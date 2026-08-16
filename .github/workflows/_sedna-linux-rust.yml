@@ -228,12 +228,11 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-preview-cargo-home-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Install sccache
         if: ${{ inputs.setup_class != 'light' }}
@@ -258,10 +257,10 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-preview-sccache-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
           restore-keys: |
-            sccache-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
-            sccache-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-
+            sedna-preview-sccache-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sedna-preview-sccache-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-
 
       - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
         if: ${{ inputs.setup_class != 'light' && inputs.install_nextest }}
@@ -492,12 +491,11 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-preview-cargo-home-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
         if: ${{ always() && !cancelled() && inputs.setup_class != 'light' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
@@ -505,7 +503,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-preview-sccache-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
       - name: sccache stats
         if: ${{ always() && inputs.setup_class != 'light' && steps.sccache_backend.outputs.backend != 'off' }}

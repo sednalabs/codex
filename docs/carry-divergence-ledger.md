@@ -1918,6 +1918,11 @@ decisions.
   supports native Linux x64, Linux Arm64, and Intel macOS x64 archives with target-bound metadata,
   checksums, and native-runner verification. Linux assets also carry keyless Sigstore bundles,
   SPDX SBOMs, and GitHub build-provenance attestations; Apple Silicon remains unsupported.
+- Preview and release Cargo dependency/compiler caches use separate authority namespaces and
+  exclude executable Cargo tool paths. Current x86 and all Arm64 installs default to exact-source
+  hardened verification; the explicit historical-x86 escape hatch rejects modern Arm/provenance
+  releases. A previously present release directory is activated only when it matches the freshly
+  verified binaries, metadata, and checksum manifest byte-for-byte.
 - Preserve the dual-native Linux matrix, target-isolated names and caches, exact-source
   hosted-runner trust checks, mandatory Arm64 hardening, historical x86 compatibility, and
   protected-main manual publication as one release contract during upstream syncs. Drop or narrow

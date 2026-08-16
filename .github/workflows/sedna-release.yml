@@ -431,12 +431,11 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-release-cargo-home-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Install sccache
         uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
@@ -465,10 +464,10 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-release-sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
           restore-keys: |
-            sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
-            sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-
+            sedna-release-sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sedna-release-sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-
 
       - name: Build release binaries
         id: build_release
@@ -525,12 +524,11 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-release-cargo-home-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
         if: ${{ always() && !cancelled() && steps.build_release.outcome == 'success' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
@@ -538,7 +536,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-release-sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
       - name: sccache stats
         if: ${{ always() && steps.sccache_backend.outputs.backend != 'off' }}
@@ -823,14 +821,13 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-release-cargo-home-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
           restore-keys: |
-            cargo-home-macos-15-intel-x86_64-apple-darwin-release-
+            sedna-release-cargo-home-macos-15-intel-x86_64-apple-darwin-
 
       - name: Install sccache
         uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
@@ -860,11 +857,11 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-release-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
           restore-keys: |
-            sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
-            sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-
-            sccache-macos-15-intel-x86_64-apple-darwin-release-
+            sedna-release-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sedna-release-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-
+            sedna-release-sccache-macos-15-intel-x86_64-apple-darwin-
 
       - name: Configure rusty_v8 artifact overrides and verify checksums
         uses: ./.github/actions/setup-rusty-v8
@@ -920,12 +917,11 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-release-cargo-home-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache
         if: ${{ always() && !cancelled() && steps.build_macos_release.outcome == 'success' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' }}
@@ -933,7 +929,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-release-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
   release-macos-preview-package:
     name: Package Intel macOS prerelease preview

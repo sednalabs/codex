@@ -8,9 +8,10 @@ allow_prerelease=false
 macos_preview=false
 verify_attestation=false
 verify_signatures=false
+allow_historical_x86=false
 
 usage() {
-  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG|latest [--dry-run] [--allow-prerelease] [--verify-signatures] [--verify-attestation] [--macos-preview]" >&2
+  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG|latest [--dry-run] [--allow-prerelease] [--verify-signatures] [--verify-attestation] [--allow-historical-x86] [--macos-preview]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -41,6 +42,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --verify-signatures)
       verify_signatures=true
+      shift
+      ;;
+    --allow-historical-x86)
+      allow_historical_x86=true
       shift
       ;;
     -h|--help)
@@ -89,6 +94,11 @@ case "${host_os}/${host_arch}" in
     exit 1
     ;;
 esac
+
+if [[ "$allow_historical_x86" == "true" && "$target" != "x86_64-unknown-linux-gnu" ]]; then
+  echo "error: --allow-historical-x86 is only valid on Linux x86_64" >&2
+  exit 1
+fi
 
 api_root="https://api.github.com/repos/sednalabs/codex"
 install_root="${HOME}/.codex/packages/standalone"
@@ -160,23 +170,11 @@ sbom_name="${archive_base}.spdx.json"
 attestation_bundle_name="${archive_base}.intoto.jsonl"
 codex_sigstore_name="${archive_base}-codex.sigstore"
 proxy_sigstore_name="${archive_base}-codex-responses-api-proxy.sigstore"
-require_linux_signatures=false
-require_linux_provenance=false
-verify_linux_elf=false
 if [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
   # Arm64 first ships with the hardened trust contract, so there is no legacy
   # Arm release mode in which these verifications may be omitted.
   verify_signatures=true
   verify_attestation=true
-fi
-if [[ "$verify_signatures" == "true" ]]; then
-  require_linux_signatures=true
-fi
-if [[ "$verify_attestation" == "true" ]]; then
-  require_linux_provenance=true
-fi
-if [[ "$target" == *-unknown-linux-gnu && ( "$verify_signatures" == "true" || "$verify_attestation" == "true" ) ]]; then
-  verify_linux_elf=true
 fi
 
 release_json="${work_dir}/release.json"
@@ -195,6 +193,44 @@ if release.get("prerelease") and allow_prerelease != "true":
 if release.get("tag_name") != expected_tag:
     raise SystemExit(f"error: release API returned tag {release.get('tag_name')!r}, expected {expected_tag!r}")
 PY
+
+if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
+  if [[ "$allow_historical_x86" == "true" ]]; then
+    if [[ "$verify_signatures" == "true" || "$verify_attestation" == "true" ]]; then
+      echo "error: --allow-historical-x86 cannot be combined with hardened verification flags" >&2
+      exit 1
+    fi
+    python3 - "$release_json" <<'PY'
+import json
+import sys
+
+release = json.loads(open(sys.argv[1], encoding="utf-8").read())
+names = {asset.get("name") for asset in release.get("assets", []) if isinstance(asset, dict)}
+if any(name and "-aarch64-unknown-linux-gnu" in name for name in names):
+    raise SystemExit("error: --allow-historical-x86 is only valid for releases without Arm64 assets")
+if any(name and (name.endswith(".spdx.json") or name.endswith(".intoto.jsonl")) for name in names):
+    raise SystemExit("error: --allow-historical-x86 cannot downgrade a release with provenance assets")
+PY
+  else
+    # Current x86 releases fail closed into the same source-bound trust contract
+    # as Arm64. Historical releases require the explicit compatibility flag.
+    verify_signatures=true
+    verify_attestation=true
+  fi
+fi
+
+require_linux_signatures=false
+require_linux_provenance=false
+verify_linux_elf=false
+if [[ "$verify_signatures" == "true" ]]; then
+  require_linux_signatures=true
+fi
+if [[ "$verify_attestation" == "true" ]]; then
+  require_linux_provenance=true
+fi
+if [[ "$target" == *-unknown-linux-gnu && ( "$verify_signatures" == "true" || "$verify_attestation" == "true" ) ]]; then
+  verify_linux_elf=true
+fi
 
 asset_manifest="${work_dir}/assets.tsv"
 python3 - "$release_json" "$archive_name" "$checksum_name" "$metadata_name" "$sbom_name" "$attestation_bundle_name" "$codex_sigstore_name" "$proxy_sigstore_name" "$require_linux_signatures" "$require_linux_provenance" > "$asset_manifest" <<'PY'
@@ -490,6 +526,16 @@ PY
   for executable in codex codex-responses-api-proxy; do
     if [[ ! -x "$release_dir/$executable" ]]; then
       echo "error: existing release is missing required executable: $executable" >&2
+      exit 1
+    fi
+  done
+  for verified_file in codex codex-responses-api-proxy RELEASE-METADATA.json SHA256SUMS.txt; do
+    if [[ ! -f "$release_dir/$verified_file" ]]; then
+      echo "error: existing release is missing verified file: $verified_file" >&2
+      exit 1
+    fi
+    if ! cmp -s "$staged/$verified_file" "$release_dir/$verified_file"; then
+      echo "error: existing release file does not match verified payload: $verified_file" >&2
       exit 1
     fi
   done

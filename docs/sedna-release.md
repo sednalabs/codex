@@ -100,8 +100,9 @@ Current workflow characteristics:
 - Release builds and GitHub Release publication are separate jobs: the build job keeps a read-only
   repository token while the small publication job owns the release environment and write-scoped
   publishing permissions.
-- Cargo home and `sccache` restore/save around the official release build to reduce duplicate
-  compilation when prior release smoke runs warmed matching caches
+- Authority-isolated Cargo dependency and `sccache` caches around the official release build.
+  Release and arbitrary-ref preview namespaces are distinct, and executable `~/.cargo/bin`
+  content is never restored from either cache.
 - Keyless Sigstore signing for Linux binaries, SPDX 2.3 SBOMs, and GitHub build-provenance
   attestations for each Linux archive and SBOM; ad-hoc code-signing checks for Intel macOS
   previews; and an optional Developer ID signing and notarization path
@@ -187,15 +188,15 @@ changes can be detected explicitly instead of inferred from tag shape alone.
   release dispatch is the first full release build
 - keep that path separate from official release publication so operators can prove a ref is
   releasable without mutating GitHub Releases
-- release smoke runs may warm dependency and compiler caches for the official publisher, but
-  `sedna-release` still performs the authoritative build, signing, metadata, checksum, and
-  publication steps itself
+- `sedna-release` reuses only its protected release cache namespace and still performs the
+  authoritative build, signing, metadata, checksum, and publication steps itself; arbitrary-ref
+  preview or smoke runs cannot populate that namespace
 - `sedna-branch-build` produces disposable preview binaries only when manually
   dispatched. Its default remains Linux `x86_64`; `platform=linux-aarch64` uses a native
   GitHub-hosted Arm64 runner, while `platform=macos` produces
   one ad hoc signed, non-notarized Intel x64 artifact for preview use without
-  publishing a GitHub Release. Cargo-home and `sccache` reuse reduce repeat-build
-  cost without changing the canonical release optimization profile.
+  publishing a GitHub Release. Cargo dependency and `sccache` reuse stays in a preview-only
+  namespace and excludes executable tool paths.
 - `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the build factory
 - branch artifacts retain for 3 days and are never updater candidates
 - only `sedna-release` is allowed to publish official GitHub Releases
@@ -246,9 +247,13 @@ runner. It intentionally does not perform host-local installation from the publi
   attestation acceptance to this repository's `sedna-release.yml` signer workflow and dispatches
   the verifier from the exact published release tag so the installer contract cannot drift from
   the release source.
-- The default x86-64 installer path remains compatible with historical releases whose metadata
-  predates `target_commit`. Exact source-commit binding is mandatory whenever hardened signature
-  or attestation verification is requested, and for every Arm64 release.
+- Current x86-64 releases fail closed into signature, provenance, hosted-runner, and exact-source
+  verification by default, including clients that fetch the current installer without new flags.
+  Historical releases whose metadata predates `target_commit` require the explicit
+  `--allow-historical-x86` compatibility flag; that flag rejects releases carrying Arm64 or
+  provenance assets. Arm64 never has a downgrade path.
+- A non-dry install may reuse an existing release directory only when both executables, metadata,
+  and checksum manifest are byte-for-byte identical to the freshly verified staged payload.
 - Host-local installs should be performed by external deployment automation outside the public
   Actions log surface
 - Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them
