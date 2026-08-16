@@ -8153,6 +8153,28 @@ fi
             proc.stderr,
         )
 
+    def test_sedna_release_router_rejects_off_main_manual_dispatch(self) -> None:
+        script = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release.yml",
+            "route",
+            "Resolve release request",
+        )["run"]
+        event = {
+            "ref": "refs/heads/release-candidate",
+            "after": "abc123",
+        }
+
+        proc, outputs = run_workflow_step_script(
+            script, event, event_name="workflow_dispatch"
+        )
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(outputs, {})
+        self.assertIn(
+            "Manual releases must be dispatched from the protected main branch",
+            proc.stderr,
+        )
+
     def test_sedna_release_uses_synced_upstream_mirror_as_version_base(self) -> None:
         workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(
             encoding="utf-8"
