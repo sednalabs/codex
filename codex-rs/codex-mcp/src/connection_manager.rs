@@ -104,8 +104,11 @@ impl McpServerConnection {
         if !self.client.startup_complete.load(Ordering::Acquire) {
             return false;
         }
+        if self.client.recovered_client_closed() {
+            return true;
+        }
         let Ok(client) = self.client.client().await else {
-            return false;
+            return self.client.recovered_client_closed();
         };
         client.client.is_closed().await
     }
@@ -115,15 +118,13 @@ impl McpServerConnection {
     }
 
     fn cancel_startup(&self) {
-        if !self.client.startup_complete.load(Ordering::Acquire) {
-            self.client.cancel_token.cancel();
-        }
+        self.client.cancel_startup();
     }
 }
 
 impl Drop for McpServerConnection {
     fn drop(&mut self) {
-        self.client.cancel_token.cancel();
+        self.client.cancel();
     }
 }
 
@@ -458,7 +459,9 @@ impl McpConnectionSet {
                     outcome = Err(StartupOutcomeError::Cancelled);
                 }
 
-                if matches!(&outcome, Err(StartupOutcomeError::Failed { .. })) {
+                if async_managed_client.is_codex_apps_mcp_server
+                    && matches!(&outcome, Err(StartupOutcomeError::Failed { .. }))
+                {
                     async_managed_client.reconnect_failed_startup().await;
                 }
 

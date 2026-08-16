@@ -33,6 +33,7 @@ use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::EventMsg;
 use codex_rollout::state_db;
 use codex_shell_command::parse_command::parse_shell_script;
+use codex_tools::ToolExecutionStatus;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSpec;
@@ -199,6 +200,10 @@ impl ToolOutput for PostToolUseFeedbackOutput {
 
     fn success_for_logging(&self) -> bool {
         self.original.success_for_logging()
+    }
+
+    fn code_mode_execution_status(&self) -> ToolExecutionStatus {
+        self.original.code_mode_execution_status()
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
@@ -578,6 +583,7 @@ impl ToolRegistry {
 
         let response_cell = tokio::sync::Mutex::new(None);
         let invocation_for_tool = invocation.clone();
+        let source_for_tool = invocation.source.clone();
         let log_payload = invocation.payload.log_payload();
 
         let result = otel
@@ -594,10 +600,13 @@ impl ToolRegistry {
                         match handle_any_tool(tool.as_ref(), invocation_for_tool).await {
                             Ok(result) => {
                                 let preview = result.result.log_preview();
-                                let success = result.result.success_for_logging();
+                                let execution_status = tool_execution_status_for_source(
+                                    &source_for_tool,
+                                    result.result.as_ref(),
+                                );
                                 let mut guard = response_cell.lock().await;
                                 *guard = Some(result);
-                                Ok((preview, success))
+                                Ok((preview, execution_status.is_completed()))
                             }
                             Err(err) => Err(err),
                         }
@@ -605,12 +614,19 @@ impl ToolRegistry {
                 },
             )
             .await;
-        let success = match &result {
-            Ok((_, success)) => *success,
-            Err(_) => false,
+        let execution_status = match &result {
+            Ok(_) => {
+                let guard = response_cell.lock().await;
+                guard
+                    .as_ref()
+                    .map(|result| tool_execution_status(&invocation, result.result.as_ref()))
+                    .unwrap_or(ToolExecutionStatus::Failed)
+            }
+            Err(_) => ToolExecutionStatus::Failed,
         };
-        emit_metric_for_tool_read(&invocation, success);
-        let post_tool_use_payload = if success {
+        let execution_completed = execution_status.is_completed();
+        emit_metric_for_tool_read(&invocation, execution_completed);
+        let post_tool_use_payload = if execution_completed {
             let guard = response_cell.lock().await;
             guard
                 .as_ref()
@@ -648,8 +664,8 @@ impl ToolRegistry {
             Ok(_) => {
                 let guard = response_cell.lock().await;
                 match guard.as_ref() {
-                    Some(result) => ToolCallOutcome::Completed {
-                        success: result.result.success_for_logging(),
+                    Some(_) => ToolCallOutcome::Completed {
+                        success: execution_completed,
                     },
                     None => ToolCallOutcome::Failed {
                         handler_executed: true,
@@ -697,6 +713,7 @@ impl ToolRegistry {
                     &result.call_id,
                     &result.payload,
                     result.result.as_ref(),
+                    execution_status,
                 );
                 Ok(result)
             }
@@ -704,6 +721,27 @@ impl ToolRegistry {
                 dispatch_trace.record_failed(&err);
                 Err(err)
             }
+        }
+    }
+}
+
+fn tool_execution_status(
+    invocation: &ToolInvocation,
+    result: &dyn ToolOutput,
+) -> ToolExecutionStatus {
+    tool_execution_status_for_source(&invocation.source, result)
+}
+
+fn tool_execution_status_for_source(
+    source: &crate::tools::context::ToolCallSource,
+    result: &dyn ToolOutput,
+) -> ToolExecutionStatus {
+    match source {
+        crate::tools::context::ToolCallSource::Direct => {
+            ToolExecutionStatus::from_success(result.success_for_logging())
+        }
+        crate::tools::context::ToolCallSource::CodeMode { .. } => {
+            result.code_mode_execution_status()
         }
     }
 }

@@ -12,11 +12,46 @@ const TELEMETRY_PREVIEW_MAX_BYTES: usize = 2 * 1024;
 const TELEMETRY_PREVIEW_MAX_LINES: usize = 64;
 const TELEMETRY_PREVIEW_TRUNCATION_NOTICE: &str = "[... telemetry preview truncated ...]";
 
+/// The execution status recorded for a tool invocation.
+///
+/// This is deliberately separate from the model-facing success bit. Most
+/// tools use the same result for both callers, but Code Mode can safely
+/// consume a complete runtime value while the model must receive a bounded
+/// failed projection of that same value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolExecutionStatus {
+    Completed,
+    Failed,
+}
+
+impl ToolExecutionStatus {
+    pub fn from_success(success: bool) -> Self {
+        if success {
+            Self::Completed
+        } else {
+            Self::Failed
+        }
+    }
+
+    pub fn is_completed(self) -> bool {
+        matches!(self, Self::Completed)
+    }
+}
+
 /// Model-facing output contract returned by executable tool runtimes.
 pub trait ToolOutput: Send {
     fn log_preview(&self) -> String;
 
     fn success_for_logging(&self) -> bool;
+
+    /// Returns the execution result when this output is consumed by Code Mode.
+    ///
+    /// The default preserves the ordinary model-facing result. Outputs that
+    /// intentionally fail-close a model projection while retaining a complete
+    /// Code Mode value may report `Completed` here instead.
+    fn code_mode_execution_status(&self) -> ToolExecutionStatus {
+        ToolExecutionStatus::from_success(self.success_for_logging())
+    }
 
     /// Whether this output contains external context that should disable memory generation when
     /// `memories.disable_on_external_context` is enabled.
@@ -62,6 +97,10 @@ where
 
     fn success_for_logging(&self) -> bool {
         (**self).success_for_logging()
+    }
+
+    fn code_mode_execution_status(&self) -> ToolExecutionStatus {
+        (**self).code_mode_execution_status()
     }
 
     fn contains_external_context(&self) -> bool {

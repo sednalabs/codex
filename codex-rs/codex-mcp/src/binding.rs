@@ -21,6 +21,7 @@ use tokio::sync::RwLock;
 
 use crate::McpConfig;
 use crate::binding_clients::McpBindingClients;
+use crate::binding_clients::McpResourceListing;
 use crate::connection_manager::McpConnectionSet;
 use crate::rmcp_client::ManagedClient;
 use crate::server::McpServerMetadata;
@@ -41,7 +42,7 @@ impl McpBinding {
     pub fn empty(config: Arc<McpConfig>) -> Self {
         Self::new(
             Arc::new(McpConnectionSet::empty(config.prefix_mcp_tool_names)),
-            Arc::new(McpBindingClients::new(HashMap::new())),
+            Arc::new(McpBindingClients::new(HashMap::new(), Default::default())),
             config,
             /*plugins_available*/ false,
             Vec::new(),
@@ -102,7 +103,7 @@ impl McpBinding {
     pub async fn list_all_resources(
         &self,
         include_server: impl Fn(&str) -> bool,
-    ) -> HashMap<String, Vec<Resource>> {
+    ) -> McpResourceListing<Resource> {
         self.clients.list_all_resources(include_server).await
     }
 
@@ -117,7 +118,7 @@ impl McpBinding {
     pub async fn list_all_resource_templates(
         &self,
         include_server: impl Fn(&str) -> bool,
-    ) -> HashMap<String, Vec<ResourceTemplate>> {
+    ) -> McpResourceListing<ResourceTemplate> {
         self.clients
             .list_all_resource_templates(include_server)
             .await

@@ -481,6 +481,21 @@ items. Downstream adopts this boundary without a carry-specific patch;
 capacity retry, realtime world state, hooks, dynamic media, compaction
 metadata, and step-scoped extension data remain composed around it.
 
+## MCP JSON-family resource model-output boundary
+
+`read_mcp_resource` is a model-visible structured-output boundary. When a
+resource advertises `application/json` or a case-insensitive
+`application/*+json` media type, generic middle truncation of the serialized
+resource envelope can cut the nested JSON text and leave a false successful
+result. The downstream boundary retains complete payloads for code mode, but
+returns a fixed compact failed structured result to the model when a JSON-family
+resource does not fit its output budget. Plain text and Markdown resources keep
+their existing bounded rendering. The history copy receives the compact error,
+so the generic history bound cannot re-corrupt a nested JSON resource. Code
+Mode retains the complete value and records a successful execution; the direct
+model invocation remains a failed bounded projection. Preserve this carry until
+upstream has equivalent model-safe resource bounding.
+
 ## Validation policy
 
 - use tiny local static sanity checks first (`git diff --check`, schema parsing, and conflict-marker scans)
@@ -781,6 +796,7 @@ User-visible behavior:
   runtime provider object, `model_reasoning_summary`, and verbosity across an
   unrelated role reload.
 - The v1 `spawn_agent` result stays on the upstream `agent_id`/`nickname` shape. The v2 result returns its canonical `task_name`, includes `agent_id` and `nickname` only when spawn metadata is visible, and reports requested/effective model and reasoning fields so callers can see what actually launched after role/profile resolution. Role, status, identity source, provider ID, and the preserved `model_reasoning_summary` remain inventory or internal metadata rather than raw spawn-result fields.
+- V2 `collabAgentToolCall` spawn lifecycle items keep request provenance and terminal observation distinct in replayable protocol data. At spawn start, the established `model` and `reasoningEffort` aliases retain the caller's request; at terminal completion, those established aliases retain the observed effective selection for compatibility with existing terminal clients. Additive `requestedModel`, `requestedReasoningEffort`, `effectiveModel`, and `effectiveReasoningEffort` are required nullable fields: request provenance remains in `requested*`, and `effective*` repeats only the observed terminal snapshot; unknown values serialize as `null`. An unknown terminal effect remains unknown even when requested provenance is present. Older persisted terminal inputs may omit all four additive fields; their observed legacy pair is terminal effective identity and never request provenance. Rust serde conversion retains this historic shape before projection, and the Python SDK performs the same inbound-only materialization for a complete four-field absence before response or notification validation. Its public V2 model still requires all four nullable fields, partial shapes retain validation errors, and no aliases are rewritten. Replay never infers an effective identity from a request or thread metadata. Automatic follow-up selection gives the identity route priority 10 over generic routes when an identity implementation or SDK path is present, selects core, app-server protocol, dedicated app-server and TUI identity, analytics/state consumer, and Python SDK lanes, and fails closed only when the highest-priority routes tie; schema-only and docs/config-only inputs do not trigger the identity route.
 - V2 description tests resolve the configured tool namespace rather than
   assuming an upstream or downstream literal, and a delegate cancelled before
   launch returns `TurnAborted` without spawning a child session.

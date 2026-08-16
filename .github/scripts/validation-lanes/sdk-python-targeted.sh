@@ -22,5 +22,6 @@ docker run --rm \
       tests/test_public_api_signatures.py \
       tests/test_public_api_runtime_behavior.py \
       tests/test_client_rpc_methods.py \
+      tests/test_contract_generation.py \
       tests/test_artifact_workflow_and_binaries.py
   '
