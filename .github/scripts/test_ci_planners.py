@@ -7480,7 +7480,11 @@ class HelperScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            if failure in ("existing_tampered", "existing_matching"):
+            if failure in (
+                "existing_tampered",
+                "existing_proxy_tampered",
+                "existing_matching",
+            ):
                 release_dir = (
                     root
                     / "home"
@@ -7509,6 +7513,11 @@ class HelperScriptTests(unittest.TestCase):
                         "#!/usr/bin/env bash\necho tampered\n", encoding="utf-8"
                     )
                     (release_dir / "codex").chmod(0o755)
+                if failure == "existing_proxy_tampered":
+                    (release_dir / "codex-responses-api-proxy").write_text(
+                        "#!/usr/bin/env bash\necho tampered\n", encoding="utf-8"
+                    )
+                    (release_dir / "codex-responses-api-proxy").chmod(0o755)
 
             fake_curl = fake_bin / "curl"
             fake_curl.write_text(
@@ -7674,6 +7683,23 @@ fi
             }
             env.pop("GH_TOKEN", None)
             env.pop("GITHUB_TOKEN", None)
+            visible_bin = root / "home" / ".local" / "bin"
+            previous_visible = {
+                "codex": "previous codex\n",
+                "codex-responses-api-proxy": "previous proxy\n",
+            }
+            if failure in ("preexisting_visible", "activation_backup_failure"):
+                visible_bin.mkdir(parents=True)
+                for executable, contents in previous_visible.items():
+                    visible = visible_bin / executable
+                    visible.write_text(contents, encoding="utf-8")
+                    visible.chmod(0o755)
+            backups = (
+                root / "home" / ".codex" / "packages" / "standalone" / "backups"
+            )
+            if failure == "activation_backup_failure":
+                backups.mkdir(parents=True)
+                backups.chmod(0o000)
             verification_args = []
             if verification_args_override is not None:
                 verification_args = verification_args_override
@@ -7695,6 +7721,17 @@ fi
                 text=True,
                 env=env,
             )
+            if failure == "activation_backup_failure":
+                backups.chmod(0o755)
+                self.assertNotEqual(proc.returncode, 0)
+                current = (
+                    root / "home" / ".codex" / "packages" / "standalone" / "current"
+                )
+                self.assertFalse(os.path.lexists(current))
+                for executable, contents in previous_visible.items():
+                    visible = visible_bin / executable
+                    self.assertFalse(visible.is_symlink(), executable)
+                    self.assertEqual(visible.read_text(encoding="utf-8"), contents)
             if verify_visible_links and proc.returncode == 0:
                 current_dir = (
                     root / "home" / ".codex" / "packages" / "standalone" / "current"
@@ -7708,6 +7745,13 @@ fi
                         (current_dir / executable).resolve(),
                         executable,
                     )
+                if failure == "preexisting_visible":
+                    for executable, contents in previous_visible.items():
+                        matches = list(backups.glob(f"{executable}.*"))
+                        self.assertEqual(len(matches), 1, executable)
+                        self.assertEqual(
+                            matches[0].read_text(encoding="utf-8"), contents
+                        )
             return proc
 
     def test_sedna_release_installer_executes_hardened_linux_fixture(self) -> None:
@@ -7731,6 +7775,20 @@ fi
                 )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
 
+    def test_sedna_release_installer_backs_up_previous_visible_binaries(self) -> None:
+        proc = self.run_sedna_installer_fixture(
+            "preexisting_visible",
+            dry_run=False,
+            verify_visible_links=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_sedna_release_installer_rolls_back_failed_activation(self) -> None:
+        self.run_sedna_installer_fixture(
+            "activation_backup_failure",
+            dry_run=False,
+        )
+
     def test_sedna_release_installer_rejects_invalid_release_assets(self) -> None:
         cases = {
             "missing_sbom": "missing required assets",
@@ -7741,6 +7799,7 @@ fi
             "wrong_elf": "unexpected binary architecture",
             "wrong_source_commit": "does not match metadata target_commit",
             "existing_tampered": "does not match verified payload",
+            "existing_proxy_tampered": "does not match verified payload",
             "outdated_verifiers": "tool checksum mismatch",
         }
         for failure, expected in cases.items():

@@ -746,33 +746,110 @@ if [[ ! -d "$release_dir" ]]; then
   mv "$tmp_release" "$release_dir"
 fi
 
-current_tmp="${install_root}/.current.tmp.$$"
-ln -s "$release_dir" "$current_tmp"
-python3 - "$current_tmp" "${install_root}/current" <<'PY'
+python3 - "$install_root" "$bin_dir" "$release_dir" <<'PY'
 import os
+import shutil
 import sys
+import tempfile
+import time
+from pathlib import Path
 
-os.replace(sys.argv[1], sys.argv[2])
+install_root, bin_dir, release_dir = map(Path, sys.argv[1:4])
+current = install_root / "current"
+executables = ("codex", "codex-responses-api-proxy")
+
+if os.path.lexists(current) and not current.is_symlink():
+    raise SystemExit(f"error: current release pointer is not a symlink: {current}")
+
+previous_current_target = os.readlink(current) if current.is_symlink() else None
+transaction = Path(tempfile.mkdtemp(prefix=".activation.", dir=install_root))
+saved_dir = transaction / "saved"
+candidate_dir = transaction / "candidate"
+saved_dir.mkdir()
+candidate_dir.mkdir()
+saved_entries: dict[str, Path] = {}
+backup_entries: dict[str, Path] = {}
+current_swapped = False
+activation_succeeded = False
+
+try:
+    for executable in executables:
+        visible = bin_dir / executable
+        saved = saved_dir / executable
+        if os.path.lexists(visible):
+            os.replace(visible, saved)
+            saved_entries[executable] = saved
+
+        candidate = candidate_dir / executable
+        candidate.symlink_to(current / executable)
+        os.replace(candidate, visible)
+
+    candidate_current = candidate_dir / "current"
+    candidate_current.symlink_to(release_dir)
+    os.replace(candidate_current, current)
+    current_swapped = True
+
+    for executable, saved in saved_entries.items():
+        if saved.is_symlink():
+            saved.unlink()
+            continue
+        if not saved.is_file():
+            raise RuntimeError(
+                f"refusing to discard unsupported previous entrypoint: {saved}"
+            )
+        backups = install_root / "backups"
+        backups.mkdir(exist_ok=True)
+        backup = backups / f"{executable}.{int(time.time())}.{os.getpid()}"
+        os.replace(saved, backup)
+        backup_entries[executable] = backup
+        print(f"backed up previous {executable} binary")
+
+    activation_succeeded = True
+except BaseException as activation_error:
+    rollback_errors = []
+    try:
+        if current_swapped:
+            if previous_current_target is None:
+                if os.path.lexists(current):
+                    current.unlink()
+            else:
+                rollback_current = candidate_dir / "rollback-current"
+                rollback_current.symlink_to(previous_current_target)
+                os.replace(rollback_current, current)
+    except BaseException as error:
+        rollback_errors.append(f"current: {error}")
+
+    for executable in reversed(executables):
+        visible = bin_dir / executable
+        try:
+            if os.path.lexists(visible):
+                visible.unlink()
+            if executable in backup_entries:
+                os.replace(backup_entries[executable], visible)
+            elif executable in saved_entries and os.path.lexists(
+                saved_entries[executable]
+            ):
+                os.replace(saved_entries[executable], visible)
+        except BaseException as error:
+            rollback_errors.append(f"{executable}: {error}")
+
+    if rollback_errors:
+        details = "; ".join(rollback_errors)
+        raise RuntimeError(
+            f"release activation failed and rollback was incomplete ({details}); "
+            f"preserved transaction: {transaction}"
+        ) from activation_error
+    raise
+finally:
+    retained_entries = any(saved_dir.iterdir()) or any(candidate_dir.iterdir())
+    if activation_succeeded or not retained_entries:
+        shutil.rmtree(transaction)
+    elif transaction.exists():
+        print(
+            f"release activation transaction retained for recovery: {transaction}",
+            file=sys.stderr,
+        )
 PY
-
-for executable in codex codex-responses-api-proxy; do
-  visible_executable="${bin_dir}/${executable}"
-  if [[ -e "$visible_executable" && ! -L "$visible_executable" ]]; then
-    mkdir -p "${install_root}/backups"
-    backup="${install_root}/backups/${executable}.$(date +%s)"
-    mv "$visible_executable" "$backup"
-    echo "backed up previous ${executable} binary"
-  fi
-
-  executable_tmp="${bin_dir}/.${executable}.tmp.$$"
-  ln -s "${release_dir}/${executable}" "$executable_tmp"
-  python3 - "$executable_tmp" "$visible_executable" <<'PY'
-import os
-import sys
-
-os.replace(sys.argv[1], sys.argv[2])
-PY
-done
 
 visible_codex="${bin_dir}/codex"
 visible_version_output="$("$visible_codex" --version 2>&1)"
