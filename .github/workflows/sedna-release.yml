@@ -36,10 +36,10 @@ on:
       macos_release_mode:
         description: "Intel macOS assets: omit, publish an ad-hoc signed preview, or require Developer ID notarization."
         required: true
-        default: off
+        default: "off"
         type: choice
         options:
-          - off
+          - "off"
           - preview
           - notarized
 
