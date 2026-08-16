@@ -7065,11 +7065,14 @@ fi
                 encoding="utf-8",
             )
             fake_file = fake_bin / "file"
-            fake_file.write_text(
-                "#!/usr/bin/env bash\n"
-                'echo "${FAKE_FILE_OUTPUT:-ELF 64-bit LSB pie executable, x86-64}"\n',
-                encoding="utf-8",
-            )
+            if failure == "legacy_x86":
+                fake_file.write_text("#!/usr/bin/env bash\nexit 97\n", encoding="utf-8")
+            else:
+                fake_file.write_text(
+                    "#!/usr/bin/env bash\n"
+                    'echo "${FAKE_FILE_OUTPUT:-ELF 64-bit LSB pie executable, x86-64}"\n',
+                    encoding="utf-8",
+                )
             fake_uname = fake_bin / "uname"
             fake_uname.write_text(
                 "#!/usr/bin/env bash\n"
@@ -7078,15 +7081,20 @@ fi
             )
             for name in ("cosign", "gh", "readelf"):
                 helper = fake_bin / name
-                helper.write_text(
-                    "#!/usr/bin/env bash\n"
-                    + (
-                        "echo \"Requesting program interpreter: ${FAKE_ELF_INTERPRETER}\"\n"
-                        if name == "readelf"
-                        else "exit 0\n"
-                    ),
-                    encoding="utf-8",
-                )
+                if failure == "legacy_x86" and name == "readelf":
+                    helper.write_text(
+                        "#!/usr/bin/env bash\nexit 97\n", encoding="utf-8"
+                    )
+                else:
+                    helper.write_text(
+                        "#!/usr/bin/env bash\n"
+                        + (
+                            "echo \"Requesting program interpreter: ${FAKE_ELF_INTERPRETER}\"\n"
+                            if name == "readelf"
+                            else "exit 0\n"
+                        ),
+                        encoding="utf-8",
+                    )
                 helper.chmod(0o755)
             fake_curl.chmod(0o755)
             fake_file.chmod(0o755)

@@ -162,6 +162,7 @@ codex_sigstore_name="${archive_base}-codex.sigstore"
 proxy_sigstore_name="${archive_base}-codex-responses-api-proxy.sigstore"
 require_linux_signatures=false
 require_linux_provenance=false
+verify_linux_elf=false
 if [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
   # Arm64 first ships with the hardened trust contract, so there is no legacy
   # Arm release mode in which these verifications may be omitted.
@@ -173,6 +174,9 @@ if [[ "$verify_signatures" == "true" ]]; then
 fi
 if [[ "$verify_attestation" == "true" ]]; then
   require_linux_provenance=true
+fi
+if [[ "$target" == *-unknown-linux-gnu && ( "$verify_signatures" == "true" || "$verify_attestation" == "true" ) ]]; then
+  verify_linux_elf=true
 fi
 
 release_json="${work_dir}/release.json"
@@ -344,7 +348,7 @@ for executable in codex codex-responses-api-proxy; do
   fi
 done
 
-if [[ "$target" == *-unknown-linux-gnu ]]; then
+if [[ "$verify_linux_elf" == "true" ]]; then
   expected_elf_arch="x86-64"
   if [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
     expected_elf_arch="ARM aarch64"
