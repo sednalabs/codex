@@ -2,17 +2,19 @@
 
 ### System requirements
 
-| Requirement                 | Details                                                                         |
-| --------------------------- | ------------------------------------------------------------------------------- |
-| Operating systems           | Linux `x86_64` or Arm64 GNU (Ubuntu 20.04+/Debian 10+ recommended); Intel macOS |
-| Git (optional, recommended) | 2.23+ for built-in PR helpers                                                   |
-| RAM                         | 4-GB minimum (8-GB recommended)                                                 |
+| Requirement                 | Details                                                              |
+| --------------------------- | -------------------------------------------------------------------- |
+| Operating systems           | Linux `x86_64` or Arm64 GNU (Ubuntu 24.04+ recommended); Intel macOS |
+| Git (optional, recommended) | 2.23+ for built-in PR helpers                                        |
+| RAM                         | 4-GB minimum (8-GB recommended)                                      |
 
-Hardened Linux asset verification uses Cosign for keyless binary signatures and GitHub CLI for
-build attestations. The public post-release verifier provisions Cosign and passes
-`--verify-signatures --verify-attestation`; external deployment automation should do the same
-after provisioning those tools. The default x86 installer path retains compatibility with
-historical release assets that predate the SBOM and attestation contract.
+Linux asset verification uses Cosign for keyless binary signatures by default. Hardened
+verification also uses GitHub CLI for build attestations; the public post-release verifier passes
+`--verify-attestation` for current dual-architecture releases. Arm64 has no legacy release mode and
+therefore always requires both signature and provenance verification. The x86 installer retains
+compatibility with historical signed release assets that predate the SBOM and attestation contract.
+Linux distributions older than the Ubuntu 24.04 hosted verification environment are not part of
+the release compatibility proof.
 
 The supported downstream Linux install and release targets are `x86_64` and Arm64 GNU. Intel macOS `x86_64` is also supported by the release contract. Other upstream platform paths remain in the repository for future re-enablement, but Sedna does not currently publish or validate them as supported targets.
 

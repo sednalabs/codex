@@ -96,6 +96,14 @@ jobs:
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
 
+        file "${stage_dir}/codex" | grep -F 'x86-64'
+        readelf -l "${stage_dir}/codex" | grep -F '/lib64/ld-linux-x86-64.so.2'
+        "${stage_dir}/codex" --version
+        "${stage_dir}/codex" --help >/dev/null
+        "${stage_dir}/codex" exec --help >/dev/null
+        "${stage_dir}/codex" app-server --help >/dev/null
+        "${stage_dir}/codex-responses-api-proxy" --help >/dev/null
+
         tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
 
         python3 - <<'PY' > "../dist/${archive_base}.json"
@@ -144,6 +152,14 @@ jobs:
 
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
+
+        file "${stage_dir}/codex" | grep -F 'ARM aarch64'
+        readelf -l "${stage_dir}/codex" | grep -F '/lib/ld-linux-aarch64.so.1'
+        "${stage_dir}/codex" --version
+        "${stage_dir}/codex" --help >/dev/null
+        "${stage_dir}/codex" exec --help >/dev/null
+        "${stage_dir}/codex" app-server --help >/dev/null
+        "${stage_dir}/codex-responses-api-proxy" --help >/dev/null
 
         tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
 

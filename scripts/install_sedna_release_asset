@@ -160,9 +160,21 @@ sbom_name="${archive_base}.spdx.json"
 attestation_bundle_name="${archive_base}.intoto.jsonl"
 codex_sigstore_name="${archive_base}-codex.sigstore"
 proxy_sigstore_name="${archive_base}-codex-responses-api-proxy.sigstore"
-require_linux_trust=false
-if [[ "$target" == "aarch64-unknown-linux-gnu" || "$verify_signatures" == "true" || "$verify_attestation" == "true" ]]; then
-  require_linux_trust=true
+require_linux_signatures=false
+require_linux_provenance=false
+if [[ "$target" == *-unknown-linux-gnu ]]; then
+  # Linux binary signatures have always been part of the supported installer
+  # contract. Keep them fail-closed for direct callers as well as CI.
+  verify_signatures=true
+  require_linux_signatures=true
+fi
+if [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+  # Arm64 first ships with the provenance contract, so there is no legacy Arm
+  # release mode in which these assets may be absent.
+  verify_attestation=true
+fi
+if [[ "$verify_attestation" == "true" ]]; then
+  require_linux_provenance=true
 fi
 
 release_json="${work_dir}/release.json"
@@ -183,14 +195,16 @@ if release.get("tag_name") != expected_tag:
 PY
 
 asset_manifest="${work_dir}/assets.tsv"
-python3 - "$release_json" "$archive_name" "$checksum_name" "$metadata_name" "$sbom_name" "$attestation_bundle_name" "$codex_sigstore_name" "$proxy_sigstore_name" "$require_linux_trust" > "$asset_manifest" <<'PY'
+python3 - "$release_json" "$archive_name" "$checksum_name" "$metadata_name" "$sbom_name" "$attestation_bundle_name" "$codex_sigstore_name" "$proxy_sigstore_name" "$require_linux_signatures" "$require_linux_provenance" > "$asset_manifest" <<'PY'
 import json
 import sys
 
-release_path, archive_name, checksum_name, metadata_name, sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name, require_linux_trust = sys.argv[1:10]
+release_path, archive_name, checksum_name, metadata_name, sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name, require_linux_signatures, require_linux_provenance = sys.argv[1:11]
 required = [archive_name, checksum_name, metadata_name]
-if require_linux_trust == "true":
-    required.extend((sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name))
+if require_linux_signatures == "true":
+    required.extend((codex_sigstore_name, proxy_sigstore_name))
+if require_linux_provenance == "true":
+    required.extend((sbom_name, attestation_bundle_name))
 release = json.loads(open(release_path, encoding="utf-8").read())
 assets = {asset.get("name"): asset for asset in release.get("assets", [])}
 missing = [name for name in required if name not in assets]
@@ -220,14 +234,14 @@ while IFS=$'\t' read -r name asset_id; do
   esac
 done < "$asset_manifest"
 
-python3 - "$work_dir" "$archive_name" "$checksum_name" "$metadata_name" "$release_tag" "$release_version" "$target" "$macos_preview" "$sbom_name" "$attestation_bundle_name" "$codex_sigstore_name" "$proxy_sigstore_name" "$require_linux_trust" <<'PY'
+python3 - "$work_dir" "$archive_name" "$checksum_name" "$metadata_name" "$release_tag" "$release_version" "$target" "$macos_preview" "$sbom_name" "$attestation_bundle_name" "$codex_sigstore_name" "$proxy_sigstore_name" "$require_linux_signatures" "$require_linux_provenance" <<'PY'
 import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 
-work_dir, archive_name, checksum_name, metadata_name, release_tag, release_version, target, macos_preview, sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name, require_linux_trust = sys.argv[1:14]
+work_dir, archive_name, checksum_name, metadata_name, release_tag, release_version, target, macos_preview, sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name, require_linux_signatures, require_linux_provenance = sys.argv[1:15]
 root = Path(work_dir)
 metadata = json.loads((root / metadata_name).read_text(encoding="utf-8"))
 expected = {
@@ -268,8 +282,10 @@ for raw in (root / checksum_name).read_text(encoding="utf-8").splitlines():
             raise SystemExit(f"error: duplicate checksum entry for {name!r}")
         checksums[name] = digest.lower()
 required_assets = [archive_name, metadata_name]
-if require_linux_trust == "true":
-    required_assets.extend((sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name))
+if require_linux_signatures == "true":
+    required_assets.extend((codex_sigstore_name, proxy_sigstore_name))
+if require_linux_provenance == "true":
+    required_assets.extend((sbom_name, attestation_bundle_name))
 for name in required_assets:
     digest = checksums.get(name)
     if digest is None:
@@ -277,7 +293,7 @@ for name in required_assets:
     actual = hashlib.sha256((root / name).read_bytes()).hexdigest()
     if actual != digest:
         raise SystemExit(f"error: checksum mismatch for {name}: expected {digest}, got {actual}")
-if require_linux_trust == "true":
+if require_linux_provenance == "true":
     sbom = json.loads((root / sbom_name).read_text(encoding="utf-8"))
     if sbom.get("spdxVersion") != "SPDX-2.3":
         raise SystemExit(f"error: {sbom_name} is not an SPDX 2.3 document")
@@ -334,12 +350,20 @@ if [[ "$target" == *-unknown-linux-gnu ]]; then
   expected_elf_arch="x86-64"
   if [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
     expected_elf_arch="ARM aarch64"
+    expected_elf_interpreter="/lib/ld-linux-aarch64.so.1"
+  else
+    expected_elf_interpreter="/lib64/ld-linux-x86-64.so.2"
   fi
   for executable in codex codex-responses-api-proxy; do
     file_output="$(file -b "$staged/$executable")"
     if [[ "$file_output" != *"ELF"* || "$file_output" != *"$expected_elf_arch"* ]]; then
       printf 'error: %s has unexpected binary architecture for %s: %s\n' \
         "$executable" "$target" "$file_output" >&2
+      exit 1
+    fi
+    if ! readelf -l "$staged/$executable" | grep -F "$expected_elf_interpreter" >/dev/null; then
+      printf 'error: %s does not use the expected GNU/Linux interpreter for %s: %s\n' \
+        "$executable" "$target" "$expected_elf_interpreter" >&2
       exit 1
     fi
   done
@@ -395,6 +419,8 @@ if [[ "$staged_version_output" != *"$release_version"* ]]; then
   exit 1
 fi
 "$staged/codex" --help >/dev/null
+"$staged/codex" exec --help >/dev/null
+"$staged/codex" app-server --help >/dev/null
 "$staged/codex-responses-api-proxy" --help >/dev/null
 
 release_dir_name="${release_tag}"

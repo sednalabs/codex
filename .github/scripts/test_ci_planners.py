@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import importlib.util
 import json
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 import unittest.mock as mock
@@ -6903,6 +6905,209 @@ class RustCiModeScriptTests(unittest.TestCase):
 
 
 class HelperScriptTests(unittest.TestCase):
+    def run_sedna_installer_fixture(
+        self, failure: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        release_tag = "v0.146.0-alpha.8-sedna.99+upstream.3"
+        release_version = release_tag.removeprefix("v")
+        target = "x86_64-unknown-linux-gnu"
+        archive_name = f"codex-sedna-{release_version}-{target}.tar.gz"
+        archive_base = archive_name.removesuffix(".tar.gz")
+        metadata_name = "RELEASE-METADATA.json"
+        checksum_name = "SHA256SUMS.txt"
+        sbom_name = f"{archive_base}.spdx.json"
+        attestation_name = f"{archive_base}.intoto.jsonl"
+        codex_sigstore_name = f"{archive_base}-codex.sigstore"
+        proxy_sigstore_name = f"{archive_base}-codex-responses-api-proxy.sigstore"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            assets_dir = root / "assets"
+            fake_bin = root / "bin"
+            stage = root / "stage"
+            assets_dir.mkdir()
+            fake_bin.mkdir()
+            stage.mkdir()
+
+            codex = stage / "codex"
+            codex.write_text(
+                "#!/usr/bin/env bash\n"
+                f"if [[ ${{1:-}} == --version ]]; then echo 'codex-cli {release_version}'; fi\n",
+                encoding="utf-8",
+            )
+            proxy = stage / "codex-responses-api-proxy"
+            proxy.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            codex.chmod(0o755)
+            proxy.chmod(0o755)
+
+            archive_path = root / archive_name
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.add(codex, arcname="codex")
+                archive.add(proxy, arcname="codex-responses-api-proxy")
+                if failure == "unsafe_archive":
+                    archive.add(codex, arcname="../escape")
+
+            metadata = {
+                "release_tag": release_tag,
+                "release_version": release_version,
+                "target": (
+                    "aarch64-unknown-linux-gnu"
+                    if failure == "malformed_metadata"
+                    else target
+                ),
+                "repository": "sednalabs/codex",
+            }
+            (root / metadata_name).write_text(json.dumps(metadata), encoding="utf-8")
+            (root / sbom_name).write_text(
+                json.dumps(
+                    {
+                        "spdxVersion": (
+                            "SPDX-2.2"
+                            if failure == "malformed_sbom"
+                            else "SPDX-2.3"
+                        )
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / attestation_name).write_text("{}\n", encoding="utf-8")
+            (root / codex_sigstore_name).write_text("{}\n", encoding="utf-8")
+            (root / proxy_sigstore_name).write_text("{}\n", encoding="utf-8")
+
+            asset_names = [
+                archive_name,
+                metadata_name,
+                sbom_name,
+                attestation_name,
+                codex_sigstore_name,
+                proxy_sigstore_name,
+            ]
+            checksums = []
+            for name in asset_names:
+                digest = hashlib.sha256((root / name).read_bytes()).hexdigest()
+                checksums.append(f"{digest}  {name}")
+            (root / checksum_name).write_text("\n".join(checksums) + "\n", encoding="utf-8")
+            if failure == "checksum_mismatch":
+                (root / codex_sigstore_name).write_text("tampered\n", encoding="utf-8")
+
+            all_asset_names = [
+                archive_name,
+                checksum_name,
+                metadata_name,
+                sbom_name,
+                attestation_name,
+                codex_sigstore_name,
+                proxy_sigstore_name,
+            ]
+            if failure == "missing_sbom":
+                all_asset_names.remove(sbom_name)
+            release_assets = []
+            for asset_id, name in enumerate(all_asset_names, start=1):
+                release_assets.append({"id": asset_id, "name": name})
+                (assets_dir / str(asset_id)).write_bytes((root / name).read_bytes())
+            (root / "release.json").write_text(
+                json.dumps(
+                    {
+                        "tag_name": release_tag,
+                        "draft": False,
+                        "prerelease": True,
+                        "assets": release_assets,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+output=''
+url=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output) output="$2"; shift 2 ;;
+    http*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+if [[ "$url" == */releases/tags/* ]]; then
+  cp "$ASSET_FIXTURE_DIR/release.json" "$output"
+else
+  cp "$ASSET_FIXTURE_DIR/assets/${url##*/}" "$output"
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_file = fake_bin / "file"
+            fake_file.write_text(
+                "#!/usr/bin/env bash\n"
+                'echo "${FAKE_FILE_OUTPUT:-ELF 64-bit LSB pie executable, x86-64}"\n',
+                encoding="utf-8",
+            )
+            for name in ("cosign", "gh", "readelf"):
+                helper = fake_bin / name
+                helper.write_text(
+                    "#!/usr/bin/env bash\n"
+                    + (
+                        "echo 'Requesting program interpreter: /lib64/ld-linux-x86-64.so.2'\n"
+                        if name == "readelf"
+                        else "exit 0\n"
+                    ),
+                    encoding="utf-8",
+                )
+                helper.chmod(0o755)
+            fake_curl.chmod(0o755)
+            fake_file.chmod(0o755)
+
+            env = {
+                **os.environ,
+                "ASSET_FIXTURE_DIR": str(root),
+                "FAKE_FILE_OUTPUT": (
+                    "ELF 64-bit LSB pie executable, ARM aarch64"
+                    if failure == "wrong_elf"
+                    else "ELF 64-bit LSB pie executable, x86-64"
+                ),
+                "GITHUB_TOKEN": "fixture-token",
+                "HOME": str(root / "home"),
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            }
+            return subprocess.run(
+                [
+                    str(REPO_ROOT / "scripts/install_sedna_release_asset"),
+                    "--repository",
+                    "sednalabs/codex",
+                    "--release-tag",
+                    release_tag,
+                    "--allow-prerelease",
+                    "--verify-attestation",
+                    "--dry-run",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+    def test_sedna_release_installer_executes_hardened_linux_fixture(self) -> None:
+        proc = self.run_sedna_installer_fixture()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("dry-run: verified", proc.stdout)
+
+    def test_sedna_release_installer_rejects_invalid_release_assets(self) -> None:
+        cases = {
+            "missing_sbom": "missing required assets",
+            "malformed_metadata": "metadata target",
+            "malformed_sbom": "not an SPDX 2.3 document",
+            "checksum_mismatch": "checksum mismatch",
+            "unsafe_archive": "refusing unexpected archive member",
+            "wrong_elf": "unexpected binary architecture",
+        }
+        for failure, expected in cases.items():
+            with self.subTest(failure=failure):
+                proc = self.run_sedna_installer_fixture(failure)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(expected, proc.stderr)
+
     def test_duplicate_workflow_finder_matches_same_branch_sha_success(self) -> None:
         runs = [
             {
@@ -7593,6 +7798,14 @@ class HelperScriptTests(unittest.TestCase):
         self.assertEqual(resolve_matrix("preview"), [linux, linux_arm, macos])
         self.assertEqual(resolve_matrix("notarized"), [linux, linux_arm, macos])
         self.assertEqual(plan.get("runs-on"), "ubuntu-slim")
+        compatibility_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml",
+            "plan",
+            "Validate x86-only compatibility request",
+        )
+        self.assertEqual(compatibility_step.get("if"), "${{ !inputs.require_linux_arm64 }}")
+        self.assertIn("releases/tags/${RELEASE_TAG}", compatibility_step.get("run") or "")
+        self.assertIn("-aarch64-unknown-linux-gnu", compatibility_step.get("run") or "")
         self.assertEqual(install.get("needs"), "plan")
         self.assertEqual(
             ((install.get("strategy") or {}).get("matrix") or {}).get("include"),
@@ -7612,17 +7825,22 @@ class HelperScriptTests(unittest.TestCase):
         self.assertIn("gh attestation verify", installer)
         self.assertIn("--signer-workflow", installer)
         self.assertIn("SPDX-2.3", installer)
+        self.assertIn('verify_signatures=true', installer)
+        self.assertIn('verify_attestation=true', installer)
         self.assertIn('release_dir_name="${release_tag}-${target}"', installer)
         self.assertIn('actual_target not in (None, expected_target)', installer)
+        self.assertIn("readelf -l", installer)
+        self.assertIn('"$staged/codex" exec --help', installer)
+        self.assertIn('"$staged/codex" app-server --help', installer)
         verify_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-release-install.yml",
             "install",
             "Verify release assets",
         )
-        self.assertIn(
-            "--verify-signatures --verify-attestation",
-            verify_step.get("run") or "",
-        )
+        verify_script = verify_step.get("run") or ""
+        self.assertIn("attestation_arg+=(--verify-signatures)", verify_script)
+        self.assertIn("attestation_arg+=(--verify-attestation)", verify_script)
+        self.assertIn('"${REQUIRE_LINUX_ARM64}" == "true"', verify_script)
 
         release_payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/sedna-release.yml"
