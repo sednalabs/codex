@@ -980,6 +980,12 @@ for a removed crate path.
   that exact seam with explicit `validation-lab` `lanes=...` rather than
   repeating the whole lane family. That narrower hosted loop is the intended
   carry-fix workflow.
+- Release-installer activation coverage includes literal `current/<executable>`
+  link targets, initial- and second-predecessor save failure, failure after the
+  first archived predecessor, catchable SIGTERM rollback, and first-install
+  SIGKILL followed by a successful idempotent retry. These cases extend the
+  release-publication row above and keep crash consistency part of that hosted
+  validation contract.
 - Full builds are buildability or promotion checkpoints, not the default
   inner-loop validator for ordinary carry iteration.
 - For native computer-use, use the Codex app-server/protocol, shared
