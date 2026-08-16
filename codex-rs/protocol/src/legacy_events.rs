@@ -251,16 +251,47 @@ impl CollabAgentToolCallItem {
     pub(crate) fn as_legacy_begin_event(&self, started_at_ms: i64) -> Option<EventMsg> {
         let receiver_thread_id = self.receiver_thread_ids.first().copied();
         match self.tool {
-            CollabAgentTool::SpawnAgent => Some(EventMsg::CollabAgentSpawnBegin(
-                CollabAgentSpawnBeginEvent {
-                    call_id: self.id.clone(),
-                    started_at_ms,
-                    sender_thread_id: self.sender_thread_id,
-                    prompt: self.prompt.clone().unwrap_or_default(),
-                    model: self.model.clone().unwrap_or_default(),
-                    reasoning_effort: self.reasoning_effort.clone().unwrap_or_default(),
-                },
-            )),
+            CollabAgentTool::SpawnAgent => {
+                let pre_additive_in_progress_identity =
+                    matches!(self.status, CollabAgentToolCallStatus::InProgress)
+                        && self.requested_model.is_none()
+                        && self.requested_reasoning_effort.is_none()
+                        && (self.model.is_some() || self.reasoning_effort.is_some());
+                Some(EventMsg::CollabAgentSpawnBegin(
+                    CollabAgentSpawnBeginEvent {
+                        call_id: self.id.clone(),
+                        started_at_ms,
+                        sender_thread_id: self.sender_thread_id,
+                        prompt: self.prompt.clone().unwrap_or_default(),
+                        model: self
+                            .requested_model
+                            .clone()
+                            .or_else(|| {
+                                matches!(self.status, CollabAgentToolCallStatus::InProgress)
+                                    .then(|| self.model.clone())
+                                    .flatten()
+                            })
+                            .unwrap_or_default(),
+                        reasoning_effort: self
+                            .requested_reasoning_effort
+                            .clone()
+                            .or_else(|| {
+                                matches!(self.status, CollabAgentToolCallStatus::InProgress)
+                                    .then(|| self.reasoning_effort.clone())
+                                    .flatten()
+                            })
+                            .unwrap_or_default(),
+                        // The required model field already uses an empty-string sentinel, so its
+                        // presence is symmetric with `requested_model` without another marker.
+                        // The effort sentinel is ambiguous: pre-additive in-progress canonical
+                        // records kept requested identity in `model`/`reasoning_effort`, so leave
+                        // them markerless and retain historic Low/High inference. Current records
+                        // always write an explicit marker, including an omitted effort.
+                        requested_reasoning_effort_present: (!pre_additive_in_progress_identity)
+                            .then_some(self.requested_reasoning_effort.is_some()),
+                    },
+                ))
+            }
             CollabAgentTool::SendInput => receiver_thread_id.map(|receiver_thread_id| {
                 EventMsg::CollabAgentInteractionBegin(CollabAgentInteractionBeginEvent {
                     call_id: self.id.clone(),
@@ -320,6 +351,7 @@ impl CollabAgentToolCallItem {
                     prompt: self.prompt.clone().unwrap_or_default(),
                     model: self.model.clone().unwrap_or_default(),
                     reasoning_effort: self.reasoning_effort.clone().unwrap_or_default(),
+                    effective_reasoning_effort_present: Some(self.reasoning_effort.is_some()),
                     status: receiver_thread_id
                         .map(|thread_id| self.agent_status(thread_id))
                         .unwrap_or(AgentStatus::NotFound),

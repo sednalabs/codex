@@ -7,6 +7,14 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ResponseItem;
+use codex_thread_store::ThreadStoreError;
+use tokio::time::Duration;
+
+/// A failed shutdown must not turn a live unpublished child into an untracked runtime. Retry a
+/// bounded number of times, then retain its reservation while the normal session-loop shutdown
+/// path finishes instead of issuing an unbounded background stream of shutdown operations.
+const UNPUBLISHED_SPAWN_CLEANUP_MAX_SHUTDOWN_ATTEMPTS: usize = 3;
+const UNPUBLISHED_SPAWN_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
 
@@ -24,6 +32,85 @@ struct SpawnAgentThreadInheritance {
 enum SpawnInitialInput {
     UserInput(Vec<UserInput>),
     InterAgentCommunication(InterAgentCommunication, AgentCommunicationContext),
+}
+
+fn spawn_publication_key(options: &SpawnAgentOptions) -> Option<SpawnPublicationKey> {
+    Some(SpawnPublicationKey::new(
+        options.parent_thread_id?,
+        options.spawn_call_id.as_deref()?,
+    ))
+}
+
+fn spawn_cancellation_owns_child(
+    control: &AgentControl,
+    publication_key: Option<&SpawnPublicationKey>,
+) -> bool {
+    publication_key.is_some_and(|key| {
+        control.state.spawn_publication_decision(key) == SpawnPublicationDecision::CancellationOwned
+    })
+}
+
+fn is_benign_unpublished_spawn_cleanup_error(error: &CodexErr) -> bool {
+    matches!(
+        error.details(),
+        CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
+    )
+}
+
+fn is_benign_unpublished_spawn_persistence_error(error: &std::io::Error) -> bool {
+    matches!(
+        error
+            .get_ref()
+            .and_then(|cause| cause.downcast_ref::<ThreadStoreError>()),
+        Some(ThreadStoreError::ThreadNotFound { .. })
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum UnpublishedSpawnReconciliation {
+    ShutdownThenVerifyTerminal,
+    PreserveNaturalTerminal,
+    ShutdownPreexistingInterrupted,
+    ChildDied,
+}
+
+pub(super) fn unpublished_spawn_reconciliation(
+    status: &AgentStatus,
+) -> UnpublishedSpawnReconciliation {
+    match status {
+        AgentStatus::PendingInit | AgentStatus::Running => {
+            UnpublishedSpawnReconciliation::ShutdownThenVerifyTerminal
+        }
+        AgentStatus::Interrupted => UnpublishedSpawnReconciliation::ShutdownPreexistingInterrupted,
+        AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Shutdown => {
+            UnpublishedSpawnReconciliation::PreserveNaturalTerminal
+        }
+        AgentStatus::NotFound => UnpublishedSpawnReconciliation::ChildDied,
+    }
+}
+
+enum UnpublishedSpawnCleanupAttempt {
+    /// The manager still owns no live instance for this child ID. It is safe for the provisional
+    /// reservation to release once this outcome has been observed.
+    Terminal { cleanup_error: Option<CodexErr> },
+    /// The exact provisional instance is still live. Its reservation and any pending V2
+    /// residency slot must remain held by an explicit cleanup owner.
+    StillLive { cleanup_error: CodexErr },
+    /// The provisional instance reached terminal state, but a different manager instance now
+    /// occupies its ID. The owner must never remove that replacement or release capacity/path
+    /// until the replacement's manager lifetime has also ended.
+    Replaced { cleanup_error: Option<CodexErr> },
+}
+
+/// Owns pre-publication capacity while a cleanup path remains in progress.
+///
+/// `SpawnReservation` continues to reserve both capacity and any requested agent path. A pending
+/// `V2ResidencySlot` deliberately remains pending, making the live child non-evictable while it
+/// has not crossed the parent-visible publication boundary. The manager continues to own the
+/// actual `CodexThread`; this task is only the explicit, auditable cleanup owner.
+struct RetainedUnpublishedSpawnCleanup {
+    _reservation: crate::agent::registry::SpawnReservation,
+    _residency_slot: Option<V2ResidencySlot>,
 }
 
 /// Restore the agent's latest durable model selection before reopening an evicted V2 runtime.
@@ -440,7 +527,14 @@ impl AgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<LiveAgent> {
+        let publication_key = spawn_publication_key(&options);
+        if spawn_cancellation_owns_child(self, publication_key.as_ref()) {
+            return Err(CodexErr::TurnAborted);
+        }
         let state = self.upgrade()?;
+        if spawn_cancellation_owns_child(self, publication_key.as_ref()) {
+            return Err(CodexErr::TurnAborted);
+        }
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &InitialHistory::New,
@@ -458,7 +552,7 @@ impl AgentControl {
             && session_source
                 .as_ref()
                 .is_some_and(is_v2_resident_session_source);
-        let residency_slot = if spawn_uses_v2_residency {
+        let mut residency_slot = if spawn_uses_v2_residency {
             Some(
                 self.reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
                     .await?,
@@ -471,7 +565,7 @@ impl AgentControl {
         } else {
             agent_max_threads
         };
-        let mut reservation = self.state.reserve_spawn_slot(reservation_max_threads)?;
+        let mut reservation = Some(self.state.reserve_spawn_slot(reservation_max_threads)?);
         let inheritance = SpawnAgentThreadInheritance {
             environments: self
                 .inherited_environments_for_source(&state, session_source.as_ref())
@@ -488,8 +582,13 @@ impl AgentControl {
                 agent_role,
                 ..
             })) => {
+                let Some(reservation) = reservation.as_mut() else {
+                    return Err(CodexErr::Fatal(
+                        "spawn reservation missing before publication".to_string(),
+                    ));
+                };
                 let (session_source, agent_metadata) = self.prepare_thread_spawn(
-                    &mut reservation,
+                    reservation,
                     &config,
                     parent_thread_id,
                     depth,
@@ -545,9 +644,208 @@ impl AgentControl {
             }
             (None, _, _) => Box::pin(state.spawn_new_thread(config.clone(), self.clone())).await?,
         };
+        #[cfg(test)]
+        self.await_after_new_thread_test_hook(new_thread.thread_id)
+            .await;
+        if spawn_cancellation_owns_child(self, publication_key.as_ref()) {
+            if let Err(cleanup_error) = self
+                .reconcile_unpublished_spawn(
+                    &state,
+                    new_thread.thread_id,
+                    &new_thread.thread,
+                    &mut reservation,
+                    &mut residency_slot,
+                )
+                .await
+            {
+                tracing::error!(
+                    child_thread_id = %new_thread.thread_id,
+                    %cleanup_error,
+                    "failed to reconcile cancellation-owned unpublished child"
+                );
+            }
+            return Err(CodexErr::TurnAborted);
+        }
+        // Claim initial delivery immediately before the first child submission. Cancellation may
+        // still win while the child is only provisioned, but once this claim succeeds it must
+        // await our real delivery result; an initial prompt can begin a child turn before the
+        // child is parent-visible.
+        let delivery_decision = publication_key
+            .as_ref()
+            .map_or(SpawnPublicationDecision::Untracked, |key| {
+                self.state.claim_spawn_publication_delivery(key)
+            });
+        if delivery_decision == SpawnPublicationDecision::CancellationOwned {
+            if let Err(cleanup_error) = self
+                .reconcile_unpublished_spawn(
+                    &state,
+                    new_thread.thread_id,
+                    &new_thread.thread,
+                    &mut reservation,
+                    &mut residency_slot,
+                )
+                .await
+            {
+                tracing::error!(
+                    child_thread_id = %new_thread.thread_id,
+                    %cleanup_error,
+                    "failed to reconcile cancellation-owned unpublished child"
+                );
+            }
+            return Err(CodexErr::TurnAborted);
+        }
+        if !matches!(
+            delivery_decision,
+            SpawnPublicationDecision::Untracked | SpawnPublicationDecision::DeliveryOwned
+        ) {
+            let error = CodexErr::Fatal(format!(
+                "spawn publication entered invalid initial-delivery state: {delivery_decision:?}"
+            ));
+            if let Err(cleanup_error) = self
+                .reconcile_unpublished_spawn(
+                    &state,
+                    new_thread.thread_id,
+                    &new_thread.thread,
+                    &mut reservation,
+                    &mut residency_slot,
+                )
+                .await
+            {
+                tracing::error!(
+                    child_thread_id = %new_thread.thread_id,
+                    %cleanup_error,
+                    "failed to reconcile unpublished child after invalid delivery state"
+                );
+            }
+            return Err(error);
+        }
+
+        let initial_input_result = match initial_input {
+            SpawnInitialInput::UserInput(input) => self
+                .send_input_after_capacity_check(new_thread.thread_id, &state, input)
+                .await
+                .map(drop),
+            SpawnInitialInput::InterAgentCommunication(communication, context) => {
+                if multi_agent_version == MultiAgentVersion::V2 {
+                    let mut provisional_metadata = agent_metadata.clone();
+                    provisional_metadata.agent_id = Some(new_thread.thread_id);
+                    match self
+                        .prepare_provisional_v2_agent_delivery(
+                            new_thread.thread_id,
+                            provisional_metadata,
+                        )
+                        .await
+                    {
+                        Ok(delivery) => delivery
+                            .send_after_capacity_check(
+                                communication,
+                                context,
+                                /*interrupt*/ false,
+                            )
+                            .await
+                            .map(drop),
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    self.send_inter_agent_communication_after_capacity_check(
+                        new_thread.thread_id,
+                        &state,
+                        communication,
+                        context,
+                    )
+                    .await
+                    .map(drop)
+                }
+            }
+        };
+        if let Err(error) = initial_input_result {
+            if let Err(cleanup_error) = self
+                .reconcile_unpublished_spawn(
+                    &state,
+                    new_thread.thread_id,
+                    &new_thread.thread,
+                    &mut reservation,
+                    &mut residency_slot,
+                )
+                .await
+            {
+                tracing::error!(
+                    child_thread_id = %new_thread.thread_id,
+                    spawn_error = %error,
+                    %cleanup_error,
+                    "failed to reconcile unpublished child after initial delivery error"
+                );
+            }
+            return Err(error);
+        }
+
+        #[cfg(test)]
+        self.await_after_initial_delivery_test_hook(new_thread.thread_id)
+            .await;
+
+        // This compare-and-swap is the parent-visible publication boundary. Initial delivery
+        // already owns cancellation at this point, so the only tracked terminal transition here
+        // is `DeliveryOwned -> Published`; cancellation can still only win before delivery.
+        let publication_decision = publication_key
+            .as_ref()
+            .map_or(SpawnPublicationDecision::Untracked, |key| {
+                self.state.publish_spawn_publication(key)
+            });
+        if publication_decision == SpawnPublicationDecision::CancellationOwned {
+            if let Err(cleanup_error) = self
+                .reconcile_unpublished_spawn(
+                    &state,
+                    new_thread.thread_id,
+                    &new_thread.thread,
+                    &mut reservation,
+                    &mut residency_slot,
+                )
+                .await
+            {
+                tracing::error!(
+                    child_thread_id = %new_thread.thread_id,
+                    %cleanup_error,
+                    "failed to reconcile cancellation-owned unpublished child"
+                );
+            }
+            return Err(CodexErr::TurnAborted);
+        }
+        if !matches!(
+            publication_decision,
+            SpawnPublicationDecision::Untracked | SpawnPublicationDecision::Published
+        ) {
+            let error = CodexErr::Fatal(format!(
+                "spawn publication entered invalid parent-visible state: {publication_decision:?}"
+            ));
+            if let Err(cleanup_error) = self
+                .reconcile_unpublished_spawn(
+                    &state,
+                    new_thread.thread_id,
+                    &new_thread.thread,
+                    &mut reservation,
+                    &mut residency_slot,
+                )
+                .await
+            {
+                tracing::error!(
+                    child_thread_id = %new_thread.thread_id,
+                    %cleanup_error,
+                    "failed to reconcile unpublished child after invalid publication state"
+                );
+            }
+            return Err(error);
+        }
+
+        // Capacity and residency reservations remain private until the publication CAS above
+        // wins, so `/agents` cannot observe a child while cancellation still owns the outcome.
         agent_metadata.agent_id = Some(new_thread.thread_id);
+        let Some(reservation) = reservation.take() else {
+            return Err(CodexErr::Fatal(
+                "spawn reservation missing at publication".to_string(),
+            ));
+        };
         reservation.commit(agent_metadata.clone());
-        if let Some(residency_slot) = residency_slot {
+        if let Some(residency_slot) = residency_slot.take() {
             residency_slot.commit(new_thread.thread_id);
         }
 
@@ -584,9 +882,10 @@ impl AgentControl {
             );
         }
 
-        // Notify a new thread has been created. This notification will be processed by clients
-        // to subscribe or drain this newly created thread.
-        // TODO(jif) add helper for drain
+        // The child event receiver is an unbounded, single-consumer buffer. Initial delivery
+        // happens before this notification, but every event remains queued until the app-server
+        // listener attaches and drains it. Publishing only after the CAS therefore preserves
+        // cancellation-owned invisibility without dropping a fast child's early stream events.
         state.notify_thread_created(new_thread.thread_id);
 
         self.persist_thread_spawn_edge_for_source(
@@ -596,21 +895,6 @@ impl AgentControl {
         )
         .await;
 
-        match initial_input {
-            SpawnInitialInput::UserInput(input) => {
-                self.send_input_after_capacity_check(new_thread.thread_id, &state, input)
-                    .await?;
-            }
-            SpawnInitialInput::InterAgentCommunication(communication, context) => {
-                self.send_inter_agent_communication_after_capacity_check(
-                    new_thread.thread_id,
-                    &state,
-                    communication,
-                    context,
-                )
-                .await?;
-            }
-        }
         if multi_agent_version != MultiAgentVersion::V2 {
             let child_reference = agent_metadata
                 .agent_path
@@ -630,6 +914,323 @@ impl AgentControl {
             metadata: agent_metadata,
             status: self.get_status(new_thread.thread_id).await,
         })
+    }
+
+    /// Reconcile a child that was created but never crossed the parent-visible publication
+    /// boundary.
+    ///
+    /// The reservation must outlive a failed cleanup while the child is still live: dropping it
+    /// would make capacity and a requested agent path reusable even though the manager still owns
+    /// the runtime. The caller retains its original cancellation or initial-delivery error; a
+    /// cleanup failure is logged and handed to a bounded, explicit cleanup owner instead.
+    pub(crate) async fn reconcile_unpublished_spawn(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        child_thread_id: ThreadId,
+        child_thread: &Arc<CodexThread>,
+        reservation: &mut Option<crate::agent::registry::SpawnReservation>,
+        residency_slot: &mut Option<V2ResidencySlot>,
+    ) -> CodexResult<()> {
+        match self
+            .attempt_unpublished_spawn_cleanup(state, child_thread_id, child_thread)
+            .await
+        {
+            UnpublishedSpawnCleanupAttempt::Terminal { cleanup_error } => {
+                cleanup_error.map_or(Ok(()), Err)
+            }
+            UnpublishedSpawnCleanupAttempt::StillLive { cleanup_error } => {
+                self.retain_unpublished_spawn_cleanup(
+                    Arc::clone(state),
+                    child_thread_id,
+                    Arc::clone(child_thread),
+                    reservation.take(),
+                    residency_slot.take(),
+                    /*shutdown_exact_child*/ true,
+                );
+                Err(cleanup_error)
+            }
+            UnpublishedSpawnCleanupAttempt::Replaced { cleanup_error } => {
+                let cleanup_error = cleanup_error.unwrap_or_else(|| {
+                    CodexErr::Fatal(format!(
+                        "unpublished child {child_thread_id} was replaced before cleanup could remove its exact manager instance"
+                    ))
+                });
+                self.retain_unpublished_spawn_cleanup(
+                    Arc::clone(state),
+                    child_thread_id,
+                    Arc::clone(child_thread),
+                    reservation.take(),
+                    residency_slot.take(),
+                    /*shutdown_exact_child*/ false,
+                );
+                Err(cleanup_error)
+            }
+        }
+    }
+
+    /// Performs one bounded cleanup attempt for the exact child instance. The function never
+    /// removes a live child and uses `remove_thread_if_same` only after terminalization, so a
+    /// same-ID replacement remains managed by its own manager entry.
+    async fn attempt_unpublished_spawn_cleanup(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        child_thread_id: ThreadId,
+        child_thread: &Arc<CodexThread>,
+    ) -> UnpublishedSpawnCleanupAttempt {
+        let initial_status = child_thread.agent_status().await;
+        let reconciliation = unpublished_spawn_reconciliation(&initial_status);
+        let mut cleanup_error = None;
+
+        if !matches!(reconciliation, UnpublishedSpawnReconciliation::ChildDied) {
+            #[cfg(test)]
+            let shutdown_result = if self.take_unpublished_shutdown_failure_for_test() {
+                Err(CodexErr::Fatal(
+                    "injected unpublished spawn shutdown failure".to_string(),
+                ))
+            } else {
+                child_thread.shutdown_and_wait().await
+            };
+            #[cfg(not(test))]
+            let shutdown_result = child_thread.shutdown_and_wait().await;
+
+            if let Err(error) = shutdown_result
+                && !is_benign_unpublished_spawn_cleanup_error(&error)
+            {
+                cleanup_error = Some(error);
+            }
+        }
+
+        // A PendingInit/Running sample can become a natural terminal event just before the
+        // shutdown reaches the child. Read again after teardown and materialize every terminal
+        // outcome: Shutdown can overwrite the status watch after a preceding TurnComplete, so
+        // flushing the queued rollout rather than trusting that final label preserves either
+        // terminal history.
+        let final_status = child_thread.agent_status().await;
+        if !is_final(&final_status) {
+            return UnpublishedSpawnCleanupAttempt::StillLive {
+                cleanup_error: cleanup_error.unwrap_or_else(|| {
+                    CodexErr::Fatal(format!(
+                        "unpublished child {child_thread_id} remained live after cleanup: {final_status:?}"
+                    ))
+                }),
+            };
+        }
+
+        self.finalize_unpublished_spawn_cleanup(state, child_thread_id, child_thread, cleanup_error)
+            .await
+    }
+
+    /// Materialize and remove a child only after its session loop has terminated. A `Replaced`
+    /// result deliberately retains the caller's reservation; removing or releasing at that point
+    /// would make an unrelated same-ID manager instance invisible or permit a path collision.
+    async fn finalize_unpublished_spawn_cleanup(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        child_thread_id: ThreadId,
+        child_thread: &Arc<CodexThread>,
+        mut cleanup_error: Option<CodexErr>,
+    ) -> UnpublishedSpawnCleanupAttempt {
+        if let Err(error) = child_thread.session.try_ensure_rollout_materialized().await
+            && cleanup_error.is_none()
+            && !is_benign_unpublished_spawn_persistence_error(&error)
+        {
+            cleanup_error = Some(CodexErr::Io(error));
+        }
+        if let Err(error) = child_thread.flush_rollout().await
+            && cleanup_error.is_none()
+            && !is_benign_unpublished_spawn_persistence_error(&error)
+        {
+            cleanup_error = Some(CodexErr::Io(error));
+        }
+
+        let removal = state
+            .remove_thread_if_same(&child_thread_id, child_thread, || {})
+            .await;
+
+        if matches!(removal, RemoveThreadIfSameResult::Replaced) {
+            tracing::warn!(
+                %child_thread_id,
+                "unpublished terminal child was replaced before cleanup; retaining capacity for the replacement"
+            );
+            return UnpublishedSpawnCleanupAttempt::Replaced { cleanup_error };
+        }
+
+        UnpublishedSpawnCleanupAttempt::Terminal { cleanup_error }
+    }
+
+    /// Transfers a still-manager-owned child into a durable cleanup owner before the spawning
+    /// caller returns. The owner holds capacity/path and V2 pending residency and is therefore
+    /// visible through the manager while preserving the no-publication contract to the parent.
+    fn retain_unpublished_spawn_cleanup(
+        &self,
+        state: Arc<ThreadManagerState>,
+        child_thread_id: ThreadId,
+        child_thread: Arc<CodexThread>,
+        reservation: Option<crate::agent::registry::SpawnReservation>,
+        residency_slot: Option<V2ResidencySlot>,
+        shutdown_exact_child: bool,
+    ) {
+        let Some(reservation) = reservation else {
+            tracing::error!(
+                %child_thread_id,
+                "unpublished cleanup lost its spawn reservation"
+            );
+            return;
+        };
+        let control = self.clone();
+        std::mem::drop(tokio::spawn(async move {
+            let _retained = RetainedUnpublishedSpawnCleanup {
+                _reservation: reservation,
+                _residency_slot: residency_slot,
+            };
+            #[cfg(test)]
+            control
+                .await_retained_unpublished_spawn_cleanup_test_hook(child_thread_id)
+                .await;
+
+            if shutdown_exact_child {
+                control
+                    .retry_unpublished_spawn_shutdown_until_terminated(
+                        &state,
+                        child_thread_id,
+                        &child_thread,
+                    )
+                    .await;
+            } else {
+                control
+                    .observe_unpublished_spawn_replacements_until_terminal(&state, child_thread_id)
+                    .await;
+            }
+        }));
+    }
+
+    /// Retry shutdown only a fixed number of times. On exhaustion, do not continue an invisible
+    /// retry loop: keep the durable cleanup owner and wait for the runtime's existing termination
+    /// signal before the final same-instance removal.
+    async fn retry_unpublished_spawn_shutdown_until_terminated(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        child_thread_id: ThreadId,
+        child_thread: &Arc<CodexThread>,
+    ) {
+        for attempt in 1..=UNPUBLISHED_SPAWN_CLEANUP_MAX_SHUTDOWN_ATTEMPTS {
+            match self
+                .attempt_unpublished_spawn_cleanup(state, child_thread_id, child_thread)
+                .await
+            {
+                UnpublishedSpawnCleanupAttempt::Terminal { cleanup_error } => {
+                    self.log_unpublished_spawn_cleanup_result(child_thread_id, cleanup_error);
+                    return;
+                }
+                UnpublishedSpawnCleanupAttempt::Replaced { cleanup_error } => {
+                    self.log_unpublished_spawn_cleanup_result(child_thread_id, cleanup_error);
+                    self.observe_unpublished_spawn_replacements_until_terminal(
+                        state,
+                        child_thread_id,
+                    )
+                    .await;
+                    return;
+                }
+                UnpublishedSpawnCleanupAttempt::StillLive { cleanup_error } => {
+                    tracing::warn!(
+                        %child_thread_id,
+                        %cleanup_error,
+                        attempt,
+                        max_attempts = UNPUBLISHED_SPAWN_CLEANUP_MAX_SHUTDOWN_ATTEMPTS,
+                        "unpublished child is still live; retaining its reservation for bounded cleanup"
+                    );
+                    if attempt < UNPUBLISHED_SPAWN_CLEANUP_MAX_SHUTDOWN_ATTEMPTS {
+                        tokio::time::sleep(UNPUBLISHED_SPAWN_CLEANUP_RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+
+        tracing::error!(
+            %child_thread_id,
+            max_attempts = UNPUBLISHED_SPAWN_CLEANUP_MAX_SHUTDOWN_ATTEMPTS,
+            "unpublished cleanup shutdown retries exhausted; retaining manager ownership until runtime termination"
+        );
+        child_thread.wait_until_terminated().await;
+        match self
+            .finalize_unpublished_spawn_cleanup(
+                state,
+                child_thread_id,
+                child_thread,
+                /*cleanup_error*/ None,
+            )
+            .await
+        {
+            UnpublishedSpawnCleanupAttempt::Terminal { cleanup_error } => {
+                self.log_unpublished_spawn_cleanup_result(child_thread_id, cleanup_error);
+            }
+            UnpublishedSpawnCleanupAttempt::Replaced { cleanup_error } => {
+                self.log_unpublished_spawn_cleanup_result(child_thread_id, cleanup_error);
+                self.observe_unpublished_spawn_replacements_until_terminal(state, child_thread_id)
+                    .await;
+            }
+            UnpublishedSpawnCleanupAttempt::StillLive { .. } => {
+                unreachable!(
+                    "finalization after session-loop termination cannot report a live child"
+                )
+            }
+        }
+    }
+
+    /// A replacement must never be shut down by the cancelled spawn's owner. Hold the original
+    /// reservation while observing each replacement manager instance to its natural runtime
+    /// termination, then remove only the same instance. This is observation, not a retry loop.
+    async fn observe_unpublished_spawn_replacements_until_terminal(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        child_thread_id: ThreadId,
+    ) {
+        loop {
+            let Ok(replacement) = state.get_thread(child_thread_id).await else {
+                return;
+            };
+            replacement.wait_until_terminated().await;
+            match self
+                .finalize_unpublished_spawn_cleanup(
+                    state,
+                    child_thread_id,
+                    &replacement,
+                    /*cleanup_error*/ None,
+                )
+                .await
+            {
+                UnpublishedSpawnCleanupAttempt::Terminal { cleanup_error } => {
+                    self.log_unpublished_spawn_cleanup_result(child_thread_id, cleanup_error);
+                    return;
+                }
+                UnpublishedSpawnCleanupAttempt::Replaced { cleanup_error } => {
+                    self.log_unpublished_spawn_cleanup_result(child_thread_id, cleanup_error);
+                    tracing::warn!(
+                        %child_thread_id,
+                        "same-ID replacement changed again during cleanup observation; retaining reservation for the current manager instance"
+                    );
+                }
+                UnpublishedSpawnCleanupAttempt::StillLive { .. } => {
+                    unreachable!(
+                        "finalization after replacement termination cannot report a live child"
+                    )
+                }
+            }
+        }
+    }
+
+    fn log_unpublished_spawn_cleanup_result(
+        &self,
+        child_thread_id: ThreadId,
+        cleanup_error: Option<CodexErr>,
+    ) {
+        if let Some(cleanup_error) = cleanup_error {
+            tracing::error!(
+                %child_thread_id,
+                %cleanup_error,
+                "unpublished spawn cleanup reached terminal manager state with a persistence fault"
+            );
+        }
     }
 
     async fn spawn_forked_thread(

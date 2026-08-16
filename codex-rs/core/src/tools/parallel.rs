@@ -14,12 +14,14 @@ use tracing::info;
 use tracing::instrument;
 use tracing::trace_span;
 
+use crate::agent::SpawnPublicationDecision;
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::tools::context::AbortedToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::lifecycle::notify_tool_aborted;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
@@ -36,6 +38,62 @@ struct ToolCallTimingGuard {
     turn_id: String,
     call_id: String,
     tool_name: codex_tools::ToolName,
+}
+
+/// Connects the tool runtime's cancellation branch to the spawn owner's publication CAS.
+///
+/// This record is created before dispatch admission, so cancellation cannot race a delayed
+/// handler past an unrecorded "no child yet" window.
+struct SpawnPublicationGuard {
+    control: crate::agent::AgentControl,
+    parent_thread_id: codex_protocol::ThreadId,
+    call_id: String,
+}
+
+fn is_multi_agent_spawn_call(call: &ToolCall, multi_agent_v2_namespace: Option<&str>) -> bool {
+    call.tool_name.name.as_str() == "spawn_agent"
+        && match call.tool_name.namespace.as_deref() {
+            None | Some(MULTI_AGENT_V1_NAMESPACE) => true,
+            Some(namespace) => Some(namespace) == multi_agent_v2_namespace,
+        }
+        && matches!(&call.payload, ToolPayload::Function { .. })
+}
+
+impl SpawnPublicationGuard {
+    fn begin(
+        session: &Session,
+        multi_agent_v2_namespace: Option<&str>,
+        call: &ToolCall,
+    ) -> Option<Self> {
+        if !is_multi_agent_spawn_call(call, multi_agent_v2_namespace) {
+            return None;
+        }
+        let guard = Self {
+            control: session.services.agent_control.clone(),
+            parent_thread_id: session.thread_id,
+            call_id: call.call_id.clone(),
+        };
+        guard
+            .control
+            .begin_tool_spawn_publication(guard.parent_thread_id, &guard.call_id);
+        Some(guard)
+    }
+
+    fn cancel(&self) -> SpawnPublicationDecision {
+        self.control
+            .cancel_tool_spawn_publication(self.parent_thread_id, &self.call_id)
+    }
+
+    fn finish(&self) {
+        self.control
+            .finish_tool_spawn_publication(self.parent_thread_id, &self.call_id);
+    }
+}
+
+impl Drop for SpawnPublicationGuard {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 #[derive(Clone)]
@@ -115,6 +173,11 @@ impl ToolCallRuntime {
         let abort_session = Arc::clone(&session);
         let abort_source = source.clone();
         let abort_turn = Arc::clone(&turn);
+        let spawn_publication = SpawnPublicationGuard::begin(
+            session.as_ref(),
+            turn.config.multi_agent_v2.tool_namespace.as_deref(),
+            &call,
+        );
         let terminal_outcome_reached = Arc::new(AtomicBool::new(false));
         let dispatch_terminal_outcome_reached = Arc::clone(&terminal_outcome_reached);
         let dispatch_call = call.clone();
@@ -157,10 +220,22 @@ impl ToolCallRuntime {
 
         async move {
             let _tool_call_timing_guard = tool_call_timing_guard;
-            tokio::select! {
+            let result = tokio::select! {
                 res = &mut dispatch_handle => res.map_err(Self::tool_task_join_error)?,
                 _ = cancellation_token.cancelled() => {
-                    if terminal_outcome_reached_or_finished(
+                    if spawn_publication.as_ref().is_some_and(|publication| {
+                        matches!(
+                            publication.cancel(),
+                            SpawnPublicationDecision::DeliveryOwned
+                                | SpawnPublicationDecision::Published
+                        )
+                    }) {
+                        // A spawned child may start its first turn before its parent-visible
+                        // publication. Delivery ownership makes cancellation wait for this
+                        // handler's actual published or failed outcome rather than falsely
+                        // reporting an aborted parent while an invisible child can do work.
+                        dispatch_handle.await.map_err(Self::tool_task_join_error)?
+                    } else if terminal_outcome_reached_or_finished(
                         Some(&terminal_outcome_reached),
                         dispatch_handle.is_finished(),
                     ) {
@@ -199,7 +274,8 @@ impl ToolCallRuntime {
                         Ok(response)
                     }
                 },
-            }
+            };
+            result
         }
         .in_current_span()
     }
@@ -358,14 +434,23 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use crate::StartThreadOptions;
+    use crate::ThreadManager;
     use crate::session::step_context::StepContext;
     use crate::tools::context::FunctionToolOutput;
     use crate::tools::context::ToolInvocation;
+    use crate::tools::handlers::ToolSearchHandlerCache;
+    use crate::tools::handlers::multi_agents::SpawnAgentHandler;
     use crate::tools::registry::CoreToolRuntime;
     use crate::tools::registry::ToolExecutor;
     use crate::tools::registry::ToolRegistry;
+    use crate::tools::router::ToolRouterParams;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_extension_api::ToolCallOutcome;
+    use codex_features::Feature;
+    use codex_login::CodexAuth;
+    use codex_model_provider_info::built_in_model_providers;
+    use codex_protocol::AgentPath;
     use codex_protocol::models::FunctionCallOutputBody;
     use codex_protocol::models::FunctionCallOutputPayload;
     use codex_tools::ToolName;
@@ -770,6 +855,496 @@ mod tests {
             ToolCallRuntime::abort_message(&call, /*secs*/ 1.25),
             "aborted by user after 1.2s"
         );
+    }
+
+    #[tokio::test]
+    async fn configured_v2_spawn_cancellation_after_new_thread_reconciles_before_runtime_abort()
+    -> anyhow::Result<()> {
+        let (mut session, mut turn_context) =
+            crate::session::tests::make_session_and_context().await;
+        let mut config = (*turn_context.config).clone();
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should enable MultiAgentV2");
+        config.multi_agent_v2.hide_spawn_agent_metadata = false;
+        config.multi_agent_v2.tool_namespace = Some("profile_agents".to_string());
+        turn_context.multi_agent_version = config.multi_agent_version_from_features();
+        turn_context.config = Arc::new(config.clone());
+
+        let manager = ThreadManager::with_models_provider_for_tests(
+            CodexAuth::from_api_key("dummy"),
+            built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
+        );
+        let root = manager
+            .start_thread(StartThreadOptions::new(config))
+            .await
+            .expect("root thread should start");
+        session.services.agent_control = manager.agent_control();
+        session.thread_id = root.thread_id;
+        let (child_created, resume_spawn) = session
+            .services
+            .agent_control
+            .pause_spawn_after_new_thread_for_test();
+        let mut created_threads = manager.subscribe_thread_created();
+
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        let step_context = StepContext::for_test(Arc::clone(&turn_context));
+        let tool_search_handler_cache = ToolSearchHandlerCache::default();
+        let router = Arc::new(ToolRouter::from_context(
+            step_context.turn.as_ref(),
+            &step_context.environments,
+            step_context.mcp.as_ref(),
+            ToolRouterParams {
+                tool_runtimes: Vec::new(),
+                tool_suggest_candidates: None,
+                extension_tool_executors: Vec::new(),
+                wait_for_environment_tool_config: None,
+                dynamic_tools: &[],
+            },
+            &tool_search_handler_cache,
+        ));
+        let call = ToolCall {
+            tool_name: ToolName::namespaced("profile_agents", "spawn_agent"),
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "message": "must not be delivered",
+                    "task_name": "cancelled_worker",
+                    "fork_turns": "none"
+                })
+                .to_string(),
+            },
+        };
+        assert!(
+            router.tool_waits_for_runtime_cancellation(&call),
+            "the production configured-V2 namespace wrapper must retain the handler's cancellation contract"
+        );
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let runtime = ToolCallRuntime::new(router, Arc::clone(&session), step_context, tracker);
+
+        let cancellation_token = CancellationToken::new();
+        let mut response_task =
+            tokio::spawn(runtime.handle_tool_call(call, cancellation_token.clone()));
+
+        let child_thread_id = tokio::time::timeout(Duration::from_secs(5), child_created)
+            .await
+            .expect("configured V2 runtime spawn should reach NewThread")
+            .expect("post-NewThread hook should identify the child");
+        assert_eq!(
+            session
+                .services
+                .agent_control
+                .tool_spawn_publication_decision_for_test(session.thread_id, "call-1"),
+            SpawnPublicationDecision::Pending,
+            "the production configured V2 router must register its publication guard before delivery"
+        );
+        assert!(
+            session
+                .services
+                .agent_control
+                .get_agent_metadata(child_thread_id)
+                .is_none(),
+            "the provisional configured-V2 child must not enter the public registry"
+        );
+        assert!(
+            created_threads.try_recv().is_err(),
+            "the provisional configured-V2 child must not notify parent-visible creation"
+        );
+        assert!(
+            manager.captured_ops().is_empty(),
+            "cancellation before delivery must not submit initial child work"
+        );
+        cancellation_token.cancel();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if session
+                    .services
+                    .agent_control
+                    .tool_spawn_publication_decision_for_test(session.thread_id, "call-1")
+                    == SpawnPublicationDecision::CancellationOwned
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("runtime cancellation should win the configured V2 publication guard");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut response_task)
+                .await
+                .is_err(),
+            "the configured-V2 wrapper must not drop the handler before cancellation-owned cleanup"
+        );
+        assert!(
+            manager.get_thread(child_thread_id).await.is_ok(),
+            "the paused handler must retain the exact private child until it performs cleanup"
+        );
+        resume_spawn.notify_one();
+
+        let response = tokio::time::timeout(Duration::from_secs(5), response_task)
+            .await
+            .expect("timed out waiting for configured V2 cancellation")
+            .expect("configured V2 runtime task should join")?;
+        let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+            anyhow::bail!("cancelled V2 spawn should return a function output");
+        };
+        let FunctionCallOutputBody::Text(message) = output.body else {
+            anyhow::bail!("cancelled V2 spawn output should be text");
+        };
+        assert!(
+            message.contains("aborted by user"),
+            "configured V2 cancellation must return the runtime abort result: {message}"
+        );
+        assert!(
+            session
+                .services
+                .agent_control
+                .get_agent_metadata(child_thread_id)
+                .is_none(),
+            "a cancellation-owned configured-V2 child must remain absent from the registry"
+        );
+        assert!(
+            manager.get_thread(child_thread_id).await.is_err(),
+            "runtime abort must return only after the exact private child is removed"
+        );
+        assert!(
+            created_threads.try_recv().is_err(),
+            "cancellation-owned cleanup must not emit a thread-created notification"
+        );
+        assert!(
+            manager.captured_ops().is_empty(),
+            "cancellation-owned cleanup must preserve no-initial-work semantics"
+        );
+        assert_eq!(
+            session.services.agent_control.v2_resident_count_for_test(),
+            0,
+            "private configured-V2 cancellation must reconcile residency before abort returns"
+        );
+        let cancelled_path = AgentPath::root()
+            .join("cancelled_worker")
+            .expect("configured task name should be a valid agent path");
+        assert!(
+            session
+                .services
+                .agent_control
+                .spawn_capacity_and_path_are_available_for_test(
+                    /*max_threads*/ 1,
+                    &cancelled_path
+                ),
+            "private configured-V2 cancellation must release capacity and the requested path"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn v1_spawn_cancellation_after_initial_delivery_returns_published_result()
+    -> anyhow::Result<()> {
+        let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;
+        let config = (*turn_context.config).clone();
+
+        let manager = ThreadManager::with_models_provider_for_tests(
+            CodexAuth::from_api_key("dummy"),
+            built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
+        );
+        let root = manager
+            .start_thread(StartThreadOptions::new(config))
+            .await
+            .expect("root thread should start");
+        session.services.agent_control = manager.agent_control();
+        session.thread_id = root.thread_id;
+        let (initial_delivery_finished, resume_spawn) = session
+            .services
+            .agent_control
+            .pause_spawn_after_initial_delivery_for_test();
+        let mut created_threads = manager.subscribe_thread_created();
+
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        let handler = Arc::new(SpawnAgentHandler::default()) as Arc<dyn CoreToolRuntime>;
+        let router = Arc::new(ToolRouter::from_parts(
+            ToolRegistry::from_tools([handler]),
+            Vec::new(),
+        ));
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let runtime = ToolCallRuntime::new(
+            router,
+            Arc::clone(&session),
+            StepContext::for_test(Arc::clone(&turn_context)),
+            tracker,
+        );
+        let cancellation_token = CancellationToken::new();
+        let mut response_task = tokio::spawn(
+            runtime.handle_tool_call(
+                ToolCall {
+                    tool_name: ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "spawn_agent"),
+                    call_id: "call-1".to_string(),
+                    payload: ToolPayload::Function {
+                        arguments: serde_json::json!({
+                            "message": "delivery owns this child"
+                        })
+                        .to_string(),
+                    },
+                },
+                cancellation_token.clone(),
+            ),
+        );
+
+        let child_thread_id =
+            tokio::time::timeout(Duration::from_secs(5), initial_delivery_finished)
+                .await
+                .expect("V1 runtime spawn should finish initial delivery")
+                .expect("post-initial-delivery hook should identify the child");
+        assert!(
+            session
+                .services
+                .agent_control
+                .get_agent_metadata(child_thread_id)
+                .is_none(),
+            "initial V1 delivery must remain private until publication"
+        );
+        assert!(
+            created_threads.try_recv().is_err(),
+            "initial V1 delivery must not notify a parent-visible child before publication"
+        );
+        assert_eq!(
+            manager
+                .captured_ops()
+                .iter()
+                .filter(|(thread_id, _)| *thread_id == child_thread_id)
+                .count(),
+            1,
+            "the V1 child must receive exactly one initial delivery before publication"
+        );
+        cancellation_token.cancel();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if session
+                    .services
+                    .agent_control
+                    .tool_spawn_publication_decision_for_test(session.thread_id, "call-1")
+                    == SpawnPublicationDecision::DeliveryOwned
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancellation after V1 delivery must observe delivery ownership");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut response_task)
+                .await
+                .is_err(),
+            "the V1 runtime must wait for the delivery-owning handler rather than return a false abort"
+        );
+        resume_spawn.notify_one();
+
+        let response = tokio::time::timeout(Duration::from_secs(5), response_task)
+            .await
+            .expect("delivery-owning V1 runtime spawn should return")
+            .expect("runtime task should join")?;
+        let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+            anyhow::bail!("V1 spawn should return a function output");
+        };
+        assert_eq!(output.success, Some(true));
+        let FunctionCallOutputBody::Text(message) = output.body else {
+            anyhow::bail!("V1 spawn output should be text");
+        };
+        assert!(
+            !message.contains("aborted by user"),
+            "delivery ownership must preserve the V1 spawn result instead of a false abort: {message}"
+        );
+        assert!(
+            session
+                .services
+                .agent_control
+                .get_agent_metadata(child_thread_id)
+                .is_some(),
+            "a delivery-owned V1 child must publish rather than remain invisibly active"
+        );
+        assert!(
+            manager.get_thread(child_thread_id).await.is_ok(),
+            "a delivery-owned V1 child remains manager-owned after its published result"
+        );
+        assert_eq!(
+            created_threads
+                .recv()
+                .await
+                .expect("published V1 child should notify once"),
+            child_thread_id
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn configured_v2_spawn_cancellation_after_initial_delivery_returns_published_result()
+    -> anyhow::Result<()> {
+        let (mut session, mut turn_context) =
+            crate::session::tests::make_session_and_context().await;
+        let mut config = (*turn_context.config).clone();
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should enable MultiAgentV2");
+        config.multi_agent_v2.hide_spawn_agent_metadata = false;
+        config.multi_agent_v2.tool_namespace = Some("profile_agents".to_string());
+        turn_context.multi_agent_version = config.multi_agent_version_from_features();
+        turn_context.config = Arc::new(config.clone());
+
+        let manager = ThreadManager::with_models_provider_for_tests(
+            CodexAuth::from_api_key("dummy"),
+            built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
+        );
+        let root = manager
+            .start_thread(StartThreadOptions::new(config))
+            .await
+            .expect("root thread should start");
+        session.services.agent_control = manager.agent_control();
+        session.thread_id = root.thread_id;
+        let (initial_delivery_finished, resume_spawn) = session
+            .services
+            .agent_control
+            .pause_spawn_after_initial_delivery_for_test();
+        let mut created_threads = manager.subscribe_thread_created();
+
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        let step_context = StepContext::for_test(Arc::clone(&turn_context));
+        let tool_search_handler_cache = ToolSearchHandlerCache::default();
+        let router = Arc::new(ToolRouter::from_context(
+            step_context.turn.as_ref(),
+            &step_context.environments,
+            step_context.mcp.as_ref(),
+            ToolRouterParams {
+                tool_runtimes: Vec::new(),
+                tool_suggest_candidates: None,
+                extension_tool_executors: Vec::new(),
+                wait_for_environment_tool_config: None,
+                dynamic_tools: &[],
+            },
+            &tool_search_handler_cache,
+        ));
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let runtime = ToolCallRuntime::new(router, Arc::clone(&session), step_context, tracker);
+        let cancellation_token = CancellationToken::new();
+        let mut response_task = tokio::spawn(
+            runtime.handle_tool_call(
+                ToolCall {
+                    tool_name: ToolName::namespaced("profile_agents", "spawn_agent"),
+                    call_id: "call-1".to_string(),
+                    payload: ToolPayload::Function {
+                        arguments: serde_json::json!({
+                            "message": "delivery owns this child",
+                            "task_name": "delivery_owned_worker",
+                            "fork_turns": "none"
+                        })
+                        .to_string(),
+                    },
+                },
+                cancellation_token.clone(),
+            ),
+        );
+
+        let child_thread_id =
+            tokio::time::timeout(Duration::from_secs(5), initial_delivery_finished)
+                .await
+                .expect("configured V2 runtime spawn should finish initial delivery")
+                .expect("post-initial-delivery hook should identify the child");
+        assert!(
+            session
+                .services
+                .agent_control
+                .get_agent_metadata(child_thread_id)
+                .is_none(),
+            "initial configured-V2 delivery must remain private until publication"
+        );
+        assert!(
+            created_threads.try_recv().is_err(),
+            "initial configured-V2 delivery must not notify parent-visible creation"
+        );
+        let initial_delivery_count = manager
+            .captured_ops()
+            .iter()
+            .filter(|(thread_id, _)| *thread_id == child_thread_id)
+            .count();
+        assert_eq!(
+            initial_delivery_count, 1,
+            "the configured-V2 child must receive exactly one initial delivery before publication"
+        );
+        cancellation_token.cancel();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if session
+                    .services
+                    .agent_control
+                    .tool_spawn_publication_decision_for_test(session.thread_id, "call-1")
+                    == SpawnPublicationDecision::DeliveryOwned
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancellation after configured-V2 delivery must observe delivery ownership");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut response_task)
+                .await
+                .is_err(),
+            "the configured-V2 runtime must wait for delivery rather than return a false abort"
+        );
+        resume_spawn.notify_one();
+
+        let response = tokio::time::timeout(Duration::from_secs(5), response_task)
+            .await
+            .expect("delivery-owning configured-V2 runtime spawn should return")
+            .expect("configured-V2 runtime task should join")?;
+        let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+            anyhow::bail!("configured-V2 spawn should return a function output");
+        };
+        assert_eq!(output.success, Some(true));
+        let FunctionCallOutputBody::Text(message) = output.body else {
+            anyhow::bail!("configured-V2 spawn output should be text");
+        };
+        assert!(
+            !message.contains("aborted by user"),
+            "delivery ownership must preserve the configured-V2 result instead of a false abort: {message}"
+        );
+        assert!(
+            session
+                .services
+                .agent_control
+                .get_agent_metadata(child_thread_id)
+                .is_some(),
+            "a delivery-owned configured-V2 child must publish rather than remain invisible"
+        );
+        assert_eq!(
+            created_threads
+                .recv()
+                .await
+                .expect("published configured-V2 child should notify once"),
+            child_thread_id
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn spawn_publication_recognizes_v1_and_configured_v2_namespaces() {
+        let mut call = tool_call("spawn_agent");
+        assert!(is_multi_agent_spawn_call(&call, Some("agents")));
+
+        call.tool_name = codex_tools::ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "spawn_agent");
+        assert!(is_multi_agent_spawn_call(&call, Some("agents")));
+
+        call.tool_name = codex_tools::ToolName::namespaced("profile_agents", "spawn_agent");
+        assert!(is_multi_agent_spawn_call(&call, Some("profile_agents")));
+        assert!(!is_multi_agent_spawn_call(&call, Some("agents")));
     }
 
     #[test]

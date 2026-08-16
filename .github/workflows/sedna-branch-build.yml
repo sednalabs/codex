@@ -1,7 +1,7 @@
 name: sedna-branch-build
 run-name: >-
   sedna-branch-build
-  [target=${{ inputs.ref || github.ref_name }}]
+  [target=${{ inputs.ref || github.ref_name }} platform=${{ inputs.platform }}]
 
 on:
   workflow_dispatch:
@@ -10,9 +10,17 @@ on:
         description: Branch, tag, or commit to build
         required: false
         type: string
+      platform:
+        description: Preview artifact platform
+        required: true
+        default: linux-x86_64
+        type: choice
+        options:
+          - linux-x86_64
+          - macos
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}-${{ inputs.platform }}
   cancel-in-progress: true
 
 permissions:
@@ -63,6 +71,7 @@ jobs:
 
   build:
     needs: metadata
+    if: ${{ inputs.platform == 'linux-x86_64' }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
@@ -106,3 +115,220 @@ jobs:
         json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
         PY
+
+  build-macos:
+    name: Build macOS preview - x86_64-apple-darwin
+    needs: metadata
+    if: ${{ inputs.platform == 'macos' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 210
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
+      SCCACHE_CACHE_SIZE: 2G
+      CODEX_RELEASE_REPOSITORY: ${{ github.repository }}
+      CODEX_RELEASE_TAG_PREFIX: v
+      CODEX_RELEASE_VERSION: ${{ needs.metadata.outputs.preview_version }}
+      DISPLAY_REF: ${{ needs.metadata.outputs.display_ref }}
+      TARGET: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Require the selected workflow ref for macOS previews
+        if: ${{ inputs.ref != '' }}
+        shell: bash
+        run: |
+          echo "macOS preview builds use the workflow's selected ref; leave the ref input empty." >&2
+          exit 1
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Compute Rust cache keys
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(shasum -a 256 Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(shasum -a 256 rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/.rusty_v8/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            cargo-home-macos-15-intel-x86_64-apple-darwin-release-
+
+      - name: Install sccache
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+        with:
+          tool: sccache
+
+      - name: Configure sccache backend
+        id: sccache_backend
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: bash .github/scripts/configure_sccache_backend.sh write-fallback
+
+      - name: Enable sccache wrapper
+        if: ${{ steps.sccache_backend.outputs.backend != 'off' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          wrapper="$(command -v sccache)"
+          echo "RUSTC_WRAPPER=${wrapper}" >> "$GITHUB_ENV"
+          echo "SCCACHE_BASEDIRS=${GITHUB_WORKSPACE}" >> "$GITHUB_ENV"
+          sccache --start-server || true
+          sccache --zero-stats || true
+
+      - name: Restore sccache cache
+        if: ${{ steps.sccache_backend.outputs.backend == 'fallback' }}
+        id: cache_sccache_restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.sccache/
+          key: sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          restore-keys: |
+            sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-
+            sccache-macos-15-intel-x86_64-apple-darwin-release-
+
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-apple-darwin
+
+      - name: Build macOS preview binaries
+        id: build_macos
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build \
+            --locked \
+            --target "${TARGET}" \
+            --release \
+            --bin codex \
+            --bin codex-code-mode-host \
+            --bin codex-responses-api-proxy
+
+      - name: Stage ad hoc signed macOS preview artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          stage_dir="${RUNNER_TEMP}/sedna-branch/${TARGET}"
+          dist_dir="${GITHUB_WORKSPACE}/dist"
+          file_version="${CODEX_RELEASE_VERSION//+/__}"
+          archive_base="codex-sedna-preview-${file_version}-${TARGET}"
+          binaries=(codex codex-code-mode-host codex-responses-api-proxy)
+
+          rm -rf "${stage_dir}"
+          mkdir -p "${stage_dir}" "${dist_dir}"
+
+          for binary in "${binaries[@]}"; do
+            source_path="target/${TARGET}/release/${binary}"
+            staged_path="${stage_dir}/${binary}"
+            entitlements="${GITHUB_WORKSPACE}/.github/scripts/macos-signing/${binary}.entitlements.plist"
+            install -m 0755 "${source_path}" "${staged_path}"
+            "${GITHUB_WORKSPACE}/.github/scripts/macos-signing/sign_macos_code.sh" \
+              --target "${staged_path}" \
+              --identity - \
+              --deep false \
+              --identifier "${binary}" \
+              --options runtime \
+              --timestamp none \
+              --entitlements "${entitlements}"
+            codesign --verify --strict --verbose=2 "${staged_path}"
+          done
+
+          "${stage_dir}/codex" --version
+          tar -C "${stage_dir}" -czf "${dist_dir}/${archive_base}.tar.gz" .
+
+          python3 - <<'PY' > "${dist_dir}/${archive_base}.json"
+          import json
+          import os
+          import subprocess
+          import sys
+
+          payload = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "commit": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD"], text=True
+              ).strip(),
+              "ref": os.environ["DISPLAY_REF"],
+              "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
+              "target": os.environ["TARGET"],
+              "signing": "ad-hoc",
+              "notarized": False,
+              "workflow": (
+                  f'{os.environ["GITHUB_SERVER_URL"]}/'
+                  f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+              ),
+          }
+          json.dump(payload, sys.stdout, indent=2)
+          sys.stdout.write("\n")
+          PY
+
+          (
+            cd "${dist_dir}"
+            shasum -a 256 ./* > SHA256SUMS.txt
+          )
+
+      - name: Upload macOS preview artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}-x86_64-apple-darwin
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Report sccache statistics
+        if: ${{ always() && steps.sccache_backend.outputs.backend != 'off' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### sccache stats — x86_64-apple-darwin (release)"
+            echo
+            echo '```text'
+            sccache --show-stats || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save Cargo home cache
+        if: ${{ always() && !cancelled() && steps.build_macos.outcome == 'success' && steps.cache_cargo_home_restore.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/.rusty_v8/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Save sccache cache
+        if: ${{ always() && !cancelled() && steps.build_macos.outcome == 'success' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.sccache/
+          key: sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}

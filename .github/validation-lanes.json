@@ -583,6 +583,28 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.tui-collab-spawn-identity-targeted",
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "subagents"
+      ],
+      "explicit_only": true,
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "tui-collab-spawn-identity-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.tui-agent-picker-model-surface-targeted",
       "groups": [
         "ui_protocol"
@@ -1364,6 +1386,50 @@
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.app-server-collab-spawn-identity-targeted",
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "subagents"
+      ],
+      "explicit_only": true,
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "app-server-collab-spawn-identity-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.collab-spawn-identity-consumers-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "subagents"
+      ],
+      "explicit_only": true,
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "collab-spawn-identity-consumers-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
     },
     {
       "lane_id": "codex.app-server-thread-cwd-targeted",
@@ -2273,6 +2339,127 @@
       ],
       "required_any_paths": [
         "codex-rs/app-server-protocol/schema/**"
+      ]
+    },
+    {
+      "route_id": "collab-spawn-identity",
+      "priority": 10,
+      "lane_ids": [
+        "codex.core-subagent-model-pinning-targeted",
+        "codex.app-server-protocol-test",
+        "codex.app-server-collab-spawn-identity-targeted",
+        "codex.tui-collab-spawn-identity-targeted",
+        "codex.collab-spawn-identity-consumers-targeted",
+        "codex.sdk-python-targeted"
+      ],
+      "allowed_paths": [
+        ".github/scripts/test_ci_planners.py",
+        ".github/scripts/resolve_rust_ci_mode.py",
+        ".github/scripts/resolve_validation_plan.py",
+        ".github/scripts/validation-lanes/app-server-protocol-test.sh",
+        ".github/scripts/validation-lanes/sdk-python-targeted.sh",
+        ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
+        "codex-rs/analytics/src/analytics_client_tests.rs",
+        "codex-rs/analytics/src/reducer.rs",
+        "codex-rs/app-server/README.md",
+        "codex-rs/app-server-protocol/schema/json/ServerNotification.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ItemCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ItemStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ReviewStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadForkResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadListResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadMetadataUpdateResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadReadResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadResumeResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadRollbackResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadUnarchiveResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/typescript/v2/ThreadItem.ts",
+        "codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle.rs",
+        "codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle_tests.rs",
+        "codex-rs/app-server-protocol/src/protocol/event_mapping.rs",
+        "codex-rs/app-server-protocol/src/protocol/mod.rs",
+        "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/item.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/tests.rs",
+        "codex-rs/app-server/src/bespoke_event_handling.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/turn_start.rs",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/close_agent.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/resume_agent.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/send_input.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "codex-rs/exec/tests/event_processor_with_json_output.rs",
+        "codex-rs/protocol/src/items.rs",
+        "codex-rs/protocol/src/legacy_events.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/chatwidget/replay.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__app_server_collab_spawn_completed_renders_requested_model_and_effort.snap",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs",
+        "codex-rs/tui/src/chatwidget/tests/history_replay.rs",
+        "codex-rs/tui/src/multi_agents.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/divergences/index.yaml",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream.md",
+        "justfile",
+        "sdk/python/docs/api-reference.md",
+        "sdk/python/scripts/update_sdk_artifacts.py",
+        "sdk/python/src/openai_codex/client.py",
+        "sdk/python/src/openai_codex/generated/v2_all.py",
+        "sdk/python/tests/test_artifact_workflow_and_binaries.py",
+        "sdk/python/tests/test_client_rpc_methods.py",
+        "sdk/python/tests/test_contract_generation.py"
+      ],
+      "required_any_paths": [
+        "codex-rs/analytics/src/analytics_client_tests.rs",
+        "codex-rs/analytics/src/reducer.rs",
+        "codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle.rs",
+        "codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle_tests.rs",
+        "codex-rs/app-server-protocol/src/protocol/event_mapping.rs",
+        "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/item.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/tests.rs",
+        "codex-rs/app-server/tests/suite/v2/turn_start.rs",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+        "codex-rs/protocol/src/items.rs",
+        "codex-rs/protocol/src/legacy_events.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/chatwidget/replay.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__app_server_collab_spawn_completed_renders_requested_model_and_effort.snap",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs",
+        "codex-rs/tui/src/chatwidget/tests/history_replay.rs",
+        "codex-rs/tui/src/multi_agents.rs",
+        "codex-rs/state/src/runtime/usage.rs",
+        "sdk/python/scripts/update_sdk_artifacts.py",
+        "sdk/python/src/openai_codex/client.py",
+        "sdk/python/src/openai_codex/generated/v2_all.py",
+        "sdk/python/tests/test_artifact_workflow_and_binaries.py",
+        "sdk/python/tests/test_client_rpc_methods.py",
+        "sdk/python/tests/test_contract_generation.py"
       ]
     },
     {

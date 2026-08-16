@@ -28,7 +28,7 @@ struct V2ResidencyState {
     pending_slots: usize,
 }
 
-pub(super) struct V2ResidencySlot {
+pub(crate) struct V2ResidencySlot {
     residency: Arc<V2Residency>,
     active: bool,
 }
@@ -264,7 +264,7 @@ impl V2Residency {
         false
     }
 
-    fn resident_count(&self) -> usize {
+    pub(super) fn resident_count(&self) -> usize {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

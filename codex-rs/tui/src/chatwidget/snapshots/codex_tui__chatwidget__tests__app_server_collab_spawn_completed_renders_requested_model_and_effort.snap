@@ -2,7 +2,7 @@
 source: tui/src/chatwidget/tests.rs
 expression: combined
 ---
-• Spawning · primitive: spawn_agent (gpt-5 high)
+• Spawning · primitive: spawn_agent (requested: gpt-5 high)
   └ Explore the repo
 
 

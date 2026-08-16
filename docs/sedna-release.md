@@ -29,9 +29,10 @@ from upstream OpenAI releases.
   `upstream_base_commit`, `upstream_base_tag`, `upstream_base_tag_exact`,
   `upstream_distance_from_tag`, `upstream_position`, `downstream_commit`, `target_commit`, and
   the compact `build_provenance` / `version_display` strings
-- Linux `x86_64` is the only supported Sedna release target today. Other upstream platform
-  packaging remains parked in the repository and may be revived later, but it is not part of the
-  current downstream release contract.
+- Linux `x86_64` (`x86_64-unknown-linux-gnu`) and Intel macOS `x86_64`
+  (`x86_64-apple-darwin`) are the officially supported Sedna release targets. Apple Silicon,
+  Windows, Linux arm64, and other upstream targets remain outside the current downstream release
+  contract.
 
 The upstream track is resolved from the target commit's merge-base with `origin/upstream-main`.
 That merge-base is the upstream reference point for the release, even if `origin/upstream-main`
@@ -90,13 +91,15 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 
 Current workflow characteristics:
 
-- GitHub-hosted Linux `x86_64` release build
+- Native GitHub-hosted Linux `x86_64` release builds, with Intel macOS `x86_64` assets selected
+  explicitly as `off`, `preview`, or `notarized`
 - Release builds and GitHub Release publication are separate jobs: the build job keeps a read-only
   repository token while the small publication job owns the release environment and write-scoped
   publishing permissions.
 - Cargo home and `sccache` restore/save around the official release build to reduce duplicate
   compilation when prior release smoke runs warmed matching caches
-- Keyless Sigstore signing for Linux binaries
+- Keyless Sigstore signing for Linux binaries; ad-hoc code-signing checks for Intel macOS previews;
+  and an optional Developer ID signing and notarization path
 - GitHub Release publication through a dedicated GitHub App installation token instead of the
   default workflow integration token
 - GitHub Release assets named with the Sedna release identity
@@ -113,6 +116,55 @@ then store:
 The workflow checks that these are configured before starting the release build, then mints the
 short-lived installation token only after the assets are staged so the publication token is fresh
 for GitHub Release creation and verifier dispatch.
+
+Intel macOS publication has three explicit modes:
+
+- `off` is the default, including automatic tag and release-marker events. It publishes no macOS
+  asset and never reads the `codesigning` environment.
+- `preview` is allowed only for prereleases. It publishes an Intel x64 tarball whose filename and
+  metadata identify it as an unnotarized preview. The binaries are ad-hoc signed, architecture and
+  signature checked, checksummed, and executed on an Intel macOS runner. They are not Developer ID
+  signed, may be blocked by Gatekeeper, and are not an official supported macOS distribution.
+- `notarized` is fail-closed. It publishes Intel x64 binaries and a DMG only after Developer ID
+  signing, Apple notarization, stapling, and a final Intel-runner verification pass.
+
+Apple provides Developer ID and notarization through the paid Apple Developer Program. This is a
+product prerequisite for the `notarized` mode, not merely a CI configuration detail. The free
+`preview` mode cannot provide the same Gatekeeper experience. See Apple's
+[membership comparison](https://developer.apple.com/support/compare-memberships/) and
+[notarization requirements](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
+
+To enable `notarized`, configure a `codesigning` GitHub Actions environment with the Azure Key
+Vault PKCS#11 and App Store Connect secrets expected by the macOS signing actions:
+
+- `AKV_CODESIGN_RCODESIGN_BLOB_URI`
+- `AKV_CODESIGN_RCODESIGN_SHA256`
+- `AKV_CODESIGN_PKCS11_LIBRARY_BLOB_URI`
+- `AKV_CODESIGN_PKCS11_LIBRARY_SHA256`
+- `AKV_CODESIGN_AZURE_CLIENT_ID`
+- `AKV_CODESIGN_TENANT`
+- `AKV_CODESIGN_SUBSCRIPTION`
+- `AKV_CODESIGN_KEY_VAULT_NAME`
+- `AKV_CODESIGN_KEY_NAME`
+- optional `AKV_CODESIGN_KEY_VERSION`
+- optional `AKV_CODESIGN_CERTIFICATE_SHA256`
+- `APPLE_NOTARIZATION_KEY_P8`
+- `APPLE_NOTARIZATION_KEY_ID`
+- `APPLE_NOTARIZATION_ISSUER_ID`
+
+The signing job reports the exact missing secret names without exposing values. Ad-hoc assets can
+never satisfy the notarized release gate.
+
+For a zero-credential Intel preview, dispatch a prerelease explicitly:
+
+```bash
+python3 .github/scripts/dispatch_sedna_release.py \
+  --channel prerelease \
+  --macos-release-mode preview
+```
+
+Omit `--macos-release-mode` to publish without macOS assets. Use `notarized` only after the
+`codesigning` environment has been provisioned.
 
 The resolver writes `version_policy=sedna-upstream-track-v2` into release metadata so future policy
 changes can be detected explicitly instead of inferred from tag shape alone.
@@ -133,7 +185,11 @@ changes can be detected explicitly instead of inferred from tag shape alone.
 - release smoke runs may warm dependency and compiler caches for the official publisher, but
   `sedna-release` still performs the authoritative build, signing, metadata, checksum, and
   publication steps itself
-- `sedna-branch-build` produces disposable preview binaries only when manually dispatched
+- `sedna-branch-build` produces disposable preview binaries only when manually
+  dispatched. Its default remains Linux `x86_64`; `platform=macos` produces
+  one ad hoc signed, non-notarized Intel x64 artifact for preview use without
+  publishing a GitHub Release. Cargo-home and `sccache` reuse reduce repeat-build
+  cost without changing the canonical release optimization profile.
 - `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the build factory
 - branch artifacts retain for 3 days and are never updater candidates
 - only `sedna-release` is allowed to publish official GitHub Releases
@@ -171,7 +227,9 @@ runner. It intentionally does not perform host-local installation from the publi
   release publisher token.
 - Manual `workflow_dispatch` runs require `dry_run=true`
 - Prerelease installs require `allow_prerelease=true` on `workflow_dispatch`
-- The verifier checks the tag shape, release metadata, `SHA256SUMS.txt`, and executable payload
+- The verifier checks both supported targets on native Linux and Intel macOS runners, including
+  tag shape, target-bound release metadata, checksums, safe archive membership, and executable
+  payloads
 - Host-local installs should be performed by external deployment automation outside the public
   Actions log surface
 - Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them

@@ -111,6 +111,23 @@ decisions.
   runs both on GitHub-hosted validation. Remove this carry when upstream makes
   the same state-clearing transition explicit.
 
+### Cancellation-Atomic Sub-Agent Publication
+
+- The retained spawn lifecycle carries manager, reservation, and residency
+  ownership through bounded cleanup until an unpublished child reaches a
+  terminal state. Initial delivery claims ownership before the first input is
+  submitted, late publication is rejected after cancellation is recorded, and
+  a cancelled owner cannot remove a same-ID replacement.
+- The current port is the r0-r5 successor chain (`58d9c95ce4`,
+  `aaf2e01a0a`, `8626d877d6`, `6c243de2d9`, `5597d2cd6`) applied to the live
+  downstream base. Focused tests cover both V1 and configured V2 spawn
+  cancellation, terminal taxonomy, buffered history, capacity retention, and
+  replacement protection.
+- Keep `codex.core-multi-agent-orchestration-targeted` and
+  `codex.core-subagent-surface-targeted` as the hosted proof lanes. Remove this
+  carry when upstream provides an equivalent publication and retained-cleanup
+  contract.
+
 ## Latest Upstream-Owned Integration
 
 ### Remote Plugins, Image Eligibility, App Metadata, And Sleeping Agent Mail
@@ -1892,7 +1909,18 @@ decisions.
   source is available only when those values remain `openai/codex` and
   `rust-v`; custom downstream origins always resolve and download through their
   configured GitHub repository.
+- The manual branch-build workflow keeps Linux `x86_64` as its default and
+  offers an explicit macOS preview mode. That mode builds one Intel x64
+  artifact, applies ad hoc signatures for local execution, records that the
+  artifact is not notarized, and reuses Cargo-home and compiler-cache entries
+  without changing the release optimization profile. It remains a disposable
+  preview and does not publish a GitHub Release. The official release contract
+  independently supports native Linux x64 and Intel macOS x64 archives with
+  target-bound metadata, checksums, and native-runner verification; Apple
+  Silicon remains unsupported.
 - Primary files:
+  - `.github/workflows/sedna-branch-build.yml`
+  - `.github/scripts/test_ci_planners.py`
   - `codex-rs/utils/version/build.rs`
   - `codex-rs/utils/version/src/lib.rs`
   - `codex-rs/cli/src/main.rs`
@@ -1966,6 +1994,77 @@ decisions.
   Descendant counts, status, role, nickname, and live/stale structure remain,
   but inventory output does not expose instruction content.
 - The v1 spawn result retains upstream `agent_id`/`nickname`. The v2 result exposes canonical `task_name`, conditionally visible `agent_id`/`nickname`, and the requested/effective model and reasoning fields after role application. Role, status, identity source, provider ID, and reasoning summary remain inventory or internal metadata rather than spawn-result fields.
+- The live collab-spawn identity carry is phase-compatible across core emission,
+  app-server conversion and lifecycle merging, history replay, TUI rendering,
+  analytics and usage, schemas, and generated clients. At spawn start, the
+  established `model` and `reasoningEffort` aliases carry the caller request.
+  At terminal completion, those aliases carry only the observed effective
+  snapshot. Additive `requestedModel` and `requestedReasoningEffort` preserve
+  request provenance at both phases; additive `effectiveModel` and
+  `effectiveReasoningEffort` repeat only an observed terminal snapshot.
+- The four additive identity fields are required nullable on current V2
+  responses: unknown values serialize as `null`. Historic terminal records
+  may omit all four additive fields; when they retain observed legacy aliases
+  but no request provenance, those aliases are terminal effective identity and
+  never `requested*`. A current terminal item with known requested provenance
+  but no observed effect keeps `effective*` null and must not be backfilled
+  from its legacy aliases or metadata. Replay, TUI, analytics, and usage must
+  neither infer an effective identity from a request or metadata nor
+  reclassify an observed terminal alias as a request.
+- The generated Python V2 model represents the current response contract: all
+  four identity keys are required even though each accepts `null`. Its
+  `CollabAgentToolCallThreadItem` validator materializes `null` only when all
+  four additive wire keys are absent. Scoping compatibility to that model
+  leaves identically named objects inside opaque tool arguments unchanged;
+  partial shapes retain their validation errors, and aliases are not
+  rewritten. Rust serde conversion retains the same historic shape for
+  persisted input before the current contract is projected.
+- Hosted guardrails for this cross-surface contract are
+  `codex.core-subagent-model-pinning-targeted`
+  (`failed_spawn_keeps_requested_identity_separate_from_terminal_effective_identity`
+  and `multi_agent_v2_spawn_without_snapshot_omits_unobserved_effective_identity`),
+  `codex.app-server-protocol-test`
+  (`collab_spawn_identity_is_phase_compatible_across_current_and_historic_protocol_conversions`
+  and `unknown_terminal_collab_spawn_serializes_all_identity_fields_as_null`),
+  `codex.collab-spawn-identity-consumers-targeted`
+  (`analytics_client_tests::collab_tool_item_analytics_keeps_requested_identity_from_the_started_event`
+  and `runtime::usage::tests::usage_logger_preserves_optional_spawn_request_identity`),
+  `codex.sdk-python-targeted`
+  (`test_generated_files_are_up_to_date`,
+  `test_thread_read_response_normalizes_only_legacy_collab_identity`,
+  `test_legacy_collab_normalization_does_not_touch_opaque_tool_arguments`,
+  `test_collab_identity_transport_keeps_current_and_partial_shapes_strict`, and
+  `test_generated_collab_spawn_identity_is_required_nullable`),
+  `codex.app-server-collab-spawn-identity-targeted`
+  (`turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_v2`
+  and `turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2`),
+  and `codex.tui-collab-spawn-identity-targeted`
+  (`replayed_collab_spawn_terminal_uses_only_explicit_effective_identity`,
+  `replayed_historic_terminal_collab_spawn_renders_legacy_identity_as_effective`,
+  `replayed_failed_collab_spawn_without_receiver_keeps_requested_identity`,
+  `live_app_server_collab_spawn_completed_renders_requested_model_and_effort`,
+  and `live_app_server_spawn_completion_does_not_fill_missing_effective_identity_from_metadata`).
+- `collab-spawn-identity` has priority 10, while unmarked follow-up routes use
+  the safe priority-0 default. Both the heavy-validation and light Rust CI
+  selectors apply the same unique-highest-priority rule. For a change confined to its enumerated
+  protocol, lifecycle, core-spawn, replay/rendering, schema, SDK, and carry
+  paths, an identity implementation or SDK path lets that route win generic
+  overlap and select `codex.core-subagent-model-pinning-targeted`,
+  `codex.app-server-protocol-test`, the two protocol/UI identity lanes, the
+  direct analytics/usage consumer lane, and `codex.sdk-python-targeted`.
+  Core snapshot authority, protocol identity storage/conversion, analytics,
+  state usage, and Python SDK changes are explicitly required route inputs so
+  those authorities and consumers receive direct hosted coverage. Schema-only
+  and docs/config-only changes do not trigger this route;
+  only equal highest-priority matches fail closed. The route includes
+  explicit-only lanes intentionally; it is not a broad default selection for
+  unrelated app-server or TUI changes.
+- Preserve the complete carry during future upstream syncs unless upstream
+  supplies the same phase contract, historic terminal no-request fallback,
+  current and historic conversion/replay behavior, TUI/analytics/usage
+  consumers, schema and generated-client shapes, and equivalent regression
+  coverage. When it does, drop the downstream identity slice and these
+  dedicated guardrails together; do not retain a partial legacy-alias adapter.
 - V2 requires `task_name`; when no effective reasoning effort is known it
   serializes `null` rather than manufacturing a `medium` value. Wait completion
   derives pending target ids from refreshed status snapshots, not the original
@@ -2044,6 +2143,17 @@ decisions.
   | Historical agent-identity auth/task stack reverted by `be757855` | Ignore        | It concerns backend identity and task lifecycle, not this model/configuration receipt seam.        |
 
 - Primary files:
+  - `codex-rs/analytics/src/analytics_client_tests.rs`
+  - `codex-rs/analytics/src/reducer.rs`
+  - `codex-rs/app-server-protocol/schema/json/`
+  - `codex-rs/app-server-protocol/schema/typescript/v2/ThreadItem.ts`
+  - `codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle.rs`
+  - `codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle_tests.rs`
+  - `codex-rs/app-server-protocol/src/protocol/event_mapping.rs`
+  - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2/tests.rs`
+  - `codex-rs/app-server/tests/suite/v2/turn_start.rs`
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
   - `codex-rs/core/src/agent/builtins/terminal-babysitter.toml`
   - `codex-rs/core/src/agent/control.rs`
@@ -2069,8 +2179,13 @@ decisions.
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs`
   - `codex-rs/protocol/src/items.rs`
+  - `codex-rs/protocol/src/legacy_events.rs`
   - `codex-rs/protocol/src/protocol.rs`
-  - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+  - `codex-rs/state/src/runtime/usage.rs`
+  - `codex-rs/tui/src/chatwidget/protocol.rs`
+  - `codex-rs/tui/src/chatwidget/replay.rs`
+  - `codex-rs/tui/src/chatwidget/tests/app_server.rs`
+  - `codex-rs/tui/src/chatwidget/tests/history_replay.rs`
   - `codex-rs/tui/src/multi_agents.rs`
   - `codex-rs/tui/src/app/agent_navigation.rs`
   - `codex-rs/tui/src/app/session_lifecycle.rs`
@@ -2095,6 +2210,9 @@ decisions.
   - `justfile`
   - `docs/config.md`
   - `docs/downstream-tool-surface-matrix.md`
+  - `sdk/python/scripts/update_sdk_artifacts.py`
+  - `sdk/python/src/openai_codex/generated/v2_all.py`
+  - `sdk/python/tests/test_client_rpc_methods.py`
 
 ### Dead-Cwd Absolute Path Handling
 
@@ -2367,7 +2485,8 @@ decisions.
   rather than in hot Codex core paths.
 - The desktop adapter is the cleanroom provider seam for macOS Screen
   Recording/Accessibility-style runtimes and future native desktop providers.
-  TUI dispatch stays behind an operator-configured command provider.
+  TUI dispatch stays behind operator-configured command providers, selected by
+  the platform-filtered desktop provider registry.
 - `codex doctor` includes read-only native provider diagnostics for browser
   provider configuration, headed display/Chrome fields, and Android provider
   endpoint/credential shape without launching browsers, connecting to profiles,
@@ -2544,6 +2663,13 @@ decisions.
   `out_of_band_resource_read_reconciles_the_published_mcp_runtime` is the
   focused hosted
   regression for refresh behavior.
+- All-server resource and resource-template listings use the same immutable
+  step binding. A configured server without an exact ready client, or a list
+  failure through a captured client, leaves ready-server results available and
+  adds a bounded `failures` entry with `notReady` or `listFailed`. Complete
+  results retain their previous shape. Explicit unavailable-server requests
+  still fail, and only a later binding may expose a recovered client; neither
+  path substitutes cached authority or retargets a prepared call.
 - Upstream commit `65ae4c26e0` registers disabled-by-default experimental
   feature `mcp_2026_07_28` in core, the generated config schema, and app-server
   feature enablement. It does not yet change the runtime resource or prepared
@@ -2599,6 +2725,9 @@ decisions.
 - Primary files:
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
   - `codex-rs/connectors/src/connector_runtime/mod.rs`
+  - `codex-rs/codex-mcp/src/binding.rs`
+  - `codex-rs/codex-mcp/src/binding_clients.rs`
+  - `codex-rs/codex-mcp/src/lib.rs`
   - `codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs`
   - `codex-rs/codex-mcp/src/runtime.rs`
   - `codex-rs/codex-mcp/src/resource_client.rs`
@@ -2607,11 +2736,42 @@ decisions.
   - `codex-rs/codex-mcp/src/tool_catalog_cache.rs`
   - `codex-rs/app-server/tests/suite/v2/mcp_server_status.rs`
   - `codex-rs/core/src/mcp_tool_call.rs`
+  - `codex-rs/core/src/tools/handlers/mcp_resource.rs`
+  - `codex-rs/core/src/tools/handlers/mcp_resource_spec.rs`
+  - `codex-rs/core/src/tools/handlers/mcp_resource_spec_tests.rs`
+  - `codex-rs/core/src/tools/handlers/mcp_resource_tests.rs`
   - `codex-rs/core/tests/suite/mcp_tool_cache.rs`
   - `codex-rs/core/tests/suite/rmcp_client.rs`
   - `codex-rs/core/src/session/mcp.rs`
   - `codex-rs/core/src/session/mcp_refresh.rs`
   - `codex-rs/core/src/state/service.rs`
+
+### MCP Transient Startup Recovery
+
+- An ordinary Streamable HTTP MCP server that fails its initial startup can
+  recover during the same Codex session. A later tool-list or binding capture
+  starts one bounded background retry; it does not require an operator restart
+  and does not wait on the retry before preserving already-ready servers in
+  that step. Stdio startup remains one-shot.
+- The reconnect state is single-flight and applies exponential backoff after a
+  failed retry. A successful client becomes the exact live catalogue and call
+  authority for the next binding.
+- Cancellation and shutdown fence the reconnect generation. A client that
+  finishes after cancellation is shut down instead of being installed, and a
+  recovered client found closed is retired before another bounded retry.
+- Upstream cached optional-startup, lazy-subagent, OAuth reauthentication, and
+  startup-status fixes are complementary but do not provide this generic
+  ordinary-failure recovery contract on the maintained downstream runtime.
+- `codex.mcp-tool-exposure-targeted` proves the lifecycle with deterministic
+  connection-manager tests and literal Streamable HTTP initial-failure and
+  cancellation integration tests.
+- Primary files:
+  - `codex-rs/codex-mcp/src/connection_manager.rs`
+  - `codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs`
+  - `codex-rs/codex-mcp/src/rmcp_client.rs`
+  - `codex-rs/codex-mcp/src/connection_manager_tests.rs`
+  - `codex-rs/core/tests/suite/rmcp_client.rs`
+  - `codex-rs/rmcp-client/src/bin/test_streamable_http_server.rs`
 
 ### 2026-07-23 Upstream Integration Boundaries
 

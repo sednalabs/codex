@@ -5,10 +5,10 @@ use crate::elicitation::ElicitationRequestManager;
 use crate::elicitation::ElicitationRequestRouter;
 use crate::elicitation::elicitation_is_rejected_by_policy;
 use crate::rmcp_client::AsyncManagedClient;
-use crate::rmcp_client::CODEX_APPS_RECONNECT_INITIAL_BACKOFF;
-use crate::rmcp_client::CodexAppsStartupReconnect;
+use crate::rmcp_client::MCP_RECONNECT_INITIAL_BACKOFF;
 use crate::rmcp_client::ManagedClient;
 use crate::rmcp_client::ManagedClientFuture;
+use crate::rmcp_client::McpStartupReconnect;
 use crate::rmcp_client::StartupOutcomeError;
 use crate::rmcp_client::ToolCatalogueSnapshot;
 use crate::rmcp_client::list_tools_for_client_uncached;
@@ -37,8 +37,12 @@ use codex_login::CodexAuth;
 use codex_protocol::ToolName;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::Event;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::McpStartupFailureReason;
+use codex_protocol::protocol::McpStartupStatus;
+use codex_protocol::protocol::McpStartupUpdateEvent;
 use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::InProcessTransportFactory;
 use codex_rmcp_client::McpAuthState;
@@ -58,10 +62,16 @@ use rmcp::model::ElicitationCapability;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::JsonObject;
+use rmcp::model::ListResourceTemplatesResult;
+use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
 use rmcp::model::NumberOrString;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ProtocolVersion;
+use rmcp::model::RawResource;
+use rmcp::model::RawResourceTemplate;
+use rmcp::model::Resource;
+use rmcp::model::ResourceTemplate;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::Tool;
@@ -223,6 +233,118 @@ impl InProcessTransportFactory for TestInProcessTransportFactory {
 }
 
 #[derive(Clone)]
+struct ResourceCatalogueTransportFactory {
+    server_name: String,
+    listing_behavior: ResourceCatalogueListingBehavior,
+}
+
+#[derive(Clone, Copy)]
+enum ResourceCatalogueListingBehavior {
+    Succeeds,
+    Fails,
+}
+
+impl ServerHandler for ResourceCatalogueTransportFactory {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        Ok(ListToolsResult::default())
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        if matches!(
+            self.listing_behavior,
+            ResourceCatalogueListingBehavior::Fails
+        ) {
+            return Err(McpError::internal_error("resource list failed", None));
+        }
+        Ok(ListResourcesResult {
+            resources: vec![Resource::new(
+                RawResource {
+                    uri: format!("memo://{}", self.server_name),
+                    name: self.server_name.clone(),
+                    title: None,
+                    description: None,
+                    mime_type: Some("text/plain".to_string()),
+                    size: None,
+                    icons: None,
+                    meta: None,
+                },
+                /*annotations*/ None,
+            )],
+            next_cursor: None,
+            meta: None,
+        })
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        if matches!(
+            self.listing_behavior,
+            ResourceCatalogueListingBehavior::Fails
+        ) {
+            return Err(McpError::internal_error(
+                "resource template list failed",
+                None,
+            ));
+        }
+        Ok(ListResourceTemplatesResult {
+            resource_templates: vec![ResourceTemplate::new(
+                RawResourceTemplate {
+                    uri_template: format!("memo://{}/{{id}}", self.server_name),
+                    name: self.server_name.clone(),
+                    title: None,
+                    description: None,
+                    mime_type: Some("text/plain".to_string()),
+                    icons: None,
+                },
+                /*annotations*/ None,
+            )],
+            next_cursor: None,
+            meta: None,
+        })
+    }
+}
+
+impl InProcessTransportFactory for ResourceCatalogueTransportFactory {
+    fn open(&self) -> BoxFuture<'static, io::Result<DuplexStream>> {
+        let server = self.clone();
+        async move {
+            let (client_stream, server_stream) = tokio::io::duplex(4096);
+            tokio::spawn(async move {
+                server
+                    .serve(server_stream)
+                    .await
+                    .expect("serve resource catalogue MCP server")
+                    .waiting()
+                    .await
+                    .expect("resource catalogue MCP server completes");
+            });
+            Ok(client_stream)
+        }
+        .boxed()
+    }
+}
+
+#[derive(Clone)]
 struct RefreshTestTransportFactory {
     tool: Tool,
     list_started: Option<Arc<Notify>>,
@@ -374,6 +496,47 @@ async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
     }
 }
 
+async fn create_resource_managed_client(
+    server_name: &str,
+    listing_behavior: ResourceCatalogueListingBehavior,
+) -> anyhow::Result<ManagedClient> {
+    let client = Arc::new(
+        RmcpClient::new_in_process_client(Arc::new(ResourceCatalogueTransportFactory {
+            server_name: server_name.to_string(),
+            listing_behavior,
+        }))
+        .await?,
+    );
+    client
+        .initialize(
+            InitializeRequestParams::new(
+                ClientCapabilities::default(),
+                Implementation::new("codex-test", "0.0.0-test"),
+            )
+            .with_protocol_version(ProtocolVersion::V_2025_06_18),
+            Some(Duration::from_secs(5)),
+            Box::new(|_, _| async { Err(anyhow!("unexpected elicitation")) }.boxed()),
+        )
+        .await?;
+
+    Ok(ManagedClient {
+        client,
+        server_info: create_test_server_info(server_name),
+        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
+            observed_generation: 0,
+            tools: Vec::new(),
+        })),
+        tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
+        server_name: server_name.to_string(),
+        is_codex_apps_mcp_server: server_name == CODEX_APPS_MCP_SERVER_NAME,
+        tool_timeout: Some(Duration::from_secs(5)),
+        server_instructions: None,
+        server_supports_sandbox_state_meta_capability: false,
+        codex_apps_tools_cache_context: None,
+        tool_catalog_cache_context: None,
+    })
+}
+
 async fn create_ready_async_managed_client(tools: Vec<ToolInfo>) -> AsyncManagedClient {
     AsyncManagedClient {
         client: futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>(Ok(
@@ -505,11 +668,72 @@ fn create_test_manager_with_failed_apps_startup(
             codex_apps_tools_cache_context: Some(cache_context),
             tool_catalog_cache_context: None,
             startup_complete: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            startup_reconnect: Some(Arc::new(CodexAppsStartupReconnect::new(reconnect_factory))),
+            startup_reconnect: Some(Arc::new(McpStartupReconnect::new(reconnect_factory))),
             cancel_token: CancellationToken::new(),
         },
     );
     manager
+}
+
+fn insert_failed_reconnecting_client(
+    manager: &mut McpConnectionSet,
+    server_name: &str,
+    reconnect_factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
+    cancel_token: CancellationToken,
+) {
+    let failed_client = futures::future::ready(Err(StartupOutcomeError::Failed {
+        error: "initial startup failed".to_string(),
+        is_authentication_required: false,
+    }))
+    .boxed()
+    .shared();
+    manager.insert_test_client(
+        server_name.to_string(),
+        AsyncManagedClient {
+            client: failed_client,
+            is_codex_apps_mcp_server: false,
+            cached_server_info: None,
+            codex_apps_tools_cache_context: None,
+            tool_catalog_cache_context: None,
+            startup_complete: Arc::new(AtomicBool::new(true)),
+            startup_reconnect: Some(Arc::new(McpStartupReconnect::new(reconnect_factory))),
+            cancel_token,
+        },
+    );
+}
+
+fn insert_failed_reconnecting_client_with_status(
+    manager: &mut McpConnectionSet,
+    server_name: &str,
+    reconnect_factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
+    cancel_token: CancellationToken,
+    tx_event: async_channel::Sender<Event>,
+) {
+    let failed_client = futures::future::ready(Err(StartupOutcomeError::Failed {
+        error: "initial startup failed".to_string(),
+        is_authentication_required: false,
+    }))
+    .boxed()
+    .shared();
+    let startup_reconnect = McpStartupReconnect::new(reconnect_factory)
+        .with_startup_status_context(
+            "startup-recovery-test".to_string(),
+            server_name.to_string(),
+            Some(tx_event),
+        );
+    manager.insert_test_client(
+        server_name.to_string(),
+        AsyncManagedClient {
+            client: failed_client,
+            is_codex_apps_mcp_server: false,
+            cached_server_info: None,
+            codex_apps_tools_cache_context: None,
+            tool_catalog_cache_context: None,
+            startup_complete: Arc::new(AtomicBool::new(true)),
+            startup_reconnect: Some(Arc::new(startup_reconnect)),
+            cancel_token,
+        },
+    );
 }
 
 fn model_tool_names(tools: &[ToolInfo]) -> HashSet<ToolName> {
@@ -1973,6 +2197,384 @@ async fn list_all_tools_reconnects_failed_codex_apps_startup_and_reuses_client()
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn startup_recovery_recreates_ordinary_client_on_next_binding() {
+    let recovered_client =
+        create_test_managed_client(vec![create_test_tool("ordinary", "search")]).await;
+    let reconnect_finished = Arc::new(Notify::new());
+    let reconnect_factory = {
+        let reconnect_finished = Arc::clone(&reconnect_finished);
+        Arc::new(move || {
+            let reconnect_finished = Arc::clone(&reconnect_finished);
+            let recovered_client = recovered_client.clone();
+            async move {
+                reconnect_finished.notify_one();
+                Ok(recovered_client)
+            }
+            .boxed()
+            .shared()
+        })
+    };
+    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let mut manager = McpConnectionSet::new_uninitialized(
+        &approval_policy,
+        &permission_profile,
+        /*prefix_mcp_tool_names*/ true,
+    );
+    insert_failed_reconnecting_client(
+        &mut manager,
+        "ordinary",
+        reconnect_factory,
+        CancellationToken::new(),
+    );
+    let manager = Arc::new(manager);
+
+    let reconnect_finished_wait = reconnect_finished.notified();
+    assert!(capture_binding(&manager).await.tools().is_empty());
+    reconnect_finished_wait.await;
+
+    assert_eq!(
+        capture_binding(&manager)
+            .await
+            .tools()
+            .iter()
+            .map(|tool| tool.callable_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["search"]
+    );
+}
+
+#[tokio::test]
+async fn startup_recovery_cancellation_retires_late_client() {
+    let recovered_client =
+        create_test_managed_client(vec![create_test_tool("ordinary", "search")]).await;
+    let reconnect_started = Arc::new(Notify::new());
+    let release_reconnect = Arc::new(Notify::new());
+    let reconnect_factory = {
+        let reconnect_started = Arc::clone(&reconnect_started);
+        let release_reconnect = Arc::clone(&release_reconnect);
+        let recovered_client = recovered_client.clone();
+        Arc::new(move || {
+            let reconnect_started = Arc::clone(&reconnect_started);
+            let release_reconnect = Arc::clone(&release_reconnect);
+            let recovered_client = recovered_client.clone();
+            async move {
+                reconnect_started.notify_one();
+                release_reconnect.notified().await;
+                Ok(recovered_client)
+            }
+            .boxed()
+            .shared()
+        })
+    };
+    let cancel_token = CancellationToken::new();
+    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let mut manager = McpConnectionSet::new_uninitialized(
+        &approval_policy,
+        &permission_profile,
+        /*prefix_mcp_tool_names*/ true,
+    );
+    insert_failed_reconnecting_client(
+        &mut manager,
+        "ordinary",
+        reconnect_factory,
+        cancel_token.clone(),
+    );
+    let manager = Arc::new(manager);
+
+    let reconnect_started_wait = reconnect_started.notified();
+    assert!(manager.list_all_tools().await.is_empty());
+    reconnect_started_wait.await;
+    manager.cancel_startup();
+    assert!(cancel_token.is_cancelled());
+    release_reconnect.notify_one();
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !recovered_client.client.is_closed().await {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("late reconnect client should be shut down");
+    assert!(manager.list_all_tools().await.is_empty());
+}
+
+#[tokio::test]
+async fn startup_recovery_shutdown_cannot_publish_late_ready() {
+    let recovered_client =
+        create_test_managed_client(vec![create_test_tool("ordinary", "search")]).await;
+    let reconnect_factory = {
+        let recovered_client = recovered_client.clone();
+        Arc::new(move || {
+            let recovered_client = recovered_client.clone();
+            async move { Ok(recovered_client) }.boxed().shared()
+        })
+    };
+    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let mut manager = McpConnectionSet::new_uninitialized(
+        &approval_policy,
+        &permission_profile,
+        /*prefix_mcp_tool_names*/ true,
+    );
+    let (tx_event, rx_event) = async_channel::bounded(1);
+    tx_event
+        .send(Event {
+            id: "sentinel".to_string(),
+            msg: EventMsg::McpStartupUpdate(McpStartupUpdateEvent {
+                server: "sentinel".to_string(),
+                status: McpStartupStatus::Starting,
+            }),
+        })
+        .await
+        .expect("fill bounded status channel");
+    insert_failed_reconnecting_client_with_status(
+        &mut manager,
+        "ordinary",
+        reconnect_factory,
+        CancellationToken::new(),
+        tx_event,
+    );
+    let manager = Arc::new(manager);
+
+    assert!(manager.list_all_tools().await.is_empty());
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while capture_binding(&manager).await.tools().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("recovered client should become the current binding");
+
+    manager.shutdown().await;
+    let sentinel = rx_event.recv().await.expect("receive sentinel event");
+    assert_eq!(sentinel.id, "sentinel");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), rx_event.recv())
+            .await
+            .is_err(),
+        "shutdown must not be followed by a stale startup Ready event"
+    );
+    assert!(recovered_client.client.is_closed().await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn startup_recovery_retires_closed_client_before_retry() {
+    let closed_client =
+        create_test_managed_client(vec![create_test_tool("ordinary", "closed")]).await;
+    closed_client.client.shutdown().await;
+    let recovered_client =
+        create_test_managed_client(vec![create_test_tool("ordinary", "search")]).await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let reconnect_finished = Arc::new(Notify::new());
+    let reconnect_factory = {
+        let attempts = Arc::clone(&attempts);
+        let reconnect_finished = Arc::clone(&reconnect_finished);
+        Arc::new(move || {
+            let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let reconnect_finished = Arc::clone(&reconnect_finished);
+            let client = if attempt == 0 {
+                closed_client.clone()
+            } else {
+                recovered_client.clone()
+            };
+            async move {
+                reconnect_finished.notify_one();
+                Ok(client)
+            }
+            .boxed()
+            .shared()
+        })
+    };
+    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let mut manager = McpConnectionSet::new_uninitialized(
+        &approval_policy,
+        &permission_profile,
+        /*prefix_mcp_tool_names*/ true,
+    );
+    insert_failed_reconnecting_client(
+        &mut manager,
+        "ordinary",
+        reconnect_factory,
+        CancellationToken::new(),
+    );
+    let manager = Arc::new(manager);
+
+    let first_reconnect_finished = reconnect_finished.notified();
+    assert!(manager.list_all_tools().await.is_empty());
+    first_reconnect_finished.await;
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(manager.list_all_tools().await.is_empty());
+
+    tokio::time::advance(MCP_RECONNECT_INITIAL_BACKOFF).await;
+    let second_reconnect_finished = reconnect_finished.notified();
+    assert!(manager.list_all_tools().await.is_empty());
+    second_reconnect_finished.await;
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(manager.list_all_tools().await[0].callable_name, "search");
+}
+
+#[tokio::test]
+async fn binding_resource_catalogue_reports_unready_server_and_recovers_on_next_binding()
+-> anyhow::Result<()> {
+    let ready_server_name = "ready";
+    let failed_server_name = "failed";
+    let ready_client = create_resource_managed_client(
+        ready_server_name,
+        ResourceCatalogueListingBehavior::Succeeds,
+    )
+    .await?;
+    let failed_client =
+        create_resource_managed_client(failed_server_name, ResourceCatalogueListingBehavior::Fails)
+            .await?;
+    let recovered_client = create_resource_managed_client(
+        CODEX_APPS_MCP_SERVER_NAME,
+        ResourceCatalogueListingBehavior::Succeeds,
+    )
+    .await?;
+    let release_reconnect = Arc::new(Notify::new());
+    let release_reconnect_for_factory = Arc::clone(&release_reconnect);
+    let reconnect_finished = Arc::new(Notify::new());
+    let reconnect_finished_for_factory = Arc::clone(&reconnect_finished);
+    let reconnect_factory = Arc::new(move || {
+        let recovered_client = recovered_client.clone();
+        let release_reconnect = Arc::clone(&release_reconnect_for_factory);
+        let reconnect_finished = Arc::clone(&reconnect_finished_for_factory);
+        async move {
+            release_reconnect.notified().await;
+            reconnect_finished.notify_one();
+            Ok(recovered_client)
+        }
+        .boxed()
+        .shared()
+    });
+    let mut manager = create_test_manager_with_failed_apps_startup(Vec::new(), reconnect_factory);
+    manager.insert_test_client(
+        ready_server_name,
+        AsyncManagedClient {
+            client: futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>(Ok(
+                ready_client,
+            ))
+            .boxed()
+            .shared(),
+            is_codex_apps_mcp_server: false,
+            cached_server_info: None,
+            codex_apps_tools_cache_context: None,
+            tool_catalog_cache_context: None,
+            startup_complete: Arc::new(AtomicBool::new(true)),
+            startup_reconnect: None,
+            cancel_token: CancellationToken::new(),
+        },
+    );
+    manager.insert_test_client(
+        failed_server_name,
+        AsyncManagedClient {
+            client: futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>(Ok(
+                failed_client,
+            ))
+            .boxed()
+            .shared(),
+            is_codex_apps_mcp_server: false,
+            cached_server_info: None,
+            codex_apps_tools_cache_context: None,
+            tool_catalog_cache_context: None,
+            startup_complete: Arc::new(AtomicBool::new(true)),
+            startup_reconnect: None,
+            cancel_token: CancellationToken::new(),
+        },
+    );
+    let manager = Arc::new(manager);
+    let reconnect_finished_wait = reconnect_finished.notified();
+
+    let first_binding = capture_binding(&manager).await;
+    let first_resources = first_binding.list_all_resources(|_| true).await;
+    let first_templates = first_binding.list_all_resource_templates(|_| true).await;
+    assert_eq!(
+        serde_json::to_value(&first_resources.by_server)?,
+        serde_json::json!({
+            "ready": [{
+                "uri": "memo://ready",
+                "name": "ready",
+                "mimeType": "text/plain"
+            }]
+        })
+    );
+    assert_eq!(
+        first_resources.failures,
+        vec![
+            crate::McpResourceListingFailure {
+                server: CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                reason: crate::McpResourceListingFailureReason::NotReady,
+            },
+            crate::McpResourceListingFailure {
+                server: failed_server_name.to_string(),
+                reason: crate::McpResourceListingFailureReason::ListFailed,
+            },
+        ]
+    );
+    assert_eq!(first_templates.failures, first_resources.failures);
+    assert_eq!(
+        format!(
+            "{:#}",
+            first_binding
+                .list_resources(CODEX_APPS_MCP_SERVER_NAME, /*params*/ None)
+                .await
+                .expect_err("explicit unavailable server should fail")
+        ),
+        "MCP server 'codex_apps' was not ready for this step"
+    );
+
+    release_reconnect.notify_one();
+    reconnect_finished_wait.await;
+    let recovered_binding = capture_binding(&manager).await;
+    let recovered_resources = recovered_binding.list_all_resources(|_| true).await;
+    let recovered_templates = recovered_binding
+        .list_all_resource_templates(|_| true)
+        .await;
+    assert_eq!(
+        recovered_resources.failures,
+        vec![crate::McpResourceListingFailure {
+            server: failed_server_name.to_string(),
+            reason: crate::McpResourceListingFailureReason::ListFailed,
+        }]
+    );
+    assert_eq!(recovered_templates.failures, recovered_resources.failures);
+    assert_eq!(
+        serde_json::to_value(&recovered_resources.by_server)?,
+        serde_json::json!({
+            "codex_apps": [{
+                "uri": "memo://codex_apps",
+                "name": "codex_apps",
+                "mimeType": "text/plain"
+            }],
+            "ready": [{
+                "uri": "memo://ready",
+                "name": "ready",
+                "mimeType": "text/plain"
+            }]
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(&recovered_templates.by_server)?,
+        serde_json::json!({
+            "codex_apps": [{
+                "uriTemplate": "memo://codex_apps/{id}",
+                "name": "codex_apps",
+                "mimeType": "text/plain"
+            }],
+            "ready": [{
+                "uriTemplate": "memo://ready/{id}",
+                "name": "ready",
+                "mimeType": "text/plain"
+            }]
+        })
+    );
+    Ok(())
+}
+
 #[tokio::test(start_paused = true)]
 async fn later_tool_list_retries_after_failed_reconnect_and_keeps_cached_tools() {
     let recovered_client = create_test_managed_client(vec![create_test_tool(
@@ -2033,7 +2635,7 @@ async fn later_tool_list_retries_after_failed_reconnect_and_keeps_cached_tools()
     );
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
 
-    tokio::time::advance(CODEX_APPS_RECONNECT_INITIAL_BACKOFF).await;
+    tokio::time::advance(MCP_RECONNECT_INITIAL_BACKOFF).await;
     let second_reconnect_finished = reconnect_finished.notified();
     let tools = manager.list_all_tools().await;
     assert_eq!(
@@ -2046,7 +2648,7 @@ async fn later_tool_list_retries_after_failed_reconnect_and_keeps_cached_tools()
     second_reconnect_finished.await;
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
 
-    tokio::time::advance(CODEX_APPS_RECONNECT_INITIAL_BACKOFF).await;
+    tokio::time::advance(MCP_RECONNECT_INITIAL_BACKOFF).await;
     let tools = manager.list_all_tools().await;
     assert_eq!(
         tools
@@ -2057,7 +2659,7 @@ async fn later_tool_list_retries_after_failed_reconnect_and_keeps_cached_tools()
     );
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
 
-    tokio::time::advance(CODEX_APPS_RECONNECT_INITIAL_BACKOFF).await;
+    tokio::time::advance(MCP_RECONNECT_INITIAL_BACKOFF).await;
     let third_reconnect_finished = reconnect_finished.notified();
     let tools = manager.list_all_tools().await;
     assert_eq!(

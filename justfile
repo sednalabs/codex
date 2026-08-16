@@ -206,6 +206,14 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_age_when_known --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_model_effort_and_task_when_available --lib -- --exact --test-threads=1
 
+# Focused TUI replay and live collab-spawn requested-identity slice.
+tui-collab-spawn-identity-targeted:
+    cargo test -p codex-tui chatwidget::tests::history_replay::replayed_collab_spawn_terminal_uses_only_explicit_effective_identity --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::history_replay::replayed_historic_terminal_collab_spawn_renders_legacy_identity_as_effective --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::history_replay::replayed_failed_collab_spawn_without_receiver_keeps_requested_identity --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::app_server::live_app_server_collab_spawn_completed_renders_requested_model_and_effort --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::app_server::live_app_server_spawn_completion_does_not_fill_missing_effective_identity_from_metadata --lib -- --exact --test-threads=1
+
 # Focused shared picker-model tool-description slice for upgradeable legacy
 
 # visibility without widening to the TUI/app-server build graph.
@@ -323,9 +331,10 @@ tui-brokered-tool-replay-targeted:
     cargo test -p codex-tui computer_use_fallback_message_only_shows_for_primary_thread --lib -- --exact --test-threads=1
 
 # Focused multi-agent orchestration slice covering wait semantics, tool guidance,
+
 # and generation-safe V2 residency eviction.
 core-multi-agent-orchestration-targeted:
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- tools::handlers::multi_agents::tests::multi_agent_v2_list_agents_returns_completed_status tools::handlers::multi_agents_v2::wait::tests::completion_rule_distinguishes_any_from_all agent::control::residency::tests::residency_slot_reservation_unloads_oldest_idle_v2_agent agent::control::residency::tests::interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction agent::control::residency::tests::ephemeral_v2_agent_is_not_evicted_without_reloadable_history agent::registry::tests::cold_status_text_stays_compact_when_json_escaped agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent context::world_state::multi_agent_mode::tests::custom_mode_removal_replaces_retained_instructions context::world_state::multi_agent_mode::tests::snapshots --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- tools::handlers::multi_agents::tests::multi_agent_v2_list_agents_returns_completed_status tools::handlers::multi_agents_v2::wait::tests::completion_rule_distinguishes_any_from_all agent::control::residency::tests::residency_slot_reservation_unloads_oldest_idle_v2_agent agent::control::residency::tests::interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction agent::control::residency::tests::ephemeral_v2_agent_is_not_evicted_without_reloadable_history agent::registry::tests::cold_status_text_stays_compact_when_json_escaped agent::registry::tests::spawn_delivery_ownership_prevents_cancellation_from_claiming_abort agent::control::tests::delivery_owned_initial_input_failure_reconciles_and_preserves_the_delivery_error agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent tools::parallel::tests::configured_v2_spawn_cancellation_after_new_thread_reconciles_before_runtime_abort tools::parallel::tests::v1_spawn_cancellation_after_initial_delivery_returns_published_result tools::parallel::tests::configured_v2_spawn_cancellation_after_initial_delivery_returns_published_result context::world_state::multi_agent_mode::tests::custom_mode_removal_replaces_retained_instructions context::world_state::multi_agent_mode::tests::snapshots --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts suite::agent_execution::v2_evicted_completed_agent_keeps_final_status suite::agent_execution::v2_cold_mailbox_allows_eviction_and_replays_on_followup suite::multi_agent_mode::changing_configured_mode_hint_to_empty_appends_explicit_reset suite::pending_input::queue_only_agent_mail_wakes_sleeping_root_and_persists_message --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test --locked -p codex-exec --test all suite::completion_backfill::ignores_unrelated_turn_completion_before_backfilling_primary_turn -- --exact --test-threads=1
     cargo nextest run -p codex-protocol --lib --no-tests=fail -- protocol::tests::turn_complete_without_provider_usage_remains_compatible --exact
@@ -388,6 +397,13 @@ mcp-tool-exposure-targeted:
     cargo test -p codex-core mcp_tool_exposure::tests:: --lib -- --test-threads=1
     cargo test -p codex-mcp list_all_tools_ --lib -- --test-threads=1
     cargo test -p codex-mcp capture_binding_uses_the_ready_clients_own_tools --lib -- --exact --test-threads=1
+    cargo test -p codex-mcp startup_recovery_ --lib -- --test-threads=1
+    cargo test -p codex-mcp binding_resource_catalogue_ --lib -- --test-threads=1
+    cargo test -p codex-core all_server_resource_payload_reports_partial_listing_failures --lib -- --exact --test-threads=1
+    cargo build -p codex-rmcp-client --bin test_streamable_http_server
+    RUST_BACKTRACE=1 RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::all_server_resource_catalogues_report_unready_server_without_hiding_ready_results --exact
+    RUST_BACKTRACE=1 RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::streamable_http_failed_startup_recovers_on_next_binding --exact
+    RUST_BACKTRACE=1 RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::streamable_http_cancelled_startup_reconnect_stays_unready --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::stdio_mcp_read_only_tool_calls_run_concurrently_without_server_opt_in --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently --exact
 
@@ -417,7 +433,7 @@ mcp-device-login-targeted:
 
 # Focused sub-agent selection, role, backend, and cold-reload slice.
 core-subagent-model-pinning-targeted:
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- agent::role::tests::apply_role_preserves_unspecified_keys agent::role::tests::spawn_tool_spec_marks_terminal_babysitter_locked_model_and_reasoning_effort tools::handlers::multi_agents_spec::tests::spawn_agent_tool_v2_requires_task_name_and_lists_visible_models tools::handlers::multi_agents::tests::spawn_agent_reasoning_effort_accepts_empty_support_metadata tools::handlers::multi_agents::tests::multi_agent_v2_spawn_accepts_child_model_without_backend_assignment tools::handlers::multi_agents::tests::multi_agent_v2_spawn_accepts_luna_compatibility_override tools::handlers::multi_agents::tests::multi_agent_v2_spawn_rejects_child_model_from_different_backend tools::handlers::multi_agents::tests::multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override tools::handlers::multi_agents::tests::multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override tools::handlers::multi_agents::tests::multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- agent::role::tests::apply_role_preserves_unspecified_keys agent::role::tests::spawn_tool_spec_marks_terminal_babysitter_locked_model_and_reasoning_effort tools::handlers::multi_agents_spec::tests::spawn_agent_tool_v2_requires_task_name_and_lists_visible_models tools::handlers::multi_agents::tests::spawn_agent_reasoning_effort_accepts_empty_support_metadata tools::handlers::multi_agents::tests::multi_agent_v2_spawn_accepts_child_model_without_backend_assignment tools::handlers::multi_agents::tests::multi_agent_v2_spawn_accepts_luna_compatibility_override tools::handlers::multi_agents::tests::multi_agent_v2_spawn_rejects_child_model_from_different_backend tools::handlers::multi_agents::tests::multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override tools::handlers::multi_agents::tests::multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override tools::handlers::multi_agents::tests::multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model tools::handlers::multi_agents::tests::failed_spawn_keeps_requested_identity_separate_from_terminal_effective_identity tools::handlers::multi_agents::tests::multi_agent_v2_spawn_without_snapshot_omits_unobserved_effective_identity --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::subagent_notifications::spawn_agent_uses_configured_subagent_defaults suite::subagent_notifications::spawn_agent_preserves_configured_defaults_through_unrelated_role suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::subagent_notifications::spawn_agent_rejects_reasoning_effort_unsupported_by_role_model --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::subagent_notifications::spawned_full_history_v2_child_uses_model_precedence_without_dropping_context
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-state -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- extract::tests::turn_context_sets_model_and_reasoning_effort extract::tests::thread_settings_applied_updates_resume_metadata local::read_thread::tests::read_thread_keeps_complete_indexed_identity_during_rollout_overlay thread_metadata_sync::tests::thread_settings_applied_updates_live_metadata types::tests::thread_metadata_patch_round_trips_optional_clears --exact
@@ -428,6 +444,16 @@ core-subagent-model-pinning-targeted:
 core-persisted-subagent-descendants-targeted:
     cargo test -p codex-state thread_spawn_edges_track_directional_status --lib -- --exact --test-threads=1
 
+# Focused app-server collab-spawn requested/effective identity projection slice.
+app-server-collab-spawn-identity-targeted:
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_v2 -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2 -- --exact --test-threads=1
+
+# Focused analytics and usage consumer slice for collab-spawn requested identity.
+collab-spawn-identity-consumers-targeted:
+    cargo test --locked -p codex-analytics analytics_client_tests::collab_tool_item_analytics_keeps_requested_identity_from_the_started_event --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-state runtime::usage::tests::usage_logger_preserves_optional_spawn_request_identity --lib -- --exact --test-threads=1
+
 # Focused app-server thread surface slice.
 app-server-thread-cwd-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::conversation_summary:: -- --test-threads=1
@@ -436,7 +462,7 @@ app-server-thread-cwd-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::thread_resume::thread_resume_returns_rollout_history -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::thread_fork::thread_fork_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_spawn_agent_item_with_requested_model_metadata_when_role_layering_is_present_v2 -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2 -- --exact --test-threads=1
 
 # Focused app-server v2 contract slice for high-signal client-facing RPCs.
 app-server-v2-contract-targeted:
@@ -700,6 +726,7 @@ bench-e2e:
     bazel test --compilation_mode=opt --cache_test_results=no --test_output=streamed //codex-rs:e2e-benchmarks
 
 # Run Bazel-backed end-to-end macrobenchmarks once per case with release-like
+
 # Rust cfg paths but fastbuild codegen.
 bench-e2e-smoke:
     # Avoid optimizer cost because smoke runs only check that benchmarks work.

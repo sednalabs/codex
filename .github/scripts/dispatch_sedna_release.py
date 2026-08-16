@@ -130,6 +130,8 @@ def dispatch_release(args: argparse.Namespace, metadata: dict[str, object]) -> N
         f"release_tag={release_tag}",
         "-f",
         f"draft={str(args.draft).lower()}",
+        "-f",
+        f"macos_release_mode={args.macos_release_mode}",
     ]
     run_command(command, cwd=args.repo, dry_run=args.dry_run)
 
@@ -205,6 +207,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Create the GitHub release as draft.",
     )
     parser.add_argument(
+        "--macos-release-mode",
+        choices=("off", "preview", "notarized"),
+        default="off",
+        help=(
+            "Intel macOS asset policy. Preview is ad-hoc signed and only valid "
+            "for prereleases; notarized requires the codesigning environment."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Refresh tags and resolve metadata, then print the workflow dispatch command.",
@@ -231,6 +242,13 @@ def main(argv: list[str]) -> int:
             dry_run=False,
         )
         metadata = resolve_release_metadata(args)
+        if (
+            args.macos_release_mode == "preview"
+            and metadata.get("github_prerelease") is not True
+        ):
+            raise DispatchError(
+                "Intel macOS preview assets may only be attached to prereleases"
+            )
         print(json.dumps(metadata, indent=2, sort_keys=True))
         if args.no_dispatch:
             print("workflow dispatch skipped by --no-dispatch")

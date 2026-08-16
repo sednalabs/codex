@@ -101,7 +101,7 @@ artifacts.
   - scopes: `protocol`, `tui`, `cli`, `core`, `workspace`
 - `sedna-release`
   - trigger: Sedna release tags or manual dispatch
-  - purpose: official public Linux `x86_64` release artifacts
+  - purpose: official public Linux `x86_64` and Intel macOS `x86_64` release artifacts
   - release visibility: the only lane that may publish a GitHub Release
   - public boundary: builds, signs, publishes, and verifies public release assets only; host-local
     installation is intentionally left to external deployment automation
@@ -160,14 +160,21 @@ artifacts.
     success already exists, so idle branches do not spend runner time proving
     the same SHA again.
 11. Use `sedna-branch-build` only when you intentionally want a preview binary.
+    - `platform=linux-x86_64` remains the default.
+    - `platform=macos` produces a disposable Intel x64 artifact and reuses
+      Cargo-home and `sccache` entries across builds. It is ad hoc signed, not
+      notarized, and is not an official Sedna release.
 12. Use `sedna-release` only for official releases.
 
 ## Current downstream platform policy
 
-- Supported downstream platform: Linux `x86_64`
-- Parked but unsupported for now: macOS, Windows, Linux arm64, and other historical upstream targets
-- Scheduled and routine heavyweight CI should stay Linux `x86_64` only until Sedna deliberately
-  re-enables another platform with matching docs, workflow, and release-policy updates
+- Officially supported downstream release platforms: Linux `x86_64` and Intel macOS `x86_64`.
+- Parked and unsupported for official releases: Apple Silicon, Windows, Linux arm64, and other
+  historical upstream targets.
+- The opt-in Intel macOS branch-build lane remains preview-only. Its artifacts are disposable and
+  are not substitutes for the target-specific assets published and verified by `sedna-release`.
+- Scheduled and routine non-release heavyweight CI remains Linux `x86_64`-focused. The official
+  publisher and release verifier are the deliberate native-runner exceptions for Intel macOS x64.
 
 ## Public/operator boundary
 

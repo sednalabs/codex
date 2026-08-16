@@ -91,8 +91,8 @@ pub(crate) const CODEX_APPS_REFRESH_DURATION_METRIC: &str = "codex.apps.refresh.
 pub(crate) const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 
-pub(crate) const CODEX_APPS_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
-const CODEX_APPS_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
+pub(crate) const MCP_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const MCP_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 const UNTRUSTED_CONNECTOR_META_KEYS: &[&str] = &[
     "connector_id",
@@ -263,42 +263,44 @@ pub(crate) type ManagedClientFuture =
     Shared<BoxFuture<'static, Result<ManagedClient, StartupOutcomeError>>>;
 
 #[derive(Default)]
-struct CodexAppsStartupReconnectState {
+struct McpStartupReconnectState {
     current_client: Option<ManagedClient>,
     reconnect_in_flight: bool,
     consecutive_failures: u32,
     retry_not_before: Option<TokioInstant>,
+    cancelled: bool,
+    recovered_client_closed: bool,
 }
 
 #[derive(Clone)]
-struct CodexAppsStartupStatusContext {
+struct McpStartupStatusContext {
     submit_id: String,
     server_name: String,
     tx_event: Sender<Event>,
 }
 
-pub(crate) struct CodexAppsStartupReconnect {
+pub(crate) struct McpStartupReconnect {
     factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
-    state: StdMutex<CodexAppsStartupReconnectState>,
-    startup_status_context: Option<CodexAppsStartupStatusContext>,
+    state: StdMutex<McpStartupReconnectState>,
+    startup_status_context: Option<McpStartupStatusContext>,
 }
 
-impl CodexAppsStartupReconnect {
+impl McpStartupReconnect {
     pub(crate) fn new(factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>) -> Self {
         Self {
             factory,
-            state: StdMutex::new(CodexAppsStartupReconnectState::default()),
+            state: StdMutex::new(McpStartupReconnectState::default()),
             startup_status_context: None,
         }
     }
 
-    fn with_startup_status_context(
+    pub(crate) fn with_startup_status_context(
         mut self,
         submit_id: String,
         server_name: String,
         tx_event: Option<Sender<Event>>,
     ) -> Self {
-        self.startup_status_context = tx_event.map(|tx_event| CodexAppsStartupStatusContext {
+        self.startup_status_context = tx_event.map(|tx_event| McpStartupStatusContext {
             submit_id,
             server_name,
             tx_event,
@@ -306,12 +308,57 @@ impl CodexAppsStartupReconnect {
         self
     }
 
-    fn current_client(&self) -> Option<ManagedClient> {
+    async fn current_client(&self) -> Option<ManagedClient> {
+        loop {
+            let client = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .current_client
+                .clone()?;
+            if !client.client.is_closed().await {
+                return Some(client);
+            }
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let still_current = state
+                .current_client
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(&current.client, &client.client));
+            if still_current {
+                state.current_client = None;
+                state.recovered_client_closed = true;
+                return None;
+            }
+        }
+    }
+
+    fn recovered_client_closed(&self) -> bool {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .current_client
-            .clone()
+            .recovered_client_closed
+    }
+
+    fn cancel(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cancelled = true;
+    }
+
+    fn cancel_if_in_flight(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.reconnect_in_flight {
+            return false;
+        }
+        state.cancelled = true;
+        true
     }
 
     fn reconnect_in_background(self: &Arc<Self>) {
@@ -320,7 +367,7 @@ impl CodexAppsStartupReconnect {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.current_client.is_some() || state.reconnect_in_flight {
+            if state.cancelled || state.current_client.is_some() || state.reconnect_in_flight {
                 return;
             }
             if state
@@ -334,56 +381,72 @@ impl CodexAppsStartupReconnect {
 
         let reconnect = Arc::clone(self);
         tokio::spawn(async move {
-            let result = (reconnect.factory)().await;
-            let startup_status_context = reconnect.startup_status_context.clone();
-            let recovered = {
+            let result = match (reconnect.factory)().await {
+                Ok(client) if client.client.is_closed().await => {
+                    Err("recreated MCP client is closed".to_string())
+                }
+                Ok(client) => Ok(client),
+                Err(error) => Err(error.to_string()),
+            };
+            let mut client_to_shutdown = None;
+            {
                 let mut state = reconnect
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.reconnect_in_flight = false;
-                match result {
-                    Ok(client) => {
-                        state.current_client = Some(client);
-                        state.consecutive_failures = 0;
-                        state.retry_not_before = None;
-                        true
-                    }
-                    Err(error) => {
-                        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-                        let retry_after = codex_apps_reconnect_backoff(state.consecutive_failures);
-                        state.retry_not_before = Some(TokioInstant::now() + retry_after);
-                        warn!(
-                            error = %error,
-                            retry_after_ms = retry_after.as_millis(),
-                            "Apps MCP startup reconnect failed; continuing with cached tools"
-                        );
-                        false
+                if state.cancelled {
+                    client_to_shutdown = result.ok();
+                } else {
+                    match result {
+                        Ok(client) => {
+                            state.current_client = Some(client);
+                            state.consecutive_failures = 0;
+                            state.retry_not_before = None;
+                            state.recovered_client_closed = false;
+                            if let Some(context) = reconnect.startup_status_context.as_ref() {
+                                // Publish readiness while holding the same state lock that
+                                // serializes cancellation and replacement. The session event
+                                // channel is unbounded, so `try_send` cannot wait for capacity;
+                                // cancellation therefore either wins before installation (and
+                                // retires the client below) or observes readiness already
+                                // published for the installed client.
+                                let _ = context.tx_event.try_send(Event {
+                                    id: context.submit_id.clone(),
+                                    msg: EventMsg::McpStartupUpdate(McpStartupUpdateEvent {
+                                        server: context.server_name.clone(),
+                                        status: McpStartupStatus::Ready,
+                                    }),
+                                });
+                            }
+                        }
+                        Err(error) => {
+                            state.consecutive_failures =
+                                state.consecutive_failures.saturating_add(1);
+                            let retry_after = mcp_reconnect_backoff(state.consecutive_failures);
+                            state.retry_not_before = Some(TokioInstant::now() + retry_after);
+                            warn!(
+                                error = %error,
+                                retry_after_ms = retry_after.as_millis(),
+                                "MCP startup reconnect failed"
+                            );
+                        }
                     }
                 }
-            };
+            }
 
-            if recovered && let Some(context) = startup_status_context {
-                let _ = context
-                    .tx_event
-                    .send(Event {
-                        id: context.submit_id,
-                        msg: EventMsg::McpStartupUpdate(McpStartupUpdateEvent {
-                            server: context.server_name,
-                            status: McpStartupStatus::Ready,
-                        }),
-                    })
-                    .await;
+            if let Some(client) = client_to_shutdown {
+                client.client.shutdown().await;
             }
         });
     }
 }
 
-fn codex_apps_reconnect_backoff(consecutive_failures: u32) -> Duration {
+fn mcp_reconnect_backoff(consecutive_failures: u32) -> Duration {
     let exponent = consecutive_failures.saturating_sub(1).min(5);
-    CODEX_APPS_RECONNECT_INITIAL_BACKOFF
+    MCP_RECONNECT_INITIAL_BACKOFF
         .saturating_mul(1 << exponent)
-        .min(CODEX_APPS_RECONNECT_MAX_BACKOFF)
+        .min(MCP_RECONNECT_MAX_BACKOFF)
 }
 
 #[derive(Clone)]
@@ -511,7 +574,7 @@ pub(crate) struct AsyncManagedClient {
     pub(crate) codex_apps_tools_cache_context: Option<ConnectorRuntimeContext<ToolInfo>>,
     pub(crate) tool_catalog_cache_context: Option<McpToolCatalogCacheContext>,
     pub(crate) startup_complete: Arc<AtomicBool>,
-    pub(crate) startup_reconnect: Option<Arc<CodexAppsStartupReconnect>>,
+    pub(crate) startup_reconnect: Option<Arc<McpStartupReconnect>>,
     pub(crate) cancel_token: CancellationToken,
 }
 
@@ -538,6 +601,10 @@ impl AsyncManagedClient {
         supports_openai_form_elicitation: bool,
     ) -> Self {
         let is_codex_apps_mcp_server = server_name == CODEX_APPS_MCP_SERVER_NAME;
+        let retry_failed_startup = matches!(
+            &server.config().transport,
+            McpServerTransportConfig::StreamableHttp { .. }
+        );
         let reconnect_server_name = server_name.clone();
         let reconnect_tx_event = tx_event.clone();
         let cached_server_info = if is_codex_apps_mcp_server {
@@ -566,10 +633,10 @@ impl AsyncManagedClient {
             startup_complete: Arc::clone(&startup_complete),
         });
         let client = startup.start();
-        let startup_reconnect = is_codex_apps_mcp_server.then(|| {
+        let startup_reconnect = retry_failed_startup.then(|| {
             let startup = Arc::clone(&startup);
             Arc::new(
-                CodexAppsStartupReconnect::new(Arc::new(move || startup.start()))
+                McpStartupReconnect::new(Arc::new(move || startup.start()))
                     .with_startup_status_context(
                         startup_submit_id,
                         reconnect_server_name,
@@ -590,14 +657,18 @@ impl AsyncManagedClient {
     }
 
     pub(crate) async fn client(&self) -> Result<ManagedClient, StartupOutcomeError> {
-        if let Some(client) = self
-            .startup_reconnect
-            .as_ref()
-            .and_then(|reconnect| reconnect.current_client())
+        if let Some(reconnect) = self.startup_reconnect.as_ref()
+            && let Some(client) = reconnect.current_client().await
         {
             return Ok(client);
         }
         self.client.clone().await
+    }
+
+    pub(crate) fn recovered_client_closed(&self) -> bool {
+        self.startup_reconnect
+            .as_ref()
+            .is_some_and(|reconnect| reconnect.recovered_client_closed())
     }
 
     /// Refreshes a ready client's catalog and reports whether it changed.
@@ -619,8 +690,27 @@ impl AsyncManagedClient {
         }
     }
 
-    pub(crate) async fn shutdown(&self) {
+    pub(crate) fn cancel(&self) {
+        if let Some(startup_reconnect) = self.startup_reconnect.as_ref() {
+            startup_reconnect.cancel();
+        }
         self.cancel_token.cancel();
+    }
+
+    pub(crate) fn cancel_startup(&self) {
+        if !self.startup_complete.load(Ordering::Acquire) {
+            self.cancel();
+        } else if self
+            .startup_reconnect
+            .as_ref()
+            .is_some_and(|reconnect| reconnect.cancel_if_in_flight())
+        {
+            self.cancel_token.cancel();
+        }
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        self.cancel();
         match self.client().await {
             Ok(client) => client.client.shutdown().await,
             Err(StartupOutcomeError::Cancelled) => {}
@@ -653,16 +743,20 @@ impl AsyncManagedClient {
 
     pub(crate) async fn listed_tools(&self) -> Option<Vec<ToolInfo>> {
         // Plugin provenance is resolved per-session rather than stored in shared cache payloads.
-        if !self.startup_complete.load(Ordering::Acquire)
-            && let Some(startup_tools) = self.cached_tools()
-        {
-            Some(startup_tools)
-        } else {
-            match self.client().await {
-                Ok(client) => Some(client.listed_tools()),
-                Err(_) if self.is_codex_apps_mcp_server => self.cached_tools(),
-                Err(_) => None,
+        if !self.startup_complete.load(Ordering::Acquire) {
+            if self.is_codex_apps_mcp_server
+                && let Some(startup_tools) = self.cached_tools()
+            {
+                return Some(startup_tools);
             }
+            if !self.is_codex_apps_mcp_server && self.has_cached_tools() {
+                return None;
+            }
+        }
+        match self.client().await {
+            Ok(client) => Some(client.listed_tools()),
+            Err(_) if self.is_codex_apps_mcp_server => self.cached_tools(),
+            Err(_) => None,
         }
     }
 }
