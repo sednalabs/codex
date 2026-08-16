@@ -25,10 +25,10 @@ on:
       macos_release_mode:
         description: Intel macOS asset kind expected on the release
         required: true
-        default: off
+        default: "off"
         type: choice
         options:
-          - off
+          - "off"
           - preview
           - notarized
 
