@@ -755,23 +755,26 @@ import sys
 os.replace(sys.argv[1], sys.argv[2])
 PY
 
-visible_codex="${bin_dir}/codex"
-if [[ -e "$visible_codex" && ! -L "$visible_codex" ]]; then
-  mkdir -p "${install_root}/backups"
-  backup="${install_root}/backups/codex.$(date +%s)"
-  mv "$visible_codex" "$backup"
-  echo "backed up previous codex binary"
-fi
+for executable in codex codex-responses-api-proxy; do
+  visible_executable="${bin_dir}/${executable}"
+  if [[ -e "$visible_executable" && ! -L "$visible_executable" ]]; then
+    mkdir -p "${install_root}/backups"
+    backup="${install_root}/backups/${executable}.$(date +%s)"
+    mv "$visible_executable" "$backup"
+    echo "backed up previous ${executable} binary"
+  fi
 
-codex_tmp="${bin_dir}/.codex.tmp.$$"
-ln -s "${release_dir}/codex" "$codex_tmp"
-python3 - "$codex_tmp" "$visible_codex" <<'PY'
+  executable_tmp="${bin_dir}/.${executable}.tmp.$$"
+  ln -s "${release_dir}/${executable}" "$executable_tmp"
+  python3 - "$executable_tmp" "$visible_executable" <<'PY'
 import os
 import sys
 
 os.replace(sys.argv[1], sys.argv[2])
 PY
+done
 
+visible_codex="${bin_dir}/codex"
 visible_version_output="$("$visible_codex" --version 2>&1)"
 if [[ "$visible_version_output" != *"$release_version"* ]]; then
   printf 'error: codex --version did not report %s: %s\n' "$release_version" "$visible_version_output" >&2

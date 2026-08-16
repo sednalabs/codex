@@ -1929,7 +1929,10 @@ decisions.
   absent; current x86 callers cannot select only one trust layer. Immutable pre-cutoff x86-only releases without modern assets automatically preserve
   stale updater compatibility; the explicit historical-x86 escape hatch cannot downgrade current
   releases. A previously present release directory is activated only when it matches the freshly
-  verified binaries, metadata, and checksum manifest byte-for-byte.
+  verified binaries, metadata, and checksum manifest byte-for-byte. A successful install atomically
+  publishes both packaged executables, `codex` and `codex-responses-api-proxy`, through the stable
+  user bin directory on the first invocation; callers must not rely on a later updater pass to repair
+  a missing proxy link.
 - Preserve the dual-native Linux matrix, target-isolated names and caches, exact-source
   hosted-runner trust checks, mandatory Arm64 hardening, historical x86 compatibility, protected-main
   marker/manual publication, and release tags as outputs rather than workflow authority as one
