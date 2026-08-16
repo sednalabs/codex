@@ -1918,9 +1918,17 @@ decisions.
   supports native Linux x64, Linux Arm64, and Intel macOS x64 archives with target-bound metadata,
   checksums, and native-runner verification. Linux assets also carry keyless Sigstore bundles,
   SPDX SBOMs, and GitHub build-provenance attestations; Apple Silicon remains unsupported.
+- Preserve the dual-native Linux matrix, target-isolated names and caches, exact-source
+  hosted-runner trust checks, mandatory Arm64 hardening, historical x86 compatibility, and
+  protected-main manual publication as one release contract during upstream syncs. Drop or narrow
+  it only when upstream provides an equivalent downstream-origin and dual-architecture release
+  contract.
 - Primary files:
+  - `.github/workflows/sedna-release.yml`
+  - `.github/workflows/sedna-release-install.yml`
   - `.github/workflows/sedna-branch-build.yml`
   - `.github/scripts/test_ci_planners.py`
+  - `scripts/install_sedna_release_asset`
   - `codex-rs/utils/version/build.rs`
   - `codex-rs/utils/version/src/lib.rs`
   - `codex-rs/cli/src/main.rs`

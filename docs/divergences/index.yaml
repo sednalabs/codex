@@ -2604,7 +2604,9 @@
         "Sedna release asset installer"
       ],
       "files": [
+        ".github/scripts/test_ci_planners.py",
         ".github/scripts/resolve_sedna_release_version.py",
+        ".github/workflows/sedna-branch-build.yml",
         ".github/workflows/sedna-release.yml",
         ".github/workflows/sedna-release-install.yml",
         "codex-rs/app-server-daemon/src/update_loop.rs",
@@ -2619,7 +2621,7 @@
         "scripts/install/test_install_sh.py",
         "scripts/resolve_sedna_release_version"
       ],
-      "behavior": "Update discovery, prompts, and installer routing follow Sedna prerelease tags and GitHub-hosted assets while preserving the upstream-derived version line and keeping host installation outside public build workflows. Upstream's optional releases.openai.com source remains intact for the default openai/codex and rust-v origin, while configured repository and tag-prefix overrides deliberately bypass that OpenAI-only source and retain their GitHub metadata and asset URLs.",
+      "behavior": "Update discovery, prompts, and installer routing follow Sedna prerelease tags and GitHub-hosted assets while preserving the upstream-derived version line and keeping host installation outside public build workflows. Official Linux releases build natively for x86_64 GNU and Arm64 GNU with target-isolated artifacts and caches; publish checksums, target-bound metadata, Sigstore bundles, SPDX SBOMs, and GitHub provenance; and dispatch native hosted verification from the exact published tag. Hardened verification binds signatures and attestations to the exact hosted release workflow source commit. Arm64 has no downgrade path, while explicitly selected historical x86-only verification preserves the older checksum, metadata, archive-safety, and executable contract without requiring fields or tools that those releases predate. Manual publication is restricted to protected main. Upstream's optional releases.openai.com source remains intact for the default openai/codex and rust-v origin, while configured repository and tag-prefix overrides deliberately bypass that OpenAI-only source and retain their GitHub metadata and asset URLs.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -2634,16 +2636,22 @@
         "test_releases_latest_installs_verified_package",
         "test_releases_asset_download_falls_back_to_github",
         "sedna_installer_fetch_uses_exact_url_and_preserves_bytes",
+        "test_sedna_release_installer_executes_hardened_linux_fixture",
+        "test_sedna_release_installer_rejects_invalid_release_assets",
+        "test_sedna_release_router_rejects_off_main_manual_dispatch",
+        "test_sedna_release_dispatches_public_asset_verification_only",
         "sedna-release workflow policy checks"
       ],
       "owner": "downstream",
-      "notes": "Keeps public GitHub workflows limited to building, publishing, and verifying assets; production installation remains an operator-controlled private concern. The releases.openai.com preference is intentionally origin-scoped so a downstream release repository can never consume OpenAI metadata or assets accidentally.",
+      "notes": "Keeps public GitHub workflows limited to building, publishing, and verifying assets; production installation remains an operator-controlled private concern. Preserve the dual-native Linux matrix, target-isolated asset names, exact-source hosted-runner trust checks, mandatory Arm64 hardening, historical x86 compatibility, and protected-main publication boundary together during upstream syncs. Drop or narrow this carry only when upstream provides an equivalent downstream release-origin adapter and dual-architecture signed, attested, source-bound asset contract. The releases.openai.com preference is intentionally origin-scoped so a downstream release repository can never consume OpenAI metadata or assets accidentally.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "release-update-routing",
       "hotspot_files": [
         "codex-rs/app-server-daemon/src/update_loop.rs",
         "codex-rs/tui/src/update_versions.rs",
-        ".github/workflows/sedna-release.yml"
+        ".github/workflows/sedna-release.yml",
+        ".github/workflows/sedna-release-install.yml",
+        "scripts/install_sedna_release_asset"
       ],
       "extraction_target": "downstream release-channel adapter"
     },
