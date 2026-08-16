@@ -152,7 +152,7 @@ jobs:
 
       - name: Set up Node.js
         if: ${{ inputs.setup_class != 'light' }}
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
