@@ -87,6 +87,10 @@ jobs:
           }
 
           if [[ "${EVENT_NAME}" != "push" ]]; then
+            if [[ "${EVENT_NAME}" == "workflow_dispatch" && "${EVENT_REF}" != "refs/heads/main" ]]; then
+              echo "Manual releases must be dispatched from the protected main branch; got ${EVENT_REF}." >&2
+              exit 1
+            fi
             emit true "${EVENT_NAME}" "${EVENT_SHA}" ""
             exit 0
           fi

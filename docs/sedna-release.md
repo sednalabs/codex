@@ -80,8 +80,8 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
   the source of truth.
 - A manual `target_sha` must equal the exact commit at the workflow dispatch ref. This keeps the
   release binaries, Sigstore certificate workflow SHA, and GitHub provenance source/signer digests
-  bound to the same immutable commit; releasing an older commit requires an exact branch or tag ref
-  at that commit rather than dispatching newer workflow code with an unrelated target.
+  bound to the same immutable commit. Manual releases must be dispatched from protected `main`;
+  arbitrary branch dispatches fail before any release build or publication.
 - Manual `workflow_dispatch` without `release_tag` requires the target commit to contain a valid
   `Sedna-Release:` trailer. Markerless manual releases must supply the expected tag explicitly.
 - A supplied `release_tag` must match the upstream track computed from the target commit's

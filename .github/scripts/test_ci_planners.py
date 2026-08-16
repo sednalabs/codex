@@ -7568,6 +7568,10 @@ fi
         self.assertIn("HEAD_MESSAGE", named_steps["Resolve release request"].get("env") or {})
         self.assertIn("^Sedna-Release:", named_steps["Resolve release request"].get("run") or "")
         self.assertIn(
+            '"${EVENT_NAME}" == "workflow_dispatch" && "${EVENT_REF}" != "refs/heads/main"',
+            named_steps["Resolve release request"].get("run") or "",
+        )
+        self.assertIn(
             "Publisher job: ${publisher_job}",
             named_steps["Summarize release gate"].get("run") or "",
         )
