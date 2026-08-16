@@ -184,6 +184,15 @@ phase-less assistant message item.
 Use `turn(...)` when you need low-level turn control (`stream()`, `steer()`,
 `interrupt()`) before collecting the turn result.
 
+The `CollabAgentToolCallThreadItem` model normalizes a pre-additive legacy item
+only when all four additive identity keys are absent, materializing
+`requestedModel`, `requestedReasoningEffort`, `effectiveModel`, and
+`effectiveReasoningEffort` as explicit `null` values before validating that
+item. The validator is scoped to the collab item model, so identically named
+objects inside opaque tool arguments are untouched. All four fields remain
+required and nullable for current inputs; partial malformed shapes retain
+normal validation errors, and aliases are not rewritten.
+
 ## Sandbox
 
 Use `sandbox=` consistently on thread lifecycle methods and turns:
