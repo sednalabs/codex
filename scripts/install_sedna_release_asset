@@ -146,8 +146,11 @@ import hashlib
 import sys
 
 path, expected = sys.argv[1:3]
+digest = hashlib.sha256()
 with open(path, "rb") as handle:
-    actual = hashlib.file_digest(handle, "sha256").hexdigest()
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+actual = digest.hexdigest()
 if actual != expected:
     raise SystemExit(f"error: tool checksum mismatch for {path}: expected {expected}, got {actual}")
 PY
@@ -193,6 +196,7 @@ ensure_gh_attestation() {
   if command -v gh >/dev/null 2>&1; then
     local existing_help
     if existing_help="$(gh attestation verify --help 2>&1)" \
+      && [[ "$existing_help" == *"--bundle"* ]] \
       && [[ "$existing_help" == *"--deny-self-hosted-runners"* ]] \
       && [[ "$existing_help" == *"--source-digest"* ]] \
       && [[ "$existing_help" == *"--signer-digest"* ]]; then
@@ -242,6 +246,7 @@ PY
   export PATH="${verification_tools_dir}:${PATH}"
   local pinned_help
   if ! pinned_help="$(gh attestation verify --help 2>&1)" \
+    || [[ "$pinned_help" != *"--bundle"* ]] \
     || [[ "$pinned_help" != *"--deny-self-hosted-runners"* ]] \
     || [[ "$pinned_help" != *"--source-digest"* ]] \
     || [[ "$pinned_help" != *"--signer-digest"* ]]; then
@@ -633,6 +638,7 @@ fi
 if [[ "$verify_attestation" == "true" ]]; then
   ensure_gh_attestation
   if ! gh_attestation_help="$(gh attestation verify --help 2>&1)" \
+    || [[ "$gh_attestation_help" != *"--bundle"* ]] \
     || [[ "$gh_attestation_help" != *"--deny-self-hosted-runners"* ]] \
     || [[ "$gh_attestation_help" != *"--source-digest"* ]] \
     || [[ "$gh_attestation_help" != *"--signer-digest"* ]]; then
@@ -641,18 +647,21 @@ if [[ "$verify_attestation" == "true" ]]; then
   fi
   gh attestation verify "$work_dir/$archive_name" \
     --repo sednalabs/codex \
+    --bundle "$work_dir/$attestation_bundle_name" \
     --deny-self-hosted-runners \
     --source-digest "$expected_source_commit" \
     --signer-digest "$expected_source_commit" \
     --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
   gh attestation verify "$work_dir/$sbom_name" \
     --repo sednalabs/codex \
+    --bundle "$work_dir/$attestation_bundle_name" \
     --deny-self-hosted-runners \
     --source-digest "$expected_source_commit" \
     --signer-digest "$expected_source_commit" \
     --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
   gh attestation verify "$work_dir/$metadata_name" \
     --repo sednalabs/codex \
+    --bundle "$work_dir/$attestation_bundle_name" \
     --deny-self-hosted-runners \
     --source-digest "$expected_source_commit" \
     --signer-digest "$expected_source_commit" \

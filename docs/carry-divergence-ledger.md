@@ -1920,8 +1920,9 @@ decisions.
   SPDX SBOMs, and GitHub build-provenance attestations; Apple Silicon remains unsupported.
 - Preview and release Cargo dependency/compiler caches use separate authority namespaces and
   exclude executable Cargo tool paths. Current x86 and all Arm64 installs default to exact-source
-  hardened verification, using checksum-pinned temporary verifier tools when compatible host tools
-  are absent. Immutable pre-cutoff x86-only releases without modern assets automatically preserve
+  hardened verification, using checksum-pinned temporary verifier tools and downloaded local
+  provenance bundles without updater-host GitHub authentication when compatible host tools are
+  absent. Immutable pre-cutoff x86-only releases without modern assets automatically preserve
   stale updater compatibility; the explicit historical-x86 escape hatch cannot downgrade current
   releases. A previously present release directory is activated only when it matches the freshly
   verified binaries, metadata, and checksum manifest byte-for-byte.
@@ -1936,6 +1937,7 @@ decisions.
   - `.github/workflows/sedna-release-install.yml`
   - `.github/workflows/sedna-branch-build.yml`
   - `.github/scripts/test_ci_planners.py`
+  - `codex-rs/app-server-daemon/src/update_loop.rs`
   - `scripts/install_sedna_release_asset`
   - `codex-rs/utils/version/build.rs`
   - `codex-rs/utils/version/src/lib.rs`

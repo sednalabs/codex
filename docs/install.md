@@ -10,7 +10,9 @@
 
 Current Linux assets default to keyless Cosign signature and GitHub build-attestation verification.
 When compatible host tools are absent, the installer downloads checksum-pinned Cosign and GitHub
-CLI binaries into its temporary verification directory; it does not install them globally. Arm64
+CLI binaries into its temporary verification directory; it does not install them globally. GitHub
+provenance verification uses the downloaded release bundle and does not require updater-host GitHub
+authentication. The checksum verifier remains compatible with the declared Python 3.10 runtime. Arm64
 has no legacy release mode. Immutable x86-only releases published before the 2026-08-16 trust
 cutoff and carrying no Arm64 or provenance assets retain their historical identity, checksum,
 archive-safety, and executable-startup path so already-shipped updater calls remain functional;

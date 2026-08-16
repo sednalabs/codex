@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -7225,6 +7226,8 @@ while [[ $# -gt 0 ]]; do
 done
 if [[ "$url" == */releases/tags/* ]]; then
   cp "$ASSET_FIXTURE_DIR/release.json" "$output"
+elif [[ "$url" == *sigstore/cosign/releases/download/* || "$url" == *cli/cli/releases/download/* ]]; then
+  printf 'untrusted verifier fixture' > "$output"
 else
   cp "$ASSET_FIXTURE_DIR/assets/${url##*/}" "$output"
 fi
@@ -7257,11 +7260,12 @@ fi
                         """#!/usr/bin/env bash
 set -euo pipefail
 if [[ ${1:-} == attestation && ${2:-} == verify && ${3:-} == --help ]]; then
-  echo '--deny-self-hosted-runners --source-digest --signer-digest'
+  echo '--bundle --deny-self-hosted-runners --source-digest --signer-digest'
   exit 0
 fi
 if [[ ${1:-} == attestation && ${2:-} == verify && ${3:-} != --help ]]; then
   deny_self_hosted=false
+  bundle=''
   source_digest=''
   signer_digest=''
   while [[ $# -gt 0 ]]; do
@@ -7269,6 +7273,9 @@ if [[ ${1:-} == attestation && ${2:-} == verify && ${3:-} != --help ]]; then
     if [[ "$arg" == --deny-self-hosted-runners ]]; then
       deny_self_hosted=true
       shift
+    elif [[ "$arg" == --bundle ]]; then
+      bundle="${2:-}"
+      shift 2
     elif [[ "$arg" == --source-digest ]]; then
       source_digest="${2:-}"
       shift 2
@@ -7279,7 +7286,7 @@ if [[ ${1:-} == attestation && ${2:-} == verify && ${3:-} != --help ]]; then
       shift
     fi
   done
-  if [[ "$deny_self_hosted" != true || "$source_digest" != "$EXPECTED_SOURCE_COMMIT" || "$signer_digest" != "$EXPECTED_SOURCE_COMMIT" ]]; then
+  if [[ "$deny_self_hosted" != true || ! -s "$bundle" || "$source_digest" != "$EXPECTED_SOURCE_COMMIT" || "$signer_digest" != "$EXPECTED_SOURCE_COMMIT" ]]; then
     exit 98
   fi
 fi
@@ -7321,6 +7328,11 @@ fi
                         encoding="utf-8",
                     )
                 helper.chmod(0o755)
+            if failure == "outdated_verifiers":
+                for name in ("cosign", "gh"):
+                    helper = fake_bin / name
+                    helper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+                    helper.chmod(0o755)
             fake_curl.chmod(0o755)
             fake_file.chmod(0o755)
             fake_uname.chmod(0o755)
@@ -7340,10 +7352,11 @@ fi
                 ),
                 "FAKE_UNAME_ARCH": arch,
                 "EXPECTED_SOURCE_COMMIT": target_commit,
-                "GITHUB_TOKEN": "fixture-token",
                 "HOME": str(root / "home"),
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
             }
+            env.pop("GH_TOKEN", None)
+            env.pop("GITHUB_TOKEN", None)
             verification_args = []
             if arch == "x86_64" and not hardened:
                 verification_args = ["--allow-historical-x86"]
@@ -7385,6 +7398,7 @@ fi
             "wrong_elf": "unexpected binary architecture",
             "wrong_source_commit": "does not match metadata target_commit",
             "existing_tampered": "does not match verified payload",
+            "outdated_verifiers": "tool checksum mismatch",
         }
         for failure, expected in cases.items():
             with self.subTest(failure=failure):
@@ -7430,6 +7444,77 @@ fi
             0,
             existing_matching_proc.stderr,
         )
+
+    def test_sedna_release_installer_python_elf_fallback(self) -> None:
+        installer = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
+            encoding="utf-8"
+        )
+        marker = (
+            'python3 - "$target" "$expected_elf_interpreter" '
+            '"$staged/codex" "$staged/codex-responses-api-proxy" <<\'PY\'\n'
+        )
+        fallback = installer.split(marker, 1)[1].split("\nPY", 1)[0]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def write_elf(path: Path, machine: int, interpreter: str) -> None:
+                encoded_interpreter = interpreter.encode() + b"\0"
+                data = bytearray(120 + len(encoded_interpreter))
+                data[:6] = b"\x7fELF\x02\x01"
+                struct.pack_into("<H", data, 18, machine)
+                struct.pack_into("<Q", data, 32, 64)
+                struct.pack_into("<H", data, 54, 56)
+                struct.pack_into("<H", data, 56, 1)
+                struct.pack_into("<I", data, 64, 3)
+                struct.pack_into("<Q", data, 72, 120)
+                struct.pack_into("<Q", data, 96, len(encoded_interpreter))
+                data[120:] = encoded_interpreter
+                path.write_bytes(data)
+
+            for target, machine, interpreter in (
+                (
+                    "x86_64-unknown-linux-gnu",
+                    62,
+                    "/lib64/ld-linux-x86-64.so.2",
+                ),
+                (
+                    "aarch64-unknown-linux-gnu",
+                    183,
+                    "/lib/ld-linux-aarch64.so.1",
+                ),
+            ):
+                with self.subTest(target=target):
+                    codex = root / f"codex-{machine}"
+                    proxy = root / f"proxy-{machine}"
+                    write_elf(codex, machine, interpreter)
+                    write_elf(proxy, machine, interpreter)
+                    proc = subprocess.run(
+                        [sys.executable, "-", target, interpreter, str(codex), str(proxy)],
+                        input=fallback,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            malformed = root / "malformed"
+            malformed.write_bytes(b"not-elf")
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-",
+                    "x86_64-unknown-linux-gnu",
+                    "/lib64/ld-linux-x86-64.so.2",
+                    str(malformed),
+                ],
+                input=fallback,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("not a little-endian ELF64", proc.stderr)
 
     def test_duplicate_workflow_finder_matches_same_branch_sha_success(self) -> None:
         runs = [
@@ -8167,6 +8252,9 @@ fi
         self.assertIn("UNNOTARIZED-PREVIEW", installer)
         self.assertIn("cosign verify-blob", installer)
         self.assertIn("gh attestation verify", installer)
+        self.assertEqual(
+            installer.count('--bundle "$work_dir/$attestation_bundle_name"'), 3
+        )
         self.assertIn("sigstore/cosign/releases/download/v3.1.3", installer)
         self.assertIn("cli/cli/releases/download/v2.97.0", installer)
         self.assertIn("verification_tools_dir", installer)
@@ -8174,6 +8262,7 @@ fi
         self.assertIn("2026, 8, 16", installer)
         self.assertIn("published_at", installer)
         self.assertIn('.decode(\n            "utf-8", errors="strict"\n        )', installer)
+        self.assertNotIn("hashlib.file_digest", installer)
         self.assertIn("--signer-workflow", installer)
         daemon_update_loop = (
             REPO_ROOT / "codex-rs/app-server-daemon/src/update_loop.rs"

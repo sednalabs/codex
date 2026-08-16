@@ -250,8 +250,10 @@ runner. It intentionally does not perform host-local installation from the publi
 - Current x86-64 releases fail closed into signature, provenance, hosted-runner, and exact-source
   verification by default, including clients that fetch the current installer without new flags.
   When compatible host tools are absent, the installer uses checksum-pinned Cosign and GitHub CLI
-  binaries in its temporary verification directory; it does not install tools globally. A pure
-  Python ELF parser is the fallback when `file` or `readelf` is absent.
+  binaries in its temporary verification directory; it does not install tools globally. GitHub
+  provenance checks use the downloaded local bundle, so updater hosts do not need GitHub
+  authentication. The streaming checksum verifier supports Python 3.10. A pure Python ELF parser is
+  the fallback when `file` or `readelf` is absent.
 - Immutable x86-only releases published before the 2026-08-16 trust-contract cutoff and carrying
   no Arm64 or provenance assets automatically retain the historical path for already-shipped
   updater calls. `--allow-historical-x86` is the explicit operator form of that same bounded mode
