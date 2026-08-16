@@ -6859,6 +6859,10 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertIn('"${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == \'true\'', results_run)
         self.assertIn("planner_fixtures failed", results_run)
         self.assertIn("installer_activation_macos failed", results_run)
+        self.assertIn(
+            "installer_activation_macos",
+            (jobs.get("results") or {}).get("needs") or [],
+        )
         self.assertIn("incremental_validation failed", results_run)
         no_relevant_gate = results_run.split("No relevant changes -> CI not required.")[0]
         self.assertIn("NEEDS_CHANGED_OUTPUTS_WORKFLOWS", no_relevant_gate)
@@ -6879,6 +6883,10 @@ class RustCiModeScriptTests(unittest.TestCase):
             step.get("run") or ""
             for step in macos_installer.get("steps") or []
             if step.get("name") == "Prove macOS activation and locking"
+        )
+        self.assertIn(
+            "HelperScriptTests.test_sedna_release_installer_uses_native_macos_target_detection",
+            macos_run,
         )
         self.assertIn(
             "HelperScriptTests.test_sedna_release_installer_serializes_activation",
@@ -7350,6 +7358,21 @@ class RustCiModeScriptTests(unittest.TestCase):
 
 
 class HelperScriptTests(unittest.TestCase):
+    @staticmethod
+    def terminate_installer_process_group(process: subprocess.Popen[str]) -> None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate(timeout=10)
+
     def run_sedna_installer_fixture(
         self,
         failure: str | None = None,
@@ -7357,6 +7380,7 @@ class HelperScriptTests(unittest.TestCase):
         arch: str = "x86_64",
         hardened: bool = True,
         dry_run: bool = True,
+        native_platform: bool = False,
         verify_visible_links: bool = False,
         verification_args_override: list[str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
@@ -7594,12 +7618,18 @@ fi
                     encoding="utf-8",
                 )
             fake_uname = fake_bin / "uname"
-            fake_uname.write_text(
-                "#!/usr/bin/env bash\n"
-                "if [[ ${1:-} == -s ]]; then echo \"${FAKE_UNAME_OS}\"; "
-                "else echo \"${FAKE_UNAME_ARCH}\"; fi\n",
-                encoding="utf-8",
-            )
+            if native_platform:
+                fake_uname.write_text(
+                    "#!/usr/bin/env bash\nexec /usr/bin/uname \"$@\"\n",
+                    encoding="utf-8",
+                )
+            else:
+                fake_uname.write_text(
+                    "#!/usr/bin/env bash\n"
+                    "if [[ ${1:-} == -s ]]; then echo \"${FAKE_UNAME_OS}\"; "
+                    "else echo \"${FAKE_UNAME_ARCH}\"; fi\n",
+                    encoding="utf-8",
+                )
             for name in ("codesign", "cosign", "gh", "readelf"):
                 helper = fake_bin / name
                 if failure == "legacy_x86" and name == "readelf":
@@ -7734,6 +7764,23 @@ fi
             }
             env.pop("GH_TOKEN", None)
             env.pop("GITHUB_TOKEN", None)
+            home = root / "home"
+            home.mkdir(exist_ok=True)
+            if failure == "install_root_parent_symlink":
+                external_codex_home = root / "external-codex-home"
+                external_codex_home.mkdir()
+                (home / ".codex").symlink_to(external_codex_home)
+            if failure == "bin_parent_symlink":
+                external_bin = root / "external-bin"
+                external_bin.mkdir()
+                (home / ".local").mkdir(parents=True)
+                (home / ".local" / "bin").symlink_to(external_bin)
+            if failure == "releases_parent_symlink":
+                external_releases = root / "external-releases"
+                external_releases.mkdir()
+                standalone = home / ".codex" / "packages" / "standalone"
+                standalone.mkdir(parents=True)
+                (standalone / "releases").symlink_to(external_releases)
             visible_bin = root / "home" / ".local" / "bin"
             previous_visible = {
                 "codex": "previous codex\n",
@@ -7846,6 +7893,7 @@ fi
             ]
             if failure in (
                 "stale_recovery_collision",
+                "stale_second_recovery_collision",
                 "stale_unmarked_predecessor",
                 "stale_unmarked_candidate",
                 "stale_saved_symlink",
@@ -7899,6 +7947,16 @@ fi
                 if failure == "stale_recovery_collision":
                     collision = backups / "codex.interrupted.fixture"
                     collision.mkdir(parents=True)
+                if failure == "stale_second_recovery_collision":
+                    (stale / "saved" / "codex-responses-api-proxy").write_text(
+                        previous_visible["codex-responses-api-proxy"],
+                        encoding="utf-8",
+                    )
+                    collision = (
+                        backups
+                        / "codex-responses-api-proxy.interrupted.fixture"
+                    )
+                    collision.mkdir(parents=True)
             if failure in (
                 "activation_lock_serialization",
                 "activation_locked_revalidation",
@@ -7922,20 +7980,33 @@ fi
                         stderr=subprocess.PIPE,
                         text=True,
                         env=env,
+                        start_new_session=True,
                     )
-                    deadline = time.monotonic() + 10
-                    while not marker.exists() and time.monotonic() < deadline:
-                        time.sleep(0.01)
-                    self.assertTrue(marker.exists(), "installer did not reach lock")
-                    self.assertIsNone(child.poll(), "installer bypassed activation lock")
-                    self.assertFalse(os.path.lexists(standalone / "current"))
-                    if failure == "activation_lock_parent_death":
-                        os.kill(child.pid, signal.SIGKILL)
-                        child.wait(timeout=10)
-                    if failure == "activation_locked_revalidation":
-                        expected_release_dir.mkdir(parents=True)
-                    test_fcntl.flock(held_lock, test_fcntl.LOCK_UN)
-                    stdout, stderr = child.communicate(timeout=30)
+                    child_completed = False
+                    lock_released = False
+                    try:
+                        deadline = time.monotonic() + 10
+                        while not marker.exists() and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        self.assertTrue(marker.exists(), "installer did not reach lock")
+                        self.assertIsNone(
+                            child.poll(), "installer bypassed activation lock"
+                        )
+                        self.assertFalse(os.path.lexists(standalone / "current"))
+                        if failure == "activation_lock_parent_death":
+                            os.kill(child.pid, signal.SIGKILL)
+                            child.wait(timeout=10)
+                        if failure == "activation_locked_revalidation":
+                            expected_release_dir.mkdir(parents=True)
+                        test_fcntl.flock(held_lock, test_fcntl.LOCK_UN)
+                        lock_released = True
+                        stdout, stderr = child.communicate(timeout=30)
+                        child_completed = True
+                    finally:
+                        if not lock_released:
+                            test_fcntl.flock(held_lock, test_fcntl.LOCK_UN)
+                        if not child_completed:
+                            self.terminate_installer_process_group(child)
                 if failure == "activation_lock_parent_death":
                     deadline = time.monotonic() + 10
                     acquired_after_parent_death = False
@@ -7999,25 +8070,30 @@ fi
                     stderr=subprocess.PIPE,
                     text=True,
                     env=first_env,
+                    start_new_session=True,
                 )
-                deadline = time.monotonic() + 20
-                while not marker.exists() and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                self.assertTrue(marker.exists(), "first installer did not pause")
-                second_marker = root / "second-installer-at-lock"
-                second_env = dict(env)
-                second_env["SEDNA_INSTALLER_TESTING"] = "1"
-                second_env["SEDNA_INSTALLER_TEST_LOCK_WAIT_MARKER"] = str(
-                    second_marker
-                )
-                second = subprocess.Popen(
-                    command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    env=second_env,
-                )
+                second = None
+                first_completed = False
+                second_completed = False
                 try:
+                    deadline = time.monotonic() + 20
+                    while not marker.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(marker.exists(), "first installer did not pause")
+                    second_marker = root / "second-installer-at-lock"
+                    second_env = dict(env)
+                    second_env["SEDNA_INSTALLER_TESTING"] = "1"
+                    second_env["SEDNA_INSTALLER_TEST_LOCK_WAIT_MARKER"] = str(
+                        second_marker
+                    )
+                    second = subprocess.Popen(
+                        command,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env=second_env,
+                        start_new_session=True,
+                    )
                     deadline = time.monotonic() + 20
                     while (
                         not second_marker.exists()
@@ -8033,8 +8109,20 @@ fi
                     )
                 finally:
                     release_pause.touch()
-                first_stdout, first_stderr = first.communicate(timeout=30)
-                second_stdout, second_stderr = second.communicate(timeout=30)
+                    try:
+                        first_stdout, first_stderr = first.communicate(timeout=30)
+                        first_completed = True
+                        if second is not None:
+                            second_stdout, second_stderr = second.communicate(
+                                timeout=30
+                            )
+                            second_completed = True
+                    finally:
+                        if not first_completed:
+                            self.terminate_installer_process_group(first)
+                        if second is not None and not second_completed:
+                            self.terminate_installer_process_group(second)
+                self.assertIsNotNone(second)
                 self.assertEqual(first.returncode, 0, first_stderr)
                 self.assertEqual(second.returncode, 0, second_stderr)
                 proc = subprocess.CompletedProcess(
@@ -8191,6 +8279,32 @@ fi
                     previous_visible["codex"],
                 )
                 self.assertTrue(collision.is_dir())
+            if failure == "stale_second_recovery_collision":
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(
+                    "refusing to overwrite recovered predecessor backup", proc.stderr
+                )
+                for executable, contents in previous_visible.items():
+                    self.assertEqual(
+                        (stale / "saved" / executable).read_text(encoding="utf-8"),
+                        contents,
+                    )
+                    self.assertFalse(
+                        (backups / f"{executable}.interrupted.fixture").is_file()
+                    )
+                collision.rmdir()
+                retry = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                self.assertEqual(retry.returncode, 0, retry.stderr)
+                for executable, contents in previous_visible.items():
+                    recovered = backups / f"{executable}.interrupted.fixture"
+                    self.assertEqual(recovered.read_text(encoding="utf-8"), contents)
+                proc = retry
             if failure == "stale_unmarked_predecessor":
                 self.assertNotEqual(proc.returncode, 0)
                 self.assertIn(
@@ -8265,6 +8379,15 @@ fi
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn(f"dry-run: verified sednalabs/codex@", proc.stdout)
                 self.assertIn(f"for {target}", proc.stdout)
+
+    @unittest.skipUnless(sys.platform == "darwin", "native macOS hosted proof")
+    def test_sedna_release_installer_uses_native_macos_target_detection(self) -> None:
+        proc = self.run_sedna_installer_fixture(
+            arch="darwin_x86_64",
+            native_platform=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("for x86_64-apple-darwin", proc.stdout)
 
     def test_sedna_release_installer_links_all_visible_executables(self) -> None:
         for arch in ("x86_64", "aarch64", "darwin_x86_64"):
@@ -8364,6 +8487,10 @@ fi
             dry_run=False,
         )
         self.run_sedna_installer_fixture(
+            "stale_second_recovery_collision",
+            dry_run=False,
+        )
+        self.run_sedna_installer_fixture(
             "stale_unmarked_predecessor",
             dry_run=False,
         )
@@ -8393,11 +8520,22 @@ fi
             "existing_proxy_tampered": "does not match verified payload",
             "existing_release_symlink": "release path must not be a symlink",
             "existing_executable_symlink": "unsafe or missing verified file",
+            "install_root_parent_symlink": "unsafe installer custody directory",
+            "bin_parent_symlink": "unsafe installer custody directory",
+            "releases_parent_symlink": "unsafe installer custody directory",
             "outdated_verifiers": "tool checksum mismatch",
         }
         for failure, expected in cases.items():
             with self.subTest(failure=failure):
-                proc = self.run_sedna_installer_fixture(failure)
+                proc = self.run_sedna_installer_fixture(
+                    failure,
+                    dry_run=failure
+                    not in {
+                        "install_root_parent_symlink",
+                        "bin_parent_symlink",
+                        "releases_parent_symlink",
+                    },
+                )
                 self.assertNotEqual(proc.returncode, 0)
                 self.assertIn(expected, proc.stderr)
 

@@ -1939,12 +1939,17 @@ decisions.
   completes any first-time links that were not yet published. A portable host-local activation lock uses
   the already-required Python runtime's real `fcntl.flock` on Linux and macOS to serialize concurrent
   installers before install-root publication, predecessor discovery, and rollback authority are captured. The
-  lock holder exits when its installer parent dies, and the hosted Intel macOS activation lane exercises the
-  same locking and activation contract rather than only simulating Darwin on Linux. Existing
+  lock holder exits when its installer parent dies. The hosted Intel macOS activation lane exercises native
+  target selection plus macOS kernel, process, and `fcntl` semantics; download and verifier calls remain
+  hermetic fixtures and do not substitute for release-level native verifier proof. Existing
   release directories and their verified files cannot be symlinks and are byte-revalidated after the lock.
-  Predecessor copies publish into the recoverable transaction only after a complete temporary copy. After
+  Every installer-owned directory component below `HOME` must be a real directory, so a symlinked
+  `.codex`, `.local`, install root, releases root, or stable bin directory cannot redirect publication.
+  The activation helper remains compatible with Python 3.9. Predecessor copies publish into the
+  recoverable transaction only after a complete temporary copy. After
   an uncatchable interruption, the next lock holder discards partial copy candidates, archives complete
-  predecessor copies from a format-marked transaction, and only then removes it. An older or malformed
+  predecessor copies from a format-marked transaction after preflighting every recovery destination, and
+  only then removes it. An older or malformed
   unmarked transaction containing saved or candidate custody data and any backup-path collision fail closed while retaining
   the still-present transaction copy. Stale `saved`, `candidate`, and live `backups` custody directories
   must be real directories rather than symlinks; rollback restoration uses unpredictable private temporary

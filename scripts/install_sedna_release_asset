@@ -805,7 +805,33 @@ if [[ "$dry_run" == "true" ]]; then
   exit 0
 fi
 
-mkdir -p "${install_root}/releases" "$bin_dir"
+python3 - "$HOME" "$install_root" "${install_root}/releases" "$bin_dir" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+home = Path(sys.argv[1])
+if home.is_symlink() or not home.is_dir():
+    raise SystemExit(f"error: refusing unsafe HOME custody directory: {home}")
+for target_arg in sys.argv[2:]:
+    target = Path(target_arg)
+    try:
+        relative = target.relative_to(home)
+    except ValueError as error:
+        raise SystemExit(
+            f"error: installer custody path is outside HOME: {target}"
+        ) from error
+    current = home
+    for component in relative.parts:
+        current /= component
+        if os.path.lexists(current):
+            if current.is_symlink() or not current.is_dir():
+                raise SystemExit(
+                    f"error: refusing unsafe installer custody directory: {current}"
+                )
+        else:
+            current.mkdir(mode=0o700)
+PY
 acquire_activation_lock
 validate_existing_release
 
@@ -829,6 +855,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Optional
 
 install_root, bin_dir, release_dir = map(Path, sys.argv[1:4])
 current = install_root / "current"
@@ -919,6 +946,7 @@ for stale_transaction in sorted(install_root.glob(".activation.*")):
             f"refusing unmarked stale transaction with custody data: "
             f"{stale_transaction}"
         )
+    recovery_plan = []
     if stale_saved.exists():
         backups = install_root / "backups"
         ensure_real_directory(backups)
@@ -938,6 +966,8 @@ for stale_transaction in sorted(install_root.glob(".activation.*")):
                 raise RuntimeError(
                     f"refusing to overwrite recovered predecessor backup: {recovered}"
                 )
+            recovery_plan.append((saved, recovered))
+        for saved, recovered in recovery_plan:
             os.replace(saved, recovered)
             print(f"recovered interrupted {saved.name} predecessor backup")
     shutil.rmtree(stale_transaction)
@@ -958,9 +988,9 @@ replaced_entries: list[str] = []
 current_swapped = False
 activation_succeeded = False
 rollback_succeeded = False
-interrupted_signal: int | None = None
+interrupted_signal: Optional[int] = None
 
-def inject_test_fault(stage: str, path: Path | None = None) -> None:
+def inject_test_fault(stage: str, path: Optional[Path] = None) -> None:
     if test_fault == f"raise:{stage}":
         raise RuntimeError(f"injected installer test failure at {stage}")
     if test_fault == f"sigterm:{stage}":
