@@ -17,6 +17,7 @@ on:
         type: choice
         options:
           - linux-x86_64
+          - linux-aarch64
           - macos
 
 concurrency:
@@ -69,7 +70,7 @@ jobs:
             echo "artifact_name=sedna-branch-${branch_slug}-${short_sha}"
           } >> "$GITHUB_OUTPUT"
 
-  build:
+  build-linux-x86_64:
     needs: metadata
     if: ${{ inputs.platform == 'linux-x86_64' }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
@@ -77,12 +78,19 @@ jobs:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       summary_title: Branch build
       release_version: ${{ needs.metadata.outputs.preview_version }}
-      artifact_name: ${{ needs.metadata.outputs.artifact_name }}
+      target: x86_64-unknown-linux-gnu
+      artifact_name: ${{ needs.metadata.outputs.artifact_name }}-x86_64-unknown-linux-gnu
       artifact_path: dist/*
       display_ref: ${{ needs.metadata.outputs.display_ref }}
       run_command: |
-        mkdir -p ../dist
+        source_status="$(git status --porcelain --untracked-files=normal)"
+        if [[ -n "${source_status}" ]]; then
+          echo "Refusing to build a preview from a dirty source tree." >&2
+          printf '%s\n' "${source_status}" >&2
+          exit 1
+        fi
         cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
+        mkdir -p ../dist
 
         stage_dir="${RUNNER_TEMP}/sedna-branch/x86_64-unknown-linux-gnu"
         file_version="${CODEX_RELEASE_VERSION//+/__}"
@@ -93,6 +101,19 @@ jobs:
 
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
+
+        file "${stage_dir}/codex" | grep -F 'x86-64'
+        readelf -l "${stage_dir}/codex" | grep -F '/lib64/ld-linux-x86-64.so.2'
+        version_output="$("${stage_dir}/codex" --version)"
+        printf '%s\n' "${version_output}"
+        if [[ "${version_output}" == *-dirty* ]]; then
+          echo "Preview binary unexpectedly contains dirty git provenance." >&2
+          exit 1
+        fi
+        "${stage_dir}/codex" --help >/dev/null
+        "${stage_dir}/codex" exec --help >/dev/null
+        "${stage_dir}/codex" app-server --help >/dev/null
+        "${stage_dir}/codex-responses-api-proxy" --help >/dev/null
 
         tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
 
@@ -107,6 +128,75 @@ jobs:
             "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
             "ref": os.environ["DISPLAY_REF"],
             "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
+            "workflow": (
+                f'{os.environ["GITHUB_SERVER_URL"]}/'
+                f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+            ),
+        }
+        json.dump(payload, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        PY
+
+  build-linux-aarch64:
+    needs: metadata
+    if: ${{ inputs.platform == 'linux-aarch64' }}
+    uses: ./.github/workflows/_sedna-linux-rust.yml
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      runner: ubuntu-24.04-arm
+      target: aarch64-unknown-linux-gnu
+      summary_title: Branch build
+      release_version: ${{ needs.metadata.outputs.preview_version }}
+      artifact_name: ${{ needs.metadata.outputs.artifact_name }}-aarch64-unknown-linux-gnu
+      artifact_path: dist/*
+      display_ref: ${{ needs.metadata.outputs.display_ref }}
+      run_command: |
+        source_status="$(git status --porcelain --untracked-files=normal)"
+        if [[ -n "${source_status}" ]]; then
+          echo "Refusing to build a preview from a dirty source tree." >&2
+          printf '%s\n' "${source_status}" >&2
+          exit 1
+        fi
+        cargo build --locked --target aarch64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
+        mkdir -p ../dist
+
+        stage_dir="${RUNNER_TEMP}/sedna-branch/aarch64-unknown-linux-gnu"
+        file_version="${CODEX_RELEASE_VERSION//+/__}"
+        archive_base="codex-sedna-preview-${file_version}-aarch64-unknown-linux-gnu"
+
+        rm -rf "${stage_dir}"
+        mkdir -p "${stage_dir}"
+
+        install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
+        install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
+
+        file "${stage_dir}/codex" | grep -F 'ARM aarch64'
+        readelf -l "${stage_dir}/codex" | grep -F '/lib/ld-linux-aarch64.so.1'
+        version_output="$("${stage_dir}/codex" --version)"
+        printf '%s\n' "${version_output}"
+        if [[ "${version_output}" == *-dirty* ]]; then
+          echo "Preview binary unexpectedly contains dirty git provenance." >&2
+          exit 1
+        fi
+        "${stage_dir}/codex" --help >/dev/null
+        "${stage_dir}/codex" exec --help >/dev/null
+        "${stage_dir}/codex" app-server --help >/dev/null
+        "${stage_dir}/codex-responses-api-proxy" --help >/dev/null
+
+        tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
+
+        python3 - <<'PY' > "../dist/${archive_base}.json"
+        import json
+        import os
+        import subprocess
+        import sys
+
+        payload = {
+            "repository": os.environ["GITHUB_REPOSITORY"],
+            "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+            "ref": os.environ["DISPLAY_REF"],
+            "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
+            "target": "aarch64-unknown-linux-gnu",
             "workflow": (
                 f'{os.environ["GITHUB_SERVER_URL"]}/'
                 f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
@@ -166,14 +256,13 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-preview-cargo-home-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
           restore-keys: |
-            cargo-home-macos-15-intel-x86_64-apple-darwin-release-
+            sedna-preview-cargo-home-macos-15-intel-x86_64-apple-darwin-
 
       - name: Install sccache
         uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
@@ -203,11 +292,10 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-preview-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
           restore-keys: |
-            sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
-            sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-
-            sccache-macos-15-intel-x86_64-apple-darwin-release-
+            sedna-preview-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sedna-preview-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-
 
       - name: Configure rusty_v8 artifact overrides and verify checksums
         uses: ./.github/actions/setup-rusty-v8
@@ -318,12 +406,11 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-preview-cargo-home-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache
         if: ${{ always() && !cancelled() && steps.build_macos.outcome == 'success' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' }}
@@ -331,4 +418,4 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-preview-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}

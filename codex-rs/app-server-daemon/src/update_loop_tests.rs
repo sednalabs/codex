@@ -8,6 +8,8 @@ use super::InstallerResponse;
 use super::SEDNA_STANDALONE_INSTALLER_URL;
 use super::fetch_installer_script;
 use super::fetch_installer_script_from_url;
+#[cfg(unix)]
+use super::install_latest_sedna_standalone;
 use super::update_modes_for_identities;
 use crate::RestartMode;
 use crate::UpdaterRefreshMode;
@@ -75,6 +77,31 @@ async fn sedna_installer_fetch_uses_exact_url_and_preserves_bytes() {
             .expect("Sedna installer fetch should succeed"),
         script
     );
+    assert_eq!(
+        http.requested_urls(),
+        vec![SEDNA_STANDALONE_INSTALLER_URL.to_string()]
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn sedna_updater_executes_stale_client_argument_contract() {
+    let script = br#"#!/usr/bin/env bash
+set -euo pipefail
+expected=(--repository sednalabs/codex --release-tag latest --allow-prerelease)
+[[ "$#" -eq "${#expected[@]}" ]]
+for expected_arg in "${expected[@]}"; do
+  [[ "$1" == "$expected_arg" ]]
+  shift
+done
+printf 'fixture updater diagnostic\n' >&2
+"#
+    .to_vec();
+    let http = FakeInstallerHttp::new(InstallerResponse::Success(script));
+
+    install_latest_sedna_standalone(&http)
+        .await
+        .expect("Sedna updater should execute the legacy argument contract");
     assert_eq!(
         http.requested_urls(),
         vec![SEDNA_STANDALONE_INSTALLER_URL.to_string()]

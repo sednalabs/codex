@@ -2,13 +2,26 @@
 
 ### System requirements
 
-| Requirement                 | Details                                               |
-| --------------------------- | ----------------------------------------------------- |
-| Operating systems           | Linux `x86_64` (Ubuntu 20.04+/Debian 10+ recommended) |
-| Git (optional, recommended) | 2.23+ for built-in PR helpers                         |
-| RAM                         | 4-GB minimum (8-GB recommended)                       |
+| Requirement                 | Details                                                              |
+| --------------------------- | -------------------------------------------------------------------- |
+| Operating systems           | Linux `x86_64` or Arm64 GNU (Ubuntu 24.04+ recommended); Intel macOS |
+| Git (optional, recommended) | 2.23+ for built-in PR helpers                                        |
+| RAM                         | 4-GB minimum (8-GB recommended)                                      |
 
-The supported downstream install and release target is Linux `x86_64` only at the moment. Other upstream platform paths remain in the repository for future re-enablement, but Sedna does not currently publish or validate them as supported targets.
+Current Linux assets default to keyless Cosign signature and GitHub build-attestation verification.
+When compatible host tools are absent, the installer downloads checksum-pinned Cosign and GitHub
+CLI binaries into its temporary verification directory; it does not install them globally. GitHub
+provenance verification uses the downloaded release bundle and does not require updater-host GitHub
+authentication. Current x86 and Arm64 always enforce both trust layers, even when a caller supplies
+only one positive verification flag. The checksum verifier remains compatible with the declared Python 3.10 runtime. Arm64
+has no legacy release mode. Immutable x86-only releases published before the 2026-08-16 trust
+cutoff and carrying no Arm64 or provenance assets retain their historical identity, checksum,
+archive-safety, and executable-startup path so already-shipped updater calls remain functional;
+the explicit `--allow-historical-x86` flag cannot downgrade a current release. Linux distributions
+older than the Ubuntu 24.04 hosted verification environment are not part of the release
+compatibility proof.
+
+The supported downstream Linux install and release targets are `x86_64` and Arm64 GNU. Intel macOS `x86_64` is also supported by the release contract. Other upstream platform paths remain in the repository for future re-enablement, but Sedna does not currently publish or validate them as supported targets.
 
 ### DotSlash
 

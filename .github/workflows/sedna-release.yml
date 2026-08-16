@@ -2,7 +2,6 @@ name: sedna-release
 run-name: >-
   ${{
     github.event_name == 'workflow_dispatch' && 'manual release request' ||
-    github.ref_type == 'tag' && format('tag release {0}', github.ref_name) ||
     'main release gate'
   }}
 
@@ -10,8 +9,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*-sedna.*"
   workflow_dispatch:
     inputs:
       target_sha:
@@ -87,14 +84,14 @@ jobs:
           }
 
           if [[ "${EVENT_NAME}" != "push" ]]; then
+            if [[ "${EVENT_NAME}" == "workflow_dispatch" && "${EVENT_REF}" != "refs/heads/main" ]]; then
+              echo "Manual releases must be dispatched from the protected main branch; got ${EVENT_REF}." >&2
+              exit 1
+            fi
             emit true "${EVENT_NAME}" "${EVENT_SHA}" ""
             exit 0
           fi
 
-          if [[ "${EVENT_REF}" == refs/tags/* ]]; then
-            emit true tag "${EVENT_SHA}" ""
-            exit 0
-          fi
           if [[ "${EVENT_REF}" != "refs/heads/main" ]]; then
             emit false unsupported_ref "" ""
             exit 0
@@ -154,9 +151,6 @@ jobs:
               ;;
             workflow_dispatch)
               reason_label="manual dispatch"
-              ;;
-            tag)
-              reason_label="release tag"
               ;;
             *)
               reason_label="${ROUTE_REASON:-unknown}"
@@ -239,6 +233,7 @@ jobs:
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
           INPUT_DRAFT: ${{ inputs.draft }}
           INPUT_MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
+          HOST_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -252,7 +247,11 @@ jobs:
           )
 
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            target_sha="${INPUT_TARGET_SHA:-${GITHUB_SHA}}"
+            target_sha="${INPUT_TARGET_SHA:-${HOST_SHA}}"
+            if [[ "${target_sha}" != "${HOST_SHA}" ]]; then
+              echo "Manual release target_sha must equal the exact workflow host SHA ${HOST_SHA}; got ${target_sha}." >&2
+              exit 1
+            fi
             args+=(--target-sha "${target_sha}" --channel "${INPUT_CHANNEL}")
             if [[ -n "${INPUT_RELEASE_TAG}" ]]; then
               args+=(--release-tag "${INPUT_RELEASE_TAG}")
@@ -337,22 +336,39 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
   release-linux:
-    name: Build Linux release artifacts
+    name: Build Linux release artifacts (${{ matrix.target }})
     needs: resolve
     if: ${{ needs.resolve.outputs.release_requested == 'true' && needs.resolve.outputs.release_build_required == 'true' }}
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            artifact_name: sedna-release-linux-x86_64-unknown-linux-gnu
+            checksum_name: SHA256SUMS.txt
+            metadata_json_name: RELEASE-METADATA.json
+            metadata_text_name: RELEASE-METADATA.txt
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact_name: sedna-release-linux-aarch64-unknown-linux-gnu
+            checksum_name: SHA256SUMS-aarch64-unknown-linux-gnu.txt
+            metadata_json_name: RELEASE-METADATA-aarch64-unknown-linux-gnu.json
+            metadata_text_name: RELEASE-METADATA-aarch64-unknown-linux-gnu.txt
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     concurrency:
-      group: ${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}
+      group: ${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}-${{ matrix.target }}
       cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
+      attestations: write
     env:
       CARGO_INCREMENTAL: "0"
       SCCACHE_CACHE_SIZE: 2G
       SCCACHE_IDLE_TIMEOUT: "0"
-      TARGET: x86_64-unknown-linux-gnu
+      TARGET: ${{ matrix.target }}
 
     steps:
       - name: Check for existing release
@@ -405,12 +421,11 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-release-cargo-home-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Install sccache
         uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
@@ -439,10 +454,10 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-release-sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
           restore-keys: |
-            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
-            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-
+            sedna-release-sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sedna-release-sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-
 
       - name: Build release binaries
         id: build_release
@@ -499,12 +514,11 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-release-cargo-home-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
         if: ${{ always() && !cancelled() && steps.build_release.outcome == 'success' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
@@ -512,7 +526,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-release-sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
       - name: sccache stats
         if: ${{ always() && steps.sccache_backend.outputs.backend != 'off' }}
@@ -557,11 +571,14 @@ jobs:
           UPSTREAM_TRACK: ${{ needs.resolve.outputs.upstream_track }}
           VERSION_DISPLAY: ${{ needs.resolve.outputs.version_display }}
           VERSION_POLICY: ${{ needs.resolve.outputs.version_policy }}
+          CHECKSUM_NAME: ${{ matrix.checksum_name }}
+          METADATA_JSON_NAME: ${{ matrix.metadata_json_name }}
+          METADATA_TEXT_NAME: ${{ matrix.metadata_text_name }}
         run: |
           set -euo pipefail
 
           dist_dir="${GITHUB_WORKSPACE}/dist"
-          stage_dir="${RUNNER_TEMP}/sedna-release/${TARGET}"
+          stage_dir="${GITHUB_WORKSPACE}/codex-rs/stage/${TARGET}"
           archive_base="codex-sedna-${RELEASE_VERSION}-${TARGET}"
 
           rm -rf "${stage_dir}"
@@ -574,8 +591,9 @@ jobs:
           cp "target/${TARGET}/release/codex-responses-api-proxy.sigstore" "${dist_dir}/${archive_base}-codex-responses-api-proxy.sigstore"
 
           tar -C "${stage_dir}" -czf "${dist_dir}/${archive_base}.tar.gz" .
+          install -m 0644 Cargo.toml Cargo.lock "${stage_dir}/"
 
-          cat > "${dist_dir}/RELEASE-METADATA.txt" <<EOF
+          cat > "${dist_dir}/${METADATA_TEXT_NAME}" <<EOF
           release_tag=${RELEASE_TAG}
           release_version=${RELEASE_VERSION}
           version_policy=${VERSION_POLICY}
@@ -596,7 +614,7 @@ jobs:
           git_describe=$(git describe --tags --always)
           EOF
 
-          python3 - <<'PY' > "${dist_dir}/RELEASE-METADATA.json"
+          python3 - <<'PY' > "${dist_dir}/${METADATA_JSON_NAME}"
           import json
           import os
 
@@ -627,15 +645,47 @@ jobs:
           os.sys.stdout.write("\n")
           PY
 
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: codex-rs/stage/${{ matrix.target }}
+          format: spdx-json
+          output-file: ${{ github.workspace }}/dist/codex-sedna-${{ needs.resolve.outputs.release_version }}-${{ matrix.target }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+
+      - name: Attest Linux archive and SBOM provenance
+        id: attest_linux
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            ${{ github.workspace }}/dist/codex-sedna-${{ needs.resolve.outputs.release_version }}-${{ matrix.target }}.tar.gz
+            ${{ github.workspace }}/dist/codex-sedna-${{ needs.resolve.outputs.release_version }}-${{ matrix.target }}.spdx.json
+            ${{ github.workspace }}/dist/${{ matrix.metadata_json_name }}
+            ${{ github.workspace }}/dist/${{ matrix.metadata_text_name }}
+
+      - name: Stage provenance bundle and checksums
+        shell: bash
+        env:
+          ARCHIVE_BASE: codex-sedna-${{ needs.resolve.outputs.release_version }}-${{ matrix.target }}
+          ATTESTATION_BUNDLE: ${{ steps.attest_linux.outputs.bundle-path }}
+          CHECKSUM_NAME: ${{ matrix.checksum_name }}
+          DIST_DIR: ${{ github.workspace }}/dist
+        run: |
+          set -euo pipefail
+          cp "${ATTESTATION_BUNDLE}" "${DIST_DIR}/${ARCHIVE_BASE}.intoto.jsonl"
           (
-            cd "${dist_dir}"
-            sha256sum ./* > SHA256SUMS.txt
+            cd "${DIST_DIR}"
+            find . -maxdepth 1 -type f ! -name "${CHECKSUM_NAME}" -printf '%f\0' \
+              | sort -z \
+              | xargs -0 sha256sum > "${CHECKSUM_NAME}"
           )
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: sedna-release-linux
+          name: ${{ matrix.artifact_name }}
           path: ${{ github.workspace }}/dist/*
           retention-days: 3
 
@@ -761,14 +811,13 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-release-cargo-home-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
           restore-keys: |
-            cargo-home-macos-15-intel-x86_64-apple-darwin-release-
+            sedna-release-cargo-home-macos-15-intel-x86_64-apple-darwin-
 
       - name: Install sccache
         uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
@@ -798,11 +847,11 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-release-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
           restore-keys: |
-            sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
-            sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-
-            sccache-macos-15-intel-x86_64-apple-darwin-release-
+            sedna-release-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sedna-release-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-
+            sedna-release-sccache-macos-15-intel-x86_64-apple-darwin-
 
       - name: Configure rusty_v8 artifact overrides and verify checksums
         uses: ./.github/actions/setup-rusty-v8
@@ -858,12 +907,11 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-release-cargo-home-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache
         if: ${{ always() && !cancelled() && steps.build_macos_release.outcome == 'success' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' }}
@@ -871,7 +919,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-release-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
   release-macos-preview-package:
     name: Package Intel macOS prerelease preview
@@ -1362,10 +1410,16 @@ jobs:
     permissions:
       actions: read
     steps:
-      - name: Download Linux release artifacts
+      - name: Download Linux x86-64 release artifacts
         uses: actions/download-artifact@v8
         with:
-          name: sedna-release-linux
+          name: sedna-release-linux-x86_64-unknown-linux-gnu
+          path: dist
+
+      - name: Download Linux Arm64 release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: sedna-release-linux-aarch64-unknown-linux-gnu
           path: dist
 
       - name: Download Intel macOS release artifacts
@@ -1479,10 +1533,11 @@ jobs:
 
           gh workflow run sedna-release-install.yml \
             --repo "${GH_REPO}" \
-            --ref main \
+            --ref "${RELEASE_TAG}" \
             -f "release_tag=${RELEASE_TAG}" \
             -f "dry_run=true" \
             -f "allow_prerelease=${RELEASE_PRERELEASE}" \
+            -f "require_linux_arm64=true" \
             -f "macos_release_mode=${MACOS_RELEASE_MODE}"
 
       - name: Summarize release decision

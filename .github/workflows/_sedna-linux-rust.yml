@@ -11,6 +11,14 @@ on:
         required: false
         type: number
         default: 1
+      runner:
+        required: false
+        type: string
+        default: ubuntu-24.04
+      target:
+        required: false
+        type: string
+        default: x86_64-unknown-linux-gnu
       summary_title:
         required: true
         type: string
@@ -80,7 +88,7 @@ permissions:
 jobs:
   run:
     name: ${{ inputs.summary_title }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: "0"
@@ -100,6 +108,10 @@ jobs:
           fetch-depth: 1
           ref: ${{ github.sha }}
           path: .workflow-src
+
+      - name: Isolate workflow-owned paths from source provenance
+        shell: bash
+        run: bash ../.workflow-src/.github/scripts/isolate_workflow_paths_from_provenance.sh "${GITHUB_WORKSPACE}"
 
       - name: Reclaim runner disk headroom
         if: ${{ runner.os == 'Linux' }}
@@ -203,7 +215,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95.0
         if: ${{ inputs.setup_class != 'light' }}
         with:
-          targets: x86_64-unknown-linux-gnu
+          targets: ${{ inputs.target }}
 
       - name: Compute lockfile hash
         if: ${{ inputs.setup_class != 'light' }}
@@ -220,12 +232,11 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-preview-cargo-home-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Install sccache
         if: ${{ inputs.setup_class != 'light' }}
@@ -250,10 +261,10 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-preview-sccache-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
           restore-keys: |
-            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
-            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-
+            sedna-preview-sccache-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sedna-preview-sccache-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-
 
       - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
         if: ${{ inputs.setup_class != 'light' && inputs.install_nextest }}
@@ -484,12 +495,11 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/.rusty_v8/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: sedna-preview-cargo-home-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
         if: ${{ always() && !cancelled() && inputs.setup_class != 'light' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
@@ -497,7 +507,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sedna-preview-sccache-linux-rust-${{ inputs.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
       - name: sccache stats
         if: ${{ always() && inputs.setup_class != 'light' && steps.sccache_backend.outputs.backend != 'off' }}

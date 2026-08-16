@@ -17,6 +17,11 @@ on:
         required: false
         default: false
         type: boolean
+      require_linux_arm64:
+        description: Require and verify the Linux Arm64 asset set; disable only for historical x86-only releases
+        required: false
+        default: true
+        type: boolean
       macos_release_mode:
         description: Intel macOS asset kind expected on the release
         required: true
@@ -29,6 +34,7 @@ on:
 
 permissions:
   contents: read
+  attestations: read
 
 concurrency:
   group: sedna-release-install
@@ -42,14 +48,52 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
+      - name: Require exact release-tag workflow ref
+        shell: bash
+        env:
+          EVENT_REF: ${{ github.ref }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          expected_ref="refs/tags/${RELEASE_TAG}"
+          if [[ "${EVENT_REF}" != "${expected_ref}" ]]; then
+            echo "Release verification must run from ${expected_ref}; workflow ref is ${EVENT_REF}."
+            exit 1
+          fi
+
+      - name: Validate x86-only compatibility request
+        if: ${{ !inputs.require_linux_arm64 }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          asset_names="${RUNNER_TEMP}/sedna-release-asset-names.txt"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            --jq '.assets[].name' > "${asset_names}"
+          arm_asset="$(grep -- '-aarch64-unknown-linux-gnu' "${asset_names}" || true)"
+          if [[ -n "${arm_asset}" ]]; then
+            echo "require_linux_arm64=false is only valid for historical releases without Arm64 assets; found ${arm_asset}."
+            exit 1
+          fi
+
       - name: Build verification matrix
         id: matrix
         shell: bash
         env:
           MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
+          REQUIRE_LINUX_ARM64: ${{ inputs.require_linux_arm64 }}
         run: |
           set -euo pipefail
           matrix='[{"platform":"Linux x64","runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}]'
+          if [[ "${REQUIRE_LINUX_ARM64}" == "true" ]]; then
+            matrix="$(
+              jq -cn \
+                --argjson linux "${matrix}" \
+                '$linux + [{"platform":"Linux Arm64","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"}]'
+            )"
+          fi
           if [[ "${MACOS_RELEASE_MODE}" != "off" ]]; then
             matrix="$(
               jq -cn \
@@ -109,6 +153,10 @@ jobs:
             echo "allow_prerelease=${allow_prerelease}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Install Cosign
+        if: ${{ runner.os == 'Linux' && inputs.require_linux_arm64 }}
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+
       - name: Verify release assets
         shell: bash
         env:
@@ -117,6 +165,8 @@ jobs:
           DRY_RUN: ${{ steps.request.outputs.dry_run }}
           ALLOW_PRERELEASE: ${{ steps.request.outputs.allow_prerelease }}
           MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
+          REQUIRE_LINUX_ARM64: ${{ inputs.require_linux_arm64 }}
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
 
@@ -130,11 +180,24 @@ jobs:
             macos_preview_arg+=(--macos-preview)
           fi
 
+          attestation_arg=()
+          if [[ "${REQUIRE_LINUX_ARM64}" == "true" && "${TARGET}" == *-unknown-linux-gnu ]]; then
+            attestation_arg+=(--verify-signatures)
+            attestation_arg+=(--verify-attestation)
+          fi
+
+          historical_x86_arg=()
+          if [[ "${REQUIRE_LINUX_ARM64}" != "true" && "${TARGET}" == "x86_64-unknown-linux-gnu" ]]; then
+            historical_x86_arg+=(--allow-historical-x86)
+          fi
+
           scripts/install_sedna_release_asset \
             --repository "${GITHUB_REPOSITORY}" \
             --release-tag "${RELEASE_TAG}" \
             --dry-run \
             "${allow_prerelease_arg[@]}" \
+            "${attestation_arg[@]}" \
+            "${historical_x86_arg[@]}" \
             "${macos_preview_arg[@]}"
 
       - name: Summarize
