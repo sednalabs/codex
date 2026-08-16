@@ -2163,6 +2163,8 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="ci-planner-output-") as tmpdir:
             output_path = Path(tmpdir) / "github-output.txt"
             output_path.write_text("", encoding="utf-8")
+            installer_tmp = root / "tmp"
+            installer_tmp.mkdir()
             env = {
                 **os.environ,
                 "GITHUB_EVENT_NAME": event_name,
@@ -6853,8 +6855,10 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertIn("needs.matrix_plan.result", results_run)
         self.assertIn("matrix_plan failed", results_run)
         self.assertIn("needs.planner_fixtures.result", results_run)
+        self.assertIn("needs.installer_activation_macos.result", results_run)
         self.assertIn('"${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == \'true\'', results_run)
         self.assertIn("planner_fixtures failed", results_run)
+        self.assertIn("installer_activation_macos failed", results_run)
         self.assertIn("incremental_validation failed", results_run)
         no_relevant_gate = results_run.split("No relevant changes -> CI not required.")[0]
         self.assertIn("NEEDS_CHANGED_OUTPUTS_WORKFLOWS", no_relevant_gate)
@@ -6862,6 +6866,27 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertNotIn(
             'NEEDS_CHANGED_OUTPUTS_CODEX}" == \'true\' || "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == \'true\'',
             results_run,
+        )
+
+        macos_installer = jobs.get("installer_activation_macos") or {}
+        self.assertEqual(macos_installer.get("runs-on"), "macos-15-intel")
+        self.assertEqual(macos_installer.get("needs"), "changed")
+        self.assertEqual(
+            macos_installer.get("if"),
+            "${{ needs.changed.outputs.workflows == 'true' }}",
+        )
+        macos_run = next(
+            step.get("run") or ""
+            for step in macos_installer.get("steps") or []
+            if step.get("name") == "Prove macOS activation and locking"
+        )
+        self.assertIn(
+            "HelperScriptTests.test_sedna_release_installer_serializes_activation",
+            macos_run,
+        )
+        self.assertIn(
+            "HelperScriptTests.test_sedna_release_installer_revalidates_after_lock",
+            macos_run,
         )
 
         argpkg_job = jobs.get("argument_comment_lint_package") or {}
@@ -7681,6 +7706,8 @@ fi
             fake_file.chmod(0o755)
             fake_uname.chmod(0o755)
 
+            installer_tmp = root / "tmp"
+            installer_tmp.mkdir()
             env = {
                 **os.environ,
                 "ASSET_FIXTURE_DIR": str(root),
@@ -7703,6 +7730,7 @@ fi
                 "EXPECTED_SOURCE_COMMIT": target_commit,
                 "HOME": str(root / "home"),
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "TMPDIR": str(installer_tmp),
             }
             env.pop("GH_TOKEN", None)
             env.pop("GITHUB_TOKEN", None)
@@ -7819,7 +7847,9 @@ fi
             if failure in (
                 "stale_recovery_collision",
                 "stale_unmarked_predecessor",
+                "stale_unmarked_candidate",
                 "stale_saved_symlink",
+                "stale_candidate_symlink",
             ):
                 stale = (
                     root
@@ -7839,14 +7869,32 @@ fi
                     (stale / "saved").symlink_to(external_saved)
                 else:
                     (stale / "saved").mkdir()
-                (stale / "candidate").mkdir()
-                if failure != "stale_unmarked_predecessor":
+                if failure == "stale_candidate_symlink":
+                    external_candidate = root / "external-candidate"
+                    external_candidate.mkdir()
+                    (external_candidate / "partial").write_text(
+                        "external candidate data", encoding="utf-8"
+                    )
+                    (stale / "candidate").symlink_to(external_candidate)
+                else:
+                    (stale / "candidate").mkdir()
+                if failure not in (
+                    "stale_unmarked_predecessor",
+                    "stale_unmarked_candidate",
+                ):
                     (stale / "TRANSACTION_FORMAT").write_text(
                         "atomic-predecessor-copy-v1\n", encoding="utf-8"
                     )
-                if failure != "stale_saved_symlink":
+                if failure not in (
+                    "stale_saved_symlink",
+                    "stale_unmarked_candidate",
+                ):
                     (stale / "saved" / "codex").write_text(
                         previous_visible["codex"], encoding="utf-8"
+                    )
+                if failure == "stale_unmarked_candidate":
+                    (stale / "candidate" / "codex.predecessor-copy").write_text(
+                        "unknown candidate custody", encoding="utf-8"
                     )
                 if failure == "stale_recovery_collision":
                     collision = backups / "codex.interrupted.fixture"
@@ -7854,6 +7902,7 @@ fi
             if failure in (
                 "activation_lock_serialization",
                 "activation_locked_revalidation",
+                "activation_lock_parent_death",
             ):
                 import fcntl as test_fcntl
 
@@ -7880,19 +7929,58 @@ fi
                     self.assertTrue(marker.exists(), "installer did not reach lock")
                     self.assertIsNone(child.poll(), "installer bypassed activation lock")
                     self.assertFalse(os.path.lexists(standalone / "current"))
+                    if failure == "activation_lock_parent_death":
+                        os.kill(child.pid, signal.SIGKILL)
+                        child.wait(timeout=10)
                     if failure == "activation_locked_revalidation":
                         expected_release_dir.mkdir(parents=True)
                     test_fcntl.flock(held_lock, test_fcntl.LOCK_UN)
                     stdout, stderr = child.communicate(timeout=30)
-                proc = subprocess.CompletedProcess(
-                    command, child.returncode, stdout, stderr
-                )
-                if failure == "activation_locked_revalidation":
-                    self.assertNotEqual(proc.returncode, 0)
-                    self.assertIn("unsafe or missing verified file", proc.stderr)
-                    self.assertFalse(os.path.lexists(standalone / "current"))
+                if failure == "activation_lock_parent_death":
+                    deadline = time.monotonic() + 10
+                    acquired_after_parent_death = False
+                    with lock_path.open("a+") as recovery_lock:
+                        while time.monotonic() < deadline:
+                            try:
+                                test_fcntl.flock(
+                                    recovery_lock,
+                                    test_fcntl.LOCK_EX | test_fcntl.LOCK_NB,
+                                )
+                            except BlockingIOError:
+                                time.sleep(0.01)
+                            else:
+                                acquired_after_parent_death = True
+                                test_fcntl.flock(recovery_lock, test_fcntl.LOCK_UN)
+                                break
+                    self.assertTrue(
+                        acquired_after_parent_death,
+                        "orphaned activation lock holder did not release custody",
+                    )
+                    retry_env = dict(env)
+                    retry_env.pop("SEDNA_INSTALLER_TESTING", None)
+                    retry_env.pop("SEDNA_INSTALLER_TEST_LOCK_WAIT_MARKER", None)
+                    retry = subprocess.run(
+                        command,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env=retry_env,
+                    )
+                    self.assertEqual(retry.returncode, 0, retry.stderr)
+                    proc = retry
+                    self.assertEqual(
+                        list(standalone.glob(".activation.*")), [], retry.stderr
+                    )
                 else:
-                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    proc = subprocess.CompletedProcess(
+                        command, child.returncode, stdout, stderr
+                    )
+                    if failure == "activation_locked_revalidation":
+                        self.assertNotEqual(proc.returncode, 0)
+                        self.assertIn("unsafe or missing verified file", proc.stderr)
+                        self.assertFalse(os.path.lexists(standalone / "current"))
+                    else:
+                        self.assertEqual(proc.returncode, 0, proc.stderr)
             elif failure == "activation_concurrent_installers":
                 marker = root / "first-installer-paused"
                 release_pause = root / "release-first-installer"
@@ -7916,15 +8004,30 @@ fi
                 while not marker.exists() and time.monotonic() < deadline:
                     time.sleep(0.01)
                 self.assertTrue(marker.exists(), "first installer did not pause")
+                second_marker = root / "second-installer-at-lock"
+                second_env = dict(env)
+                second_env["SEDNA_INSTALLER_TESTING"] = "1"
+                second_env["SEDNA_INSTALLER_TEST_LOCK_WAIT_MARKER"] = str(
+                    second_marker
+                )
                 second = subprocess.Popen(
                     command,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    env=env,
+                    env=second_env,
                 )
                 try:
-                    time.sleep(0.25)
+                    deadline = time.monotonic() + 20
+                    while (
+                        not second_marker.exists()
+                        and time.monotonic() < deadline
+                    ):
+                        time.sleep(0.01)
+                    self.assertTrue(
+                        second_marker.exists(),
+                        "second installer did not reach lock boundary",
+                    )
                     self.assertIsNone(
                         second.poll(), "second installer bypassed first installer lock"
                     )
@@ -8091,12 +8194,24 @@ fi
             if failure == "stale_unmarked_predecessor":
                 self.assertNotEqual(proc.returncode, 0)
                 self.assertIn(
-                    "refusing unmarked stale transaction with predecessor data",
+                    "refusing unmarked stale transaction with custody data",
                     proc.stderr,
                 )
                 self.assertEqual(
                     (stale / "saved" / "codex").read_text(encoding="utf-8"),
                     previous_visible["codex"],
+                )
+            if failure == "stale_unmarked_candidate":
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(
+                    "refusing unmarked stale transaction with custody data",
+                    proc.stderr,
+                )
+                self.assertEqual(
+                    (
+                        stale / "candidate" / "codex.predecessor-copy"
+                    ).read_text(encoding="utf-8"),
+                    "unknown candidate custody",
                 )
             if failure == "stale_saved_symlink":
                 self.assertNotEqual(proc.returncode, 0)
@@ -8105,6 +8220,14 @@ fi
                 self.assertEqual(
                     (external_saved / "codex").read_text(encoding="utf-8"),
                     previous_visible["codex"],
+                )
+            if failure == "stale_candidate_symlink":
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("unsafe stale custody directory", proc.stderr)
+                self.assertTrue((stale / "candidate").is_symlink())
+                self.assertEqual(
+                    (external_candidate / "partial").read_text(encoding="utf-8"),
+                    "external candidate data",
                 )
             if verify_visible_links and proc.returncode == 0:
                 current_dir = (
@@ -8182,7 +8305,6 @@ fi
                         failure, arch=arch, dry_run=False
                     )
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux flock contract")
     def test_sedna_release_installer_serializes_activation(self) -> None:
         self.run_sedna_installer_fixture(
             "activation_lock_serialization",
@@ -8194,8 +8316,12 @@ fi
             dry_run=False,
             verify_visible_links=True,
         )
+        self.run_sedna_installer_fixture(
+            "activation_lock_parent_death",
+            dry_run=False,
+            verify_visible_links=True,
+        )
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux lock contract")
     def test_sedna_release_installer_revalidates_after_lock(self) -> None:
         self.run_sedna_installer_fixture(
             "activation_locked_revalidation",
@@ -8242,7 +8368,15 @@ fi
             dry_run=False,
         )
         self.run_sedna_installer_fixture(
+            "stale_unmarked_candidate",
+            dry_run=False,
+        )
+        self.run_sedna_installer_fixture(
             "stale_saved_symlink",
+            dry_run=False,
+        )
+        self.run_sedna_installer_fixture(
+            "stale_candidate_symlink",
             dry_run=False,
         )
 

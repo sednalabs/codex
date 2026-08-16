@@ -989,12 +989,13 @@ for a removed crate path.
   interval after an atomic filesystem replacement but before Python records
   that replacement, so rollback must reconcile authoritative path state rather
   than trust only in-memory bookkeeping. The same contract proves a host-local
-  Python `fcntl.flock` activation lock across Linux and Intel macOS, a two-installer
-  serialization run, exact relative-pointer restoration, locked immutable-path
+  Python `fcntl.flock` activation lock across Linux and Intel macOS, a hosted
+  Intel macOS activation lane, a two-installer serialization run, parent-death
+  lock release, exact relative-pointer restoration, locked immutable-path
   revalidation, fail-closed current and stale backup-path collision handling,
   atomic predecessor-copy publication, partial-copy discard, and recovery of
   complete format-marked stale predecessor copies before their transaction is
-  removed. Unmarked stale predecessor data remains fail-closed for operator
+  removed. Unmarked stale saved or candidate custody data remains fail-closed for operator
   reconciliation rather than being represented as a complete backup, and
   symlinked stale/live custody directories are rejected without traversing or
   moving their external contents.

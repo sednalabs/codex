@@ -2610,6 +2610,7 @@
         ".github/scripts/validation-lanes/artifact-build.sh",
         ".github/workflows/_sedna-linux-rust.yml",
         ".github/workflows/_validation-lane-release.yml",
+        ".github/workflows/rust-ci.yml",
         ".github/workflows/sedna-branch-build.yml",
         ".github/workflows/sedna-release.yml",
         ".github/workflows/sedna-release-install.yml",
@@ -2646,6 +2647,7 @@
         "test_sedna_release_installer_rolls_back_failed_activation",
         "test_sedna_release_installer_serializes_activation",
         "test_sedna_release_installer_revalidates_after_lock",
+        "hosted Intel macOS installer activation and locking",
         "test_sedna_release_installer_recovers_first_install_after_sigkill",
         "test_sedna_release_installer_recovers_predecessors_after_sigkill",
         "test_sedna_release_installer_discards_partial_predecessor_copy",
@@ -2661,7 +2663,7 @@
         "sedna-release workflow policy checks"
       ],
       "owner": "downstream",
-      "notes": "Keeps public GitHub workflows limited to building, publishing, and verifying assets; production installation remains an operator-controlled private concern. Preserve the dual-native Linux matrix, clean pre-build provenance and post-build repository staging boundary, target-isolated asset names, preview/release cache authority separation with no cached executable tool path, default hardened current x86 and mandatory Arm64 verification, checksum-pinned ephemeral verifier bootstrap, exact-source hosted-runner trust checks, bounded pre-cutoff historical x86 compatibility, locked and symlink-free existing-install equality, portable serialized atomic shared-current activation across Linux and Intel macOS, crash-consistent first-install link publication, atomic predecessor-copy publication, recovery of complete interrupted predecessor copies, partial-copy discard, collision-safe rollback, rollback of predecessor entrypoints, and protected-main publication boundary together during upstream syncs. Drop or narrow this carry only when upstream provides an equivalent downstream release-origin adapter and dual-architecture signed, attested, source-bound asset contract. The releases.openai.com preference is intentionally origin-scoped so a downstream release repository can never consume OpenAI metadata or assets accidentally.",
+      "notes": "Keeps public GitHub workflows limited to building, publishing, and verifying assets; production installation remains an operator-controlled private concern. Preserve the dual-native Linux matrix, clean pre-build provenance and post-build repository staging boundary, target-isolated asset names, preview/release cache authority separation with no cached executable tool path, default hardened current x86 and mandatory Arm64 verification, checksum-pinned ephemeral verifier bootstrap, exact-source hosted-runner trust checks, bounded pre-cutoff historical x86 compatibility, locked and symlink-free existing-install equality, Python fcntl serialized atomic shared-current activation across Linux and Intel macOS with hosted Intel macOS proof and parent-death lock release, crash-consistent first-install link publication, atomic predecessor-copy publication, recovery of complete interrupted predecessor copies, fail-closed unmarked saved or candidate custody, symlink rejection for saved, candidate, and backups custody, partial-copy discard, collision-safe rollback through private random temporary directories, rollback of predecessor entrypoints, and protected-main publication boundary together during upstream syncs. Drop or narrow this carry only when upstream provides an equivalent downstream release-origin adapter and dual-architecture signed, attested, source-bound asset contract. The releases.openai.com preference is intentionally origin-scoped so a downstream release repository can never consume OpenAI metadata or assets accidentally.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "release-update-routing",
       "hotspot_files": [
