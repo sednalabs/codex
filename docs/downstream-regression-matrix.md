@@ -988,7 +988,10 @@ for a removed crate path.
   validation contract. Signal fixtures cover both ordinary checkpoints and the
   interval after an atomic filesystem replacement but before Python records
   that replacement, so rollback must reconcile authoritative path state rather
-  than trust only in-memory bookkeeping.
+  than trust only in-memory bookkeeping. The same contract proves a host-local
+  activation lock, exact relative-pointer restoration, fail-closed backup-path
+  collision handling, and recovery of stale interrupted predecessor copies
+  before their transaction directory is removed.
 - Full builds are buildability or promotion checkpoints, not the default
   inner-loop validator for ordinary carry iteration.
 - For native computer-use, use the Codex app-server/protocol, shared
