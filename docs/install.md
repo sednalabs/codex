@@ -13,7 +13,7 @@ CLI with `gh attestation verify` for build attestations. The public post-release
 Cosign and passes `--verify-signatures --verify-attestation` for current dual-architecture releases.
 Arm64 has no legacy release mode and therefore always requires both signature and provenance
 verification. The default x86 installer path retains compatibility with historical updater calls
-that validate release identity, checksums, archive safety, architecture, and executable startup but
+that validate release identity, checksums, archive safety, and executable startup but
 predate the SBOM and attestation contract; new external deployment automation should pass both
 hardened verification flags. Linux distributions older than the Ubuntu 24.04 hosted verification
 environment are not part of the release compatibility proof.
