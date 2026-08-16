@@ -1095,6 +1095,10 @@ impl CoreToolRuntime for MultiAgentV2NamespaceOverride {
         self.handler.matches_kind(payload)
     }
 
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        self.handler.waits_for_runtime_cancellation()
+    }
+
     fn create_diff_consumer(
         &self,
     ) -> Option<Box<dyn crate::tools::registry::ToolArgumentDiffConsumer>> {
