@@ -248,7 +248,8 @@ runner. It intentionally does not perform host-local installation from the publi
   the verifier from the exact published release tag so the installer contract cannot drift from
   the release source.
 - Current x86-64 releases fail closed into signature, provenance, hosted-runner, and exact-source
-  verification by default, including clients that fetch the current installer without new flags.
+  verification, including clients that fetch the current installer without new flags and callers
+  that explicitly supply only one positive verification flag.
   When compatible host tools are absent, the installer uses checksum-pinned Cosign and GitHub CLI
   binaries in its temporary verification directory; it does not install tools globally. GitHub
   provenance checks use the downloaded local bundle, so updater hosts do not need GitHub

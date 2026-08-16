@@ -1922,7 +1922,7 @@ decisions.
   exclude executable Cargo tool paths. Current x86 and all Arm64 installs default to exact-source
   hardened verification, using checksum-pinned temporary verifier tools and downloaded local
   provenance bundles without updater-host GitHub authentication when compatible host tools are
-  absent. Immutable pre-cutoff x86-only releases without modern assets automatically preserve
+  absent; current x86 callers cannot select only one trust layer. Immutable pre-cutoff x86-only releases without modern assets automatically preserve
   stale updater compatibility; the explicit historical-x86 escape hatch cannot downgrade current
   releases. A previously present release directory is activated only when it matches the freshly
   verified binaries, metadata, and checksum manifest byte-for-byte.

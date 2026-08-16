@@ -351,9 +351,10 @@ PY
     # immutable pre-contract releases installable without weakening any release
     # published on or after the trust-contract cutoff.
     allow_historical_x86=true
-  elif [[ "$verify_signatures" != "true" && "$verify_attestation" != "true" ]]; then
+  elif [[ "$x86_release_contract" == "current" ]]; then
     # Current x86 releases fail closed into the same source-bound trust contract
-    # as Arm64, including clients that invoke the current script with old args.
+    # as Arm64, including old clients and callers that supply only one positive
+    # verification flag.
     verify_signatures=true
     verify_attestation=true
   fi

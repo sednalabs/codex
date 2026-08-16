@@ -7033,6 +7033,7 @@ class HelperScriptTests(unittest.TestCase):
         arch: str = "x86_64",
         hardened: bool = True,
         dry_run: bool = True,
+        verification_args_override: list[str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         release_tag = "v0.146.0-alpha.8-sedna.99+upstream.3"
         release_version = release_tag.removeprefix("v")
@@ -7333,6 +7334,24 @@ fi
                     helper = fake_bin / name
                     helper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
                     helper.chmod(0o755)
+            if failure == "signature_failure":
+                (fake_bin / "cosign").write_text(
+                    "#!/usr/bin/env bash\n"
+                    "if [[ ${1:-} == verify-blob && ${2:-} == --help ]]; then "
+                    "echo --certificate-github-workflow-sha; exit 0; fi\n"
+                    "exit 91\n",
+                    encoding="utf-8",
+                )
+                (fake_bin / "cosign").chmod(0o755)
+            if failure == "attestation_failure":
+                (fake_bin / "gh").write_text(
+                    "#!/usr/bin/env bash\n"
+                    "if [[ ${1:-} == attestation && ${2:-} == verify && ${3:-} == --help ]]; then "
+                    "echo '--bundle --deny-self-hosted-runners --source-digest --signer-digest'; exit 0; fi\n"
+                    "exit 92\n",
+                    encoding="utf-8",
+                )
+                (fake_bin / "gh").chmod(0o755)
             fake_curl.chmod(0o755)
             fake_file.chmod(0o755)
             fake_uname.chmod(0o755)
@@ -7358,7 +7377,9 @@ fi
             env.pop("GH_TOKEN", None)
             env.pop("GITHUB_TOKEN", None)
             verification_args = []
-            if arch == "x86_64" and not hardened:
+            if verification_args_override is not None:
+                verification_args = verification_args_override
+            elif arch == "x86_64" and not hardened:
                 verification_args = ["--allow-historical-x86"]
             return subprocess.run(
                 [
@@ -7435,6 +7456,18 @@ fi
             "cannot downgrade a current release",
             downgrade_current_x86_proc.stderr,
         )
+
+        signatures_only_proc = self.run_sedna_installer_fixture(
+            "attestation_failure",
+            verification_args_override=["--verify-signatures"],
+        )
+        self.assertNotEqual(signatures_only_proc.returncode, 0)
+
+        attestation_only_proc = self.run_sedna_installer_fixture(
+            "signature_failure",
+            verification_args_override=["--verify-attestation"],
+        )
+        self.assertNotEqual(attestation_only_proc.returncode, 0)
 
         existing_matching_proc = self.run_sedna_installer_fixture(
             "existing_matching", dry_run=False
@@ -7515,6 +7548,39 @@ fi
             )
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("not a little-endian ELF64", proc.stderr)
+
+            x86 = root / "codex-62"
+            wrong_machine_proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-",
+                    "aarch64-unknown-linux-gnu",
+                    "/lib/ld-linux-aarch64.so.1",
+                    str(x86),
+                ],
+                input=fallback,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(wrong_machine_proc.returncode, 0)
+            self.assertIn("unexpected ELF machine", wrong_machine_proc.stderr)
+
+            wrong_interpreter_proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-",
+                    "x86_64-unknown-linux-gnu",
+                    "/wrong/interpreter",
+                    str(x86),
+                ],
+                input=fallback,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(wrong_interpreter_proc.returncode, 0)
+            self.assertIn("uses ELF interpreter", wrong_interpreter_proc.stderr)
 
     def test_duplicate_workflow_finder_matches_same_branch_sha_success(self) -> None:
         runs = [
