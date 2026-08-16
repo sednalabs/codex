@@ -301,12 +301,14 @@ if require_linux_provenance == "true":
         raise SystemExit(f"error: {sbom_name} is not an SPDX 2.3 document")
 PY
 
-expected_source_commit="$(python3 - "$work_dir/$metadata_name" "$release_json" <<'PY'
+expected_source_commit="$(python3 - "$work_dir/$metadata_name" "$release_json" "$require_linux_signatures" "$require_linux_provenance" <<'PY'
 import json
 import re
 import sys
 
-metadata_path, release_path = sys.argv[1:3]
+metadata_path, release_path, require_signatures, require_provenance = sys.argv[1:5]
+if require_signatures != "true" and require_provenance != "true":
+    raise SystemExit(0)
 metadata = json.loads(open(metadata_path, encoding="utf-8").read())
 release = json.loads(open(release_path, encoding="utf-8").read())
 target_commit = metadata.get("target_commit")

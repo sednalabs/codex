@@ -6977,6 +6977,8 @@ class HelperScriptTests(unittest.TestCase):
                 "repository": "sednalabs/codex",
                 "target_commit": target_commit,
             }
+            if failure == "legacy_x86":
+                metadata.pop("target_commit")
             (root / metadata_name).write_text(json.dumps(metadata), encoding="utf-8")
             (root / sbom_name).write_text(
                 json.dumps(
@@ -7042,7 +7044,9 @@ class HelperScriptTests(unittest.TestCase):
                         "target_commitish": (
                             "b" * 40
                             if failure == "wrong_source_commit"
-                            else target_commit
+                            else (
+                                "main" if failure == "legacy_x86" else target_commit
+                            )
                         ),
                         "assets": release_assets,
                     }

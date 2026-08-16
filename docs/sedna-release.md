@@ -243,6 +243,9 @@ runner. It intentionally does not perform host-local installation from the publi
   attestation acceptance to this repository's `sedna-release.yml` signer workflow and dispatches
   the verifier from the exact published release tag so the installer contract cannot drift from
   the release source.
+- The default x86-64 installer path remains compatible with historical releases whose metadata
+  predates `target_commit`. Exact source-commit binding is mandatory whenever hardened signature
+  or attestation verification is requested, and for every Arm64 release.
 - Host-local installs should be performed by external deployment automation outside the public
   Actions log surface
 - Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them
