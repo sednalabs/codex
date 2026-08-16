@@ -11,7 +11,7 @@
 
 It stays close to upstream Codex while carrying runtime behaviour for work that is long-running, multi-agent, unattended, remote, or otherwise benefits from stronger continuity and runtime evidence.
 
-That includes richer agent lifecycle and orchestration, child model and reasoning selection, bounded recovery, first-party usage and cost evidence, native computer use, headless MCP operation, and additional operator-facing runtime information.
+That includes richer agent lifecycle and orchestration, child model and reasoning routing with requested-versus-effective identity evidence, bounded recovery, first-party usage and cost evidence, native computer use, headless MCP operation, and additional operator-facing runtime information.
 
 > [!IMPORTANT]
 > Codex Sedna is an independent downstream distribution and is not an official OpenAI Codex release.
@@ -36,7 +36,7 @@ Codex Sedna is useful if you want Codex with stronger support for:
 
 - long-running local sessions and agent trees;
 - richer sub-agent identity, lifecycle, and coordination;
-- child model and reasoning-effort selection;
+- child model and reasoning-effort routing, exact assertions, and effective-identity evidence;
 - blocking and conditional waits;
 - persisted agent continuity and resumed work;
 - browser, Android, or desktop computer use;
@@ -86,27 +86,35 @@ To build from source, see [Installing and building](./docs/install.md).
 
 ### Long-running and multi-agent execution
 
-Sedna carries additional runtime behaviour for sessions and agent trees that cannot assume every participating agent will remain continuously resident until the work is finished.
+Sedna builds on upstream Codex's multi-agent runtime rather than replacing it. Its downstream carry concentrates on stronger routing guarantees, lifecycle durability, observability, blocking orchestration contracts, and behaviour that remains useful when child runtimes are not continuously resident.
 
 That includes stronger support around:
 
-- agent identity and inventory;
-- child model and reasoning configuration;
-- agent-tree inspection;
-- blocking waits and joins;
-- mailbox-based coordination;
-- persisted descendant continuity;
+- logical agent identity and inventory across live and cold states;
+- child model and reasoning routing, exact assertions, and requested-versus-effective identity;
+- cheap live inventory plus bounded live/stale agent-tree inspection;
+- targeted blocking waits and joins with `any` / `all` completion semantics;
+- mailbox coordination that can preserve queue-only work without waking a cold agent;
+- persisted descendant continuity and ordered runtime reload;
 - residency, unload, and reload behaviour;
 - background terminal completion;
 - resumed sessions and agent history.
 
-Within the models supported by the active provider and runtime, orchestrators can select child models and reasoning effort instead of forcing one configuration across the entire tree.
+Upstream Codex provides the underlying per-child model and reasoning-selection pipeline. Sedna extends that pipeline for long-running orchestration with stricter routing and substantially richer identity evidence.
 
-Requested and effective agent configuration is exposed through runtime surfaces where the available evidence supports it.
+Orchestrators can request child model and reasoning settings and, where exact routing matters, assert the model and reasoning effort that must remain after role, profile, service-tier, and runtime resolution. A mismatch can be rejected before the child is created or receives its initial task.
+
+Sedna keeps requested identity distinct from effective identity. Requested and effective model and reasoning information is carried through downstream tool results and lifecycle surfaces, with effective provider and service-tier context exposed where the runtime has authoritative evidence. This makes it possible to distinguish what an orchestrator asked for from what actually launched.
+
+Role and catalogue compatibility remains explicit. Downstream preserves selected runtime configuration across role reload where the role does not override it, and maintains compatibility rules for models whose current catalogue metadata does not accurately describe their supported child-agent use.
+
+Sedna also treats a V2 agent's logical identity separately from whether its runtime is currently resident. Quiescent children can become cold while retaining compact status and persisted history, remain visible to orchestration, and later be reloaded when work requires them.
+
+Queue-only inter-agent messages can remain attached to a cold agent without waking its runtime. A later follow-up can reload the child and transfer queued mail in order before triggering new work.
+
+Together with targeted `wait_agent` joins, richer live/stale tree inspection, persisted lineage, residency management, background-terminal completion, resumed history, and bounded recovery, these behaviours make long-lived agent trees easier to inspect, coordinate, unload, reload, and recover without treating one process as the durable task.
 
 This allows stronger models and higher reasoning budgets to be used where they materially improve the result, while bounded roles such as waiting, monitoring, or narrow inspection can use lighter execution where appropriate.
-
-The result is a runtime that is easier to inspect and recover when execution changes underneath long-lived work.
 
 ### Bounded recovery
 
