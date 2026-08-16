@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 import unittest.mock as mock
 from pathlib import Path
@@ -7696,15 +7697,18 @@ fi
                 / "packages"
                 / "standalone"
                 / "releases"
-                / release_tag
+                / (release_tag if arch == "x86_64" else f"{release_tag}-{target}")
             )
             predecessor_failures = {
                 "activation_backup_failure",
+                "activation_backup_collision",
                 "activation_initial_save_failure",
+                "activation_relative_current_rollback",
                 "activation_second_save_failure",
                 "activation_sigterm",
                 "activation_sigterm_current_record",
                 "activation_sigterm_visible_record",
+                "activation_sigkill_with_predecessor",
             }
             if failure in predecessor_failures:
                 old_release = (
@@ -7722,7 +7726,10 @@ fi
                     old_executable.write_text(contents, encoding="utf-8")
                     old_executable.chmod(0o755)
                 current = old_release.parent.parent / "current"
-                current.symlink_to(old_release)
+                if failure == "activation_relative_current_rollback":
+                    current.symlink_to(Path("releases") / "previous")
+                else:
+                    current.symlink_to(old_release)
             if failure in ("preexisting_visible", *predecessor_failures):
                 visible_bin.mkdir(parents=True)
                 for executable, contents in previous_visible.items():
@@ -7730,6 +7737,7 @@ fi
                     if failure in (
                         "activation_sigterm",
                         "activation_sigterm_current_record",
+                        "activation_relative_current_rollback",
                     ):
                         visible.symlink_to(current / executable)
                     else:
@@ -7740,6 +7748,9 @@ fi
             )
             test_faults = {
                 "activation_backup_failure": "raise:after-first-backup",
+                "activation_backup_collision": (
+                    "collision-dir:before-first-backup-replace"
+                ),
                 "activation_initial_save_failure": "raise:before-first-save",
                 "activation_second_save_failure": "raise:before-second-save",
                 "activation_sigterm": "sigterm:after-current-swap",
@@ -7750,6 +7761,12 @@ fi
                     "sigterm:after-first-visible-replace"
                 ),
                 "activation_sigkill_first_install": "sigkill:after-current-swap",
+                "activation_sigkill_with_predecessor": (
+                    "sigkill:after-first-visible"
+                ),
+                "activation_relative_current_rollback": (
+                    "raise:after-first-visible"
+                ),
             }
             if failure in test_faults:
                 env["SEDNA_INSTALLER_TESTING"] = "1"
@@ -7769,15 +7786,49 @@ fi
                 *verification_args,
                 *(["--dry-run"] if dry_run else []),
             ]
-            proc = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                env=env,
-            )
+            if failure == "activation_lock_serialization":
+                import fcntl as test_fcntl
+
+                standalone = (
+                    root / "home" / ".codex" / "packages" / "standalone"
+                )
+                standalone.mkdir(parents=True)
+                lock_path = standalone / ".release-activation.lock"
+                marker = root / "activation-lock-waiting"
+                env["SEDNA_INSTALLER_TESTING"] = "1"
+                env["SEDNA_INSTALLER_TEST_LOCK_WAIT_MARKER"] = str(marker)
+                with lock_path.open("a+") as held_lock:
+                    test_fcntl.flock(held_lock, test_fcntl.LOCK_EX)
+                    child = subprocess.Popen(
+                        command,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env=env,
+                    )
+                    deadline = time.monotonic() + 10
+                    while not marker.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(marker.exists(), "installer did not reach lock")
+                    self.assertIsNone(child.poll(), "installer bypassed activation lock")
+                    self.assertFalse(os.path.lexists(standalone / "current"))
+                    test_fcntl.flock(held_lock, test_fcntl.LOCK_UN)
+                    stdout, stderr = child.communicate(timeout=30)
+                proc = subprocess.CompletedProcess(
+                    command, child.returncode, stdout, stderr
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+            else:
+                proc = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
             if failure in (
                 "activation_backup_failure",
+                "activation_backup_collision",
                 "activation_initial_save_failure",
                 "activation_second_save_failure",
             ):
@@ -7794,6 +7845,14 @@ fi
                 self.assertEqual(
                     list(current.parent.glob(".activation.*")), [], proc.stderr
                 )
+            if failure == "activation_relative_current_rollback":
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertEqual(os.readlink(current), "releases/previous")
+                self.assertEqual(current.resolve(), old_release)
+                for executable in previous_visible:
+                    visible = visible_bin / executable
+                    self.assertEqual(visible.resolve(), old_release / executable)
+                self.assertEqual(list(current.parent.glob(".activation.*")), [])
             if failure in (
                 "activation_sigterm",
                 "activation_sigterm_current_record",
@@ -7836,6 +7895,37 @@ fi
                     env=retry_env,
                 )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(list(current.parent.glob(".activation.*")), [])
+            if failure == "activation_sigkill_with_predecessor":
+                self.assertEqual(proc.returncode, 128 + signal.SIGKILL, proc.stderr)
+                current = (
+                    root / "home" / ".codex" / "packages" / "standalone" / "current"
+                )
+                transactions = list(current.parent.glob(".activation.*"))
+                self.assertEqual(len(transactions), 1)
+                for executable, contents in previous_visible.items():
+                    saved = transactions[0] / "saved" / executable
+                    self.assertEqual(saved.read_text(encoding="utf-8"), contents)
+                retry_env = dict(env)
+                retry_env.pop("SEDNA_INSTALLER_TESTING")
+                retry_env.pop("SEDNA_INSTALLER_TEST_FAULT")
+                proc = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=retry_env,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(list(current.parent.glob(".activation.*")), [])
+                for executable, contents in previous_visible.items():
+                    recovered = list(
+                        backups.glob(f"{executable}.interrupted.*")
+                    )
+                    self.assertEqual(len(recovered), 1, executable)
+                    self.assertEqual(
+                        recovered[0].read_text(encoding="utf-8"), contents
+                    )
             if verify_visible_links and proc.returncode == 0:
                 current_dir = (
                     root / "home" / ".codex" / "packages" / "standalone" / "current"
@@ -7891,23 +7981,49 @@ fi
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_sedna_release_installer_rolls_back_failed_activation(self) -> None:
-        for failure in (
-            "activation_initial_save_failure",
-            "activation_second_save_failure",
-            "activation_backup_failure",
-            "activation_sigterm",
-            "activation_sigterm_current_record",
-            "activation_sigterm_visible_record",
-        ):
-            with self.subTest(failure=failure):
-                self.run_sedna_installer_fixture(failure, dry_run=False)
+        for arch in ("x86_64", "aarch64"):
+            for failure in (
+                "activation_initial_save_failure",
+                "activation_second_save_failure",
+                "activation_backup_collision",
+                "activation_backup_failure",
+                "activation_relative_current_rollback",
+                "activation_sigterm",
+                "activation_sigterm_current_record",
+                "activation_sigterm_visible_record",
+            ):
+                with self.subTest(arch=arch, failure=failure):
+                    self.run_sedna_installer_fixture(
+                        failure, arch=arch, dry_run=False
+                    )
 
-    def test_sedna_release_installer_recovers_first_install_after_sigkill(self) -> None:
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux flock contract")
+    def test_sedna_release_installer_serializes_activation(self) -> None:
         self.run_sedna_installer_fixture(
-            "activation_sigkill_first_install",
+            "activation_lock_serialization",
             dry_run=False,
             verify_visible_links=True,
         )
+
+    def test_sedna_release_installer_recovers_first_install_after_sigkill(self) -> None:
+        for arch in ("x86_64", "aarch64"):
+            with self.subTest(arch=arch):
+                self.run_sedna_installer_fixture(
+                    "activation_sigkill_first_install",
+                    arch=arch,
+                    dry_run=False,
+                    verify_visible_links=True,
+                )
+
+    def test_sedna_release_installer_recovers_predecessors_after_sigkill(self) -> None:
+        for arch in ("x86_64", "aarch64"):
+            with self.subTest(arch=arch):
+                self.run_sedna_installer_fixture(
+                    "activation_sigkill_with_predecessor",
+                    arch=arch,
+                    dry_run=False,
+                    verify_visible_links=True,
+                )
 
     def test_sedna_release_installer_rejects_invalid_release_assets(self) -> None:
         cases = {

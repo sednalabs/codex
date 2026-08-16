@@ -1936,8 +1936,12 @@ decisions.
   before that pointer changes and then replaced individually only after the new pointer is usable. Catchable
   interruption, activation, or previous-binary backup failure restores the predecessor pointer and
   entrypoints; an uncatchable process death never leaves a newly published dangling link, and a rerun
-  completes any first-time links that were not yet published. Callers must not rely on an ordinary later
-  updater pass to repair a missing proxy link after a successful invocation.
+  completes any first-time links that were not yet published. A host-local activation lock serializes
+  concurrent installers before predecessor discovery and rollback authority are captured. After an
+  uncatchable interruption, the next lock holder archives copied predecessor binaries from the stale
+  transaction before removing it; backup-path collisions fail closed and restore from the still-present
+  transaction copy. Callers must not rely on an ordinary later updater pass to repair a missing proxy link
+  after a successful invocation.
 - Preserve the dual-native Linux matrix, target-isolated names and caches, exact-source
   hosted-runner trust checks, mandatory Arm64 hardening, historical x86 compatibility, protected-main
   marker/manual publication, and release tags as outputs rather than workflow authority as one

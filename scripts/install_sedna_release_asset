@@ -735,6 +735,26 @@ if [[ "$dry_run" == "true" ]]; then
 fi
 
 mkdir -p "${install_root}/releases" "$bin_dir"
+if ! command -v flock >/dev/null 2>&1; then
+  echo "error: flock is required for serialized release activation" >&2
+  exit 1
+fi
+test_lock_marker="${SEDNA_INSTALLER_TEST_LOCK_WAIT_MARKER:-}"
+if [[ -n "$test_lock_marker" && "${SEDNA_INSTALLER_TESTING:-}" != "1" ]]; then
+  echo "error: installer test controls require SEDNA_INSTALLER_TESTING=1" >&2
+  exit 1
+fi
+if [[ -n "$test_lock_marker" ]]; then
+  if [[ -e "$test_lock_marker" ]]; then
+    echo "error: installer test lock marker already exists: $test_lock_marker" >&2
+    exit 1
+  fi
+  (umask 077; : > "$test_lock_marker")
+fi
+exec {activation_lock_fd}>"${install_root}/.release-activation.lock"
+chmod 600 "${install_root}/.release-activation.lock"
+flock -x "$activation_lock_fd"
+
 if [[ ! -d "$release_dir" ]]; then
   tmp_release="${install_root}/releases/.${release_dir_name}.tmp.$$"
   rm -rf "$tmp_release"
@@ -759,8 +779,53 @@ install_root, bin_dir, release_dir = map(Path, sys.argv[1:4])
 current = install_root / "current"
 executables = ("codex", "codex-responses-api-proxy")
 
+test_fault = os.environ.get("SEDNA_INSTALLER_TEST_FAULT")
+if test_fault and os.environ.get("SEDNA_INSTALLER_TESTING") != "1":
+    raise SystemExit(
+        "error: installer test controls require SEDNA_INSTALLER_TESTING=1"
+    )
+
 if os.path.lexists(current) and not current.is_symlink():
     raise SystemExit(f"error: current release pointer is not a symlink: {current}")
+
+for stale_transaction in sorted(install_root.glob(".activation.*")):
+    if stale_transaction.is_symlink() or not stale_transaction.is_dir():
+        raise RuntimeError(
+            f"refusing unexpected stale activation path: {stale_transaction}"
+        )
+    unexpected = {
+        entry.name
+        for entry in stale_transaction.iterdir()
+        if entry.name not in {"saved", "candidate"}
+    }
+    if unexpected:
+        raise RuntimeError(
+            f"refusing stale activation transaction with unexpected entries: "
+            f"{stale_transaction} ({', '.join(sorted(unexpected))})"
+        )
+    stale_saved = stale_transaction / "saved"
+    if stale_saved.exists():
+        backups = install_root / "backups"
+        backups.mkdir(exist_ok=True)
+        for saved in stale_saved.iterdir():
+            if (
+                saved.name not in executables
+                or saved.is_symlink()
+                or not saved.is_file()
+            ):
+                raise RuntimeError(
+                    f"refusing unexpected stale predecessor entry: {saved}"
+                )
+            recovered = backups / (
+                f"{saved.name}.interrupted.{stale_transaction.name.removeprefix('.activation.')}"
+            )
+            if os.path.lexists(recovered):
+                raise RuntimeError(
+                    f"refusing to overwrite recovered predecessor backup: {recovered}"
+                )
+            os.replace(saved, recovered)
+            print(f"recovered interrupted {saved.name} predecessor backup")
+    shutil.rmtree(stale_transaction)
 
 previous_current_target = os.readlink(current) if current.is_symlink() else None
 transaction = Path(tempfile.mkdtemp(prefix=".activation.", dir=install_root))
@@ -777,20 +842,17 @@ activation_succeeded = False
 rollback_succeeded = False
 interrupted_signal: int | None = None
 
-test_fault = os.environ.get("SEDNA_INSTALLER_TEST_FAULT")
-if test_fault and os.environ.get("SEDNA_INSTALLER_TESTING") != "1":
-    raise SystemExit(
-        "error: SEDNA_INSTALLER_TEST_FAULT requires SEDNA_INSTALLER_TESTING=1"
-    )
-
-
-def inject_test_fault(stage: str) -> None:
+def inject_test_fault(stage: str, path: Path | None = None) -> None:
     if test_fault == f"raise:{stage}":
         raise RuntimeError(f"injected installer test failure at {stage}")
     if test_fault == f"sigterm:{stage}":
         os.kill(os.getpid(), signal.SIGTERM)
     if test_fault == f"sigkill:{stage}":
         os.kill(os.getpid(), signal.SIGKILL)
+    if test_fault == f"collision-dir:{stage}":
+        if path is None:
+            raise RuntimeError(f"test collision stage has no path: {stage}")
+        path.mkdir(parents=True)
 
 
 def interrupt_activation(signum: int, _frame: object) -> None:
@@ -852,6 +914,9 @@ try:
         backups.mkdir(exist_ok=True)
         backup = backups / f"{executable}.{int(time.time())}.{os.getpid()}"
         backup_entries[executable] = backup
+        inject_test_fault("before-first-backup-replace", backup)
+        if os.path.lexists(backup):
+            raise RuntimeError(f"refusing to overwrite predecessor backup: {backup}")
         os.replace(saved, backup)
         print(f"backed up previous {executable} binary")
         if len(backup_entries) == 1:
@@ -875,16 +940,20 @@ except BaseException as activation_error:
         try:
             backup = backup_entries.get(executable)
             saved = saved_entries.get(executable)
-            if backup is not None and os.path.lexists(backup):
+            if saved is not None and os.path.lexists(saved):
+                restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
+                shutil.copy2(saved, restore)
+                os.replace(restore, visible)
+            elif (
+                backup is not None
+                and backup.is_file()
+                and not backup.is_symlink()
+            ):
                 source = backup
                 restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
                 shutil.copy2(source, restore)
                 os.replace(restore, visible)
                 source.unlink()
-            elif saved is not None and os.path.lexists(saved):
-                restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
-                shutil.copy2(saved, restore)
-                os.replace(restore, visible)
             elif executable in saved_symlinks:
                 restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
                 restore.symlink_to(saved_symlinks[executable])
