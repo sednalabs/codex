@@ -1931,8 +1931,10 @@ decisions.
   releases. A previously present release directory is activated only when it matches the freshly
   verified binaries, metadata, and checksum manifest byte-for-byte. A successful install atomically
   publishes both packaged executables, `codex` and `codex-responses-api-proxy`, through the stable
-  user bin directory on the first invocation; callers must not rely on a later updater pass to repair
-  a missing proxy link.
+  user bin directory on the first invocation. Both stable links resolve through the single `current`
+  pointer, so one atomic pointer replacement activates them together; any activation or previous-binary
+  backup failure restores the predecessor pointer and entrypoints. Callers must not rely on a later
+  updater pass to repair a missing proxy link.
 - Preserve the dual-native Linux matrix, target-isolated names and caches, exact-source
   hosted-runner trust checks, mandatory Arm64 hardening, historical x86 compatibility, protected-main
   marker/manual publication, and release tags as outputs rather than workflow authority as one
