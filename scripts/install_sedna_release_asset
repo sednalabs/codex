@@ -822,6 +822,7 @@ try:
     candidate_current = candidate_dir / "current"
     candidate_current.symlink_to(release_dir)
     os.replace(candidate_current, current)
+    inject_test_fault("after-current-replace")
     current_swapped = True
     inject_test_fault("after-current-swap")
 
@@ -833,6 +834,11 @@ try:
         candidate.symlink_to(current / executable)
         try:
             os.replace(candidate, visible)
+            inject_test_fault(
+                "after-first-visible-replace"
+                if index == 0
+                else "after-second-visible-replace"
+            )
         finally:
             if os.path.lexists(candidate):
                 candidate.unlink()
@@ -845,8 +851,8 @@ try:
         backups = install_root / "backups"
         backups.mkdir(exist_ok=True)
         backup = backups / f"{executable}.{int(time.time())}.{os.getpid()}"
-        os.replace(saved, backup)
         backup_entries[executable] = backup
+        os.replace(saved, backup)
         print(f"backed up previous {executable} binary")
         if len(backup_entries) == 1:
             inject_test_fault("after-first-backup")
@@ -854,20 +860,30 @@ try:
     activation_succeeded = True
 except BaseException as activation_error:
     rollback_errors = []
-    for executable in reversed(replaced_entries):
+    for executable in reversed(executables):
         visible = bin_dir / executable
+        candidate_target = str(current / executable)
+        visible_is_candidate = (
+            visible.is_symlink() and os.readlink(visible) == candidate_target
+        )
+        entry_was_replaced = executable in replaced_entries or (
+            visible_is_candidate
+            and saved_symlinks.get(executable) != candidate_target
+        )
+        if not entry_was_replaced:
+            continue
         try:
-            if executable in backup_entries:
-                source = backup_entries[executable]
+            backup = backup_entries.get(executable)
+            saved = saved_entries.get(executable)
+            if backup is not None and os.path.lexists(backup):
+                source = backup
                 restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
                 shutil.copy2(source, restore)
                 os.replace(restore, visible)
                 source.unlink()
-            elif executable in saved_entries and os.path.lexists(
-                saved_entries[executable]
-            ):
+            elif saved is not None and os.path.lexists(saved):
                 restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
-                shutil.copy2(saved_entries[executable], restore)
+                shutil.copy2(saved, restore)
                 os.replace(restore, visible)
             elif executable in saved_symlinks:
                 restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
@@ -879,7 +895,14 @@ except BaseException as activation_error:
             rollback_errors.append(f"{executable}: {error}")
 
     try:
-        if current_swapped:
+        current_matches_candidate = (
+            current.is_symlink() and os.readlink(current) == str(release_dir)
+        )
+        current_was_swapped = current_swapped or (
+            current_matches_candidate
+            and previous_current_target != str(release_dir)
+        )
+        if current_was_swapped:
             if previous_current_target is None:
                 if os.path.lexists(current):
                     current.unlink()
