@@ -235,6 +235,9 @@ runner. It intentionally does not perform host-local installation from the publi
 - Prerelease installs require `allow_prerelease=true` on `workflow_dispatch`
 - New releases require native Linux Arm64 verification by default. Set
   `require_linux_arm64=false` only when manually verifying a historical x86-only release.
+  That explicit compatibility mode uses the historical checksum, metadata, archive-safety, and
+  executable checks; it cannot apply the newer exact-source signature and attestation contract to
+  releases whose metadata predates that contract.
 - The verifier checks all supported targets on native x86-64 Linux, Arm64 Linux, and Intel macOS
   runners, including tag shape, target-bound release metadata, checksums, safe archive membership,
   and executable payloads. Linux verification also checks keyless Sigstore identity, native ELF

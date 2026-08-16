@@ -8007,6 +8007,21 @@ fi
         self.assertIn("attestation_arg+=(--verify-signatures)", verify_script)
         self.assertIn("attestation_arg+=(--verify-attestation)", verify_script)
         self.assertIn('"${REQUIRE_LINUX_ARM64}" == "true"', verify_script)
+        self.assertEqual(
+            verify_script.count(
+                'if [[ "${REQUIRE_LINUX_ARM64}" == "true" && "${TARGET}" == *-unknown-linux-gnu ]]'
+            ),
+            1,
+        )
+        cosign_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml",
+            "install",
+            "Install Cosign",
+        )
+        self.assertEqual(
+            cosign_step.get("if"),
+            "${{ runner.os == 'Linux' && inputs.require_linux_arm64 }}",
+        )
 
         release_payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/sedna-release.yml"

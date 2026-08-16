@@ -141,7 +141,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Install Cosign
-        if: ${{ runner.os == 'Linux' }}
+        if: ${{ runner.os == 'Linux' && inputs.require_linux_arm64 }}
         uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
 
       - name: Verify release assets
@@ -168,10 +168,8 @@ jobs:
           fi
 
           attestation_arg=()
-          if [[ "${TARGET}" == *-unknown-linux-gnu ]]; then
-            attestation_arg+=(--verify-signatures)
-          fi
           if [[ "${REQUIRE_LINUX_ARM64}" == "true" && "${TARGET}" == *-unknown-linux-gnu ]]; then
+            attestation_arg+=(--verify-signatures)
             attestation_arg+=(--verify-attestation)
           fi
 
