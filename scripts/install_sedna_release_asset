@@ -106,32 +106,19 @@ bin_dir="${HOME}/.local/bin"
 
 work_dir="$(mktemp -d -t sedna-release-install.XXXXXX)"
 activation_lock_kind=""
-activation_lock_dir="${install_root}/.release-activation.lock.d"
+activation_lock_pid=""
 cleanup() {
-  if [[ "$activation_lock_kind" == "mkdir" ]]; then
-    rm -rf "$activation_lock_dir" 2>/dev/null || true
-  elif [[ "$activation_lock_kind" == "flock" || "$activation_lock_kind" == "lockf" ]]; then
-    exec 9>&- 2>/dev/null || true
+  if [[ "$activation_lock_kind" == "python-fcntl" && -n "$activation_lock_pid" ]]; then
+    kill "$activation_lock_pid" 2>/dev/null || true
+    wait "$activation_lock_pid" 2>/dev/null || true
   fi
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
 
-mkdir_lock_is_stale() {
-  [[ -d "$activation_lock_dir" ]] || return 1
-  local pid started_at now
-  pid="$(cat "$activation_lock_dir/pid" 2>/dev/null || true)"
-  started_at="$(cat "$activation_lock_dir/started_at" 2>/dev/null || true)"
-  now="$(date +%s 2>/dev/null || printf '0')"
-  [[ "$started_at" =~ ^[0-9]+$ ]] || started_at=0
-  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-    return 1
-  fi
-  [[ "$started_at" -eq 0 || "$now" -eq 0 || $((now - started_at)) -ge 900 ]]
-}
-
 acquire_activation_lock() {
   local lock_file="${install_root}/.release-activation.lock"
+  local lock_ready="${work_dir}/activation-lock-ready"
   local test_lock_marker="${SEDNA_INSTALLER_TEST_LOCK_WAIT_MARKER:-}"
   if [[ ( -n "${SEDNA_INSTALLER_TEST_FAULT:-}" \
       || -n "${SEDNA_INSTALLER_TEST_LOCK_WAIT_MARKER:-}" \
@@ -149,35 +136,34 @@ acquire_activation_lock() {
     (umask 077; : > "$test_lock_marker")
   fi
 
-  if [[ -L "$lock_file" || -L "$activation_lock_dir" ]]; then
-    echo "error: release activation lock paths must not be symlinks" >&2
-    exit 1
-  fi
-  if [[ "$host_os" == "Darwin" ]] && command -v lockf >/dev/null 2>&1; then
-    : >>"$lock_file"
-    chmod 600 "$lock_file"
-    exec 9<>"$lock_file"
-    lockf 9
-    activation_lock_kind="lockf"
-    return
-  fi
-  if command -v flock >/dev/null 2>&1; then
-    exec 9>"$lock_file"
-    chmod 600 "$lock_file"
-    flock 9
-    activation_lock_kind="flock"
-    return
-  fi
-  while ! mkdir "$activation_lock_dir" 2>/dev/null; do
-    if mkdir_lock_is_stale; then
-      rm -rf "$activation_lock_dir"
-      continue
+  python3 - "$lock_file" "$lock_ready" "$$" <<'PY' &
+import fcntl
+import os
+import pathlib
+import sys
+import time
+
+lock_path, ready_path = map(pathlib.Path, sys.argv[1:3])
+parent_pid = int(sys.argv[3])
+flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+fd = os.open(lock_path, flags, 0o600)
+os.fchmod(fd, 0o600)
+with os.fdopen(fd, "a+") as lock_file:
+    fcntl.flock(lock_file, fcntl.LOCK_EX)
+    ready_path.write_text("locked\n", encoding="utf-8")
+    while os.getppid() == parent_pid:
+        time.sleep(0.1)
+PY
+  activation_lock_pid="$!"
+  activation_lock_kind="python-fcntl"
+  while [[ ! -f "$lock_ready" ]]; do
+    if ! kill -0 "$activation_lock_pid" 2>/dev/null; then
+      wait "$activation_lock_pid" || true
+      echo "error: failed to acquire release activation lock" >&2
+      exit 1
     fi
-    sleep 1
+    sleep 0.05
   done
-  printf '%s\n' "$$" >"$activation_lock_dir/pid"
-  date +%s >"$activation_lock_dir/started_at" 2>/dev/null || true
-  activation_lock_kind="mkdir"
 }
 
 github_header=(
@@ -849,6 +835,14 @@ current = install_root / "current"
 executables = ("codex", "codex-responses-api-proxy")
 transaction_format = "atomic-predecessor-copy-v1"
 
+
+def ensure_real_directory(path: Path) -> None:
+    if os.path.lexists(path):
+        if path.is_symlink() or not path.is_dir():
+            raise RuntimeError(f"refusing unsafe custody directory: {path}")
+        return
+    path.mkdir()
+
 test_fault = os.environ.get("SEDNA_INSTALLER_TEST_FAULT")
 test_pause_marker = os.environ.get("SEDNA_INSTALLER_TEST_PAUSE_MARKER")
 test_pause_release = os.environ.get("SEDNA_INSTALLER_TEST_PAUSE_RELEASE")
@@ -878,6 +872,14 @@ for stale_transaction in sorted(install_root.glob(".activation.*")):
             f"{stale_transaction} ({', '.join(sorted(unexpected))})"
         )
     stale_saved = stale_transaction / "saved"
+    stale_candidate = stale_transaction / "candidate"
+    for custody_dir in (stale_saved, stale_candidate):
+        if os.path.lexists(custody_dir) and (
+            custody_dir.is_symlink() or not custody_dir.is_dir()
+        ):
+            raise RuntimeError(
+                f"refusing unsafe stale custody directory: {custody_dir}"
+            )
     format_path = stale_transaction / "TRANSACTION_FORMAT"
     format_is_current = (
         format_path.is_file()
@@ -891,7 +893,7 @@ for stale_transaction in sorted(install_root.glob(".activation.*")):
         )
     if stale_saved.exists():
         backups = install_root / "backups"
-        backups.mkdir(exist_ok=True)
+        ensure_real_directory(backups)
         for saved in stale_saved.iterdir():
             if (
                 saved.name not in executables
@@ -1018,7 +1020,7 @@ try:
 
     for executable, saved in saved_entries.items():
         backups = install_root / "backups"
-        backups.mkdir(exist_ok=True)
+        ensure_real_directory(backups)
         backup = backups / f"{executable}.{int(time.time())}.{os.getpid()}"
         backup_entries[executable] = backup
         inject_test_fault("before-first-backup-replace", backup)
