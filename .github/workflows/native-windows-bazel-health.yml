@@ -16,15 +16,76 @@ on:
 permissions:
   contents: read
 
-# This workflow has one job for its stable native repository-cache key. Serialise
-# trusted pushes so that one known job is the only possible writer for that key;
-# manual dispatches never receive cache-write eligibility.
+# The native x86 health job is the sole writer for its stable repository-cache
+# key. The ARM64 selection analysis uses its own key and can publish only under
+# the same trusted post-merge predicate; manual dispatches never receive cache-
+# write eligibility.
 concurrency:
   group: native-windows-bazel-health-${{ github.ref }}
   cancel-in-progress: false
   queue: max
 
 jobs:
+  analyze-windows-arm64-gnullvm-toolchain:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    name: Bazel aquery for aarch64-pc-windows-gnullvm Rust toolchain selection
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Prepare Bazel CI
+        id: prepare_bazel
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          # Keep this analysis cache distinct from the native x86 health key.
+          # Its matching save below remains restricted to trusted post-merge
+          # pushes by prepare-bazel-ci's repository cache write policy.
+          target: aarch64-pc-windows-gnullvm
+          cache-scope: bazel-${{ github.job }}
+
+      - name: Assert ARM64 gnullvm Rust action-toolchain selection
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aquery_output="${RUNNER_TEMP}/aarch64-windows-gnullvm-aquery.txt"
+          # `aquery` configures actions but does not execute build or test
+          # actions. The target and extra execution platform together model
+          # the ARM64 native Windows gnullvm selection contract.
+          ./.github/scripts/run_bazel_with_buildbuddy.py \
+            aquery \
+            --platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm \
+            --extra_execution_platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm \
+            --include_artifacts=true \
+            --output=text \
+            //codex-rs/otel:otel \
+            >"${aquery_output}"
+
+          # Validate one exact Rustc action block. Whole-output checks could
+          # otherwise accept gnullvm text from an unrelated action.
+          python3 .github/scripts/verify_arm64_gnullvm_aquery.py \
+            "${aquery_output}" \
+            --target //codex-rs/otel:otel
+
+      # Keep the ARM64 analysis cache independent from the native x86 health
+      # cache. `repository-cache-write-enabled` is true only for trusted push
+      # runs on main or upstream-main, never for dispatches or untrusted refs.
+      - name: Save ARM64 gnullvm aquery repository cache
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true' && steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
+          key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
+
   test-windows-native-main:
     timeout-minutes: 40
     runs-on: windows-2022
@@ -65,9 +126,8 @@ jobs:
 
           bazel_test_args=(
             test
-            # Hosted Windows image changes can make cached Rust proc-macro DLLs
-            # unloadable even when Bazel fully materializes them. Rebuild only
-            # Rust actions locally while retaining remote cache reuse elsewhere.
+            # Native gnullvm proc macros require the matching gnullvm Rust
+            # execution toolchain so their DLL runtime remains loadable.
             --modify_execution_info=Rustc=+no-remote-cache
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings

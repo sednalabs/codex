@@ -1,0 +1,171 @@
+# What: register a distinct gnullvm Rust execution toolchain on Windows.
+# Why: native gnullvm proc macros must load against the matching Rust runtime;
+# the generic MSVC execution toolchain leaves those DLLs unloadable.
+# Scope: Rust compiler tools only. Miri and module-extension host Cargo retain
+# their existing MSVC-only exec set.
+
+diff --git a/rs/platforms/triples.bzl b/rs/platforms/triples.bzl
+--- a/rs/platforms/triples.bzl
++++ b/rs/platforms/triples.bzl
+@@ -61,0 +62,7 @@ SUPPORTED_EXEC_TRIPLES = [
++# Miri intentionally remains on SUPPORTED_EXEC_TRIPLES. Its distributed host
++# tools do not cover this ABI, while Rust compiler tools do.
++SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [
++    "x86_64-pc-windows-gnullvm",
++    "aarch64-pc-windows-gnullvm",
++]
++
+diff --git a/rs/toolchains/declare_rust_analyzer_toolchains.bzl b/rs/toolchains/declare_rust_analyzer_toolchains.bzl
+--- a/rs/toolchains/declare_rust_analyzer_toolchains.bzl
++++ b/rs/toolchains/declare_rust_analyzer_toolchains.bzl
+@@ -7 +7 @@ load(
+-load("//rs/platforms:triples.bzl", "SUPPORTED_EXEC_TRIPLES")
++load("//rs/platforms:triples.bzl", "SUPPORTED_RUST_EXEC_TRIPLES", "triple_to_rust_constraint_set")
+@@ -16,0 +17,5 @@ def _channel(version):
++def _exec_triple_suffix(exec_triple):
++    if exec_triple.system == "windows":
++        return "{}_{}_{}".format(exec_triple.system, exec_triple.arch, exec_triple.abi)
++    return "{}_{}".format(exec_triple.system, exec_triple.arch)
++
+@@ -26 +31 @@ def declare_rust_analyzer_toolchains(
+-        execs = SUPPORTED_EXEC_TRIPLES):
++        execs = SUPPORTED_RUST_EXEC_TRIPLES):
+@@ -34 +39 @@ def declare_rust_analyzer_toolchains(
+-        triple_suffix = exec_triple.system + "_" + exec_triple.arch
++        triple_suffix = _exec_triple_suffix(exec_triple)
+@@ -40,3 +45,2 @@ def declare_rust_analyzer_toolchains(
+-        rust_analyzer_toolchain_name = "{}_{}_{}_rust_analyzer_toolchain".format(
+-            exec_triple.system,
+-            exec_triple.arch,
++        rust_analyzer_toolchain_name = "{}_{}_rust_analyzer_toolchain".format(
++            triple_suffix,
+@@ -60,5 +64,2 @@ def declare_rust_analyzer_toolchains(
+-            name = "{}_{}_rust_analyzer_{}".format(exec_triple.system, exec_triple.arch, version_key),
+-            exec_compatible_with = [
+-                "@platforms//os:" + exec_triple.system,
+-                "@platforms//cpu:" + exec_triple.arch,
+-            ],
++            name = "{}_rust_analyzer_{}".format(triple_suffix, version_key),
++            exec_compatible_with = triple_to_rust_constraint_set(triple),
+diff --git a/rs/toolchains/declare_rustc_toolchains.bzl b/rs/toolchains/declare_rustc_toolchains.bzl
+--- a/rs/toolchains/declare_rustc_toolchains.bzl
++++ b/rs/toolchains/declare_rustc_toolchains.bzl
+@@ -3 +3 @@ load("@rules_rust//rust/platform:triple.bzl", _parse_triple = "triple")
+-load("//rs/platforms:triples.bzl", "ALL_TARGET_TRIPLES", "SUPPORTED_EXEC_TRIPLES", "SUPPORTED_TIER_3_TRIPLES", "triple_to_rust_constraint_set")
++load("//rs/platforms:triples.bzl", "ALL_TARGET_TRIPLES", "SUPPORTED_RUST_EXEC_TRIPLES", "SUPPORTED_TIER_3_TRIPLES", "triple_to_rust_constraint_set")
+@@ -13,0 +14,5 @@ def _channel(version):
++def _exec_triple_suffix(exec_triple):
++    if exec_triple.system == "windows":
++        return "{}_{}_{}".format(exec_triple.system, exec_triple.arch, exec_triple.abi)
++    return "{}_{}".format(exec_triple.system, exec_triple.arch)
++
+@@ -26 +31 @@ def declare_rustc_toolchains(
+-        execs = SUPPORTED_EXEC_TRIPLES,
++        execs = SUPPORTED_RUST_EXEC_TRIPLES,
+@@ -51 +56 @@ def declare_rustc_toolchains(
+-        triple_suffix = exec_triple.system + "_" + exec_triple.arch
++        triple_suffix = _exec_triple_suffix(exec_triple)
+@@ -57,3 +62,2 @@ def declare_rustc_toolchains(
+-        rust_toolchain_name = "{}_{}_{}_rust_toolchain".format(
+-            exec_triple.system,
+-            exec_triple.arch,
++        rust_toolchain_name = "{}_{}_rust_toolchain".format(
++            triple_suffix,
+@@ -200,3 +204,2 @@ def declare_rustc_toolchains(
+-                name = "{}_{}_to_{}_targets_{}{}".format(
+-                    exec_triple.system,
+-                    exec_triple.arch,
++                name = "{}_to_{}_targets_{}{}".format(
++                    triple_suffix,
+@@ -207,4 +210 @@ def declare_rustc_toolchains(
+-                exec_compatible_with = [
+-                    "@platforms//os:" + exec_triple.system,
+-                    "@platforms//cpu:" + exec_triple.arch,
+-                ],
++                exec_compatible_with = triple_to_rust_constraint_set(triple),
+diff --git a/rs/toolchains/declare_rustfmt_toolchains.bzl b/rs/toolchains/declare_rustfmt_toolchains.bzl
+--- a/rs/toolchains/declare_rustfmt_toolchains.bzl
++++ b/rs/toolchains/declare_rustfmt_toolchains.bzl
+@@ -3 +3 @@ load("@rules_rust//rust/platform:triple.bzl", _parse_triple = "triple")
+-load("//rs/platforms:triples.bzl", "SUPPORTED_EXEC_TRIPLES")
++load("//rs/platforms:triples.bzl", "SUPPORTED_RUST_EXEC_TRIPLES", "triple_to_rust_constraint_set")
+@@ -12,0 +13,5 @@ def _channel(version):
++def _exec_triple_suffix(exec_triple):
++    if exec_triple.system == "windows":
++        return "{}_{}_{}".format(exec_triple.system, exec_triple.arch, exec_triple.abi)
++    return "{}_{}".format(exec_triple.system, exec_triple.arch)
++
+@@ -18 +23 @@ def declare_rustfmt_toolchains(
+-        execs = SUPPORTED_EXEC_TRIPLES):
++        execs = SUPPORTED_RUST_EXEC_TRIPLES):
+@@ -25 +30 @@ def declare_rustfmt_toolchains(
+-        triple_suffix = exec_triple.system + "_" + exec_triple.arch
++        triple_suffix = _exec_triple_suffix(exec_triple)
+@@ -30,3 +35,2 @@ def declare_rustfmt_toolchains(
+-        rustfmt_toolchain_name = "{}_{}_{}_rustfmt_toolchain".format(
+-            exec_triple.system,
+-            exec_triple.arch,
++        rustfmt_toolchain_name = "{}_{}_rustfmt_toolchain".format(
++            triple_suffix,
+@@ -46,5 +50,2 @@ def declare_rustfmt_toolchains(
+-            name = "{}_{}_rustfmt_{}".format(exec_triple.system, exec_triple.arch, version_key),
+-            exec_compatible_with = [
+-                "@platforms//os:" + exec_triple.system,
+-                "@platforms//cpu:" + exec_triple.arch,
+-            ],
++            name = "{}_rustfmt_{}".format(triple_suffix, version_key),
++            exec_compatible_with = triple_to_rust_constraint_set(triple),
+diff --git a/rs/toolchains/module_extension.bzl b/rs/toolchains/module_extension.bzl
+--- a/rs/toolchains/module_extension.bzl
++++ b/rs/toolchains/module_extension.bzl
+@@ -11 +11 @@ load("//rs/experimental/miri/private:miri_repository.bzl", "miri_repository")
+-load("//rs/platforms:triples.bzl", "SUPPORTED_EXEC_TRIPLES", "SUPPORTED_TIER_1_AND_2_TRIPLES")
++load("//rs/platforms:triples.bzl", "SUPPORTED_EXEC_TRIPLES", "SUPPORTED_RUST_EXEC_TRIPLES", "SUPPORTED_TIER_1_AND_2_TRIPLES")
+@@ -44,0 +45,5 @@ def _normalize_arch_name(arch):
++def _exec_triple_suffix(exec_triple):
++    if exec_triple.system == "windows":
++        return "{}_{}_{}".format(exec_triple.system, exec_triple.arch, exec_triple.abi)
++    return "{}_{}".format(exec_triple.system, exec_triple.arch)
++
+@@ -245 +250 @@ def _toolchains_impl(mctx):
+-        for triple in SUPPORTED_EXEC_TRIPLES:
++        for triple in SUPPORTED_RUST_EXEC_TRIPLES:
+@@ -252,1 +257,2 @@ def _toolchains_impl(mctx):
+-            if version in miri_versions:
++            # Miri does not ship a gnullvm host distribution.
++            if version in miri_versions and triple in SUPPORTED_EXEC_TRIPLES:
+@@ -262 +267 @@ def _toolchains_impl(mctx):
+-        for triple in SUPPORTED_EXEC_TRIPLES:
++        for triple in SUPPORTED_RUST_EXEC_TRIPLES:
+@@ -274 +279 @@ def _toolchains_impl(mctx):
+-        for triple in SUPPORTED_EXEC_TRIPLES:
++        for triple in SUPPORTED_RUST_EXEC_TRIPLES:
+@@ -302 +307 @@ def _toolchains_impl(mctx):
+-        for triple in SUPPORTED_EXEC_TRIPLES:
++        for triple in SUPPORTED_RUST_EXEC_TRIPLES:
+@@ -305 +310 @@ def _toolchains_impl(mctx):
+-            triple_suffix = exec_triple.system + "_" + exec_triple.arch
++            triple_suffix = _exec_triple_suffix(exec_triple)
+@@ -323 +328 @@ def _toolchains_impl(mctx):
+-                if exec_triple.arch == host_arch and exec_triple.system == host_os:
++                if triple in SUPPORTED_EXEC_TRIPLES and exec_triple.arch == host_arch and exec_triple.system == host_os:
+@@ -339,2 +344,3 @@ def _toolchains_impl(mctx):
+-            if version in miri_versions:
++            # Miri's declaration keeps its legacy OS/CPU-only repository name.
++            if version in miri_versions and triple in SUPPORTED_EXEC_TRIPLES:
+                 miri_repository(
+@@ -341 +347 @@ def _toolchains_impl(mctx):
+-                    name = "miri_{}_{}".format(triple_suffix, version_key),
++                    name = "miri_{}_{}_{}".format(exec_triple.system, exec_triple.arch, version_key),
+@@ -364 +369 @@ def _toolchains_impl(mctx):
+-        for triple in SUPPORTED_EXEC_TRIPLES:
++        for triple in SUPPORTED_RUST_EXEC_TRIPLES:
+@@ -366 +371 @@ def _toolchains_impl(mctx):
+-            triple_suffix = exec_triple.system + "_" + exec_triple.arch
++            triple_suffix = _exec_triple_suffix(exec_triple)
+@@ -388 +393 @@ def _toolchains_impl(mctx):
+-        for triple in SUPPORTED_EXEC_TRIPLES:
++        for triple in SUPPORTED_RUST_EXEC_TRIPLES:
+@@ -390 +395 @@ def _toolchains_impl(mctx):
+-            triple_suffix = exec_triple.system + "_" + exec_triple.arch
++            triple_suffix = _exec_triple_suffix(exec_triple)
