@@ -989,9 +989,13 @@ for a removed crate path.
   interval after an atomic filesystem replacement but before Python records
   that replacement, so rollback must reconcile authoritative path state rather
   than trust only in-memory bookkeeping. The same contract proves a host-local
-  activation lock, exact relative-pointer restoration, fail-closed backup-path
-  collision handling, and recovery of stale interrupted predecessor copies
-  before their transaction directory is removed.
+  portable activation lock across Linux and Intel macOS, a two-installer
+  serialization run, exact relative-pointer restoration, locked immutable-path
+  revalidation, fail-closed current and stale backup-path collision handling,
+  atomic predecessor-copy publication, partial-copy discard, and recovery of
+  complete format-marked stale predecessor copies before their transaction is
+  removed. Unmarked stale predecessor data remains fail-closed for operator
+  reconciliation rather than being represented as a complete backup.
 - Full builds are buildability or promotion checkpoints, not the default
   inner-loop validator for ordinary carry iteration.
 - For native computer-use, use the Codex app-server/protocol, shared

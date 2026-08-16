@@ -105,10 +105,80 @@ install_root="${HOME}/.codex/packages/standalone"
 bin_dir="${HOME}/.local/bin"
 
 work_dir="$(mktemp -d -t sedna-release-install.XXXXXX)"
+activation_lock_kind=""
+activation_lock_dir="${install_root}/.release-activation.lock.d"
 cleanup() {
+  if [[ "$activation_lock_kind" == "mkdir" ]]; then
+    rm -rf "$activation_lock_dir" 2>/dev/null || true
+  elif [[ "$activation_lock_kind" == "flock" || "$activation_lock_kind" == "lockf" ]]; then
+    exec 9>&- 2>/dev/null || true
+  fi
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
+
+mkdir_lock_is_stale() {
+  [[ -d "$activation_lock_dir" ]] || return 1
+  local pid started_at now
+  pid="$(cat "$activation_lock_dir/pid" 2>/dev/null || true)"
+  started_at="$(cat "$activation_lock_dir/started_at" 2>/dev/null || true)"
+  now="$(date +%s 2>/dev/null || printf '0')"
+  [[ "$started_at" =~ ^[0-9]+$ ]] || started_at=0
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    return 1
+  fi
+  [[ "$started_at" -eq 0 || "$now" -eq 0 || $((now - started_at)) -ge 900 ]]
+}
+
+acquire_activation_lock() {
+  local lock_file="${install_root}/.release-activation.lock"
+  local test_lock_marker="${SEDNA_INSTALLER_TEST_LOCK_WAIT_MARKER:-}"
+  if [[ ( -n "${SEDNA_INSTALLER_TEST_FAULT:-}" \
+      || -n "${SEDNA_INSTALLER_TEST_LOCK_WAIT_MARKER:-}" \
+      || -n "${SEDNA_INSTALLER_TEST_PAUSE_MARKER:-}" \
+      || -n "${SEDNA_INSTALLER_TEST_PAUSE_RELEASE:-}" ) \
+      && "${SEDNA_INSTALLER_TESTING:-}" != "1" ]]; then
+    echo "error: installer test controls require SEDNA_INSTALLER_TESTING=1" >&2
+    exit 1
+  fi
+  if [[ -n "$test_lock_marker" ]]; then
+    if [[ -e "$test_lock_marker" ]]; then
+      echo "error: installer test lock marker already exists: $test_lock_marker" >&2
+      exit 1
+    fi
+    (umask 077; : > "$test_lock_marker")
+  fi
+
+  if [[ -L "$lock_file" || -L "$activation_lock_dir" ]]; then
+    echo "error: release activation lock paths must not be symlinks" >&2
+    exit 1
+  fi
+  if [[ "$host_os" == "Darwin" ]] && command -v lockf >/dev/null 2>&1; then
+    : >>"$lock_file"
+    chmod 600 "$lock_file"
+    exec 9<>"$lock_file"
+    lockf 9
+    activation_lock_kind="lockf"
+    return
+  fi
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$lock_file"
+    chmod 600 "$lock_file"
+    flock 9
+    activation_lock_kind="flock"
+    return
+  fi
+  while ! mkdir "$activation_lock_dir" 2>/dev/null; do
+    if mkdir_lock_is_stale; then
+      rm -rf "$activation_lock_dir"
+      continue
+    fi
+    sleep 1
+  done
+  printf '%s\n' "$$" >"$activation_lock_dir/pid"
+  date +%s >"$activation_lock_dir/started_at" 2>/dev/null || true
+  activation_lock_kind="mkdir"
+}
 
 github_header=(
   -H "User-Agent: sedna-release-install"
@@ -693,7 +763,24 @@ if [[ "$target" != "x86_64-unknown-linux-gnu" ]]; then
   release_dir_name="${release_tag}-${target}"
 fi
 release_dir="${install_root}/releases/${release_dir_name}"
-if [[ -d "$release_dir" ]]; then
+validate_existing_release() {
+  if [[ -L "$release_dir" ]]; then
+    echo "error: existing release path must not be a symlink: $release_dir" >&2
+    exit 1
+  fi
+  if [[ ! -e "$release_dir" ]]; then
+    return
+  fi
+  if [[ ! -d "$release_dir" ]]; then
+    echo "error: existing release path is not a directory: $release_dir" >&2
+    exit 1
+  fi
+  for verified_file in codex codex-responses-api-proxy RELEASE-METADATA.json SHA256SUMS.txt; do
+    if [[ -L "$release_dir/$verified_file" || ! -f "$release_dir/$verified_file" ]]; then
+      echo "error: existing release has an unsafe or missing verified file: $verified_file" >&2
+      exit 1
+    fi
+  done
   python3 - "$release_dir/RELEASE-METADATA.json" "$release_tag" "$target" <<'PY'
 import json
 import sys
@@ -711,22 +798,20 @@ if actual_target is None and expected_target != "x86_64-unknown-linux-gnu":
     raise SystemExit("error: non-x86 release metadata must include its target")
 PY
   for executable in codex codex-responses-api-proxy; do
-    if [[ ! -x "$release_dir/$executable" ]]; then
+    if [[ -L "$release_dir/$executable" || ! -x "$release_dir/$executable" ]]; then
       echo "error: existing release is missing required executable: $executable" >&2
       exit 1
     fi
   done
   for verified_file in codex codex-responses-api-proxy RELEASE-METADATA.json SHA256SUMS.txt; do
-    if [[ ! -f "$release_dir/$verified_file" ]]; then
-      echo "error: existing release is missing verified file: $verified_file" >&2
-      exit 1
-    fi
     if ! cmp -s "$staged/$verified_file" "$release_dir/$verified_file"; then
       echo "error: existing release file does not match verified payload: $verified_file" >&2
       exit 1
     fi
   done
-fi
+}
+
+validate_existing_release
 
 if [[ "$dry_run" == "true" ]]; then
   echo "dry-run: verified sednalabs/codex@${release_tag} for ${target}"
@@ -735,25 +820,8 @@ if [[ "$dry_run" == "true" ]]; then
 fi
 
 mkdir -p "${install_root}/releases" "$bin_dir"
-if ! command -v flock >/dev/null 2>&1; then
-  echo "error: flock is required for serialized release activation" >&2
-  exit 1
-fi
-test_lock_marker="${SEDNA_INSTALLER_TEST_LOCK_WAIT_MARKER:-}"
-if [[ -n "$test_lock_marker" && "${SEDNA_INSTALLER_TESTING:-}" != "1" ]]; then
-  echo "error: installer test controls require SEDNA_INSTALLER_TESTING=1" >&2
-  exit 1
-fi
-if [[ -n "$test_lock_marker" ]]; then
-  if [[ -e "$test_lock_marker" ]]; then
-    echo "error: installer test lock marker already exists: $test_lock_marker" >&2
-    exit 1
-  fi
-  (umask 077; : > "$test_lock_marker")
-fi
-exec {activation_lock_fd}>"${install_root}/.release-activation.lock"
-chmod 600 "${install_root}/.release-activation.lock"
-flock -x "$activation_lock_fd"
+acquire_activation_lock
+validate_existing_release
 
 if [[ ! -d "$release_dir" ]]; then
   tmp_release="${install_root}/releases/.${release_dir_name}.tmp.$$"
@@ -764,6 +832,7 @@ if [[ ! -d "$release_dir" ]]; then
   cp "$staged/RELEASE-METADATA.json" "$tmp_release/RELEASE-METADATA.json"
   cp "$staged/SHA256SUMS.txt" "$tmp_release/SHA256SUMS.txt"
   mv "$tmp_release" "$release_dir"
+  validate_existing_release
 fi
 
 python3 - "$install_root" "$bin_dir" "$release_dir" <<'PY'
@@ -778,9 +847,14 @@ from pathlib import Path
 install_root, bin_dir, release_dir = map(Path, sys.argv[1:4])
 current = install_root / "current"
 executables = ("codex", "codex-responses-api-proxy")
+transaction_format = "atomic-predecessor-copy-v1"
 
 test_fault = os.environ.get("SEDNA_INSTALLER_TEST_FAULT")
-if test_fault and os.environ.get("SEDNA_INSTALLER_TESTING") != "1":
+test_pause_marker = os.environ.get("SEDNA_INSTALLER_TEST_PAUSE_MARKER")
+test_pause_release = os.environ.get("SEDNA_INSTALLER_TEST_PAUSE_RELEASE")
+if (test_fault or test_pause_marker or test_pause_release) and os.environ.get(
+    "SEDNA_INSTALLER_TESTING"
+) != "1":
     raise SystemExit(
         "error: installer test controls require SEDNA_INSTALLER_TESTING=1"
     )
@@ -796,7 +870,7 @@ for stale_transaction in sorted(install_root.glob(".activation.*")):
     unexpected = {
         entry.name
         for entry in stale_transaction.iterdir()
-        if entry.name not in {"saved", "candidate"}
+        if entry.name not in {"saved", "candidate", "TRANSACTION_FORMAT"}
     }
     if unexpected:
         raise RuntimeError(
@@ -804,6 +878,17 @@ for stale_transaction in sorted(install_root.glob(".activation.*")):
             f"{stale_transaction} ({', '.join(sorted(unexpected))})"
         )
     stale_saved = stale_transaction / "saved"
+    format_path = stale_transaction / "TRANSACTION_FORMAT"
+    format_is_current = (
+        format_path.is_file()
+        and not format_path.is_symlink()
+        and format_path.read_text(encoding="utf-8") == f"{transaction_format}\n"
+    )
+    if not format_is_current and stale_saved.exists() and any(stale_saved.iterdir()):
+        raise RuntimeError(
+            f"refusing unmarked stale transaction with predecessor data: "
+            f"{stale_transaction}"
+        )
     if stale_saved.exists():
         backups = install_root / "backups"
         backups.mkdir(exist_ok=True)
@@ -833,6 +918,9 @@ saved_dir = transaction / "saved"
 candidate_dir = transaction / "candidate"
 saved_dir.mkdir()
 candidate_dir.mkdir()
+(transaction / "TRANSACTION_FORMAT").write_text(
+    f"{transaction_format}\n", encoding="utf-8"
+)
 saved_entries: dict[str, Path] = {}
 saved_symlinks: dict[str, str] = {}
 backup_entries: dict[str, Path] = {}
@@ -853,6 +941,19 @@ def inject_test_fault(stage: str, path: Path | None = None) -> None:
         if path is None:
             raise RuntimeError(f"test collision stage has no path: {stage}")
         path.mkdir(parents=True)
+    if test_fault == f"sigkill-partial:{stage}":
+        if path is None:
+            raise RuntimeError(f"test partial-copy stage has no path: {stage}")
+        path.write_bytes(b"partial predecessor copy")
+        os.kill(os.getpid(), signal.SIGKILL)
+    if test_fault == f"pause:{stage}":
+        if not test_pause_marker or not test_pause_release:
+            raise RuntimeError("installer pause test paths are missing")
+        marker = Path(test_pause_marker)
+        release = Path(test_pause_release)
+        marker.touch()
+        while not release.exists():
+            time.sleep(0.01)
 
 
 def interrupt_activation(signum: int, _frame: object) -> None:
@@ -873,7 +974,13 @@ try:
             if visible.is_symlink():
                 saved_symlinks[executable] = os.readlink(visible)
             elif visible.is_file():
-                shutil.copy2(visible, saved)
+                copy_candidate = candidate_dir / f"{executable}.predecessor-copy"
+                inject_test_fault(
+                    "during-first-save" if index == 0 else "during-second-save",
+                    copy_candidate,
+                )
+                shutil.copy2(visible, copy_candidate)
+                os.replace(copy_candidate, saved)
                 saved_entries[executable] = saved
             else:
                 raise RuntimeError(
