@@ -233,7 +233,7 @@ async fn install_latest_sedna_standalone(http: &impl InstallerHttp) -> Result<()
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .context("failed to invoke Sedna standalone Codex updater")?;
     let mut stdin = child

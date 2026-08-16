@@ -2606,6 +2606,7 @@
       "files": [
         ".github/scripts/test_ci_planners.py",
         ".github/scripts/resolve_sedna_release_version.py",
+        ".github/workflows/_sedna-linux-rust.yml",
         ".github/workflows/sedna-branch-build.yml",
         ".github/workflows/sedna-release.yml",
         ".github/workflows/sedna-release-install.yml",
@@ -2621,7 +2622,7 @@
         "scripts/install/test_install_sh.py",
         "scripts/resolve_sedna_release_version"
       ],
-      "behavior": "Update discovery, prompts, and installer routing follow Sedna prerelease tags and GitHub-hosted assets while preserving the upstream-derived version line and keeping host installation outside public build workflows. Official Linux releases build natively for x86_64 GNU and Arm64 GNU with target-isolated artifacts and authority-isolated non-executable caches; publish checksums, target-bound metadata, Sigstore bundles, SPDX SBOMs, and GitHub provenance; and dispatch native hosted verification from the exact published tag. Hardened verification binds signatures and attestations to the exact hosted release workflow source commit. Current x86 and all Arm64 installs fail closed into that trust contract by default. Explicitly selected historical x86-only verification preserves the older checksum, metadata, archive-safety, and executable contract without requiring fields or tools that those releases predate, but cannot downgrade releases carrying Arm64 or provenance assets. Existing install directories must match the freshly verified staged payload byte-for-byte before activation. Manual publication is restricted to protected main. Upstream's optional releases.openai.com source remains intact for the default openai/codex and rust-v origin, while configured repository and tag-prefix overrides deliberately bypass that OpenAI-only source and retain their GitHub metadata and asset URLs.",
+      "behavior": "Update discovery, prompts, and installer routing follow Sedna prerelease tags and GitHub-hosted assets while preserving the upstream-derived version line and keeping host installation outside public build workflows. Official Linux releases build natively for x86_64 GNU and Arm64 GNU with target-isolated artifacts and authority-isolated non-executable caches; publish checksums, target-bound metadata, Sigstore bundles, SPDX SBOMs, and GitHub provenance; and dispatch native hosted verification from the exact published tag. Hardened verification binds signatures and attestations to the exact hosted release workflow source commit. Current x86 and all Arm64 installs fail closed into that trust contract by default, bootstrapping checksum-pinned verification tools only in the temporary work directory when host tools are absent. Immutable pre-cutoff x86-only releases without Arm64 or provenance assets automatically preserve the older checksum, metadata, archive-safety, and executable contract for stale updater calls; the explicit historical mode cannot downgrade a current release. Existing install directories must match the freshly verified staged payload byte-for-byte before activation. Manual publication is restricted to protected main. Upstream's optional releases.openai.com source remains intact for the default openai/codex and rust-v origin, while configured repository and tag-prefix overrides deliberately bypass that OpenAI-only source and retain their GitHub metadata and asset URLs.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -2644,12 +2645,13 @@
         "sedna-release workflow policy checks"
       ],
       "owner": "downstream",
-      "notes": "Keeps public GitHub workflows limited to building, publishing, and verifying assets; production installation remains an operator-controlled private concern. Preserve the dual-native Linux matrix, target-isolated asset names, preview/release cache authority separation with no cached executable tool path, default hardened current x86 and mandatory Arm64 verification, exact-source hosted-runner trust checks, explicit historical x86 compatibility, verified existing-install equality, and protected-main publication boundary together during upstream syncs. Drop or narrow this carry only when upstream provides an equivalent downstream release-origin adapter and dual-architecture signed, attested, source-bound asset contract. The releases.openai.com preference is intentionally origin-scoped so a downstream release repository can never consume OpenAI metadata or assets accidentally.",
+      "notes": "Keeps public GitHub workflows limited to building, publishing, and verifying assets; production installation remains an operator-controlled private concern. Preserve the dual-native Linux matrix, target-isolated asset names, preview/release cache authority separation with no cached executable tool path, default hardened current x86 and mandatory Arm64 verification, checksum-pinned ephemeral verifier bootstrap, exact-source hosted-runner trust checks, bounded pre-cutoff historical x86 compatibility, verified existing-install equality, and protected-main publication boundary together during upstream syncs. Drop or narrow this carry only when upstream provides an equivalent downstream release-origin adapter and dual-architecture signed, attested, source-bound asset contract. The releases.openai.com preference is intentionally origin-scoped so a downstream release repository can never consume OpenAI metadata or assets accidentally.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "release-update-routing",
       "hotspot_files": [
         "codex-rs/app-server-daemon/src/update_loop.rs",
         "codex-rs/tui/src/update_versions.rs",
+        ".github/workflows/_sedna-linux-rust.yml",
         ".github/workflows/sedna-release.yml",
         ".github/workflows/sedna-release-install.yml",
         "scripts/install_sedna_release_asset"

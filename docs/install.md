@@ -8,15 +8,15 @@
 | Git (optional, recommended) | 2.23+ for built-in PR helpers                                        |
 | RAM                         | 4-GB minimum (8-GB recommended)                                      |
 
-Hardened Linux asset verification uses Cosign for keyless binary signatures and a current GitHub
-CLI with `gh attestation verify` for build attestations. The public post-release verifier provisions
-Cosign and passes `--verify-signatures --verify-attestation` for current dual-architecture releases.
-Arm64 has no legacy release mode and therefore always requires both signature and provenance
-verification. The default x86 installer path retains compatibility with historical updater calls
-that validate release identity, checksums, archive safety, and executable startup but
-predate the SBOM and attestation contract; new external deployment automation should pass both
-hardened verification flags. Linux distributions older than the Ubuntu 24.04 hosted verification
-environment are not part of the release compatibility proof.
+Current Linux assets default to keyless Cosign signature and GitHub build-attestation verification.
+When compatible host tools are absent, the installer downloads checksum-pinned Cosign and GitHub
+CLI binaries into its temporary verification directory; it does not install them globally. Arm64
+has no legacy release mode. Immutable x86-only releases published before the 2026-08-16 trust
+cutoff and carrying no Arm64 or provenance assets retain their historical identity, checksum,
+archive-safety, and executable-startup path so already-shipped updater calls remain functional;
+the explicit `--allow-historical-x86` flag cannot downgrade a current release. Linux distributions
+older than the Ubuntu 24.04 hosted verification environment are not part of the release
+compatibility proof.
 
 The supported downstream Linux install and release targets are `x86_64` and Arm64 GNU. Intel macOS `x86_64` is also supported by the release contract. Other upstream platform paths remain in the repository for future re-enablement, but Sedna does not currently publish or validate them as supported targets.
 

@@ -1920,7 +1920,9 @@ decisions.
   SPDX SBOMs, and GitHub build-provenance attestations; Apple Silicon remains unsupported.
 - Preview and release Cargo dependency/compiler caches use separate authority namespaces and
   exclude executable Cargo tool paths. Current x86 and all Arm64 installs default to exact-source
-  hardened verification; the explicit historical-x86 escape hatch rejects modern Arm/provenance
+  hardened verification, using checksum-pinned temporary verifier tools when compatible host tools
+  are absent. Immutable pre-cutoff x86-only releases without modern assets automatically preserve
+  stale updater compatibility; the explicit historical-x86 escape hatch cannot downgrade current
   releases. A previously present release directory is activated only when it matches the freshly
   verified binaries, metadata, and checksum manifest byte-for-byte.
 - Preserve the dual-native Linux matrix, target-isolated names and caches, exact-source
@@ -1929,6 +1931,7 @@ decisions.
   it only when upstream provides an equivalent downstream-origin and dual-architecture release
   contract.
 - Primary files:
+  - `.github/workflows/_sedna-linux-rust.yml`
   - `.github/workflows/sedna-release.yml`
   - `.github/workflows/sedna-release-install.yml`
   - `.github/workflows/sedna-branch-build.yml`

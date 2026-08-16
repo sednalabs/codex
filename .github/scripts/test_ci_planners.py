@@ -7162,6 +7162,11 @@ class HelperScriptTests(unittest.TestCase):
                         "tag_name": release_tag,
                         "draft": False,
                         "prerelease": True,
+                        "published_at": (
+                            "2026-07-31T05:48:08Z"
+                            if failure == "legacy_x86"
+                            else "2026-08-16T12:00:00Z"
+                        ),
                         "target_commitish": (
                             "b" * 40
                             if failure == "wrong_source_commit"
@@ -7286,6 +7291,10 @@ exit 0
                     helper.write_text(
                         """#!/usr/bin/env bash
 set -euo pipefail
+if [[ ${1:-} == verify-blob && ${2:-} == --help ]]; then
+  echo '--certificate-github-workflow-sha --certificate-identity-regexp'
+  exit 0
+fi
 workflow_sha=''
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == --certificate-github-workflow-sha ]]; then
@@ -7395,12 +7404,21 @@ fi
         self.assertEqual(legacy_x86_proc.returncode, 0, legacy_x86_proc.stderr)
         self.assertIn("for x86_64-unknown-linux-gnu", legacy_x86_proc.stdout)
 
+        stale_updater_legacy_x86_proc = self.run_sedna_installer_fixture(
+            "legacy_x86", arch="x86_64", hardened=True
+        )
+        self.assertEqual(
+            stale_updater_legacy_x86_proc.returncode,
+            0,
+            stale_updater_legacy_x86_proc.stderr,
+        )
+
         downgrade_current_x86_proc = self.run_sedna_installer_fixture(
             arch="x86_64", hardened=False
         )
         self.assertNotEqual(downgrade_current_x86_proc.returncode, 0)
         self.assertIn(
-            "cannot downgrade a release with provenance assets",
+            "cannot downgrade a current release",
             downgrade_current_x86_proc.stderr,
         )
 
@@ -8149,7 +8167,21 @@ fi
         self.assertIn("UNNOTARIZED-PREVIEW", installer)
         self.assertIn("cosign verify-blob", installer)
         self.assertIn("gh attestation verify", installer)
+        self.assertIn("sigstore/cosign/releases/download/v3.1.3", installer)
+        self.assertIn("cli/cli/releases/download/v2.97.0", installer)
+        self.assertIn("verification_tools_dir", installer)
+        self.assertIn("verify_download_sha256", installer)
+        self.assertIn("2026, 8, 16", installer)
+        self.assertIn("published_at", installer)
+        self.assertIn('.decode(\n            "utf-8", errors="strict"\n        )', installer)
         self.assertIn("--signer-workflow", installer)
+        daemon_update_loop = (
+            REPO_ROOT / "codex-rs/app-server-daemon/src/update_loop.rs"
+        ).read_text(encoding="utf-8")
+        sedna_updater = daemon_update_loop.split(
+            "async fn install_latest_sedna_standalone", 1
+        )[1]
+        self.assertIn(".stderr(Stdio::inherit())", sedna_updater)
         self.assertEqual(installer.count('--source-digest "$expected_source_commit"'), 3)
         self.assertEqual(installer.count('--signer-digest "$expected_source_commit"'), 3)
         self.assertEqual(

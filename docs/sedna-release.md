@@ -249,9 +249,13 @@ runner. It intentionally does not perform host-local installation from the publi
   the release source.
 - Current x86-64 releases fail closed into signature, provenance, hosted-runner, and exact-source
   verification by default, including clients that fetch the current installer without new flags.
-  Historical releases whose metadata predates `target_commit` require the explicit
-  `--allow-historical-x86` compatibility flag; that flag rejects releases carrying Arm64 or
-  provenance assets. Arm64 never has a downgrade path.
+  When compatible host tools are absent, the installer uses checksum-pinned Cosign and GitHub CLI
+  binaries in its temporary verification directory; it does not install tools globally. A pure
+  Python ELF parser is the fallback when `file` or `readelf` is absent.
+- Immutable x86-only releases published before the 2026-08-16 trust-contract cutoff and carrying
+  no Arm64 or provenance assets automatically retain the historical path for already-shipped
+  updater calls. `--allow-historical-x86` is the explicit operator form of that same bounded mode
+  and cannot downgrade a current release. Arm64 never has a downgrade path.
 - A non-dry install may reuse an existing release directory only when both executables, metadata,
   and checksum manifest are byte-for-byte identical to the freshly verified staged payload.
 - Host-local installs should be performed by external deployment automation outside the public
