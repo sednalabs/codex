@@ -239,6 +239,7 @@ jobs:
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
           INPUT_DRAFT: ${{ inputs.draft }}
           INPUT_MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
+          HOST_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -252,7 +253,11 @@ jobs:
           )
 
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            target_sha="${INPUT_TARGET_SHA:-${GITHUB_SHA}}"
+            target_sha="${INPUT_TARGET_SHA:-${HOST_SHA}}"
+            if [[ "${target_sha}" != "${HOST_SHA}" ]]; then
+              echo "Manual release target_sha must equal the exact workflow host SHA ${HOST_SHA}; got ${target_sha}." >&2
+              exit 1
+            fi
             args+=(--target-sha "${target_sha}" --channel "${INPUT_CHANNEL}")
             if [[ -n "${INPUT_RELEASE_TAG}" ]]; then
               args+=(--release-tag "${INPUT_RELEASE_TAG}")

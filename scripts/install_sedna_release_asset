@@ -301,6 +301,26 @@ if require_linux_provenance == "true":
         raise SystemExit(f"error: {sbom_name} is not an SPDX 2.3 document")
 PY
 
+expected_source_commit="$(python3 - "$work_dir/$metadata_name" "$release_json" <<'PY'
+import json
+import re
+import sys
+
+metadata_path, release_path = sys.argv[1:3]
+metadata = json.loads(open(metadata_path, encoding="utf-8").read())
+release = json.loads(open(release_path, encoding="utf-8").read())
+target_commit = metadata.get("target_commit")
+if not isinstance(target_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", target_commit):
+    raise SystemExit("error: release metadata target_commit must be a full lowercase Git SHA")
+release_target = release.get("target_commitish")
+if release_target != target_commit:
+    raise SystemExit(
+        f"error: release target_commitish={release_target!r} does not match metadata target_commit={target_commit!r}"
+    )
+print(target_commit)
+PY
+)"
+
 staged="${work_dir}/stage"
 mkdir "$staged"
 python3 - "$work_dir/$archive_name" "$staged" <<'PY'
@@ -380,11 +400,13 @@ if [[ "$verify_signatures" == "true" ]]; then
   cosign verify-blob \
     --bundle "$work_dir/$codex_sigstore_name" \
     --certificate-identity-regexp "$certificate_identity_regexp" \
+    --certificate-github-workflow-sha "$expected_source_commit" \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     "$staged/codex"
   cosign verify-blob \
     --bundle "$work_dir/$proxy_sigstore_name" \
     --certificate-identity-regexp "$certificate_identity_regexp" \
+    --certificate-github-workflow-sha "$expected_source_commit" \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     "$staged/codex-responses-api-proxy"
 
@@ -395,21 +417,30 @@ if [[ "$verify_attestation" == "true" ]]; then
     echo "error: a GitHub CLI version with 'gh attestation verify' is required to verify build attestations" >&2
     exit 1
   fi
-  if ! gh_attestation_help="$(gh attestation verify --help 2>&1)" || [[ "$gh_attestation_help" != *"--deny-self-hosted-runners"* ]]; then
-    echo "error: a GitHub CLI version with hosted-runner attestation enforcement is required" >&2
+  if ! gh_attestation_help="$(gh attestation verify --help 2>&1)" \
+    || [[ "$gh_attestation_help" != *"--deny-self-hosted-runners"* ]] \
+    || [[ "$gh_attestation_help" != *"--source-digest"* ]] \
+    || [[ "$gh_attestation_help" != *"--signer-digest"* ]]; then
+    echo "error: a GitHub CLI version with exact-source hosted-runner attestation enforcement is required" >&2
     exit 1
   fi
   gh attestation verify "$work_dir/$archive_name" \
     --repo sednalabs/codex \
     --deny-self-hosted-runners \
+    --source-digest "$expected_source_commit" \
+    --signer-digest "$expected_source_commit" \
     --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
   gh attestation verify "$work_dir/$sbom_name" \
     --repo sednalabs/codex \
     --deny-self-hosted-runners \
+    --source-digest "$expected_source_commit" \
+    --signer-digest "$expected_source_commit" \
     --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
   gh attestation verify "$work_dir/$metadata_name" \
     --repo sednalabs/codex \
     --deny-self-hosted-runners \
+    --source-digest "$expected_source_commit" \
+    --signer-digest "$expected_source_commit" \
     --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
 fi
 

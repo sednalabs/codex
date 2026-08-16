@@ -6914,6 +6914,7 @@ class HelperScriptTests(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str]:
         release_tag = "v0.146.0-alpha.8-sedna.99+upstream.3"
         release_version = release_tag.removeprefix("v")
+        target_commit = "a" * 40
         target = (
             "aarch64-unknown-linux-gnu"
             if arch == "aarch64"
@@ -6974,6 +6975,7 @@ class HelperScriptTests(unittest.TestCase):
                     else target
                 ),
                 "repository": "sednalabs/codex",
+                "target_commit": target_commit,
             }
             (root / metadata_name).write_text(json.dumps(metadata), encoding="utf-8")
             (root / sbom_name).write_text(
@@ -7037,6 +7039,11 @@ class HelperScriptTests(unittest.TestCase):
                         "tag_name": release_tag,
                         "draft": False,
                         "prerelease": True,
+                        "target_commitish": (
+                            "b" * 40
+                            if failure == "wrong_source_commit"
+                            else target_commit
+                        ),
                         "assets": release_assets,
                     }
                 ),
@@ -7090,21 +7097,52 @@ fi
                         """#!/usr/bin/env bash
 set -euo pipefail
 if [[ ${1:-} == attestation && ${2:-} == verify && ${3:-} == --help ]]; then
-  echo --deny-self-hosted-runners
+  echo '--deny-self-hosted-runners --source-digest --signer-digest'
   exit 0
 fi
 if [[ ${1:-} == attestation && ${2:-} == verify && ${3:-} != --help ]]; then
   deny_self_hosted=false
-  for arg in "$@"; do
+  source_digest=''
+  signer_digest=''
+  while [[ $# -gt 0 ]]; do
+    arg="$1"
     if [[ "$arg" == --deny-self-hosted-runners ]]; then
       deny_self_hosted=true
+      shift
+    elif [[ "$arg" == --source-digest ]]; then
+      source_digest="${2:-}"
+      shift 2
+    elif [[ "$arg" == --signer-digest ]]; then
+      signer_digest="${2:-}"
+      shift 2
+    else
+      shift
     fi
   done
-  if [[ "$deny_self_hosted" != true ]]; then
+  if [[ "$deny_self_hosted" != true || "$source_digest" != "$EXPECTED_SOURCE_COMMIT" || "$signer_digest" != "$EXPECTED_SOURCE_COMMIT" ]]; then
     exit 98
   fi
 fi
 exit 0
+""",
+                        encoding="utf-8",
+                    )
+                elif name == "cosign":
+                    helper.write_text(
+                        """#!/usr/bin/env bash
+set -euo pipefail
+workflow_sha=''
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == --certificate-github-workflow-sha ]]; then
+    workflow_sha="${2:-}"
+    shift 2
+  else
+    shift
+  fi
+done
+if [[ "$workflow_sha" != "$EXPECTED_SOURCE_COMMIT" ]]; then
+  exit 99
+fi
 """,
                         encoding="utf-8",
                     )
@@ -7137,6 +7175,7 @@ exit 0
                     else "/lib64/ld-linux-x86-64.so.2"
                 ),
                 "FAKE_UNAME_ARCH": arch,
+                "EXPECTED_SOURCE_COMMIT": target_commit,
                 "GITHUB_TOKEN": "fixture-token",
                 "HOME": str(root / "home"),
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -7180,6 +7219,7 @@ exit 0
             "checksum_mismatch": "checksum mismatch",
             "unsafe_archive": "refusing unexpected archive member",
             "wrong_elf": "unexpected binary architecture",
+            "wrong_source_commit": "does not match metadata target_commit",
         }
         for failure, expected in cases.items():
             with self.subTest(failure=failure):
@@ -7541,6 +7581,15 @@ exit 0
         self.assertIn(
             "--missing-marker error",
             resolve_named_steps["Resolve release metadata"].get("run") or "",
+        )
+        resolve_metadata_step = resolve_named_steps["Resolve release metadata"]
+        self.assertEqual(
+            (resolve_metadata_step.get("env") or {}).get("HOST_SHA"),
+            "${{ github.sha }}",
+        )
+        self.assertIn(
+            'if [[ "${target_sha}" != "${HOST_SHA}" ]]',
+            resolve_metadata_step.get("run") or "",
         )
         self.assertEqual(
             release_job.get("name"),
@@ -7923,6 +7972,14 @@ exit 0
         self.assertIn("cosign verify-blob", installer)
         self.assertIn("gh attestation verify", installer)
         self.assertIn("--signer-workflow", installer)
+        self.assertEqual(installer.count('--source-digest "$expected_source_commit"'), 3)
+        self.assertEqual(installer.count('--signer-digest "$expected_source_commit"'), 3)
+        self.assertEqual(
+            installer.count(
+                '--certificate-github-workflow-sha "$expected_source_commit"'
+            ),
+            2,
+        )
         deny_runner_lines = [
             line
             for line in installer.splitlines()
