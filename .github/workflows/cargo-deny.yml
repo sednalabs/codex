@@ -2,9 +2,19 @@ name: cargo-deny
 
 on:
   workflow_call:
+    inputs:
+      run_cargo_deny:
+        description: Run dependency policy validation for this change.
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
 
 jobs:
   cargo-deny:
+    if: ${{ inputs.run_cargo_deny }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -32,3 +42,29 @@ jobs:
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
+
+  required:
+    name: cargo-deny required gate
+    if: ${{ always() }}
+    needs: cargo-deny
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require selected dependency policy lane
+        shell: bash
+        env:
+          RUN_CARGO_DENY: ${{ inputs.run_cargo_deny }}
+          RESULT: ${{ needs.cargo-deny.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${RUN_CARGO_DENY}" == "true" ]]; then
+            [[ "${RESULT}" == "success" ]] || {
+              echo "cargo-deny was required but concluded: ${RESULT}" >&2
+              exit 1
+            }
+          else
+            [[ "${RESULT}" == "skipped" ]] || {
+              echo "cargo-deny was not selected but concluded unexpectedly: ${RESULT}" >&2
+              exit 1
+            }
+            echo "cargo-deny not applicable to this change."
+          fi
