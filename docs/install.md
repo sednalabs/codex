@@ -2,11 +2,17 @@
 
 ### System requirements
 
-| Requirement                 | Details                                               |
-| --------------------------- | ----------------------------------------------------- |
-| Operating systems           | Linux `x86_64` (Ubuntu 20.04+/Debian 10+ recommended) |
-| Git (optional, recommended) | 2.23+ for built-in PR helpers                         |
-| RAM                         | 4-GB minimum (8-GB recommended)                       |
+| Requirement                 | Details                                                                         |
+| --------------------------- | ------------------------------------------------------------------------------- |
+| Operating systems           | Linux `x86_64` or Arm64 GNU (Ubuntu 20.04+/Debian 10+ recommended); Intel macOS |
+| Git (optional, recommended) | 2.23+ for built-in PR helpers                                                   |
+| RAM                         | 4-GB minimum (8-GB recommended)                                                 |
+
+Hardened Linux asset verification uses Cosign for keyless binary signatures and GitHub CLI for
+build attestations. The public post-release verifier provisions Cosign and passes
+`--verify-signatures --verify-attestation`; external deployment automation should do the same
+after provisioning those tools. The default x86 installer path retains compatibility with
+historical release assets that predate the SBOM and attestation contract.
 
 The supported downstream Linux install and release targets are `x86_64` and Arm64 GNU. Intel macOS `x86_64` is also supported by the release contract. Other upstream platform paths remain in the repository for future re-enablement, but Sedna does not currently publish or validate them as supported targets.
 

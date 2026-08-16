@@ -594,6 +594,7 @@ jobs:
           cp "target/${TARGET}/release/codex-responses-api-proxy.sigstore" "${dist_dir}/${archive_base}-codex-responses-api-proxy.sigstore"
 
           tar -C "${stage_dir}" -czf "${dist_dir}/${archive_base}.tar.gz" .
+          install -m 0644 Cargo.toml Cargo.lock "${stage_dir}/"
 
           cat > "${dist_dir}/${METADATA_TEXT_NAME}" <<EOF
           release_tag=${RELEASE_TAG}
@@ -664,6 +665,8 @@ jobs:
           subject-path: |
             codex-rs/dist/codex-sedna-${{ needs.resolve.outputs.release_version }}-${{ matrix.target }}.tar.gz
             codex-rs/dist/codex-sedna-${{ needs.resolve.outputs.release_version }}-${{ matrix.target }}.spdx.json
+            codex-rs/dist/${{ matrix.metadata_json_name }}
+            codex-rs/dist/${{ matrix.metadata_text_name }}
 
       - name: Stage provenance bundle and checksums
         shell: bash
@@ -1535,10 +1538,11 @@ jobs:
 
           gh workflow run sedna-release-install.yml \
             --repo "${GH_REPO}" \
-            --ref main \
+            --ref "${RELEASE_TAG}" \
             -f "release_tag=${RELEASE_TAG}" \
             -f "dry_run=true" \
             -f "allow_prerelease=${RELEASE_PRERELEASE}" \
+            -f "require_linux_arm64=true" \
             -f "macos_release_mode=${MACOS_RELEASE_MODE}"
 
       - name: Summarize release decision

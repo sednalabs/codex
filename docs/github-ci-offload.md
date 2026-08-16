@@ -161,6 +161,7 @@ artifacts.
     the same SHA again.
 11. Use `sedna-branch-build` only when you intentionally want a preview binary.
     - `platform=linux-x86_64` remains the default.
+    - `platform=linux-aarch64` produces a disposable native GNU/Linux Arm64 artifact.
     - `platform=macos` produces a disposable Intel x64 artifact and reuses
       Cargo-home and `sccache` entries across builds. It is ad hoc signed, not
       notarized, and is not an official Sedna release.
@@ -173,8 +174,9 @@ artifacts.
   historical upstream targets.
 - The opt-in Intel macOS branch-build lane remains preview-only. Its artifacts are disposable and
   are not substitutes for the target-specific assets published and verified by `sedna-release`.
-- Scheduled and routine non-release heavyweight CI remains Linux `x86_64`-focused. The official
-  publisher and release verifier are the deliberate native-runner exceptions for Intel macOS x64.
+- Scheduled and routine non-release heavyweight CI remains Linux `x86_64`-focused. The branch
+  preview, official publisher, and release verifier are deliberate native-runner exceptions for
+  Linux Arm64 and Intel macOS x64.
 
 ## Public/operator boundary
 

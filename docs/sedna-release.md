@@ -229,10 +229,16 @@ runner. It intentionally does not perform host-local installation from the publi
   release publisher token.
 - Manual `workflow_dispatch` runs require `dry_run=true`
 - Prerelease installs require `allow_prerelease=true` on `workflow_dispatch`
+- New releases require native Linux Arm64 verification by default. Set
+  `require_linux_arm64=false` only when manually verifying a historical x86-only release.
 - The verifier checks all supported targets on native x86-64 Linux, Arm64 Linux, and Intel macOS
   runners, including tag shape, target-bound release metadata, checksums, safe archive membership,
   and executable payloads. Linux verification also checks keyless Sigstore identity, native ELF
   architecture, SPDX structure, and GitHub build attestations for the archive and SBOM.
+- Hardened Linux verification passes `--verify-signatures --verify-attestation`. The verifier pins
+  attestation acceptance to this repository's `sedna-release.yml` signer workflow and dispatches
+  the verifier from the exact published release tag so the installer contract cannot drift from
+  the release source.
 - Host-local installs should be performed by external deployment automation outside the public
   Actions log surface
 - Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them

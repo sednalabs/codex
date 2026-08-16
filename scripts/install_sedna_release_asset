@@ -7,9 +7,10 @@ dry_run=false
 allow_prerelease=false
 macos_preview=false
 verify_attestation=false
+verify_signatures=false
 
 usage() {
-  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG|latest [--dry-run] [--allow-prerelease] [--verify-attestation] [--macos-preview]" >&2
+  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG|latest [--dry-run] [--allow-prerelease] [--verify-signatures] [--verify-attestation] [--macos-preview]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -36,6 +37,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --verify-attestation)
       verify_attestation=true
+      shift
+      ;;
+    --verify-signatures)
+      verify_signatures=true
       shift
       ;;
     -h|--help)
@@ -155,6 +160,10 @@ sbom_name="${archive_base}.spdx.json"
 attestation_bundle_name="${archive_base}.intoto.jsonl"
 codex_sigstore_name="${archive_base}-codex.sigstore"
 proxy_sigstore_name="${archive_base}-codex-responses-api-proxy.sigstore"
+require_linux_trust=false
+if [[ "$target" == "aarch64-unknown-linux-gnu" || "$verify_signatures" == "true" || "$verify_attestation" == "true" ]]; then
+  require_linux_trust=true
+fi
 
 release_json="${work_dir}/release.json"
 fetch_json "${api_root}/releases/tags/${release_tag}" "$release_json"
@@ -174,13 +183,13 @@ if release.get("tag_name") != expected_tag:
 PY
 
 asset_manifest="${work_dir}/assets.tsv"
-python3 - "$release_json" "$archive_name" "$checksum_name" "$metadata_name" "$sbom_name" "$attestation_bundle_name" "$codex_sigstore_name" "$proxy_sigstore_name" "$target" > "$asset_manifest" <<'PY'
+python3 - "$release_json" "$archive_name" "$checksum_name" "$metadata_name" "$sbom_name" "$attestation_bundle_name" "$codex_sigstore_name" "$proxy_sigstore_name" "$require_linux_trust" > "$asset_manifest" <<'PY'
 import json
 import sys
 
-release_path, archive_name, checksum_name, metadata_name, sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name, target = sys.argv[1:10]
+release_path, archive_name, checksum_name, metadata_name, sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name, require_linux_trust = sys.argv[1:10]
 required = [archive_name, checksum_name, metadata_name]
-if target.endswith("-unknown-linux-gnu"):
+if require_linux_trust == "true":
     required.extend((sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name))
 release = json.loads(open(release_path, encoding="utf-8").read())
 assets = {asset.get("name"): asset for asset in release.get("assets", [])}
@@ -211,14 +220,14 @@ while IFS=$'\t' read -r name asset_id; do
   esac
 done < "$asset_manifest"
 
-python3 - "$work_dir" "$archive_name" "$checksum_name" "$metadata_name" "$release_tag" "$release_version" "$target" "$macos_preview" "$sbom_name" "$attestation_bundle_name" "$codex_sigstore_name" "$proxy_sigstore_name" <<'PY'
+python3 - "$work_dir" "$archive_name" "$checksum_name" "$metadata_name" "$release_tag" "$release_version" "$target" "$macos_preview" "$sbom_name" "$attestation_bundle_name" "$codex_sigstore_name" "$proxy_sigstore_name" "$require_linux_trust" <<'PY'
 import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 
-work_dir, archive_name, checksum_name, metadata_name, release_tag, release_version, target, macos_preview, sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name = sys.argv[1:13]
+work_dir, archive_name, checksum_name, metadata_name, release_tag, release_version, target, macos_preview, sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name, require_linux_trust = sys.argv[1:14]
 root = Path(work_dir)
 metadata = json.loads((root / metadata_name).read_text(encoding="utf-8"))
 expected = {
@@ -259,7 +268,7 @@ for raw in (root / checksum_name).read_text(encoding="utf-8").splitlines():
             raise SystemExit(f"error: duplicate checksum entry for {name!r}")
         checksums[name] = digest.lower()
 required_assets = [archive_name, metadata_name]
-if target.endswith("-unknown-linux-gnu"):
+if require_linux_trust == "true":
     required_assets.extend((sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name))
 for name in required_assets:
     digest = checksums.get(name)
@@ -268,7 +277,7 @@ for name in required_assets:
     actual = hashlib.sha256((root / name).read_bytes()).hexdigest()
     if actual != digest:
         raise SystemExit(f"error: checksum mismatch for {name}: expected {digest}, got {actual}")
-if target.endswith("-unknown-linux-gnu"):
+if require_linux_trust == "true":
     sbom = json.loads((root / sbom_name).read_text(encoding="utf-8"))
     if sbom.get("spdxVersion") != "SPDX-2.3":
         raise SystemExit(f"error: {sbom_name} is not an SPDX 2.3 document")
@@ -322,6 +331,21 @@ for executable in codex codex-responses-api-proxy; do
 done
 
 if [[ "$target" == *-unknown-linux-gnu ]]; then
+  expected_elf_arch="x86-64"
+  if [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+    expected_elf_arch="ARM aarch64"
+  fi
+  for executable in codex codex-responses-api-proxy; do
+    file_output="$(file -b "$staged/$executable")"
+    if [[ "$file_output" != *"ELF"* || "$file_output" != *"$expected_elf_arch"* ]]; then
+      printf 'error: %s has unexpected binary architecture for %s: %s\n' \
+        "$executable" "$target" "$file_output" >&2
+      exit 1
+    fi
+  done
+fi
+
+if [[ "$verify_signatures" == "true" ]]; then
   if ! command -v cosign >/dev/null 2>&1; then
     echo "error: cosign is required to verify Linux release signatures" >&2
     exit 1
@@ -338,27 +362,22 @@ if [[ "$target" == *-unknown-linux-gnu ]]; then
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     "$staged/codex-responses-api-proxy"
 
-  expected_elf_arch="x86-64"
-  if [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
-    expected_elf_arch="ARM aarch64"
-  fi
-  for executable in codex codex-responses-api-proxy; do
-    file_output="$(file -b "$staged/$executable")"
-    if [[ "$file_output" != *"ELF"* || "$file_output" != *"$expected_elf_arch"* ]]; then
-      printf 'error: %s has unexpected binary architecture for %s: %s\n' \
-        "$executable" "$target" "$file_output" >&2
-      exit 1
-    fi
-  done
+fi
 
-  if [[ "$verify_attestation" == "true" ]]; then
-    if ! command -v gh >/dev/null 2>&1; then
-      echo "error: gh is required to verify GitHub build attestations" >&2
-      exit 1
-    fi
-    gh attestation verify "$work_dir/$archive_name" --repo sednalabs/codex
-    gh attestation verify "$work_dir/$sbom_name" --repo sednalabs/codex
+if [[ "$verify_attestation" == "true" ]]; then
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "error: gh is required to verify GitHub build attestations" >&2
+    exit 1
   fi
+  gh attestation verify "$work_dir/$archive_name" \
+    --repo sednalabs/codex \
+    --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
+  gh attestation verify "$work_dir/$sbom_name" \
+    --repo sednalabs/codex \
+    --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
+  gh attestation verify "$work_dir/$metadata_name" \
+    --repo sednalabs/codex \
+    --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
 fi
 
 if [[ "$target" == "x86_64-apple-darwin" ]]; then
@@ -378,16 +397,27 @@ fi
 "$staged/codex" --help >/dev/null
 "$staged/codex-responses-api-proxy" --help >/dev/null
 
-release_dir="${install_root}/releases/${release_tag}"
+release_dir_name="${release_tag}"
+if [[ "$target" != "x86_64-unknown-linux-gnu" ]]; then
+  release_dir_name="${release_tag}-${target}"
+fi
+release_dir="${install_root}/releases/${release_dir_name}"
 if [[ -d "$release_dir" ]]; then
-  python3 - "$release_dir/RELEASE-METADATA.json" "$release_tag" <<'PY'
+  python3 - "$release_dir/RELEASE-METADATA.json" "$release_tag" "$target" <<'PY'
 import json
 import sys
 
-metadata_path, expected_tag = sys.argv[1:3]
+metadata_path, expected_tag, expected_target = sys.argv[1:4]
 metadata = json.loads(open(metadata_path, encoding="utf-8").read())
 if metadata.get("release_tag") != expected_tag:
     raise SystemExit(f"error: existing release metadata tag does not match {expected_tag}")
+actual_target = metadata.get("target")
+if actual_target not in (None, expected_target):
+    raise SystemExit(
+        f"error: existing release metadata target {actual_target!r} does not match {expected_target}"
+    )
+if actual_target is None and expected_target != "x86_64-unknown-linux-gnu":
+    raise SystemExit("error: non-x86 release metadata must include its target")
 PY
   for executable in codex codex-responses-api-proxy; do
     if [[ ! -x "$release_dir/$executable" ]]; then
@@ -405,7 +435,7 @@ fi
 
 mkdir -p "${install_root}/releases" "$bin_dir"
 if [[ ! -d "$release_dir" ]]; then
-  tmp_release="${install_root}/releases/.${release_tag}.tmp.$$"
+  tmp_release="${install_root}/releases/.${release_dir_name}.tmp.$$"
   rm -rf "$tmp_release"
   mkdir "$tmp_release"
   cp -p "$staged/codex" "$tmp_release/codex"

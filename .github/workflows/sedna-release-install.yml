@@ -17,6 +17,11 @@ on:
         required: false
         default: false
         type: boolean
+      require_linux_arm64:
+        description: Require and verify the Linux Arm64 asset set; disable only for historical x86-only releases
+        required: false
+        default: true
+        type: boolean
       macos_release_mode:
         description: Intel macOS asset kind expected on the release
         required: true
@@ -29,6 +34,7 @@ on:
 
 permissions:
   contents: read
+  attestations: read
 
 concurrency:
   group: sedna-release-install
@@ -47,9 +53,17 @@ jobs:
         shell: bash
         env:
           MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
+          REQUIRE_LINUX_ARM64: ${{ inputs.require_linux_arm64 }}
         run: |
           set -euo pipefail
-          matrix='[{"platform":"Linux x64","runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"},{"platform":"Linux Arm64","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"}]'
+          matrix='[{"platform":"Linux x64","runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}]'
+          if [[ "${REQUIRE_LINUX_ARM64}" == "true" ]]; then
+            matrix="$(
+              jq -cn \
+                --argjson linux "${matrix}" \
+                '$linux + [{"platform":"Linux Arm64","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"}]'
+            )"
+          fi
           if [[ "${MACOS_RELEASE_MODE}" != "off" ]]; then
             matrix="$(
               jq -cn \
@@ -137,7 +151,7 @@ jobs:
 
           attestation_arg=()
           if [[ "${TARGET}" == *-unknown-linux-gnu ]]; then
-            attestation_arg+=(--verify-attestation)
+            attestation_arg+=(--verify-signatures --verify-attestation)
           fi
 
           scripts/install_sedna_release_asset \

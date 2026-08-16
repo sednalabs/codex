@@ -7544,13 +7544,17 @@ class HelperScriptTests(unittest.TestCase):
         jobs = payload.get("jobs") or {}
         plan = jobs.get("plan") or {}
         install = jobs.get("install") or {}
+        self.assertEqual(
+            payload.get("permissions"),
+            {"contents": "read", "attestations": "read"},
+        )
         matrix_script = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-release-install.yml",
             "plan",
             "Build verification matrix",
         )["run"]
 
-        def resolve_matrix(mode: str) -> list[dict[str, str]]:
+        def resolve_matrix(mode: str, *, require_arm64: bool = True) -> list[dict[str, str]]:
             with tempfile.TemporaryDirectory() as tmpdir:
                 output_path = Path(tmpdir) / "github-output.txt"
                 output_path.write_text("", encoding="utf-8")
@@ -7563,6 +7567,7 @@ class HelperScriptTests(unittest.TestCase):
                         **os.environ,
                         "GITHUB_OUTPUT": str(output_path),
                         "MACOS_RELEASE_MODE": mode,
+                        "REQUIRE_LINUX_ARM64": str(require_arm64).lower(),
                     },
                 )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -7584,6 +7589,7 @@ class HelperScriptTests(unittest.TestCase):
             "target": "x86_64-apple-darwin",
         }
         self.assertEqual(resolve_matrix("off"), [linux, linux_arm])
+        self.assertEqual(resolve_matrix("off", require_arm64=False), [linux])
         self.assertEqual(resolve_matrix("preview"), [linux, linux_arm, macos])
         self.assertEqual(resolve_matrix("notarized"), [linux, linux_arm, macos])
         self.assertEqual(plan.get("runs-on"), "ubuntu-slim")
@@ -7604,7 +7610,38 @@ class HelperScriptTests(unittest.TestCase):
         self.assertIn("UNNOTARIZED-PREVIEW", installer)
         self.assertIn("cosign verify-blob", installer)
         self.assertIn("gh attestation verify", installer)
+        self.assertIn("--signer-workflow", installer)
         self.assertIn("SPDX-2.3", installer)
+        self.assertIn('release_dir_name="${release_tag}-${target}"', installer)
+        self.assertIn('actual_target not in (None, expected_target)', installer)
+        verify_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml",
+            "install",
+            "Verify release assets",
+        )
+        self.assertIn(
+            "--verify-signatures --verify-attestation",
+            verify_step.get("run") or "",
+        )
+
+        release_payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release.yml"
+        )
+        release_steps = (
+            ((release_payload.get("jobs") or {}).get("release-linux") or {}).get("steps")
+            or []
+        )
+        release_named_steps = {
+            step.get("name"): step for step in release_steps if step.get("name")
+        }
+        stage_script = release_named_steps["Stage release assets"].get("run") or ""
+        self.assertIn('install -m 0644 Cargo.toml Cargo.lock "${stage_dir}/"', stage_script)
+        attest_subjects = (
+            release_named_steps["Attest Linux archive and SBOM provenance"].get("with")
+            or {}
+        ).get("subject-path") or ""
+        self.assertIn("matrix.metadata_json_name", attest_subjects)
+        self.assertIn("matrix.metadata_text_name", attest_subjects)
 
     def test_sedna_release_verifier_tag_grammar_matches_resolver_shape(self) -> None:
         install_workflow = (
@@ -7722,7 +7759,9 @@ class HelperScriptTests(unittest.TestCase):
         install_job = ((install_payload.get("jobs") or {}).get("install") or {})
 
         self.assertIn("Dispatch release asset verifier", release_workflow)
+        self.assertIn('--ref "${RELEASE_TAG}"', release_workflow)
         self.assertIn('-f "dry_run=true"', release_workflow)
+        self.assertIn('-f "require_linux_arm64=true"', release_workflow)
         self.assertIn('-f "macos_release_mode=${MACOS_RELEASE_MODE}"', release_workflow)
         self.assertNotIn('-f "dry_run=false"', release_workflow)
         self.assertEqual(install_job.get("runs-on"), "${{ matrix.runner }}")
