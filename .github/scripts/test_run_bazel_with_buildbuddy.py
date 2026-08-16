@@ -237,6 +237,29 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ],
         )
 
+    def test_aquery_command_uses_configured_local_caches(self) -> None:
+        env = {
+            "BAZEL_REPO_CONTENTS_CACHE": "/tmp/bazel-repo-contents",
+            "BAZEL_REPOSITORY_CACHE": "/tmp/bazel-repository",
+        }
+
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_command(
+                "aquery",
+                "--output=text",
+                "//codex-rs/otel:otel",
+                env=env,
+            ),
+            [
+                "bazel",
+                "aquery",
+                "--output=text",
+                "//codex-rs/otel:otel",
+                "--repo_contents_cache=/tmp/bazel-repo-contents",
+                "--repository_cache=/tmp/bazel-repository",
+            ],
+        )
+
     def test_bazel_command_adds_local_caches_before_separator(self) -> None:
         self.assertEqual(
             run_bazel_with_buildbuddy.bazel_command(

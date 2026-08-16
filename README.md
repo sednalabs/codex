@@ -1,156 +1,363 @@
 # Codex Sedna
 
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
+**A maintained downstream of OpenAI Codex for long-running, observable agent work.**
 
-Codex Sedna is the SednaLabs downstream fork of Codex CLI. It stays close to
-the upstream OpenAI Codex experience while shipping Sedna-owned release
-artifacts, downstream validation policy, and fork-specific runtime behavior.
+[Releases](https://github.com/sednalabs/codex/releases) |
+[Downstream notes](./docs/downstream.md) |
+[Native computer use](./docs/native-computer-use.md) |
+[Build from source](./docs/install.md)
 
-If you are looking for the upstream OpenAI distribution, IDE integrations, or
-Codex Web, use the official [Codex documentation](https://developers.openai.com/codex)
-and [chatgpt.com/codex](https://chatgpt.com/codex). The upstream
-`npm install -g @openai/codex` and `brew install --cask codex` paths install
-the OpenAI distribution, not Sedna-owned release artifacts.
+**Codex Sedna** is the [Sedna Labs](https://github.com/sednalabs) downstream distribution of [OpenAI Codex CLI](https://github.com/openai/codex).
+
+It stays close to upstream Codex while carrying runtime behaviour for work that is long-running, multi-agent, unattended, remote, or otherwise benefits from stronger continuity and runtime evidence.
+
+That includes richer agent lifecycle and orchestration, child model and reasoning routing with requested-versus-effective identity evidence, bounded recovery, first-party usage and cost evidence, native computer use, headless MCP operation, and additional operator-facing runtime information.
+
+> [!IMPORTANT]
+> Codex Sedna is an independent downstream distribution and is not an official OpenAI Codex release.
+>
+> For stock Codex, official IDE integrations, Codex App, or Codex Web, use the [official Codex documentation](https://developers.openai.com/codex) and [chatgpt.com/codex](https://chatgpt.com/codex).
+
+## Why this fork exists
+
+Codex Sedna grew out of Sedna Labs' internal work on control planes for agent tasks that can continue across sessions, processes, machines, and individual agents.
+
+That work treats the task as durable while individual agents, processes, and execution environments are replaceable. It exposed runtime requirements around continuity, coordination, recovery, model selection, runtime evidence, and computer use.
+
+Codex Sedna contains the Codex-side changes we maintain in response to those requirements.
+
+Here, long-running describes the logical task. It may span days or weeks across multiple turns, context windows, agents, and processes. It does not mean one `codex` process or model call remains alive throughout.
+
+Sedna Labs also uses this fork beneath internal orchestration and control-plane software for longer-running workloads. That software is not part of this repository and is not required to use Codex Sedna.
+
+## Should I use Sedna?
+
+Codex Sedna is useful if you want Codex with stronger support for:
+
+- long-running local sessions and agent trees;
+- richer sub-agent identity, lifecycle, and coordination;
+- child model and reasoning-effort routing, exact assertions, and effective-identity evidence;
+- blocking and conditional waits;
+- persisted agent continuity and resumed work;
+- browser, Android, or desktop computer use;
+- runtime usage and cost evidence across agent lineage;
+- operator-facing usage and quota-pacing information;
+- headless or remote MCP workflows;
+- bounded recovery from selected transient interruptions;
+- explicit tracking and regression protection for differences from upstream.
+
+If you mainly want the standard Codex CLI experience, upstream Codex is usually the simpler choice.
 
 ## Install
 
-Use the latest [sednalabs/codex GitHub Release](https://github.com/sednalabs/codex/releases)
-for supported Codex Sedna binaries.
+Official Codex Sedna releases currently support **Linux x86_64**.
 
-Current public Sedna releases publish one supported CLI archive:
+Download the latest supported release from [GitHub Releases](https://github.com/sednalabs/codex/releases).
 
-- Linux `x86_64`: `codex-sedna-<version>-x86_64-unknown-linux-gnu.tar.gz`
+The archive is named:
 
-The archive contains `codex` plus `codex-responses-api-proxy`. macOS, Windows,
-Linux arm64, and other historical upstream targets remain in the source tree for
-future re-enablement, but they are not currently supported Sedna release
-targets.
+```text
+codex-sedna-<version>-x86_64-unknown-linux-gnu.tar.gz
+```
 
-To build from source, follow [Installing and building](./docs/install.md).
+It contains:
 
-Run `codex` and select **Sign in with ChatGPT** to use Codex through your
-ChatGPT plan. API-key usage is also supported with the upstream Codex auth
-setup described in the official Codex docs.
+```text
+codex
+codex-responses-api-proxy
+```
 
-## What Sedna Adds
+Extract the archive and run:
 
-Sedna keeps the fork intentionally narrow in hot upstream code and moves
-downstream behavior behind explicit seams where possible. The main additions
-are:
+```bash
+./codex
+```
 
-| Area                      | What changes in this fork                                                                                                                                                                         |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Release ownership         | Sedna publishes its own GitHub releases, version naming, and Linux x86_64 release policy.                                                                                                         |
-| Validation                | Heavy validation and buildability checks are GitHub-first, with lane docs for targeted, frontier, and release workflows.                                                                          |
-| Native computer use       | The open-source Sedna adapter layer promotes bare Android, browser, and desktop tool names to Codex-owned native computer-use tools with transcript, app-server, TUI, rollout, and trace support. |
-| Browser use               | The repo includes a built-in Playwright browser provider for local Chrome/Chromium; command providers can supply signed-in Chrome, in-app-browser, remote, or hosted browser runtimes.            |
-| Model-visible screenshots | Successful visual browser, Android, and desktop observations must return native image content to the model. Artifact paths are diagnostics, not the primary visual channel.                       |
-| Agent orchestration       | Downstream carries blocking wait patterns, richer sub-agent inventory, usage/accounting projection, and continuity improvements for long-running local workflows.                                 |
-| Runtime accounting        | The fork maintains first-party local usage/accounting surfaces so live CLI, TUI, and app-server views can explain active-thread and combined-session usage.                                       |
-| MCP and config safety     | Downstream preserves safety controls around MCP configuration, OAuth fallback behavior, headless device login with dynamic client registration, approval memory, and related runtime guardrails.  |
+You can then select **Sign in with ChatGPT** to use Codex through your ChatGPT plan. API-key authentication is also supported through the normal Codex authentication flow.
 
-For the full inventory, read [Downstream / fork notes](./docs/downstream.md)
-and the [Downstream regression matrix](./docs/downstream-regression-matrix.md).
+To build from source, see [Installing and building](./docs/install.md).
 
-## Headless MCP Device Login
+> [!NOTE]
+> OpenAI's npm package, Homebrew package, installers, and official release artifacts install upstream Codex, not Codex Sedna.
+>
+> Manually dispatched macOS preview artifacts may also be available. These are ad hoc signed, non-notarized previews and are not part of the current supported Sedna release contract.
 
-Codex Sedna supports the
-[OAuth 2.0 Device Authorization Grant (RFC 8628)](https://datatracker.ietf.org/doc/html/rfc8628)
-for configured HTTP MCP servers that advertise a device authorization endpoint
-in their OAuth metadata. This is useful in SSH sessions, remote shells, CI
-runners, and other headless environments where a localhost browser callback is
-inconvenient.
+## What Sedna changes
+
+### Long-running and multi-agent execution
+
+Sedna builds on upstream Codex's multi-agent runtime rather than replacing it. Its downstream changes concentrate on stricter child routing, durable agent lifecycle state, runtime inspection, blocking waits and joins, and behaviour that remains useful when child runtimes are not continuously resident.
+
+That includes stronger support around:
+
+- logical agent identity and inventory across live and cold states;
+- child model and reasoning routing, exact assertions, and requested-versus-effective identity;
+- cheap live inventory plus bounded live/stale agent-tree inspection;
+- targeted blocking waits and joins with `any` / `all` completion semantics;
+- mailbox coordination that can preserve queue-only work without waking a cold agent;
+- persisted descendant continuity and ordered runtime reload;
+- residency, unload, and reload behaviour;
+- background terminal completion;
+- resumed sessions and agent history.
+
+Upstream Codex provides the underlying per-child model and reasoning-selection pipeline. Sedna extends that pipeline with post-resolution routing assertions and requested-versus-effective identity evidence.
+
+Orchestrators can request child model and reasoning settings and, where exact routing matters, assert the model and reasoning effort that must remain after role, profile, service-tier, and runtime resolution. A mismatch can be rejected before the child is created or receives its initial task.
+
+Sedna keeps requested identity distinct from effective identity. Requested and effective model and reasoning information is carried through downstream tool results and lifecycle surfaces, with effective provider and service-tier context exposed where the runtime has authoritative evidence. This makes it possible to distinguish what an orchestrator asked for from what actually launched.
+
+Role and catalogue compatibility remains explicit. Downstream preserves selected runtime configuration across role reload where the role does not override it, and maintains compatibility rules for models whose current catalogue metadata does not accurately describe their supported child-agent use.
+
+Sedna also treats a V2 agent's logical identity separately from whether its runtime is currently resident. Quiescent children can become cold while retaining compact status and persisted history, remain visible to orchestration, and later be reloaded when work requires them.
+
+Queue-only inter-agent messages can remain attached to a cold agent without waking its runtime. A later follow-up can reload the child and transfer queued mail in order before triggering new work.
+
+Together with targeted `wait_agent` joins, richer live/stale tree inspection, persisted lineage, residency management, background-terminal completion, resumed history, and bounded recovery, these behaviours make long-lived agent trees easier to inspect, coordinate, unload, reload, and recover without treating one process as the durable task.
+
+This allows stronger models and higher reasoning budgets to be used where they materially improve the result, while bounded roles such as waiting, monitoring, or narrow inspection can use lighter execution where appropriate.
+
+### Bounded recovery
+
+Long-running work should not be discarded merely because a recoverable dependency or client boundary briefly fails.
+
+At selected, explicitly classified boundaries, Codex Sedna can reconnect, retry, or continue within fixed limits while preserving the surrounding thread and working state.
+
+This is not a policy of retrying everything.
+
+Recovery remains specific to the operation and failure class. Ambiguous, mutating, or authority-sensitive operations do not acquire generic replay behaviour merely in the name of resilience.
+
+Where the runtime cannot establish that recovery is safe, it stops rather than guessing.
+
+### Usage, lineage, and cost
+
+Sedna records resource consumption during execution so operators can inspect usage and cost while work is running, rather than relying only on later billing data.
+
+The fork maintains a first-party local usage ledger in downstream-owned storage.
+
+Depending on the evidence available from the provider and runtime, the ledger can retain information such as:
+
+- thread and agent lineage;
+- requested model identity;
+- provider-observed model identity;
+- provider and service-tier context;
+- token usage;
+- prompt-cache write usage;
+- Fast-mode evidence;
+- agent spawn relationships;
+- tool and runtime activity;
+- versioned Codex credit estimates.
+
+Configured identity and provider-observed identity remain distinct where the available evidence supports that distinction.
+
+This matters because the cost of an orchestration strategy is rarely visible from the root agent alone.
+
+One task might be completed by a single strong model. Another might use a coordinating model, several specialist children, lighter waiting agents, and parallel review. Retries, compaction, rejected attempts, and replacement execution can change the economics again.
+
+The useful comparison is therefore the cost of producing an acceptable result, not simply the cost of an individual model call.
+
+A cheaper execution strategy that creates more failures, more review work, or an unacceptable implementation is not necessarily cheaper. A stronger model used for work a smaller model can reliably perform is unnecessary expense.
+
+The usage ledger and lineage surfaces provide evidence for comparing those choices. They do not claim to choose the optimal orchestration strategy automatically.
+
+Where evidence or rate information is incomplete, accounting should preserve that uncertainty rather than silently invent precision.
+
+The same information is useful to an individual operator. Downstream TUI surfaces include richer agent identity and model information, agent-tree usage views, and a weekly quota-pacing status-line indicator.
+
+### Native computer use
+
+Codex Sedna gives the open-source Codex runtime first-class model-facing contracts for browser, Android, and desktop interaction.
+
+The native tool surface includes:
+
+```text
+browser_observe
+browser_step
+
+android_observe
+android_step
+android_install_build_from_run
+
+desktop_observe
+desktop_step
+```
+
+Codex owns the model-facing contract:
+
+- tool schemas;
+- transcript events;
+- app-server routing;
+- TUI projection;
+- rollout persistence;
+- tracing;
+- native image results.
+
+Runtime providers own the environment-specific implementation:
+
+- browser or device sessions;
+- screenshots and viewport capture;
+- UI inspection;
+- input execution;
+- emulator or desktop setup;
+- backend lifecycle and permissions.
+
+A successful visual observation returns **actual image content to the model**.
+
+Screenshot paths, UI hierarchy files, logs, and other artifacts may be useful evidence, but they are not substitutes for model-visible pixels.
+
+The repository includes a built-in Playwright browser provider for local Chrome and Chromium. External providers can implement the same Codex contract for other browser, Android, and desktop environments.
+
+Provider availability depends on the operator's configuration. A model-facing contract in the source tree does not imply that Sedna publishes a runtime provider for every platform.
+
+See [Native computer-use adapter tooling](./docs/native-computer-use.md), the [computer-use cleanroom contracts](./docs/native-computer-use-cleanroom.md), and the [tool surface matrix](./docs/downstream-tool-surface-matrix.md).
+
+### Headless and remote MCP operation
+
+Sedna carries additional MCP behaviour for environments where Codex cannot assume an interactive browser or a perfectly stable local connection.
+
+For compatible HTTP MCP servers, Codex Sedna supports OAuth 2.0 Device Authorization Grant:
 
 ```bash
 codex mcp login <server-name> --device-auth
 ```
 
-Codex performs dynamic client registration when the server supports it. If the
-server does not support dynamic registration, configure the server entry with a
-client ID using `codex mcp add --oauth-client-id <client-id>`.
+Codex can perform dynamic client registration when the authorization server supports it.
 
-During login, Codex prints the verification URL and user code from the
-authorization server, then stores the resulting MCP credentials for the
-configured server. MCP servers built with the
-[`mcp-toolkit-rs`](https://github.com/sednalabs/mcp-toolkit-rs) hosted HTTP auth
-surface can expose the metadata needed for this flow.
+Otherwise an explicit client ID can be configured:
 
-## Native Computer Use
+```bash
+codex mcp add <server-name> --oauth-client-id <client-id>
+```
 
-Codex Sedna treats native computer use as a Codex-owned contract backed by
-replaceable runtime providers.
+The fork also carries downstream behaviour around MCP configuration, bounded recovery, partial catalogue availability, approvals, and remote or headless operation.
 
-Codex owns the model-facing tools, transcript events, app-server routing, TUI
-projection, rollout persistence, and native image-output requirement. Providers
-own browser sessions, Android sessions, desktop permissions, screenshots, UI
-digests, input execution, and backend-specific setup.
+## Maintaining the downstream
 
-The open-source implementation in this repository covers the Codex-side
-computer-use adapter layer and the built-in Playwright browser provider. Native
-macOS desktop providers, Windows in-app-browser shells, signed-in Chrome
-extension providers, remote browsers, and Android device providers plug in
-through documented provider seams instead of being hard-coded into Codex core.
+Sedna is intended to remain a downstream of Codex, not gradually turn into an unrelated codebase.
 
-The stable native tool surface includes:
+The public branches have distinct roles:
 
-- `browser_observe` and `browser_step`
-- `android_observe`, `android_step`, and `android_install_build_from_run`
-- `desktop_observe` and `desktop_step`
+```text
+openai/codex main
+        |
+        v
+sednalabs/codex upstream-main
+        |
+        | merge
+        v
+sednalabs/codex main
+```
 
-The browser bridge supports backend hints such as `auto`, `browser`, `chrome`,
-`chromium`, and provider-declared backends such as `iab`. The built-in
-Playwright provider can run headless or headed Chrome/Chromium and supports
-bounded browser actions, fresh post-action screenshots, compact page metadata,
-selector diagnostics, service-account navigation headers, optional audit
-artifacts, and per-thread browser profile isolation. External command providers
-can implement signed-in Chrome, in-app-browser, remote-browser, or hosted
-browser runtimes behind the same request/response contract.
+- **`upstream-main`** is the fast-forward mirror of upstream `openai/codex`.
+- **`main`** is the maintained Sedna downstream and normal pull-request target.
 
-Read [Native computer-use adapter tooling](./docs/native-computer-use.md) for
-the runtime contract and [Native computer-use cleanroom contracts](./docs/native-computer-use-cleanroom.md)
-for the sanitized provider requirements used for macOS desktop, Windows/browser
-shell, Chrome-extension, bundled-plugin, and Android provider work.
+Upstream synchronisation is merge-based.
 
-## Working With The Fork
+The maintenance rule is to prefer upstream behaviour wherever it meets the required contract, and to retain downstream code only where it does not.
 
-This repository has two public branch roles:
+Where upstream implements an equivalent capability, downstream behaviour should normally converge on it rather than preserve a competing implementation indefinitely.
 
-- `origin/main`: maintained downstream branch and public PR target.
-- `origin/upstream-main`: fast-forward mirror of `upstream/main`.
+Where a difference remains necessary, Sedna tries to keep it behind a narrow extension seam, provider boundary, runtime capability, or downstream-owned storage surface rather than spreading it through high-churn upstream code.
 
-Completed work on a feature, bugfix, docs, or cleanup branch should be
-committed, pushed, and opened as a pull request targeting `origin/main` before
-handoff. Do not leave finished branch work only in a local worktree.
+### Tracked downstream differences
 
-Downstream syncs are merge-based from `upstream-main` into `main`. The intended
-long-term shape is minimal fork carry in high-churn upstream files, with
-downstream behavior expressed through narrow extension seams or provider
-boundaries when possible. Some carry is deliberate product behavior rather than
-temporary merge residue; the carry ledger and divergence registry mark those
-surfaces so sync work preserves them until upstream offers an equivalent
-contract.
+A maintained fork needs to be able to explain why it differs from upstream.
 
-Release and validation work is intentionally GitHub-first. Public release
-artifacts are produced by Sedna release workflows; preview and validation runs
-are buildability and regression evidence, not release artifacts.
+The machine-readable [divergence registry](./docs/divergences/index.yaml) records live downstream behaviour together with information such as:
 
-## Documentation Map
+- the behaviour being carried;
+- affected surfaces and files;
+- whether an upstream equivalent exists;
+- downstream ownership;
+- regression coverage;
+- hotspot files;
+- the expected extraction or upstreaming direction.
 
-| Need                                                        | Start here                                                                                                                      |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Fork identity, branch policy, and divergence inventory      | [Downstream / fork notes](./docs/downstream.md)                                                                                 |
-| Release naming, release artifacts, and supported targets    | [Sedna release policy](./docs/sedna-release.md)                                                                                 |
-| Native browser, Android, and desktop computer-use contracts | [Native computer-use adapter tooling](./docs/native-computer-use.md)                                                            |
-| Cleanroom provider requirements                             | [Native computer-use cleanroom contracts](./docs/native-computer-use-cleanroom.md)                                              |
-| GitHub-first validation lanes and remote offload            | [GitHub CI offload](./docs/github-ci-offload.md)                                                                                |
-| Multi-step validation workflow                              | [Validation workflow](./docs/validation_workflow.md)                                                                            |
-| Downstream tool and regression coverage                     | [Tool surface matrix](./docs/downstream-tool-surface-matrix.md) and [Regression matrix](./docs/downstream-regression-matrix.md) |
-| Installing or building from source                          | [Installing and building](./docs/install.md)                                                                                    |
-| Local memories behavior                                     | [Memories](./docs/memories.md)                                                                                                  |
-| Contributing guidelines                                     | [Contributing](./docs/contributing.md)                                                                                          |
+The [Downstream regression matrix](./docs/downstream-regression-matrix.md) maps those differences to focused validation lanes.
+
+The registry also helps identify downstream code that can be removed when upstream gains an equivalent capability.
+
+## Validation
+
+Sedna uses GitHub-hosted validation heavily, particularly for downstream seams vulnerable to upstream drift.
+
+Focused validation exists around areas including:
+
+- multi-agent lifecycle and orchestration;
+- child-model and reasoning surfaces;
+- blocking and terminal waits;
+- agent usage totals and quota pacing;
+- usage-ledger behaviour;
+- persisted agent state and lineage;
+- MCP safety and recovery;
+- native computer use and image propagation;
+- app-server protocol extensions;
+- downstream divergence consistency;
+- release buildability.
+
+Heavy or unusual validation can run through targeted hosted lanes rather than making every change execute every expensive repository-wide test.
+
+See the [Validation workflow](./docs/validation_workflow.md), [GitHub CI offload](./docs/github-ci-offload.md), and [Downstream regression matrix](./docs/downstream-regression-matrix.md).
+
+## Releases and provenance
+
+Sedna publishes its own artifacts so downstream binaries remain clearly distinguishable from OpenAI releases.
+
+Release versions retain the upstream track while adding Sedna identity, for example:
+
+```text
+v0.119.0-sedna.2
+v0.126.0-alpha.5-sedna.1+upstream.1
+```
+
+Official release metadata records the upstream reference point and exact downstream commit used for the build.
+
+The current release process includes:
+
+- Linux `x86_64` as the supported public Sedna target;
+- Sedna-specific version and artifact naming;
+- exact upstream and downstream provenance metadata;
+- SHA-256 checksums;
+- keyless Sigstore signing;
+- separate preview, validation, and official-release paths.
+
+Official releases are produced by Sedna-owned GitHub workflows rather than reusing upstream OpenAI release artifacts.
+
+See [Sedna release policy](./docs/sedna-release.md).
+
+## Scope
+
+Codex Sedna is an agent execution runtime, not a complete managed long-horizon agent platform.
+
+It can be used directly as a CLI or beneath a higher-level orchestration system.
+
+Persistence is a **runtime design objective, not a hosted durability guarantee**. Deployment, host availability, external scheduling, fleet supervision, cross-host failover, and higher-level recovery remain operator concerns unless another system supplies them.
+
+Support in the source tree also does not imply a supported Sedna binary or runtime provider for every platform.
+
+## Documentation
+
+| Topic                                      | Start here                                                                  |
+| ------------------------------------------ | --------------------------------------------------------------------------- |
+| Fork policy and upstream relationship      | [Downstream / fork notes](./docs/downstream.md)                             |
+| Live downstream differences                | [Divergence registry](./docs/divergences/index.yaml)                        |
+| Downstream and upstream tool surfaces      | [Tool surface matrix](./docs/downstream-tool-surface-matrix.md)             |
+| Regression ownership                       | [Regression matrix](./docs/downstream-regression-matrix.md)                 |
+| Browser, Android, and desktop computer use | [Native computer use](./docs/native-computer-use.md)                        |
+| Provider implementation boundaries         | [Computer-use cleanroom contracts](./docs/native-computer-use-cleanroom.md) |
+| Releases and provenance                    | [Sedna release policy](./docs/sedna-release.md)                             |
+| Validation                                 | [Validation workflow](./docs/validation_workflow.md)                        |
+| Installing and building                    | [Install](./docs/install.md)                                                |
+| Local memories                             | [Memories](./docs/memories.md)                                              |
+| Contributing                               | [Contributing](./docs/contributing.md)                                      |
+
+## Contributing
+
+Normal feature, bugfix, documentation, and cleanup work should branch from `main` and return through a pull request targeting `main`.
+
+Changes to intentional downstream behaviour should update the relevant divergence and regression records where applicable.
+
+See [Contributing](./docs/contributing.md).
 
 ## License
 
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+Codex Sedna is licensed under the [Apache-2.0 License](LICENSE).
