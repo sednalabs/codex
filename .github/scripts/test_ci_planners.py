@@ -7338,20 +7338,20 @@ class HelperScriptTests(unittest.TestCase):
         release_tag = "v0.146.0-alpha.8-sedna.99+upstream.3"
         release_version = release_tag.removeprefix("v")
         target_commit = "a" * 40
-        target = (
-            "aarch64-unknown-linux-gnu"
-            if arch == "aarch64"
-            else "x86_64-unknown-linux-gnu"
-        )
+        target = {
+            "aarch64": "aarch64-unknown-linux-gnu",
+            "darwin_x86_64": "x86_64-apple-darwin",
+            "x86_64": "x86_64-unknown-linux-gnu",
+        }[arch]
         archive_name = f"codex-sedna-{release_version}-{target}.tar.gz"
         archive_base = archive_name.removesuffix(".tar.gz")
         metadata_name = (
             f"RELEASE-METADATA-{target}.json"
-            if arch == "aarch64"
+            if arch != "x86_64"
             else "RELEASE-METADATA.json"
         )
         checksum_name = (
-            f"SHA256SUMS-{target}.txt" if arch == "aarch64" else "SHA256SUMS.txt"
+            f"SHA256SUMS-{target}.txt" if arch != "x86_64" else "SHA256SUMS.txt"
         )
         sbom_name = f"{archive_base}.spdx.json"
         attestation_name = f"{archive_base}.intoto.jsonl"
@@ -7400,6 +7400,8 @@ class HelperScriptTests(unittest.TestCase):
                 "repository": "sednalabs/codex",
                 "target_commit": target_commit,
             }
+            if arch == "darwin_x86_64":
+                metadata.update({"signing": "developer-id", "notarized": True})
             if failure == "legacy_x86":
                 metadata.pop("target_commit")
             (root / metadata_name).write_text(json.dumps(metadata), encoding="utf-8")
@@ -7486,6 +7488,8 @@ class HelperScriptTests(unittest.TestCase):
                 "existing_tampered",
                 "existing_proxy_tampered",
                 "existing_matching",
+                "existing_release_symlink",
+                "existing_executable_symlink",
             ):
                 release_dir = (
                     root
@@ -7496,7 +7500,14 @@ class HelperScriptTests(unittest.TestCase):
                     / "releases"
                     / release_tag
                 )
-                release_dir.mkdir(parents=True)
+                if failure == "existing_release_symlink":
+                    release_payload_dir = root / "release-symlink-target"
+                    release_payload_dir.mkdir()
+                    release_dir.parent.mkdir(parents=True)
+                    release_dir.symlink_to(release_payload_dir)
+                else:
+                    release_dir.mkdir(parents=True)
+                    release_payload_dir = release_dir
                 for name in (
                     "codex",
                     "codex-responses-api-proxy",
@@ -7509,7 +7520,7 @@ class HelperScriptTests(unittest.TestCase):
                         "RELEASE-METADATA.json": root / metadata_name,
                         "SHA256SUMS.txt": root / checksum_name,
                     }[name]
-                    shutil.copy2(source, release_dir / name)
+                    shutil.copy2(source, release_payload_dir / name)
                 if failure == "existing_tampered":
                     (release_dir / "codex").write_text(
                         "#!/usr/bin/env bash\necho tampered\n", encoding="utf-8"
@@ -7520,6 +7531,10 @@ class HelperScriptTests(unittest.TestCase):
                         "#!/usr/bin/env bash\necho tampered\n", encoding="utf-8"
                     )
                     (release_dir / "codex-responses-api-proxy").chmod(0o755)
+                if failure == "existing_executable_symlink":
+                    external_codex = root / "external-codex"
+                    (release_dir / "codex").replace(external_codex)
+                    (release_dir / "codex").symlink_to(external_codex)
 
             fake_curl = fake_bin / "curl"
             fake_curl.write_text(
@@ -7556,10 +7571,11 @@ fi
             fake_uname = fake_bin / "uname"
             fake_uname.write_text(
                 "#!/usr/bin/env bash\n"
-                "if [[ ${1:-} == -s ]]; then echo Linux; else echo \"${FAKE_UNAME_ARCH}\"; fi\n",
+                "if [[ ${1:-} == -s ]]; then echo \"${FAKE_UNAME_OS}\"; "
+                "else echo \"${FAKE_UNAME_ARCH}\"; fi\n",
                 encoding="utf-8",
             )
-            for name in ("cosign", "gh", "readelf"):
+            for name in ("codesign", "cosign", "gh", "lockf", "readelf"):
                 helper = fake_bin / name
                 if failure == "legacy_x86" and name == "readelf":
                     helper.write_text(
@@ -7678,7 +7694,12 @@ fi
                     if arch == "aarch64"
                     else "/lib64/ld-linux-x86-64.so.2"
                 ),
-                "FAKE_UNAME_ARCH": arch,
+                "FAKE_UNAME_ARCH": (
+                    "x86_64" if arch == "darwin_x86_64" else arch
+                ),
+                "FAKE_UNAME_OS": (
+                    "Darwin" if arch == "darwin_x86_64" else "Linux"
+                ),
                 "EXPECTED_SOURCE_COMMIT": target_commit,
                 "HOME": str(root / "home"),
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -7709,6 +7730,7 @@ fi
                 "activation_sigterm_current_record",
                 "activation_sigterm_visible_record",
                 "activation_sigkill_with_predecessor",
+                "activation_sigkill_during_save",
             }
             if failure in predecessor_failures:
                 old_release = (
@@ -7764,6 +7786,9 @@ fi
                 "activation_sigkill_with_predecessor": (
                     "sigkill:after-first-visible"
                 ),
+                "activation_sigkill_during_save": (
+                    "sigkill-partial:during-first-save"
+                ),
                 "activation_relative_current_rollback": (
                     "raise:after-first-visible"
                 ),
@@ -7786,7 +7811,34 @@ fi
                 *verification_args,
                 *(["--dry-run"] if dry_run else []),
             ]
-            if failure == "activation_lock_serialization":
+            if failure in (
+                "stale_recovery_collision",
+                "stale_unmarked_predecessor",
+            ):
+                stale = (
+                    root
+                    / "home"
+                    / ".codex"
+                    / "packages"
+                    / "standalone"
+                    / ".activation.fixture"
+                )
+                (stale / "saved").mkdir(parents=True)
+                (stale / "candidate").mkdir()
+                if failure == "stale_recovery_collision":
+                    (stale / "TRANSACTION_FORMAT").write_text(
+                        "atomic-predecessor-copy-v1\n", encoding="utf-8"
+                    )
+                (stale / "saved" / "codex").write_text(
+                    previous_visible["codex"], encoding="utf-8"
+                )
+                if failure == "stale_recovery_collision":
+                    collision = backups / "codex.interrupted.fixture"
+                    collision.mkdir(parents=True)
+            if failure in (
+                "activation_lock_serialization",
+                "activation_locked_revalidation",
+            ):
                 import fcntl as test_fcntl
 
                 standalone = (
@@ -7812,12 +7864,63 @@ fi
                     self.assertTrue(marker.exists(), "installer did not reach lock")
                     self.assertIsNone(child.poll(), "installer bypassed activation lock")
                     self.assertFalse(os.path.lexists(standalone / "current"))
+                    if failure == "activation_locked_revalidation":
+                        expected_release_dir.mkdir(parents=True)
                     test_fcntl.flock(held_lock, test_fcntl.LOCK_UN)
                     stdout, stderr = child.communicate(timeout=30)
                 proc = subprocess.CompletedProcess(
                     command, child.returncode, stdout, stderr
                 )
-                self.assertEqual(proc.returncode, 0, proc.stderr)
+                if failure == "activation_locked_revalidation":
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("unsafe or missing verified file", proc.stderr)
+                    self.assertFalse(os.path.lexists(standalone / "current"))
+                else:
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+            elif failure == "activation_concurrent_installers":
+                marker = root / "first-installer-paused"
+                release_pause = root / "release-first-installer"
+                first_env = dict(env)
+                first_env["SEDNA_INSTALLER_TESTING"] = "1"
+                first_env["SEDNA_INSTALLER_TEST_FAULT"] = (
+                    "pause:after-current-swap"
+                )
+                first_env["SEDNA_INSTALLER_TEST_PAUSE_MARKER"] = str(marker)
+                first_env["SEDNA_INSTALLER_TEST_PAUSE_RELEASE"] = str(
+                    release_pause
+                )
+                first = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=first_env,
+                )
+                deadline = time.monotonic() + 20
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(marker.exists(), "first installer did not pause")
+                second = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                )
+                try:
+                    time.sleep(0.25)
+                    self.assertIsNone(
+                        second.poll(), "second installer bypassed first installer lock"
+                    )
+                finally:
+                    release_pause.touch()
+                first_stdout, first_stderr = first.communicate(timeout=30)
+                second_stdout, second_stderr = second.communicate(timeout=30)
+                self.assertEqual(first.returncode, 0, first_stderr)
+                self.assertEqual(second.returncode, 0, second_stderr)
+                proc = subprocess.CompletedProcess(
+                    command, second.returncode, second_stdout, second_stderr
+                )
             else:
                 proc = subprocess.run(
                     command,
@@ -7926,6 +8029,55 @@ fi
                     self.assertEqual(
                         recovered[0].read_text(encoding="utf-8"), contents
                     )
+            if failure == "activation_sigkill_during_save":
+                self.assertEqual(proc.returncode, 128 + signal.SIGKILL, proc.stderr)
+                current = (
+                    root / "home" / ".codex" / "packages" / "standalone" / "current"
+                )
+                self.assertEqual(os.readlink(current), str(old_release))
+                transactions = list(current.parent.glob(".activation.*"))
+                self.assertEqual(len(transactions), 1)
+                partial = transactions[0] / "candidate" / "codex.predecessor-copy"
+                self.assertEqual(partial.read_bytes(), b"partial predecessor copy")
+                retry_env = dict(env)
+                retry_env.pop("SEDNA_INSTALLER_TESTING")
+                retry_env.pop("SEDNA_INSTALLER_TEST_FAULT")
+                proc = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=retry_env,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(list(current.parent.glob(".activation.*")), [])
+                self.assertEqual(list(backups.glob("*.interrupted.*")), [])
+                for executable, contents in previous_visible.items():
+                    matches = list(backups.glob(f"{executable}.*"))
+                    self.assertEqual(len(matches), 1, executable)
+                    self.assertEqual(
+                        matches[0].read_text(encoding="utf-8"), contents
+                    )
+            if failure == "stale_recovery_collision":
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(
+                    "refusing to overwrite recovered predecessor backup", proc.stderr
+                )
+                self.assertEqual(
+                    (stale / "saved" / "codex").read_text(encoding="utf-8"),
+                    previous_visible["codex"],
+                )
+                self.assertTrue(collision.is_dir())
+            if failure == "stale_unmarked_predecessor":
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(
+                    "refusing unmarked stale transaction with predecessor data",
+                    proc.stderr,
+                )
+                self.assertEqual(
+                    (stale / "saved" / "codex").read_text(encoding="utf-8"),
+                    previous_visible["codex"],
+                )
             if verify_visible_links and proc.returncode == 0:
                 current_dir = (
                     root / "home" / ".codex" / "packages" / "standalone" / "current"
@@ -7955,6 +8107,7 @@ fi
         for arch, target in (
             ("x86_64", "x86_64-unknown-linux-gnu"),
             ("aarch64", "aarch64-unknown-linux-gnu"),
+            ("darwin_x86_64", "x86_64-apple-darwin"),
         ):
             with self.subTest(arch=arch):
                 proc = self.run_sedna_installer_fixture(arch=arch)
@@ -7963,7 +8116,7 @@ fi
                 self.assertIn(f"for {target}", proc.stdout)
 
     def test_sedna_release_installer_links_all_visible_executables(self) -> None:
-        for arch in ("x86_64", "aarch64"):
+        for arch in ("x86_64", "aarch64", "darwin_x86_64"):
             with self.subTest(arch=arch):
                 proc = self.run_sedna_installer_fixture(
                     arch=arch,
@@ -7973,15 +8126,18 @@ fi
                 self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_sedna_release_installer_backs_up_previous_visible_binaries(self) -> None:
-        proc = self.run_sedna_installer_fixture(
-            "preexisting_visible",
-            dry_run=False,
-            verify_visible_links=True,
-        )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for arch in ("x86_64", "aarch64", "darwin_x86_64"):
+            with self.subTest(arch=arch):
+                proc = self.run_sedna_installer_fixture(
+                    "preexisting_visible",
+                    arch=arch,
+                    dry_run=False,
+                    verify_visible_links=True,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_sedna_release_installer_rolls_back_failed_activation(self) -> None:
-        for arch in ("x86_64", "aarch64"):
+        for arch in ("x86_64", "aarch64", "darwin_x86_64"):
             for failure in (
                 "activation_initial_save_failure",
                 "activation_second_save_failure",
@@ -8004,9 +8160,21 @@ fi
             dry_run=False,
             verify_visible_links=True,
         )
+        self.run_sedna_installer_fixture(
+            "activation_concurrent_installers",
+            dry_run=False,
+            verify_visible_links=True,
+        )
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux lock contract")
+    def test_sedna_release_installer_revalidates_after_lock(self) -> None:
+        self.run_sedna_installer_fixture(
+            "activation_locked_revalidation",
+            dry_run=False,
+        )
 
     def test_sedna_release_installer_recovers_first_install_after_sigkill(self) -> None:
-        for arch in ("x86_64", "aarch64"):
+        for arch in ("x86_64", "aarch64", "darwin_x86_64"):
             with self.subTest(arch=arch):
                 self.run_sedna_installer_fixture(
                     "activation_sigkill_first_install",
@@ -8016,7 +8184,7 @@ fi
                 )
 
     def test_sedna_release_installer_recovers_predecessors_after_sigkill(self) -> None:
-        for arch in ("x86_64", "aarch64"):
+        for arch in ("x86_64", "aarch64", "darwin_x86_64"):
             with self.subTest(arch=arch):
                 self.run_sedna_installer_fixture(
                     "activation_sigkill_with_predecessor",
@@ -8024,6 +8192,26 @@ fi
                     dry_run=False,
                     verify_visible_links=True,
                 )
+
+    def test_sedna_release_installer_discards_partial_predecessor_copy(self) -> None:
+        for arch in ("x86_64", "aarch64", "darwin_x86_64"):
+            with self.subTest(arch=arch):
+                self.run_sedna_installer_fixture(
+                    "activation_sigkill_during_save",
+                    arch=arch,
+                    dry_run=False,
+                    verify_visible_links=True,
+                )
+
+    def test_sedna_release_installer_fails_closed_on_stale_backup_collision(self) -> None:
+        self.run_sedna_installer_fixture(
+            "stale_recovery_collision",
+            dry_run=False,
+        )
+        self.run_sedna_installer_fixture(
+            "stale_unmarked_predecessor",
+            dry_run=False,
+        )
 
     def test_sedna_release_installer_rejects_invalid_release_assets(self) -> None:
         cases = {
@@ -8036,6 +8224,8 @@ fi
             "wrong_source_commit": "does not match metadata target_commit",
             "existing_tampered": "does not match verified payload",
             "existing_proxy_tampered": "does not match verified payload",
+            "existing_release_symlink": "release path must not be a symlink",
+            "existing_executable_symlink": "unsafe or missing verified file",
             "outdated_verifiers": "tool checksum mismatch",
         }
         for failure, expected in cases.items():
