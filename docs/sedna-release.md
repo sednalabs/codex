@@ -115,11 +115,9 @@ Current workflow characteristics:
 
 ### Release environment governance
 
-The `release` GitHub Actions environment admits protected branches only; custom branch policies
-are disabled. Deployment requires review by `GraciousGazelles`. Self-review prevention is not
-enabled, so the required reviewer may approve a deployment they initiated. These provider controls
-are the authoritative publication gate; workflow-side ref and release-route checks remain
-defense-in-depth and do not replace the environment review.
+The `release` GitHub Actions environment admits protected branches only and requires explicit
+environment approval before publication. This environment gate is authoritative; workflow-side
+ref and release-route checks remain defense-in-depth and do not replace approval.
 
 Release publication requires a dedicated GitHub App installed on this repository only. Configure
 the app with repository permissions for `Contents: Read and write` and `Actions: Read and write`,
