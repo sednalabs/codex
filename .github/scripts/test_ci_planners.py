@@ -3843,6 +3843,38 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('"notarized": False', macos_stage_script)
         self.assertNotIn("${{ needs.metadata.outputs.display_ref }}", macos_stage_script)
 
+    def test_sedna_preview_artifact_builds_require_clean_git_provenance(
+        self,
+    ) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml"
+        )
+        jobs = payload.get("jobs") or {}
+        clean_check = 'source_status="$(git status --porcelain --untracked-files=normal)"'
+        version_check = 'version_output="$("${stage_dir}/codex" --version)"'
+
+        for job_name in ("build-linux-x86_64", "build-linux-aarch64"):
+            with self.subTest(job=job_name):
+                run_command = ((jobs.get(job_name) or {}).get("with") or {}).get(
+                    "run_command"
+                ) or ""
+                cargo_index = run_command.index("cargo build --locked")
+                self.assertIn(clean_check, run_command)
+                self.assertLess(run_command.index(clean_check), cargo_index)
+                self.assertLess(cargo_index, run_command.index("mkdir -p ../dist"))
+                self.assertIn(version_check, run_command)
+                self.assertIn('[[ "${version_output}" == *-dirty* ]]', run_command)
+
+        artifact_script = (
+            REPO_ROOT / ".github/scripts/validation-lanes/artifact-build.sh"
+        ).read_text(encoding="utf-8")
+        cargo_index = artifact_script.index("cargo build --locked")
+        self.assertIn(clean_check, artifact_script)
+        self.assertLess(artifact_script.index(clean_check), cargo_index)
+        self.assertLess(cargo_index, artifact_script.index("mkdir -p ../dist"))
+        self.assertIn(version_check, artifact_script)
+        self.assertIn('[[ "${version_output}" == *-dirty* ]]', artifact_script)
+
     def test_sedna_preview_and_release_caches_have_separate_non_executable_authority(
         self,
     ) -> None:

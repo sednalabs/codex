@@ -1914,7 +1914,10 @@ decisions.
   artifact, applies ad hoc signatures for local execution, records that the
   artifact is not notarized, and reuses Cargo-home and compiler-cache entries
   without changing the release optimization profile. It remains a disposable
-  preview and does not publish a GitHub Release. The official release contract independently
+  preview and does not publish a GitHub Release. Linux branch and validation-artifact builders
+  require a clean checkout before Cargo starts, defer repository-root `dist/` creation until after
+  compilation, and reject a staged binary whose displayed git provenance contains `-dirty`. The
+  official release contract independently
   supports native Linux x64, Linux Arm64, and Intel macOS x64 archives with target-bound metadata,
   checksums, and native-runner verification. Linux assets also carry keyless Sigstore bundles,
   SPDX SBOMs, and GitHub build-provenance attestations; Apple Silicon remains unsupported.
@@ -1937,6 +1940,7 @@ decisions.
   - `.github/workflows/sedna-release.yml`
   - `.github/workflows/sedna-release-install.yml`
   - `.github/workflows/sedna-branch-build.yml`
+  - `.github/scripts/validation-lanes/artifact-build.sh`
   - `.github/scripts/test_ci_planners.py`
   - `codex-rs/app-server-daemon/src/update_loop.rs`
   - `scripts/install_sedna_release_asset`

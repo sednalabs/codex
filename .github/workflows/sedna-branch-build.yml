@@ -83,8 +83,14 @@ jobs:
       artifact_path: dist/*
       display_ref: ${{ needs.metadata.outputs.display_ref }}
       run_command: |
-        mkdir -p ../dist
+        source_status="$(git status --porcelain --untracked-files=normal)"
+        if [[ -n "${source_status}" ]]; then
+          echo "Refusing to build a preview from a dirty source tree." >&2
+          printf '%s\n' "${source_status}" >&2
+          exit 1
+        fi
         cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
+        mkdir -p ../dist
 
         stage_dir="${RUNNER_TEMP}/sedna-branch/x86_64-unknown-linux-gnu"
         file_version="${CODEX_RELEASE_VERSION//+/__}"
@@ -98,7 +104,12 @@ jobs:
 
         file "${stage_dir}/codex" | grep -F 'x86-64'
         readelf -l "${stage_dir}/codex" | grep -F '/lib64/ld-linux-x86-64.so.2'
-        "${stage_dir}/codex" --version
+        version_output="$("${stage_dir}/codex" --version)"
+        printf '%s\n' "${version_output}"
+        if [[ "${version_output}" == *-dirty* ]]; then
+          echo "Preview binary unexpectedly contains dirty git provenance." >&2
+          exit 1
+        fi
         "${stage_dir}/codex" --help >/dev/null
         "${stage_dir}/codex" exec --help >/dev/null
         "${stage_dir}/codex" app-server --help >/dev/null
@@ -140,8 +151,14 @@ jobs:
       artifact_path: dist/*
       display_ref: ${{ needs.metadata.outputs.display_ref }}
       run_command: |
-        mkdir -p ../dist
+        source_status="$(git status --porcelain --untracked-files=normal)"
+        if [[ -n "${source_status}" ]]; then
+          echo "Refusing to build a preview from a dirty source tree." >&2
+          printf '%s\n' "${source_status}" >&2
+          exit 1
+        fi
         cargo build --locked --target aarch64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
+        mkdir -p ../dist
 
         stage_dir="${RUNNER_TEMP}/sedna-branch/aarch64-unknown-linux-gnu"
         file_version="${CODEX_RELEASE_VERSION//+/__}"
@@ -155,7 +172,12 @@ jobs:
 
         file "${stage_dir}/codex" | grep -F 'ARM aarch64'
         readelf -l "${stage_dir}/codex" | grep -F '/lib/ld-linux-aarch64.so.1'
-        "${stage_dir}/codex" --version
+        version_output="$("${stage_dir}/codex" --version)"
+        printf '%s\n' "${version_output}"
+        if [[ "${version_output}" == *-dirty* ]]; then
+          echo "Preview binary unexpectedly contains dirty git provenance." >&2
+          exit 1
+        fi
         "${stage_dir}/codex" --help >/dev/null
         "${stage_dir}/codex" exec --help >/dev/null
         "${stage_dir}/codex" app-server --help >/dev/null

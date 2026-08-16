@@ -100,7 +100,8 @@ artifacts.
   - cache policy: same restore-only fallback archive policy as `rust-ci-full`
   - scopes: `protocol`, `tui`, `cli`, `core`, `workspace`
 - `sedna-release`
-  - trigger: Sedna release tags or manual dispatch
+  - trigger: a protected-`main` release-marker push or a protected-`main` manual dispatch; release
+    tags are outputs and verifier refs, not publication triggers
   - purpose: official public Linux `x86_64`, Linux Arm64, and Intel macOS `x86_64` release artifacts
   - release visibility: the only lane that may publish a GitHub Release
   - public boundary: builds, signs, publishes, and verifies public release assets only; host-local
@@ -162,6 +163,8 @@ artifacts.
 11. Use `sedna-branch-build` only when you intentionally want a preview binary.
     - `platform=linux-x86_64` remains the default.
     - `platform=linux-aarch64` produces a disposable native GNU/Linux Arm64 artifact.
+    - Linux preview builds require a clean checkout before compilation, stage repository-root
+      output only afterward, and fail if the binary reports dirty git provenance.
     - `platform=macos` produces a disposable Intel x64 artifact and reuses
       Cargo-home and `sccache` entries across builds. It is ad hoc signed, not
       notarized, and is not an official Sedna release.
