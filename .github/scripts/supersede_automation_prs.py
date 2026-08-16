@@ -20,14 +20,32 @@ class PullRequest:
     title: str
     body: str
     head_ref: str
+    head_repo: str
     created_at: str
     author: str
     html_url: str
 
 
-DEPENDABOT_TITLE = re.compile(r"^Bump (.+?) from .+? to .+?(?: in (/.+))?$", re.I)
+@dataclass(frozen=True)
+class DependabotVersion:
+    release: tuple[int, ...]
+    prerelease: bool
+    constraint: str = ""
+
+
+DEPENDABOT_TITLE = re.compile(
+    r"^(?:(?:chore|build)\(deps(?:-dev)?\):\s*)?"
+    r"(?:Bump|Update) (?P<dependency>.+?)(?: requirement)? from \S+ "
+    r"to (?P<target>\S+)(?: in (?P<directory>/.+))?$",
+    re.I,
+)
 DEPENDABOT_BODY = re.compile(r"Bumps? \[([^]]+)\]", re.I)
-DEPENDABOT_VERSION = re.compile(r"dependency-version:\s*([0-9][0-9A-Za-z.+_-]*)", re.I)
+DEPENDABOT_VERSION = re.compile(r"dependency-version:\s*(\S+)", re.I)
+STABLE_VERSION = re.compile(r"^(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))*$")
+PRERELEASE_VERSION = re.compile(
+    r"^(?P<release>(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))*)"
+    r"-(?P<prerelease>[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)$"
+)
 GITHUB_API_BASE = "https://api.github.com/repos/sednalabs/codex"
 
 
@@ -69,6 +87,7 @@ class GitHub:
                     title=item.get("title", ""),
                     body=item.get("body") or "",
                     head_ref=item.get("head", {}).get("ref", ""),
+                    head_repo=(item.get("head", {}).get("repo") or {}).get("full_name", ""),
                     created_at=item.get("created_at", ""),
                     author=item.get("user", {}).get("login", ""),
                     html_url=item.get("html_url", ""),
@@ -84,28 +103,72 @@ def dependabot_key(pr: PullRequest) -> str | None:
         return None
     body_match = DEPENDABOT_BODY.search(pr.body)
     title_match = DEPENDABOT_TITLE.match(pr.title)
-    dependency = body_match.group(1).strip() if body_match else (title_match.group(1).strip() if title_match else None)
+    dependency = (
+        body_match.group(1).strip()
+        if body_match
+        else (title_match.group("dependency").strip() if title_match else None)
+    )
     if not dependency:
         return None
-    directory = title_match.group(2).strip() if title_match and title_match.group(2) else ""
-    return f"{dependency.lower()}::{directory.lower()}"
+    directory = (
+        title_match.group("directory").strip()
+        if title_match and title_match.group("directory")
+        else ""
+    )
+    target = title_match.group("target") if title_match else ""
+    constraint = ">=" if target.startswith(">=") else ""
+    return f"{dependency.lower()}::{directory.lower()}::{constraint}"
 
 
-def dependabot_version(pr: PullRequest) -> tuple[int, ...]:
+def dependabot_version(pr: PullRequest) -> DependabotVersion | None:
     match = DEPENDABOT_VERSION.search(pr.body)
     if not match:
         title_match = DEPENDABOT_TITLE.match(pr.title)
         if not title_match:
-            return (0,)
-        version = title_match.group(0).rsplit(" to ", 1)[-1].split(" in ", 1)[0]
+            return None
+        version = title_match.group("target")
     else:
         version = match.group(1)
-    numbers = tuple(int(part) for part in re.findall(r"\d+", version))
-    return numbers or (0,)
+    constraint = ">=" if version.startswith(">=") else ""
+    if constraint:
+        version = version[len(constraint) :]
+    elif version[:1] in "<>=!~":
+        return None
+    if STABLE_VERSION.fullmatch(version):
+        return DependabotVersion(normalize_release(version), prerelease=False, constraint=constraint)
+    prerelease_match = PRERELEASE_VERSION.fullmatch(version)
+    if prerelease_match:
+        return DependabotVersion(
+            normalize_release(prerelease_match.group("release")),
+            prerelease=True,
+            constraint=constraint,
+        )
+    return None
+
+
+def normalize_release(version: str) -> tuple[int, ...]:
+    release = [int(part) for part in version.split(".")]
+    while len(release) > 1 and release[-1] == 0:
+        release.pop()
+    return tuple(release)
+
+
+def strictly_supersedes(candidate: DependabotVersion, other: DependabotVersion) -> bool:
+    if candidate.constraint != other.constraint:
+        return False
+    if candidate.prerelease:
+        return False
+    if other.prerelease:
+        return candidate.release >= other.release
+    return candidate.release > other.release
 
 
 def models_key(pr: PullRequest) -> bool:
-    return pr.head_ref.startswith("bot/sync-models-json-")
+    return (
+        pr.author.lower() == "github-actions[bot]"
+        and pr.head_repo.lower() == "sednalabs/codex"
+        and pr.head_ref.startswith("bot/sync-models-json-")
+    )
 
 
 def supersession_plan(prs: list[PullRequest], mode: str) -> list[dict[str, object]]:
@@ -124,9 +187,28 @@ def supersession_plan(prs: list[PullRequest], mode: str) -> list[dict[str, objec
 
     plan: list[dict[str, object]] = []
     for key, candidates in groups.items():
-        ordered = sorted(candidates, key=lambda pr: (dependabot_version(pr), pr.created_at, pr.number), reverse=True)
-        newest = ordered[0]
-        for stale in ordered[1:]:
+        if mode == "models-json":
+            ordered = sorted(candidates, key=lambda pr: (pr.created_at, pr.number), reverse=True)
+            newest = ordered[0]
+            stale_candidates = ordered[1:]
+        else:
+            versions = [(pr, dependabot_version(pr)) for pr in candidates]
+            if any(version is None for _, version in versions):
+                continue
+            comparable_versions = [(pr, version) for pr, version in versions if version is not None]
+            winners = [
+                pr
+                for pr, version in comparable_versions
+                if all(
+                    pr == other_pr or strictly_supersedes(version, other_version)
+                    for other_pr, other_version in comparable_versions
+                )
+            ]
+            if len(winners) != 1:
+                continue
+            newest = winners[0]
+            stale_candidates = [pr for pr in candidates if pr != newest]
+        for stale in stale_candidates:
             message = (
                 f"Closing this superseded automation PR. The newer PR #{newest.number} "
                 f"is the current {key.split('::', 1)[0]} update: {newest.html_url}."

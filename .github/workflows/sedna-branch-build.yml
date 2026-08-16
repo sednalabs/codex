@@ -117,11 +117,11 @@ jobs:
         PY
 
   build-macos:
-    name: Build macOS preview - ${{ matrix.target }}
+    name: Build macOS preview - x86_64-apple-darwin
     needs: metadata
     if: ${{ inputs.platform == 'macos' }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    runs-on: macos-15-intel
+    timeout-minutes: 210
     permissions:
       contents: read
     defaults:
@@ -131,19 +131,12 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
+      SCCACHE_CACHE_SIZE: 2G
       CODEX_RELEASE_REPOSITORY: ${{ github.repository }}
       CODEX_RELEASE_TAG_PREFIX: v
       CODEX_RELEASE_VERSION: ${{ needs.metadata.outputs.preview_version }}
       DISPLAY_REF: ${{ needs.metadata.outputs.display_ref }}
-      TARGET: ${{ matrix.target }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            target: aarch64-apple-darwin
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
+      TARGET: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v7
         with:
@@ -158,14 +151,71 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-apple-darwin
+
+      - name: Compute Rust cache keys
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(shasum -a 256 Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(shasum -a 256 rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/.rusty_v8/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            cargo-home-macos-15-intel-x86_64-apple-darwin-release-
+
+      - name: Install sccache
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+        with:
+          tool: sccache
+
+      - name: Configure sccache backend
+        id: sccache_backend
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: bash .github/scripts/configure_sccache_backend.sh write-fallback
+
+      - name: Enable sccache wrapper
+        if: ${{ steps.sccache_backend.outputs.backend != 'off' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          wrapper="$(command -v sccache)"
+          echo "RUSTC_WRAPPER=${wrapper}" >> "$GITHUB_ENV"
+          echo "SCCACHE_BASEDIRS=${GITHUB_WORKSPACE}" >> "$GITHUB_ENV"
+          sccache --start-server || true
+          sccache --zero-stats || true
+
+      - name: Restore sccache cache
+        if: ${{ steps.sccache_backend.outputs.backend == 'fallback' }}
+        id: cache_sccache_restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.sccache/
+          key: sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          restore-keys: |
+            sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-
+            sccache-macos-15-intel-x86_64-apple-darwin-release-
 
       - name: Configure rusty_v8 artifact overrides and verify checksums
         uses: ./.github/actions/setup-rusty-v8
         with:
-          target: ${{ matrix.target }}
+          target: x86_64-apple-darwin
 
       - name: Build macOS preview binaries
+        id: build_macos
         shell: bash
         run: |
           set -euo pipefail
@@ -243,7 +293,42 @@ jobs:
       - name: Upload macOS preview artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ needs.metadata.outputs.artifact_name }}-${{ matrix.target }}
+          name: ${{ needs.metadata.outputs.artifact_name }}-x86_64-apple-darwin
           path: dist/*
           if-no-files-found: error
           retention-days: 3
+
+      - name: Report sccache statistics
+        if: ${{ always() && steps.sccache_backend.outputs.backend != 'off' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### sccache stats — x86_64-apple-darwin (release)"
+            echo
+            echo '```text'
+            sccache --show-stats || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save Cargo home cache
+        if: ${{ always() && !cancelled() && steps.build_macos.outcome == 'success' && steps.cache_cargo_home_restore.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/.rusty_v8/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+      - name: Save sccache cache
+        if: ${{ always() && !cancelled() && steps.build_macos.outcome == 'success' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' }}
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.sccache/
+          key: sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}

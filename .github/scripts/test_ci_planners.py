@@ -148,6 +148,22 @@ def workflow_step_by_name(workflow_path: Path, job_name: str, step_name: str) ->
     raise AssertionError(f"missing step {step_name!r} in {workflow_path}")
 
 
+def workflow_checkout_identity_script(workflow_path: Path) -> str:
+    run_script = workflow_step_by_name(
+        workflow_path,
+        "metadata",
+        "Compute checkout ref",
+    ).get("run") or ""
+    start_marker = "# BEGIN checkout identity"
+    end_marker = "# END checkout identity"
+    start = run_script.index(start_marker)
+    end = run_script.index(end_marker, start) + len(end_marker)
+    return "\n".join(
+        line[10:] if line.startswith("          ") else line
+        for line in run_script[start:end].splitlines()
+    )
+
+
 def run_workflow_step_script(
     script: str, event: dict, *, event_name: str = "push"
 ) -> tuple[subprocess.CompletedProcess, dict]:
@@ -515,6 +531,7 @@ class DispatchSednaReleaseTests(unittest.TestCase):
             dispatch_ref="main",
             channel="prerelease",
             draft=False,
+            macos_release_mode="off",
             repo=Path("/repo"),
             dry_run=True,
         )
@@ -544,6 +561,8 @@ class DispatchSednaReleaseTests(unittest.TestCase):
                 "release_tag=v0.133.0-sedna.1+upstream.31",
                 "-f",
                 "draft=false",
+                "-f",
+                "macos_release_mode=off",
             ],
             cwd=Path("/repo"),
             dry_run=True,
@@ -603,6 +622,49 @@ class DispatchSednaReleaseTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(events, ["refresh", "resolve", "dispatch"])
 
+    def test_main_rejects_macos_preview_for_stable_release(self) -> None:
+        metadata = {
+            "release_tag": "v0.133.0-sedna.1",
+            "target_commit": "d4b356a4c23ff606556dac7232353c80d2ce8deb",
+            "github_prerelease": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                mock.patch.object(
+                    DISPATCH_SEDNA_RELEASE,
+                    "refresh_upstream_rust_tags",
+                ),
+                mock.patch.object(
+                    DISPATCH_SEDNA_RELEASE,
+                    "resolve_release_metadata",
+                    return_value=metadata,
+                ),
+                mock.patch.object(
+                    DISPATCH_SEDNA_RELEASE,
+                    "dispatch_release",
+                ) as dispatch,
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()) as stderr,
+            ):
+                result = DISPATCH_SEDNA_RELEASE.main(
+                    [
+                        "--repo",
+                        tmpdir,
+                        "--target-sha",
+                        metadata["target_commit"],
+                        "--macos-release-mode",
+                        "preview",
+                    ]
+                )
+
+        self.assertEqual(result, 1)
+        dispatch.assert_not_called()
+        self.assertIn(
+            "Intel macOS preview assets may only be attached to prereleases",
+            stderr.getvalue(),
+        )
+
 
 class RouteSelectionTests(unittest.TestCase):
     maxDiff = None
@@ -611,6 +673,78 @@ class RouteSelectionTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
         cls.routes = cls.catalog["followup_routes"]
+
+    collab_spawn_identity_candidate_paths = [
+        ".github/scripts/resolve_validation_plan.py",
+        ".github/scripts/resolve_rust_ci_mode.py",
+        ".github/scripts/test_ci_planners.py",
+        ".github/scripts/validation-lanes/app-server-protocol-test.sh",
+        ".github/scripts/validation-lanes/sdk-python-targeted.sh",
+        ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
+        "codex-rs/analytics/src/analytics_client_tests.rs",
+        "codex-rs/analytics/src/reducer.rs",
+        "codex-rs/app-server-protocol/schema/json/ServerNotification.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ItemCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ItemStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ReviewStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadForkResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadListResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadMetadataUpdateResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadReadResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadResumeResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadRollbackResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadUnarchiveResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/typescript/v2/ThreadItem.ts",
+        "codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle.rs",
+        "codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle_tests.rs",
+        "codex-rs/app-server-protocol/src/protocol/event_mapping.rs",
+        "codex-rs/app-server-protocol/src/protocol/mod.rs",
+        "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/item.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/tests.rs",
+        "codex-rs/app-server/README.md",
+        "codex-rs/app-server/tests/suite/v2/turn_start.rs",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/close_agent.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/resume_agent.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/send_input.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "codex-rs/exec/tests/event_processor_with_json_output.rs",
+        "codex-rs/protocol/src/items.rs",
+        "codex-rs/protocol/src/legacy_events.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/chatwidget/replay.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__app_server_collab_spawn_completed_renders_requested_model_and_effort.snap",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs",
+        "codex-rs/tui/src/chatwidget/tests/history_replay.rs",
+        "codex-rs/tui/src/multi_agents.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/divergences/index.yaml",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream.md",
+        "justfile",
+        "sdk/python/docs/api-reference.md",
+        "sdk/python/scripts/update_sdk_artifacts.py",
+        "sdk/python/src/openai_codex/client.py",
+        "sdk/python/src/openai_codex/generated/v2_all.py",
+        "sdk/python/tests/test_artifact_workflow_and_binaries.py",
+        "sdk/python/tests/test_client_rpc_methods.py",
+    ]
 
     def test_picker_shared_surface_routes_to_both_picker_lanes(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
@@ -959,10 +1093,153 @@ class RouteSelectionTests(unittest.TestCase):
 
     def test_app_server_schema_fixture_route_stays_on_schema_contract_lane(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
-            ["codex-rs/app-server-protocol/schema/json/ServerNotification.json"],
+            ["codex-rs/app-server-protocol/schema/json/v2/ThreadReadResponse.json"],
             self.routes,
         )
         self.assertEqual(lanes, ["codex.app-server-protocol-test"])
+
+    def test_collab_spawn_identity_source_outranks_generic_routes(self) -> None:
+        route = next(
+            route
+            for route in self.routes
+            if route["route_id"] == "collab-spawn-identity"
+        )
+        self.assertEqual(route["priority"], 10)
+        self.assertEqual(
+            route["lane_ids"],
+            [
+                "codex.core-subagent-model-pinning-targeted",
+                "codex.app-server-protocol-test",
+                "codex.app-server-collab-spawn-identity-targeted",
+                "codex.tui-collab-spawn-identity-targeted",
+                "codex.collab-spawn-identity-consumers-targeted",
+                "codex.sdk-python-targeted",
+            ],
+        )
+
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle.rs"],
+            self.routes,
+        )
+        self.assertEqual(lanes, route["lane_ids"])
+
+        rust_ci_lanes = RESOLVE_RUST_CI_MODE.select_followup_lanes(
+            ["codex-rs/core/src/agent/control.rs"],
+            self.routes,
+        )
+        self.assertEqual(rust_ci_lanes, route["lane_ids"])
+
+    def test_collab_spawn_identity_consumer_sources_use_direct_consumer_lane(self) -> None:
+        expected = [
+            "codex.core-subagent-model-pinning-targeted",
+            "codex.app-server-protocol-test",
+            "codex.app-server-collab-spawn-identity-targeted",
+            "codex.tui-collab-spawn-identity-targeted",
+            "codex.collab-spawn-identity-consumers-targeted",
+            "codex.sdk-python-targeted",
+        ]
+        for path in (
+            "codex-rs/analytics/src/analytics_client_tests.rs",
+            "codex-rs/state/src/runtime/usage.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    RESOLVE_VALIDATION_PLAN.select_followup_lanes([path], self.routes),
+                    expected,
+                )
+
+    def test_collab_spawn_identity_authority_sources_trigger_dedicated_route(self) -> None:
+        route = next(
+            route
+            for route in self.routes
+            if route["route_id"] == "collab-spawn-identity"
+        )
+        for path in (
+            "codex-rs/core/src/agent/control.rs",
+            "codex-rs/protocol/src/items.rs",
+            "codex-rs/protocol/src/legacy_events.rs",
+            "codex-rs/protocol/src/protocol.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    RESOLVE_VALIDATION_PLAN.select_followup_lanes([path], self.routes),
+                    route["lane_ids"],
+                )
+
+    def test_collab_spawn_identity_sdk_sources_include_python_sdk_lane(self) -> None:
+        route = next(
+            route
+            for route in self.routes
+            if route["route_id"] == "collab-spawn-identity"
+        )
+        for path in (
+            "sdk/python/src/openai_codex/client.py",
+            "sdk/python/src/openai_codex/generated/v2_all.py",
+            "sdk/python/tests/test_client_rpc_methods.py",
+            "sdk/python/tests/test_contract_generation.py",
+        ):
+            with self.subTest(path=path):
+                lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes([path], self.routes)
+                self.assertEqual(lanes, route["lane_ids"])
+                self.assertIn("codex.sdk-python-targeted", lanes)
+
+    def test_followup_route_priority_fails_closed_on_equal_highest_match(self) -> None:
+        routes = [
+            {
+                "route_id": "first",
+                "priority": 1,
+                "lane_ids": ["codex.first"],
+                "allowed_paths": ["identity/**"],
+            },
+            {
+                "route_id": "second",
+                "priority": 1,
+                "lane_ids": ["codex.second"],
+                "allowed_paths": ["identity/**"],
+            },
+        ]
+
+        self.assertEqual(
+            RESOLVE_VALIDATION_PLAN.select_followup_lanes(["identity/source.rs"], routes),
+            [],
+        )
+        self.assertEqual(
+            RESOLVE_RUST_CI_MODE.select_followup_lanes(["identity/source.rs"], routes),
+            [],
+        )
+
+    def test_route_priority_helpers_reject_invalid_unrelated_route(self) -> None:
+        routes = [
+            {
+                "route_id": "identity",
+                "priority": 10,
+                "lane_ids": ["codex.identity"],
+                "allowed_paths": ["identity/**"],
+            },
+            {
+                "route_id": "unrelated-invalid",
+                "priority": False,
+                "lane_ids": ["codex.unrelated"],
+                "allowed_paths": ["unrelated/**"],
+            },
+        ]
+
+        for selector in (
+            RESOLVE_VALIDATION_PLAN.select_followup_lanes,
+            RESOLVE_RUST_CI_MODE.select_followup_lanes,
+        ):
+            with self.subTest(selector=selector.__module__, files=["identity/source.rs"]):
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    "unrelated-invalid must set priority to a non-negative integer",
+                ):
+                    selector(["identity/source.rs"], routes)
+            with self.subTest(selector=selector.__module__, files=[]):
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    "unrelated-invalid must set priority to a non-negative integer",
+                ):
+                    selector([], routes)
 
     def test_brokered_tool_replay_route_stays_tight(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
@@ -1637,7 +1914,359 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
             )
 
 
+class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
+    workflow_path = REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+
+    def _run_identity_fixture(
+        self,
+        repo: TempGitRepo | Path,
+        *,
+        event_name: str,
+        checkout_ref: str,
+        input_ref: str = "",
+        pr_head_sha: str = "",
+        pr_head_ref: str = "",
+    ) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
+        script = workflow_checkout_identity_script(self.workflow_path)
+        command = f"set -euo pipefail\n{script}\n"
+        repo_root = repo.root if isinstance(repo, TempGitRepo) else repo
+        with tempfile.TemporaryDirectory(prefix="ci-planner-output-") as tmpdir:
+            output_path = Path(tmpdir) / "github-output.txt"
+            output_path.write_text("", encoding="utf-8")
+            env = {
+                **os.environ,
+                "GITHUB_EVENT_NAME": event_name,
+                "GITHUB_OUTPUT": str(output_path),
+                "CHECKOUT_REF": checkout_ref,
+                "DISPLAY_REF": "main",
+                "INPUT_REF": input_ref,
+                "PR_HEAD_SHA": pr_head_sha,
+                "PR_HEAD_REF": pr_head_ref,
+            }
+            proc = subprocess.run(
+                ["bash", "-c", command],
+                cwd=repo_root,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            return proc, parse_github_output_file(output_path)
+
+    def _fixture_repo(
+        self,
+    ) -> tuple[
+        TempGitRepo,
+        tempfile.TemporaryDirectory,
+        tempfile.TemporaryDirectory,
+        Path,
+        str,
+        str,
+        str,
+    ]:
+        source = TempGitRepo()
+        base_sha = source.commit("fixture base", {"payload.txt": "base\n"})
+        source._git("checkout", "--orphan", "target")
+        source._git("rm", "-rf", ".")
+        resolved_sha = source.commit("fixture resolved", {"payload.txt": "resolved\n"})
+        source._git("checkout", "main")
+        moved_sha = source.commit("fixture moved", {"payload.txt": "moved\n"})
+        source._git("branch", "mutable", resolved_sha)
+        source._git("tag", "lightweight", resolved_sha)
+        source._git("tag", "-a", "annotated", "-m", "annotated fixture", resolved_sha)
+        origin_tmpdir = tempfile.TemporaryDirectory(prefix="ci-planner-origin-")
+        origin = Path(origin_tmpdir.name) / "origin.git"
+        source._git("clone", "--bare", str(source.root), str(origin))
+        source._git("remote", "add", "origin", str(origin))
+        checkout_tmpdir = tempfile.TemporaryDirectory(prefix="ci-planner-checkout-")
+        checkout = Path(checkout_tmpdir.name) / "checkout"
+        for args in (
+            ("init", "--initial-branch=main", str(checkout)),
+            ("-C", str(checkout), "remote", "add", "origin", f"file://{origin}"),
+            (
+                "-C",
+                str(checkout),
+                "fetch",
+                "--depth=1",
+                "--no-tags",
+                "origin",
+                "refs/heads/main:refs/remotes/origin/main",
+            ),
+            ("-C", str(checkout), "checkout", "-B", "main", "origin/main"),
+        ):
+            subprocess.run(
+                ["git", *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        return (
+            source,
+            origin_tmpdir,
+            checkout_tmpdir,
+            checkout,
+            base_sha,
+            resolved_sha,
+            moved_sha,
+        )
+
+    def _move_fixture_refs(
+        self,
+        repo: TempGitRepo,
+        origin_tmpdir: tempfile.TemporaryDirectory,
+        moved_sha: str,
+    ) -> None:
+        origin = Path(origin_tmpdir.name) / "origin.git"
+        repo._git("branch", "-f", "mutable", moved_sha)
+        repo._git("tag", "-f", "lightweight", moved_sha)
+        repo._git("tag", "-f", "-a", "annotated", "-m", "moved annotated fixture", moved_sha)
+        repo._git(
+            "push",
+            "--force",
+            str(origin),
+            "refs/heads/mutable:refs/heads/mutable",
+            "refs/tags/lightweight:refs/tags/lightweight",
+            "refs/tags/annotated:refs/tags/annotated",
+        )
+
+    def test_complete_output_boundary_uses_real_git_refs_and_peels_to_immutable_sha(self) -> None:
+        (
+            source,
+            origin_tmpdir,
+            checkout_tmpdir,
+            checkout,
+            base_sha,
+            resolved_sha,
+            moved_sha,
+        ) = self._fixture_repo()
+        try:
+            pr_head_sha = "a" * 40
+            captured_outputs: dict[str, dict[str, str]] = {}
+            workflow_sha = moved_sha
+            self.assertNotEqual(
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(checkout),
+                        "cat-file",
+                        "-e",
+                        f"{resolved_sha}^{{commit}}",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                ).returncode,
+                0,
+            )
+            cases = [
+                (
+                    "pull_request",
+                    "",
+                    pr_head_sha,
+                    "feature/head",
+                    pr_head_sha,
+                ),
+                ("workflow_dispatch", "", "", "", workflow_sha),
+                ("workflow_dispatch", moved_sha, "", "", moved_sha),
+                ("workflow_dispatch", resolved_sha, "", "", resolved_sha),
+                ("workflow_dispatch", "mutable", "", "", resolved_sha),
+                ("workflow_dispatch", "refs/heads/mutable", "", "", resolved_sha),
+                ("workflow_dispatch", "lightweight", "", "", resolved_sha),
+                ("workflow_dispatch", "annotated", "", "", resolved_sha),
+            ]
+            for event_name, input_ref, pr_head, pr_ref, expected_sha in cases:
+                with self.subTest(event_name=event_name, input_ref=input_ref):
+                    proc, outputs = self._run_identity_fixture(
+                        checkout,
+                        event_name=event_name,
+                        checkout_ref=workflow_sha,
+                        input_ref=input_ref,
+                        pr_head_sha=pr_head,
+                        pr_head_ref=pr_ref,
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(outputs.get("checkout_ref"), expected_sha)
+                    self.assertEqual(outputs.get("checkout_sha"), expected_sha)
+                    self.assertEqual(
+                        outputs.get("event_policy"),
+                        (
+                            "pull_request_exact_head_lane_fingerprint"
+                            if event_name == "pull_request"
+                            else "workflow_dispatch_exact_head_manual"
+                        ),
+                    )
+                    self.assertEqual(
+                        outputs.get("display_ref"),
+                        pr_ref or input_ref or "main",
+                    )
+                    if event_name == "workflow_dispatch":
+                        captured_outputs[input_ref or "<default>"] = outputs
+
+            self._move_fixture_refs(source, origin_tmpdir, moved_sha)
+            source._git("fetch", "origin", "mutable")
+            self.assertEqual(source.rev_parse("origin/mutable"), moved_sha)
+            for input_ref, outputs in captured_outputs.items():
+                captured_sha = outputs.get("checkout_sha")
+                self.assertIsNotNone(captured_sha, input_ref)
+                resolved = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(checkout),
+                        "rev-parse",
+                        "--verify",
+                        f"{captured_sha}^{{commit}}",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(resolved.returncode, 0, input_ref)
+                self.assertEqual(resolved.stdout.strip(), captured_sha, input_ref)
+                self.assertEqual(
+                    subprocess.run(
+                        [
+                            "git",
+                            "-C",
+                            str(checkout),
+                            "cat-file",
+                            "-e",
+                            f"{captured_sha}^{{commit}}",
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    ).returncode,
+                    0,
+                    input_ref,
+                )
+            self.assertEqual(resolved_sha, source.rev_parse(resolved_sha))
+            self.assertNotEqual(resolved_sha, moved_sha)
+        finally:
+            source.cleanup()
+            origin_tmpdir.cleanup()
+            checkout_tmpdir.cleanup()
+
+    def test_unsupported_event_fails_closed_before_identity_output(self) -> None:
+        source, origin_tmpdir, checkout_tmpdir, checkout, base_sha, _, _ = self._fixture_repo()
+        try:
+            proc, outputs = self._run_identity_fixture(
+                checkout,
+                event_name="push",
+                checkout_ref=base_sha,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertEqual(outputs, {})
+            self.assertIn("unsupported event", proc.stderr)
+        finally:
+            source.cleanup()
+            origin_tmpdir.cleanup()
+            checkout_tmpdir.cleanup()
+
+    def test_full_sha_manual_input_fails_closed_when_commit_is_missing(self) -> None:
+        source, origin_tmpdir, checkout_tmpdir, checkout, base_sha, _, _ = self._fixture_repo()
+        try:
+            proc, outputs = self._run_identity_fixture(
+                checkout,
+                event_name="workflow_dispatch",
+                checkout_ref=base_sha,
+                input_ref="e" * 40,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertEqual(outputs, {})
+            self.assertIn("unable to fetch checkout ref", proc.stderr)
+        finally:
+            source.cleanup()
+            origin_tmpdir.cleanup()
+            checkout_tmpdir.cleanup()
+
+    def test_unsafe_manual_ref_inputs_fail_before_fetch_or_identity_output(self) -> None:
+        source, origin_tmpdir, checkout_tmpdir, checkout, base_sha, _, _ = self._fixture_repo()
+        try:
+            fetch_head = checkout / ".git" / "FETCH_HEAD"
+            initial_fetch_head = fetch_head.read_bytes()
+            for input_ref in ("--upload-pack=evil", "bad\nref"):
+                with self.subTest(input_ref=repr(input_ref)):
+                    proc, outputs = self._run_identity_fixture(
+                        checkout,
+                        event_name="workflow_dispatch",
+                        checkout_ref=base_sha,
+                        input_ref=input_ref,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertEqual(outputs, {})
+                    self.assertIn("unsafe checkout ref input rejected", proc.stderr)
+                    self.assertEqual(fetch_head.read_bytes(), initial_fetch_head)
+        finally:
+            source.cleanup()
+            origin_tmpdir.cleanup()
+            checkout_tmpdir.cleanup()
+
+    def test_identity_variables_are_not_reassigned_after_output_boundary(self) -> None:
+        payload = load_workflow_payload(self.workflow_path)
+        metadata_step = workflow_step_by_name(
+            self.workflow_path,
+            "metadata",
+            "Compute checkout ref",
+        )
+        run_script = metadata_step.get("run") or ""
+        end = run_script.index("# END checkout identity")
+        post_identity = run_script[end:]
+        for variable in ("checkout_ref", "checkout_sha", "display_ref"):
+            self.assertNotRegex(post_identity, rf"(?m)^\s*{variable}=")
+
+        jobs = payload.get("jobs") or {}
+        metadata_outputs = jobs["metadata"].get("outputs") or {}
+        self.assertEqual(
+            metadata_outputs.get("checkout_ref"),
+            "${{ steps.meta.outputs.checkout_ref }}",
+        )
+        self.assertEqual(
+            metadata_outputs.get("checkout_sha"),
+            "${{ steps.meta.outputs.checkout_sha }}",
+        )
+        self.assertEqual(
+            metadata_outputs.get("display_ref"),
+            "${{ steps.meta.outputs.display_ref }}",
+        )
+        expected_consumers = {
+            "smoke_workflow_lanes",
+            "smoke_node_lanes",
+            "smoke_rust_minimal_lanes",
+            "smoke_rust_integration_lanes",
+            "smoke_release_lanes",
+            "workflow_lanes",
+            "node_lanes",
+            "rust_minimal_lanes",
+            "rust_minimal_batches",
+            "rust_integration_lanes",
+            "rust_integration_batches",
+            "release_lanes_eager",
+            "release_lanes",
+        }
+        actual_consumers = {
+            name
+            for name, job in jobs.items()
+            if ((job or {}).get("with") or {}).get("checkout_ref")
+            == "${{ needs.metadata.outputs.checkout_ref }}"
+        }
+        self.assertEqual(actual_consumers, expected_consumers)
+        self.assertEqual(len(actual_consumers), 13)
+        summary_run = next(
+            step.get("run") or ""
+            for step in (jobs["summary"].get("steps") or [])
+            if "aggregate_validation_summary.py" in (step.get("run") or "")
+        )
+        self.assertIn('--checkout-ref "${{ needs.metadata.outputs.checkout_ref }}"', summary_run)
+        self.assertIn('--head-sha "${{ needs.metadata.outputs.checkout_sha }}"', summary_run)
+
+
 class ValidationPlanScriptTests(unittest.TestCase):
+    collab_spawn_identity_candidate_paths = (
+        RouteSelectionTests.collab_spawn_identity_candidate_paths
+    )
+
     maxDiff = None
 
     def validation_lab_fingerprint(
@@ -1917,6 +2546,28 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ],
         )
 
+    def test_recommend_lab_full_collab_spawn_identity_candidate_includes_explicit_lanes(
+        self,
+    ) -> None:
+        payload = self.recommend_lab_for_files(self.collab_spawn_identity_candidate_paths)
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["lane_set"], "ui-protocol")
+        self.assertEqual(payload["source"], "followup_route")
+        self.assertEqual(
+            payload["lane_ids"],
+            [
+                "codex.core-subagent-model-pinning-targeted",
+                "codex.app-server-protocol-test",
+                "codex.app-server-collab-spawn-identity-targeted",
+                "codex.tui-collab-spawn-identity-targeted",
+                "codex.collab-spawn-identity-consumers-targeted",
+                "codex.sdk-python-targeted",
+            ],
+        )
+        self.assertTrue(payload["include_explicit_lanes"])
+        self.assertEqual(payload["dispatch_inputs"]["include_explicit_lanes"], "true")
+
     def test_recommend_lab_external_agent_containment_route_is_fail_closed(self) -> None:
         payload = self.recommend_lab_for_files(
             [
@@ -2098,6 +2749,58 @@ class ValidationPlanScriptTests(unittest.TestCase):
             recipe,
         )
         self.assertEqual(recipe.count("--exact"), 5)
+
+    def test_collab_spawn_identity_recipes_pin_exact_cross_surface_checks(self) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
+        expected_lanes = {
+            "codex.app-server-collab-spawn-identity-targeted": (
+                "app-server-collab-spawn-identity-targeted",
+                "rust_integration",
+                [
+                    "suite::v2::turn_start::turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_v2",
+                    "suite::v2::turn_start::turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2",
+                ],
+            ),
+            "codex.tui-collab-spawn-identity-targeted": (
+                "tui-collab-spawn-identity-targeted",
+                "rust_minimal",
+                [
+                    "chatwidget::tests::history_replay::replayed_collab_spawn_terminal_uses_only_explicit_effective_identity",
+                    "chatwidget::tests::history_replay::replayed_historic_terminal_collab_spawn_renders_legacy_identity_as_effective",
+                    "chatwidget::tests::history_replay::replayed_failed_collab_spawn_without_receiver_keeps_requested_identity",
+                    "chatwidget::tests::app_server::live_app_server_collab_spawn_completed_renders_requested_model_and_effort",
+                    "chatwidget::tests::app_server::live_app_server_spawn_completion_does_not_fill_missing_effective_identity_from_metadata",
+                ],
+            ),
+            "codex.collab-spawn-identity-consumers-targeted": (
+                "collab-spawn-identity-consumers-targeted",
+                "rust_minimal",
+                [
+                    "analytics_client_tests::collab_tool_item_analytics_keeps_requested_identity_from_the_started_event",
+                    "runtime::usage::tests::usage_logger_preserves_optional_spawn_request_identity",
+                ],
+            ),
+        }
+        recipes = just_recipe_bodies(REPO_ROOT / "justfile")
+
+        for lane_id, (recipe_name, setup_class, selectors) in expected_lanes.items():
+            with self.subTest(lane_id=lane_id):
+                lane = next(
+                    lane for lane in catalog["lanes"] if lane["lane_id"] == lane_id
+                )
+                self.assertTrue(lane["explicit_only"])
+                self.assertEqual(lane["setup_class"], setup_class)
+                self.assertEqual(lane["script_args"], [recipe_name])
+
+                exact_selectors = []
+                for line in recipes[recipe_name]:
+                    command, separator, _ = line.strip().partition(" -- --exact ")
+                    if separator:
+                        exact_selectors.append(
+                            command.removesuffix(" --lib").rsplit(maxsplit=1)[-1]
+                        )
+                self.assertEqual(len(exact_selectors), len(selectors))
+                self.assertCountEqual(exact_selectors, selectors)
 
     def test_recommend_lab_docs_path_uses_docs_domain_fallback(self) -> None:
         payload = self.recommend_lab_for_files(["docs/validation_workflow.md"])
@@ -2461,6 +3164,21 @@ class ValidationPlanScriptTests(unittest.TestCase):
         ):
             RESOLVE_VALIDATION_PLAN.validate_catalog(traversal_catalog, repo_root=REPO_ROOT)
 
+    def test_validation_catalog_rejects_invalid_followup_route_priority(self) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.normalize_catalog(RESOLVE_VALIDATION_PLAN.load_catalog())
+        route = next(
+            route
+            for route in catalog["followup_routes"]
+            if route["route_id"] == "collab-spawn-identity"
+        )
+        route["priority"] = False
+
+        with self.assertRaisesRegex(
+            SystemExit,
+            "must set priority to a non-negative integer",
+        ):
+            RESOLVE_VALIDATION_PLAN.validate_catalog(catalog, repo_root=REPO_ROOT)
+
     def test_heavy_plan_splits_selected_lanes_by_setup_class(self) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",
@@ -2769,7 +3487,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('if [[ "${LAB_PROFILE}" == "artifact"', run_script)
         self.assertIn("git -C \"${target_checkout}\" tag --merged HEAD", run_script)
 
-    def test_sedna_branch_build_uses_safe_ref_env_and_macos_preview_matrix(
+    def test_sedna_branch_build_uses_safe_ref_env_and_cached_macos_x64_preview(
         self,
     ) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-branch-build.yml")
@@ -2816,18 +3534,51 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         macos_job = (payload.get("jobs") or {}).get("build-macos") or {}
         self.assertEqual(macos_job.get("if"), "${{ inputs.platform == 'macos' }}")
+        self.assertEqual(macos_job.get("runs-on"), "macos-15-intel")
+        self.assertEqual(macos_job.get("timeout-minutes"), "210")
+        self.assertNotIn("strategy", macos_job)
+        self.assertEqual((macos_job.get("env") or {}).get("TARGET"), "x86_64-apple-darwin")
+        self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", macos_job.get("env") or {})
+        self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", macos_job.get("env") or {})
+        install_sccache_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "build-macos",
+            "Install sccache",
+        )
         self.assertEqual(
-            ((macos_job.get("strategy") or {}).get("matrix") or {}).get("include"),
-            [
-                {
-                    "runner": "macos-15",
-                    "target": "aarch64-apple-darwin",
-                },
-                {
-                    "runner": "macos-15-intel",
-                    "target": "x86_64-apple-darwin",
-                },
-            ],
+            install_sccache_step.get("uses"),
+            "taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e",
+        )
+        configure_sccache_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "build-macos",
+            "Configure sccache backend",
+        )
+        self.assertIn(
+            "configure_sccache_backend.sh write-fallback",
+            configure_sccache_step.get("run") or "",
+        )
+        restore_sccache_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "build-macos",
+            "Restore sccache cache",
+        )
+        self.assertIn(
+            "sccache-macos-15-intel-x86_64-apple-darwin-release-",
+            (restore_sccache_step.get("with") or {}).get("key") or "",
+        )
+        save_sccache_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "build-macos",
+            "Save sccache cache",
+        )
+        self.assertEqual(
+            save_sccache_step.get("uses"),
+            "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+        )
+        self.assertIn(
+            "steps.build_macos.outcome == 'success'",
+            save_sccache_step.get("if") or "",
         )
         macos_build_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
@@ -3129,8 +3880,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "${{ vars.SEDNA_HEAVY_RUST_BATCHING }}",
         )
         run_script = metadata_step.get("run") or ""
+        self.assertIn("# BEGIN checkout identity", run_script)
+        self.assertIn("resolve_checkout_identity", run_script)
+        self.assertIn("FETCH_HEAD^{commit}", run_script)
+        self.assertIn('echo "checkout_ref=${checkout_ref}"', run_script)
+        self.assertIn('echo "checkout_sha=${checkout_sha}"', run_script)
+        self.assertIn('echo "display_ref=${display_ref}"', run_script)
+        self.assertNotIn('checkout_sha="$(git rev-parse FETCH_HEAD)', run_script)
         self.assertIn('checkout_ref="${CHECKOUT_REF}"', run_script)
         self.assertIn('checkout_ref="${PR_HEAD_SHA}"', run_script)
+        self.assertIn('checkout_sha="${PR_HEAD_SHA}"', run_script)
         self.assertIn('display_ref="${DISPLAY_REF}"', run_script)
         self.assertIn('--requested-lane "${REQUESTED_LANE}"', run_script)
         self.assertIn('--rust-batching "${INPUT_RUST_BATCHING}"', run_script)
@@ -3334,6 +4093,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "codex.tui-agent-picker-usage-targeted",
                 "codex.tui-agent-usage-totals-targeted",
                 "codex.tui-brokered-tool-replay-targeted",
+                "codex.tui-collab-spawn-identity-targeted",
                 "codex.tui-config-refresh-session-targeted",
                 "codex.tui-esc-interrupt-targeted",
                 "codex.tui-front-queue-submit-targeted",
@@ -4030,6 +4790,43 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("'upstream-main'", script)
         self.assertIn("mayCancelHeadPushRuns &&", script)
         self.assertIn("Post-merge push runs on ${baseBranch}", script)
+
+    def test_supersede_automation_prs_uses_pr_write_and_idempotent_comments(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/supersede-automation-prs.yml"
+        )
+        reconcile = ((payload.get("jobs") or {}).get("reconcile") or {})
+
+        self.assertEqual(
+            payload.get("concurrency"),
+            {
+                "group": "${{ github.workflow }}",
+                "cancel-in-progress": "false",
+            },
+        )
+
+        self.assertEqual(
+            reconcile.get("permissions"),
+            {"contents": "read", "pull-requests": "write"},
+        )
+
+        apply_steps = [
+            step
+            for step in reconcile.get("steps") or []
+            if (step.get("name") or "").startswith("Apply ")
+        ]
+        self.assertEqual(len(apply_steps), 2)
+        for step in apply_steps:
+            with self.subTest(step=step.get("name")):
+                script = (step.get("with") or {}).get("script") or ""
+                self.assertIn("github.paginate(", script)
+                self.assertIn("github.rest.issues.listComments", script)
+                self.assertIn("comment.user?.login?.toLowerCase() === 'github-actions[bot]'", script)
+                self.assertIn("comment.body === action.message", script)
+                self.assertIn("github.rest.issues.createComment", script)
+                self.assertIn("github.rest.pulls.update", script)
+                self.assertIn("pull_number: action.number", script)
+                self.assertNotIn("github.rest.issues.update", script)
 
     def test_sedna_sync_upstream_uses_github_app_token_and_shared_helper(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
@@ -4855,16 +5652,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 43)
+        self.assertEqual(payload["planned_job_count"], 44)
         self.assertEqual(payload["selected_workflow_lane_count"], 7)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 14)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 6)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 13)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "26")
-        self.assertEqual(payload["rust_integration_max_parallel"], "25")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "28")
+        self.assertEqual(payload["rust_integration_max_parallel"], "26")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {
@@ -5139,6 +5936,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         metadata_outputs = (jobs.get("metadata") or {}).get("outputs") or {}
         self.assertEqual(metadata_outputs.get("display_ref"), "${{ steps.meta.outputs.display_ref }}")
+        self.assertEqual(
+            metadata_outputs.get("event_policy"),
+            "${{ steps.meta.outputs.event_policy }}",
+        )
         self.assertEqual(metadata_outputs.get("checkout_sha"), "${{ steps.meta.outputs.checkout_sha }}")
         self.assertEqual(
             metadata_outputs.get("planned_matrix"),
@@ -5219,6 +6020,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
             metadata_outputs.get("dedupe_reason"),
             "${{ steps.meta.outputs.dedupe_reason }}",
         )
+        self.assertEqual(
+            metadata_outputs.get("event_policy"),
+            "${{ steps.meta.outputs.event_policy }}",
+        )
+        self.assertIn('event_policy="pull_request_exact_head_lane_fingerprint"', metadata_run)
+        self.assertIn('event_policy="workflow_dispatch_exact_head_manual"', metadata_run)
+        self.assertIn("unsupported event for sedna-heavy-tests checkout identity", metadata_run)
         self.assertIn(".ci_proof_v1.schema_version == \"ci-proof-v1\"", metadata_run)
         self.assertIn(".ci_proof_v1.planner_fingerprint == $planner", metadata_run)
         self.assertIn(".ci_proof_v1.conclusion == \"success\"", metadata_run)
@@ -5293,7 +6101,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             report_step.get("run") or "",
         )
         self.assertIn(
-            '--event-policy "pull_request_exact_head_lane_fingerprint"',
+            '--event-policy "${{ needs.metadata.outputs.event_policy }}"',
             report_step.get("run") or "",
         )
         self.assertIn(
@@ -6318,11 +7126,12 @@ class HelperScriptTests(unittest.TestCase):
 
     def test_sedna_release_manual_dispatch_defaults_to_auto_channel(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
-        channel_input = (
-            (((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs") or {})
-            .get("channel")
+        inputs = (
+            ((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs")
             or {}
         )
+        channel_input = inputs.get("channel") or {}
+        macos_input = inputs.get("macos_release_mode") or {}
 
         self.assertEqual(
             {
@@ -6332,6 +7141,16 @@ class HelperScriptTests(unittest.TestCase):
             {
                 "default": "auto",
                 "options": ["auto", "stable", "prerelease"],
+            },
+        )
+        self.assertEqual(
+            {
+                "default": macos_input.get("default"),
+                "options": macos_input.get("options"),
+            },
+            {
+                "default": "off",
+                "options": ["off", "preview", "notarized"],
             },
         )
 
@@ -6399,7 +7218,21 @@ class HelperScriptTests(unittest.TestCase):
         )
         self.assertNotIn("environment", release_job)
         self.assertEqual(publish_job.get("name"), "Publish GitHub release")
-        self.assertEqual(publish_job.get("needs"), ["resolve", "release-linux"])
+        self.assertEqual(
+            publish_job.get("needs"),
+            [
+                "resolve",
+                "release-linux",
+                "release-macos-preview-package",
+                "release-macos-finalize",
+            ],
+        )
+        self.assertIn("always()", publish_job.get("if") or "")
+        self.assertIn("macos_release_mode == 'off'", publish_job.get("if") or "")
+        self.assertIn(
+            "needs.release-linux.result == 'success'",
+            publish_job.get("if") or "",
+        )
         self.assertEqual(publish_job.get("environment"), "release")
         self.assertEqual(
             publish_job.get("permissions"),
@@ -6426,6 +7259,14 @@ class HelperScriptTests(unittest.TestCase):
         self.assertEqual(
             named_steps["Download Linux release artifacts"].get("with") or {},
             {"name": "sedna-release-linux", "path": "dist"},
+        )
+        self.assertEqual(
+            named_steps["Download Intel macOS release artifacts"].get("with") or {},
+            {"name": "sedna-release-macos-x64", "path": "dist"},
+        )
+        self.assertEqual(
+            named_steps["Download Intel macOS preview artifacts"].get("with") or {},
+            {"name": "sedna-release-macos-x64-preview", "path": "dist"},
         )
 
         config_step = named_steps["Check release publisher app configuration"]
@@ -6482,10 +7323,195 @@ class HelperScriptTests(unittest.TestCase):
 
         self.assertLess(version_check_index, dry_run_index)
         self.assertIn(
-            'staged codex --version did not report ${release_version@Q}',
+            "error: staged codex --version did not report %s: %s",
             installer,
         )
         self.assertIn('echo "$staged_version_output"', installer)
+
+    def test_sedna_release_macos_x64_is_signed_notarized_and_verified(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        jobs = payload.get("jobs") or {}
+        preflight = jobs.get("release-macos-signing-preflight") or {}
+        build = jobs.get("release-macos-build") or {}
+        sign = jobs.get("release-macos-sign") or {}
+        package = jobs.get("release-macos-package") or {}
+        sign_dmg = jobs.get("release-macos-sign-dmg") or {}
+        finalize = jobs.get("release-macos-finalize") or {}
+
+        self.assertEqual(preflight.get("runs-on"), "ubuntu-slim")
+        self.assertIn(
+            "macos_release_mode == 'notarized'",
+            preflight.get("if") or "",
+        )
+        self.assertEqual(
+            preflight.get("environment"),
+            {"name": "codesigning", "deployment": "false"},
+        )
+        preflight_steps = {
+            step.get("name"): step
+            for step in preflight.get("steps") or []
+            if step.get("name")
+        }
+        config = preflight_steps["Check Intel macOS signing configuration"]
+        self.assertIn("Missing Intel macOS release signing configuration", config.get("run") or "")
+        self.assertIn("APPLE_NOTARIZATION_KEY_P8", config.get("env") or {})
+
+        self.assertEqual(build.get("runs-on"), "macos-15-intel")
+        self.assertEqual(build.get("needs"), ["resolve", "release-macos-signing-preflight"])
+        self.assertEqual((build.get("env") or {}).get("TARGET"), "x86_64-apple-darwin")
+        self.assertEqual(sign.get("runs-on"), "ubuntu-24.04")
+        self.assertIn(
+            "macos_release_mode == 'notarized'",
+            sign.get("if") or "",
+        )
+        self.assertEqual(sign.get("environment"), {"name": "codesigning", "deployment": "false"})
+        self.assertEqual((sign.get("permissions") or {}).get("id-token"), "write")
+        sign_steps = {step.get("name"): step for step in sign.get("steps") or [] if step.get("name")}
+        self.assertIn(
+            "notarize_macos_binary_with_rcodesign.sh",
+            sign_steps["Sign and notarize Intel macOS binaries"].get("run") or "",
+        )
+
+        self.assertEqual(package.get("runs-on"), "macos-15-intel")
+        package_steps = {
+            step.get("name"): step for step in package.get("steps") or [] if step.get("name")
+        }
+        package_script = package_steps["Package Intel macOS release assets"].get("run") or ""
+        self.assertIn("hdiutil create", package_script)
+        self.assertIn("codex codex-responses-api-proxy", package_script)
+
+        self.assertEqual(sign_dmg.get("environment"), {"name": "codesigning", "deployment": "false"})
+        sign_dmg_steps = {
+            step.get("name"): step for step in sign_dmg.get("steps") or [] if step.get("name")
+        }
+        self.assertIn(
+            "notarize_macos_dmg_with_rcodesign.sh",
+            sign_dmg_steps["Sign, notarize, and staple Intel macOS DMG"].get("run") or "",
+        )
+
+        self.assertEqual(finalize.get("runs-on"), "macos-15-intel")
+        finalize_steps = {
+            step.get("name"): step for step in finalize.get("steps") or [] if step.get("name")
+        }
+        verify_script = finalize_steps["Verify Intel macOS release assets"].get("run") or ""
+        for evidence in (
+            "lipo",
+            "codesign --verify --strict",
+            "diff -u",
+            "hdiutil verify",
+            "xcrun stapler validate",
+            "hdiutil attach",
+        ):
+            self.assertIn(evidence, verify_script)
+
+    def test_sedna_release_macos_preview_is_explicit_and_unnotarized(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        jobs = payload.get("jobs") or {}
+        build = jobs.get("release-macos-build") or {}
+        preview = jobs.get("release-macos-preview-package") or {}
+        publish = jobs.get("publish-release") or {}
+        resolve_script = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release.yml",
+            "resolve",
+            "Resolve release metadata",
+        )["run"]
+
+        self.assertIn('macos_release_mode="off"', resolve_script)
+        self.assertIn(
+            "Ad-hoc signed Intel macOS assets may only be attached to prereleases",
+            resolve_script,
+        )
+        self.assertIn("always()", build.get("if") or "")
+        self.assertIn("macos_release_mode == 'preview'", build.get("if") or "")
+        self.assertEqual(preview.get("runs-on"), "macos-15-intel")
+        self.assertEqual(preview.get("needs"), ["resolve", "release-macos-build"])
+        self.assertIn("macos_release_mode == 'preview'", preview.get("if") or "")
+
+        preview_steps = {
+            step.get("name"): step
+            for step in preview.get("steps") or []
+            if step.get("name")
+        }
+        package_script = preview_steps[
+            "Ad-hoc sign and package Intel macOS preview"
+        ].get("run") or ""
+        for evidence in (
+            "--identity -",
+            "Signature=adhoc",
+            "UNNOTARIZED-PREVIEW",
+            '"signing": "ad-hoc"',
+            '"notarized": False',
+            '"gatekeeper_ready": False',
+        ):
+            self.assertIn(evidence, package_script)
+
+        publish_steps = {
+            step.get("name"): step
+            for step in publish.get("steps") or []
+            if step.get("name")
+        }
+        create_script = publish_steps["Create GitHub release"].get("run") or ""
+        self.assertIn("not Developer ID signed or notarized", create_script)
+        self.assertIn("not an official supported macOS distribution", create_script)
+
+    def test_sedna_release_installer_targets_native_linux_and_intel_macos(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml"
+        )
+        jobs = payload.get("jobs") or {}
+        plan = jobs.get("plan") or {}
+        install = jobs.get("install") or {}
+        matrix_script = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml",
+            "plan",
+            "Build verification matrix",
+        )["run"]
+
+        def resolve_matrix(mode: str) -> list[dict[str, str]]:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_path = Path(tmpdir) / "github-output.txt"
+                output_path.write_text("", encoding="utf-8")
+                proc = subprocess.run(
+                    ["bash", "-c", f"set -euo pipefail\n{matrix_script}"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "GITHUB_OUTPUT": str(output_path),
+                        "MACOS_RELEASE_MODE": mode,
+                    },
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                return json.loads(parse_github_output_file(output_path)["matrix"])
+
+        linux = {
+            "platform": "Linux x64",
+            "runner": "ubuntu-24.04",
+            "target": "x86_64-unknown-linux-gnu",
+        }
+        macos = {
+            "platform": "Intel macOS x64",
+            "runner": "macos-15-intel",
+            "target": "x86_64-apple-darwin",
+        }
+        self.assertEqual(resolve_matrix("off"), [linux])
+        self.assertEqual(resolve_matrix("preview"), [linux, macos])
+        self.assertEqual(resolve_matrix("notarized"), [linux, macos])
+        self.assertEqual(plan.get("runs-on"), "ubuntu-slim")
+        self.assertEqual(install.get("needs"), "plan")
+        self.assertEqual(
+            ((install.get("strategy") or {}).get("matrix") or {}).get("include"),
+            "${{ fromJSON(needs.plan.outputs.matrix) }}",
+        )
+        installer = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Darwin/x86_64", installer)
+        self.assertIn("x86_64-apple-darwin", installer)
+        self.assertIn("codesign --verify --strict", installer)
+        self.assertIn("--macos-preview", installer)
+        self.assertIn("UNNOTARIZED-PREVIEW", installer)
 
     def test_sedna_release_verifier_tag_grammar_matches_resolver_shape(self) -> None:
         install_workflow = (
@@ -6604,8 +7630,13 @@ class HelperScriptTests(unittest.TestCase):
 
         self.assertIn("Dispatch release asset verifier", release_workflow)
         self.assertIn('-f "dry_run=true"', release_workflow)
+        self.assertIn('-f "macos_release_mode=${MACOS_RELEASE_MODE}"', release_workflow)
         self.assertNotIn('-f "dry_run=false"', release_workflow)
-        self.assertEqual(install_job.get("runs-on"), "ubuntu-24.04")
+        self.assertEqual(install_job.get("runs-on"), "${{ matrix.runner }}")
+        self.assertEqual(
+            ((install_job.get("strategy") or {}).get("matrix") or {}).get("include"),
+            "${{ fromJSON(needs.plan.outputs.matrix) }}",
+        )
         workflow_json = json.dumps(install_payload, sort_keys=True)
         self.assertNotIn("self-hosted", workflow_json)
         self.assertIn("public workflow requires true", workflow_json)

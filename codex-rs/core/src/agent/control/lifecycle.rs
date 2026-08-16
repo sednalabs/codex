@@ -22,6 +22,9 @@ pub(crate) struct PreparedV2AgentDelivery {
     agent_id: ThreadId,
     metadata: AgentMetadata,
     lifecycle: OwnedMutexGuard<AgentLifecycleState>,
+    /// Initial spawn delivery temporarily owns exact-child metadata before the publication CAS
+    /// makes that metadata parent-visible through the registry.
+    metadata_is_published: bool,
 }
 
 impl AgentControl {
@@ -47,6 +50,38 @@ impl AgentControl {
             agent_id,
             metadata,
             lifecycle,
+            metadata_is_published: true,
+        })
+    }
+
+    /// Prepare the first V2 delivery for a just-created child before its spawn publication CAS.
+    ///
+    /// The metadata is owned by `spawn_agent_internal` and deliberately has no registry entry
+    /// yet. Keeping it private prevents cancellation-owned children from entering normal agent
+    /// lookup, inventory, TUI, or analytics paths, while the lifecycle gate still serializes the
+    /// initial delivery with the child metadata that will become public only after publication.
+    pub(super) async fn prepare_provisional_v2_agent_delivery(
+        &self,
+        agent_id: ThreadId,
+        metadata: AgentMetadata,
+    ) -> CodexResult<PreparedV2AgentDelivery> {
+        if metadata.agent_id != Some(agent_id) {
+            return Err(CodexErr::Fatal(format!(
+                "provisional V2 metadata does not belong to child {agent_id}"
+            )));
+        }
+        let state = self.upgrade()?;
+        let lifecycle = metadata.lifecycle.lock().await;
+        if state.get_thread(agent_id).await.is_err() {
+            return Err(CodexErr::ThreadNotFound(agent_id));
+        }
+        Ok(PreparedV2AgentDelivery {
+            control: self.clone(),
+            state,
+            agent_id,
+            metadata,
+            lifecycle,
+            metadata_is_published: false,
         })
     }
 
@@ -96,6 +131,7 @@ impl AgentControl {
             agent_id,
             metadata,
             lifecycle,
+            metadata_is_published: true,
         })
     }
 
@@ -187,10 +223,11 @@ impl PreparedV2AgentDelivery {
         interrupt: bool,
     ) -> futures::future::BoxFuture<'static, CodexResult<String>> {
         Box::pin(async move {
-            if !self
-                .control
-                .state
-                .metadata_is_current(self.agent_id, &self.metadata)
+            if self.metadata_is_published
+                && !self
+                    .control
+                    .state
+                    .metadata_is_current(self.agent_id, &self.metadata)
             {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));
             }

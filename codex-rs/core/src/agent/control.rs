@@ -1,6 +1,8 @@
 use crate::agent::AgentStatus;
 use crate::agent::registry::AgentMetadata;
 use crate::agent::registry::AgentRegistry;
+use crate::agent::registry::SpawnPublicationDecision;
+use crate::agent::registry::SpawnPublicationKey;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
@@ -10,11 +12,13 @@ use crate::codex_thread::CodexThread;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
+use crate::context::world_state::SubagentContext;
+use crate::context::world_state::SubagentContextBuilder;
+use crate::context::world_state::SubagentContextRow;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::rollout_budget::RolloutBudget;
 use crate::session::emit_subagent_session_started;
 use crate::session_prefix::format_inter_agent_completion_message;
-use crate::session_prefix::format_subagent_context_line;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::state_db;
 use crate::thread_manager::RemoveThreadIfSameResult;
@@ -53,6 +57,10 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Weak;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -74,6 +82,11 @@ mod lifecycle;
 mod residency;
 mod spawn;
 
+#[cfg(test)]
+use self::spawn::UnpublishedSpawnReconciliation;
+#[cfg(test)]
+use self::spawn::unpublished_spawn_reconciliation;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SpawnAgentForkMode {
     FullHistory,
@@ -86,6 +99,11 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
+    /// The call that owns the parent-visible publication decision for a tool spawn.
+    ///
+    /// Direct control-plane callers leave this unset. Tool runtime dispatch creates the matching
+    /// record before the handler begins, so cancellation and child publication share one winner.
+    pub(crate) spawn_call_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -208,6 +226,35 @@ pub(crate) struct AgentControl {
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
+    #[cfg(test)]
+    spawn_test_hooks: Arc<SpawnTestHooks>,
+    #[cfg(test)]
+    hide_next_agent_config_snapshot: Arc<tokio::sync::Mutex<bool>>,
+}
+
+/// Deterministic race and failure controls for the post-creation spawn boundary.
+///
+/// These live on `AgentControl`, rather than the manager, because every spawned child shares the
+/// same control and publication registry as its parent. Production builds have no hook surface.
+#[cfg(test)]
+#[derive(Default)]
+struct SpawnTestHooks {
+    after_new_thread: std::sync::Mutex<Option<AfterNewThreadTestHook>>,
+    after_initial_delivery: std::sync::Mutex<Option<AfterNewThreadTestHook>>,
+    fail_unpublished_shutdown_once: AtomicBool,
+    retained_unpublished_cleanup: std::sync::Mutex<Option<RetainedUnpublishedCleanupTestHook>>,
+}
+
+#[cfg(test)]
+struct AfterNewThreadTestHook {
+    observed_child: tokio::sync::oneshot::Sender<ThreadId>,
+    resume_spawn: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+struct RetainedUnpublishedCleanupTestHook {
+    observed_child: tokio::sync::oneshot::Sender<ThreadId>,
+    resume_cleanup: Arc<tokio::sync::Notify>,
 }
 
 impl AgentControl {
@@ -238,6 +285,177 @@ impl AgentControl {
 
     pub(crate) fn rollout_budget(&self) -> &RolloutBudget {
         self.rollout_budget.as_ref()
+    }
+
+    pub(crate) fn begin_tool_spawn_publication(&self, parent_thread_id: ThreadId, call_id: &str) {
+        self.state
+            .begin_spawn_publication(SpawnPublicationKey::new(parent_thread_id, call_id));
+    }
+
+    pub(crate) fn cancel_tool_spawn_publication(
+        &self,
+        parent_thread_id: ThreadId,
+        call_id: &str,
+    ) -> SpawnPublicationDecision {
+        self.state
+            .cancel_spawn_publication(SpawnPublicationKey::new(parent_thread_id, call_id))
+    }
+
+    pub(crate) fn finish_tool_spawn_publication(&self, parent_thread_id: ThreadId, call_id: &str) {
+        self.state
+            .finish_spawn_publication(&SpawnPublicationKey::new(parent_thread_id, call_id));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tool_spawn_publication_decision_for_test(
+        &self,
+        parent_thread_id: ThreadId,
+        call_id: &str,
+    ) -> SpawnPublicationDecision {
+        self.state
+            .spawn_publication_decision(&SpawnPublicationKey::new(parent_thread_id, call_id))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn v2_resident_count_for_test(&self) -> usize {
+        self.v2_residency.resident_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spawn_capacity_and_path_are_available_for_test(
+        &self,
+        max_threads: usize,
+        agent_path: &AgentPath,
+    ) -> bool {
+        let Ok(mut reservation) = self.state.reserve_spawn_slot(Some(max_threads)) else {
+            return false;
+        };
+        reservation.reserve_agent_path(agent_path).is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_spawn_after_new_thread_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<ThreadId>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let (observed_child, child_created) = tokio::sync::oneshot::channel();
+        let resume_spawn = Arc::new(tokio::sync::Notify::new());
+        *self
+            .spawn_test_hooks
+            .after_new_thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(AfterNewThreadTestHook {
+            observed_child,
+            resume_spawn: Arc::clone(&resume_spawn),
+        });
+        (child_created, resume_spawn)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_spawn_after_initial_delivery_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<ThreadId>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let (observed_child, initial_delivery_finished) = tokio::sync::oneshot::channel();
+        let resume_spawn = Arc::new(tokio::sync::Notify::new());
+        *self
+            .spawn_test_hooks
+            .after_initial_delivery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(AfterNewThreadTestHook {
+            observed_child,
+            resume_spawn: Arc::clone(&resume_spawn),
+        });
+        (initial_delivery_finished, resume_spawn)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_unpublished_spawn_shutdown_for_test(&self) {
+        self.spawn_test_hooks
+            .fail_unpublished_shutdown_once
+            .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_retained_unpublished_spawn_cleanup_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<ThreadId>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let (observed_child, cleanup_retained) = tokio::sync::oneshot::channel();
+        let resume_cleanup = Arc::new(tokio::sync::Notify::new());
+        *self
+            .spawn_test_hooks
+            .retained_unpublished_cleanup
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(RetainedUnpublishedCleanupTestHook {
+                observed_child,
+                resume_cleanup: Arc::clone(&resume_cleanup),
+            });
+        (cleanup_retained, resume_cleanup)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn await_after_new_thread_test_hook(&self, child_thread_id: ThreadId) {
+        let hook = self
+            .spawn_test_hooks
+            .after_new_thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(hook) = hook {
+            let _ = hook.observed_child.send(child_thread_id);
+            hook.resume_spawn.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn await_after_initial_delivery_test_hook(&self, child_thread_id: ThreadId) {
+        let hook = self
+            .spawn_test_hooks
+            .after_initial_delivery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(hook) = hook {
+            let _ = hook.observed_child.send(child_thread_id);
+            hook.resume_spawn.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn await_retained_unpublished_spawn_cleanup_test_hook(
+        &self,
+        child_thread_id: ThreadId,
+    ) {
+        let hook = self
+            .spawn_test_hooks
+            .retained_unpublished_cleanup
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(hook) = hook {
+            let _ = hook.observed_child.send(child_thread_id);
+            hook.resume_cleanup.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_unpublished_shutdown_failure_for_test(&self) -> bool {
+        self.spawn_test_hooks
+            .fail_unpublished_shutdown_once
+            .swap(false, Ordering::AcqRel)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn hide_next_agent_config_snapshot(&self) {
+        *self.hide_next_agent_config_snapshot.lock().await = true;
     }
 
     /// Send rich user input items to an existing agent thread.
@@ -444,6 +662,10 @@ impl AgentControl {
         &self,
         agent_id: ThreadId,
     ) -> Option<ThreadConfigSnapshot> {
+        #[cfg(test)]
+        if std::mem::take(&mut *self.hide_next_agent_config_snapshot.lock().await) {
+            return None;
+        }
         let Ok(state) = self.upgrade() else {
             return None;
         };
@@ -508,23 +730,30 @@ impl AgentControl {
     pub(crate) async fn format_environment_context_subagents(
         &self,
         parent_thread_id: ThreadId,
-    ) -> String {
+    ) -> SubagentContext {
         let Ok(agents) = self.open_thread_spawn_children(parent_thread_id).await else {
-            return String::new();
+            return SubagentContext::default();
         };
 
-        agents
-            .into_iter()
-            .map(|(thread_id, metadata)| {
-                let reference = metadata
-                    .agent_path
-                    .as_ref()
-                    .map(|agent_path| agent_path.name().to_string())
-                    .unwrap_or_else(|| thread_id.to_string());
-                format_subagent_context_line(reference.as_str(), metadata.agent_nickname.as_deref())
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        let mut builder = SubagentContextBuilder::default();
+        let mut agents = agents.into_iter();
+        while let Some((thread_id, metadata)) = agents.next() {
+            if !builder.has_row_capacity() {
+                builder.note_omitted(1 + agents.len());
+                break;
+            }
+            let row = if let Some(agent_path) = metadata.agent_path.as_ref() {
+                SubagentContextRow::new(agent_path.name(), metadata.agent_nickname.as_deref())
+            } else {
+                let reference = thread_id.to_string();
+                SubagentContextRow::new(reference.as_str(), metadata.agent_nickname.as_deref())
+            };
+            if !builder.push(row) {
+                builder.note_omitted(1 + agents.len());
+                break;
+            }
+        }
+        builder.finish()
     }
 
     pub(crate) async fn list_agents(
