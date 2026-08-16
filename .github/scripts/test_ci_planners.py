@@ -7908,8 +7908,21 @@ fi
             release_named_steps["Attest Linux archive and SBOM provenance"].get("with")
             or {}
         ).get("subject-path") or ""
+        self.assertNotIn("codex-rs/dist/", attest_subjects)
+        self.assertIn("${{ github.workspace }}/dist/", attest_subjects)
         self.assertIn("matrix.metadata_json_name", attest_subjects)
         self.assertIn("matrix.metadata_text_name", attest_subjects)
+        sbom_output = (
+            release_named_steps["Generate SPDX SBOM"].get("with") or {}
+        ).get("output-file") or ""
+        self.assertTrue(sbom_output.startswith("${{ github.workspace }}/dist/"))
+        provenance_step = release_named_steps["Stage provenance bundle and checksums"]
+        self.assertIsNone(provenance_step.get("working-directory"))
+        self.assertEqual(
+            (provenance_step.get("env") or {}).get("DIST_DIR"),
+            "${{ github.workspace }}/dist",
+        )
+        self.assertIn('cd "${DIST_DIR}"', provenance_step.get("run") or "")
 
     def test_sedna_release_verifier_tag_grammar_matches_resolver_shape(self) -> None:
         install_workflow = (
