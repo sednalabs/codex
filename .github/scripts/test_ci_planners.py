@@ -8533,6 +8533,73 @@ fi
             proc.stderr,
         )
 
+    def test_sedna_release_tag_target_must_be_on_protected_main(self) -> None:
+        step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release.yml",
+            "route",
+            "Require tag target on protected main",
+        )
+        script = step["run"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            subprocess.run(
+                ["git", "init", "--initial-branch=main"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            for key, value in (
+                ("user.name", "Release Gate Test"),
+                ("user.email", "release-gate@example.invalid"),
+            ):
+                subprocess.run(["git", "config", key, value], cwd=root, check=True)
+            (root / "authority.txt").write_text("main\n", encoding="utf-8")
+            subprocess.run(["git", "add", "authority.txt"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "protected main"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            main_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True
+            ).strip()
+            subprocess.run(
+                ["git", "update-ref", "refs/remotes/origin/main", main_sha],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "switch", "--orphan", "tag-only"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            (root / "authority.txt").write_text("tag only\n", encoding="utf-8")
+            subprocess.run(["git", "add", "authority.txt"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "tag-only tree"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            tag_only_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True
+            ).strip()
+
+            for target_sha, expected_returncode in ((main_sha, 0), (tag_only_sha, 1)):
+                with self.subTest(target_sha=target_sha):
+                    proc = subprocess.run(
+                        ["bash", "-s"],
+                        cwd=root,
+                        input=script,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                        env={**os.environ, "TARGET_SHA": target_sha},
+                    )
+                    self.assertEqual(proc.returncode, expected_returncode, proc.stderr)
+
     def test_sedna_release_uses_synced_upstream_mirror_as_version_base(self) -> None:
         workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(
             encoding="utf-8"

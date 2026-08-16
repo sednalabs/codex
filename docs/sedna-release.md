@@ -82,6 +82,8 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
   release binaries, Sigstore certificate workflow SHA, and GitHub provenance source/signer digests
   bound to the same immutable commit. Manual releases must be dispatched from protected `main`;
   arbitrary branch dispatches fail before any release build or publication.
+- A pushed release tag is rejected before build or signing unless its peeled commit is reachable
+  from the full-history protected `origin/main` ref fetched by the release gate.
 - Manual `workflow_dispatch` without `release_tag` requires the target commit to contain a valid
   `Sedna-Release:` trailer. Markerless manual releases must supply the expected tag explicitly.
 - A supplied `release_tag` must match the upstream track computed from the target commit's

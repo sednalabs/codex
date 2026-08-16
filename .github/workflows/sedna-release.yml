@@ -53,13 +53,20 @@ jobs:
     name: Release request gate
     runs-on: ubuntu-slim
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       release_requested: ${{ steps.route.outputs.release_requested }}
       reason: ${{ steps.route.outputs.reason }}
       channel: ${{ steps.route.outputs.channel }}
       target_sha: ${{ steps.route.outputs.target_sha }}
     steps:
+      - name: Check out release authority refs
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Resolve release request
         id: route
         shell: bash
@@ -131,6 +138,20 @@ jobs:
           fi
 
           emit true release_marker "${EVENT_AFTER}" "${channel}"
+
+      - name: Require tag target on protected main
+        if: ${{ steps.route.outputs.reason == 'tag' }}
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.route.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          tag_commit="$(git rev-parse "${TARGET_SHA}^{commit}")"
+          main_commit="$(git rev-parse refs/remotes/origin/main)"
+          if ! git merge-base --is-ancestor "${tag_commit}" "${main_commit}"; then
+            echo "Release tag target ${tag_commit} is not reachable from protected main ${main_commit}." >&2
+            exit 1
+          fi
 
       - name: Summarize release gate
         if: ${{ always() }}
