@@ -391,18 +391,25 @@ if [[ "$verify_signatures" == "true" ]]; then
 fi
 
 if [[ "$verify_attestation" == "true" ]]; then
-  if ! command -v gh >/dev/null 2>&1 || ! gh attestation verify --help >/dev/null 2>&1; then
+  if ! command -v gh >/dev/null 2>&1; then
     echo "error: a GitHub CLI version with 'gh attestation verify' is required to verify build attestations" >&2
+    exit 1
+  fi
+  if ! gh_attestation_help="$(gh attestation verify --help 2>&1)" || [[ "$gh_attestation_help" != *"--deny-self-hosted-runners"* ]]; then
+    echo "error: a GitHub CLI version with hosted-runner attestation enforcement is required" >&2
     exit 1
   fi
   gh attestation verify "$work_dir/$archive_name" \
     --repo sednalabs/codex \
+    --deny-self-hosted-runners \
     --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
   gh attestation verify "$work_dir/$sbom_name" \
     --repo sednalabs/codex \
+    --deny-self-hosted-runners \
     --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
   gh attestation verify "$work_dir/$metadata_name" \
     --repo sednalabs/codex \
+    --deny-self-hosted-runners \
     --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
 fi
 

@@ -7085,6 +7085,29 @@ fi
                     helper.write_text(
                         "#!/usr/bin/env bash\nexit 97\n", encoding="utf-8"
                     )
+                elif name == "gh":
+                    helper.write_text(
+                        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == attestation && ${2:-} == verify && ${3:-} == --help ]]; then
+  echo --deny-self-hosted-runners
+  exit 0
+fi
+if [[ ${1:-} == attestation && ${2:-} == verify && ${3:-} != --help ]]; then
+  deny_self_hosted=false
+  for arg in "$@"; do
+    if [[ "$arg" == --deny-self-hosted-runners ]]; then
+      deny_self_hosted=true
+    fi
+  done
+  if [[ "$deny_self_hosted" != true ]]; then
+    exit 98
+  fi
+fi
+exit 0
+""",
+                        encoding="utf-8",
+                    )
                 else:
                     helper.write_text(
                         "#!/usr/bin/env bash\n"
@@ -7900,6 +7923,12 @@ fi
         self.assertIn("cosign verify-blob", installer)
         self.assertIn("gh attestation verify", installer)
         self.assertIn("--signer-workflow", installer)
+        deny_runner_lines = [
+            line
+            for line in installer.splitlines()
+            if line.strip() == "--deny-self-hosted-runners " + "\\"
+        ]
+        self.assertEqual(len(deny_runner_lines), 3)
         self.assertIn("SPDX-2.3", installer)
         self.assertIn('verify_signatures=true', installer)
         self.assertIn('verify_attestation=true', installer)
