@@ -70,11 +70,10 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 - `Sedna-Release: prerelease` allows upstream prerelease tracks and publishes the GitHub Release as
   a prerelease. The release workflow dispatches asset verification with an explicit
   prerelease allowance for that exact tag.
-- Pushing a tag like `v0.119.0-sedna.2` remains supported, but the workflow validates that the tag
-  matches the resolver's computed version for the target commit before publishing.
-- If a tag push triggers a duplicate run for a tag that has already been published for the same target
-  commit, the workflow treats it as an idempotent skip instead of rebuilding. If the tag exists but
-  points to a different commit, the workflow still fails to prevent accidental tag reuse.
+- Release-tag pushes and deletions never initiate publication. The protected-`main` workflow resolves
+  and creates the tag as an output after admission; a repeated protected-`main` request for an
+  already-published tag/target pair is an idempotent skip. If the tag exists but points to a
+  different commit, the workflow still fails to prevent accidental tag reuse.
 - Manual `workflow_dispatch` accepts an optional `target_sha`, `channel`, and optional
   `release_tag`. If `release_tag` is supplied, it is an assertion checked against the resolver, not
   the source of truth.
@@ -82,8 +81,8 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
   release binaries, Sigstore certificate workflow SHA, and GitHub provenance source/signer digests
   bound to the same immutable commit. Manual releases must be dispatched from protected `main`;
   arbitrary branch dispatches fail before any release build or publication.
-- A pushed release tag is rejected before build or signing unless its peeled commit is reachable
-  from the full-history protected `origin/main` ref fetched by the release gate.
+- A synthetic/non-main ref presented to the route is classified as unsupported and cannot start
+  build, signing, attestation, or publication work.
 - Manual `workflow_dispatch` without `release_tag` requires the target commit to contain a valid
   `Sedna-Release:` trailer. Markerless manual releases must supply the expected tag explicitly.
 - A supplied `release_tag` must match the upstream track computed from the target commit's

@@ -1927,8 +1927,9 @@ decisions.
   releases. A previously present release directory is activated only when it matches the freshly
   verified binaries, metadata, and checksum manifest byte-for-byte.
 - Preserve the dual-native Linux matrix, target-isolated names and caches, exact-source
-  hosted-runner trust checks, mandatory Arm64 hardening, historical x86 compatibility, and
-  protected-main manual publication as one release contract during upstream syncs. Drop or narrow
+  hosted-runner trust checks, mandatory Arm64 hardening, historical x86 compatibility, protected-main
+  marker/manual publication, and release tags as outputs rather than workflow authority as one
+  release contract during upstream syncs. Drop or narrow
   it only when upstream provides an equivalent downstream-origin and dual-architecture release
   contract.
 - Primary files:

@@ -7900,7 +7900,7 @@ fi
         self.assertEqual(route_job.get("name"), "Release request gate")
         self.assertEqual(route_job.get("runs-on"), "ubuntu-slim")
         self.assertEqual(release_push.get("branches"), ["main"])
-        self.assertEqual(release_push.get("tags"), ["v*-sedna.*"])
+        self.assertNotIn("tags", release_push)
         self.assertEqual(release_payload.get("permissions"), {})
         self.assertEqual(route_job.get("permissions"), {})
         self.assertFalse(any("uses" in step for step in router_steps))
@@ -8533,72 +8533,32 @@ fi
             proc.stderr,
         )
 
-    def test_sedna_release_tag_target_must_be_on_protected_main(self) -> None:
-        step = workflow_step_by_name(
-            REPO_ROOT / ".github/workflows/sedna-release.yml",
-            "route",
-            "Require tag target on protected main",
-        )
-        script = step["run"]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            subprocess.run(
-                ["git", "init", "--initial-branch=main"],
-                cwd=root,
-                check=True,
-                capture_output=True,
-            )
-            for key, value in (
-                ("user.name", "Release Gate Test"),
-                ("user.email", "release-gate@example.invalid"),
-            ):
-                subprocess.run(["git", "config", key, value], cwd=root, check=True)
-            (root / "authority.txt").write_text("main\n", encoding="utf-8")
-            subprocess.run(["git", "add", "authority.txt"], cwd=root, check=True)
-            subprocess.run(
-                ["git", "commit", "-m", "protected main"],
-                cwd=root,
-                check=True,
-                capture_output=True,
-            )
-            main_sha = subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=root, text=True
-            ).strip()
-            subprocess.run(
-                ["git", "update-ref", "refs/remotes/origin/main", main_sha],
-                cwd=root,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "switch", "--orphan", "tag-only"],
-                cwd=root,
-                check=True,
-                capture_output=True,
-            )
-            (root / "authority.txt").write_text("tag only\n", encoding="utf-8")
-            subprocess.run(["git", "add", "authority.txt"], cwd=root, check=True)
-            subprocess.run(
-                ["git", "commit", "-m", "tag-only tree"],
-                cwd=root,
-                check=True,
-                capture_output=True,
-            )
-            tag_only_sha = subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=root, text=True
-            ).strip()
+    def test_sedna_release_does_not_accept_tag_push_authority(self) -> None:
+        workflow_path = REPO_ROOT / ".github/workflows/sedna-release.yml"
+        payload = load_workflow_payload(workflow_path)
+        push = ((payload.get("on") or {}).get("push") or {})
+        self.assertEqual(push, {"branches": ["main"]})
+        self.assertNotIn("tags", push)
 
-            for target_sha, expected_returncode in ((main_sha, 0), (tag_only_sha, 1)):
-                with self.subTest(target_sha=target_sha):
-                    proc = subprocess.run(
-                        ["bash", "-s"],
-                        cwd=root,
-                        input=script,
-                        text=True,
-                        capture_output=True,
-                        check=False,
-                        env={**os.environ, "TARGET_SHA": target_sha},
-                    )
-                    self.assertEqual(proc.returncode, expected_returncode, proc.stderr)
+        script = workflow_step_by_name(
+            workflow_path, "route", "Resolve release request"
+        )["run"]
+        for after in ("abc123", "0" * 40):
+            with self.subTest(after=after):
+                proc, outputs = run_workflow_step_script(
+                    script,
+                    {"ref": "refs/tags/v0.146.0-sedna.1", "after": after},
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(
+                    outputs,
+                    {
+                        "release_requested": "false",
+                        "reason": "unsupported_ref",
+                        "target_sha": "",
+                        "channel": "",
+                    },
+                )
 
     def test_sedna_release_uses_synced_upstream_mirror_as_version_base(self) -> None:
         workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(

@@ -2,7 +2,6 @@ name: sedna-release
 run-name: >-
   ${{
     github.event_name == 'workflow_dispatch' && 'manual release request' ||
-    github.ref_type == 'tag' && format('tag release {0}', github.ref_name) ||
     'main release gate'
   }}
 
@@ -10,8 +9,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*-sedna.*"
   workflow_dispatch:
     inputs:
       target_sha:
@@ -53,20 +50,13 @@ jobs:
     name: Release request gate
     runs-on: ubuntu-slim
     timeout-minutes: 5
-    permissions:
-      contents: read
+    permissions: {}
     outputs:
       release_requested: ${{ steps.route.outputs.release_requested }}
       reason: ${{ steps.route.outputs.reason }}
       channel: ${{ steps.route.outputs.channel }}
       target_sha: ${{ steps.route.outputs.target_sha }}
     steps:
-      - name: Check out release authority refs
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
       - name: Resolve release request
         id: route
         shell: bash
@@ -102,10 +92,6 @@ jobs:
             exit 0
           fi
 
-          if [[ "${EVENT_REF}" == refs/tags/* ]]; then
-            emit true tag "${EVENT_SHA}" ""
-            exit 0
-          fi
           if [[ "${EVENT_REF}" != "refs/heads/main" ]]; then
             emit false unsupported_ref "" ""
             exit 0
@@ -139,20 +125,6 @@ jobs:
 
           emit true release_marker "${EVENT_AFTER}" "${channel}"
 
-      - name: Require tag target on protected main
-        if: ${{ steps.route.outputs.reason == 'tag' }}
-        shell: bash
-        env:
-          TARGET_SHA: ${{ steps.route.outputs.target_sha }}
-        run: |
-          set -euo pipefail
-          tag_commit="$(git rev-parse "${TARGET_SHA}^{commit}")"
-          main_commit="$(git rev-parse refs/remotes/origin/main)"
-          if ! git merge-base --is-ancestor "${tag_commit}" "${main_commit}"; then
-            echo "Release tag target ${tag_commit} is not reachable from protected main ${main_commit}." >&2
-            exit 1
-          fi
-
       - name: Summarize release gate
         if: ${{ always() }}
         shell: bash
@@ -179,9 +151,6 @@ jobs:
               ;;
             workflow_dispatch)
               reason_label="manual dispatch"
-              ;;
-            tag)
-              reason_label="release tag"
               ;;
             *)
               reason_label="${ROUTE_REASON:-unknown}"
