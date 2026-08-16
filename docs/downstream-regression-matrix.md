@@ -985,7 +985,10 @@ for a removed crate path.
   first archived predecessor, catchable SIGTERM rollback, and first-install
   SIGKILL followed by a successful idempotent retry. These cases extend the
   release-publication row above and keep crash consistency part of that hosted
-  validation contract.
+  validation contract. Signal fixtures cover both ordinary checkpoints and the
+  interval after an atomic filesystem replacement but before Python records
+  that replacement, so rollback must reconcile authoritative path state rather
+  than trust only in-memory bookkeeping.
 - Full builds are buildability or promotion checkpoints, not the default
   inner-loop validator for ordinary carry iteration.
 - For native computer-use, use the Codex app-server/protocol, shared

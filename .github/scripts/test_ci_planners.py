@@ -7703,6 +7703,8 @@ fi
                 "activation_initial_save_failure",
                 "activation_second_save_failure",
                 "activation_sigterm",
+                "activation_sigterm_current_record",
+                "activation_sigterm_visible_record",
             }
             if failure in predecessor_failures:
                 old_release = (
@@ -7725,7 +7727,10 @@ fi
                 visible_bin.mkdir(parents=True)
                 for executable, contents in previous_visible.items():
                     visible = visible_bin / executable
-                    if failure == "activation_sigterm":
+                    if failure in (
+                        "activation_sigterm",
+                        "activation_sigterm_current_record",
+                    ):
                         visible.symlink_to(current / executable)
                     else:
                         visible.write_text(contents, encoding="utf-8")
@@ -7738,6 +7743,12 @@ fi
                 "activation_initial_save_failure": "raise:before-first-save",
                 "activation_second_save_failure": "raise:before-second-save",
                 "activation_sigterm": "sigterm:after-current-swap",
+                "activation_sigterm_current_record": (
+                    "sigterm:after-current-replace"
+                ),
+                "activation_sigterm_visible_record": (
+                    "sigterm:after-first-visible-replace"
+                ),
                 "activation_sigkill_first_install": "sigkill:after-current-swap",
             }
             if failure in test_faults:
@@ -7783,14 +7794,26 @@ fi
                 self.assertEqual(
                     list(current.parent.glob(".activation.*")), [], proc.stderr
                 )
-            if failure == "activation_sigterm":
+            if failure in (
+                "activation_sigterm",
+                "activation_sigterm_current_record",
+                "activation_sigterm_visible_record",
+            ):
                 self.assertEqual(proc.returncode, 128 + signal.SIGTERM, proc.stderr)
                 self.assertEqual(os.readlink(current), str(old_release))
-                for executable in previous_visible:
+                for executable, contents in previous_visible.items():
                     visible = visible_bin / executable
-                    self.assertTrue(visible.is_symlink(), executable)
-                    self.assertEqual(os.readlink(visible), str(current / executable))
-                    self.assertEqual(visible.resolve(), old_release / executable)
+                    if failure == "activation_sigterm_visible_record":
+                        self.assertFalse(visible.is_symlink(), executable)
+                        self.assertEqual(
+                            visible.read_text(encoding="utf-8"), contents
+                        )
+                    else:
+                        self.assertTrue(visible.is_symlink(), executable)
+                        self.assertEqual(
+                            os.readlink(visible), str(current / executable)
+                        )
+                        self.assertEqual(visible.resolve(), old_release / executable)
                 self.assertEqual(list(current.parent.glob(".activation.*")), [])
             if failure == "activation_sigkill_first_install":
                 self.assertEqual(proc.returncode, 128 + signal.SIGKILL, proc.stderr)
@@ -7873,6 +7896,8 @@ fi
             "activation_second_save_failure",
             "activation_backup_failure",
             "activation_sigterm",
+            "activation_sigterm_current_record",
+            "activation_sigterm_visible_record",
         ):
             with self.subTest(failure=failure):
                 self.run_sedna_installer_fixture(failure, dry_run=False)
