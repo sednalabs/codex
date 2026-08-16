@@ -8553,6 +8553,10 @@ fi
             REPO_ROOT / ".github/workflows/sedna-release-install.yml"
         )
         install_job = ((install_payload.get("jobs") or {}).get("install") or {})
+        plan_job = ((install_payload.get("jobs") or {}).get("plan") or {})
+        plan_steps = {
+            step.get("name"): step for step in plan_job.get("steps") or [] if "name" in step
+        }
 
         self.assertIn("Dispatch release asset verifier", release_workflow)
         self.assertIn('--ref "${RELEASE_TAG}"', release_workflow)
@@ -8560,6 +8564,31 @@ fi
         self.assertIn('-f "require_linux_arm64=true"', release_workflow)
         self.assertIn('-f "macos_release_mode=${MACOS_RELEASE_MODE}"', release_workflow)
         self.assertNotIn('-f "dry_run=false"', release_workflow)
+        exact_ref_step = plan_steps["Require exact release-tag workflow ref"]
+        self.assertEqual(
+            (exact_ref_step.get("env") or {}).get("EVENT_REF"), "${{ github.ref }}"
+        )
+        self.assertIn('expected_ref="refs/tags/${RELEASE_TAG}"', exact_ref_step["run"])
+        self.assertIn('"${EVENT_REF}" != "${expected_ref}"', exact_ref_step["run"])
+        release_tag = "v0.146.0-alpha.8-sedna.99+upstream.3"
+        for event_ref, expected_returncode in (
+            (f"refs/tags/{release_tag}", 0),
+            ("refs/heads/main", 1),
+        ):
+            with self.subTest(event_ref=event_ref):
+                proc = subprocess.run(
+                    ["bash", "-s"],
+                    input=exact_ref_step["run"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env={
+                        **os.environ,
+                        "EVENT_REF": event_ref,
+                        "RELEASE_TAG": release_tag,
+                    },
+                )
+                self.assertEqual(proc.returncode, expected_returncode, proc.stderr)
         self.assertEqual(install_job.get("runs-on"), "${{ matrix.runner }}")
         self.assertEqual(
             ((install_job.get("strategy") or {}).get("matrix") or {}).get("include"),

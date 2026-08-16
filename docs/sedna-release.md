@@ -246,7 +246,8 @@ runner. It intentionally does not perform host-local installation from the publi
 - Hardened Linux verification passes `--verify-signatures --verify-attestation`. The verifier pins
   attestation acceptance to this repository's `sedna-release.yml` signer workflow and dispatches
   the verifier from the exact published release tag so the installer contract cannot drift from
-  the release source.
+  the release source. It rejects a manual dispatch unless the selected workflow ref is exactly
+  `refs/tags/<release_tag>`; the public verifier has no cross-revision maintenance mode.
 - Current x86-64 releases fail closed into signature, provenance, hosted-runner, and exact-source
   verification, including clients that fetch the current installer without new flags and callers
   that explicitly supply only one positive verification flag.

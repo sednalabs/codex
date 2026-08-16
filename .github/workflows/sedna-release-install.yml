@@ -48,6 +48,19 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
+      - name: Require exact release-tag workflow ref
+        shell: bash
+        env:
+          EVENT_REF: ${{ github.ref }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          expected_ref="refs/tags/${RELEASE_TAG}"
+          if [[ "${EVENT_REF}" != "${expected_ref}" ]]; then
+            echo "Release verification must run from ${expected_ref}; workflow ref is ${EVENT_REF}."
+            exit 1
+          fi
+
       - name: Validate x86-only compatibility request
         if: ${{ !inputs.require_linux_arm64 }}
         shell: bash
