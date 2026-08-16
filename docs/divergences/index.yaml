@@ -2612,7 +2612,6 @@
         ".github/workflows/sedna-release-install.yml",
         "codex-rs/app-server-daemon/src/update_loop.rs",
         "codex-rs/app-server-daemon/src/update_loop_tests.rs",
-        "codex-rs/app-server-daemon/src/update_loop_tests.rs",
         "codex-rs/tui/src/update_action.rs",
         "codex-rs/tui/src/update_prompt.rs",
         "codex-rs/tui/src/update_versions.rs",
