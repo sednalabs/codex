@@ -8,6 +8,7 @@ import io
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,48 @@ import yaml
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPTS_DIR.parent.parent
+UNIFIED_DIFF_HUNK_HEADER = re.compile(
+    r"^@@ -\d+(?:,(?P<old_count>\d+))? \+\d+(?:,(?P<new_count>\d+))? @@"
+)
+
+
+def unified_diff_hunk_line_counts(patch: str) -> list[tuple[str, int, int, int, int]]:
+    """Return each hunk's declared and observed old/new line counts."""
+
+    hunks: list[tuple[str, int, int, int, int]] = []
+    header: str | None = None
+    expected_old = expected_new = observed_old = observed_new = 0
+
+    def finish_hunk() -> None:
+        if header is not None:
+            hunks.append(
+                (header, expected_old, observed_old, expected_new, observed_new)
+            )
+
+    for line in patch.splitlines():
+        match = UNIFIED_DIFF_HUNK_HEADER.match(line)
+        if match:
+            finish_hunk()
+            header = line
+            expected_old = int(match["old_count"] or 1)
+            expected_new = int(match["new_count"] or 1)
+            observed_old = observed_new = 0
+            continue
+        if line.startswith("@@"):
+            raise AssertionError(f"malformed unified diff hunk header: {line}")
+        if line.startswith("diff --git "):
+            finish_hunk()
+            header = None
+            continue
+        if header is None:
+            continue
+        if line.startswith((" ", "-")):
+            observed_old += 1
+        if line.startswith((" ", "+")):
+            observed_new += 1
+
+    finish_hunk()
+    return hunks
 
 
 def load_module(name: str, path: Path):
@@ -1346,7 +1389,7 @@ class RouteSelectionTests(unittest.TestCase):
         ).get("run") or ""
         self.assertIn("--local_test_jobs=1", windows_test_run)
 
-    def test_bazel_windows_native_main_avoids_remote_rust_cache(self) -> None:
+    def test_bazel_windows_native_main_uses_gnullvm_proc_macro_toolchain(self) -> None:
         bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         self.assertNotIn("test-windows-native-main", bazel.get("jobs") or {})
 
@@ -1371,7 +1414,20 @@ class RouteSelectionTests(unittest.TestCase):
         )
 
         native_job = (payload.get("jobs") or {}).get("test-windows-native-main") or {}
+        self.assertEqual(
+            native_job.get("name"),
+            "Bazel test on windows-latest for x86_64-pc-windows-gnullvm (native health)",
+        )
         native_steps = native_job.get("steps") or []
+        prepare_step = next(
+            (step for step in native_steps if step.get("name") == "Prepare Bazel CI"),
+            None,
+        )
+        self.assertIsNotNone(prepare_step, "Step 'Prepare Bazel CI' not found")
+        self.assertEqual(
+            (prepare_step.get("with") or {}).get("target"),
+            "x86_64-pc-windows-gnullvm",
+        )
         native_step = next(
             (step for step in native_steps if step.get("name") == "bazel test //..."),
             None,
@@ -1379,9 +1435,78 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIsNotNone(native_step, "Step 'bazel test //...' not found")
         self.assertNotIn("continue-on-error", native_step)
         native_test_run = native_step.get("run") or ""
+        self.assertNotIn("--platforms=", native_test_run)
+        self.assertNotIn("--windows-msvc-host-platform", native_test_run)
+        self.assertNotIn("toolchain_linker_preference=rust", native_test_run)
         self.assertIn(
             "--modify_execution_info=Rustc=+no-remote-cache",
             native_test_run,
+        )
+
+        module_bazel = (REPO_ROOT / "MODULE.bazel").read_text(encoding="utf-8")
+        self.assertIn(
+            '"//patches:rules_rs_windows_gnullvm_exec_toolchain.patch"',
+            module_bazel,
+        )
+        gnullvm_exec_patch = (
+            REPO_ROOT / "patches/rules_rs_windows_gnullvm_exec_toolchain.patch"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [",
+            gnullvm_exec_patch,
+        )
+        self.assertIn(
+            '''+SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [
++    "x86_64-pc-windows-gnullvm",
++    "aarch64-pc-windows-gnullvm",
++]''',
+            gnullvm_exec_patch,
+        )
+        self.assertIn(
+            "@@ -61,0 +62,7 @@ SUPPORTED_EXEC_TRIPLES = [",
+            gnullvm_exec_patch,
+        )
+        for hunk, expected_old, observed_old, expected_new, observed_new in (
+            unified_diff_hunk_line_counts(gnullvm_exec_patch)
+        ):
+            with self.subTest(hunk=hunk):
+                self.assertEqual(observed_old, expected_old)
+                self.assertEqual(observed_new, expected_new)
+        # `//:local_windows` inherits the runner CPU. Each compiler-tool
+        # declaration must therefore resolve using full target-triple
+        # constraints, including ARM64 gnullvm rather than an MSVC fallback.
+        self.assertEqual(
+            gnullvm_exec_patch.count(
+                "exec_compatible_with = triple_to_rust_constraint_set(triple),"
+            ),
+            3,
+        )
+        self.assertEqual(
+            gnullvm_exec_patch.count("execs = SUPPORTED_RUST_EXEC_TRIPLES"),
+            3,
+        )
+        self.assertIn(
+            "if triple in SUPPORTED_EXEC_TRIPLES and exec_triple.arch == host_arch "
+            "and exec_triple.system == host_os:",
+            gnullvm_exec_patch,
+        )
+        self.assertEqual(
+            gnullvm_exec_patch.count(
+                "if version in miri_versions and triple in SUPPORTED_EXEC_TRIPLES:"
+            ),
+            2,
+        )
+        self.assertIn(
+            "name = \"miri_{}_{}_{}\".format(exec_triple.system, exec_triple.arch, version_key),",
+            gnullvm_exec_patch,
+        )
+
+        execution_logs_upload = next(
+            step for step in native_steps if step.get("name") == "Upload Bazel execution logs"
+        )
+        self.assertEqual(
+            (execution_logs_upload.get("with") or {}).get("name"),
+            "bazel-execution-logs-test-windows-native-x86_64-pc-windows-gnullvm",
         )
 
         diagnostics_step = next(
@@ -1401,6 +1526,105 @@ class RouteSelectionTests(unittest.TestCase):
             if step.get("name") == "Upload native Windows Bazel diagnostics"
         )
         self.assertEqual((diagnostics_upload.get("with") or {}).get("retention-days"), "3")
+
+    def test_native_windows_health_analyzes_arm64_gnullvm_rust_toolchain_selection(
+        self,
+    ) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml"
+        )
+        analysis_job = (
+            (payload.get("jobs") or {}).get("analyze-windows-arm64-gnullvm-toolchain")
+            or {}
+        )
+        self.assertEqual(analysis_job.get("runs-on"), "ubuntu-latest")
+        self.assertEqual(
+            analysis_job.get("name"),
+            "Bazel aquery for aarch64-pc-windows-gnullvm Rust toolchain selection",
+        )
+        self.assertEqual(analysis_job.get("timeout-minutes"), "20")
+
+        analysis_steps = analysis_job.get("steps") or []
+        prepare_step = next(
+            (step for step in analysis_steps if step.get("name") == "Prepare Bazel CI"),
+            None,
+        )
+        self.assertIsNotNone(prepare_step, "Step 'Prepare Bazel CI' not found")
+        self.assertEqual(prepare_step.get("id"), "prepare_bazel")
+        self.assertEqual(
+            (prepare_step.get("with") or {}).get("target"),
+            "aarch64-pc-windows-gnullvm",
+        )
+        self.assertEqual(
+            (prepare_step.get("with") or {}).get("cache-scope"),
+            "bazel-${{ github.job }}",
+        )
+
+        analysis_step = next(
+            (
+                step
+                for step in analysis_steps
+                if step.get("name")
+                == "Assert ARM64 gnullvm Rust action-toolchain selection"
+            ),
+            None,
+        )
+        self.assertIsNotNone(
+            analysis_step,
+            "ARM64 gnullvm toolchain selection step not found",
+        )
+        analysis_run = analysis_step.get("run") or ""
+        self.assertIn("./.github/scripts/run_bazel_with_buildbuddy.py", analysis_run)
+        self.assertIn("aquery", analysis_run)
+        self.assertNotIn("\n          bazel aquery", analysis_run)
+        self.assertNotIn("bazel build", analysis_run)
+        self.assertNotIn("bazel test", analysis_run)
+        self.assertIn(
+            "--platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm",
+            analysis_run,
+        )
+        self.assertIn(
+            "--extra_execution_platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm",
+            analysis_run,
+        )
+        self.assertIn("--include_artifacts=true", analysis_run)
+        self.assertIn("//codex-rs/otel:otel", analysis_run)
+        self.assertIn(
+            "python3 .github/scripts/verify_arm64_gnullvm_aquery.py",
+            analysis_run,
+        )
+        self.assertIn("--target //codex-rs/otel:otel", analysis_run)
+        self.assertNotIn("grep", analysis_run)
+        analysis_cache_save = next(
+            (
+                step
+                for step in analysis_steps
+                if step.get("name") == "Save ARM64 gnullvm aquery repository cache"
+            ),
+            None,
+        )
+        self.assertIsNotNone(analysis_cache_save, "ARM64 analysis cache save not found")
+        self.assertEqual(analysis_cache_save.get("continue-on-error"), "true")
+        self.assertEqual(
+            analysis_cache_save.get("uses"),
+            "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+        )
+        self.assertIn(
+            "steps.prepare_bazel.outputs.repository-cache-hit != 'true'",
+            analysis_cache_save.get("if") or "",
+        )
+        self.assertIn(
+            "steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'",
+            analysis_cache_save.get("if") or "",
+        )
+        self.assertEqual(
+            (analysis_cache_save.get("with") or {}).get("path"),
+            "${{ steps.prepare_bazel.outputs.repository-cache-path }}",
+        )
+        self.assertEqual(
+            (analysis_cache_save.get("with") or {}).get("key"),
+            "${{ steps.prepare_bazel.outputs.repository-cache-key }}",
+        )
 
     def test_bazel_ci_docs_only_plan_is_fail_closed_and_preserves_required_signal(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
