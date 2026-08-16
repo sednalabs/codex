@@ -748,6 +748,7 @@ fi
 
 python3 - "$install_root" "$bin_dir" "$release_dir" <<'PY'
 import os
+import signal
 import shutil
 import sys
 import tempfile
@@ -768,45 +769,115 @@ candidate_dir = transaction / "candidate"
 saved_dir.mkdir()
 candidate_dir.mkdir()
 saved_entries: dict[str, Path] = {}
+saved_symlinks: dict[str, str] = {}
 backup_entries: dict[str, Path] = {}
+replaced_entries: list[str] = []
 current_swapped = False
 activation_succeeded = False
+rollback_succeeded = False
+interrupted_signal: int | None = None
+
+test_fault = os.environ.get("SEDNA_INSTALLER_TEST_FAULT")
+if test_fault and os.environ.get("SEDNA_INSTALLER_TESTING") != "1":
+    raise SystemExit(
+        "error: SEDNA_INSTALLER_TEST_FAULT requires SEDNA_INSTALLER_TESTING=1"
+    )
+
+
+def inject_test_fault(stage: str) -> None:
+    if test_fault == f"raise:{stage}":
+        raise RuntimeError(f"injected installer test failure at {stage}")
+    if test_fault == f"sigterm:{stage}":
+        os.kill(os.getpid(), signal.SIGTERM)
+    if test_fault == f"sigkill:{stage}":
+        os.kill(os.getpid(), signal.SIGKILL)
+
+
+def interrupt_activation(signum: int, _frame: object) -> None:
+    global interrupted_signal
+    interrupted_signal = signum
+    raise InterruptedError(f"release activation interrupted by signal {signum}")
+
+
+for handled_signal in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(handled_signal, interrupt_activation)
 
 try:
-    for executable in executables:
+    for index, executable in enumerate(executables):
         visible = bin_dir / executable
         saved = saved_dir / executable
+        inject_test_fault("before-first-save" if index == 0 else "before-second-save")
         if os.path.lexists(visible):
-            os.replace(visible, saved)
-            saved_entries[executable] = saved
-
-        candidate = candidate_dir / executable
-        candidate.symlink_to(current / executable)
-        os.replace(candidate, visible)
+            if visible.is_symlink():
+                saved_symlinks[executable] = os.readlink(visible)
+            elif visible.is_file():
+                shutil.copy2(visible, saved)
+                saved_entries[executable] = saved
+            else:
+                raise RuntimeError(
+                    f"refusing to replace unsupported previous entrypoint: {visible}"
+                )
+        inject_test_fault("after-first-save" if index == 0 else "after-second-save")
 
     candidate_current = candidate_dir / "current"
     candidate_current.symlink_to(release_dir)
     os.replace(candidate_current, current)
     current_swapped = True
+    inject_test_fault("after-current-swap")
+
+    for index, executable in enumerate(executables):
+        visible = bin_dir / executable
+        candidate = bin_dir / f".{executable}.activation.{os.getpid()}"
+        if os.path.lexists(candidate):
+            raise RuntimeError(f"activation candidate already exists: {candidate}")
+        candidate.symlink_to(current / executable)
+        try:
+            os.replace(candidate, visible)
+        finally:
+            if os.path.lexists(candidate):
+                candidate.unlink()
+        replaced_entries.append(executable)
+        inject_test_fault(
+            "after-first-visible" if index == 0 else "after-second-visible"
+        )
 
     for executable, saved in saved_entries.items():
-        if saved.is_symlink():
-            saved.unlink()
-            continue
-        if not saved.is_file():
-            raise RuntimeError(
-                f"refusing to discard unsupported previous entrypoint: {saved}"
-            )
         backups = install_root / "backups"
         backups.mkdir(exist_ok=True)
         backup = backups / f"{executable}.{int(time.time())}.{os.getpid()}"
         os.replace(saved, backup)
         backup_entries[executable] = backup
         print(f"backed up previous {executable} binary")
+        if len(backup_entries) == 1:
+            inject_test_fault("after-first-backup")
 
     activation_succeeded = True
 except BaseException as activation_error:
     rollback_errors = []
+    for executable in reversed(replaced_entries):
+        visible = bin_dir / executable
+        try:
+            if executable in backup_entries:
+                source = backup_entries[executable]
+                restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
+                shutil.copy2(source, restore)
+                os.replace(restore, visible)
+                source.unlink()
+            elif executable in saved_entries and os.path.lexists(
+                saved_entries[executable]
+            ):
+                restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
+                shutil.copy2(saved_entries[executable], restore)
+                os.replace(restore, visible)
+            elif executable in saved_symlinks:
+                restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
+                restore.symlink_to(saved_symlinks[executable])
+                os.replace(restore, visible)
+            elif os.path.lexists(visible):
+                visible.unlink()
+        except BaseException as error:
+            rollback_errors.append(f"{executable}: {error}")
+
     try:
         if current_swapped:
             if previous_current_target is None:
@@ -819,30 +890,18 @@ except BaseException as activation_error:
     except BaseException as error:
         rollback_errors.append(f"current: {error}")
 
-    for executable in reversed(executables):
-        visible = bin_dir / executable
-        try:
-            if os.path.lexists(visible):
-                visible.unlink()
-            if executable in backup_entries:
-                os.replace(backup_entries[executable], visible)
-            elif executable in saved_entries and os.path.lexists(
-                saved_entries[executable]
-            ):
-                os.replace(saved_entries[executable], visible)
-        except BaseException as error:
-            rollback_errors.append(f"{executable}: {error}")
-
     if rollback_errors:
         details = "; ".join(rollback_errors)
         raise RuntimeError(
             f"release activation failed and rollback was incomplete ({details}); "
             f"preserved transaction: {transaction}"
         ) from activation_error
+    rollback_succeeded = True
+    if interrupted_signal is not None:
+        raise SystemExit(128 + interrupted_signal) from activation_error
     raise
 finally:
-    retained_entries = any(saved_dir.iterdir()) or any(candidate_dir.iterdir())
-    if activation_succeeded or not retained_entries:
+    if activation_succeeded or rollback_succeeded:
         shutil.rmtree(transaction)
     elif transaction.exists():
         print(

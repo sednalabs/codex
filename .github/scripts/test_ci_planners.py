@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import re
+import signal
 import shutil
 import struct
 import subprocess
@@ -7688,50 +7689,130 @@ fi
                 "codex": "previous codex\n",
                 "codex-responses-api-proxy": "previous proxy\n",
             }
-            if failure in ("preexisting_visible", "activation_backup_failure"):
+            expected_release_dir = (
+                root
+                / "home"
+                / ".codex"
+                / "packages"
+                / "standalone"
+                / "releases"
+                / release_tag
+            )
+            predecessor_failures = {
+                "activation_backup_failure",
+                "activation_initial_save_failure",
+                "activation_second_save_failure",
+                "activation_sigterm",
+            }
+            if failure in predecessor_failures:
+                old_release = (
+                    root
+                    / "home"
+                    / ".codex"
+                    / "packages"
+                    / "standalone"
+                    / "releases"
+                    / "previous"
+                )
+                old_release.mkdir(parents=True)
+                for executable, contents in previous_visible.items():
+                    old_executable = old_release / executable
+                    old_executable.write_text(contents, encoding="utf-8")
+                    old_executable.chmod(0o755)
+                current = old_release.parent.parent / "current"
+                current.symlink_to(old_release)
+            if failure in ("preexisting_visible", *predecessor_failures):
                 visible_bin.mkdir(parents=True)
                 for executable, contents in previous_visible.items():
                     visible = visible_bin / executable
-                    visible.write_text(contents, encoding="utf-8")
-                    visible.chmod(0o755)
+                    if failure == "activation_sigterm":
+                        visible.symlink_to(current / executable)
+                    else:
+                        visible.write_text(contents, encoding="utf-8")
+                        visible.chmod(0o755)
             backups = (
                 root / "home" / ".codex" / "packages" / "standalone" / "backups"
             )
-            if failure == "activation_backup_failure":
-                backups.mkdir(parents=True)
-                backups.chmod(0o000)
+            test_faults = {
+                "activation_backup_failure": "raise:after-first-backup",
+                "activation_initial_save_failure": "raise:before-first-save",
+                "activation_second_save_failure": "raise:before-second-save",
+                "activation_sigterm": "sigterm:after-current-swap",
+                "activation_sigkill_first_install": "sigkill:after-current-swap",
+            }
+            if failure in test_faults:
+                env["SEDNA_INSTALLER_TESTING"] = "1"
+                env["SEDNA_INSTALLER_TEST_FAULT"] = test_faults[failure]
             verification_args = []
             if verification_args_override is not None:
                 verification_args = verification_args_override
             elif arch == "x86_64" and not hardened:
                 verification_args = ["--allow-historical-x86"]
+            command = [
+                str(REPO_ROOT / "scripts/install_sedna_release_asset"),
+                "--repository",
+                "sednalabs/codex",
+                "--release-tag",
+                release_tag,
+                "--allow-prerelease",
+                *verification_args,
+                *(["--dry-run"] if dry_run else []),
+            ]
             proc = subprocess.run(
-                [
-                    str(REPO_ROOT / "scripts/install_sedna_release_asset"),
-                    "--repository",
-                    "sednalabs/codex",
-                    "--release-tag",
-                    release_tag,
-                    "--allow-prerelease",
-                    *verification_args,
-                    *(["--dry-run"] if dry_run else []),
-                ],
+                command,
                 check=False,
                 capture_output=True,
                 text=True,
                 env=env,
             )
-            if failure == "activation_backup_failure":
-                backups.chmod(0o755)
+            if failure in (
+                "activation_backup_failure",
+                "activation_initial_save_failure",
+                "activation_second_save_failure",
+            ):
                 self.assertNotEqual(proc.returncode, 0)
                 current = (
                     root / "home" / ".codex" / "packages" / "standalone" / "current"
                 )
-                self.assertFalse(os.path.lexists(current))
+                self.assertTrue(current.is_symlink())
+                self.assertEqual(os.readlink(current), str(old_release))
                 for executable, contents in previous_visible.items():
                     visible = visible_bin / executable
                     self.assertFalse(visible.is_symlink(), executable)
                     self.assertEqual(visible.read_text(encoding="utf-8"), contents)
+                self.assertEqual(
+                    list(current.parent.glob(".activation.*")), [], proc.stderr
+                )
+            if failure == "activation_sigterm":
+                self.assertEqual(proc.returncode, 128 + signal.SIGTERM, proc.stderr)
+                self.assertEqual(os.readlink(current), str(old_release))
+                for executable in previous_visible:
+                    visible = visible_bin / executable
+                    self.assertTrue(visible.is_symlink(), executable)
+                    self.assertEqual(os.readlink(visible), str(current / executable))
+                    self.assertEqual(visible.resolve(), old_release / executable)
+                self.assertEqual(list(current.parent.glob(".activation.*")), [])
+            if failure == "activation_sigkill_first_install":
+                self.assertEqual(proc.returncode, 128 + signal.SIGKILL, proc.stderr)
+                current = (
+                    root / "home" / ".codex" / "packages" / "standalone" / "current"
+                )
+                self.assertTrue(current.is_symlink())
+                self.assertEqual(os.readlink(current), str(expected_release_dir))
+                self.assertEqual(len(list(current.parent.glob(".activation.*"))), 1)
+                for executable in previous_visible:
+                    self.assertFalse(os.path.lexists(visible_bin / executable))
+                retry_env = dict(env)
+                retry_env.pop("SEDNA_INSTALLER_TESTING")
+                retry_env.pop("SEDNA_INSTALLER_TEST_FAULT")
+                proc = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=retry_env,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
             if verify_visible_links and proc.returncode == 0:
                 current_dir = (
                     root / "home" / ".codex" / "packages" / "standalone" / "current"
@@ -7740,6 +7821,9 @@ fi
                 for executable in ("codex", "codex-responses-api-proxy"):
                     visible = bin_dir / executable
                     self.assertTrue(visible.is_symlink(), executable)
+                    self.assertEqual(
+                        os.readlink(visible), str(current_dir / executable), executable
+                    )
                     self.assertEqual(
                         visible.resolve(),
                         (current_dir / executable).resolve(),
@@ -7784,9 +7868,20 @@ fi
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_sedna_release_installer_rolls_back_failed_activation(self) -> None:
-        self.run_sedna_installer_fixture(
+        for failure in (
+            "activation_initial_save_failure",
+            "activation_second_save_failure",
             "activation_backup_failure",
+            "activation_sigterm",
+        ):
+            with self.subTest(failure=failure):
+                self.run_sedna_installer_fixture(failure, dry_run=False)
+
+    def test_sedna_release_installer_recovers_first_install_after_sigkill(self) -> None:
+        self.run_sedna_installer_fixture(
+            "activation_sigkill_first_install",
             dry_run=False,
+            verify_visible_links=True,
         )
 
     def test_sedna_release_installer_rejects_invalid_release_assets(self) -> None:
