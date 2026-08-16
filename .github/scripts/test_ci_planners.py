@@ -7330,6 +7330,7 @@ class HelperScriptTests(unittest.TestCase):
         arch: str = "x86_64",
         hardened: bool = True,
         dry_run: bool = True,
+        verify_visible_links: bool = False,
         verification_args_override: list[str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         release_tag = "v0.146.0-alpha.8-sedna.99+upstream.3"
@@ -7678,7 +7679,7 @@ fi
                 verification_args = verification_args_override
             elif arch == "x86_64" and not hardened:
                 verification_args = ["--allow-historical-x86"]
-            return subprocess.run(
+            proc = subprocess.run(
                 [
                     str(REPO_ROOT / "scripts/install_sedna_release_asset"),
                     "--repository",
@@ -7694,6 +7695,20 @@ fi
                 text=True,
                 env=env,
             )
+            if verify_visible_links and proc.returncode == 0:
+                current_dir = (
+                    root / "home" / ".codex" / "packages" / "standalone" / "current"
+                )
+                bin_dir = root / "home" / ".local" / "bin"
+                for executable in ("codex", "codex-responses-api-proxy"):
+                    visible = bin_dir / executable
+                    self.assertTrue(visible.is_symlink(), executable)
+                    self.assertEqual(
+                        visible.resolve(),
+                        (current_dir / executable).resolve(),
+                        executable,
+                    )
+            return proc
 
     def test_sedna_release_installer_executes_hardened_linux_fixture(self) -> None:
         for arch, target in (
@@ -7705,6 +7720,16 @@ fi
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn(f"dry-run: verified sednalabs/codex@", proc.stdout)
                 self.assertIn(f"for {target}", proc.stdout)
+
+    def test_sedna_release_installer_links_all_visible_executables(self) -> None:
+        for arch in ("x86_64", "aarch64"):
+            with self.subTest(arch=arch):
+                proc = self.run_sedna_installer_fixture(
+                    arch=arch,
+                    dry_run=False,
+                    verify_visible_links=True,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_sedna_release_installer_rejects_invalid_release_assets(self) -> None:
         cases = {
