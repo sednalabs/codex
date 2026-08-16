@@ -2874,6 +2874,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         prompt: Some("continue".to_string()),
         model: None,
         reasoning_effort: None,
+        requested_model: None,
+        requested_reasoning_effort: None,
         agents_states: [(receiver_thread_id, CoreAgentStatus::Completed(None))]
             .into_iter()
             .collect(),
@@ -2890,6 +2892,10 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             prompt: Some("continue".to_string()),
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
             agents_states: [(
                 receiver_thread_id.to_string(),
                 CollabAgentState {
@@ -2899,6 +2905,42 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             )]
             .into_iter()
             .collect(),
+        }
+    );
+
+    let failed_spawn = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: "spawn-2".to_string(),
+        tool: CoreCollabAgentTool::SpawnAgent,
+        status: CoreCollabAgentToolCallStatus::Failed,
+        sender_thread_id,
+        receiver_thread_ids: Vec::new(),
+        receiver_agents: Vec::new(),
+        prompt: Some("inspect".to_string()),
+        model: Some("gpt-effective".to_string()),
+        reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        requested_model: Some("gpt-requested".to_string()),
+        requested_reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+        agents_states: HashMap::new(),
+    });
+
+    assert_eq!(
+        ThreadItem::from(failed_spawn),
+        ThreadItem::CollabAgentToolCall {
+            id: "spawn-2".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::Failed,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: Vec::new(),
+            prompt: Some("inspect".to_string()),
+            model: Some("gpt-effective".to_string()),
+            reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            requested_model: Some("gpt-requested".to_string()),
+            requested_reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+            effective_model: Some("gpt-effective".to_string()),
+            effective_reasoning_effort: Some(
+                codex_protocol::openai_models::ReasoningEffort::Medium
+            ),
+            agents_states: HashMap::new(),
         }
     );
 
@@ -3086,6 +3128,82 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             })),
             error: None,
             duration_ms: Some(42),
+        }
+    );
+}
+
+#[test]
+fn v1_omitted_spawn_identity_sentinels_do_not_become_requested_identity() {
+    let sender_thread_id = codex_protocol::ThreadId::default();
+    let legacy_v1_item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: "spawn-v1-omitted-identity".to_string(),
+        tool: CoreCollabAgentTool::SpawnAgent,
+        status: CoreCollabAgentToolCallStatus::InProgress,
+        sender_thread_id,
+        receiver_thread_ids: Vec::new(),
+        receiver_agents: Vec::new(),
+        prompt: Some("inspect".to_string()),
+        model: Some(String::new()),
+        reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        requested_model: None,
+        requested_reasoning_effort: None,
+        agents_states: HashMap::new(),
+    });
+
+    assert_eq!(
+        ThreadItem::from(legacy_v1_item),
+        ThreadItem::CollabAgentToolCall {
+            id: "spawn-v1-omitted-identity".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: Vec::new(),
+            prompt: Some("inspect".to_string()),
+            model: None,
+            reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
+            agents_states: HashMap::new(),
+        }
+    );
+}
+
+#[test]
+fn v1_model_only_spawn_does_not_invent_requested_effort() {
+    let sender_thread_id = codex_protocol::ThreadId::default();
+    let legacy_v1_item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: "spawn-v1-model-only".to_string(),
+        tool: CoreCollabAgentTool::SpawnAgent,
+        status: CoreCollabAgentToolCallStatus::InProgress,
+        sender_thread_id,
+        receiver_thread_ids: Vec::new(),
+        receiver_agents: Vec::new(),
+        prompt: Some("inspect".to_string()),
+        model: Some("gpt-requested".to_string()),
+        reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        requested_model: None,
+        requested_reasoning_effort: None,
+        agents_states: HashMap::new(),
+    });
+
+    assert_eq!(
+        ThreadItem::from(legacy_v1_item),
+        ThreadItem::CollabAgentToolCall {
+            id: "spawn-v1-model-only".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: Vec::new(),
+            prompt: Some("inspect".to_string()),
+            model: Some("gpt-requested".to_string()),
+            reasoning_effort: None,
+            requested_model: Some("gpt-requested".to_string()),
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
+            agents_states: HashMap::new(),
         }
     );
 }
@@ -4538,6 +4656,7 @@ fn realtime_start_omitted_initial_items_remain_none() {
 
     assert_eq!(params.initial_items, None);
 }
+
 #[test]
 fn realtime_start_deserializes_client_handoff_channel_prefixes() {
     let params = serde_json::from_value::<ThreadRealtimeStartParams>(json!({
@@ -4561,5 +4680,47 @@ fn realtime_start_deserializes_client_handoff_channel_prefixes() {
             ),
             ("final".to_string(), vec!["[DONE]".to_string()]),
         ]))
+    );
+}
+
+#[test]
+fn tool_request_user_input_params_default_legacy_missing_is_blocking_to_true() {
+    let params = serde_json::from_value::<ToolRequestUserInputParams>(json!({
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "itemId": "call-1",
+        "questions": [{
+            "id": "q1",
+            "header": "Confirm",
+            "question": "Continue?",
+            "options": [{
+                "label": "Yes",
+                "description": "Continue."
+            }]
+        }],
+        "autoResolutionMs": 60_000
+    }))
+    .expect("legacy request_user_input params should deserialize");
+
+    assert_eq!(
+        params,
+        ToolRequestUserInputParams {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item_id: "call-1".to_string(),
+            questions: vec![ToolRequestUserInputQuestion {
+                id: "q1".to_string(),
+                header: "Confirm".to_string(),
+                question: "Continue?".to_string(),
+                is_other: false,
+                is_secret: false,
+                options: Some(vec![ToolRequestUserInputOption {
+                    label: "Yes".to_string(),
+                    description: "Continue.".to_string(),
+                }]),
+            }],
+            is_blocking: true,
+            auto_resolution_ms: Some(60_000),
+        }
     );
 }

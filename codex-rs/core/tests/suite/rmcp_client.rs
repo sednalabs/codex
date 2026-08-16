@@ -46,6 +46,7 @@ use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpInvocation;
+use codex_protocol::protocol::McpStartupStatus;
 use codex_protocol::protocol::McpToolCallBeginEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
@@ -61,6 +62,7 @@ use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_no_remote_env;
+use core_test_support::skip_if_remote;
 use core_test_support::skip_if_wine_exec;
 use core_test_support::stdio_server_bin;
 use core_test_support::test_codex::TestCodex;
@@ -427,6 +429,136 @@ async fn openai_form_capability_is_advertised_to_mcp_servers() -> anyhow::Result
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn openai_form_capability_is_not_advertised_by_default() -> anyhow::Result<()> {
     assert_openai_form_capability_advertisement(/*expected*/ false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn all_server_resource_catalogues_report_unready_server_without_hiding_ready_results()
+-> anyhow::Result<()> {
+    skip_if_wine_exec!(
+        Ok(()),
+        "requires a Windows test_stdio_server in the Wine-exec environment"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let resources_call_id = "list-all-resources";
+    let templates_call_id = "list-all-resource-templates";
+    let explicit_call_id = "list-unready-resources";
+    mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_function_call(resources_call_id, "list_mcp_resources", "{}"),
+            responses::ev_function_call(templates_call_id, "list_mcp_resource_templates", "{}"),
+            responses::ev_function_call(
+                explicit_call_id,
+                "list_mcp_resources",
+                &json!({"server": "unready"}).to_string(),
+            ),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let final_mock = mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("msg-1", "Resource catalogues inspected."),
+            responses::ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    let ready_command = remote_aware_stdio_server_bin()?;
+    let fixture = test_codex()
+        .with_config(move |config| {
+            insert_mcp_server(
+                config,
+                "ready",
+                stdio_transport(ready_command, /*env*/ None, Vec::new()),
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+            insert_mcp_server(
+                config,
+                "unready",
+                stdio_transport(
+                    "codex-test-missing-mcp-server".to_string(),
+                    /*env*/ None,
+                    Vec::new(),
+                ),
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    wait_for_mcp_server(&fixture.codex, "ready").await?;
+
+    fixture
+        .codex
+        .submit(read_only_user_turn(
+            &fixture,
+            "inspect all MCP resource catalogues",
+        ))
+        .await?;
+    wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let request = final_mock.single_request();
+    let resources_output = request
+        .function_call_output_text(resources_call_id)
+        .expect("resource catalogue output");
+    assert_eq!(
+        serde_json::from_str::<Value>(&resources_output)?,
+        json!({
+            "resources": [{
+                "server": "ready",
+                "uri": "memo://codex/example-note",
+                "name": "example-note",
+                "title": "Example Note",
+                "description": "A sample MCP resource exposed for integration tests.",
+                "mimeType": "text/plain"
+            }],
+            "failures": [{
+                "server": "unready",
+                "reason": "notReady"
+            }]
+        })
+    );
+    let templates_output = request
+        .function_call_output_text(templates_call_id)
+        .expect("resource template catalogue output");
+    assert_eq!(
+        serde_json::from_str::<Value>(&templates_output)?,
+        json!({
+            "resourceTemplates": [{
+                "server": "ready",
+                "uriTemplate": "memo://codex/{slug}",
+                "name": "codex-memo",
+                "title": "Codex Memo",
+                "description": "Template for memo://codex/{slug} resources used in tests.",
+                "mimeType": "text/plain"
+            }],
+            "failures": [{
+                "server": "unready",
+                "reason": "notReady"
+            }]
+        })
+    );
+    let explicit_output = request
+        .function_call_output_text(explicit_call_id)
+        .expect("explicit unavailable-server output");
+    assert!(
+        explicit_output.contains("MCP server 'unready' was not ready for this step"),
+        "unexpected explicit-server output: {explicit_output}"
+    );
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -2709,6 +2841,345 @@ async fn streamable_http_tool_call_round_trip() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What this tests: a real Streamable HTTP constructor may fail its initial
+/// handshake, then recover on the next production MCP binding after the server
+/// accepts a later handshake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streamable_http_failed_startup_recovers_on_next_binding() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "host-local Streamable HTTP control barrier; covered by the non-remote hosted lane"
+    );
+
+    let server = responses::start_mock_server().await;
+    let server_name = "rmcp_http_startup_recovery";
+    let namespace = format!("mcp__{server_name}");
+    let http_server = start_streamable_http_test_server(
+        "startup-recovery",
+        /*auth*/ None,
+        ToolPagination::Disabled,
+    )
+    .await?
+    .context("startup recovery proof requires test_streamable_http_server")?;
+    let server_url = http_server.url().to_string();
+    let control_server_url = server_url.clone();
+
+    // Fail the initial handshake and both built-in HTTP retry attempts. The
+    // client therefore publishes an ordinary failed startup, rather than
+    // accidentally passing through the server's first successful handshake.
+    set_streamable_http_initialize_failure(
+        &server_url,
+        /*remaining*/ 3,
+        /*hold_until_released*/ false,
+    )
+    .await?;
+    let fixture = test_codex()
+        .with_config(move |config| {
+            insert_mcp_server(
+                config,
+                server_name,
+                McpServerTransportConfig::StreamableHttp {
+                    url: server_url,
+                    bearer_token_env_var: None,
+                    http_headers: None,
+                    env_http_headers: None,
+                },
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    let startup_summary = loop {
+        let event = fixture
+            .codex
+            .next_event()
+            .await
+            .expect("startup event stream ended unexpectedly");
+        if let EventMsg::McpStartupComplete(summary) = event.msg {
+            break summary;
+        }
+    };
+    assert!(
+        startup_summary
+            .failed
+            .iter()
+            .any(|failure| failure.server == server_name)
+    );
+
+    // Make the server healthy before the later binding. The first turn captures
+    // the failed binding and starts ordinary startup recovery in the background.
+    set_streamable_http_initialize_failure(
+        &control_server_url,
+        /*remaining*/ 0,
+        /*hold_until_released*/ false,
+    )
+    .await?;
+    mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-startup-recovery-prime"),
+            responses::ev_assistant_message("msg-startup-recovery-prime", "retry scheduled"),
+            responses::ev_completed("resp-startup-recovery-prime"),
+        ]),
+    )
+    .await;
+    fixture
+        .codex
+        .submit(auto_approved_user_turn(
+            &fixture,
+            "prime MCP startup recovery",
+        ))
+        .await?;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut saw_ready = false;
+        let mut saw_turn_complete = false;
+        while !saw_ready || !saw_turn_complete {
+            match fixture.codex.next_event().await?.msg {
+                EventMsg::McpStartupUpdate(update)
+                    if update.server == server_name
+                        && matches!(update.status, McpStartupStatus::Ready) =>
+                {
+                    saw_ready = true;
+                }
+                EventMsg::TurnComplete(_) => saw_turn_complete = true,
+                _ => {}
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("recovery did not publish Ready and complete its triggering turn")??;
+
+    // The next production binding must use this same runtime's recovered
+    // client; no config refresh or replacement runtime is involved.
+    mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-startup-recovery-call"),
+            responses::ev_function_call_with_namespace(
+                "call-startup-recovery",
+                &namespace,
+                "echo",
+                r#"{"message":"recovered"}"#,
+            ),
+            responses::ev_completed("resp-startup-recovery-call"),
+        ]),
+    )
+    .await;
+    mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-startup-recovery-complete"),
+            responses::ev_assistant_message("msg-startup-recovery-complete", "recovered"),
+            responses::ev_completed("resp-startup-recovery-complete"),
+        ]),
+    )
+    .await;
+    fixture
+        .codex
+        .submit(auto_approved_user_turn(
+            &fixture,
+            "call the recovered MCP echo tool",
+        ))
+        .await?;
+
+    let end_event = wait_for_event(&fixture.codex, |ev| {
+        matches!(ev, EventMsg::McpToolCallEnd(_))
+    })
+    .await;
+    let EventMsg::McpToolCallEnd(end) = end_event else {
+        unreachable!("event guard guarantees McpToolCallEnd");
+    };
+    let result = end
+        .result
+        .as_ref()
+        .expect("recovered rmcp echo tool should return success");
+    assert_eq!(result.is_error, Some(false));
+    assert_eq!(
+        result
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("echo"))
+            .and_then(Value::as_str),
+        Some("ECHOING: recovered")
+    );
+    wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    server.verify().await;
+    http_server.shutdown().await;
+    Ok(())
+}
+
+/// What this tests: cancelling a confirmed in-flight ordinary Streamable HTTP
+/// reconnect leaves the original runtime without a late ready client.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "host-local Streamable HTTP control barrier; covered by the non-remote hosted lane"
+    );
+
+    let server = responses::start_mock_server().await;
+    let server_name = "rmcp_http_cancelled_recovery";
+    let namespace = format!("mcp__{server_name}");
+    let http_server = start_streamable_http_test_server(
+        "cancelled-recovery",
+        /*auth*/ None,
+        ToolPagination::Disabled,
+    )
+    .await?
+    .context("startup cancellation proof requires test_streamable_http_server")?;
+    let server_url = http_server.url().to_string();
+    let control_server_url = server_url.clone();
+    set_streamable_http_initialize_failure(
+        &server_url,
+        /*remaining*/ 3,
+        /*hold_until_released*/ false,
+    )
+    .await?;
+
+    let fixture = test_codex()
+        .with_config(move |config| {
+            insert_mcp_server(
+                config,
+                server_name,
+                McpServerTransportConfig::StreamableHttp {
+                    url: server_url,
+                    bearer_token_env_var: None,
+                    http_headers: None,
+                    env_http_headers: None,
+                },
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    let startup_summary = loop {
+        let event = fixture
+            .codex
+            .next_event()
+            .await
+            .expect("startup event stream ended unexpectedly");
+        if let EventMsg::McpStartupComplete(summary) = event.msg {
+            break summary;
+        }
+    };
+    assert!(
+        startup_summary
+            .failed
+            .iter()
+            .any(|failure| failure.server == server_name)
+    );
+
+    set_streamable_http_initialize_failure(
+        &control_server_url,
+        /*remaining*/ 1,
+        /*hold_until_released*/ true,
+    )
+    .await?;
+    mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-cancelled-recovery-prime"),
+            responses::ev_assistant_message("msg-cancelled-recovery-prime", "retry scheduled"),
+            responses::ev_completed("resp-cancelled-recovery-prime"),
+        ]),
+    )
+    .await;
+    fixture
+        .codex
+        .submit(auto_approved_user_turn(
+            &fixture,
+            "prime MCP startup cancellation",
+        ))
+        .await?;
+    wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_streamable_http_initialize_failure_started(&control_server_url).await?;
+
+    // The server has confirmed that the recovery initialize request is held
+    // in flight before the real session interrupt path is invoked.
+    fixture.codex.submit(Op::Interrupt).await?;
+
+    let post_cancel_request = mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-cancelled-recovery-unavailable"),
+            responses::ev_assistant_message(
+                "msg-cancelled-recovery-unavailable",
+                "cancelled recovery remained unavailable",
+            ),
+            responses::ev_completed("resp-cancelled-recovery-unavailable"),
+        ]),
+    )
+    .await;
+    fixture
+        .codex
+        .submit(auto_approved_user_turn(
+            &fixture,
+            "inspect MCP tools after cancelling startup recovery",
+        ))
+        .await?;
+
+    // Keep the server response held through the unavailable snapshot. Because
+    // the interrupt and this user input are queued in order, TurnComplete is
+    // the completion boundary for the real cancellation surface. The same
+    // overall bound then drains a post-release sentinel turn and rejects any
+    // late Ready update.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        wait_for_turn_complete_without_ready(&fixture, server_name).await?;
+        assert!(
+            post_cancel_request
+                .single_request()
+                .tool_by_name(&namespace, "echo")
+                .is_none()
+        );
+
+        set_streamable_http_initialize_failure(
+            &control_server_url,
+            /*remaining*/ 0,
+            /*hold_until_released*/ false,
+        )
+        .await?;
+
+        mount_sse_once(
+            &server,
+            responses::sse(vec![
+                responses::ev_response_created("resp-cancelled-recovery-quiescence"),
+                responses::ev_assistant_message(
+                    "msg-cancelled-recovery-quiescence",
+                    "cancelled recovery remained unavailable",
+                ),
+                responses::ev_completed("resp-cancelled-recovery-quiescence"),
+            ]),
+        )
+        .await;
+        fixture
+            .codex
+            .submit(auto_approved_user_turn(
+                &fixture,
+                "confirm MCP recovery cancellation quiescence",
+            ))
+            .await?;
+        wait_for_turn_complete_without_ready(&fixture, server_name).await
+    })
+    .await
+    .context("cancelled recovery did not reach bounded quiescence")??;
+
+    server.verify().await;
+    http_server.shutdown().await;
+    Ok(())
+}
+
 /// What this tests: Codex drains every `tools/list` page, indexes the complete
 /// catalogue for deferred search, and calls a tool that was absent from page one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -3299,6 +3770,61 @@ async fn start_streamable_http_test_server(
         server_url,
         process: StreamableHttpTestServerProcess::Local(child),
     }))
+}
+
+/// Arms or clears the host-local test server's initialization failure control.
+async fn set_streamable_http_initialize_failure(
+    server_url: &str,
+    remaining: usize,
+    hold_until_released: bool,
+) -> anyhow::Result<()> {
+    let base_url = server_url.strip_suffix("/mcp").unwrap_or(server_url);
+    Client::new()
+        .post(format!("{base_url}/test/control/initialize-post-failure"))
+        .json(&json!({
+            "status": 503,
+            "remaining": remaining,
+            "hold_until_released": hold_until_released,
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
+/// Waits until the host-local test server has received the held initialize
+/// request, before the caller exercises startup cancellation.
+async fn wait_streamable_http_initialize_failure_started(server_url: &str) -> anyhow::Result<()> {
+    let base_url = server_url.strip_suffix("/mcp").unwrap_or(server_url);
+    Client::new()
+        .get(format!(
+            "{base_url}/test/control/initialize-post-failure/wait-started"
+        ))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
+/// Drains one turn boundary while rejecting any ready update from the
+/// cancelled reconnect. The caller supplies one overall timeout around the
+/// required sequence rather than timing out individual events.
+async fn wait_for_turn_complete_without_ready(
+    fixture: &TestCodex,
+    server_name: &str,
+) -> anyhow::Result<()> {
+    loop {
+        match fixture.codex.next_event().await?.msg {
+            EventMsg::McpStartupUpdate(update)
+                if update.server == server_name
+                    && matches!(update.status, McpStartupStatus::Ready) =>
+            {
+                anyhow::bail!("cancelled MCP recovery emitted a late ready update");
+            }
+            EventMsg::TurnComplete(_) => return Ok(()),
+            _ => {}
+        }
+    }
 }
 
 /// Starts the Streamable HTTP MCP test server inside the remote test container.

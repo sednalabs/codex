@@ -3450,9 +3450,12 @@ mod tests {
         std::fs::write(
             temp.path().join("desktop-computer-use.json"),
             serde_json::json!({
-                "provider": "command",
-                "platforms": ["all"],
-                "command": [command]
+                "providers": [{
+                    "id": "doctor-desktop",
+                    "provider": "command",
+                    "platforms": ["all"],
+                    "command": [command]
+                }]
             })
             .to_string(),
         )
@@ -3489,6 +3492,13 @@ mod tests {
                 .details
                 .iter()
                 .any(|detail| detail == "desktop providers configured: 1")
+        );
+        assert!(
+            check
+                .details
+                .iter()
+                .any(|detail| detail.starts_with("desktop provider ids: ")
+                    && detail.contains("doctor-desktop"))
         );
     }
 

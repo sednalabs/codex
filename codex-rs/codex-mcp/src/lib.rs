@@ -1,5 +1,8 @@
 pub use binding::McpBinding;
 pub use binding::PreparedMcpCall;
+pub use binding_clients::McpResourceListing;
+pub use binding_clients::McpResourceListingFailure;
+pub use binding_clients::McpResourceListingFailureReason;
 pub use connection_manager::tool_is_model_visible;
 pub use elicitation::ElicitationLifecycle;
 pub use elicitation::ElicitationReviewRequest;
