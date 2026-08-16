@@ -153,7 +153,7 @@ Also run `just argument-comment-lint` to ensure the codebase is clean of comment
 - Treat GitHub Actions as the default factory for remote seam validation, preview binaries, heavy Rust tests, and official releases.
 - Use `validation-lab.yml` as the default remote-first validation surface for scratch refs, integration refs, and other non-PR exploratory work.
 - Prefer `profile=targeted` for one active seam and `profile=frontier` for bounded next-blocker harvesting once there is a recent trusted baseline.
-- Downstream support is currently limited to Linux `x86_64`. Public release artifacts, heavyweight checkpoint workflows, and routine remote validation should target Linux `x86_64` only unless the user explicitly asks to revive another platform and the supporting docs/workflows are updated in the same change.
+- Downstream release support includes Linux `x86_64` and Linux Arm64 GNU. Public release artifacts and native release verification must cover both architectures; heavyweight checkpoint workflows and routine remote validation may remain target-specific when their owning contract does not require the release matrix. Intel macOS remains an explicitly selected release mode, while other platforms require a deliberate support-contract change with matching docs and workflows.
 - Configured helper presets remain a good narrow local lane for smoke checks, formatting, and targeted validation.
 - Do not run routine direct terminal `cargo build` or `cargo test` commands for expensive local validation when the same work can be offloaded to GitHub CI.
 - Heavy remote CI only starts after the relevant work is committed and pushed.

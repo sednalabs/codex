@@ -29,10 +29,10 @@ from upstream OpenAI releases.
   `upstream_base_commit`, `upstream_base_tag`, `upstream_base_tag_exact`,
   `upstream_distance_from_tag`, `upstream_position`, `downstream_commit`, `target_commit`, and
   the compact `build_provenance` / `version_display` strings
-- Linux `x86_64` (`x86_64-unknown-linux-gnu`) and Intel macOS `x86_64`
-  (`x86_64-apple-darwin`) are the officially supported Sedna release targets. Apple Silicon,
-  Windows, Linux arm64, and other upstream targets remain outside the current downstream release
-  contract.
+- Linux `x86_64` (`x86_64-unknown-linux-gnu`), Linux Arm64
+  (`aarch64-unknown-linux-gnu`), and Intel macOS `x86_64` (`x86_64-apple-darwin`) are the officially
+  supported Sedna release targets. Apple Silicon, Windows, and other upstream targets remain
+  outside the current downstream release contract.
 
 The upstream track is resolved from the target commit's merge-base with `origin/upstream-main`.
 That merge-base is the upstream reference point for the release, even if `origin/upstream-main`
@@ -70,14 +70,19 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 - `Sedna-Release: prerelease` allows upstream prerelease tracks and publishes the GitHub Release as
   a prerelease. The release workflow dispatches asset verification with an explicit
   prerelease allowance for that exact tag.
-- Pushing a tag like `v0.119.0-sedna.2` remains supported, but the workflow validates that the tag
-  matches the resolver's computed version for the target commit before publishing.
-- If a tag push triggers a duplicate run for a tag that has already been published for the same target
-  commit, the workflow treats it as an idempotent skip instead of rebuilding. If the tag exists but
-  points to a different commit, the workflow still fails to prevent accidental tag reuse.
+- Release-tag pushes and deletions never initiate publication. The protected-`main` workflow resolves
+  and creates the tag as an output after admission; a repeated protected-`main` request for an
+  already-published tag/target pair is an idempotent skip. If the tag exists but points to a
+  different commit, the workflow still fails to prevent accidental tag reuse.
 - Manual `workflow_dispatch` accepts an optional `target_sha`, `channel`, and optional
   `release_tag`. If `release_tag` is supplied, it is an assertion checked against the resolver, not
   the source of truth.
+- A manual `target_sha` must equal the exact commit at the workflow dispatch ref. This keeps the
+  release binaries, Sigstore certificate workflow SHA, and GitHub provenance source/signer digests
+  bound to the same immutable commit. Manual releases must be dispatched from protected `main`;
+  arbitrary branch dispatches fail before any release build or publication.
+- A synthetic/non-main ref presented to the route is classified as unsupported and cannot start
+  build, signing, attestation, or publication work.
 - Manual `workflow_dispatch` without `release_tag` requires the target commit to contain a valid
   `Sedna-Release:` trailer. Markerless manual releases must supply the expected tag explicitly.
 - A supplied `release_tag` must match the upstream track computed from the target commit's
@@ -91,20 +96,28 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 
 Current workflow characteristics:
 
-- Native GitHub-hosted Linux `x86_64` release builds, with Intel macOS `x86_64` assets selected
+- Native GitHub-hosted Linux `x86_64` and Arm64 release builds, with Intel macOS `x86_64` assets selected
   explicitly as `off`, `preview`, or `notarized`
 - Release builds and GitHub Release publication are separate jobs: the build job keeps a read-only
   repository token while the small publication job owns the release environment and write-scoped
   publishing permissions.
-- Cargo home and `sccache` restore/save around the official release build to reduce duplicate
-  compilation when prior release smoke runs warmed matching caches
-- Keyless Sigstore signing for Linux binaries; ad-hoc code-signing checks for Intel macOS previews;
-  and an optional Developer ID signing and notarization path
+- Authority-isolated Cargo dependency and `sccache` caches around the official release build.
+  Release and arbitrary-ref preview namespaces are distinct, and executable `~/.cargo/bin`
+  content is never restored from either cache.
+- Keyless Sigstore signing for Linux binaries, SPDX 2.3 SBOMs, and GitHub build-provenance
+  attestations for each Linux archive and SBOM; ad-hoc code-signing checks for Intel macOS
+  previews; and an optional Developer ID signing and notarization path
 - GitHub Release publication through a dedicated GitHub App installation token instead of the
   default workflow integration token
 - GitHub Release assets named with the Sedna release identity
 - Exact upstream/downstream provenance recorded in release metadata assets
 - No dependency on upstream runner groups or upstream release tags
+
+### Release environment governance
+
+The `release` GitHub Actions environment admits protected branches only and requires explicit
+environment approval before publication. This environment gate is authoritative; workflow-side
+ref and release-route checks remain defense-in-depth and do not replace approval.
 
 Release publication requires a dedicated GitHub App installed on this repository only. Configure
 the app with repository permissions for `Contents: Read and write` and `Actions: Read and write`,
@@ -182,14 +195,18 @@ changes can be detected explicitly instead of inferred from tag shape alone.
   release dispatch is the first full release build
 - keep that path separate from official release publication so operators can prove a ref is
   releasable without mutating GitHub Releases
-- release smoke runs may warm dependency and compiler caches for the official publisher, but
-  `sedna-release` still performs the authoritative build, signing, metadata, checksum, and
-  publication steps itself
+- `sedna-release` reuses only its protected release cache namespace and still performs the
+  authoritative build, signing, metadata, checksum, and publication steps itself; arbitrary-ref
+  preview or smoke runs cannot populate that namespace
 - `sedna-branch-build` produces disposable preview binaries only when manually
-  dispatched. Its default remains Linux `x86_64`; `platform=macos` produces
+  dispatched. Its default remains Linux `x86_64`; `platform=linux-aarch64` uses a native
+  GitHub-hosted Arm64 runner, while `platform=macos` produces
   one ad hoc signed, non-notarized Intel x64 artifact for preview use without
-  publishing a GitHub Release. Cargo-home and `sccache` reuse reduce repeat-build
-  cost without changing the canonical release optimization profile.
+  publishing a GitHub Release. Cargo dependency and `sccache` reuse stays in a preview-only
+  namespace and excludes executable tool paths. Linux preview and validation-artifact builds
+  isolate workflow-owned helper/cache paths from source provenance, require a clean checkout before
+  compilation, create repository-root `dist/` output only after compilation, and reject any binary
+  whose displayed git provenance contains `-dirty`.
 - `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the build factory
 - branch artifacts retain for 3 days and are never updater candidates
 - only `sedna-release` is allowed to publish official GitHub Releases
@@ -227,9 +244,34 @@ runner. It intentionally does not perform host-local installation from the publi
   release publisher token.
 - Manual `workflow_dispatch` runs require `dry_run=true`
 - Prerelease installs require `allow_prerelease=true` on `workflow_dispatch`
-- The verifier checks both supported targets on native Linux and Intel macOS runners, including
-  tag shape, target-bound release metadata, checksums, safe archive membership, and executable
-  payloads
+- New releases require native Linux Arm64 verification by default. Set
+  `require_linux_arm64=false` only when manually verifying a historical x86-only release.
+  That explicit compatibility mode uses the historical checksum, metadata, archive-safety, and
+  executable checks; it cannot apply the newer exact-source signature and attestation contract to
+  releases whose metadata predates that contract.
+- The verifier checks all supported targets on native x86-64 Linux, Arm64 Linux, and Intel macOS
+  runners, including tag shape, target-bound release metadata, checksums, safe archive membership,
+  and executable payloads. Linux verification also checks keyless Sigstore identity, native ELF
+  architecture, SPDX structure, and GitHub build attestations for the archive and SBOM.
+- Hardened Linux verification passes `--verify-signatures --verify-attestation`. The verifier pins
+  attestation acceptance to this repository's `sedna-release.yml` signer workflow and dispatches
+  the verifier from the exact published release tag so the installer contract cannot drift from
+  the release source. It rejects a manual dispatch unless the selected workflow ref is exactly
+  `refs/tags/<release_tag>`; the public verifier has no cross-revision maintenance mode.
+- Current x86-64 releases fail closed into signature, provenance, hosted-runner, and exact-source
+  verification, including clients that fetch the current installer without new flags and callers
+  that explicitly supply only one positive verification flag.
+  When compatible host tools are absent, the installer uses checksum-pinned Cosign and GitHub CLI
+  binaries in its temporary verification directory; it does not install tools globally. GitHub
+  provenance checks use the downloaded local bundle, so updater hosts do not need GitHub
+  authentication. The streaming checksum verifier supports Python 3.10. A pure Python ELF parser is
+  the fallback when `file` or `readelf` is absent.
+- Immutable x86-only releases published before the 2026-08-16 trust-contract cutoff and carrying
+  no Arm64 or provenance assets automatically retain the historical path for already-shipped
+  updater calls. `--allow-historical-x86` is the explicit operator form of that same bounded mode
+  and cannot downgrade a current release. Arm64 never has a downgrade path.
+- A non-dry install may reuse an existing release directory only when both executables, metadata,
+  and checksum manifest are byte-for-byte identical to the freshly verified staged payload.
 - Host-local installs should be performed by external deployment automation outside the public
   Actions log surface
 - Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them

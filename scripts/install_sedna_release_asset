@@ -6,9 +6,12 @@ release_tag=""
 dry_run=false
 allow_prerelease=false
 macos_preview=false
+verify_attestation=false
+verify_signatures=false
+allow_historical_x86=false
 
 usage() {
-  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG|latest [--dry-run] [--allow-prerelease] [--macos-preview]" >&2
+  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG|latest [--dry-run] [--allow-prerelease] [--verify-signatures] [--verify-attestation] [--allow-historical-x86] [--macos-preview]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -31,6 +34,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --macos-preview)
       macos_preview=true
+      shift
+      ;;
+    --verify-attestation)
+      verify_attestation=true
+      shift
+      ;;
+    --verify-signatures)
+      verify_signatures=true
+      shift
+      ;;
+    --allow-historical-x86)
+      allow_historical_x86=true
       shift
       ;;
     -h|--help)
@@ -58,6 +73,11 @@ case "${host_os}/${host_arch}" in
     checksum_name="SHA256SUMS.txt"
     metadata_name="RELEASE-METADATA.json"
     ;;
+  Linux/aarch64|Linux/arm64)
+    target="aarch64-unknown-linux-gnu"
+    checksum_name="SHA256SUMS-${target}.txt"
+    metadata_name="RELEASE-METADATA-${target}.json"
+    ;;
   Darwin/x86_64)
     target="x86_64-apple-darwin"
     if [[ "$macos_preview" == "true" ]]; then
@@ -69,11 +89,16 @@ case "${host_os}/${host_arch}" in
     fi
     ;;
   *)
-    printf 'error: unsupported release platform: %s/%s (supported: Linux/x86_64, Darwin/x86_64)\n' \
+    printf 'error: unsupported release platform: %s/%s (supported: Linux/x86_64, Linux/aarch64, Darwin/x86_64)\n' \
       "$host_os" "$host_arch" >&2
     exit 1
     ;;
 esac
+
+if [[ "$allow_historical_x86" == "true" && "$target" != "x86_64-unknown-linux-gnu" ]]; then
+  echo "error: --allow-historical-x86 is only valid on Linux x86_64" >&2
+  exit 1
+fi
 
 api_root="https://api.github.com/repos/sednalabs/codex"
 install_root="${HOME}/.codex/packages/standalone"
@@ -113,6 +138,123 @@ fetch_asset() {
     --output "$output"
 }
 
+verify_download_sha256() {
+  local path="$1"
+  local expected="$2"
+  python3 - "$path" "$expected" <<'PY'
+import hashlib
+import sys
+
+path, expected = sys.argv[1:3]
+digest = hashlib.sha256()
+with open(path, "rb") as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+actual = digest.hexdigest()
+if actual != expected:
+    raise SystemExit(f"error: tool checksum mismatch for {path}: expected {expected}, got {actual}")
+PY
+}
+
+verification_tools_dir="${work_dir}/verification-tools"
+
+ensure_cosign() {
+  if command -v cosign >/dev/null 2>&1 \
+    && cosign verify-blob --help 2>&1 | grep -F -- '--certificate-github-workflow-sha' >/dev/null; then
+    return
+  fi
+
+  local tool_arch checksum
+  case "$target" in
+    x86_64-unknown-linux-gnu)
+      tool_arch="amd64"
+      checksum="4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
+      ;;
+    aarch64-unknown-linux-gnu)
+      tool_arch="arm64"
+      checksum="c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a"
+      ;;
+    *)
+      echo "error: automatic Cosign provisioning is only supported for Linux release targets" >&2
+      exit 1
+      ;;
+  esac
+  mkdir -p "$verification_tools_dir"
+  curl --fail --location --silent --show-error \
+    "https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-${tool_arch}" \
+    --output "${verification_tools_dir}/cosign"
+  verify_download_sha256 "${verification_tools_dir}/cosign" "$checksum"
+  chmod 0755 "${verification_tools_dir}/cosign"
+  export PATH="${verification_tools_dir}:${PATH}"
+  if ! cosign verify-blob --help 2>&1 | grep -F -- '--certificate-github-workflow-sha' >/dev/null; then
+    echo "error: pinned Cosign does not expose exact workflow-SHA verification" >&2
+    exit 1
+  fi
+}
+
+ensure_gh_attestation() {
+  if command -v gh >/dev/null 2>&1; then
+    local existing_help
+    if existing_help="$(gh attestation verify --help 2>&1)" \
+      && [[ "$existing_help" == *"--bundle"* ]] \
+      && [[ "$existing_help" == *"--deny-self-hosted-runners"* ]] \
+      && [[ "$existing_help" == *"--source-digest"* ]] \
+      && [[ "$existing_help" == *"--signer-digest"* ]]; then
+      return
+    fi
+  fi
+
+  local tool_arch checksum archive member
+  case "$target" in
+    x86_64-unknown-linux-gnu)
+      tool_arch="amd64"
+      checksum="a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112"
+      ;;
+    aarch64-unknown-linux-gnu)
+      tool_arch="arm64"
+      checksum="73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5"
+      ;;
+    *)
+      echo "error: automatic GitHub attestation verifier provisioning is only supported for Linux release targets" >&2
+      exit 1
+      ;;
+  esac
+  mkdir -p "$verification_tools_dir"
+  archive="${verification_tools_dir}/gh.tar.gz"
+  member="gh_2.97.0_linux_${tool_arch}/bin/gh"
+  curl --fail --location --silent --show-error \
+    "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_${tool_arch}.tar.gz" \
+    --output "$archive"
+  verify_download_sha256 "$archive" "$checksum"
+  python3 - "$archive" "$member" "${verification_tools_dir}/gh" <<'PY'
+import shutil
+import sys
+import tarfile
+
+archive_path, expected_member, output_path = sys.argv[1:4]
+with tarfile.open(archive_path, mode="r:gz") as archive:
+    member = archive.getmember(expected_member)
+    if not member.isfile() or member.size <= 0 or member.size > 256 * 1024 * 1024:
+        raise SystemExit("error: pinned GitHub CLI archive member is not a bounded regular file")
+    source = archive.extractfile(member)
+    if source is None:
+        raise SystemExit("error: failed to extract pinned GitHub CLI executable")
+    with source, open(output_path, "wb") as output:
+        shutil.copyfileobj(source, output)
+PY
+  chmod 0755 "${verification_tools_dir}/gh"
+  export PATH="${verification_tools_dir}:${PATH}"
+  local pinned_help
+  if ! pinned_help="$(gh attestation verify --help 2>&1)" \
+    || [[ "$pinned_help" != *"--bundle"* ]] \
+    || [[ "$pinned_help" != *"--deny-self-hosted-runners"* ]] \
+    || [[ "$pinned_help" != *"--source-digest"* ]] \
+    || [[ "$pinned_help" != *"--signer-digest"* ]]; then
+    echo "error: pinned GitHub CLI lacks exact-source hosted-runner attestation enforcement" >&2
+    exit 1
+  fi
+}
+
 if [[ "$release_tag" == "latest" ]]; then
   latest_json="${work_dir}/latest-release.json"
   fetch_json "${api_root}/releases/latest" "$latest_json"
@@ -140,6 +282,18 @@ if [[ "$target" == "x86_64-apple-darwin" && "$macos_preview" == "true" ]]; then
   archive_name="codex-sedna-${release_version}-${target}-UNNOTARIZED-PREVIEW.tar.gz"
 fi
 
+archive_base="${archive_name%.tar.gz}"
+sbom_name="${archive_base}.spdx.json"
+attestation_bundle_name="${archive_base}.intoto.jsonl"
+codex_sigstore_name="${archive_base}-codex.sigstore"
+proxy_sigstore_name="${archive_base}-codex-responses-api-proxy.sigstore"
+if [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+  # Arm64 first ships with the hardened trust contract, so there is no legacy
+  # Arm release mode in which these verifications may be omitted.
+  verify_signatures=true
+  verify_attestation=true
+fi
+
 release_json="${work_dir}/release.json"
 fetch_json "${api_root}/releases/tags/${release_tag}" "$release_json"
 
@@ -157,13 +311,79 @@ if release.get("tag_name") != expected_tag:
     raise SystemExit(f"error: release API returned tag {release.get('tag_name')!r}, expected {expected_tag!r}")
 PY
 
-asset_manifest="${work_dir}/assets.tsv"
-python3 - "$release_json" "$archive_name" "$checksum_name" "$metadata_name" > "$asset_manifest" <<'PY'
+if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
+  x86_release_contract="$(python3 - "$release_json" <<'PY'
+import datetime as dt
 import json
 import sys
 
-release_path, archive_name, checksum_name, metadata_name = sys.argv[1:5]
-required = (archive_name, checksum_name, metadata_name)
+release = json.loads(open(sys.argv[1], encoding="utf-8").read())
+published_at = release.get("published_at")
+try:
+    published = dt.datetime.fromisoformat(str(published_at).replace("Z", "+00:00"))
+except ValueError as exc:
+    raise SystemExit(f"error: release published_at is not a valid timestamp: {published_at!r}") from exc
+cutoff = dt.datetime(2026, 8, 16, tzinfo=dt.timezone.utc)
+names = {asset.get("name") for asset in release.get("assets", []) if isinstance(asset, dict)}
+has_modern_assets = any(
+    name
+    and (
+        "-aarch64-unknown-linux-gnu" in name
+        or name.endswith(".spdx.json")
+        or name.endswith(".intoto.jsonl")
+    )
+    for name in names
+)
+print("historical" if published < cutoff and not has_modern_assets else "current")
+PY
+)"
+  if [[ "$allow_historical_x86" == "true" ]]; then
+    if [[ "$verify_signatures" == "true" || "$verify_attestation" == "true" ]]; then
+      echo "error: --allow-historical-x86 cannot be combined with hardened verification flags" >&2
+      exit 1
+    fi
+    if [[ "$x86_release_contract" != "historical" ]]; then
+      echo "error: --allow-historical-x86 cannot downgrade a current release" >&2
+      exit 1
+    fi
+  elif [[ "$verify_signatures" != "true" && "$verify_attestation" != "true" && "$x86_release_contract" == "historical" ]]; then
+    # Existing updater clients fetch this installer without new flags. Keep
+    # immutable pre-contract releases installable without weakening any release
+    # published on or after the trust-contract cutoff.
+    allow_historical_x86=true
+  elif [[ "$x86_release_contract" == "current" ]]; then
+    # Current x86 releases fail closed into the same source-bound trust contract
+    # as Arm64, including old clients and callers that supply only one positive
+    # verification flag.
+    verify_signatures=true
+    verify_attestation=true
+  fi
+fi
+
+require_linux_signatures=false
+require_linux_provenance=false
+verify_linux_elf=false
+if [[ "$verify_signatures" == "true" ]]; then
+  require_linux_signatures=true
+fi
+if [[ "$verify_attestation" == "true" ]]; then
+  require_linux_provenance=true
+fi
+if [[ "$target" == *-unknown-linux-gnu && ( "$verify_signatures" == "true" || "$verify_attestation" == "true" ) ]]; then
+  verify_linux_elf=true
+fi
+
+asset_manifest="${work_dir}/assets.tsv"
+python3 - "$release_json" "$archive_name" "$checksum_name" "$metadata_name" "$sbom_name" "$attestation_bundle_name" "$codex_sigstore_name" "$proxy_sigstore_name" "$require_linux_signatures" "$require_linux_provenance" > "$asset_manifest" <<'PY'
+import json
+import sys
+
+release_path, archive_name, checksum_name, metadata_name, sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name, require_linux_signatures, require_linux_provenance = sys.argv[1:11]
+required = [archive_name, checksum_name, metadata_name]
+if require_linux_signatures == "true":
+    required.extend((codex_sigstore_name, proxy_sigstore_name))
+if require_linux_provenance == "true":
+    required.extend((sbom_name, attestation_bundle_name))
 release = json.loads(open(release_path, encoding="utf-8").read())
 assets = {asset.get("name"): asset for asset in release.get("assets", [])}
 missing = [name for name in required if name not in assets]
@@ -187,17 +407,20 @@ while IFS=$'\t' read -r name asset_id; do
     "$metadata_name")
       fetch_asset "$asset_id" "${work_dir}/${metadata_name}"
       ;;
+    "$sbom_name"|"$attestation_bundle_name"|"$codex_sigstore_name"|"$proxy_sigstore_name")
+      fetch_asset "$asset_id" "${work_dir}/${name}"
+      ;;
   esac
 done < "$asset_manifest"
 
-python3 - "$work_dir" "$archive_name" "$checksum_name" "$metadata_name" "$release_tag" "$release_version" "$target" "$macos_preview" <<'PY'
+python3 - "$work_dir" "$archive_name" "$checksum_name" "$metadata_name" "$release_tag" "$release_version" "$target" "$macos_preview" "$sbom_name" "$attestation_bundle_name" "$codex_sigstore_name" "$proxy_sigstore_name" "$require_linux_signatures" "$require_linux_provenance" <<'PY'
 import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 
-work_dir, archive_name, checksum_name, metadata_name, release_tag, release_version, target, macos_preview = sys.argv[1:9]
+work_dir, archive_name, checksum_name, metadata_name, release_tag, release_version, target, macos_preview, sbom_name, attestation_bundle_name, codex_sigstore_name, proxy_sigstore_name, require_linux_signatures, require_linux_provenance = sys.argv[1:15]
 root = Path(work_dir)
 metadata = json.loads((root / metadata_name).read_text(encoding="utf-8"))
 expected = {
@@ -237,13 +460,45 @@ for raw in (root / checksum_name).read_text(encoding="utf-8").splitlines():
         if name in checksums:
             raise SystemExit(f"error: duplicate checksum entry for {name!r}")
         checksums[name] = digest.lower()
-digest = checksums.get(archive_name)
-if digest is None:
-    raise SystemExit(f"error: {checksum_name} does not include {archive_name}")
-actual = hashlib.sha256((root / archive_name).read_bytes()).hexdigest()
-if actual != digest:
-    raise SystemExit(f"error: checksum mismatch for {archive_name}: expected {digest}, got {actual}")
+required_assets = [archive_name, metadata_name]
+if require_linux_signatures == "true":
+    required_assets.extend((codex_sigstore_name, proxy_sigstore_name))
+if require_linux_provenance == "true":
+    required_assets.extend((sbom_name, attestation_bundle_name))
+for name in required_assets:
+    digest = checksums.get(name)
+    if digest is None:
+        raise SystemExit(f"error: {checksum_name} does not include {name}")
+    actual = hashlib.sha256((root / name).read_bytes()).hexdigest()
+    if actual != digest:
+        raise SystemExit(f"error: checksum mismatch for {name}: expected {digest}, got {actual}")
+if require_linux_provenance == "true":
+    sbom = json.loads((root / sbom_name).read_text(encoding="utf-8"))
+    if sbom.get("spdxVersion") != "SPDX-2.3":
+        raise SystemExit(f"error: {sbom_name} is not an SPDX 2.3 document")
 PY
+
+expected_source_commit="$(python3 - "$work_dir/$metadata_name" "$release_json" "$require_linux_signatures" "$require_linux_provenance" <<'PY'
+import json
+import re
+import sys
+
+metadata_path, release_path, require_signatures, require_provenance = sys.argv[1:5]
+if require_signatures != "true" and require_provenance != "true":
+    raise SystemExit(0)
+metadata = json.loads(open(metadata_path, encoding="utf-8").read())
+release = json.loads(open(release_path, encoding="utf-8").read())
+target_commit = metadata.get("target_commit")
+if not isinstance(target_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", target_commit):
+    raise SystemExit("error: release metadata target_commit must be a full lowercase Git SHA")
+release_target = release.get("target_commitish")
+if release_target != target_commit:
+    raise SystemExit(
+        f"error: release target_commitish={release_target!r} does not match metadata target_commit={target_commit!r}"
+    )
+print(target_commit)
+PY
+)"
 
 staged="${work_dir}/stage"
 mkdir "$staged"
@@ -292,6 +547,128 @@ for executable in codex codex-responses-api-proxy; do
   fi
 done
 
+if [[ "$verify_linux_elf" == "true" ]]; then
+  expected_elf_arch="x86-64"
+  if [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+    expected_elf_arch="ARM aarch64"
+    expected_elf_interpreter="/lib/ld-linux-aarch64.so.1"
+  else
+    expected_elf_interpreter="/lib64/ld-linux-x86-64.so.2"
+  fi
+  if command -v file >/dev/null 2>&1 && command -v readelf >/dev/null 2>&1; then
+    for executable in codex codex-responses-api-proxy; do
+      file_output="$(file -b "$staged/$executable")"
+      if [[ "$file_output" != *"ELF"* || "$file_output" != *"$expected_elf_arch"* ]]; then
+        printf 'error: %s has unexpected binary architecture for %s: %s\n' \
+          "$executable" "$target" "$file_output" >&2
+        exit 1
+      fi
+      if ! readelf -l "$staged/$executable" | grep -F "$expected_elf_interpreter" >/dev/null; then
+        printf 'error: %s does not use the expected GNU/Linux interpreter for %s: %s\n' \
+          "$executable" "$target" "$expected_elf_interpreter" >&2
+        exit 1
+      fi
+    done
+  else
+    python3 - "$target" "$expected_elf_interpreter" "$staged/codex" "$staged/codex-responses-api-proxy" <<'PY'
+import pathlib
+import struct
+import sys
+
+target, expected_interpreter, *paths = sys.argv[1:]
+expected_machine = {
+    "x86_64-unknown-linux-gnu": 62,
+    "aarch64-unknown-linux-gnu": 183,
+}[target]
+for raw_path in paths:
+    path = pathlib.Path(raw_path)
+    data = path.read_bytes()
+    if len(data) < 64 or data[:6] != b"\x7fELF\x02\x01":
+        raise SystemExit(f"error: {path.name} is not a little-endian ELF64 executable for {target}")
+    machine = struct.unpack_from("<H", data, 18)[0]
+    if machine != expected_machine:
+        raise SystemExit(
+            f"error: {path.name} has unexpected ELF machine {machine} for {target}"
+        )
+    program_offset = struct.unpack_from("<Q", data, 32)[0]
+    entry_size = struct.unpack_from("<H", data, 54)[0]
+    entry_count = struct.unpack_from("<H", data, 56)[0]
+    if entry_size < 56 or entry_count > 4096:
+        raise SystemExit(f"error: {path.name} has an invalid ELF program-header table")
+    interpreter = None
+    for index in range(entry_count):
+        offset = program_offset + index * entry_size
+        if offset + 56 > len(data):
+            raise SystemExit(f"error: {path.name} has a truncated ELF program-header table")
+        if struct.unpack_from("<I", data, offset)[0] != 3:
+            continue
+        string_offset = struct.unpack_from("<Q", data, offset + 8)[0]
+        string_size = struct.unpack_from("<Q", data, offset + 32)[0]
+        if string_size == 0 or string_size > 4096 or string_offset + string_size > len(data):
+            raise SystemExit(f"error: {path.name} has an invalid ELF interpreter entry")
+        interpreter = data[string_offset : string_offset + string_size].rstrip(b"\0").decode(
+            "utf-8", errors="strict"
+        )
+        break
+    if interpreter != expected_interpreter:
+        raise SystemExit(
+            f"error: {path.name} uses ELF interpreter {interpreter!r}, expected {expected_interpreter!r}"
+        )
+PY
+  fi
+fi
+
+if [[ "$verify_signatures" == "true" ]]; then
+  ensure_cosign
+  certificate_identity_regexp='^https://github\.com/sednalabs/codex/\.github/workflows/sedna-release\.yml@refs/(heads/main|tags/v[^/]+)$'
+  cosign verify-blob \
+    --bundle "$work_dir/$codex_sigstore_name" \
+    --certificate-identity-regexp "$certificate_identity_regexp" \
+    --certificate-github-workflow-sha "$expected_source_commit" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    "$staged/codex"
+  cosign verify-blob \
+    --bundle "$work_dir/$proxy_sigstore_name" \
+    --certificate-identity-regexp "$certificate_identity_regexp" \
+    --certificate-github-workflow-sha "$expected_source_commit" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    "$staged/codex-responses-api-proxy"
+
+fi
+
+if [[ "$verify_attestation" == "true" ]]; then
+  ensure_gh_attestation
+  if ! gh_attestation_help="$(gh attestation verify --help 2>&1)" \
+    || [[ "$gh_attestation_help" != *"--bundle"* ]] \
+    || [[ "$gh_attestation_help" != *"--deny-self-hosted-runners"* ]] \
+    || [[ "$gh_attestation_help" != *"--source-digest"* ]] \
+    || [[ "$gh_attestation_help" != *"--signer-digest"* ]]; then
+    echo "error: a GitHub CLI version with exact-source hosted-runner attestation enforcement is required" >&2
+    exit 1
+  fi
+  gh attestation verify "$work_dir/$archive_name" \
+    --repo sednalabs/codex \
+    --bundle "$work_dir/$attestation_bundle_name" \
+    --deny-self-hosted-runners \
+    --source-digest "$expected_source_commit" \
+    --signer-digest "$expected_source_commit" \
+    --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
+  gh attestation verify "$work_dir/$sbom_name" \
+    --repo sednalabs/codex \
+    --bundle "$work_dir/$attestation_bundle_name" \
+    --deny-self-hosted-runners \
+    --source-digest "$expected_source_commit" \
+    --signer-digest "$expected_source_commit" \
+    --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
+  gh attestation verify "$work_dir/$metadata_name" \
+    --repo sednalabs/codex \
+    --bundle "$work_dir/$attestation_bundle_name" \
+    --deny-self-hosted-runners \
+    --source-digest "$expected_source_commit" \
+    --signer-digest "$expected_source_commit" \
+    --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
+fi
+
 if [[ "$target" == "x86_64-apple-darwin" ]]; then
   for executable in codex codex-responses-api-proxy; do
     if ! codesign --verify --strict "$staged/$executable"; then
@@ -306,21 +683,46 @@ if [[ "$staged_version_output" != *"$release_version"* ]]; then
   printf 'error: staged codex --version did not report %s: %s\n' "$release_version" "$staged_version_output" >&2
   exit 1
 fi
+"$staged/codex" --help >/dev/null
+"$staged/codex" exec --help >/dev/null
+"$staged/codex" app-server --help >/dev/null
+"$staged/codex-responses-api-proxy" --help >/dev/null
 
-release_dir="${install_root}/releases/${release_tag}"
+release_dir_name="${release_tag}"
+if [[ "$target" != "x86_64-unknown-linux-gnu" ]]; then
+  release_dir_name="${release_tag}-${target}"
+fi
+release_dir="${install_root}/releases/${release_dir_name}"
 if [[ -d "$release_dir" ]]; then
-  python3 - "$release_dir/RELEASE-METADATA.json" "$release_tag" <<'PY'
+  python3 - "$release_dir/RELEASE-METADATA.json" "$release_tag" "$target" <<'PY'
 import json
 import sys
 
-metadata_path, expected_tag = sys.argv[1:3]
+metadata_path, expected_tag, expected_target = sys.argv[1:4]
 metadata = json.loads(open(metadata_path, encoding="utf-8").read())
 if metadata.get("release_tag") != expected_tag:
     raise SystemExit(f"error: existing release metadata tag does not match {expected_tag}")
+actual_target = metadata.get("target")
+if actual_target not in (None, expected_target):
+    raise SystemExit(
+        f"error: existing release metadata target {actual_target!r} does not match {expected_target}"
+    )
+if actual_target is None and expected_target != "x86_64-unknown-linux-gnu":
+    raise SystemExit("error: non-x86 release metadata must include its target")
 PY
   for executable in codex codex-responses-api-proxy; do
     if [[ ! -x "$release_dir/$executable" ]]; then
       echo "error: existing release is missing required executable: $executable" >&2
+      exit 1
+    fi
+  done
+  for verified_file in codex codex-responses-api-proxy RELEASE-METADATA.json SHA256SUMS.txt; do
+    if [[ ! -f "$release_dir/$verified_file" ]]; then
+      echo "error: existing release is missing verified file: $verified_file" >&2
+      exit 1
+    fi
+    if ! cmp -s "$staged/$verified_file" "$release_dir/$verified_file"; then
+      echo "error: existing release file does not match verified payload: $verified_file" >&2
       exit 1
     fi
   done
@@ -334,7 +736,7 @@ fi
 
 mkdir -p "${install_root}/releases" "$bin_dir"
 if [[ ! -d "$release_dir" ]]; then
-  tmp_release="${install_root}/releases/.${release_tag}.tmp.$$"
+  tmp_release="${install_root}/releases/.${release_dir_name}.tmp.$$"
   rm -rf "$tmp_release"
   mkdir "$tmp_release"
   cp -p "$staged/codex" "$tmp_release/codex"

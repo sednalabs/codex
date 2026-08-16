@@ -1909,18 +1909,44 @@ decisions.
   source is available only when those values remain `openai/codex` and
   `rust-v`; custom downstream origins always resolve and download through their
   configured GitHub repository.
-- The manual branch-build workflow keeps Linux `x86_64` as its default and
-  offers an explicit macOS preview mode. That mode builds one Intel x64
+- The manual branch-build workflow keeps Linux `x86_64` as its default, adds an explicit native
+  Linux Arm64 preview mode, and offers an explicit macOS preview mode. The macOS mode builds one Intel x64
   artifact, applies ad hoc signatures for local execution, records that the
   artifact is not notarized, and reuses Cargo-home and compiler-cache entries
   without changing the release optimization profile. It remains a disposable
-  preview and does not publish a GitHub Release. The official release contract
-  independently supports native Linux x64 and Intel macOS x64 archives with
-  target-bound metadata, checksums, and native-runner verification; Apple
-  Silicon remains unsupported.
+  preview and does not publish a GitHub Release. Linux branch and validation-artifact builders
+  isolate workflow-owned helper/cache paths from source provenance, require a clean checkout before
+  Cargo starts, defer repository-root `dist/` creation until after compilation, and reject a staged
+  binary whose displayed git provenance contains `-dirty`. The
+  official release contract independently
+  supports native Linux x64, Linux Arm64, and Intel macOS x64 archives with target-bound metadata,
+  checksums, and native-runner verification. Linux assets also carry keyless Sigstore bundles,
+  SPDX SBOMs, and GitHub build-provenance attestations; Apple Silicon remains unsupported.
+- Preview and release Cargo dependency/compiler caches use separate authority namespaces and
+  exclude executable Cargo tool paths. Current x86 and all Arm64 installs default to exact-source
+  hardened verification, using checksum-pinned temporary verifier tools and downloaded local
+  provenance bundles without updater-host GitHub authentication when compatible host tools are
+  absent; current x86 callers cannot select only one trust layer. Immutable pre-cutoff x86-only releases without modern assets automatically preserve
+  stale updater compatibility; the explicit historical-x86 escape hatch cannot downgrade current
+  releases. A previously present release directory is activated only when it matches the freshly
+  verified binaries, metadata, and checksum manifest byte-for-byte.
+- Preserve the dual-native Linux matrix, target-isolated names and caches, exact-source
+  hosted-runner trust checks, mandatory Arm64 hardening, historical x86 compatibility, protected-main
+  marker/manual publication, and release tags as outputs rather than workflow authority as one
+  release contract during upstream syncs. Drop or narrow
+  it only when upstream provides an equivalent downstream-origin and dual-architecture release
+  contract.
 - Primary files:
+  - `.github/workflows/_sedna-linux-rust.yml`
+  - `.github/workflows/sedna-release.yml`
+  - `.github/workflows/sedna-release-install.yml`
   - `.github/workflows/sedna-branch-build.yml`
+  - `.github/workflows/_validation-lane-release.yml`
+  - `.github/scripts/isolate_workflow_paths_from_provenance.sh`
+  - `.github/scripts/validation-lanes/artifact-build.sh`
   - `.github/scripts/test_ci_planners.py`
+  - `codex-rs/app-server-daemon/src/update_loop.rs`
+  - `scripts/install_sedna_release_asset`
   - `codex-rs/utils/version/build.rs`
   - `codex-rs/utils/version/src/lib.rs`
   - `codex-rs/cli/src/main.rs`
