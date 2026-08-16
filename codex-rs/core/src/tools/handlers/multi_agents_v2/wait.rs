@@ -180,6 +180,8 @@ impl Handler {
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
+                    requested_model: None,
+                    requested_reasoning_effort: None,
                     agents_states: Default::default(),
                 }),
             )
@@ -462,6 +464,8 @@ async fn emit_wait_completion(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states,
             }),
         )

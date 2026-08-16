@@ -28,6 +28,7 @@ INITIAL_ROUTE_MAX_FILES = 12
 INITIAL_ROUTE_MAX_LINES = 400
 FOLLOWUP_ROUTE_MAX_FILES = 4
 FOLLOWUP_ROUTE_MAX_LINES = 80
+DEFAULT_FOLLOWUP_ROUTE_PRIORITY = 0
 
 RUST_BUNDLE_PATTERNS = [
     "codex-rs/**/*.rs",
@@ -180,12 +181,26 @@ def classify_files(files: list[str]) -> dict[str, bool]:
     }
 
 
+def followup_route_priority(route: dict) -> int:
+    """Return a validated route priority, defaulting safely for existing routes."""
+    priority = route.get("priority", DEFAULT_FOLLOWUP_ROUTE_PRIORITY)
+    if isinstance(priority, bool) or not isinstance(priority, int) or priority < 0:
+        route_id = str(route.get("route_id") or "<unknown>")
+        raise SystemExit(
+            f"follow-up route {route_id} must set priority to a non-negative integer"
+        )
+    return priority
+
+
 def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
+    routes_with_priority = [
+        (route, followup_route_priority(route)) for route in routes
+    ]
     if not files:
         return []
 
-    matching_routes = []
-    for route in routes:
+    matching_routes: list[tuple[dict, int]] = []
+    for route, priority in routes_with_priority:
         allowed_paths = route.get("allowed_paths", [])
         required_any_paths = route.get("required_any_paths", [])
         if not allowed_paths:
@@ -196,11 +211,20 @@ def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
             any(path_matches(path, pattern) for pattern in required_any_paths) for path in files
         ):
             continue
-        matching_routes.append(route)
+        matching_routes.append((route, priority))
 
-    if len(matching_routes) != 1:
+    if not matching_routes:
         return []
-    return matching_routes[0].get("lane_ids", [])
+
+    highest_priority = max(priority for _, priority in matching_routes)
+    highest_priority_routes = [
+        route
+        for route, priority in matching_routes
+        if priority == highest_priority
+    ]
+    if len(highest_priority_routes) != 1:
+        return []
+    return list(highest_priority_routes[0].get("lane_ids", []))
 
 
 def route_lanes_are_light_workflow_only(lane_ids: list[str], catalog: dict) -> bool:

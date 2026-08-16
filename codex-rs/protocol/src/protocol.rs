@@ -4378,6 +4378,34 @@ pub struct CollabAgentSpawnBeginEvent {
     pub prompt: String,
     pub model: String,
     pub reasoning_effort: ReasoningEffortConfig,
+    /// Whether the required legacy `reasoning_effort` field represents an explicit canonical
+    /// request. Current records send this marker, including `false`, so a default compatibility
+    /// value cannot discard an explicit `Medium`. `None` is reserved for historic payloads that
+    /// predate the marker, including pre-additive canonical records materialized to legacy form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub requested_reasoning_effort_present: Option<bool>,
+}
+
+impl CollabAgentSpawnBeginEvent {
+    /// Restores optional requested identity from the required legacy wire fields.
+    ///
+    /// Current canonical records populate `requested_reasoning_effort_present`, including
+    /// `false`, so the required legacy field can retain its default-value compatibility shape
+    /// without losing an explicit `Medium`. Historic payloads, including pre-additive canonical
+    /// records materialized to legacy form, omit the marker and keep the prior inference: only a
+    /// nondefault effort can be restored. Therefore markerless historic `Medium` remains
+    /// irreducibly ambiguous and is treated as absent.
+    pub fn canonical_requested_identity(&self) -> (Option<String>, Option<ReasoningEffortConfig>) {
+        let model = (!self.model.is_empty()).then(|| self.model.clone());
+        let reasoning_effort = match self.requested_reasoning_effort_present {
+            Some(true) => Some(self.reasoning_effort.clone()),
+            Some(false) => None,
+            None => (self.reasoning_effort != ReasoningEffortConfig::default())
+                .then(|| self.reasoning_effort.clone()),
+        };
+        (model, reasoning_effort)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -4429,8 +4457,35 @@ pub struct CollabAgentSpawnEndEvent {
     pub model: String,
     /// Effective reasoning effort used by the spawned agent after inheritance and role overrides.
     pub reasoning_effort: ReasoningEffortConfig,
+    /// Whether the required legacy `reasoning_effort` field represents an observed canonical
+    /// effective effort. Current producers always send this marker, including `false`, so a
+    /// default compatibility value cannot fabricate `Medium`. `None` is reserved for historic
+    /// payloads that predate the marker and retain their established inference rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub effective_reasoning_effort_present: Option<bool>,
     /// Last known status of the new agent reported to the sender agent.
     pub status: AgentStatus,
+}
+
+impl CollabAgentSpawnEndEvent {
+    /// Restores optional effective identity from the required legacy terminal fields.
+    ///
+    /// Current producers populate `effective_reasoning_effort_present`, including `false`, so
+    /// the required legacy field can retain its default-value compatibility shape without
+    /// fabricating `Medium`. Historic payloads omit the marker and keep the prior inference:
+    /// a nonempty model or a nondefault effort establishes an effective effort, while the empty
+    /// model/default-effort pair remains unknown.
+    pub fn canonical_effective_identity(&self) -> (Option<String>, Option<ReasoningEffortConfig>) {
+        let model = (!self.model.is_empty()).then(|| self.model.clone());
+        let reasoning_effort = match self.effective_reasoning_effort_present {
+            Some(true) => Some(self.reasoning_effort.clone()),
+            Some(false) => None,
+            None => (model.is_some() || self.reasoning_effort != ReasoningEffortConfig::default())
+                .then(|| self.reasoning_effort.clone()),
+        };
+        (model, reasoning_effort)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
@@ -4614,6 +4669,9 @@ pub struct CollabResumeEndEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::items::CollabAgentTool;
+    use crate::items::CollabAgentToolCallItem;
+    use crate::items::CollabAgentToolCallStatus;
     use crate::items::CommandExecutionItem;
     use crate::items::CommandExecutionStatus;
     use crate::items::DynamicToolCallItem;
@@ -5776,6 +5834,250 @@ mod tests {
                 ..
             })] if call_id == "dynamic-1" && turn_id == "turn-1"
         ));
+    }
+
+    #[test]
+    fn collab_spawn_lifecycle_keeps_requested_and_effective_identity_distinct() {
+        let thread_id = ThreadId::new();
+        let started = ItemStartedEvent {
+            thread_id,
+            turn_id: "turn-1".into(),
+            started_at_ms: 10,
+            item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: "spawn-1".into(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: thread_id,
+                receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
+                prompt: Some("inspect".into()),
+                model: None,
+                reasoning_effort: None,
+                requested_model: Some("gpt-requested".into()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+                agents_states: Default::default(),
+            }),
+        };
+        let completed = ItemCompletedEvent {
+            thread_id,
+            turn_id: "turn-1".into(),
+            completed_at_ms: 20,
+            item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: "spawn-1".into(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: thread_id,
+                receiver_thread_ids: vec![ThreadId::new()],
+                receiver_agents: Vec::new(),
+                prompt: Some("inspect".into()),
+                model: Some("gpt-effective".into()),
+                reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: Default::default(),
+            }),
+        };
+
+        assert!(matches!(
+            started.as_legacy_events(/*show_raw_agent_reasoning*/ false).as_slice(),
+            [EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+                model,
+                reasoning_effort: ReasoningEffortConfig::High,
+                requested_reasoning_effort_present: Some(true),
+                ..
+            })] if model == "gpt-requested"
+        ));
+        assert!(matches!(
+            completed
+                .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+                .as_slice(),
+            [EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+                model,
+                reasoning_effort: ReasoningEffortConfig::Medium,
+                effective_reasoning_effort_present: Some(true),
+                ..
+            })] if model == "gpt-effective"
+        ));
+
+        let legacy_completed = completed
+            .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+            .into_iter()
+            .next()
+            .expect("completed spawn emits one legacy terminal event");
+        let serialized = serde_json::to_value(&legacy_completed)
+            .expect("serialize current legacy terminal event");
+        assert_eq!(
+            serialized["effective_reasoning_effort_present"],
+            json!(true)
+        );
+        let legacy_completed: EventMsg =
+            serde_json::from_value(serialized).expect("deserialize current legacy terminal event");
+        assert!(matches!(
+            legacy_completed,
+            EventMsg::CollabAgentSpawnEnd(event)
+                if event.canonical_effective_identity()
+                    == (
+                        Some("gpt-effective".to_string()),
+                        Some(ReasoningEffortConfig::Medium),
+                    )
+        ));
+
+        let historic_started = ItemStartedEvent {
+            thread_id,
+            turn_id: "turn-1".into(),
+            started_at_ms: 30,
+            item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: "historic-spawn-1".into(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: thread_id,
+                receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
+                prompt: None,
+                model: Some("gpt-historic-request".into()),
+                reasoning_effort: Some(ReasoningEffortConfig::Low),
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: Default::default(),
+            }),
+        };
+        let historic_legacy_started = historic_started
+            .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+            .into_iter()
+            .next()
+            .expect("pre-additive spawn start emits one legacy event");
+        assert!(matches!(
+            &historic_legacy_started,
+            EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+                model,
+                reasoning_effort: ReasoningEffortConfig::Low,
+                requested_reasoning_effort_present: None,
+                ..
+            }) if model == "gpt-historic-request"
+        ));
+        let serialized = serde_json::to_value(&historic_legacy_started)
+            .expect("serialize pre-additive legacy spawn start");
+        assert!(
+            serialized
+                .get("requested_reasoning_effort_present")
+                .is_none()
+        );
+        let EventMsg::CollabAgentSpawnBegin(replayed) = serde_json::from_value(serialized)
+            .expect("deserialize pre-additive legacy spawn start")
+        else {
+            panic!("pre-additive legacy spawn start must deserialize as a spawn begin");
+        };
+        assert_eq!(
+            replayed.canonical_requested_identity(),
+            (
+                Some("gpt-historic-request".to_string()),
+                Some(ReasoningEffortConfig::Low),
+            )
+        );
+    }
+
+    #[test]
+    fn collab_spawn_begin_presence_marker_preserves_explicit_medium_request() {
+        let thread_id = ThreadId::new();
+        let current_explicit_medium = ItemStartedEvent {
+            thread_id,
+            turn_id: "turn-1".into(),
+            started_at_ms: 10,
+            item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: "spawn-explicit-medium".into(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: thread_id,
+                receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                agents_states: Default::default(),
+            }),
+        };
+        let current_omitted = ItemStartedEvent {
+            thread_id,
+            turn_id: "turn-1".into(),
+            started_at_ms: 20,
+            item: TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: "spawn-omitted".into(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: thread_id,
+                receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: Default::default(),
+            }),
+        };
+
+        let explicit_medium = current_explicit_medium
+            .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+            .into_iter()
+            .next()
+            .expect("current explicit request emits a legacy begin event");
+        let serialized_explicit = serde_json::to_value(&explicit_medium)
+            .expect("serialize current explicit legacy begin event");
+        assert_eq!(
+            serialized_explicit["requested_reasoning_effort_present"],
+            json!(true)
+        );
+        let explicit_medium: EventMsg = serde_json::from_value(serialized_explicit)
+            .expect("deserialize current explicit legacy begin event");
+        assert!(matches!(
+            explicit_medium,
+            EventMsg::CollabAgentSpawnBegin(event)
+                if event.canonical_requested_identity()
+                    == (None, Some(ReasoningEffortConfig::Medium))
+        ));
+
+        let omitted = current_omitted
+            .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+            .into_iter()
+            .next()
+            .expect("current omitted request emits a legacy begin event");
+        let serialized_omitted =
+            serde_json::to_value(&omitted).expect("serialize current omitted legacy begin event");
+        assert_eq!(
+            serialized_omitted["requested_reasoning_effort_present"],
+            json!(false)
+        );
+        let omitted: EventMsg = serde_json::from_value(serialized_omitted)
+            .expect("deserialize current omitted legacy begin event");
+        assert!(matches!(
+            omitted,
+            EventMsg::CollabAgentSpawnBegin(event)
+                if event.canonical_requested_identity() == (None, None)
+        ));
+
+        let historic_markerless_medium = CollabAgentSpawnBeginEvent {
+            call_id: "historic-medium".into(),
+            started_at_ms: 30,
+            sender_thread_id: thread_id,
+            prompt: String::new(),
+            model: String::new(),
+            reasoning_effort: ReasoningEffortConfig::Medium,
+            requested_reasoning_effort_present: None,
+        };
+        let serialized_historic = serde_json::to_value(&historic_markerless_medium)
+            .expect("serialize historic markerless begin event");
+        assert!(
+            serialized_historic
+                .get("requested_reasoning_effort_present")
+                .is_none()
+        );
+        assert_eq!(
+            historic_markerless_medium.canonical_requested_identity(),
+            (None, None),
+            "markerless historic Medium remains ambiguous and uses the established inference"
+        );
     }
 
     #[test]

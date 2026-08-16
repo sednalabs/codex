@@ -36,6 +36,7 @@ RUST_BATCH_FORCE_MIN_LANES = 2
 RUST_BATCH_MAX_LANES = 2
 RUST_BATCH_TARGET_WEIGHT_SECONDS = 720
 DEFAULT_RUST_BATCH_WEIGHT_SECONDS = 360
+DEFAULT_FOLLOWUP_ROUTE_PRIORITY = 0
 LAB_MATRIX_JOB_LIMIT = 256
 VALID_LAB_FANOUT_TIERS = {"balanced", "enterprise", "soak"}
 SAFE_NEXTEST_ARCHIVE_FIELD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -280,8 +281,15 @@ def normalize_catalog(catalog: dict) -> dict:
                 else "depth"
             )
 
+    normalized_routes: list[dict] = []
+    for original in catalog.get("followup_routes", []):
+        route = dict(original)
+        route.setdefault("priority", DEFAULT_FOLLOWUP_ROUTE_PRIORITY)
+        normalized_routes.append(route)
+
     normalized = dict(catalog)
     normalized["lanes"] = normalized_lanes
+    normalized["followup_routes"] = normalized_routes
     return normalized
 
 
@@ -356,6 +364,14 @@ def validate_catalog(catalog: dict, *, repo_root: Path | None = None) -> None:
         validate_nextest_archive_config(lane, repo_root=repo_root)
         resolve_checkout_fetch_depth(lane)
         resolve_timeout_minutes(lane)
+
+    for route in catalog.get("followup_routes", []):
+        if not isinstance(route, dict):
+            raise SystemExit("validation catalog follow-up routes must be objects")
+        route_id = route.get("route_id")
+        if not isinstance(route_id, str) or not route_id:
+            raise SystemExit("validation catalog follow-up routes must set route_id")
+        followup_route_priority(route)
 
 
 def validate_safe_nextest_archive_field(lane_id: str, field_name: str, value: object) -> str:
@@ -519,12 +535,26 @@ def path_matches(path: str, pattern: str) -> bool:
     return fnmatch.fnmatch(path, pattern)
 
 
+def followup_route_priority(route: dict) -> int:
+    """Return a validated route priority, defaulting safely for existing routes."""
+    priority = route.get("priority", DEFAULT_FOLLOWUP_ROUTE_PRIORITY)
+    if isinstance(priority, bool) or not isinstance(priority, int) or priority < 0:
+        route_id = str(route.get("route_id") or "<unknown>")
+        raise SystemExit(
+            f"follow-up route {route_id} must set priority to a non-negative integer"
+        )
+    return priority
+
+
 def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
+    routes_with_priority = [
+        (route, followup_route_priority(route)) for route in routes
+    ]
     if not files:
         return []
 
-    matching_routes: list[dict] = []
-    for route in routes:
+    matching_routes: list[tuple[dict, int]] = []
+    for route, priority in routes_with_priority:
         allowed_paths = route.get("allowed_paths", [])
         required_any_paths = route.get("required_any_paths", [])
         if not allowed_paths:
@@ -535,11 +565,20 @@ def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
             any(path_matches(path, pattern) for pattern in required_any_paths) for path in files
         ):
             continue
-        matching_routes.append(route)
+        matching_routes.append((route, priority))
 
-    if len(matching_routes) != 1:
+    if not matching_routes:
         return []
-    return list(matching_routes[0].get("lane_ids", []))
+
+    highest_priority = max(priority for _, priority in matching_routes)
+    highest_priority_routes = [
+        route
+        for route, priority in matching_routes
+        if priority == highest_priority
+    ]
+    if len(highest_priority_routes) != 1:
+        return []
+    return list(highest_priority_routes[0].get("lane_ids", []))
 
 
 def parse_changed_files(raw: str) -> list[str]:

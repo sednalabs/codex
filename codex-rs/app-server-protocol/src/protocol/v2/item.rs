@@ -47,14 +47,49 @@ use codex_shell_command::parse_command::shlex_join;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use schemars::JsonSchema;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_with::serde_as;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use ts_rs::TS;
+
+struct RequiredNullableStringSchema;
+
+impl JsonSchema for RequiredNullableStringSchema {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "RequiredNullableString".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        Option::<String>::json_schema(generator)
+    }
+}
+
+struct RequiredNullableReasoningEffortSchema;
+
+impl JsonSchema for RequiredNullableReasoningEffortSchema {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "RequiredNullableReasoningEffort".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        Option::<ReasoningEffort>::json_schema(generator)
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -375,10 +410,38 @@ pub enum ThreadItem {
         receiver_thread_ids: Vec<String>,
         /// Prompt text sent as part of the collab tool call, when available.
         prompt: Option<String>,
-        /// Model requested for the spawned agent, when applicable.
+        /// Established model alias for a spawned-agent lifecycle item.
+        ///
+        /// On spawn start, this is the caller-requested model. On a terminal spawn item, this is the observed effective model. An unknown terminal effective model is null.
         model: Option<String>,
-        /// Reasoning effort requested for the spawned agent, when applicable.
+        /// Established reasoning-effort alias for a spawned-agent lifecycle item.
+        ///
+        /// On spawn start, this is the caller-requested effort. On a terminal spawn item, this is the observed effective effort. An unknown terminal effective effort is null.
         reasoning_effort: Option<ReasoningEffort>,
+        /// Additive explicit provenance for the requested model.
+        ///
+        /// This remains available on terminal spawn items even though the legacy `model` alias then represents the observed effective model. This required nullable field is null when request provenance is unavailable.
+        #[serde(default)]
+        #[schemars(with = "RequiredNullableStringSchema", !default)]
+        requested_model: Option<String>,
+        /// Additive explicit provenance for the requested reasoning effort.
+        ///
+        /// This remains available on terminal spawn items even though the legacy `reasoningEffort` alias then represents the observed effective effort. This required nullable field is null when request provenance is unavailable.
+        #[serde(default)]
+        #[schemars(with = "RequiredNullableReasoningEffortSchema", !default)]
+        requested_reasoning_effort: Option<ReasoningEffort>,
+        /// Effective model observed for a spawned agent at terminal lifecycle time.
+        ///
+        /// This required nullable field is null when unknown and must not be filled from thread metadata or a request.
+        #[serde(default)]
+        #[schemars(with = "RequiredNullableStringSchema", !default)]
+        effective_model: Option<String>,
+        /// Effective reasoning effort observed for a spawned agent at terminal lifecycle time.
+        ///
+        /// This required nullable field is null when unknown and must not be filled from thread metadata or a request.
+        #[serde(default)]
+        #[schemars(with = "RequiredNullableReasoningEffortSchema", !default)]
+        effective_reasoning_effort: Option<ReasoningEffort>,
         /// Last known status of the target agents, when available.
         agents_states: HashMap<String, CollabAgentState>,
     },
@@ -953,25 +1016,99 @@ impl From<CoreTurnItem> for ThreadItem {
                     .duration
                     .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
             },
-            CoreTurnItem::CollabAgentToolCall(call) => ThreadItem::CollabAgentToolCall {
-                id: call.id,
-                tool: call.tool.into(),
-                status: call.status.into(),
-                sender_thread_id: call.sender_thread_id.to_string(),
-                receiver_thread_ids: call
-                    .receiver_thread_ids
-                    .into_iter()
-                    .map(String::from)
-                    .collect(),
-                prompt: call.prompt,
-                model: call.model,
-                reasoning_effort: call.reasoning_effort,
-                agents_states: call
-                    .agents_states
-                    .into_iter()
-                    .map(|(thread_id, status)| (thread_id.to_string(), status.into()))
-                    .collect(),
-            },
+            CoreTurnItem::CollabAgentToolCall(call) => {
+                let is_spawn_start = matches!(
+                    (&call.tool, &call.status),
+                    (
+                        CoreCollabAgentTool::SpawnAgent,
+                        CoreCollabAgentToolCallStatus::InProgress
+                    )
+                );
+                let is_terminal_spawn = matches!(
+                    (&call.tool, &call.status),
+                    (
+                        CoreCollabAgentTool::SpawnAgent,
+                        CoreCollabAgentToolCallStatus::Completed
+                            | CoreCollabAgentToolCallStatus::Failed
+                    )
+                );
+                let (
+                    model,
+                    reasoning_effort,
+                    requested_model,
+                    requested_reasoning_effort,
+                    effective_model,
+                    effective_reasoning_effort,
+                ) = if is_spawn_start {
+                    // Pre-additive canonical start records wrote their requested identity
+                    // directly to model/reasoning_effort. Preserve that history without
+                    // ever treating it as an observed terminal selection.
+                    // V1's required legacy fields use an empty model and the default Medium
+                    // effort as field-wise omitted-request sentinels. They are transport
+                    // artifacts, not canonical requested identity. A markerless historic
+                    // Medium remains irreducibly ambiguous and follows the same absent
+                    // inference as CollabAgentSpawnBeginEvent.
+                    let requested_model = call
+                        .requested_model
+                        .or_else(|| call.model.filter(|model| !model.is_empty()));
+                    let requested_reasoning_effort =
+                        call.requested_reasoning_effort.or_else(|| {
+                            call.reasoning_effort
+                                .filter(|effort| effort != &ReasoningEffort::Medium)
+                        });
+                    (
+                        requested_model.clone(),
+                        requested_reasoning_effort.clone(),
+                        requested_model,
+                        requested_reasoning_effort,
+                        None,
+                        None,
+                    )
+                } else if is_terminal_spawn {
+                    // Canonical terminal records retain the observed snapshot in the
+                    // historic core pair. Preserve that established terminal wire
+                    // meaning in the app-server legacy pair, while requested* keeps
+                    // the additive request provenance. Historic terminal records
+                    // without requested* must not fabricate it.
+                    let requested_model = call.requested_model;
+                    let requested_reasoning_effort = call.requested_reasoning_effort;
+                    let effective_model = call.model;
+                    let effective_reasoning_effort = call.reasoning_effort;
+                    (
+                        effective_model.clone(),
+                        effective_reasoning_effort.clone(),
+                        requested_model,
+                        requested_reasoning_effort,
+                        effective_model,
+                        effective_reasoning_effort,
+                    )
+                } else {
+                    (call.model, call.reasoning_effort, None, None, None, None)
+                };
+                ThreadItem::CollabAgentToolCall {
+                    id: call.id,
+                    tool: call.tool.into(),
+                    status: call.status.into(),
+                    sender_thread_id: call.sender_thread_id.to_string(),
+                    receiver_thread_ids: call
+                        .receiver_thread_ids
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
+                    prompt: call.prompt,
+                    model,
+                    reasoning_effort,
+                    requested_model,
+                    requested_reasoning_effort,
+                    effective_model,
+                    effective_reasoning_effort,
+                    agents_states: call
+                        .agents_states
+                        .into_iter()
+                        .map(|(thread_id, status)| (thread_id.to_string(), status.into()))
+                        .collect(),
+                }
+            }
             CoreTurnItem::SubAgentActivity(activity) => ThreadItem::SubAgentActivity {
                 id: activity.id,
                 kind: activity.kind.into(),

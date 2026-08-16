@@ -27,6 +27,91 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Classify PR paths once for reusable workflows that do not have their own
+  # planner. Pushes and merge-queue attempts intentionally run the full scope.
+  # Any classifier failure also fails open to full validation rather than
+  # silently dropping a lane.
+  scope:
+    name: Blocking CI scope
+    runs-on: ubuntu-24.04
+    outputs:
+      cargo_deny: ${{ steps.scope.outputs.cargo_deny }}
+      repo_policy: ${{ steps.scope.outputs.repo_policy }}
+      repo_package: ${{ steps.scope.outputs.repo_package }}
+      repo_format: ${{ steps.scope.outputs.repo_format }}
+      repo_readme: ${{ steps.scope.outputs.repo_readme }}
+      sdk_python: ${{ steps.scope.outputs.sdk_python }}
+      sdk_typescript: ${{ steps.scope.outputs.sdk_typescript }}
+    steps:
+      - name: Checkout PR head for path classification
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Classify blocking CI scope
+        id: scope
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          set_full_scope() {
+            {
+              echo "cargo_deny=true"
+              echo "repo_policy=true"
+              echo "repo_package=true"
+              echo "repo_format=true"
+              echo "repo_readme=true"
+              echo "sdk_python=true"
+              echo "sdk_typescript=true"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          if [[ '${{ github.event_name }}' != 'pull_request' ]]; then
+            set_full_scope
+            exit 0
+          fi
+
+          if ! git fetch --no-tags --depth=1 origin "${BASE_SHA}"; then
+            echo "::warning title=CI scope classification::Unable to fetch PR base; running full blocking CI."
+            set_full_scope
+            exit 0
+          fi
+
+          if ! python3 .github/scripts/test_classify_ci_paths.py; then
+            echo "::warning title=CI scope classification::Classifier self-tests failed; running full blocking CI."
+            set_full_scope
+            exit 0
+          fi
+
+          if ! plan="$(python3 .github/scripts/classify_ci_paths.py --base-sha "${BASE_SHA}" --head-sha "${HEAD_SHA}")"; then
+            echo "::warning title=CI scope classification::Unable to classify PR paths; running full blocking CI."
+            set_full_scope
+            exit 0
+          fi
+
+          PLAN_JSON="${plan}" python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          plan = json.loads(os.environ["PLAN_JSON"])
+          for key in (
+              "cargo_deny",
+              "repo_policy",
+              "repo_package",
+              "repo_format",
+              "repo_readme",
+              "sdk_python",
+              "sdk_typescript",
+          ):
+              print(f"{key}={'true' if plan[key] else 'false'}")
+          PY
+
   # Keep reusable workflow calls alphabetized. The `required` job below is the
   # version-controlled list that the main-branch ruleset should require.
   bazel:
@@ -41,7 +126,10 @@ jobs:
 
   cargo-deny:
     name: cargo-deny
+    needs: scope
     uses: ./.github/workflows/cargo-deny.yml
+    with:
+      run_cargo_deny: ${{ needs.scope.outputs.cargo_deny == 'true' }}
     secrets: inherit
 
   codespell:
@@ -51,7 +139,13 @@ jobs:
 
   repo-checks:
     name: repo-checks
+    needs: scope
     uses: ./.github/workflows/repo-checks.yml
+    with:
+      run_policy: ${{ needs.scope.outputs.repo_policy == 'true' }}
+      run_package: ${{ needs.scope.outputs.repo_package == 'true' }}
+      run_format: ${{ needs.scope.outputs.repo_format == 'true' }}
+      run_readme: ${{ needs.scope.outputs.repo_readme == 'true' }}
     secrets: inherit
 
   rust-ci:
@@ -61,7 +155,11 @@ jobs:
 
   sdk:
     name: sdk
+    needs: scope
     uses: ./.github/workflows/sdk.yml
+    with:
+      run_python: ${{ needs.scope.outputs.sdk_python == 'true' }}
+      run_typescript: ${{ needs.scope.outputs.sdk_typescript == 'true' }}
     secrets: inherit
 
   required:
@@ -77,6 +175,7 @@ jobs:
       - repo-checks
       - rust-ci
       - sdk
+      - scope
     runs-on: ubuntu-24.04
     steps:
       # Keep the helper on the same revision as the caller and child workflows.

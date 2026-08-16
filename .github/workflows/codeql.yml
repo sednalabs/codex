@@ -30,8 +30,118 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  plan:
+    name: CodeQL language planner
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      run_analysis: ${{ steps.plan.outputs.run_analysis }}
+      selected_languages: ${{ steps.plan.outputs.selected_languages }}
+    steps:
+      - name: Checkout PR head for path classification
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Select CodeQL languages
+        id: plan
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          emit_matrix() {
+            local languages_json="$1"
+            LANGUAGES_JSON="${languages_json}" python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          languages = json.loads(os.environ["LANGUAGES_JSON"])
+          configs = {
+              "actions": ("none", "./.codeql-runtime/codeql-actions.yml"),
+              "c-cpp": ("none", "./.github/codeql/codeql-config.yml"),
+              "javascript-typescript": ("none", "./.github/codeql/codeql-config.yml"),
+              "python": ("none", "./.github/codeql/codeql-config.yml"),
+              "rust": ("none", "./.github/codeql/codeql-rust.yml"),
+          }
+          include = [
+              {
+                  "language": language,
+                  "build-mode": configs[language][0],
+                  "config_file": configs[language][1],
+              }
+              for language in languages
+          ]
+          if not include:
+              # Keep the matrix structurally non-empty even though the analyze
+              # job is disabled by run_analysis. This avoids empty-matrix edge
+              # cases in GitHub's job expansion.
+              include.append(
+                  {
+                      "language": "not-applicable",
+                      "build-mode": "none",
+                      "config_file": "./.github/codeql/codeql-config.yml",
+                  }
+              )
+          matrix = {"include": include}
+          print(f"matrix={json.dumps(matrix, separators=(',', ':'))}")
+          print(f"run_analysis={'true' if languages else 'false'}")
+          print(f"selected_languages={','.join(languages) if languages else 'none'}")
+          PY
+          }
+
+          full_languages='["actions","c-cpp","javascript-typescript","python","rust"]'
+
+          # Scheduled scans, pushes, merge-queue attempts, and manual runs keep
+          # full repository coverage. Only PRs are path scoped.
+          if [[ '${{ github.event_name }}' != 'pull_request' ]]; then
+            emit_matrix "${full_languages}"
+            exit 0
+          fi
+
+          if ! git fetch --no-tags --depth=1 origin "${BASE_SHA}"; then
+            echo "::warning title=CodeQL path classification::Unable to fetch PR base; running every CodeQL language."
+            emit_matrix "${full_languages}"
+            exit 0
+          fi
+
+          if ! scope="$(python3 .github/scripts/classify_ci_paths.py --base-sha "${BASE_SHA}" --head-sha "${HEAD_SHA}")"; then
+            echo "::warning title=CodeQL path classification::Unable to classify PR paths; running every CodeQL language."
+            emit_matrix "${full_languages}"
+            exit 0
+          fi
+
+          languages="$(SCOPE_JSON="${scope}" python3 - <<'PY'
+          import json
+          import os
+          print(json.dumps(json.loads(os.environ["SCOPE_JSON"])["codeql_languages"], separators=(",", ":")))
+          PY
+          )"
+          emit_matrix "${languages}"
+
+      - name: Summarize CodeQL scope
+        shell: bash
+        run: |
+          {
+            echo "### CodeQL scope"
+            echo "- event: \`${{ github.event_name }}\`"
+            echo "- selected languages: \`${{ steps.plan.outputs.selected_languages }}\`"
+            if [[ '${{ steps.plan.outputs.run_analysis }}' != 'true' ]]; then
+              echo "- analysis: skipped because this PR does not change a CodeQL-scanned language surface"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   analyze:
     name: Analyze (${{ matrix.language }})
+    needs: plan
+    if: ${{ needs.plan.outputs.run_analysis == 'true' }}
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -40,23 +150,7 @@ jobs:
       security-events: write
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - language: actions
-            build-mode: none
-            config_file: ./.codeql-runtime/codeql-actions.yml
-          - language: c-cpp
-            build-mode: none
-            config_file: ./.github/codeql/codeql-config.yml
-          - language: javascript-typescript
-            build-mode: none
-            config_file: ./.github/codeql/codeql-config.yml
-          - language: python
-            build-mode: none
-            config_file: ./.github/codeql/codeql-config.yml
-          - language: rust
-            build-mode: none
-            config_file: ./.github/codeql/codeql-rust.yml
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -208,6 +302,7 @@ jobs:
   results:
     name: CodeQL required gate
     needs:
+      - plan
       - analyze
     if: always()
     runs-on: ubuntu-24.04
@@ -224,18 +319,36 @@ jobs:
           echo "### CodeQL timing" >> "$GITHUB_STEP_SUMMARY"
           gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
             --jq '.jobs[]
-              | select(.name | test("^(Analyze \\(|CodeQL required gate)"))
+              | select(.name | test("^(CodeQL language planner|Analyze \\(|CodeQL required gate)"))
               | "- \(.name): \(.status)/\(.conclusion // "") started=\(.started_at) completed=\(.completed_at // "")"' \
             >> "$GITHUB_STEP_SUMMARY"
 
       - name: Summarize
         shell: bash
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          ANALYZE_RESULT: ${{ needs.analyze.result }}
+          RUN_ANALYSIS: ${{ needs.plan.outputs.run_analysis }}
         run: |
           set -euo pipefail
 
-          echo "analyze : ${{ needs.analyze.result }}"
+          echo "plan    : ${PLAN_RESULT}"
+          echo "analyze : ${ANALYZE_RESULT}"
 
-          if [[ '${{ needs.analyze.result }}' != 'success' ]]; then
-            echo 'CodeQL analysis failed.'
+          [[ "${PLAN_RESULT}" == "success" ]] || {
+            echo 'CodeQL planner failed.' >&2
             exit 1
+          }
+
+          if [[ "${RUN_ANALYSIS}" == "true" ]]; then
+            [[ "${ANALYZE_RESULT}" == "success" ]] || {
+              echo 'Selected CodeQL analysis failed.' >&2
+              exit 1
+            }
+          else
+            [[ "${ANALYZE_RESULT}" == "skipped" ]] || {
+              echo "CodeQL analysis was not selected but concluded unexpectedly: ${ANALYZE_RESULT}" >&2
+              exit 1
+            }
+            echo 'No CodeQL language analysis was applicable to this PR.'
           fi

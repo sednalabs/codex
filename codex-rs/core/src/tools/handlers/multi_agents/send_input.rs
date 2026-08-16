@@ -79,6 +79,8 @@ impl Handler {
                     prompt: Some(prompt.clone()),
                     model: None,
                     reasoning_effort: None,
+                    requested_model: None,
+                    requested_reasoning_effort: None,
                     agents_states: Default::default(),
                 }),
             )
@@ -110,6 +112,8 @@ impl Handler {
                     prompt: Some(prompt),
                     model: None,
                     reasoning_effort: None,
+                    requested_model: None,
+                    requested_reasoning_effort: None,
                     agents_states: [(receiver_thread_id, status)].into_iter().collect(),
                 }),
             )
