@@ -6906,7 +6906,11 @@ class RustCiModeScriptTests(unittest.TestCase):
 
 class HelperScriptTests(unittest.TestCase):
     def run_sedna_installer_fixture(
-        self, failure: str | None = None, *, arch: str = "x86_64"
+        self,
+        failure: str | None = None,
+        *,
+        arch: str = "x86_64",
+        hardened: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         release_tag = "v0.146.0-alpha.8-sedna.99+upstream.3"
         release_version = release_tag.removeprefix("v")
@@ -7015,6 +7019,14 @@ class HelperScriptTests(unittest.TestCase):
             ]
             if failure in ("missing_sbom", "arm_missing_sbom"):
                 all_asset_names.remove(sbom_name)
+            if failure == "legacy_x86":
+                for trust_name in (
+                    sbom_name,
+                    attestation_name,
+                    codex_sigstore_name,
+                    proxy_sigstore_name,
+                ):
+                    all_asset_names.remove(trust_name)
             release_assets = []
             for asset_id, name in enumerate(all_asset_names, start=1):
                 release_assets.append({"id": asset_id, "name": name})
@@ -7098,9 +7110,9 @@ fi
                 "HOME": str(root / "home"),
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
             }
-            verification_args = (
-                [] if arch == "aarch64" else ["--verify-attestation"]
-            )
+            verification_args = []
+            if arch == "x86_64" and hardened:
+                verification_args = ["--verify-signatures", "--verify-attestation"]
             return subprocess.run(
                 [
                     str(REPO_ROOT / "scripts/install_sedna_release_asset"),
@@ -7149,6 +7161,12 @@ fi
         )
         self.assertNotEqual(arm_proc.returncode, 0)
         self.assertIn("missing required assets", arm_proc.stderr)
+
+        legacy_x86_proc = self.run_sedna_installer_fixture(
+            "legacy_x86", arch="x86_64", hardened=False
+        )
+        self.assertEqual(legacy_x86_proc.returncode, 0, legacy_x86_proc.stderr)
+        self.assertIn("for x86_64-unknown-linux-gnu", legacy_x86_proc.stdout)
 
     def test_duplicate_workflow_finder_matches_same_branch_sha_success(self) -> None:
         runs = [

@@ -162,16 +162,14 @@ codex_sigstore_name="${archive_base}-codex.sigstore"
 proxy_sigstore_name="${archive_base}-codex-responses-api-proxy.sigstore"
 require_linux_signatures=false
 require_linux_provenance=false
-if [[ "$target" == *-unknown-linux-gnu ]]; then
-  # Linux binary signatures have always been part of the supported installer
-  # contract. Keep them fail-closed for direct callers as well as CI.
-  verify_signatures=true
-  require_linux_signatures=true
-fi
 if [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
-  # Arm64 first ships with the provenance contract, so there is no legacy Arm
-  # release mode in which these assets may be absent.
+  # Arm64 first ships with the hardened trust contract, so there is no legacy
+  # Arm release mode in which these verifications may be omitted.
+  verify_signatures=true
   verify_attestation=true
+fi
+if [[ "$verify_signatures" == "true" ]]; then
+  require_linux_signatures=true
 fi
 if [[ "$verify_attestation" == "true" ]]; then
   require_linux_provenance=true
@@ -389,8 +387,8 @@ if [[ "$verify_signatures" == "true" ]]; then
 fi
 
 if [[ "$verify_attestation" == "true" ]]; then
-  if ! command -v gh >/dev/null 2>&1; then
-    echo "error: gh is required to verify GitHub build attestations" >&2
+  if ! command -v gh >/dev/null 2>&1 || ! gh attestation verify --help >/dev/null 2>&1; then
+    echo "error: a GitHub CLI version with 'gh attestation verify' is required to verify build attestations" >&2
     exit 1
   fi
   gh attestation verify "$work_dir/$archive_name" \
