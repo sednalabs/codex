@@ -7575,7 +7575,7 @@ fi
                 "else echo \"${FAKE_UNAME_ARCH}\"; fi\n",
                 encoding="utf-8",
             )
-            for name in ("codesign", "cosign", "gh", "lockf", "readelf"):
+            for name in ("codesign", "cosign", "gh", "readelf"):
                 helper = fake_bin / name
                 if failure == "legacy_x86" and name == "readelf":
                     helper.write_text(
@@ -7723,6 +7723,7 @@ fi
             predecessor_failures = {
                 "activation_backup_failure",
                 "activation_backup_collision",
+                "activation_backups_symlink",
                 "activation_initial_save_failure",
                 "activation_relative_current_rollback",
                 "activation_second_save_failure",
@@ -7768,6 +7769,10 @@ fi
             backups = (
                 root / "home" / ".codex" / "packages" / "standalone" / "backups"
             )
+            if failure == "activation_backups_symlink":
+                external_backups = root / "external-backups"
+                external_backups.mkdir()
+                backups.symlink_to(external_backups)
             test_faults = {
                 "activation_backup_failure": "raise:after-first-backup",
                 "activation_backup_collision": (
@@ -7814,6 +7819,7 @@ fi
             if failure in (
                 "stale_recovery_collision",
                 "stale_unmarked_predecessor",
+                "stale_saved_symlink",
             ):
                 stale = (
                     root
@@ -7823,15 +7829,25 @@ fi
                     / "standalone"
                     / ".activation.fixture"
                 )
-                (stale / "saved").mkdir(parents=True)
+                stale.mkdir(parents=True)
+                if failure == "stale_saved_symlink":
+                    external_saved = root / "external-saved"
+                    external_saved.mkdir()
+                    (external_saved / "codex").write_text(
+                        previous_visible["codex"], encoding="utf-8"
+                    )
+                    (stale / "saved").symlink_to(external_saved)
+                else:
+                    (stale / "saved").mkdir()
                 (stale / "candidate").mkdir()
-                if failure == "stale_recovery_collision":
+                if failure != "stale_unmarked_predecessor":
                     (stale / "TRANSACTION_FORMAT").write_text(
                         "atomic-predecessor-copy-v1\n", encoding="utf-8"
                     )
-                (stale / "saved" / "codex").write_text(
-                    previous_visible["codex"], encoding="utf-8"
-                )
+                if failure != "stale_saved_symlink":
+                    (stale / "saved" / "codex").write_text(
+                        previous_visible["codex"], encoding="utf-8"
+                    )
                 if failure == "stale_recovery_collision":
                     collision = backups / "codex.interrupted.fixture"
                     collision.mkdir(parents=True)
@@ -7932,6 +7948,7 @@ fi
             if failure in (
                 "activation_backup_failure",
                 "activation_backup_collision",
+                "activation_backups_symlink",
                 "activation_initial_save_failure",
                 "activation_second_save_failure",
             ):
@@ -7948,6 +7965,9 @@ fi
                 self.assertEqual(
                     list(current.parent.glob(".activation.*")), [], proc.stderr
                 )
+                if failure == "activation_backups_symlink":
+                    self.assertTrue(backups.is_symlink())
+                    self.assertEqual(list(external_backups.iterdir()), [])
             if failure == "activation_relative_current_rollback":
                 self.assertNotEqual(proc.returncode, 0)
                 self.assertEqual(os.readlink(current), "releases/previous")
@@ -8078,6 +8098,14 @@ fi
                     (stale / "saved" / "codex").read_text(encoding="utf-8"),
                     previous_visible["codex"],
                 )
+            if failure == "stale_saved_symlink":
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("unsafe stale custody directory", proc.stderr)
+                self.assertTrue((stale / "saved").is_symlink())
+                self.assertEqual(
+                    (external_saved / "codex").read_text(encoding="utf-8"),
+                    previous_visible["codex"],
+                )
             if verify_visible_links and proc.returncode == 0:
                 current_dir = (
                     root / "home" / ".codex" / "packages" / "standalone" / "current"
@@ -8142,6 +8170,7 @@ fi
                 "activation_initial_save_failure",
                 "activation_second_save_failure",
                 "activation_backup_collision",
+                "activation_backups_symlink",
                 "activation_backup_failure",
                 "activation_relative_current_rollback",
                 "activation_sigterm",
@@ -8210,6 +8239,10 @@ fi
         )
         self.run_sedna_installer_fixture(
             "stale_unmarked_predecessor",
+            dry_run=False,
+        )
+        self.run_sedna_installer_fixture(
+            "stale_saved_symlink",
             dry_run=False,
         )
 

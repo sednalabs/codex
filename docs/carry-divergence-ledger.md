@@ -1937,15 +1937,16 @@ decisions.
   interruption, activation, or previous-binary backup failure restores the predecessor pointer and
   entrypoints; an uncatchable process death never leaves a newly published dangling link, and a rerun
   completes any first-time links that were not yet published. A portable host-local activation lock uses
-  macOS `lockf`, Linux `flock`, or a stale-aware directory fallback to serialize concurrent installers
-  before install-root publication, predecessor discovery, and rollback authority are captured. Existing
+  the already-required Python runtime's real `fcntl.flock` on Linux and macOS to serialize concurrent
+  installers before install-root publication, predecessor discovery, and rollback authority are captured. Existing
   release directories and their verified files cannot be symlinks and are byte-revalidated after the lock.
   Predecessor copies publish into the recoverable transaction only after a complete temporary copy. After
   an uncatchable interruption, the next lock holder discards partial copy candidates, archives complete
   predecessor copies from a format-marked transaction, and only then removes it. An older or malformed
   unmarked transaction containing predecessor data and any backup-path collision fail closed while retaining
-  the still-present transaction copy. Callers must not rely on an ordinary later updater pass to repair a
-  missing proxy link after a successful invocation.
+  the still-present transaction copy. Stale `saved`, `candidate`, and live `backups` custody directories
+  must be real directories rather than symlinks. Callers must not rely on an ordinary later updater pass to
+  repair a missing proxy link after a successful invocation.
 - Preserve the dual-native Linux matrix, target-isolated names and caches, exact-source
   hosted-runner trust checks, mandatory Arm64 hardening, historical x86 compatibility, protected-main
   marker/manual publication, and release tags as outputs rather than workflow authority as one
