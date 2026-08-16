@@ -198,8 +198,9 @@ changes can be detected explicitly instead of inferred from tag shape alone.
   one ad hoc signed, non-notarized Intel x64 artifact for preview use without
   publishing a GitHub Release. Cargo dependency and `sccache` reuse stays in a preview-only
   namespace and excludes executable tool paths. Linux preview and validation-artifact builds
-  require a clean checkout before compilation, create repository-root `dist/` output only after
-  compilation, and reject any binary whose displayed git provenance contains `-dirty`.
+  isolate workflow-owned helper/cache paths from source provenance, require a clean checkout before
+  compilation, create repository-root `dist/` output only after compilation, and reject any binary
+  whose displayed git provenance contains `-dirty`.
 - `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the build factory
 - branch artifacts retain for 3 days and are never updater candidates
 - only `sedna-release` is allowed to publish official GitHub Releases

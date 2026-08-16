@@ -163,8 +163,9 @@ artifacts.
 11. Use `sedna-branch-build` only when you intentionally want a preview binary.
     - `platform=linux-x86_64` remains the default.
     - `platform=linux-aarch64` produces a disposable native GNU/Linux Arm64 artifact.
-    - Linux preview builds require a clean checkout before compilation, stage repository-root
-      output only afterward, and fail if the binary reports dirty git provenance.
+    - Linux preview builds isolate workflow-owned helper/cache paths from source provenance,
+      require a clean checkout before compilation, stage repository-root output only afterward,
+      and fail if the binary reports dirty git provenance.
     - `platform=macos` produces a disposable Intel x64 artifact and reuses
       Cargo-home and `sccache` entries across builds. It is ad hoc signed, not
       notarized, and is not an official Sedna release.

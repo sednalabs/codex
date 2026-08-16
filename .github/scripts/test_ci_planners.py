@@ -3853,6 +3853,47 @@ class ValidationPlanScriptTests(unittest.TestCase):
         clean_check = 'source_status="$(git status --porcelain --untracked-files=normal)"'
         version_check = 'version_output="$("${stage_dir}/codex" --version)"'
 
+        reusable_workflows = (
+            ("_sedna-linux-rust.yml", "run", "Run requested command"),
+            ("_validation-lane-release.yml", "run", "Run requested lane script"),
+        )
+        isolation_helper = (
+            REPO_ROOT
+            / ".github/scripts/isolate_workflow_paths_from_provenance.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('echo "/.workflow-src/"', isolation_helper)
+        self.assertIn('echo "/.sccache/"', isolation_helper)
+        self.assertIn("status --porcelain --untracked-files=normal", isolation_helper)
+
+        for workflow_name, job_name, run_step_name in reusable_workflows:
+            with self.subTest(workflow=workflow_name):
+                reusable_payload = load_workflow_payload(
+                    REPO_ROOT / ".github/workflows" / workflow_name
+                )
+                reusable_steps = (
+                    ((reusable_payload.get("jobs") or {}).get(job_name) or {}).get(
+                        "steps"
+                    )
+                    or []
+                )
+                reusable_names = [step.get("name") for step in reusable_steps]
+                isolation_step = next(
+                    step
+                    for step in reusable_steps
+                    if step.get("name")
+                    == "Isolate workflow-owned paths from source provenance"
+                )
+                self.assertIn(
+                    "isolate_workflow_paths_from_provenance.sh",
+                    isolation_step.get("run") or "",
+                )
+                self.assertLess(
+                    reusable_names.index(
+                        "Isolate workflow-owned paths from source provenance"
+                    ),
+                    reusable_names.index(run_step_name),
+                )
+
         for job_name in ("build-linux-x86_64", "build-linux-aarch64"):
             with self.subTest(job=job_name):
                 run_command = ((jobs.get(job_name) or {}).get("with") or {}).get(

@@ -128,6 +128,10 @@ jobs:
           ref: ${{ github.sha }}
           path: .workflow-src
 
+      - name: Isolate workflow-owned paths from source provenance
+        shell: bash
+        run: bash .workflow-src/.github/scripts/isolate_workflow_paths_from_provenance.sh "${GITHUB_WORKSPACE}"
+
       - name: Reclaim runner disk headroom
         if: ${{ runner.os == 'Linux' }}
         shell: bash

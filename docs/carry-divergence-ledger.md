@@ -1915,8 +1915,9 @@ decisions.
   artifact is not notarized, and reuses Cargo-home and compiler-cache entries
   without changing the release optimization profile. It remains a disposable
   preview and does not publish a GitHub Release. Linux branch and validation-artifact builders
-  require a clean checkout before Cargo starts, defer repository-root `dist/` creation until after
-  compilation, and reject a staged binary whose displayed git provenance contains `-dirty`. The
+  isolate workflow-owned helper/cache paths from source provenance, require a clean checkout before
+  Cargo starts, defer repository-root `dist/` creation until after compilation, and reject a staged
+  binary whose displayed git provenance contains `-dirty`. The
   official release contract independently
   supports native Linux x64, Linux Arm64, and Intel macOS x64 archives with target-bound metadata,
   checksums, and native-runner verification. Linux assets also carry keyless Sigstore bundles,
@@ -1940,6 +1941,8 @@ decisions.
   - `.github/workflows/sedna-release.yml`
   - `.github/workflows/sedna-release-install.yml`
   - `.github/workflows/sedna-branch-build.yml`
+  - `.github/workflows/_validation-lane-release.yml`
+  - `.github/scripts/isolate_workflow_paths_from_provenance.sh`
   - `.github/scripts/validation-lanes/artifact-build.sh`
   - `.github/scripts/test_ci_planners.py`
   - `codex-rs/app-server-daemon/src/update_loop.rs`
