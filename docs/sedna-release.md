@@ -113,6 +113,14 @@ Current workflow characteristics:
 - Exact upstream/downstream provenance recorded in release metadata assets
 - No dependency on upstream runner groups or upstream release tags
 
+### Release environment governance
+
+The `release` GitHub Actions environment admits protected branches only; custom branch policies
+are disabled. Deployment requires review by `GraciousGazelles`. Self-review prevention is not
+enabled, so the required reviewer may approve a deployment they initiated. These provider controls
+are the authoritative publication gate; workflow-side ref and release-route checks remain
+defense-in-depth and do not replace the environment review.
+
 Release publication requires a dedicated GitHub App installed on this repository only. Configure
 the app with repository permissions for `Contents: Read and write` and `Actions: Read and write`,
 then store:
