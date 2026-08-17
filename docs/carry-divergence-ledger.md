@@ -1939,9 +1939,10 @@ decisions.
   completes any first-time links that were not yet published. A portable host-local activation lock uses
   the already-required Python runtime's real `fcntl.flock` on Linux and macOS to serialize concurrent
   installers before install-root publication, predecessor discovery, and rollback authority are captured. The
-  lock holder exits when its installer parent dies. The hosted Intel macOS activation lane exercises native
-  target selection plus macOS kernel, process, and `fcntl` semantics; download and verifier calls remain
-  hermetic fixtures and do not substitute for release-level native verifier proof. Existing
+  lock holder exits when its installer parent dies. The hosted Intel macOS activation lane installs
+  pinned PyYAML only in a `RUNNER_TEMP` virtual environment and exercises native target selection plus
+  macOS kernel, process, and `fcntl` semantics; download and verifier calls remain hermetic fixtures and
+  do not substitute for release-level native verifier proof. Existing
   release directories and their verified files cannot be symlinks and are byte-revalidated after the lock.
   Every installer-owned directory component below `HOME` must be a real directory, so a symlinked
   `.codex`, `.local`, install root, releases root, or stable bin directory cannot redirect publication.
