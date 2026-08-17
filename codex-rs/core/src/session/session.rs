@@ -1409,9 +1409,6 @@ impl Session {
                 || mcp_auth_changes.has_changed().unwrap_or(false)
             {
                 sess.services
-                    .plugins_manager
-                    .set_auth_mode(latest_auth.as_ref().map(CodexAuth::api_auth_mode));
-                sess.services
                     .mcp_manager
                     .runtime_config_for_step(
                         config.as_ref(),
