@@ -23,6 +23,30 @@ compatibility proof.
 
 The supported downstream Linux install and release targets are `x86_64` and Arm64 GNU. Intel macOS `x86_64` is also supported by the release contract. Other upstream platform paths remain in the repository for future re-enablement, but Sedna does not currently publish or validate them as supported targets.
 
+### Install a verified release asset
+
+From a trusted checkout of the exact release source, the downstream installer can verify and
+activate a published asset:
+
+```bash
+scripts/install_sedna_release_asset \
+  --repository sednalabs/codex \
+  --release-tag <exact-tag>
+```
+
+Add `--allow-prerelease` only when the exact tag is an intentionally selected GitHub prerelease.
+Use `--dry-run` to verify without activating the payload. Intel macOS preview assets additionally
+require `--macos-preview`; that explicit preview path does not make an ad-hoc signed,
+non-notarized artifact an official distribution.
+
+A successful non-dry install publishes both `codex` and `codex-responses-api-proxy` in
+`$HOME/.local/bin`. Both stable links resolve through the same release `current` pointer, so a
+single atomic pointer replacement activates the pair. The installer serializes activation,
+preserves regular predecessor binaries under its backup custody, rolls back catchable failures,
+and recovers retained predecessor copies on the next invocation after an uncatchable interruption.
+Do not delete installer transaction or backup directories to repair an interrupted installation;
+rerun the same trusted installer and exact tag so it can reconcile them under the activation lock.
+
 ### DotSlash
 
 The GitHub Release also contains a [DotSlash](https://dotslash-cli.com/) file for the Codex CLI named `codex`. Using a DotSlash file makes it possible to make a lightweight commit to source control to ensure all contributors use the same version of an executable, regardless of what platform they use for development.

@@ -50,17 +50,19 @@ If you mainly want the standard Codex CLI experience, upstream Codex is usually 
 
 ## Install
 
-Official Codex Sedna releases currently support **Linux x86_64**.
+Official Codex Sedna releases currently support **Linux x86_64** and
+**Linux Arm64 GNU**.
 
 Download the latest supported release from [GitHub Releases](https://github.com/sednalabs/codex/releases).
 
-The archive is named:
+The archives are named:
 
 ```text
 codex-sedna-<version>-x86_64-unknown-linux-gnu.tar.gz
+codex-sedna-<version>-aarch64-unknown-linux-gnu.tar.gz
 ```
 
-It contains:
+Each archive contains:
 
 ```text
 codex
@@ -79,6 +81,8 @@ To build from source, see [Installing and building](./docs/install.md).
 
 > [!NOTE]
 > OpenAI's npm package, Homebrew package, installers, and official release artifacts install upstream Codex, not Codex Sedna.
+>
+> GitHub prereleases must be selected explicitly; the host installer refuses them unless the operator passes `--allow-prerelease` with the exact release tag.
 >
 > Manually dispatched macOS preview artifacts may also be available. These are ad hoc signed, non-notarized previews and are not part of the current supported Sedna release contract.
 

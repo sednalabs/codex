@@ -272,6 +272,17 @@ runner. It intentionally does not perform host-local installation from the publi
   and cannot downgrade a current release. Arm64 never has a downgrade path.
 - A non-dry install may reuse an existing release directory only when both executables, metadata,
   and checksum manifest are byte-for-byte identical to the freshly verified staged payload.
+- A successful host-local activation publishes stable `codex` and
+  `codex-responses-api-proxy` links through one `current` release pointer. Activation is serialized
+  with a host-local lock, preserves regular predecessor binaries before the pointer changes, and
+  either rolls back catchable failures or reconciles retained predecessor copies on the next run
+  after an uncatchable interruption. Operators should rerun the same trusted installer and exact
+  tag rather than manually deleting transaction or backup custody.
+- Pull requests that change release/install workflows run the activation fixtures on an Intel
+  macOS host as well as Linux. The macOS job installs pinned PyYAML only into a virtual environment
+  under `RUNNER_TEMP`, uses that interpreter for the planner fixtures, and leaves the runner's
+  system Python environment untouched. This job proves native target, process, and `fcntl`
+  activation semantics; it is not release-level signature or notarization verification.
 - Host-local installs should be performed by external deployment automation outside the public
   Actions log surface
 - Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them
