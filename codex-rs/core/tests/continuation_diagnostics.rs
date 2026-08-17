@@ -185,10 +185,16 @@ async fn synthetic_limit_error_does_not_prevent_later_v2_spawn_attempt() -> Resu
 
     submit_user_turn(&test.codex, FIRST_PROMPT).await?;
     wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
-    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     submit_user_turn(&test.codex, SECOND_PROMPT).await?;
-    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     server.verify().await;
     Ok(())
