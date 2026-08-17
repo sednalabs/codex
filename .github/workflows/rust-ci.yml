@@ -378,10 +378,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
       - name: Install planner fixture dependency
-        run: python3 -m pip install PyYAML==6.0.3
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/installer-test-venv"
+          "${RUNNER_TEMP}/installer-test-venv/bin/python" -m pip install PyYAML==6.0.3
       - name: Prove macOS activation and locking
         run: |
-          python3 .github/scripts/test_ci_planners.py \
+          "${RUNNER_TEMP}/installer-test-venv/bin/python" .github/scripts/test_ci_planners.py \
             HelperScriptTests.test_sedna_release_installer_uses_native_macos_target_detection \
             HelperScriptTests.test_sedna_release_installer_links_all_visible_executables \
             HelperScriptTests.test_sedna_release_installer_backs_up_previous_visible_binaries \

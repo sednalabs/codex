@@ -2163,8 +2163,6 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="ci-planner-output-") as tmpdir:
             output_path = Path(tmpdir) / "github-output.txt"
             output_path.write_text("", encoding="utf-8")
-            installer_tmp = root / "tmp"
-            installer_tmp.mkdir()
             env = {
                 **os.environ,
                 "GITHUB_EVENT_NAME": event_name,
