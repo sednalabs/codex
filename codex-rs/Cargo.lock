@@ -2014,7 +2014,6 @@ dependencies = [
  "codex-git-attribution",
  "codex-git-utils",
  "codex-goal-extension",
- "codex-guardian",
  "codex-guardian-v2",
  "codex-home",
  "codex-hooks",
@@ -3292,15 +3291,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "codex-guardian"
-version = "0.0.0"
-dependencies = [
- "codex-core",
- "codex-extension-api",
- "codex-protocol",
 ]
 
 [[package]]
