@@ -252,6 +252,7 @@ impl App {
         }
         let mut lineage_reads = 0;
         let mut budget_exhausted = false;
+        let mut retryable_lineage_failure = false;
         for thread in response.data {
             if !matches!(
                 thread.source,
@@ -265,10 +266,11 @@ impl App {
                     MAX_LINEAGE_READS,
                     &mut lineage_reads,
                     &mut budget_exhausted,
+                    &mut retryable_lineage_failure,
                 )
                 .await
             {
-                if budget_exhausted {
+                if budget_exhausted || retryable_lineage_failure {
                     break;
                 }
                 continue;
@@ -301,7 +303,7 @@ impl App {
                 self.agent_navigation.mark_running(thread_id);
             }
         }
-        if budget_exhausted {
+        if budget_exhausted || retryable_lineage_failure {
             self.agent_navigation.defer_picker_page();
             self.sync_active_agent_label();
             return;
@@ -325,6 +327,7 @@ impl App {
         max_reads: usize,
         reads: &mut usize,
         budget_exhausted: &mut bool,
+        retryable_failure: &mut bool,
     ) -> bool {
         let mut current = match thread
             .parent_thread_id
@@ -348,6 +351,7 @@ impl App {
                     }
                     *reads += 1;
                     let Ok(parent) = app_server.thread_read(current, false).await else {
+                        *retryable_failure = true;
                         return false;
                     };
                     let parent_thread_id = parent
