@@ -137,11 +137,20 @@ import sys
 os.replace(sys.argv[1], sys.argv[2])
 PY
 }
+remove_owned_link() {
+  local path="$1"
+  local expected="$2"
+  if [[ -L "$path" && "$(readlink "$path")" == "$expected" ]]; then
+    rm -f "$path"
+  fi
+}
 cleanup() {
   if [[ "$activation_started" == "true" && "$activation_committed" != "true" ]]; then
     if [[ -n "$activation_previous_visible_link" ]]; then
       visible_restore="${bin_dir}/.codex.restore.${restore_suffix}"
-      restore_link "$activation_previous_visible_link" "$visible_restore" "${bin_dir}/codex" || true
+      if ! restore_link "$activation_previous_visible_link" "$visible_restore" "${bin_dir}/codex"; then
+        remove_owned_link "${bin_dir}/codex" "${release_dir}/codex"
+      fi
     elif [[ -n "$activation_visible_backup" && -e "$activation_visible_backup" ]]; then
       rm -f "${bin_dir}/codex"
       mv "$activation_visible_backup" "${bin_dir}/codex"
@@ -151,7 +160,9 @@ cleanup() {
     current_path="${install_root}/current"
     if [[ -n "$activation_previous_current" ]]; then
       current_restore="${install_root}/.current.restore.${restore_suffix}"
-      restore_link "$activation_previous_current" "$current_restore" "$current_path" || true
+      if ! restore_link "$activation_previous_current" "$current_restore" "$current_path"; then
+        remove_owned_link "$current_path" "$release_dir"
+      fi
     elif [[ -L "$current_path" ]]; then
       rm -f "$current_path"
     fi

@@ -7762,8 +7762,10 @@ fi
                 current_temp = root / "home" / ".codex" / "packages" / "standalone" / ".current.restore.collision"
                 self.assertEqual(visible_temp.readlink(), root / "attacker-visible")
                 self.assertEqual(current_temp.readlink(), root / "attacker-current")
-                self.assertNotEqual((root / "home" / ".local" / "bin" / "codex").readlink(), root / "attacker-visible")
-                self.assertNotEqual((root / "home" / ".codex" / "packages" / "standalone" / "current").readlink(), root / "attacker-current")
+                visible_path = root / "home" / ".local" / "bin" / "codex"
+                current_path = root / "home" / ".codex" / "packages" / "standalone" / "current"
+                self.assertFalse(visible_path.exists() or visible_path.is_symlink())
+                self.assertFalse(current_path.exists() or current_path.is_symlink())
             return proc
 
     def test_sedna_release_installer_executes_hardened_linux_fixture(self) -> None:
