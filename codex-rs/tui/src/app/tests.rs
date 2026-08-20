@@ -2110,6 +2110,7 @@ async fn replay_only_thread_rejects_direct_user_turn_without_server_mutation() {
         None,
         None,
         None,
+        None,
     );
 
     app.submit_thread_op(&mut app_server, thread_id, op)
