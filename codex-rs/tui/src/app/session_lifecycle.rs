@@ -306,7 +306,7 @@ impl App {
     }
 
     async fn persisted_descendant_reaches_root(
-        &self,
+        &mut self,
         app_server: &mut AppServerSession,
         thread: &codex_app_server_protocol::Thread,
         root_id: ThreadId,
