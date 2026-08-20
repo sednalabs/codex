@@ -341,6 +341,27 @@ pub(crate) async fn arm_initialize_post_response(
     Ok(())
 }
 
+pub(crate) async fn arm_initialize_post_sse_response(
+    base_url: &str,
+    status: u16,
+    remaining: usize,
+    body: &str,
+) -> anyhow::Result<()> {
+    let response = reqwest::Client::new()
+        .post(format!("{base_url}{INITIALIZE_POST_FAILURE_CONTROL_PATH}"))
+        .json(&json!({
+            "status": status,
+            "remaining": remaining,
+            "content_type": "text/event-stream",
+            "body": body,
+        }))
+        .send()
+        .await?;
+
+    assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+    Ok(())
+}
+
 pub(crate) async fn spawn_streamable_http_server() -> anyhow::Result<(Child, String)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();

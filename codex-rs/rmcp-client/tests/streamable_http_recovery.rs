@@ -19,6 +19,7 @@ use serde_json::Value;
 use streamable_http_test_support::arm_initialize_post_failure;
 use streamable_http_test_support::arm_initialize_post_json_rpc_failure;
 use streamable_http_test_support::arm_initialize_post_response;
+use streamable_http_test_support::arm_initialize_post_sse_response;
 use streamable_http_test_support::arm_initialized_notification_post_json_rpc_failure;
 use streamable_http_test_support::arm_initialized_notification_post_response;
 use streamable_http_test_support::arm_session_post_failure;
@@ -159,6 +160,19 @@ async fn streamable_http_rejects_empty_ok_for_initialize_request() -> anyhow::Re
 
     let Err(_) = create_client(&base_url).await else {
         anyhow::bail!("empty response unexpectedly accepted for initialize request");
+    };
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn streamable_http_rejects_empty_sse_for_initialize_request() -> anyhow::Result<()> {
+    let (_server, base_url) = spawn_streamable_http_server().await?;
+
+    arm_initialize_post_sse_response(&base_url, /*status*/ 200, /*remaining*/ 10, "").await?;
+
+    let Err(_) = create_client(&base_url).await else {
+        anyhow::bail!("empty SSE response unexpectedly accepted for initialize request");
     };
 
     Ok(())
