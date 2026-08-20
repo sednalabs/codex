@@ -255,4 +255,53 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn only_thread_spawn_sources_are_picker_eligible_and_must_chain_to_primary() {
+        let primary_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000011").expect("valid thread");
+        let eligible_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000012").expect("valid thread");
+        let review_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000013").expect("valid thread");
+        let orphan_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000014").expect("valid thread");
+        let mut review = test_thread(
+            review_id,
+            SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::Review),
+        );
+        review.parent_thread_id = Some(primary_thread_id.to_string());
+        let mut orphan = test_thread(
+            orphan_id,
+            thread_spawn_source(
+                ThreadId::from_string("00000000-0000-0000-0000-000000000099")
+                    .expect("valid thread"),
+                1,
+                "orphan",
+                "worker",
+            ),
+        );
+        orphan.parent_thread_id = Some(primary_thread_id.to_string());
+
+        let loaded = find_loaded_subagent_threads_for_primary(
+            vec![
+                test_thread(primary_thread_id, SessionSource::Cli),
+                test_thread(
+                    eligible_id,
+                    thread_spawn_source(primary_thread_id, 1, "eligible", "worker"),
+                ),
+                review,
+                orphan,
+            ],
+            primary_thread_id,
+        );
+
+        assert_eq!(
+            loaded
+                .into_iter()
+                .map(|thread| thread.thread_id)
+                .collect::<Vec<_>>(),
+            vec![eligible_id]
+        );
+    }
 }
