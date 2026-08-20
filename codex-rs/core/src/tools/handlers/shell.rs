@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::exec::ExecParams;
+use crate::exec_env::scrub_non_inheritable_env_vars;
 use crate::exec_policy::ExecApprovalRequest;
 use crate::function_tool::FunctionCallError;
 use crate::session::turn_context::TurnContext;
@@ -79,12 +80,13 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
 
     let fs = turn_environment.environment.get_filesystem();
 
-    let explicit_env_overrides = turn
+    let mut explicit_env_overrides = turn
         .config
         .permissions
         .shell_environment_policy
         .r#set
         .clone();
+    scrub_non_inheritable_env_vars(&mut explicit_env_overrides);
     let exec_permission_approvals_enabled =
         session.features().enabled(Feature::ExecPermissionApprovals);
     let requested_additional_permissions = additional_permissions.clone();
