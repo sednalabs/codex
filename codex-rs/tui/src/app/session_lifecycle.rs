@@ -288,10 +288,14 @@ impl App {
             let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
                 continue;
             };
+            let has_live_channel = self
+                .thread_event_channels
+                .get(&thread_id)
+                .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
             let is_closed = matches!(
                 thread.status,
                 codex_app_server_protocol::ThreadStatus::NotLoaded
-            );
+            ) && !has_live_channel;
             self.upsert_agent_picker_thread(
                 thread_id,
                 thread.agent_nickname,
@@ -307,10 +311,12 @@ impl App {
             );
             self.agent_navigation
                 .set_agent_path(thread_id, source_agent_path(&thread.source));
-            if persisted_picker_thread_is_running(thread.status) {
-                self.agent_navigation.mark_running(thread_id);
-            } else {
-                self.agent_navigation.mark_stopped(thread_id);
+            if !has_live_channel {
+                if persisted_picker_thread_is_running(thread.status) {
+                    self.agent_navigation.mark_running(thread_id);
+                } else {
+                    self.agent_navigation.mark_stopped(thread_id);
+                }
             }
         }
         if budget_exhausted || retryable_lineage_failure {
