@@ -7682,6 +7682,9 @@ fi
             if failure == "activation_restore":
                 env["SEDNA_INSTALLER_TEST_FAULT"] = "after-visible-predecessor"
                 env["SEDNA_INSTALLER_TESTING"] = "1"
+            elif failure == "activation_fault_inert":
+                env["SEDNA_INSTALLER_TEST_FAULT"] = "after-visible-predecessor"
+                env.pop("SEDNA_INSTALLER_TESTING", None)
             env.pop("GH_TOKEN", None)
             env.pop("GITHUB_TOKEN", None)
             verification_args = []
@@ -7737,6 +7740,13 @@ fi
             "activation_restore", dry_run=False
         )
         self.assertEqual(proc.returncode, 73, proc.stderr)
+
+    def test_sedna_release_installer_fault_hook_is_inert_without_testing_mode(self) -> None:
+        proc = self.run_sedna_installer_fixture(
+            "activation_fault_inert", dry_run=False
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("installed sednalabs/codex@", proc.stdout)
 
     def test_sedna_release_installer_rejects_invalid_release_assets(self) -> None:
         cases = {

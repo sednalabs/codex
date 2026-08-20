@@ -856,7 +856,8 @@ elif [[ -e "$visible_codex" ]]; then
   echo "backed up previous codex binary"
 fi
 
-if [[ "${SEDNA_INSTALLER_TEST_FAULT:-}" == "after-visible-predecessor" ]]; then
+if [[ "${SEDNA_INSTALLER_TESTING:-}" == "1" \
+    && "${SEDNA_INSTALLER_TEST_FAULT:-}" == "after-visible-predecessor" ]]; then
   exit 73
 fi
 
