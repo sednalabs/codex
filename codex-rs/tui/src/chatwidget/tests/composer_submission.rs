@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 async fn replay_only_rejects_queued_input_before_queue_or_history_mutation() {
     let (mut chat, mut rx, mut op_rx) =
         make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
-    chat.set_replay_only_thread(true);
+    chat.set_replay_only_thread(/*replay_only*/ true);
     drain_insert_history(&mut rx);
     chat.queue_user_message_with_options(
         UserMessage::from("must not be queued"),
@@ -40,7 +40,7 @@ async fn replay_only_rejects_queued_input_before_queue_or_history_mutation() {
 #[tokio::test]
 async fn replay_only_queued_rejection_restores_paste_mapping_losslessly() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
-    chat.set_replay_only_thread(true);
+    chat.set_replay_only_thread(/*replay_only*/ true);
     let placeholder = "[Pasted Content 4 chars]".to_string();
     let message = UserMessage {
         text: format!("before {placeholder} after"),
@@ -243,7 +243,7 @@ async fn replay_only_thread_preserves_restored_queued_input_before_draining() {
             preserve_in_flight_turn: true,
         },
     );
-    restored_chat.set_replay_only_thread(true);
+    restored_chat.set_replay_only_thread(/*replay_only*/ true);
 
     assert!(!restored_chat.maybe_send_next_queued_input());
     assert_eq!(
