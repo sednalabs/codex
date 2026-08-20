@@ -142,10 +142,29 @@ fn update_action_label_for_sedna_identity(
     has_sedna_identity: bool,
     release_version: &str,
 ) -> &'static str {
+    update_action_label_for_sedna_identity_on_target(
+        context,
+        has_sedna_identity,
+        release_version,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+
+fn update_action_label_for_sedna_identity_on_target(
+    context: &InstallContext,
+    has_sedna_identity: bool,
+    release_version: &str,
+    target_os: &str,
+    target_arch: &str,
+) -> &'static str {
     if !has_sedna_identity {
         return "no automatic update action outside the Sedna release channel";
     }
     if !is_valid_sedna_release_version(release_version) {
+        return "no automatic update action";
+    }
+    if !codex_utils_version::is_sedna_standalone_update_target_supported(target_os, target_arch) {
         return "no automatic update action";
     }
     match &context.method {
@@ -414,7 +433,13 @@ mod tests {
             package_layout: None,
         };
         assert_eq!(
-            update_action_label_for_sedna_identity(&unix, true, "1.2.3-sedna.4"),
+            update_action_label_for_sedna_identity_on_target(
+                &unix,
+                true,
+                "1.2.3-sedna.4",
+                "linux",
+                "x86_64",
+            ),
             "Sedna standalone installer"
         );
         assert_eq!(
@@ -426,6 +451,21 @@ mod tests {
                 update_action_label_for_sedna_identity(&unix, true, release_version),
                 "no automatic update action",
                 "accepted {release_version}"
+            );
+        }
+        for target in [("macos", "aarch64"), ("freebsd", "x86_64")] {
+            assert_eq!(
+                update_action_label_for_sedna_identity_on_target(
+                    &unix,
+                    true,
+                    "1.2.3-sedna.4",
+                    target.0,
+                    target.1,
+                ),
+                "no automatic update action",
+                "accepted unsupported target {}-{}",
+                target.0,
+                target.1
             );
         }
     }

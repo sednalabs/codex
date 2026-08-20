@@ -184,9 +184,27 @@ fn is_sedna_standalone_update_eligible(
     tag_prefix: Option<&str>,
     release_version: Option<&str>,
 ) -> bool {
+    is_sedna_standalone_update_eligible_on_target(
+        repository,
+        tag_prefix,
+        release_version,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+
+#[cfg(unix)]
+fn is_sedna_standalone_update_eligible_on_target(
+    repository: Option<&str>,
+    tag_prefix: Option<&str>,
+    release_version: Option<&str>,
+    target_os: &str,
+    target_arch: &str,
+) -> bool {
     matches!(repository, Some("sednalabs/codex"))
         && matches!(tag_prefix, Some("v"))
         && release_version.is_some_and(is_sedna_release_version)
+        && codex_utils_version::is_sedna_standalone_update_target_supported(target_os, target_arch)
 }
 
 #[cfg(unix)]
