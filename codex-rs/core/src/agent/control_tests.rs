@@ -188,10 +188,19 @@ impl AgentControlHarness {
         config: Config,
         state_db: Option<StateDbHandle>,
     ) -> Self {
+        Self::new_with_config_and_manager_home(home, config, state_db, None)
+    }
+
+    fn new_with_config_and_manager_home(
+        home: TempDir,
+        config: Config,
+        state_db: Option<StateDbHandle>,
+        manager_home: Option<std::path::PathBuf>,
+    ) -> Self {
         let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
             CodexAuth::from_api_key("dummy"),
             config.model_provider.clone(),
-            config.codex_home.to_path_buf(),
+            manager_home.unwrap_or_else(|| config.codex_home.to_path_buf()),
             std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
             state_db.clone(),
         );
@@ -402,11 +411,17 @@ async fn agent_control_omits_browser_tools_without_a_provider_in_its_config_home
 }
 
 #[tokio::test]
-async fn agent_control_does_not_read_browser_tools_from_another_codex_home() {
+async fn agent_control_uses_child_config_home_for_browser_tools() {
     let ambient_home = TempDir::new().expect("create alternate codex home");
-    write_browser_provider_config(ambient_home.path());
     let (child_home, config) = test_config().await;
-    let harness = AgentControlHarness::new_with_config(child_home, config).await;
+    write_browser_provider_config(child_home.path());
+    let state_db = init_state_db(&config).await;
+    let harness = AgentControlHarness::new_with_config_and_manager_home(
+        child_home,
+        config,
+        state_db,
+        Some(ambient_home.path().to_path_buf()),
+    );
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
     let child_thread_id = harness
         .spawn_anonymous_child(
@@ -422,7 +437,7 @@ async fn agent_control_does_not_read_browser_tools_from_another_codex_home() {
         .get_thread(child_thread_id)
         .await
         .expect("child should be registered");
-    assert_browser_dynamic_tools_absent(&child_thread).await;
+    assert_browser_dynamic_tools(&child_thread).await;
 
     harness
         .control
