@@ -149,6 +149,14 @@ async fn verified_sedna_auto_update_release(release_dir: &Path) -> Option<Manage
 }
 
 #[cfg(unix)]
+fn sha256_hex(contents: &[u8]) -> String {
+    Sha256::digest(contents)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[cfg(unix)]
 fn checksum_matches(checksums: &str, file_name: &str, contents: &[u8]) -> bool {
     let expected = checksums.lines().find_map(|line| {
         let mut fields = line.split_whitespace();
@@ -157,10 +165,7 @@ fn checksum_matches(checksums: &str, file_name: &str, contents: &[u8]) -> bool {
         (candidate == file_name).then_some(digest)
     });
     expected.is_some_and(|expected| {
-        let actual = Sha256::digest(contents)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let actual = sha256_hex(contents);
         expected.len() == 64
             && expected.bytes().all(|byte| byte.is_ascii_hexdigit())
             && expected.eq_ignore_ascii_case(&actual)
