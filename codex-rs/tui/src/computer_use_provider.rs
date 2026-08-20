@@ -19,11 +19,11 @@ pub(crate) enum ComputerUseProviderOutcome {
 
 pub(crate) async fn handle_computer_use(
     params: &ComputerUseCallParams,
-    codex_home: &Path,
+    browser_codex_home: Option<&Path>,
 ) -> ComputerUseProviderOutcome {
     for provider in computer_use_providers() {
         if provider.supports(params) {
-            return provider.handle(params, codex_home).await;
+            return provider.handle(params, browser_codex_home).await;
         }
     }
     ComputerUseProviderOutcome::Unavailable
@@ -70,7 +70,7 @@ impl RegisteredComputerUseProvider {
     async fn handle(
         &self,
         params: &ComputerUseCallParams,
-        codex_home: &Path,
+        browser_codex_home: Option<&Path>,
     ) -> ComputerUseProviderOutcome {
         match self.handler {
             ComputerUseProviderHandler::Android => {
@@ -84,6 +84,9 @@ impl RegisteredComputerUseProvider {
                 }
             }
             ComputerUseProviderHandler::Browser => {
+                let Some(codex_home) = browser_codex_home else {
+                    return ComputerUseProviderOutcome::Unavailable;
+                };
                 match handle_browser_computer_use_for_codex_home(params, codex_home).await {
                     BrowserComputerUseOutcome::Handled(response) => {
                         ComputerUseProviderOutcome::Handled(response)
@@ -128,7 +131,7 @@ mod tests {
                 tool: "browser_observe".to_string(),
                 arguments: json!({"scope": "viewport_and_page"}),
             },
-            Path::new("/nonexistent-codex-home"),
+            Some(Path::new("/nonexistent-codex-home")),
         )
         .await;
 
@@ -147,7 +150,7 @@ mod tests {
                 tool: "browser_private_backend_probe".to_string(),
                 arguments: json!({}),
             },
-            Path::new("/nonexistent-codex-home"),
+            Some(Path::new("/nonexistent-codex-home")),
         )
         .await;
 
@@ -166,7 +169,7 @@ mod tests {
                 tool: "desktop_observe".to_string(),
                 arguments: json!({"scope": "screen_and_ui"}),
             },
-            Path::new("/nonexistent-codex-home"),
+            None,
         )
         .await;
 
@@ -197,7 +200,7 @@ mod tests {
                 tool: "browser_observe".to_string(),
                 arguments: json!({}),
             },
-            child_home.path(),
+            Some(child_home.path()),
         )
         .await;
 
