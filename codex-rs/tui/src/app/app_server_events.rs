@@ -311,12 +311,11 @@ fn session_effective_codex_home(
     // absent session remains unresolved and is handled by the caller as unavailable.
     session.rollout_path.as_deref().map_or_else(
         || Some(default_codex_home.to_path_buf()),
-        |path| rollout_codex_home(Some(path)),
+        |path| rollout_codex_home(path),
     )
 }
 
-fn rollout_codex_home(rollout_path: Option<&Path>) -> Option<PathBuf> {
-    let rollout_path = rollout_path?;
+fn rollout_codex_home(rollout_path: &Path) -> Option<PathBuf> {
     if !rollout_path.is_absolute() {
         return None;
     }
@@ -352,47 +351,40 @@ mod tests {
         };
         let primary = temp_dir.join("primary");
         assert_eq!(
-            rollout_codex_home(Some(
-                primary.join("sessions/2026/01/rollout.jsonl").as_path(),
-            )),
+            rollout_codex_home(primary.join("sessions/2026/01/rollout.jsonl").as_path()),
             Some(primary.clone())
         );
         let child = temp_dir.join("child");
         assert_eq!(
-            rollout_codex_home(Some(child.join("sessions/2026/01/rollout.jsonl").as_path(),)),
+            rollout_codex_home(child.join("sessions/2026/01/rollout.jsonl").as_path()),
             Some(child.clone())
         );
         let archived = temp_dir.join("archived");
         assert_eq!(
-            rollout_codex_home(Some(
-                archived.join("archived_sessions/rollout.jsonl").as_path(),
-            )),
+            rollout_codex_home(archived.join("archived_sessions/rollout.jsonl").as_path()),
             Some(archived.clone())
         );
         let sessions = temp_dir.join("sessions");
         assert_eq!(
-            rollout_codex_home(Some(
-                sessions.join("sessions/2026/01/rollout.jsonl").as_path(),
-            )),
+            rollout_codex_home(sessions.join("sessions/2026/01/rollout.jsonl").as_path()),
             Some(sessions.clone())
         );
         let archived_sessions = temp_dir.join("archived_sessions");
         assert_eq!(
-            rollout_codex_home(Some(
+            rollout_codex_home(
                 archived_sessions
                     .join("archived_sessions/rollout.jsonl")
                     .as_path(),
-            )),
+            ),
             Some(archived_sessions)
         );
 
         let no_session_directory = temp_dir.join("no-session-directory/rollout.jsonl");
         let sessions_but_no_boundary = temp_dir.join("sessions-but-no-boundary");
         for malformed in [
-            None,
-            Some(Path::new("sessions/2026/01/rollout.jsonl")),
-            Some(no_session_directory.as_path()),
-            Some(sessions_but_no_boundary.as_path()),
+            Path::new("sessions/2026/01/rollout.jsonl"),
+            no_session_directory.as_path(),
+            sessions_but_no_boundary.as_path(),
         ] {
             assert_eq!(rollout_codex_home(malformed), None);
         }
