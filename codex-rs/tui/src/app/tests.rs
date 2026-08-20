@@ -2131,6 +2131,23 @@ fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
             })),
         )
         .await?;
+        codex_rollout::append_rollout_item_to_path(
+            &child_rollout,
+            &RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-child".to_string(),
+                last_agent_message: None,
+                error: None,
+                started_at: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+                provider_usage: None,
+            })),
+        )
+        .await?;
 
         let persisted = app_server
             .thread_read(child_thread_id, /*include_turns*/ false)
