@@ -476,6 +476,7 @@ impl App {
                 (session, turns, false)
             }
         };
+        let promote_active_thread = self.active_thread_id == Some(thread_id) && live_attached;
         let channel = self.ensure_thread_channel(thread_id);
         if live_attached {
             channel.mark_live();
@@ -483,7 +484,21 @@ impl App {
             channel.mark_replay_only();
         }
         let mut store = channel.store.lock().await;
-        store.set_session(session, turns);
+        store.set_session(session.clone(), turns);
+        drop(store);
+
+        // A replay-only channel can be selected while its server-side thread is temporarily
+        // unavailable, then promoted in place when the thread becomes live again. Apply the
+        // resumed session to the existing widget before clearing the replay gate so model and
+        // session state are configured before any preserved queue is considered for delivery.
+        if promote_active_thread {
+            self.chat_widget.handle_thread_session(session);
+            self.chat_widget.set_replay_only_thread(false);
+            if self.agent_navigation.is_parent_owned(thread_id) {
+                self.chat_widget.set_parent_owned_thread();
+            }
+            self.chat_widget.maybe_send_next_queued_input();
+        }
         Ok(live_attached)
     }
 
