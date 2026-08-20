@@ -1018,4 +1018,13 @@ mod tests {
         state.begin_picker_page_sequence();
         assert!(state.set_next_picker_page_cursor(Some("page-a".to_string())));
     }
+
+    #[test]
+    fn deferred_picker_page_retains_continuation_cursor() {
+        let mut state = AgentNavigationState::default();
+        assert!(state.set_next_picker_page_cursor(Some("cursor-c".to_string())));
+        state.defer_picker_page();
+        assert!(state.picker_page_deferred());
+        assert_eq!(state.next_picker_page_cursor().as_deref(), Some("cursor-c"));
+    }
 }
