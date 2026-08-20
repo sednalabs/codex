@@ -513,7 +513,8 @@ impl App {
             self.chat_widget.handle_thread_session(session);
             self.chat_widget
                 .replay_thread_turns(turns, ReplayKind::ThreadSnapshot);
-            self.chat_widget.set_replay_only_thread(false);
+            self.chat_widget
+                .set_replay_only_thread(/*replay_only*/ false);
             if self.agent_navigation.is_parent_owned(thread_id) {
                 self.chat_widget.set_parent_owned_thread();
             }
@@ -603,7 +604,8 @@ impl App {
                     .attach_live_thread_for_selection_with_tui(app_server, thread_id, Some(tui))
                     .await?;
                 if live_attached {
-                    self.chat_widget.set_replay_only_thread(false);
+                    self.chat_widget
+                        .set_replay_only_thread(/*replay_only*/ false);
                     if self.agent_navigation.is_parent_owned(thread_id) {
                         self.chat_widget.set_parent_owned_thread();
                     }
