@@ -559,6 +559,15 @@ impl App {
         thread_id: ThreadId,
     ) -> Result<()> {
         if self.active_thread_id == Some(thread_id) {
+            // A replay channel can outlive the server-side closed state. Re-check liveness even
+            // when already selected so a thread that became live again is promoted in place.
+            self.refresh_agent_picker_thread_liveness(app_server, thread_id)
+                .await;
+            if self.should_attach_live_thread_for_selection(thread_id) {
+                self.attach_live_thread_for_selection(app_server, thread_id)
+                    .await?;
+                self.chat_widget.set_replay_only_thread(false);
+            }
             return Ok(());
         }
 
@@ -642,6 +651,7 @@ impl App {
         if blocks_direct_input {
             self.chat_widget.set_parent_owned_thread();
         }
+        self.chat_widget.set_replay_only_thread(is_replay_only);
 
         self.reset_for_thread_switch(tui)?;
         self.replay_thread_snapshot(snapshot, !is_replay_only);

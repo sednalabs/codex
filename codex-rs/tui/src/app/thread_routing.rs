@@ -440,15 +440,13 @@ impl App {
         thread_id: ThreadId,
         op: AppCommand,
     ) -> Result<()> {
-        if matches!(op, AppCommand::UserTurn { .. })
-            && self
-                .thread_event_channels
-                .get(&thread_id)
-                .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
-        {
+        if self.is_replay_only_thread(thread_id) && !Self::replay_safe_op(&op) {
             self.chat_widget.add_error_message(format!(
-                "Agent thread {thread_id} is replay-only; direct input is unavailable."
+                "Agent thread {thread_id} is replay-only; this operation is unavailable."
             ));
+            if matches!(op, AppCommand::UserTurn { .. }) {
+                self.chat_widget.handle_replay_only_submission_rejection();
+            }
             return Ok(());
         }
         crate::session_log::log_outbound_op(&op);
@@ -475,6 +473,19 @@ impl App {
         self.chat_widget
             .add_error_message(format!("Not available in TUI yet for thread {thread_id}."));
         Ok(())
+    }
+
+    fn is_replay_only_thread(&self, thread_id: ThreadId) -> bool {
+        self.thread_event_channels
+            .get(&thread_id)
+            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
+    }
+
+    /// Only operations which inspect local/server state are valid while a transcript is detached.
+    /// Keep this allow-list deliberately narrow: approvals, context changes, and all turn/control
+    /// operations can mutate the underlying thread even when they look harmless in the UI.
+    fn replay_safe_op(op: &AppCommand) -> bool {
+        matches!(op, AppCommand::ListSkills { .. })
     }
 
     /// Persist prompt text in the local cross-session message history.
