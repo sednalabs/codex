@@ -484,7 +484,7 @@ impl App {
             channel.mark_replay_only();
         }
         let mut store = channel.store.lock().await;
-        store.set_session(session.clone(), turns);
+        store.set_session(session.clone(), turns.clone());
         drop(store);
 
         // A replay-only channel can be selected while its server-side thread is temporarily
@@ -492,7 +492,13 @@ impl App {
         // resumed session to the existing widget before clearing the replay gate so model and
         // session state are configured before any preserved queue is considered for delivery.
         if promote_active_thread {
+            // The widget may still contain the transcript rendered while this channel was
+            // replay-only. `thread/resume` is authoritative when it supplies turns, so rebuild
+            // the app-owned transcript before reopening the gate and delivering queued input.
+            self.reset_transcript_state_after_clear();
             self.chat_widget.handle_thread_session(session);
+            self.chat_widget
+                .replay_thread_turns(turns, ReplayKind::ThreadSnapshot);
             self.chat_widget.set_replay_only_thread(false);
             if self.agent_navigation.is_parent_owned(thread_id) {
                 self.chat_widget.set_parent_owned_thread();
