@@ -14,6 +14,11 @@ use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
 
+const AGENT_PICKER_LOADED_PAGE_SIZE: u32 = 50;
+const AGENT_PICKER_LOADED_MAX_PAGES: usize = 128;
+const AGENT_PICKER_LOADED_MAX_THREADS: usize =
+    AGENT_PICKER_LOADED_PAGE_SIZE as usize * AGENT_PICKER_LOADED_MAX_PAGES;
+
 #[derive(Clone, Copy)]
 pub(super) enum ThreadAttachPresentation {
     SessionLineage,
@@ -848,19 +853,52 @@ impl App {
             return LoadedSubagentBackfill::default();
         };
 
-        let loaded_thread_ids = match app_server
-            .thread_loaded_list(ThreadLoadedListParams {
-                cursor: None,
-                limit: None,
-            })
-            .await
-        {
-            Ok(response) => response.data,
-            Err(err) => {
-                tracing::warn!(%err, "failed to list loaded threads for subagent backfill");
+        // The loaded-thread endpoint is cursor paginated. Keep the scan finite and fail closed
+        // when a server returns an oversized page, repeats a cursor, or never exhausts its pages.
+        // An unbounded or ambiguous scan must not turn into an unbounded set of thread/read calls.
+        let mut cursor = None;
+        let mut seen_cursors = HashSet::new();
+        let mut loaded_thread_ids = Vec::new();
+        for _ in 0..AGENT_PICKER_LOADED_MAX_PAGES {
+            let response = match app_server
+                .thread_loaded_list(ThreadLoadedListParams {
+                    cursor,
+                    limit: Some(AGENT_PICKER_LOADED_PAGE_SIZE),
+                })
+                .await
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    tracing::warn!(%err, "failed to list loaded threads for subagent backfill");
+                    return LoadedSubagentBackfill::default();
+                }
+            };
+            if response.data.len() > AGENT_PICKER_LOADED_PAGE_SIZE as usize
+                || loaded_thread_ids
+                    .len()
+                    .checked_add(response.data.len())
+                    .map_or(true, |count| count > AGENT_PICKER_LOADED_MAX_THREADS)
+            {
+                tracing::warn!(
+                    "rejecting loaded-thread backfill page outside the picker scan budget"
+                );
                 return LoadedSubagentBackfill::default();
             }
-        };
+            loaded_thread_ids.extend(response.data);
+            let Some(next_cursor) = response.next_cursor else {
+                cursor = None;
+                break;
+            };
+            if !seen_cursors.insert(next_cursor.clone()) {
+                tracing::warn!(%next_cursor, "rejecting repeated loaded-thread pagination cursor");
+                return LoadedSubagentBackfill::default();
+            }
+            cursor = Some(next_cursor);
+        }
+        if cursor.is_some() {
+            tracing::warn!("rejecting loaded-thread backfill after exhausting its page budget");
+            return LoadedSubagentBackfill::default();
+        }
 
         let mut threads = Vec::new();
         let mut had_read_error = false;
