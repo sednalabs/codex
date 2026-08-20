@@ -424,6 +424,16 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> Result<bool> {
+        self.attach_live_thread_for_selection_with_tui(app_server, thread_id, None)
+            .await
+    }
+
+    async fn attach_live_thread_for_selection_with_tui(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+        mut tui: Option<&mut tui::Tui>,
+    ) -> Result<bool> {
         if let Some(channel) = self.thread_event_channels.get(&thread_id)
             && channel.attachment() == ThreadEventAttachment::Live
         {
@@ -495,6 +505,9 @@ impl App {
             // The widget may still contain the transcript rendered while this channel was
             // replay-only. `thread/resume` is authoritative when it supplies turns, so rebuild
             // the app-owned transcript before reopening the gate and delivering queued input.
+            if let Some(tui) = tui.as_deref_mut() {
+                self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
+            }
             self.reset_transcript_state_after_clear();
             self.chat_widget.handle_thread_session(session);
             self.chat_widget
@@ -586,7 +599,7 @@ impl App {
                 .await;
             if self.should_attach_live_thread_for_selection(thread_id) {
                 let live_attached = self
-                    .attach_live_thread_for_selection(app_server, thread_id)
+                    .attach_live_thread_for_selection_with_tui(app_server, thread_id, Some(tui))
                     .await?;
                 if live_attached {
                     self.chat_widget.set_replay_only_thread(false);
@@ -617,7 +630,7 @@ impl App {
         let mut attached_replay_only = false;
         if self.should_attach_live_thread_for_selection(thread_id) {
             match self
-                .attach_live_thread_for_selection(app_server, thread_id)
+                .attach_live_thread_for_selection_with_tui(app_server, thread_id, Some(tui))
                 .await
             {
                 Ok(live_attached) => {

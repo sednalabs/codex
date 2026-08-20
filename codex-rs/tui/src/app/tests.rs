@@ -2119,6 +2119,7 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
             compaction_events_in_turn: 0,
             final_model: None,
             model_snapshot: None,
+            provider_usage: None,
             completed_at: None,
             duration_ms: None,
             time_to_first_token_ms: None,
@@ -2187,12 +2188,11 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
             app.transcript_cells.push(cell.into());
         }
     }
-    assert!(app
-        .transcript_cells
-        .iter()
-        .any(|cell| cell.display_lines(120).iter().any(|line| {
-            line.to_string().contains("stale replay output")
-        })));
+    assert!(app.transcript_cells.iter().any(|cell| {
+        cell.display_lines(120)
+            .iter()
+            .any(|line| line.to_string().contains("stale replay output"))
+    }));
 
     // Seed the same queued follow-up state that a replay-only snapshot restores.
     app.chat_widget.set_replay_only_thread(false);
@@ -2239,12 +2239,12 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
             .any(|transcript| transcript.contains("authoritative resumed output")),
         "promotion should emit the authoritative resumed history"
     );
-    assert!(app
-        .transcript_cells
-        .iter()
-        .all(|cell| !cell.display_lines(120).iter().any(|line| {
-            line.to_string().contains("stale replay output")
-        })));
+    assert!(app.transcript_cells.iter().all(|cell| {
+        !cell
+            .display_lines(120)
+            .iter()
+            .any(|line| line.to_string().contains("stale replay output"))
+    }));
     assert!(
         matches!(next_user_turn_op(&mut op_rx), Op::UserTurn { .. }),
         "promotion should drain the preserved queue after live session configuration"
