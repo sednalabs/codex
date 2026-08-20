@@ -439,9 +439,21 @@ fn dynamic_tool_for_merge_test(
 }
 
 fn assert_browser_merge_preserves_persistent_tool() {
-    let active_browser = dynamic_tool_for_merge_test("browser_step", false, true);
-    let persisted_helper = dynamic_tool_for_merge_test("persistent_helper", true, false);
-    let stale_browser = dynamic_tool_for_merge_test("browser_step", true, true);
+    let active_browser = dynamic_tool_for_merge_test(
+        "browser_step",
+        /*persist_on_resume*/ false,
+        /*browser*/ true,
+    );
+    let persisted_helper = dynamic_tool_for_merge_test(
+        "persistent_helper",
+        /*persist_on_resume*/ true,
+        /*browser*/ false,
+    );
+    let stale_browser = dynamic_tool_for_merge_test(
+        "browser_step",
+        /*persist_on_resume*/ true,
+        /*browser*/ true,
+    );
 
     let merged = merge_dynamic_tools(
         vec![active_browser.clone()],
