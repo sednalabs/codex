@@ -292,10 +292,15 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         ],
     );
     let (proxy_captures, proxy_exports) = build_proxy_env_exports();
+    let non_inheritable_tool_captures = build_non_inheritable_env_tool_captures();
     let non_inheritable_scrub = build_non_inheritable_env_scrub();
     let runtime_path_prepend_exports =
         runtime_path_prepends.shell_exports_after_snapshot(explicit_env_overrides);
-    let override_captures = join_shell_blocks([override_captures, proxy_captures]);
+    let override_captures = join_shell_blocks([
+        non_inheritable_tool_captures,
+        override_captures,
+        proxy_captures,
+    ]);
     let override_exports = join_shell_blocks([
         non_inheritable_scrub,
         override_exports,
@@ -315,8 +320,15 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
     vec![shell_path.to_string(), "-c".to_string(), rewritten_script]
 }
 
+fn build_non_inheritable_env_tool_captures() -> String {
+    // Resolve these before sourcing the snapshot so a restored PATH or shell function cannot
+    // redirect the scrub's command substitutions. `command -p` searches the shell's default
+    // utility path rather than the snapshot-controlled PATH.
+    "__codex_env=$(command -p -v env)\n__codex_sed=$(command -p -v sed)\n__codex_tr=$(command -p -v tr)".to_string()
+}
+
 fn build_non_inheritable_env_scrub() -> String {
-    "for __codex_snapshot_name in $(env | sed 's/=.*//'); do\n  case \"$(printf '%s' \"$__codex_snapshot_name\" | tr '[:lower:]' '[:upper:]')\" in\n    OPENAI_FEDERATION_RULE_ID|OPENAI_IDENTITY_TOKEN_FILE) unset \"$__codex_snapshot_name\" ;;\n  esac\ndone".to_string()
+    "for __codex_snapshot_name in $(\"$__codex_env\" | \"$__codex_sed\" 's/=.*//'); do\n  case \"$(printf '%s' \"$__codex_snapshot_name\" | \"$__codex_tr\" '[:lower:]' '[:upper:]')\" in\n    OPENAI_FEDERATION_RULE_ID|OPENAI_IDENTITY_TOKEN_FILE) unset \"$__codex_snapshot_name\" ;;\n  esac\ndone\nunset __codex_env __codex_sed __codex_tr".to_string()
 }
 
 fn build_override_exports(
