@@ -475,7 +475,7 @@ impl App {
         Ok(())
     }
 
-    fn is_replay_only_thread(&self, thread_id: ThreadId) -> bool {
+    pub(super) fn is_replay_only_thread(&self, thread_id: ThreadId) -> bool {
         self.thread_event_channels
             .get(&thread_id)
             .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
@@ -484,7 +484,7 @@ impl App {
     /// Only operations which inspect local/server state are valid while a transcript is detached.
     /// Keep this allow-list deliberately narrow: approvals, context changes, and all turn/control
     /// operations can mutate the underlying thread even when they look harmless in the UI.
-    fn replay_safe_op(op: &AppCommand) -> bool {
+    pub(super) fn replay_safe_op(op: &AppCommand) -> bool {
         matches!(op, AppCommand::ListSkills { .. })
     }
 
