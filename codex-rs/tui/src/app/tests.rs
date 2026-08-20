@@ -2190,7 +2190,7 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
         }
     }
     assert!(app.transcript_cells.iter().any(|cell| {
-        cell.display_lines(120)
+        cell.display_lines(/*width*/ 120)
             .iter()
             .any(|line| line.to_string().contains("stale replay output"))
     }));
@@ -2198,7 +2198,8 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
     // Seed the same queued follow-up state that a replay-only snapshot restores.
     app.chat_widget
         .set_replay_only_thread(/*replay_only*/ false);
-    app.chat_widget.set_queue_autosend_suppressed(true);
+    app.chat_widget
+        .set_queue_autosend_suppressed(/*suppressed*/ true);
     app.chat_widget.submit_user_message_with_mode(
         "queued during replay".to_string(),
         CollaborationModeMask {
@@ -2220,7 +2221,8 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
             preserve_in_flight_turn: true,
         },
     );
-    app.chat_widget.set_queue_autosend_suppressed(false);
+    app.chat_widget
+        .set_queue_autosend_suppressed(/*suppressed*/ false);
 
     let resumed_model = started.session.model.clone();
     assert!(
@@ -2243,7 +2245,7 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
     );
     assert!(app.transcript_cells.iter().all(|cell| {
         !cell
-            .display_lines(120)
+            .display_lines(/*width*/ 120)
             .iter()
             .any(|line| line.to_string().contains("stale replay output"))
     }));
@@ -2274,14 +2276,14 @@ async fn replay_only_thread_rejects_direct_user_turn_without_server_mutation() {
         }],
         app.config.cwd.to_path_buf(),
         AskForApproval::OnRequest,
-        None,
+        /*active_permission_profile*/ None,
         model,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
+        /*effort*/ None,
+        /*summary*/ None,
+        /*service_tier*/ None,
+        /*final_output_json_schema*/ None,
+        /*collaboration_mode*/ None,
+        /*personality*/ None,
     );
 
     app.submit_thread_op(&mut app_server, thread_id, op)
