@@ -900,24 +900,30 @@ class SednaReleaseInstallerTest(unittest.TestCase):
                 )
                 self.assertEqual(current_target, "previous-managed-release")
 
-    def test_automatic_newer_stable_candidate_reaches_release_metadata_without_activation(
-        self,
-    ) -> None:
+    def test_automatic_newer_stable_candidate_installs_the_verified_release(self) -> None:
         result, requests, current_target = run_sedna_installer(
             "v1.2.4-sedna.1",
             "1.2.3-sedna.4",
+            successful=True,
         )
 
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("automatic update candidate", result.stderr)
         self.assertEqual(
             requests,
             [
                 "https://api.github.com/repos/sednalabs/codex/releases/latest",
                 "https://api.github.com/repos/sednalabs/codex/releases/tags/v1.2.4-sedna.1",
+                "https://api.github.com/repos/sednalabs/codex/releases/assets/101",
+                "https://api.github.com/repos/sednalabs/codex/releases/assets/102",
+                "https://api.github.com/repos/sednalabs/codex/releases/assets/103",
             ],
         )
-        self.assertEqual(current_target, "previous-managed-release")
+        self.assertTrue(
+            current_target.endswith("/releases/v1.2.4-sedna.1"),
+            current_target,
+        )
+        self.assertIn("installed sednalabs/codex@v1.2.4-sedna.1", result.stdout)
 
     def test_manual_prerelease_remains_an_explicit_opt_in(self) -> None:
         result, requests, current_target = run_sedna_installer(
@@ -938,12 +944,88 @@ class SednaReleaseInstallerTest(unittest.TestCase):
         self.assertEqual(current_target, "previous-managed-release")
 
 
+def create_sedna_release(root: Path, release_tag: str) -> dict[str, Path]:
+    release_version = release_tag.removeprefix("v")
+    target = "x86_64-unknown-linux-gnu"
+    archive_name = f"codex-sedna-{release_version}-{target}.tar.gz"
+    release_root = root / "sedna-release"
+    payload_root = release_root / "payload"
+    payload_root.mkdir(parents=True)
+
+    write_executable(
+        payload_root / "codex",
+        "#!/bin/sh\n"
+        'case "${1:-}" in\n'
+        f"  --version) printf 'codex {release_version}\\n' ;;\n"
+        "  --help|exec|app-server) exit 0 ;;\n"
+        "  *) exit 0 ;;\n"
+        "esac\n",
+    )
+    write_executable(payload_root / "codex-responses-api-proxy", "#!/bin/sh\nexit 0\n")
+
+    archive = release_root / archive_name
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(payload_root / "codex", arcname="codex")
+        tar.add(
+            payload_root / "codex-responses-api-proxy",
+            arcname="codex-responses-api-proxy",
+        )
+
+    metadata = release_root / "RELEASE-METADATA.json"
+    metadata.write_text(
+        json.dumps(
+            {
+                "release_tag": release_tag,
+                "release_version": release_version,
+                "target": target,
+                "repository": "sednalabs/codex",
+            }
+        ),
+        encoding="utf-8",
+    )
+    checksum = release_root / "SHA256SUMS.txt"
+    checksum.write_text(
+        "\n".join(
+            (
+                f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive_name}",
+                f"{hashlib.sha256(metadata.read_bytes()).hexdigest()}  {metadata.name}",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    release_json = release_root / "release.json"
+    release_json.write_text(
+        json.dumps(
+            {
+                "tag_name": release_tag,
+                "draft": False,
+                "prerelease": False,
+                "published_at": "2026-08-01T00:00:00Z",
+                "assets": [
+                    {"name": archive_name, "id": 101},
+                    {"name": checksum.name, "id": 102},
+                    {"name": metadata.name, "id": 103},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "archive": archive,
+        "checksum": checksum,
+        "metadata": metadata,
+        "release_json": release_json,
+    }
+
+
 def run_sedna_installer(
     selected_tag: str,
     current_version: str,
     *,
     allow_prerelease: bool = False,
     use_latest: bool = True,
+    successful: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], str]:
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
@@ -952,6 +1034,7 @@ def run_sedna_installer(
         latest_json = root / "latest-release.json"
         latest_json.write_text(json.dumps({"tag_name": selected_tag}), encoding="utf-8")
         request_log = root / "requests.log"
+        sedna_assets = create_sedna_release(root, selected_tag) if successful else {}
 
         fake_uname = bin_dir / "uname"
         fake_uname.write_text(
@@ -980,7 +1063,17 @@ def run_sedna_installer(
             '  cp "$CODEX_TEST_LATEST_JSON" "$output"\n'
             "  exit 0\n"
             "fi\n"
-            "exit 22\n",
+            'if [[ "$url" == */releases/tags/* && -n "${CODEX_TEST_SEDNA_RELEASE_JSON:-}" ]]; then\n'
+            '  cp "$CODEX_TEST_SEDNA_RELEASE_JSON" "$output"\n'
+            "  exit 0\n"
+            "fi\n"
+            'case "$url" in\n'
+            '  */releases/assets/101) cp "$CODEX_TEST_SEDNA_ARCHIVE" "$output" ;;\n'
+            '  */releases/assets/102) cp "$CODEX_TEST_SEDNA_CHECKSUM" "$output" ;;\n'
+            '  */releases/assets/103) cp "$CODEX_TEST_SEDNA_METADATA" "$output" ;;\n'
+            "  *) exit 22 ;;\n"
+            "esac\n"
+            "exit 0\n",
             encoding="utf-8",
         )
         fake_curl.chmod(0o755)
@@ -997,6 +1090,12 @@ def run_sedna_installer(
             {
                 "CODEX_TEST_LATEST_JSON": str(latest_json),
                 "CODEX_TEST_REQUEST_LOG": str(request_log),
+                "CODEX_TEST_SEDNA_ARCHIVE": str(sedna_assets.get("archive", "")),
+                "CODEX_TEST_SEDNA_CHECKSUM": str(sedna_assets.get("checksum", "")),
+                "CODEX_TEST_SEDNA_METADATA": str(sedna_assets.get("metadata", "")),
+                "CODEX_TEST_SEDNA_RELEASE_JSON": str(
+                    sedna_assets.get("release_json", "")
+                ),
                 "HOME": str(home),
                 "PATH": f"{bin_dir}:/usr/bin:/bin",
             }

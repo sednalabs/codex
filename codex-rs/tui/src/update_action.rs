@@ -23,11 +23,6 @@ pub enum UpdateAction {
 }
 
 impl UpdateAction {
-    const UPSTREAM_STANDALONE_UNIX_ARGS: &'static [&'static str] = &[
-        "-c",
-        "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
-    ];
-
     #[cfg(any(not(debug_assertions), test))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
         Self::from_install_context_for_sedna_release(
@@ -116,9 +111,7 @@ impl UpdateAction {
                     "codex".to_string(),
                 ],
             ),
-            UpdateAction::StandaloneUnix => Self::standalone_unix_command_args_for_repository(
-                crate::version::CODEX_RELEASE_REPOSITORY,
-            ),
+            UpdateAction::StandaloneUnix => Self::sedna_standalone_unix_command_args(),
             UpdateAction::StandaloneWindows => (
                 "powershell",
                 vec![
@@ -132,29 +125,17 @@ impl UpdateAction {
         }
     }
 
-    fn standalone_unix_command_args_for_repository(
-        repository: &str,
-    ) -> (&'static str, Vec<String>) {
-        if repository.eq_ignore_ascii_case("sednalabs/codex") {
-            (
-                "bash",
-                vec![
-                    "-c".to_string(),
-                    format!(
-                        "curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset | CODEX_NON_INTERACTIVE=1 bash -s -- --repository sednalabs/codex --release-tag latest --require-newer-than {}",
-                        crate::version::CODEX_CLI_VERSION,
-                    ),
-                ],
-            )
-        } else {
-            (
-                "sh",
-                Self::UPSTREAM_STANDALONE_UNIX_ARGS
-                    .iter()
-                    .map(|argument| (*argument).to_string())
-                    .collect(),
-            )
-        }
+    fn sedna_standalone_unix_command_args() -> (&'static str, Vec<String>) {
+        (
+            "bash",
+            vec![
+                "-c".to_string(),
+                format!(
+                    "curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset | CODEX_NON_INTERACTIVE=1 bash -s -- --repository sednalabs/codex --release-tag latest --require-newer-than {}",
+                    crate::version::CODEX_CLI_VERSION,
+                ),
+            ],
+        )
     }
 
     /// Returns string representation of the command-line arguments for invoking the update.
@@ -370,20 +351,9 @@ mod tests {
     }
 
     #[test]
-    fn standalone_update_commands_rerun_latest_installer() {
+    fn standalone_unix_update_uses_the_fork_installer() {
         assert_eq!(
-            UpdateAction::standalone_unix_command_args_for_repository("openai/codex"),
-            (
-                "sh",
-                vec![
-                    "-c".to_string(),
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
-                        .to_string(),
-                ],
-            )
-        );
-        assert_eq!(
-            UpdateAction::standalone_unix_command_args_for_repository("sednalabs/codex"),
+            UpdateAction::sedna_standalone_unix_command_args(),
             (
                 "bash",
                 vec![
