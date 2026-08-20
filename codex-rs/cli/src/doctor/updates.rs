@@ -21,6 +21,10 @@ use super::run_command;
 
 const VERSION_FILE_NAME: &str = "version.json";
 const SEDNA_RELEASE_REPOSITORY: &str = "sednalabs/codex";
+const LOCALLY_CONSISTENT_SUMMARY: &str = "update configuration is locally consistent";
+const NEWER_SEDNA_RELEASE_SUMMARY: &str = "newer Sedna release is available";
+const INVALID_SEDNA_VERSION_SUMMARY: &str = "Sedna release versions could not be compared";
+const SEDNA_RELEASE_PROBE_WARNING_SUMMARY: &str = "Sedna release probe failed";
 
 /// Builds the update-health row for the current installation.
 ///
@@ -40,12 +44,17 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
     push_cached_version_details(&mut details, &version_file);
 
     let mut status = CheckStatus::Ok;
-    let summary = "update configuration is locally consistent".to_string();
+    let mut summary = LOCALLY_CONSISTENT_SUMMARY.to_string();
     if is_sedna_release_channel() {
         match fetch_latest_sedna_release_version() {
             Ok(latest_version) => {
                 details.push(format!("latest Sedna release: {latest_version}"));
-                match is_newer_sedna_release(&latest_version, RELEASE_VERSION) {
+                let comparison = is_newer_sedna_release(&latest_version, RELEASE_VERSION);
+                let (comparison_status, comparison_summary) =
+                    sedna_release_comparison_status(comparison);
+                status = status.max(comparison_status);
+                summary = comparison_summary.to_string();
+                match comparison {
                     Some(true) => {
                         details
                             .push("latest version status: newer version is available".to_string());
@@ -56,7 +65,6 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
                         );
                     }
                     None => {
-                        status = status.max(CheckStatus::Warning);
                         details.push(
                             "latest version status: running version is not a valid Sedna release"
                                 .to_string(),
@@ -65,7 +73,9 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
                 }
             }
             Err(err) => {
-                status = status.max(CheckStatus::Warning);
+                let (probe_status, probe_summary) = sedna_release_probe_failure_status();
+                status = status.max(probe_status);
+                summary = probe_summary.to_string();
                 details.push(format!("latest version probe: {err}"));
             }
         }
@@ -74,6 +84,18 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
     }
 
     DoctorCheck::new("updates.status", "updates", status, summary).details(details)
+}
+
+fn sedna_release_comparison_status(is_newer: Option<bool>) -> (CheckStatus, &'static str) {
+    match is_newer {
+        Some(true) => (CheckStatus::Ok, NEWER_SEDNA_RELEASE_SUMMARY),
+        Some(false) => (CheckStatus::Ok, LOCALLY_CONSISTENT_SUMMARY),
+        None => (CheckStatus::Warning, INVALID_SEDNA_VERSION_SUMMARY),
+    }
+}
+
+const fn sedna_release_probe_failure_status() -> (CheckStatus, &'static str) {
+    (CheckStatus::Warning, SEDNA_RELEASE_PROBE_WARNING_SUMMARY)
 }
 
 fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
@@ -220,14 +242,19 @@ fn is_newer_sedna_release(latest: &str, current: &str) -> Option<bool> {
 #[derive(Debug, Eq, PartialEq)]
 struct SednaReleaseVersion {
     core: [String; 3],
-    prerelease: Vec<String>,
+    track_prerelease: Vec<String>,
+    ordinal: String,
 }
 
 impl SednaReleaseVersion {
     fn parse(version: &str) -> Option<Self> {
         let version = parse_sedna_release_tag(&format!("v{version}"))?;
         let version_without_metadata = version.split_once('+').map_or(version.as_str(), |(v, _)| v);
-        let (core, prerelease) = version_without_metadata.split_once('-')?;
+        let (track, ordinal) = version_without_metadata.rsplit_once("-sedna.")?;
+        let (core, track_prerelease) = match track.split_once('-') {
+            Some((core, prerelease)) => (core, prerelease.split('.').map(str::to_owned).collect()),
+            None => (track, Vec::new()),
+        };
         let mut core_parts = core.split('.').map(str::to_owned);
         let core = [core_parts.next()?, core_parts.next()?, core_parts.next()?];
         if core_parts.next().is_some() {
@@ -235,7 +262,8 @@ impl SednaReleaseVersion {
         }
         Some(Self {
             core,
-            prerelease: prerelease.split('.').map(str::to_owned).collect(),
+            track_prerelease,
+            ordinal: ordinal.to_string(),
         })
     }
 }
@@ -248,22 +276,40 @@ impl Ord for SednaReleaseVersion {
                 return ordering;
             }
         }
-        for (left, right) in self.prerelease.iter().zip(&other.prerelease) {
-            let ordering = match (
-                left.bytes().all(|byte| byte.is_ascii_digit()),
-                right.bytes().all(|byte| byte.is_ascii_digit()),
-            ) {
-                (true, true) => compare_numeric_identifiers(left, right),
-                (true, false) => Ordering::Less,
-                (false, true) => Ordering::Greater,
-                (false, false) => left.cmp(right),
-            };
-            if ordering != Ordering::Equal {
-                return ordering;
+        let prerelease_ordering = match (
+            self.track_prerelease.is_empty(),
+            other.track_prerelease.is_empty(),
+        ) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            (false, false) => {
+                compare_prerelease_identifiers(&self.track_prerelease, &other.track_prerelease)
             }
+        };
+        if prerelease_ordering != Ordering::Equal {
+            return prerelease_ordering;
         }
-        self.prerelease.len().cmp(&other.prerelease.len())
+        compare_numeric_identifiers(&self.ordinal, &other.ordinal)
     }
+}
+
+fn compare_prerelease_identifiers(left: &[String], right: &[String]) -> Ordering {
+    for (left, right) in left.iter().zip(right) {
+        let ordering = match (
+            left.bytes().all(|byte| byte.is_ascii_digit()),
+            right.bytes().all(|byte| byte.is_ascii_digit()),
+        ) {
+            (true, true) => compare_numeric_identifiers(left, right),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => left.cmp(right),
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    left.len().cmp(&right.len())
 }
 
 impl PartialOrd for SednaReleaseVersion {
@@ -400,10 +446,34 @@ mod tests {
             is_newer_sedna_release("1.2.3-alpha.2-sedna.1", "1.2.3-alpha.1-sedna.9"),
             Some(true)
         );
+        assert_eq!(
+            is_newer_sedna_release("1.2.3-alpha.10-sedna.1", "1.2.3-alpha.2-sedna.99"),
+            Some(true)
+        );
         assert_eq!(is_newer_sedna_release("1.2.3", "1.2.2-sedna.1"), None);
         assert_eq!(
             is_newer_sedna_release("1.2.3-sedna.2", "1.2.2+upstream.3"),
             None
+        );
+    }
+
+    #[test]
+    fn sedna_release_summary_reports_newer_and_warning_states() {
+        assert_eq!(
+            sedna_release_comparison_status(Some(true)),
+            (CheckStatus::Ok, NEWER_SEDNA_RELEASE_SUMMARY)
+        );
+        assert_eq!(
+            sedna_release_comparison_status(Some(false)),
+            (CheckStatus::Ok, LOCALLY_CONSISTENT_SUMMARY)
+        );
+        assert_eq!(
+            sedna_release_comparison_status(None),
+            (CheckStatus::Warning, INVALID_SEDNA_VERSION_SUMMARY)
+        );
+        assert_eq!(
+            sedna_release_probe_failure_status(),
+            (CheckStatus::Warning, SEDNA_RELEASE_PROBE_WARNING_SUMMARY)
         );
     }
 

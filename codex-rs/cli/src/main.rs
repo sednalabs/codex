@@ -809,10 +809,29 @@ fn run_update_command() -> anyhow::Result<()> {
     {
         let Some(action) = codex_tui::get_update_action() else {
             anyhow::bail!(
-                "Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/"
+                "Could not detect the Codex installation method. Please update manually: {}",
+                update_manual_install_url()
             );
         };
         run_update_action(action)
+    }
+}
+
+fn update_manual_install_url() -> &'static str {
+    update_manual_install_url_for_release_identity(
+        option_env!("CODEX_RELEASE_REPOSITORY"),
+        option_env!("CODEX_RELEASE_TAG_PREFIX"),
+    )
+}
+
+const fn update_manual_install_url_for_release_identity(
+    repository: Option<&str>,
+    tag_prefix: Option<&str>,
+) -> &'static str {
+    if matches!(repository, Some("sednalabs/codex")) && matches!(tag_prefix, Some("v")) {
+        "https://github.com/sednalabs/codex/releases/latest"
+    } else {
+        "https://developers.openai.com/codex/cli/"
     }
 }
 
@@ -2596,6 +2615,22 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_tui::TokenUsage;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn manual_update_url_uses_sedna_releases_only_for_sedna_identity() {
+        assert_eq!(
+            update_manual_install_url_for_release_identity(Some("sednalabs/codex"), Some("v")),
+            "https://github.com/sednalabs/codex/releases/latest"
+        );
+        assert_eq!(
+            update_manual_install_url_for_release_identity(Some("openai/codex"), Some("v")),
+            "https://developers.openai.com/codex/cli/"
+        );
+        assert_eq!(
+            update_manual_install_url_for_release_identity(Some("sednalabs/codex"), None),
+            "https://developers.openai.com/codex/cli/"
+        );
+    }
 
     #[tokio::test]
     async fn updater_http_client_factory_honors_respect_system_proxy() {
