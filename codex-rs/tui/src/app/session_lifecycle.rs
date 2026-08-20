@@ -10,8 +10,8 @@ use crate::app_server_session::thread_blocks_direct_input;
 use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_selected_description;
-use codex_config::types::ResumeCwdMode;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
 
@@ -68,7 +68,9 @@ mod loaded_thread_page_tests {
 
     fn page(data_len: usize, next_cursor: Option<&str>) -> ThreadLoadedListResponse {
         ThreadLoadedListResponse {
-            data: (0..data_len).map(|index| format!("thread-{index}")).collect(),
+            data: (0..data_len)
+                .map(|index| format!("thread-{index}"))
+                .collect(),
             next_cursor: next_cursor.map(str::to_owned),
         }
     }
@@ -99,11 +101,7 @@ mod loaded_thread_page_tests {
     fn rejects_repeated_cursors_without_following_the_cycle() {
         let mut ids = Vec::new();
         let mut cursors = HashSet::from(["cursor-1".to_string()]);
-        let result = accept_loaded_thread_page(
-            &mut ids,
-            &mut cursors,
-            page(1, Some("cursor-1")),
-        );
+        let result = accept_loaded_thread_page(&mut ids, &mut cursors, page(1, Some("cursor-1")));
         assert_eq!(result, Err(LoadedThreadPageRejection::RepeatedCursor));
         assert_eq!(ids, vec!["thread-0"]);
     }
