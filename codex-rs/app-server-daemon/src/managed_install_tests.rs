@@ -247,9 +247,11 @@ async fn release_validation_fails_closed_for_outside_and_unverified_metadata() {
 
 fn write_release(standalone: &Path, release_name: &str, metadata: &str) -> PathBuf {
     let release = standalone.join("releases").join(release_name);
-    fs::create_dir_all(&release).expect("release directory");
-    fs::write(release.join("codex"), b"managed codex binary").expect("managed binary");
-    fs::write(release.join("RELEASE-METADATA.json"), metadata).expect("release metadata");
+    fs::create_dir_all(&release).unwrap_or_else(|err| panic!("release directory: {err}"));
+    fs::write(release.join("codex"), b"managed codex binary")
+        .unwrap_or_else(|err| panic!("managed binary: {err}"));
+    fs::write(release.join("RELEASE-METADATA.json"), metadata)
+        .unwrap_or_else(|err| panic!("release metadata: {err}"));
     write_workflow_checksums(&release, metadata.as_bytes());
     write_installed_checksums(&release, metadata.as_bytes(), b"managed codex binary");
     release
@@ -264,7 +266,7 @@ fn write_workflow_checksums(release: &Path, metadata: &[u8]) {
             sha256_hex(metadata),
         ),
     )
-    .expect("workflow checksums");
+    .unwrap_or_else(|err| panic!("workflow checksums: {err}"));
 }
 
 fn write_installed_checksums(release: &Path, metadata: &[u8], executable: &[u8]) {
@@ -276,7 +278,7 @@ fn write_installed_checksums(release: &Path, metadata: &[u8], executable: &[u8])
             sha256_hex(executable),
         ),
     )
-    .expect("release checksums");
+    .unwrap_or_else(|err| panic!("release checksums: {err}"));
 }
 
 fn release_metadata(repository: &str, tag: &str, version: &str, target: &str) -> String {
