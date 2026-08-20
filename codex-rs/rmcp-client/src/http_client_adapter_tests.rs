@@ -144,3 +144,36 @@ async fn accepts_empty_event_stream_for_one_way_client_messages() {
         "expected empty event-stream response to be accepted, got {result:?}"
     );
 }
+
+#[tokio::test]
+async fn accepts_no_content_length_empty_event_stream_for_one_way_message() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/event-stream"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let adapter = StreamableHttpClientAdapter::new(
+        Environment::default_for_tests().get_http_client(),
+        HeaderMap::new(),
+        /*auth_provider*/ None,
+    );
+    let result = adapter
+        .post_message(
+            Arc::from(format!("{}/mcp", server.uri())),
+            ClientJsonRpcMessage::notification(ClientNotification::InitializedNotification(
+                InitializedNotification::default(),
+            )),
+            /*session_id*/ None,
+            /*auth_token*/ None,
+            HashMap::new(),
+        )
+        .await;
+
+    assert!(
+        matches!(result, Ok(StreamableHttpPostResponse::Accepted)),
+        "expected no-content-length empty event-stream response to be accepted, got {result:?}"
+    );
+}
