@@ -36,7 +36,8 @@ use core_test_support::PathBufExt;
 use pretty_assertions::assert_eq;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::process::Stdio;
 use std::sync::Arc;
 use tempfile::tempdir;
 
@@ -817,7 +818,7 @@ fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
     .expect("make startup hook executable");
     std::fs::write(
         &snapshot_path,
-        format!("PATH=/definitely-not-a-real-path\nenv() {{ :; }}\nsed() {{ :; }}\ntr() {{ :; }}\nprintf() {{ :; }}\nunset() {{ :; }}\ncommand() {{ :; }}\n__codex_env=/tmp/hostile-env\n__codex_sed=/tmp/hostile-sed\ncommand unset __codex_tr\nexport BASH_ENV='{}'\nexport OpenAI_Federation_Rule_Id='/run/snapshot-rule'\nexport openai_identity_token_file='/run/snapshot-token'\n", startup_path.display()),
+        format!("PATH=/definitely-not-a-real-path\nenv() {{ :; }}\nsed() {{ :; }}\ntr() {{ :; }}\nprintf() {{ :; }}\nunset() {{ :; }}\ncommand() {{ :; }}\n__codex_snapshot_env=/tmp/hostile-env\n__codex_snapshot_sed=/tmp/hostile-sed\ncommand unset __codex_tr\nexport BASH_ENV='{}'\nexport OpenAI_Federation_Rule_Id='/run/snapshot-rule'\nexport openai_identity_token_file='/run/snapshot-token'\n", startup_path.display()),
     )
     .expect("write snapshot");
     let (session_shell, shell_snapshot) =
