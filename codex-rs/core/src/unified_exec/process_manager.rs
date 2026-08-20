@@ -71,7 +71,6 @@ use codex_protocol::error::SandboxErr;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::TerminalInteractionEvent;
-use codex_protocol::shell_environment::is_non_inheritable_env_var;
 use codex_sandboxing::SandboxCommand;
 use codex_tools::ToolName;
 use codex_utils_output_truncation::approx_tokens_from_byte_count;
@@ -93,6 +92,18 @@ const NETWORK_ACCESS_DENIED_MESSAGE: &str =
     "Network access was denied by the Codex sandbox network proxy.";
 const LATE_NETWORK_DENIAL_GRACE_PERIOD: Duration = Duration::from_millis(100);
 const INTERRUPT: &str = "\u{3}";
+
+// Keep launch-context credentials out of model-reachable child processes. The
+// protocol-level helper for this policy landed after the downstream base used
+// by this branch, so keep the narrow predicate local to this propagation seam.
+const NON_INHERITABLE_ENV_VARS: [&str; 2] =
+    ["OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE"];
+
+fn is_non_inheritable_env_var(name: &str) -> bool {
+    NON_INHERITABLE_ENV_VARS
+        .iter()
+        .any(|restricted| restricted.eq_ignore_ascii_case(name))
+}
 
 /// Test-only override for deterministic unified exec process IDs.
 ///
