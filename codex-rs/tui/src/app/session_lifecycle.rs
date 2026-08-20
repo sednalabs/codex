@@ -40,6 +40,13 @@ fn persisted_picker_thread_is_running(status: codex_app_server_protocol::ThreadS
     )
 }
 
+fn persisted_picker_thread_is_closed(
+    status: codex_app_server_protocol::ThreadStatus,
+    already_closed: bool,
+) -> bool {
+    already_closed || matches!(status, codex_app_server_protocol::ThreadStatus::NotLoaded)
+}
+
 impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         let backfill = self.backfill_loaded_subagent_threads(app_server).await;
@@ -292,10 +299,11 @@ impl App {
                 .thread_event_channels
                 .get(&thread_id)
                 .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
-            let is_closed = matches!(
-                thread.status,
-                codex_app_server_protocol::ThreadStatus::NotLoaded
-            ) && !has_live_channel;
+            let already_closed = self
+                .agent_navigation
+                .get(&thread_id)
+                .is_some_and(|entry| entry.is_closed);
+            let is_closed = persisted_picker_thread_is_closed(thread.status, already_closed);
             self.upsert_agent_picker_thread(
                 thread_id,
                 thread.agent_nickname,
@@ -311,7 +319,9 @@ impl App {
             );
             self.agent_navigation
                 .set_agent_path(thread_id, source_agent_path(&thread.source));
-            if !has_live_channel {
+            if is_closed {
+                self.agent_navigation.mark_stopped(thread_id);
+            } else if !has_live_channel {
                 if persisted_picker_thread_is_running(thread.status) {
                     self.agent_navigation.mark_running(thread_id);
                 } else {
@@ -1376,6 +1386,26 @@ mod tests {
             ThreadStatus::SystemError
         ));
         assert!(!persisted_picker_thread_is_running(ThreadStatus::NotLoaded));
+    }
+
+    #[test]
+    fn persisted_terminal_status_or_thread_closed_event_outweighs_live_attachment() {
+        use codex_app_server_protocol::ThreadStatus;
+
+        assert!(persisted_picker_thread_is_closed(
+            ThreadStatus::NotLoaded,
+            false
+        ));
+        assert!(persisted_picker_thread_is_closed(
+            ThreadStatus::Active {
+                active_flags: vec![]
+            },
+            true
+        ));
+        assert!(!persisted_picker_thread_is_closed(
+            ThreadStatus::Idle,
+            false
+        ));
     }
 
     #[test]
