@@ -14,6 +14,8 @@ mod startup;
 mod turn_submission;
 
 use super::*;
+use app_test_support::create_fake_parented_rollout_with_source;
+use app_test_support::rollout_path;
 use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
@@ -93,6 +95,7 @@ use codex_models_manager::test_support::construct_model_info_offline_for_tests;
 use codex_models_manager::test_support::get_model_offline_for_tests;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
+use codex_protocol::AgentPath;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
@@ -2074,6 +2077,135 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
     assert!(!app.should_attach_live_thread_for_selection(thread_id));
+}
+
+#[test]
+fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+        let root = app_server
+            .start_thread(app.chat_widget.config_ref())
+            .await?;
+        let root_thread_id = root.session.thread_id;
+        app.enqueue_primary_thread_session(root.session, root.turns)
+            .await?;
+
+        let child_timestamp = "2026-01-01T00-00-01";
+        let child_thread_id = ThreadId::from_string(
+            &create_fake_parented_rollout_with_source(
+                app.config.codex_home.as_path(),
+                child_timestamp,
+                "2026-01-01T00:00:01Z",
+                "Saved child message",
+                Some(app.config.model_provider_id.as_str()),
+                /*git_info*/ None,
+                RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    agent_path: Some(
+                        AgentPath::try_from("/root/worker").expect("valid agent path"),
+                    ),
+                    agent_nickname: Some("worker".to_string()),
+                    agent_role: Some("worker".to_string()),
+                }),
+                root_thread_id.into(),
+                root_thread_id,
+            )?,
+        )?;
+        let child_rollout = rollout_path(
+            app.config.codex_home.as_path(),
+            child_timestamp,
+            &child_thread_id.to_string(),
+        );
+        codex_rollout::append_rollout_item_to_path(
+            &child_rollout,
+            &RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-child".to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: ModeKind::default(),
+            })),
+        )
+        .await?;
+
+        let persisted = app_server
+            .thread_read(child_thread_id, /*include_turns*/ false)
+            .await?;
+        assert!(matches!(
+            persisted.status,
+            codex_app_server_protocol::ThreadStatus::NotLoaded
+        ));
+        app.agent_navigation.upsert(
+            child_thread_id,
+            Some("worker".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ true,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        app.agent_navigation
+            .set_agent_path(child_thread_id, Some("/root/worker".to_string()));
+
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
+            .await?;
+
+        let entry = app
+            .agent_navigation
+            .get(&child_thread_id)
+            .expect("resumed child should remain in picker navigation");
+        assert!(!entry.is_closed, "successful resume must reopen the picker row");
+        assert!(entry.is_running, "successful resume must clear the stopped barrier");
+        assert_eq!(
+            app.thread_event_channels
+                .get(&child_thread_id)
+                .expect("resumed child channel")
+                .attachment(),
+            ThreadEventAttachment::Live
+        );
+        assert!(
+            !app.thread_event_channels
+                .get(&child_thread_id)
+                .expect("resumed child channel")
+                .store
+                .lock()
+                .await
+                .turns
+                .is_empty(),
+            "selection should replay persisted turns from the live resume"
+        );
+
+        while app_event_rx.try_recv().is_ok() {}
+        app.chat_widget
+            .restore_user_message_to_composer("follow-up on resumed child".into());
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. }))),
+            "live resume must retain writable/queued follow-up behavior"
+        );
+
+        app.agent_navigation.mark_stopped(child_thread_id);
+        app.enqueue_thread_notification(
+            child_thread_id,
+            turn_started_notification(child_thread_id, "turn-next"),
+        )
+        .await?;
+        app.open_agent_picker(&mut app_server).await;
+        let entry = app
+            .agent_navigation
+            .get(&child_thread_id)
+            .expect("resumed child should remain visible in /agent");
+        assert!(!entry.is_closed);
+        assert!(entry.is_running, "later TurnStarted must revive a live picker row");
+
+        app_server.shutdown().await?;
+        Ok(())
+    })
 }
 
 #[tokio::test]
