@@ -146,7 +146,7 @@ async fn accepts_empty_event_stream_for_one_way_client_messages() {
 }
 
 #[tokio::test]
-async fn accepts_no_content_length_empty_event_stream_for_one_way_message() {
+async fn preserves_no_content_length_event_stream_for_one_way_message() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/mcp"))
@@ -173,8 +173,8 @@ async fn accepts_no_content_length_empty_event_stream_for_one_way_message() {
         .await;
 
     assert!(
-        matches!(result, Ok(StreamableHttpPostResponse::Accepted)),
-        "expected no-content-length empty event-stream response to be accepted, got {result:?}"
+        matches!(result, Ok(StreamableHttpPostResponse::Sse(_, _))),
+        "expected no-content-length event-stream response to remain live, got {result:?}"
     );
 }
 
