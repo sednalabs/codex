@@ -1380,12 +1380,6 @@ impl BottomPane {
             .map(ToOwned::to_owned)
     }
 
-    pub(crate) fn is_selection_view_active(&self, view_id: &'static str) -> bool {
-        self.view_stack
-            .last()
-            .is_some_and(|view| view.view_id() == Some(view_id))
-    }
-
     pub(crate) fn dismiss_active_view_if_id(&mut self, view_id: &'static str) -> bool {
         let is_match = self
             .view_stack
