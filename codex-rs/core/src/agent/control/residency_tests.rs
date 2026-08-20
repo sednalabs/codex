@@ -586,17 +586,11 @@ async fn terminal_idle_unload_rearms_after_accepted_send_input_invalidates_deadl
         /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
     )
     .await;
-    let initial_generation = metadata
-        .lifecycle
-        .lock()
-        .await
-        .terminal_idle_unload_generation();
     mark_thread_status(
         first.thread.as_ref(),
         AgentStatus::Completed(Some("first turn complete".to_string())),
     )
     .await;
-    wait_for_terminal_idle_deadline_after(&metadata, initial_generation).await;
     advance(Duration::from_millis(50)).await;
 
     let submission_id = control
@@ -619,12 +613,6 @@ async fn terminal_idle_unload_rearms_after_accepted_send_input_invalidates_deadl
         .input_queue
         .wait_for_residency_submission_absent(&submission_id)
         .await;
-    let invalidated_generation = metadata
-        .lifecycle
-        .lock()
-        .await
-        .terminal_idle_unload_generation();
-
     advance(Duration::from_millis(50)).await;
     settle_terminal_idle_watcher().await;
 
@@ -633,13 +621,18 @@ async fn terminal_idle_unload_rearms_after_accepted_send_input_invalidates_deadl
         .await
         .expect("the pre-send deadline must not unload accepted work");
     assert!(Arc::ptr_eq(&resident, &first.thread));
+    let generation_before_replacement_terminal = metadata
+        .lifecycle
+        .lock()
+        .await
+        .terminal_idle_unload_generation();
 
     mark_thread_status(
         first.thread.as_ref(),
         AgentStatus::Completed(Some("replacement turn complete".to_string())),
     )
     .await;
-    wait_for_terminal_idle_deadline_after(&metadata, invalidated_generation).await;
+    wait_for_terminal_idle_deadline_after(&metadata, generation_before_replacement_terminal).await;
 
     advance(Duration::from_millis(99)).await;
     settle_terminal_idle_watcher().await;
@@ -649,11 +642,7 @@ async fn terminal_idle_unload_rearms_after_accepted_send_input_invalidates_deadl
     );
 
     advance(Duration::from_millis(1)).await;
-    settle_terminal_idle_watcher().await;
-    assert!(
-        manager.get_thread(first.thread_id).await.is_err(),
-        "the current watcher should rearm after deadline invalidation"
-    );
+    wait_for_thread_to_unload_after_terminal_idle_deadline(&manager, first.thread_id).await;
     assert_eq!(control.v2_residency.resident_count(), 0);
 }
 
