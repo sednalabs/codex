@@ -163,7 +163,10 @@ fn no_config_exec_request_scrubs_non_inheritable_env_vars() {
 
     let (policy, env) = exec_server_env_for_request(&request);
     assert!(policy.is_none());
-    assert_eq!(env, HashMap::from([(String::from("KEEP"), String::from("value"))]));
+    assert_eq!(
+        env,
+        HashMap::from([(String::from("KEEP"), String::from("value"))])
+    );
 }
 
 #[test]
