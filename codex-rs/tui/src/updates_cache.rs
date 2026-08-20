@@ -1,6 +1,7 @@
 use crate::legacy_core::config::Config;
 use crate::update_versions::is_actionable_sedna_update;
-use crate::version::{CODEX_RELEASE_REPOSITORY, CODEX_RELEASE_TAG_PREFIX};
+use crate::version::CODEX_RELEASE_REPOSITORY;
+use crate::version::CODEX_RELEASE_TAG_PREFIX;
 use chrono::DateTime;
 use chrono::Utc;
 use serde::Deserialize;
