@@ -17,7 +17,6 @@ use codex_app_server_protocol::ThreadSourceKind;
 use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
-use std::collections::HashMap;
 use std::collections::HashSet;
 
 #[derive(Clone, Copy)]
@@ -251,7 +250,6 @@ impl App {
             let _ = self.agent_navigation.set_next_picker_page_cursor(None);
             return;
         }
-        let mut lineage_cache = HashMap::new();
         let mut lineage_reads = 0;
         for thread in response.data {
             if !matches!(
@@ -265,7 +263,6 @@ impl App {
                     MAX_DEPTH,
                     MAX_LINEAGE_READS,
                     &mut lineage_reads,
-                    &mut lineage_cache,
                 )
                 .await
             {
@@ -316,7 +313,6 @@ impl App {
         max_depth: usize,
         max_reads: usize,
         reads: &mut usize,
-        cache: &mut HashMap<ThreadId, Option<codex_app_server_protocol::Thread>>,
     ) -> bool {
         let mut current = match thread
             .parent_thread_id
@@ -330,29 +326,38 @@ impl App {
             if current == root_id {
                 return true;
             }
-            let parent = if let Some(parent) = cache.get(&current) {
-                parent.clone()
-            } else {
-                if *reads >= max_reads {
-                    return false;
-                }
-                *reads += 1;
-                let parent = app_server.thread_read(current, false).await.ok();
-                cache.insert(current, parent.clone());
-                parent
-            };
-            let Some(parent) = parent else { return false };
-            if !matches!(
-                parent.source,
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-            ) {
+            let (parent_thread_id, is_thread_spawn) =
+                if let Some(cached) = self.agent_navigation.picker_lineage_cache_get(current) {
+                    cached
+                } else {
+                    if *reads >= max_reads {
+                        return false;
+                    }
+                    *reads += 1;
+                    let Ok(parent) = app_server.thread_read(current, false).await else {
+                        self.agent_navigation
+                            .picker_lineage_cache_insert(current, None, false);
+                        return false;
+                    };
+                    let parent_thread_id = parent
+                        .parent_thread_id
+                        .as_deref()
+                        .and_then(|id| ThreadId::from_string(id).ok());
+                    let is_thread_spawn = matches!(
+                        parent.source,
+                        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+                    );
+                    self.agent_navigation.picker_lineage_cache_insert(
+                        current,
+                        parent_thread_id,
+                        is_thread_spawn,
+                    );
+                    (parent_thread_id, is_thread_spawn)
+                };
+            if !is_thread_spawn {
                 return false;
             }
-            current = match parent
-                .parent_thread_id
-                .as_deref()
-                .and_then(|id| ThreadId::from_string(id).ok())
-            {
+            current = match parent_thread_id {
                 Some(id) => id,
                 None => return current == root_id,
             };
