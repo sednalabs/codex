@@ -81,13 +81,7 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
     match std::fs::read_to_string(version_file) {
         Ok(contents) => match serde_json::from_str::<VersionInfo>(&contents) {
             Ok(info) => {
-                details.push(format!("cached latest version: {}", info.latest_version));
-                if let Some(last_checked_at) = info.last_checked_at {
-                    details.push(format!("last checked at: {last_checked_at}"));
-                }
-                if let Some(dismissed_version) = info.dismissed_version {
-                    details.push(format!("dismissed version: {dismissed_version}"));
-                }
+                push_cache_info_details(details, &info, is_sedna_release_channel());
             }
             Err(err) => details.push(format!("version cache parse: {err}")),
         },
@@ -95,6 +89,25 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
             details.push("version cache: missing".to_string());
         }
         Err(err) => details.push(format!("version cache read: {err}")),
+    }
+}
+
+fn push_cache_info_details(
+    details: &mut Vec<String>,
+    info: &VersionInfo,
+    has_current_sedna_identity: bool,
+) {
+    if !has_current_sedna_identity || !info.matches_sedna_release_identity() {
+        details.push("version cache: ignored (untrusted release identity)".to_string());
+        return;
+    }
+
+    details.push(format!("cached latest version: {}", info.latest_version));
+    if let Some(last_checked_at) = &info.last_checked_at {
+        details.push(format!("last checked at: {last_checked_at}"));
+    }
+    if let Some(dismissed_version) = &info.dismissed_version {
+        details.push(format!("dismissed version: {dismissed_version}"));
     }
 }
 
@@ -272,6 +285,17 @@ struct VersionInfo {
     last_checked_at: Option<String>,
     #[serde(default)]
     dismissed_version: Option<String>,
+    #[serde(default)]
+    release_repository: Option<String>,
+    #[serde(default)]
+    release_tag_prefix: Option<String>,
+}
+
+impl VersionInfo {
+    fn matches_sedna_release_identity(&self) -> bool {
+        self.release_repository.as_deref() == Some(SEDNA_RELEASE_REPOSITORY)
+            && self.release_tag_prefix.as_deref() == Some("v")
+    }
 }
 
 #[cfg(test)]
@@ -380,6 +404,67 @@ mod tests {
         assert_eq!(
             is_newer_sedna_release("1.2.3-sedna.2", "1.2.2+upstream.3"),
             None
+        );
+    }
+
+    #[test]
+    fn matching_cache_identity_retains_cached_version_details() {
+        let info = VersionInfo {
+            latest_version: "1.2.3-sedna.2".to_string(),
+            last_checked_at: Some("2026-08-20T00:00:00Z".to_string()),
+            dismissed_version: Some("1.2.3-sedna.2".to_string()),
+            release_repository: Some("sednalabs/codex".to_string()),
+            release_tag_prefix: Some("v".to_string()),
+        };
+        let mut details = Vec::new();
+
+        push_cache_info_details(&mut details, &info, true);
+
+        assert_eq!(
+            details,
+            vec![
+                "cached latest version: 1.2.3-sedna.2",
+                "last checked at: 2026-08-20T00:00:00Z",
+                "dismissed version: 1.2.3-sedna.2",
+            ]
+        );
+    }
+
+    #[test]
+    fn source_less_cache_identity_is_ignored() {
+        let info = VersionInfo {
+            latest_version: "1.2.3-sedna.2".to_string(),
+            last_checked_at: None,
+            dismissed_version: Some("1.2.3-sedna.2".to_string()),
+            release_repository: None,
+            release_tag_prefix: None,
+        };
+        let mut details = Vec::new();
+
+        push_cache_info_details(&mut details, &info, true);
+
+        assert_eq!(
+            details,
+            vec!["version cache: ignored (untrusted release identity)"]
+        );
+    }
+
+    #[test]
+    fn mismatched_cache_identity_is_ignored() {
+        let info = VersionInfo {
+            latest_version: "999.0.0".to_string(),
+            last_checked_at: None,
+            dismissed_version: Some("999.0.0".to_string()),
+            release_repository: Some("openai/codex".to_string()),
+            release_tag_prefix: Some("rust-v".to_string()),
+        };
+        let mut details = Vec::new();
+
+        push_cache_info_details(&mut details, &info, true);
+
+        assert_eq!(
+            details,
+            vec!["version cache: ignored (untrusted release identity)"]
         );
     }
 }
