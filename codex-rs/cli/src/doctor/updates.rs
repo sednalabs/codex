@@ -10,6 +10,7 @@ use std::path::Path;
 use codex_core::config::Config;
 use codex_install_context::InstallContext;
 use codex_install_context::InstallMethod;
+use codex_install_context::StandalonePlatform;
 use codex_utils_version::RELEASE_VERSION;
 use serde::Deserialize;
 
@@ -98,11 +99,25 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
 }
 
 fn update_action_label(context: &InstallContext) -> &'static str {
-    if !is_sedna_release_channel() {
+    update_action_label_for_sedna_identity(context, is_sedna_release_channel())
+}
+
+fn update_action_label_for_sedna_identity(
+    context: &InstallContext,
+    has_sedna_identity: bool,
+) -> &'static str {
+    if !has_sedna_identity {
         return "no automatic update action outside the Sedna release channel";
     }
     match &context.method {
-        InstallMethod::Standalone { .. } => "Sedna standalone installer",
+        InstallMethod::Standalone {
+            platform: StandalonePlatform::Unix,
+            ..
+        } => "Sedna standalone installer",
+        InstallMethod::Standalone {
+            platform: StandalonePlatform::Windows,
+            ..
+        } => "no automatic update action",
         InstallMethod::Npm
         | InstallMethod::Bun
         | InstallMethod::Pnpm
@@ -296,6 +311,38 @@ mod tests {
                 .contains("openai")
             );
         }
+    }
+
+    #[test]
+    fn doctor_action_label_offers_sedna_installer_only_for_unix_standalone() {
+        let native_release_dir = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
+            std::env::temp_dir().join("native-release"),
+        )
+        .expect("temp dir path should be absolute");
+        let unix = InstallContext {
+            method: InstallMethod::Standalone {
+                platform: StandalonePlatform::Unix,
+                release_dir: native_release_dir.clone(),
+                resources_dir: None,
+            },
+            package_layout: None,
+        };
+        let windows = InstallContext {
+            method: InstallMethod::Standalone {
+                platform: StandalonePlatform::Windows,
+                release_dir: native_release_dir,
+                resources_dir: None,
+            },
+            package_layout: None,
+        };
+        assert_eq!(
+            update_action_label_for_sedna_identity(&unix, true),
+            "Sedna standalone installer"
+        );
+        assert_eq!(
+            update_action_label_for_sedna_identity(&windows, true),
+            "no automatic update action"
+        );
     }
 
     #[test]

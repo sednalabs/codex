@@ -34,18 +34,22 @@ impl UpdateAction {
 
     #[cfg(any(not(debug_assertions), test))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
-        Self::from_install_context_for_sedna_identity(
+        Self::from_install_context_for_sedna_release(
             context,
             crate::version::is_sedna_release_channel(),
+            crate::version::CODEX_CLI_VERSION,
         )
     }
 
     #[cfg(any(not(debug_assertions), test))]
-    fn from_install_context_for_sedna_identity(
+    fn from_install_context_for_sedna_release(
         context: &InstallContext,
         has_sedna_identity: bool,
+        running_release_version: &str,
     ) -> Option<Self> {
-        if !has_sedna_identity {
+        if !has_sedna_identity
+            || !crate::update_versions::is_sedna_release_version(running_release_version)
+        {
             return None;
         }
         match &context.method {
@@ -118,57 +122,62 @@ mod tests {
                 .expect("temp dir path should be absolute");
 
         assert_eq!(
-            UpdateAction::from_install_context_for_sedna_identity(
+            UpdateAction::from_install_context_for_sedna_release(
                 &InstallContext {
                     method: InstallMethod::Other,
                     package_layout: None,
                 },
-                true
+                true,
+                "1.2.3-sedna.1"
             ),
             None
         );
         assert_eq!(
-            UpdateAction::from_install_context_for_sedna_identity(
+            UpdateAction::from_install_context_for_sedna_release(
                 &InstallContext {
                     method: InstallMethod::Npm,
                     package_layout: None,
                 },
-                true
+                true,
+                "1.2.3-sedna.1"
             ),
             None
         );
         assert_eq!(
-            UpdateAction::from_install_context_for_sedna_identity(
+            UpdateAction::from_install_context_for_sedna_release(
                 &InstallContext {
                     method: InstallMethod::Bun,
                     package_layout: None,
                 },
-                true
+                true,
+                "1.2.3-sedna.1"
             ),
             None
         );
         assert_eq!(
-            UpdateAction::from_install_context_for_sedna_identity(
+            UpdateAction::from_install_context_for_sedna_release(
                 &InstallContext {
                     method: InstallMethod::Pnpm,
                     package_layout: None,
                 },
-                true
+                true,
+                "1.2.3-sedna.1"
             ),
             None
         );
         assert_eq!(
-            UpdateAction::from_install_context_for_sedna_identity(
+            UpdateAction::from_install_context_for_sedna_release(
                 &InstallContext {
                     method: InstallMethod::Brew,
                     package_layout: None,
                 },
-                true
+                true,
+                "1.2.3-sedna.1"
             ),
             None
         );
         assert_eq!(
-            UpdateAction::from_install_context_for_sedna_identity(
+            UpdateAction::from_install_context_for_sedna_release(
                 &InstallContext {
                     method: InstallMethod::Standalone {
                         platform: StandalonePlatform::Unix,
@@ -177,12 +186,13 @@ mod tests {
                     },
                     package_layout: None,
                 },
-                true
+                true,
+                "1.2.3-sedna.1"
             ),
             Some(UpdateAction::StandaloneUnix)
         );
         assert_eq!(
-            UpdateAction::from_install_context_for_sedna_identity(
+            UpdateAction::from_install_context_for_sedna_release(
                 &InstallContext {
                     method: InstallMethod::Standalone {
                         platform: StandalonePlatform::Windows,
@@ -191,19 +201,35 @@ mod tests {
                     },
                     package_layout: None,
                 },
-                true
+                true,
+                "1.2.3-sedna.1"
             ),
             None
         );
     }
 
     #[test]
-    fn absent_identity_disables_standalone_update_action() {
+    fn missing_identity_or_invalid_release_disables_standalone_update_action() {
         let native_release_dir =
             AbsolutePathBuf::from_absolute_path(std::env::temp_dir().join("native-release"))
                 .expect("temp dir path should be absolute");
         assert_eq!(
-            UpdateAction::from_install_context_for_sedna_identity(
+            UpdateAction::from_install_context_for_sedna_release(
+                &InstallContext {
+                    method: InstallMethod::Standalone {
+                        platform: StandalonePlatform::Unix,
+                        release_dir: native_release_dir.clone(),
+                        resources_dir: None,
+                    },
+                    package_layout: None,
+                },
+                false,
+                "1.2.3-sedna.1",
+            ),
+            None
+        );
+        assert_eq!(
+            UpdateAction::from_install_context_for_sedna_release(
                 &InstallContext {
                     method: InstallMethod::Standalone {
                         platform: StandalonePlatform::Unix,
@@ -212,7 +238,8 @@ mod tests {
                     },
                     package_layout: None,
                 },
-                false,
+                true,
+                "1.2.3",
             ),
             None
         );
