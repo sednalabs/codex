@@ -483,6 +483,39 @@ impl App {
         Ok(live_attached)
     }
 
+    /// Hydrates a closed thread for read-only transcript replay.
+    ///
+    /// Closed metadata entries are intentionally not resumed: doing so could reopen a terminal
+    /// thread or attach a live listener where none is available. Instead, fetch the saved turns
+    /// with `thread/read`, seed a replay-only channel, and fail closed when the server cannot
+    /// provide a transcript.
+    pub(super) async fn attach_closed_thread_for_selection(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> Result<()> {
+        if self.thread_event_channels.contains_key(&thread_id) {
+            return Ok(());
+        }
+
+        let thread = app_server
+            .thread_read(thread_id, /*include_turns*/ true)
+            .await?;
+        if thread.turns.is_empty() {
+            return Err(color_eyre::eyre::eyre!(
+                "Agent thread {thread_id} has no saved transcript for read-only replay."
+            ));
+        }
+
+        let turns = thread.turns.clone();
+        let session = self.session_state_for_thread_read(thread_id, &thread).await;
+        let channel = self.ensure_thread_channel(thread_id);
+        channel.mark_replay_only();
+        let mut store = channel.store.lock().await;
+        store.set_session(session, turns);
+        Ok(())
+    }
+
     /// Replaces the chat widget and re-seeds the new widget's collab metadata from the navigation
     /// cache.
     ///
@@ -561,9 +594,15 @@ impl App {
                 }
             }
         } else if !self.thread_event_channels.contains_key(&thread_id) && is_replay_only {
-            self.chat_widget
-                .add_error_message(format!("Agent thread {thread_id} is no longer available."));
-            return Ok(());
+            if let Err(err) = self
+                .attach_closed_thread_for_selection(app_server, thread_id)
+                .await
+            {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to load the closed transcript for agent thread {thread_id}: {err}"
+                ));
+                return Ok(());
+            }
         }
         let previous_thread_id = self.active_thread_id;
         self.store_active_thread_receiver().await;
