@@ -181,7 +181,18 @@ mod tests {
     async fn browser_provider_executes_from_explicit_session_codex_home() {
         let ambient_home = tempdir().expect("ambient codex home");
         let child_home = tempdir().expect("child codex home");
-        let config = r#"{"provider":"command","command":["sh","-c","cat >/dev/null; printf '{\"contentItems\":[{\"type\":\"inputText\",\"text\":\"child home\"},{\"type\":\"inputImage\",\"imageUrl\":\"data:image/png;base64,AAAA\",\"detail\":\"high\"}],\"success\":true}"]}"#;
+        let config = json!({
+            "provider": "command",
+            "command": [
+                "sh",
+                "-c",
+                r#"cat >/dev/null
+cat <<'JSON'
+{"contentItems":[{"type":"inputText","text":"child home"},{"type":"inputImage","imageUrl":"data:image/png;base64,AAAA","detail":"high"}],"success":true}
+JSON"#,
+            ],
+        })
+        .to_string();
         std::fs::write(
             ambient_home.path().join("browser-computer-use.json"),
             config.replace("child home", "ambient home"),
