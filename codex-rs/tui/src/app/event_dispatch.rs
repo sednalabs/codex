@@ -2574,6 +2574,12 @@ impl App {
             );
             return AppRunControl::Continue;
         }
+        if self.is_replay_only_thread(thread_id) {
+            self.chat_widget.add_error_message(
+                "Agent thread is replay-only; '/archive' is unavailable.".to_string(),
+            );
+            return AppRunControl::Continue;
+        }
 
         match app_server.thread_archive(thread_id).await {
             Ok(()) => AppRunControl::Exit(ExitReason::UserRequested),
@@ -2598,6 +2604,12 @@ impl App {
             self.chat_widget.add_error_message(
                 "'/delete' is unavailable in side conversations. Press Ctrl+C to return to the main thread first."
                     .to_string(),
+            );
+            return AppRunControl::Continue;
+        }
+        if self.is_replay_only_thread(thread_id) {
+            self.chat_widget.add_error_message(
+                "Agent thread is replay-only; '/delete' is unavailable.".to_string(),
             );
             return AppRunControl::Continue;
         }
