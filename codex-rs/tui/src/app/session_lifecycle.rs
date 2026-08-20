@@ -11,11 +11,11 @@ use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_selected_description;
 use codex_app_server_protocol::SessionSource;
-use codex_app_server_protocol::SubAgentSource;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_config::types::ResumeCwdMode;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
 
