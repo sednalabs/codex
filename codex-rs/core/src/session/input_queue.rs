@@ -14,6 +14,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
+#[cfg(test)]
+use tokio::sync::Notify;
 use tokio::sync::OwnedMutexGuard;
 use tokio::sync::watch;
 
@@ -49,6 +51,8 @@ pub(crate) struct InputQueue {
     residency_activity_generation: AtomicU64,
     pending_terminal_finalizers: AtomicUsize,
     pending_residency_submissions: StdMutex<HashSet<String>>,
+    #[cfg(test)]
+    residency_submission_changed: Notify,
 }
 
 impl InputQueue {
@@ -64,6 +68,8 @@ impl InputQueue {
             residency_activity_generation: AtomicU64::new(0),
             pending_terminal_finalizers: AtomicUsize::new(0),
             pending_residency_submissions: StdMutex::new(HashSet::new()),
+            #[cfg(test)]
+            residency_submission_changed: Notify::new(),
         }
     }
 
@@ -101,6 +107,8 @@ impl InputQueue {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(submission_id);
+        #[cfg(test)]
+        self.residency_submission_changed.notify_waiters();
     }
 
     pub(crate) fn finish_residency_submission(&self, submission_id: &str) {
@@ -108,6 +116,8 @@ impl InputQueue {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(submission_id);
+        #[cfg(test)]
+        self.residency_submission_changed.notify_waiters();
     }
 
     pub(crate) async fn acknowledge_residency_submission(&self, submission_id: &str) {
@@ -129,6 +139,22 @@ impl InputQueue {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_residency_submission_absent(&self, submission_id: &str) {
+        loop {
+            let changed = self.residency_submission_changed.notified();
+            let pending = self
+                .pending_residency_submissions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(submission_id);
+            if !pending {
+                return;
+            }
+            changed.await;
+        }
     }
 
     pub(crate) async fn subscribe_activity(

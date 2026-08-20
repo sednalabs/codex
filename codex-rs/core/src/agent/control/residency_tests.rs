@@ -613,6 +613,12 @@ async fn terminal_idle_unload_rearms_after_accepted_send_input_invalidates_deadl
         !submission_id.is_empty(),
         "accepted send_input work should return a submission id"
     );
+    first
+        .thread
+        .session
+        .input_queue
+        .wait_for_residency_submission_absent(&submission_id)
+        .await;
     let invalidated_generation = metadata
         .lifecycle
         .lock()
@@ -653,10 +659,15 @@ async fn terminal_idle_unload_rearms_after_accepted_send_input_invalidates_deadl
 
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_defers_for_finalizer_then_retries() {
-    let (_home, _config, manager, control, first, _metadata) = terminal_idle_test_agent(
+    let (_home, _config, manager, control, first, metadata) = terminal_idle_test_agent(
         /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
     )
     .await;
+    let prior_generation = metadata
+        .lifecycle
+        .lock()
+        .await
+        .terminal_idle_unload_generation();
     first
         .thread
         .session
@@ -667,10 +678,17 @@ async fn terminal_idle_unload_defers_for_finalizer_then_retries() {
         AgentStatus::Completed(Some("finalizer pending".to_string())),
     )
     .await;
-    yield_now().await;
+    wait_for_terminal_idle_deadline_after(&metadata, prior_generation).await;
 
     advance(Duration::from_millis(100)).await;
-    yield_now().await;
+    wait_for_terminal_idle_deferred(&manager, first.thread_id, || {
+        first
+            .thread
+            .session
+            .input_queue
+            .has_pending_terminal_finalizers()
+    })
+    .await;
     assert!(
         manager.get_thread(first.thread_id).await.is_ok(),
         "a pending terminal finalizer must defer watcher-triggered unload"
@@ -695,10 +713,15 @@ async fn terminal_idle_unload_defers_for_finalizer_then_retries() {
 
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_defers_for_pending_unified_exec_completion() {
-    let (_home, _config, manager, control, first, _metadata) = terminal_idle_test_agent(
+    let (_home, _config, manager, control, first, metadata) = terminal_idle_test_agent(
         /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
     )
     .await;
+    let prior_generation = metadata
+        .lifecycle
+        .lock()
+        .await
+        .terminal_idle_unload_generation();
     first
         .thread
         .session
@@ -717,15 +740,15 @@ async fn terminal_idle_unload_defers_for_pending_unified_exec_completion() {
         AgentStatus::Completed(Some("terminal completion pending".to_string())),
     )
     .await;
-    yield_now().await;
+    wait_for_terminal_idle_deadline_after(&metadata, prior_generation).await;
 
     advance(Duration::from_millis(100)).await;
-    yield_now().await;
+    wait_for_pending_terminal_completion(&manager, first.thread_id, &first).await;
     let resident = manager
         .get_thread(first.thread_id)
         .await
-        .expect("a pending unified-exec completion must defer unload");
-    assert!(Arc::ptr_eq(&resident, &first.thread));
+        .expect("deferred runtime");
+    assert!(Arc::ptr_eq(&resident, &first));
     assert!(
         resident
             .session
@@ -927,6 +950,41 @@ async fn settle_terminal_idle_watcher() {
     for _ in 0..SETTLE_YIELDS {
         yield_now().await;
     }
+}
+
+async fn wait_for_terminal_idle_deferred(
+    manager: &ThreadManager,
+    thread_id: ThreadId,
+    pending: impl Fn() -> bool,
+) {
+    for _ in 0..100 {
+        if manager.get_thread(thread_id).await.is_ok() && pending() {
+            return;
+        }
+        yield_now().await;
+    }
+    panic!("terminal idle watcher did not reach the deferred outcome");
+}
+
+async fn wait_for_pending_terminal_completion(
+    manager: &ThreadManager,
+    thread_id: ThreadId,
+    thread: &crate::thread_manager::NewThread,
+) {
+    for _ in 0..100 {
+        if manager.get_thread(thread_id).await.is_ok()
+            && thread
+                .thread
+                .session
+                .input_queue
+                .has_pending_terminal_completions()
+                .await
+        {
+            return;
+        }
+        yield_now().await;
+    }
+    panic!("terminal idle watcher did not reach the deferred completion outcome");
 }
 
 async fn wait_for_terminal_idle_deadline_after(
