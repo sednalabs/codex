@@ -191,9 +191,8 @@ impl UpdateSelection {
 impl WidgetRef for &UpdatePromptScreen {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
-        let mut column = ColumnRenderable::new();
-
         let release_notes_url = latest_release_notes_url();
+        let mut column = ColumnRenderable::new();
 
         column.push("");
         column.push(Line::from(vec![
