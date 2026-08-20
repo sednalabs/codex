@@ -74,10 +74,18 @@ pub(crate) async fn dismiss_version(config: &Config, version: &str) -> anyhow::R
     let mut info = match read_version_info(&version_file) {
         Ok(info) if info.matches_current_channel() => info,
         Err(_) => {
-            VersionInfo::for_current_channel(version.to_string(), DateTime::<Utc>::UNIX_EPOCH, None)
+            VersionInfo::for_current_channel(
+                version.to_string(),
+                DateTime::<Utc>::UNIX_EPOCH,
+                /*dismissed_version*/ None,
+            )
         }
         Ok(_) => {
-            VersionInfo::for_current_channel(version.to_string(), DateTime::<Utc>::UNIX_EPOCH, None)
+            VersionInfo::for_current_channel(
+                version.to_string(),
+                DateTime::<Utc>::UNIX_EPOCH,
+                /*dismissed_version*/ None,
+            )
         }
     };
     info.dismissed_version = Some(version.to_string());
