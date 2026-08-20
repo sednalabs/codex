@@ -1154,7 +1154,7 @@ fn standalone_unix_update_available_history_cell_snapshot() {
 
 #[test]
 fn update_available_history_cell_uses_configured_release_urls() {
-    let cell = UpdateAvailableHistoryCell::new("9.9.9".to_string(), None);
+    let cell = UpdateAvailableHistoryCell::new("9.9.9".to_string(), /*update_action*/ None);
     let raw = render_lines(&cell.raw_lines());
 
     assert_eq!(
