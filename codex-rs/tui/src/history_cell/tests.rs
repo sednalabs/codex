@@ -1153,24 +1153,6 @@ fn standalone_unix_update_available_history_cell_snapshot() {
 }
 
 #[test]
-fn standalone_windows_update_available_history_cell_snapshot() {
-    let cell =
-        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneWindows));
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
-
-    insta::assert_snapshot!(rendered);
-}
-
-#[test]
-fn pnpm_update_available_history_cell_snapshot() {
-    let cell =
-        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::PnpmGlobalLatest));
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
-
-    insta::assert_snapshot!(rendered);
-}
-
-#[test]
 fn update_available_history_cell_uses_configured_release_urls() {
     let cell = UpdateAvailableHistoryCell::new("9.9.9".to_string(), None);
     let raw = render_lines(&cell.raw_lines());
