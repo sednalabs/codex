@@ -82,7 +82,10 @@ mod loaded_thread_page_tests {
         let result = accept_loaded_thread_page(
             &mut ids,
             &mut cursors,
-            page(AGENT_PICKER_LOADED_PAGE_SIZE as usize + 1, None),
+            page(
+                /*data_len*/ AGENT_PICKER_LOADED_PAGE_SIZE as usize + 1,
+                /*next_cursor*/ None,
+            ),
         );
         assert_eq!(result, Err(LoadedThreadPageRejection::OversizedPage));
         assert!(ids.is_empty());
@@ -92,7 +95,11 @@ mod loaded_thread_page_tests {
     fn rejects_pages_that_exceed_the_total_thread_budget() {
         let mut ids = vec!["existing".to_string(); AGENT_PICKER_LOADED_MAX_THREADS];
         let mut cursors = HashSet::new();
-        let result = accept_loaded_thread_page(&mut ids, &mut cursors, page(1, None));
+        let result = accept_loaded_thread_page(
+            &mut ids,
+            &mut cursors,
+            page(/*data_len*/ 1, /*next_cursor*/ None),
+        );
         assert_eq!(result, Err(LoadedThreadPageRejection::ThreadBudgetExceeded));
         assert_eq!(ids.len(), AGENT_PICKER_LOADED_MAX_THREADS);
     }
@@ -101,7 +108,11 @@ mod loaded_thread_page_tests {
     fn rejects_repeated_cursors_without_following_the_cycle() {
         let mut ids = Vec::new();
         let mut cursors = HashSet::from(["cursor-1".to_string()]);
-        let result = accept_loaded_thread_page(&mut ids, &mut cursors, page(1, Some("cursor-1")));
+        let result = accept_loaded_thread_page(
+            &mut ids,
+            &mut cursors,
+            page(/*data_len*/ 1, Some("cursor-1")),
+        );
         assert_eq!(result, Err(LoadedThreadPageRejection::RepeatedCursor));
         assert_eq!(ids, vec!["thread-0"]);
     }
@@ -115,7 +126,7 @@ mod loaded_thread_page_tests {
             cursor = accept_loaded_thread_page(
                 &mut ids,
                 &mut cursors,
-                page(1, Some(&format!("cursor-{index}"))),
+                page(/*data_len*/ 1, Some(&format!("cursor-{index}"))),
             )
             .expect("unique cursor should remain within the thread budget");
         }
