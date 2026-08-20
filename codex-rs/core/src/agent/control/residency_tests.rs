@@ -673,32 +673,28 @@ async fn terminal_idle_unload_defers_for_finalizer_then_retries() {
         AgentStatus::Completed(Some("finalizer pending".to_string())),
     )
     .await;
-    wait_for_terminal_idle_deadline_after(&metadata, prior_generation).await;
+    let initial_generation =
+        wait_for_terminal_idle_deadline_after(&metadata, prior_generation).await;
 
     advance(Duration::from_millis(100)).await;
-    wait_for_terminal_idle_deferred(&manager, first.thread_id, || {
-        first
-            .thread
-            .session
-            .input_queue
-            .has_pending_terminal_finalizers()
-    })
-    .await;
+    wait_for_terminal_idle_deadline_after(&metadata, initial_generation).await;
     assert!(
         manager.get_thread(first.thread_id).await.is_ok(),
         "a pending terminal finalizer must defer watcher-triggered unload"
     );
+    assert!(
+        first
+            .thread
+            .session
+            .input_queue
+            .has_pending_terminal_finalizers(),
+        "the terminal finalizer must remain pending while the deadline is rearmed"
+    );
     assert_eq!(control.v2_residency.resident_count(), 1);
 
     first.thread.session.input_queue.finish_terminal_finalizer();
-    settle_terminal_idle_watcher().await;
-    assert_thread_unloads_within_terminal_idle_intervals(
-        &manager,
-        first.thread_id,
-        Duration::from_millis(100),
-        /*max_intervals*/ 2,
-    )
-    .await;
+    advance(Duration::from_millis(100)).await;
+    wait_for_thread_to_unload_after_terminal_idle_deadline(&manager, first.thread_id).await;
     assert!(
         manager.get_thread(first.thread_id).await.is_err(),
         "the watcher should retry after the terminal finalizer completes"
@@ -945,20 +941,6 @@ async fn settle_terminal_idle_watcher() {
     for _ in 0..SETTLE_YIELDS {
         yield_now().await;
     }
-}
-
-async fn wait_for_terminal_idle_deferred(
-    manager: &ThreadManager,
-    thread_id: ThreadId,
-    pending: impl Fn() -> bool,
-) {
-    for _ in 0..100 {
-        if manager.get_thread(thread_id).await.is_ok() && pending() {
-            return;
-        }
-        yield_now().await;
-    }
-    panic!("terminal idle watcher did not reach the deferred outcome");
 }
 
 async fn wait_for_pending_terminal_completion(

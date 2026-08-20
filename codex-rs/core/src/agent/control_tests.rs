@@ -1112,23 +1112,18 @@ async fn send_input_submits_user_message() {
         .into_iter()
         .find(|entry| *entry == expected);
     assert_eq!(captured, Some(expected));
-    for _ in 0..16 {
-        if !_thread
-            .session
-            .input_queue
-            .has_pending_residency_submissions()
-        {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    assert!(
-        !_thread
-            .session
-            .input_queue
-            .has_pending_residency_submissions(),
-        "submission loop should acknowledge accepted work"
-    );
+    let input_queue = &_thread.session.input_queue;
+    timeout(
+        Duration::from_secs(5),
+        input_queue.wait_for_residency_submission_absent(&submission_id),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "residency submission {submission_id} remained pending after send_input; pending={}",
+            input_queue.has_pending_residency_submissions()
+        )
+    });
 }
 
 #[tokio::test]
