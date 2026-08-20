@@ -288,7 +288,7 @@ mod tests {
                 test_thread(primary_thread_id, SessionSource::Cli),
                 test_thread(
                     eligible_id,
-                    thread_spawn_source(primary_thread_id, 1, "eligible", "worker"),
+                    thread_spawn_source(primary_thread_id, /*depth*/ 1, "eligible", "worker"),
                 ),
                 review,
                 orphan,
