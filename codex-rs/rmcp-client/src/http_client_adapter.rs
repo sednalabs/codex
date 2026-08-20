@@ -237,6 +237,18 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
                 },
             ));
         }
+        if !accepts_empty_body
+            && content_type
+                .as_deref()
+                .is_some_and(|value| value.starts_with(EVENT_STREAM_MIME_TYPE))
+            && response_header(&response.headers, reqwest::header::CONTENT_LENGTH)
+                .as_deref()
+                .is_some_and(|value| value.trim() == "0")
+        {
+            let error = serde_json::from_slice::<ServerJsonRpcMessage>(&[])
+                .expect_err("empty request response must fail deserialization");
+            return Err(StreamableHttpError::Deserialize(error));
+        }
         match content_type.as_deref() {
             Some(content_type) if content_type.starts_with(EVENT_STREAM_MIME_TYPE) => {
                 let event_stream = sse_stream_from_body(body_stream);
