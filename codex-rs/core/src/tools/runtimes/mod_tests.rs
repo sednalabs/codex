@@ -717,7 +717,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_apply_patch_rollout_state() {
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
         &snapshot_path,
-        "# Snapshot file\nexport CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS='stale'\n",
+        "# Snapshot file\nexport CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS='stale'\nexport OpenAI_Identity_Token_File='/run/snapshot-token'\n",
     )
     .expect("write snapshot");
     let (session_shell, shell_snapshot) =
@@ -725,7 +725,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_apply_patch_rollout_state() {
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
-        "printenv CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS".to_string(),
+        "printf '%s|%s' \"$CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS\" \"${OpenAI_Identity_Token_File-unset}\"".to_string(),
     ];
     let env = HashMap::from([(
         CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
@@ -756,7 +756,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_apply_patch_rollout_state() {
         .expect("run rewritten command");
 
     assert!(output.status.success(), "command failed: {output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1|unset");
     assert!(!rewritten[2].contains("stale-rollout"));
     assert!(!rewritten[2].contains("/run/stale-token"));
 
