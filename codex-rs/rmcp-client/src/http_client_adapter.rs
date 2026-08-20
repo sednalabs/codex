@@ -203,6 +203,19 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
 
         let content_type = response_header(&response.headers, CONTENT_TYPE);
         let session_id = response_header(&response.headers, HEADER_SESSION_ID);
+        if status_is_success(response.status)
+            && response_header(&response.headers, reqwest::header::CONTENT_LENGTH)
+                .as_deref()
+                .is_some_and(|value| value.trim() == "0")
+            && matches!(
+                message,
+                JsonRpcMessage::Response(_)
+                    | JsonRpcMessage::Notification(_)
+                    | JsonRpcMessage::Error(_)
+            )
+        {
+            return Ok(StreamableHttpPostResponse::Accepted);
+        }
         if !status_is_success(response.status) {
             let body = collect_body(&mut body_stream).await?;
             if !retryable_post_response_status(mcp_method.as_deref(), response.status)
