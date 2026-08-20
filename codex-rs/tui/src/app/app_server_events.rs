@@ -342,35 +342,43 @@ mod tests {
 
     #[test]
     fn rollout_codex_home_requires_absolute_sessions_path() {
-        assert_eq!(
-            rollout_codex_home(Some(Path::new(
-                "/tmp/primary/sessions/2026/01/rollout.jsonl",
-            ))),
-            Some(Path::new("/tmp/primary").to_path_buf())
-        );
+        let temp_dir = std::env::temp_dir();
+        let primary = temp_dir.join("primary");
         assert_eq!(
             rollout_codex_home(Some(
-                Path::new("/tmp/child/sessions/2026/01/rollout.jsonl",)
+                primary.join("sessions/2026/01/rollout.jsonl").as_path(),
             )),
-            Some(Path::new("/tmp/child").to_path_buf())
+            Some(primary.clone())
         );
+        let child = temp_dir.join("child");
         assert_eq!(
-            rollout_codex_home(Some(Path::new(
-                "/tmp/primary/archived_sessions/rollout.jsonl",
-            ))),
-            Some(Path::new("/tmp/primary").to_path_buf())
+            rollout_codex_home(Some(
+                child.join("sessions/2026/01/rollout.jsonl").as_path(),
+            )),
+            Some(child.clone())
         );
+        let archived = temp_dir.join("archived");
         assert_eq!(
-            rollout_codex_home(Some(Path::new(
-                "/tmp/sessions/sessions/2026/01/rollout.jsonl",
-            ))),
-            Some(Path::new("/tmp/sessions").to_path_buf())
+            rollout_codex_home(Some(
+                archived.join("archived_sessions/rollout.jsonl").as_path(),
+            )),
+            Some(archived.clone())
         );
+        let sessions = temp_dir.join("sessions");
         assert_eq!(
-            rollout_codex_home(Some(Path::new(
-                "/tmp/archived_sessions/archived_sessions/rollout.jsonl",
-            ))),
-            Some(Path::new("/tmp/archived_sessions").to_path_buf())
+            rollout_codex_home(Some(
+                sessions.join("sessions/2026/01/rollout.jsonl").as_path(),
+            )),
+            Some(sessions.clone())
+        );
+        let archived_sessions = temp_dir.join("archived_sessions");
+        assert_eq!(
+            rollout_codex_home(Some(
+                archived_sessions
+                    .join("archived_sessions/rollout.jsonl")
+                    .as_path(),
+            )),
+            Some(archived_sessions)
         );
 
         for malformed in [
