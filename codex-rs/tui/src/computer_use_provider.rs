@@ -169,7 +169,7 @@ mod tests {
                 tool: "desktop_observe".to_string(),
                 arguments: json!({"scope": "screen_and_ui"}),
             },
-            None,
+            /*browser_codex_home*/ None,
         )
         .await;
 

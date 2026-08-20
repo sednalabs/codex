@@ -359,9 +359,7 @@ mod tests {
         );
         let child = temp_dir.join("child");
         assert_eq!(
-            rollout_codex_home(Some(
-                child.join("sessions/2026/01/rollout.jsonl").as_path(),
-            )),
+            rollout_codex_home(Some(child.join("sessions/2026/01/rollout.jsonl").as_path(),)),
             Some(child.clone())
         );
         let archived = temp_dir.join("archived");
