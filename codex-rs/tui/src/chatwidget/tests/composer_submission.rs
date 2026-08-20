@@ -10,6 +10,33 @@ use pretty_assertions::assert_eq;
 use std::collections::VecDeque;
 
 #[tokio::test]
+async fn replay_only_rejects_queued_input_before_queue_or_history_mutation() {
+    let (mut chat, mut rx, mut op_rx) =
+        make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
+    chat.set_replay_only_thread(true);
+    drain_insert_history(&mut rx);
+    chat.queue_user_message_with_options(
+        UserMessage::from("must not be queued"),
+        QueuedInputAction::ParseSlash,
+        vec![("pending paste".to_string(), "paste".to_string())],
+    );
+
+    assert!(chat.input_queue.queued_user_messages.is_empty());
+    assert!(chat
+        .input_queue
+        .queued_user_message_history_records
+        .is_empty());
+    assert_no_submit_op(&mut op_rx);
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .flatten()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Replay-only transcripts do not accept input."));
+}
+
+#[tokio::test]
 async fn parent_owned_thread_blocks_all_direct_input_entry_points() {
     let (mut chat, mut rx, mut op_rx) =
         make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
