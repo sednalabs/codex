@@ -362,7 +362,7 @@ fn build_non_inheritable_safe_exec(
     post_startup_scrub: &str,
 ) -> String {
     format!(
-        "exec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"unset ENV BASH_ENV ZDOTDIR\\n$__codex_scrub_script\\n__codex_shell=\\$1\\n__codex_script=\\\"{post_startup_scrub}\\n\\$2\\\"\\nshift 2\\n{startup_hook_exports}\\nexport __codex_env __codex_awk\\nexec \\\"\\$__codex_shell\\\" -c \\\"\\$__codex_script\\\" \\\"\\$@\\\"\" sh '{original_shell}' '{original_script}'{trailing_args}"
+        "exec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"unset ENV BASH_ENV ZDOTDIR\\n$__codex_scrub_script\\n__codex_shell=\\$1\\n__codex_script=\\\"{post_startup_scrub}\\n\\$2\\\"\\nshift 2\\n{startup_hook_exports}\\nexec \\\"\\$__codex_shell\\\" -c \\\"\\$__codex_script\\\" \\\"\\$@\\\"\" sh '{original_shell}' '{original_script}'{trailing_args}"
     )
 }
 
@@ -374,7 +374,7 @@ fn build_post_startup_scrub(
 ) -> String {
     if shell_path.ends_with("/sh") {
         return format!(
-            "__codex_post_scrub=\"$(__codex_env=\\\"$__codex_env\\\"; \\\"$__codex_env\\\" | \\\"$__codex_awk\\\" -F= 'tolower($1) == \\\"openai_federation_rule_id\\\" || tolower($1) == \\\"openai_identity_token_file\\\" {{ print \\\"unset '\\047\\\" $1 \\\"'\\047\\\" }}')\"\nexec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"$__codex_post_scrub\nexec /bin/sh -c '{original_script}'\" sh{trailing_args}"
+            "__codex_post_scrub=\"$(\\\"$__codex_env\\\" | \\\"$__codex_awk\\\" -F= 'tolower($1) == \\\"openai_federation_rule_id\\\" || tolower($1) == \\\"openai_identity_token_file\\\" {{ print \\\"unset '\\047\\\" $1 \\\"'\\047\\\" }}')\"\nexec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"$__codex_post_scrub\nexec /bin/sh -c '{original_script}'\" sh{trailing_args}"
         );
     }
     let builtin = if shell_path.ends_with("/bash") || shell_path.ends_with("/zsh") {
