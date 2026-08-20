@@ -425,7 +425,7 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> Result<bool> {
-        self.attach_live_thread_for_selection_with_tui(app_server, thread_id, None)
+        self.attach_live_thread_for_selection_with_tui(app_server, thread_id, /*tui*/ None)
             .await
     }
 
@@ -506,7 +506,7 @@ impl App {
             // The widget may still contain the transcript rendered while this channel was
             // replay-only. `thread/resume` is authoritative when it supplies turns, so rebuild
             // the app-owned transcript before reopening the gate and delivering queued input.
-            if let Some(tui) = tui.as_deref_mut() {
+            if let Some(tui) = tui {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
             }
             self.reset_transcript_state_after_clear();
