@@ -343,6 +343,13 @@ mod tests {
     #[test]
     fn rollout_codex_home_requires_absolute_sessions_path() {
         let temp_dir = std::env::temp_dir();
+        let temp_dir = if temp_dir.is_absolute() {
+            temp_dir
+        } else {
+            std::env::current_dir()
+                .expect("current working directory")
+                .join(temp_dir)
+        };
         let primary = temp_dir.join("primary");
         assert_eq!(
             rollout_codex_home(Some(
