@@ -3,8 +3,8 @@ use crate::metrics::tags::APP_VERSION_TAG;
 use crate::metrics::tags::MODEL_TAG;
 use crate::metrics::tags::ORIGINATOR_TAG;
 use crate::metrics::tags::SESSION_SOURCE_TAG;
-use codex_protocol::protocol::SessionSource;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::SessionSource;
 use pretty_assertions::assert_eq;
 
 #[test]
