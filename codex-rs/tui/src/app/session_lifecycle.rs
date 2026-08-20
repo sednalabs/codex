@@ -17,6 +17,7 @@ use codex_app_server_protocol::ThreadSourceKind;
 use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 #[derive(Clone, Copy)]
@@ -210,6 +211,7 @@ impl App {
     async fn backfill_persisted_subagent_page(&mut self, app_server: &mut AppServerSession) {
         const PAGE_SIZE: u32 = 50;
         const MAX_DEPTH: usize = 128;
+        const MAX_LINEAGE_READS: usize = 128;
         let Some(root_id) = self.primary_thread_id else {
             return;
         };
@@ -249,12 +251,22 @@ impl App {
             let _ = self.agent_navigation.set_next_picker_page_cursor(None);
             return;
         }
+        let mut lineage_cache = HashMap::new();
+        let mut lineage_reads = 0;
         for thread in response.data {
             if !matches!(
                 thread.source,
                 SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
             ) || !self
-                .persisted_descendant_reaches_root(app_server, &thread, root_id, MAX_DEPTH)
+                .persisted_descendant_reaches_root(
+                    app_server,
+                    &thread,
+                    root_id,
+                    MAX_DEPTH,
+                    MAX_LINEAGE_READS,
+                    &mut lineage_reads,
+                    &mut lineage_cache,
+                )
                 .await
             {
                 continue;
@@ -302,6 +314,9 @@ impl App {
         thread: &codex_app_server_protocol::Thread,
         root_id: ThreadId,
         max_depth: usize,
+        max_reads: usize,
+        reads: &mut usize,
+        cache: &mut HashMap<ThreadId, Option<codex_app_server_protocol::Thread>>,
     ) -> bool {
         let mut current = match thread
             .parent_thread_id
@@ -315,9 +330,18 @@ impl App {
             if current == root_id {
                 return true;
             }
-            let Ok(parent) = app_server.thread_read(current, false).await else {
-                return false;
+            let parent = if let Some(parent) = cache.get(&current) {
+                parent.clone()
+            } else {
+                if *reads >= max_reads {
+                    return false;
+                }
+                *reads += 1;
+                let parent = app_server.thread_read(current, false).await.ok();
+                cache.insert(current, parent.clone());
+                parent
             };
+            let Some(parent) = parent else { return false };
             if !matches!(
                 parent.source,
                 SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
