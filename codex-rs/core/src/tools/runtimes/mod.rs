@@ -208,6 +208,15 @@ pub(crate) fn disable_powershell_profile_for_elevated_windows_sandbox(
     command
 }
 
+pub(crate) fn scrub_shell_startup_hook_env_vars(env: &mut HashMap<String, String>) {
+    env.retain(|name, _| {
+        !matches!(
+            name.to_ascii_uppercase().as_str(),
+            "ENV" | "BASH_ENV" | "ZDOTDIR"
+        )
+    });
+}
+
 /// POSIX-only helper: for commands produced by `Shell::derive_exec_args`
 /// for Bash/Zsh/sh of the form `[shell_path, "-lc", "<script>"]`, and
 /// when a snapshot is configured on the session shell, rewrite the argv
@@ -307,8 +316,13 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         proxy_exports,
         runtime_path_prepend_exports,
     ]);
-    let safe_exec =
-        build_non_inheritable_safe_exec(&original_shell, &original_script, &trailing_args);
+    let startup_hook_exports = build_startup_hook_exports(explicit_env_overrides);
+    let safe_exec = build_non_inheritable_safe_exec(
+        &original_shell,
+        &original_script,
+        &trailing_args,
+        &startup_hook_exports,
+    );
     let rewritten_script = if override_exports.is_empty() {
         format!(
             "{non_inheritable_tool_captures}\n\nif . '{snapshot_path}' >/dev/null 2>&1; then :; fi\n\n{non_inheritable_scrub}\n\n{safe_exec}"
@@ -337,10 +351,30 @@ fn build_non_inheritable_safe_exec(
     original_shell: &str,
     original_script: &str,
     trailing_args: &str,
+    startup_hook_exports: &str,
 ) -> String {
     format!(
-        "exec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"unset ENV BASH_ENV ZDOTDIR\\n$__codex_scrub_script\\n__codex_shell=\\$1\\n__codex_script=\\$2\\nshift 2\\nexec \\\"\\$__codex_shell\\\" -c \\\"\\$__codex_script\\\" \\\"\\$@\\\"\" sh '{original_shell}' '{original_script}'{trailing_args}"
+        "exec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"unset ENV BASH_ENV ZDOTDIR\\n$__codex_scrub_script\\n__codex_shell=\\$1\\n__codex_script=\\\"{startup_hook_exports}\\n\\$2\\\"\\nshift 2\\nexec \\\"\\$__codex_shell\\\" -c \\\"\\$__codex_script\\\" \\\"\\$@\\\"\" sh '{original_shell}' '{original_script}'{trailing_args}"
     )
+}
+
+fn build_startup_hook_exports(explicit_env_overrides: &HashMap<String, String>) -> String {
+    explicit_env_overrides
+        .iter()
+        .filter_map(|(name, value)| {
+            let canonical = match name.to_ascii_uppercase().as_str() {
+                "ENV" => "ENV",
+                "BASH_ENV" => "BASH_ENV",
+                "ZDOTDIR" => "ZDOTDIR",
+                _ => return None,
+            };
+            Some(format!(
+                "export {canonical}='{}'",
+                shell_single_quote(value)
+            ))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn build_override_exports(

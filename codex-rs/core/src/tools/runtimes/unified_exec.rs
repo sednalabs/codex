@@ -329,7 +329,10 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
             req.network.as_ref(),
             launch_sandbox_permissions,
         ));
-        let env = exec_env_for_sandbox_permissions(&req.env, launch_sandbox_permissions);
+        let mut env = exec_env_for_sandbox_permissions(&req.env, launch_sandbox_permissions);
+        if shell_snapshot_location.is_some() {
+            crate::tools::runtimes::scrub_shell_startup_hook_env_vars(&mut env);
+        }
         let (env, managed_network_context, network_proxy_launch) = match managed_network {
             Some(network) if environment_is_remote => {
                 let launch = network.remote_launch_config().await.map_err(|err| {
