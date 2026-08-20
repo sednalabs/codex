@@ -569,6 +569,9 @@ impl App {
                     .await?;
                 if live_attached {
                     self.chat_widget.set_replay_only_thread(false);
+                    if self.agent_navigation.is_parent_owned(thread_id) {
+                        self.chat_widget.set_parent_owned_thread();
+                    }
                 }
             }
             return Ok(());

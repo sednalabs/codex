@@ -112,7 +112,7 @@ impl ChatWidget {
         pending_pastes: Vec<(String, String)>,
     ) {
         if self.replay_only {
-            self.restore_user_message_to_composer(user_message);
+            self.restore_user_message_to_composer_with_pending_pastes(user_message, pending_pastes);
             self.add_error_message("Replay-only transcripts do not accept input.".to_string());
             return;
         }
