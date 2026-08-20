@@ -7703,6 +7703,9 @@ fi
             elif failure == "activation_fault_inert":
                 env["SEDNA_INSTALLER_TEST_FAULT"] = "after-visible-predecessor"
                 env.pop("SEDNA_INSTALLER_TESTING", None)
+            elif failure == "activation_empty_restore":
+                env["SEDNA_INSTALLER_TEST_FAULT"] = "after-visible-replacement"
+                env["SEDNA_INSTALLER_TESTING"] = "1"
             env.pop("GH_TOKEN", None)
             env.pop("GITHUB_TOKEN", None)
             verification_args = []
@@ -7730,6 +7733,11 @@ fi
                 visible_path = root / "home" / ".local" / "bin" / "codex"
                 self.assertTrue(visible_path.is_symlink())
                 self.assertEqual(visible_path.readlink(), predecessor_link)
+            if failure == "activation_empty_restore":
+                self.assertFalse((root / "home" / ".local" / "bin" / "codex").exists())
+                self.assertFalse(
+                    (root / "home" / ".codex" / "packages" / "standalone" / "current").exists()
+                )
             return proc
 
     def test_sedna_release_installer_executes_hardened_linux_fixture(self) -> None:
@@ -7765,6 +7773,12 @@ fi
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("installed sednalabs/codex@", proc.stdout)
+
+    def test_sedna_release_installer_removes_new_links_on_empty_predecessor_failure(self) -> None:
+        proc = self.run_sedna_installer_fixture(
+            "activation_empty_restore", dry_run=False
+        )
+        self.assertEqual(proc.returncode, 74, proc.stderr)
 
     def test_sedna_release_installer_rejects_symlinked_owned_paths(self) -> None:
         for failure in (

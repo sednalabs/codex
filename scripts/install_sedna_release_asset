@@ -112,6 +112,7 @@ activation_committed=false
 activation_previous_current=""
 activation_previous_visible_link=""
 activation_visible_backup=""
+activation_visible_created=false
 cleanup() {
   if [[ "$activation_started" == "true" && "$activation_committed" != "true" ]]; then
     if [[ -n "$activation_previous_visible_link" ]]; then
@@ -127,6 +128,8 @@ PY
     elif [[ -n "$activation_visible_backup" && -e "$activation_visible_backup" ]]; then
       rm -f "${bin_dir}/codex"
       mv "$activation_visible_backup" "${bin_dir}/codex"
+    elif [[ "$activation_visible_created" == "true" && -L "${bin_dir}/codex" ]]; then
+      rm -f "${bin_dir}/codex"
     fi
     current_path="${install_root}/current"
     if [[ -n "$activation_previous_current" ]]; then
@@ -907,6 +910,12 @@ import sys
 
 os.replace(sys.argv[1], sys.argv[2])
 PY
+activation_visible_created=true
+
+if [[ "${SEDNA_INSTALLER_TESTING:-}" == "1" \
+    && "${SEDNA_INSTALLER_TEST_FAULT:-}" == "after-visible-replacement" ]]; then
+  exit 74
+fi
 
 visible_version_output="$("$visible_codex" --version 2>&1)"
 if [[ "$visible_version_output" != *"$release_version"* ]]; then
