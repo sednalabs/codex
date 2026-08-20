@@ -784,7 +784,7 @@ fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
         &snapshot_path,
-        "PATH=/definitely-not-a-real-path\nenv() { printf 'hostile-env'; }\nsed() { printf 'hostile-sed'; }\ntr() { printf 'hostile-tr'; }\nexport OpenAI_Federation_Rule_Id='/run/snapshot-rule'\nexport openai_identity_token_file='/run/snapshot-token'\n",
+        "PATH=/definitely-not-a-real-path\nenv() { printf 'hostile-env'; }\nsed() { printf 'hostile-sed'; }\ntr() { printf 'hostile-tr'; }\nprintf() { printf 'hostile-printf'; }\nunset() { :; }\n__codex_env=/tmp/hostile-env\n__codex_sed=/tmp/hostile-sed\ncommand unset __codex_tr\nexport OpenAI_Federation_Rule_Id='/run/snapshot-rule'\nexport openai_identity_token_file='/run/snapshot-token'\n",
     )
     .expect("write snapshot");
     let (session_shell, shell_snapshot) =
@@ -792,7 +792,7 @@ fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
-        "printf '%s|%s|' \"${OpenAI_Federation_Rule_Id-unset}\" \"${openai_identity_token_file-unset}\"; /usr/bin/env | /usr/bin/grep -i '^openai_.*=' || true".to_string(),
+        "command printf '%s|%s|' \"${OpenAI_Federation_Rule_Id-unset}\" \"${openai_identity_token_file-unset}\"; /usr/bin/env | /usr/bin/grep -i '^openai_.*=' || true".to_string(),
     ];
     let explicit_env_overrides = HashMap::from([
         (
