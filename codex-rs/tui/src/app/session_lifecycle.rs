@@ -359,6 +359,14 @@ impl App {
                     }),
                     is_closed,
                 );
+                // A cached channel may still be attached live when the server reports that the
+                // thread is closed. Keep the attachment in sync with authoritative metadata so
+                // central mutation guards cannot submit operations to a replay-only transcript.
+                if is_closed {
+                    if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+                        channel.mark_replay_only();
+                    }
+                }
                 if is_parent_owned {
                     self.agent_navigation.mark_parent_owned(thread_id);
                 }
@@ -405,6 +413,11 @@ impl App {
                         thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
                         is_closed,
                     );
+                }
+                if is_closed {
+                    if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+                        channel.mark_replay_only();
+                    }
                 }
                 self.agent_navigation
                     .set_running(thread_id, /*is_running*/ false);

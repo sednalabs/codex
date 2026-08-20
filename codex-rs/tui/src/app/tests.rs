@@ -1453,6 +1453,36 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
         })
     );
     assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
+
+    assert!(app.is_replay_only_thread(thread_id));
+    let op = AppCommand::user_turn(
+        vec![UserInput::Text {
+            text: "must not be submitted".to_string(),
+            text_elements: Vec::new(),
+        }],
+        app.config.cwd.to_path_buf(),
+        AskForApproval::OnRequest,
+        /*active_permission_profile*/ None,
+        get_model_offline_for_tests(app.config.model.as_deref()),
+        /*effort*/ None,
+        /*summary*/ None,
+        /*service_tier*/ None,
+        /*final_output_json_schema*/ None,
+        /*collaboration_mode*/ None,
+        /*personality*/ None,
+    );
+    app.submit_thread_op(&mut app_server, thread_id, op)
+        .await
+        .expect("closed cached thread should reject direct mutation locally");
+    let store = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("replay channel should remain")
+        .store
+        .lock()
+        .await;
+    assert!(store.active_turn_id().is_none());
+    assert!(store.turns.is_empty());
     Ok(())
 }
 
