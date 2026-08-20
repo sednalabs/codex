@@ -19,6 +19,112 @@ const AGENT_PICKER_LOADED_MAX_PAGES: usize = 128;
 const AGENT_PICKER_LOADED_MAX_THREADS: usize =
     AGENT_PICKER_LOADED_PAGE_SIZE as usize * AGENT_PICKER_LOADED_MAX_PAGES;
 
+#[derive(Debug, PartialEq, Eq)]
+enum LoadedThreadPageRejection {
+    OversizedPage,
+    ThreadBudgetExceeded,
+    RepeatedCursor,
+}
+
+impl std::fmt::Display for LoadedThreadPageRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OversizedPage => f.write_str("oversized loaded-thread page"),
+            Self::ThreadBudgetExceeded => f.write_str("loaded-thread budget exceeded"),
+            Self::RepeatedCursor => f.write_str("repeated loaded-thread pagination cursor"),
+        }
+    }
+}
+
+fn accept_loaded_thread_page(
+    loaded_thread_ids: &mut Vec<String>,
+    seen_cursors: &mut HashSet<String>,
+    response: ThreadLoadedListResponse,
+) -> std::result::Result<Option<String>, LoadedThreadPageRejection> {
+    if response.data.len() > AGENT_PICKER_LOADED_PAGE_SIZE as usize {
+        return Err(LoadedThreadPageRejection::OversizedPage);
+    }
+    if loaded_thread_ids
+        .len()
+        .checked_add(response.data.len())
+        .map_or(true, |count| count > AGENT_PICKER_LOADED_MAX_THREADS)
+    {
+        return Err(LoadedThreadPageRejection::ThreadBudgetExceeded);
+    }
+    loaded_thread_ids.extend(response.data);
+    let Some(next_cursor) = response.next_cursor else {
+        return Ok(None);
+    };
+    if !seen_cursors.insert(next_cursor.clone()) {
+        return Err(LoadedThreadPageRejection::RepeatedCursor);
+    }
+    Ok(Some(next_cursor))
+}
+
+#[cfg(test)]
+mod loaded_thread_page_tests {
+    use super::*;
+
+    fn page(data_len: usize, next_cursor: Option<&str>) -> ThreadLoadedListResponse {
+        ThreadLoadedListResponse {
+            data: (0..data_len).map(|index| format!("thread-{index}")).collect(),
+            next_cursor: next_cursor.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn rejects_oversized_pages_before_registering_ids() {
+        let mut ids = Vec::new();
+        let mut cursors = HashSet::new();
+        let result = accept_loaded_thread_page(
+            &mut ids,
+            &mut cursors,
+            page(AGENT_PICKER_LOADED_PAGE_SIZE as usize + 1, None),
+        );
+        assert_eq!(result, Err(LoadedThreadPageRejection::OversizedPage));
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn rejects_pages_that_exceed_the_total_thread_budget() {
+        let mut ids = vec!["existing".to_string(); AGENT_PICKER_LOADED_MAX_THREADS];
+        let mut cursors = HashSet::new();
+        let result = accept_loaded_thread_page(&mut ids, &mut cursors, page(1, None));
+        assert_eq!(result, Err(LoadedThreadPageRejection::ThreadBudgetExceeded));
+        assert_eq!(ids.len(), AGENT_PICKER_LOADED_MAX_THREADS);
+    }
+
+    #[test]
+    fn rejects_repeated_cursors_without_following_the_cycle() {
+        let mut ids = Vec::new();
+        let mut cursors = HashSet::from(["cursor-1".to_string()]);
+        let result = accept_loaded_thread_page(
+            &mut ids,
+            &mut cursors,
+            page(1, Some("cursor-1")),
+        );
+        assert_eq!(result, Err(LoadedThreadPageRejection::RepeatedCursor));
+        assert_eq!(ids, vec!["thread-0"]);
+    }
+
+    #[test]
+    fn finite_page_budget_rejects_an_unexhausted_scan() {
+        let mut ids = Vec::new();
+        let mut cursors = HashSet::new();
+        let mut cursor = None;
+        for index in 0..AGENT_PICKER_LOADED_MAX_PAGES {
+            cursor = accept_loaded_thread_page(
+                &mut ids,
+                &mut cursors,
+                page(1, Some(&format!("cursor-{index}"))),
+            )
+            .expect("unique cursor should remain within the thread budget");
+        }
+        assert!(cursor.is_some());
+        assert_eq!(ids.len(), AGENT_PICKER_LOADED_MAX_PAGES);
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum ThreadAttachPresentation {
     SessionLineage,
@@ -841,8 +947,8 @@ impl App {
     /// keyboard navigation are pre-populated even if the TUI did not witness the original spawn
     /// events. Fresh and forked threads cannot have pre-existing descendants.
     ///
-    /// The loaded-thread list is fetched in full (no pagination) and the spawn tree is walked
-    /// by `find_loaded_subagent_threads_for_primary`. Each discovered subagent is registered via
+    /// The loaded-thread list is fetched through a bounded cursor-paginated scan and the spawn tree
+    /// is walked by `find_loaded_subagent_threads_for_primary`. Each discovered subagent is registered via
     /// `upsert_agent_picker_thread`, which writes to both `AgentNavigationState` and the
     /// `ChatWidget` metadata map.
     pub(super) async fn backfill_loaded_subagent_threads(
@@ -873,26 +979,21 @@ impl App {
                     return LoadedSubagentBackfill::default();
                 }
             };
-            if response.data.len() > AGENT_PICKER_LOADED_PAGE_SIZE as usize
-                || loaded_thread_ids
-                    .len()
-                    .checked_add(response.data.len())
-                    .map_or(true, |count| count > AGENT_PICKER_LOADED_MAX_THREADS)
-            {
-                tracing::warn!(
-                    "rejecting loaded-thread backfill page outside the picker scan budget"
-                );
-                return LoadedSubagentBackfill::default();
-            }
-            loaded_thread_ids.extend(response.data);
-            let Some(next_cursor) = response.next_cursor else {
+            let next_cursor = match accept_loaded_thread_page(
+                &mut loaded_thread_ids,
+                &mut seen_cursors,
+                response,
+            ) {
+                Ok(next_cursor) => next_cursor,
+                Err(rejection) => {
+                    tracing::warn!(%rejection, "rejecting loaded-thread backfill page outside the picker scan budget");
+                    return LoadedSubagentBackfill::default();
+                }
+            };
+            let Some(next_cursor) = next_cursor else {
                 cursor = None;
                 break;
             };
-            if !seen_cursors.insert(next_cursor.clone()) {
-                tracing::warn!(%next_cursor, "rejecting repeated loaded-thread pagination cursor");
-                return LoadedSubagentBackfill::default();
-            }
             cursor = Some(next_cursor);
         }
         if cursor.is_some() {
