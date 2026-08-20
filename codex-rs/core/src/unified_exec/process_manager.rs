@@ -141,6 +141,8 @@ fn exec_env_policy_from_shell_policy(
     exclude.extend([
         CODEX_PERMISSION_PROFILE_ENV_VAR.to_string(),
         codex_apply_patch::CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
+        "OPENAI_FEDERATION_RULE_ID".to_string(),
+        "OPENAI_IDENTITY_TOKEN_FILE".to_string(),
     ]);
     let mut r#set = policy.r#set.clone();
     r#set.retain(|key, _| {
