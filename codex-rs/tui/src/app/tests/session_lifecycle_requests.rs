@@ -350,10 +350,11 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
 
                 let (_, reads) = take_backfill_counts(&requests);
                 assert!(reads >= 1, "picker must refresh the cached child liveness");
-                assert!(app
-                    .agent_navigation
-                    .get(&child_thread_id)
-                    .is_some_and(|entry| entry.is_closed));
+                assert!(
+                    app.agent_navigation
+                        .get(&child_thread_id)
+                        .is_some_and(|entry| entry.is_closed)
+                );
                 assert_eq!(
                     app.thread_event_channels
                         .get(&child_thread_id)
