@@ -8,6 +8,14 @@ pub(crate) fn is_newer(latest: &str, current: &str) -> Option<bool> {
     }
 }
 
+/// Cache values are untrusted across releases. A cached value may be compared
+/// only after it passes the Sedna release grammar used for live release tags.
+pub(crate) fn is_actionable_sedna_update(latest: &str, current: &str) -> bool {
+    is_sedna_release_version(latest)
+        && is_sedna_release_version(current)
+        && is_newer(latest, current).unwrap_or(false)
+}
+
 pub(crate) fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<String> {
     let version = latest_tag_name
         .strip_prefix(CODEX_RELEASE_TAG_PREFIX)
@@ -108,6 +116,17 @@ mod tests {
             assert!(
                 extract_version_from_latest_tag(tag).is_err(),
                 "accepted {tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn cached_updates_must_be_sedna_releases_before_comparison() {
+        assert!(is_actionable_sedna_update("1.5.0-sedna.2", "1.5.0-sedna.1"));
+        for cached_version in ["1.5.1", "1.5.1+upstream.4", "1.5.1-sedna.x"] {
+            assert!(
+                !is_actionable_sedna_update(cached_version, "1.5.0-sedna.1"),
+                "accepted cached version {cached_version}"
             );
         }
     }

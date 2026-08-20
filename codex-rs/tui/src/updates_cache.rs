@@ -1,4 +1,5 @@
 use crate::legacy_core::config::Config;
+use crate::update_versions::is_actionable_sedna_update;
 use crate::version::{CODEX_RELEASE_REPOSITORY, CODEX_RELEASE_TAG_PREFIX};
 use chrono::DateTime;
 use chrono::Utc;
@@ -45,6 +46,12 @@ impl VersionInfo {
         self.matches_current_channel()
             .then(|| self.dismissed_version.clone())
             .flatten()
+    }
+
+    pub(crate) fn actionable_latest_version(&self, current_version: &str) -> Option<&str> {
+        (self.matches_current_channel()
+            && is_actionable_sedna_update(&self.latest_version, current_version))
+        .then_some(self.latest_version.as_str())
     }
 }
 

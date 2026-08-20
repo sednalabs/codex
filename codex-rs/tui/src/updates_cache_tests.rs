@@ -102,3 +102,20 @@ fn legacy_source_less_cache_does_not_preserve_its_dismissal() {
 
     assert_eq!(info.dismissed_version_for_current_channel(), None);
 }
+
+#[test]
+fn current_identity_cache_rejects_non_sedna_latest_versions() {
+    for cached_version in ["999.0.0", "999.0.0+upstream.4", "999.0.0-sedna.x"] {
+        let info = VersionInfo::for_current_channel(
+            cached_version.to_string(),
+            DateTime::<Utc>::UNIX_EPOCH,
+            None,
+        );
+
+        assert_eq!(
+            info.actionable_latest_version("998.0.0-sedna.1"),
+            None,
+            "accepted cached version {cached_version}"
+        );
+    }
+}
