@@ -269,7 +269,11 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         .iter()
         .map(|arg| format!(" '{}'", shell_single_quote(arg)))
         .collect::<String>();
-    let mut override_env = explicit_env_overrides.clone();
+    let mut override_env = explicit_env_overrides
+        .iter()
+        .filter(|(key, _)| !is_protected_snapshot_override(key))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<HashMap<_, _>>();
     for key in [
         CODEX_THREAD_ID_ENV_VAR,
         CODEX_PERMISSION_PROFILE_ENV_VAR,
@@ -323,6 +327,17 @@ fn build_override_exports(
     keys.dedup();
 
     build_override_exports_for_keys("__CODEX_SNAPSHOT_OVERRIDE", &keys)
+}
+
+fn is_protected_snapshot_override(key: &str) -> bool {
+    [
+        CODEX_PERMISSION_PROFILE_ENV_VAR,
+        CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR,
+        "OPENAI_FEDERATION_RULE_ID",
+        "OPENAI_IDENTITY_TOKEN_FILE",
+    ]
+    .iter()
+    .any(|protected| protected.eq_ignore_ascii_case(key))
 }
 
 fn build_proxy_env_exports() -> (String, String) {

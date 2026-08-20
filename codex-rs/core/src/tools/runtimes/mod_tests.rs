@@ -731,11 +731,21 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_apply_patch_rollout_state() {
         CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
         "1".to_string(),
     )]);
+    let explicit_env_overrides = HashMap::from([
+        (
+            "codex_apply_patch_preserve_line_endings".to_string(),
+            "stale-rollout".to_string(),
+        ),
+        (
+            "openai_identity_token_file".to_string(),
+            "/run/stale-token".to_string(),
+        ),
+    ]);
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
         &command,
         &session_shell,
         Some(&shell_snapshot),
-        &HashMap::new(),
+        &explicit_env_overrides,
         &env,
         &RuntimePathPrepends::default(),
     );
@@ -747,6 +757,8 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_apply_patch_rollout_state() {
 
     assert!(output.status.success(), "command failed: {output:?}");
     assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+    assert!(!rewritten[2].contains("stale-rollout"));
+    assert!(!rewritten[2].contains("/run/stale-token"));
 
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
         &command,
