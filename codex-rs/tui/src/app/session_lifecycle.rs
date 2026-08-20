@@ -303,7 +303,8 @@ impl App {
                 .agent_navigation
                 .get(&thread_id)
                 .is_some_and(|entry| entry.is_closed);
-            let is_closed = persisted_picker_thread_is_closed(thread.status, already_closed);
+            let is_closed =
+                persisted_picker_thread_is_closed(thread.status.clone(), already_closed);
             self.upsert_agent_picker_thread(
                 thread_id,
                 thread.agent_nickname,
@@ -322,7 +323,7 @@ impl App {
             if is_closed {
                 self.agent_navigation.mark_stopped(thread_id);
             } else if !has_live_channel {
-                if persisted_picker_thread_is_running(thread.status) {
+                if persisted_picker_thread_is_running(thread.status.clone()) {
                     self.agent_navigation.mark_running(thread_id);
                 } else {
                     self.agent_navigation.mark_stopped(thread_id);
