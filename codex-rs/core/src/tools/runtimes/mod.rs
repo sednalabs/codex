@@ -317,11 +317,13 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         runtime_path_prepend_exports,
     ]);
     let startup_hook_exports = build_startup_hook_exports(explicit_env_overrides);
+    let post_startup_scrub = build_post_startup_scrub(&shell_path);
     let safe_exec = build_non_inheritable_safe_exec(
         &original_shell,
         &original_script,
         &trailing_args,
         &startup_hook_exports,
+        &post_startup_scrub,
     );
     let rewritten_script = if override_exports.is_empty() {
         format!(
@@ -352,9 +354,21 @@ fn build_non_inheritable_safe_exec(
     original_script: &str,
     trailing_args: &str,
     startup_hook_exports: &str,
+    post_startup_scrub: &str,
 ) -> String {
     format!(
-        "exec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"unset ENV BASH_ENV ZDOTDIR\\n$__codex_scrub_script\\n__codex_shell=\\$1\\n__codex_script=\\\"{startup_hook_exports}\\n\\$2\\\"\\nshift 2\\nexec \\\"\\$__codex_shell\\\" -c \\\"\\$__codex_script\\\" \\\"\\$@\\\"\" sh '{original_shell}' '{original_script}'{trailing_args}"
+        "exec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"unset ENV BASH_ENV ZDOTDIR\\n$__codex_scrub_script\\n__codex_shell=\\$1\\n__codex_script=\\\"{post_startup_scrub}\\n\\$2\\\"\\nshift 2\\n{startup_hook_exports}\\nexec \\\"\\$__codex_shell\\\" -c \\\"\\$__codex_script\\\" \\\"\\$@\\\"\" sh '{original_shell}' '{original_script}'{trailing_args}"
+    )
+}
+
+fn build_post_startup_scrub(shell_path: &str) -> String {
+    let builtin = if shell_path.ends_with("/bash") || shell_path.ends_with("/zsh") {
+        "builtin"
+    } else {
+        "command"
+    };
+    format!(
+        "IFS=' \\t\\n'\nfor __codex_startup_name in $(/usr/bin/env | /usr/bin/awk -F= 'tolower($1) == \"openai_federation_rule_id\" || tolower($1) == \"openai_identity_token_file\" {{ print $1 }}'); do\n  {builtin} unset \"$__codex_startup_name\"\ndone"
     )
 }
 
