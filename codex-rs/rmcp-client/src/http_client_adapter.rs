@@ -203,19 +203,12 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
 
         let content_type = response_header(&response.headers, CONTENT_TYPE);
         let session_id = response_header(&response.headers, HEADER_SESSION_ID);
-        if status_is_success(response.status)
-            && response_header(&response.headers, reqwest::header::CONTENT_LENGTH)
-                .as_deref()
-                .is_some_and(|value| value.trim() == "0")
-            && matches!(
-                message,
-                JsonRpcMessage::Response(_)
-                    | JsonRpcMessage::Notification(_)
-                    | JsonRpcMessage::Error(_)
-            )
-        {
-            return Ok(StreamableHttpPostResponse::Accepted);
-        }
+        let accepts_empty_body = matches!(
+            &message,
+            JsonRpcMessage::Response(_)
+                | JsonRpcMessage::Notification(_)
+                | JsonRpcMessage::Error(_)
+        );
         if !status_is_success(response.status) {
             let body = collect_body(&mut body_stream).await?;
             if !retryable_post_response_status(mcp_method.as_deref(), response.status)
@@ -238,19 +231,24 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
         }
         match content_type.as_deref() {
             Some(content_type) if content_type.starts_with(EVENT_STREAM_MIME_TYPE) => {
-                let event_stream = sse_stream_from_body(body_stream);
+                let event_stream = if accepts_empty_body {
+                    let first_chunk = body_stream
+                        .recv()
+                        .await
+                        .map_err(StreamableHttpClientAdapterError::from)
+                        .map_err(StreamableHttpError::Client)?;
+                    if first_chunk.is_none() {
+                        return Ok(StreamableHttpPostResponse::Accepted);
+                    }
+                    sse_stream_from_body_with_first_chunk(body_stream, first_chunk)
+                } else {
+                    sse_stream_from_body(body_stream)
+                };
                 Ok(StreamableHttpPostResponse::Sse(event_stream, session_id))
             }
             Some(content_type) if content_type.starts_with(JSON_MIME_TYPE) => {
                 let body = collect_body(&mut body_stream).await?;
-                if body.is_empty()
-                    && matches!(
-                        message,
-                        JsonRpcMessage::Response(_)
-                            | JsonRpcMessage::Notification(_)
-                            | JsonRpcMessage::Error(_)
-                    )
-                {
+                if body.is_empty() && accepts_empty_body {
                     return Ok(StreamableHttpPostResponse::Accepted);
                 }
                 let message: ServerJsonRpcMessage =
@@ -259,14 +257,7 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
             }
             _ => {
                 let body = collect_body(&mut body_stream).await?;
-                if body.is_empty()
-                    && matches!(
-                        message,
-                        JsonRpcMessage::Response(_)
-                            | JsonRpcMessage::Notification(_)
-                            | JsonRpcMessage::Error(_)
-                    )
-                {
+                if body.is_empty() && accepts_empty_body {
                     return Ok(StreamableHttpPostResponse::Accepted);
                 }
                 let content_type = content_type.unwrap_or_else(|| "missing-content-type".into());
@@ -614,12 +605,21 @@ async fn collect_body(
 fn sse_stream_from_body(
     body_stream: HttpResponseBodyStream,
 ) -> BoxStream<'static, std::result::Result<Sse, sse_stream::Error>> {
-    SseStream::from_bytes_stream(stream::unfold(body_stream, |mut body_stream| async move {
-        match body_stream.recv().await {
-            Ok(Some(bytes)) => Some((Ok(Bytes::from(bytes)), body_stream)),
-            Ok(None) => None,
-            Err(error) => Some((Err(io::Error::other(error)), body_stream)),
-        }
-    }))
-    .boxed()
+    sse_stream_from_body_with_first_chunk(body_stream, None)
+}
+
+fn sse_stream_from_body_with_first_chunk(
+    body_stream: HttpResponseBodyStream,
+    first_chunk: Option<Vec<u8>>,
+) -> BoxStream<'static, std::result::Result<Sse, sse_stream::Error>> {
+    let body_stream = stream::iter(first_chunk.map(|bytes| Ok(Bytes::from(bytes)))).chain(
+        stream::unfold(body_stream, |mut body_stream| async move {
+            match body_stream.recv().await {
+                Ok(Some(bytes)) => Some((Ok(Bytes::from(bytes)), body_stream)),
+                Ok(None) => None,
+                Err(error) => Some((Err(io::Error::other(error)), body_stream)),
+            }
+        }),
+    );
+    SseStream::from_bytes_stream(body_stream).boxed()
 }
