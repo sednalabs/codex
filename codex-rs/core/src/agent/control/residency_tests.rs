@@ -748,7 +748,7 @@ async fn terminal_idle_unload_defers_for_pending_unified_exec_completion() {
         .get_thread(first.thread_id)
         .await
         .expect("deferred runtime");
-    assert!(Arc::ptr_eq(&resident, &first));
+    assert!(Arc::ptr_eq(&resident, &first.thread));
     assert!(
         resident
             .session
