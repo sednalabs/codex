@@ -8,6 +8,7 @@ use super::SEDNA_STANDALONE_INSTALLER_URL;
 use super::fetch_installer_script_from_url;
 #[cfg(unix)]
 use super::install_latest_sedna_standalone;
+use super::post_install_release_is_strictly_newer;
 use super::update_modes_for_identities;
 use crate::RestartMode;
 use crate::UpdaterRefreshMode;
@@ -35,6 +36,20 @@ fn changed_updater_forces_refresh_even_when_version_may_match() {
             RestartMode::Always,
             UpdaterRefreshMode::ReexecIfManagedBinaryChanged,
         )
+    );
+}
+
+#[test]
+fn post_install_release_must_be_strictly_newer_before_restart_or_reexec() {
+    let installed_from = "1.2.3-sedna.1";
+    assert_eq!(
+        [
+            post_install_release_is_strictly_newer(installed_from, "1.2.2-sedna.1"),
+            post_install_release_is_strictly_newer(installed_from, "1.2.3-sedna.1"),
+            post_install_release_is_strictly_newer(installed_from, "1.2.4-sedna.1"),
+            post_install_release_is_strictly_newer(installed_from, "not-a-sedna-release"),
+        ],
+        [false, false, true, false]
     );
 }
 

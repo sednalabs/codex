@@ -110,12 +110,19 @@ async fn update_once(
     let Some(managed_sedna_release) = managed_release.sedna_auto_update else {
         return Ok(UpdateLoopControl::Continue);
     };
-    install_latest_standalone(http, &managed_sedna_release.version).await?;
+    let installed_from_version = managed_sedna_release.version;
+    install_latest_standalone(http, &installed_from_version).await?;
 
     let managed_release = resolved_managed_standalone_release(&daemon.managed_codex_bin).await?;
-    if managed_release.sedna_auto_update.is_none() {
+    let Some(installed_release) = managed_release.sedna_auto_update else {
         return Err(anyhow::anyhow!(
             "managed release is no longer eligible for automatic updates after installation"
+        ));
+    };
+    if !post_install_release_is_strictly_newer(&installed_from_version, &installed_release.version)
+    {
+        return Err(anyhow::anyhow!(
+            "managed release after installation was not strictly newer than the release selected for update"
         ));
     }
     let managed_codex_bin = managed_release.executable;
@@ -161,6 +168,15 @@ fn update_modes_for_identities(
             UpdaterRefreshMode::ReexecIfManagedBinaryChanged,
         )
     }
+}
+
+#[cfg(unix)]
+fn post_install_release_is_strictly_newer(
+    installed_from_version: &str,
+    installed_release_version: &str,
+) -> bool {
+    codex_utils_version::is_newer_sedna_release(installed_release_version, installed_from_version)
+        .unwrap_or(false)
 }
 
 #[cfg(unix)]
