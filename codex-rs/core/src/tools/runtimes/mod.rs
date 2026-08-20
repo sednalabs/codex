@@ -262,6 +262,11 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
 
     let snapshot_path = snapshot.to_string_lossy();
     let shell_path = session_shell.shell_path.to_string_lossy();
+    let builtin_prefix = if shell_path.ends_with("/bash") || shell_path.ends_with("/zsh") {
+        "builtin"
+    } else {
+        "command"
+    };
     let original_shell = shell_single_quote(&command[0]);
     let original_script = shell_single_quote(&command[2]);
     let snapshot_path = shell_single_quote(snapshot_path.as_ref());
@@ -293,7 +298,7 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
     );
     let (proxy_captures, proxy_exports) = build_proxy_env_exports();
     let non_inheritable_tool_captures = build_non_inheritable_env_tool_captures();
-    let non_inheritable_scrub = build_non_inheritable_env_scrub();
+    let non_inheritable_scrub = build_non_inheritable_env_scrub(builtin_prefix);
     let runtime_path_prepend_exports =
         runtime_path_prepends.shell_exports_after_snapshot(explicit_env_overrides);
     let override_captures = join_shell_blocks([
@@ -327,8 +332,10 @@ fn build_non_inheritable_env_tool_captures() -> String {
     "__codex_env=$(command -p -v env)\n__codex_sed=$(command -p -v sed)\n__codex_tr=$(command -p -v tr)\ncommand readonly __codex_env __codex_sed __codex_tr".to_string()
 }
 
-fn build_non_inheritable_env_scrub() -> String {
-    "for __codex_snapshot_name in $(\"$__codex_env\" | \"$__codex_sed\" 's/=.*//'); do\n  case \"$(command printf '%s' \"$__codex_snapshot_name\" | \"$__codex_tr\" '[:lower:]' '[:upper:]')\" in\n    OPENAI_FEDERATION_RULE_ID|OPENAI_IDENTITY_TOKEN_FILE) command unset \"$__codex_snapshot_name\" ;;\n  esac\ndone".to_string()
+fn build_non_inheritable_env_scrub(builtin_prefix: &str) -> String {
+    format!(
+        "for __codex_snapshot_name in $(\"$__codex_env\" | \"$__codex_sed\" 's/=.*//'); do\n  case \"$({builtin_prefix} printf '%s' \"$__codex_snapshot_name\" | \"$__codex_tr\" '[:lower:]' '[:upper:]')\" in\n    OPENAI_FEDERATION_RULE_ID|OPENAI_IDENTITY_TOKEN_FILE) {builtin_prefix} unset \"$__codex_snapshot_name\" ;;\n  esac\ndone"
+    )
 }
 
 fn build_override_exports(
