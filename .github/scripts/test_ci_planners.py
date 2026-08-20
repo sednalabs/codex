@@ -7706,6 +7706,16 @@ fi
                 self.assertIn(f"dry-run: verified sednalabs/codex@", proc.stdout)
                 self.assertIn(f"for {target}", proc.stdout)
 
+    def test_sedna_release_installer_serializes_activation_before_mutation(self) -> None:
+        script = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("acquire_activation_lock", script)
+        self.assertIn('activation_started=true', script)
+        self.assertIn('activation_previous_current="$(readlink', script)
+        self.assertIn("refusing to overwrite an existing installer backup", script)
+        self.assertIn("while os.getppid() == parent_pid", script)
+
     def test_sedna_release_installer_rejects_invalid_release_assets(self) -> None:
         cases = {
             "missing_sbom": "missing required assets",
