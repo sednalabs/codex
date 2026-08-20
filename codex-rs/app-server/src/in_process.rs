@@ -121,6 +121,14 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
     )
 }
 
+fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
+    matches!(
+        event,
+        InProcessServerEvent::ServerNotification(notification)
+            if server_notification_requires_delivery(notification)
+    )
+}
+
 /// Input needed to start an in-process app-server runtime.
 ///
 /// These fields mirror the pieces of ambient process state that stdio and
@@ -398,6 +406,27 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
 
     let runtime_handle = tokio::spawn(async move {
+        // Keep lossless event backpressure out of the command router. A slow
+        // event consumer must not prevent the router from receiving and
+        // forwarding cancellation or shutdown commands.
+        let (forward_tx, mut forward_rx) = mpsc::unbounded_channel::<InProcessServerEvent>();
+        let event_tx_forward = event_tx.clone();
+        let mut event_forward_handle = tokio::spawn(async move {
+            while let Some(event) = forward_rx.recv().await {
+                if event_requires_delivery(&event) {
+                    if event_tx_forward.send(event).await.is_err() {
+                        break;
+                    }
+                } else if let Err(send_error) = event_tx_forward.try_send(event) {
+                    match send_error {
+                        mpsc::error::TrySendError::Full(_) => {
+                            warn!("dropping in-process server event (queue full)");
+                        }
+                        mpsc::error::TrySendError::Closed(_) => break,
+                    }
+                }
+            }
+        });
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
         let auth_manager =
             AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env)
@@ -681,25 +710,11 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                         OutgoingMessage::AppServerNotification(envelope) => {
                             let notification = envelope.notification;
-                            if server_notification_requires_delivery(&notification) {
-                                if event_tx
-                                    .send(InProcessServerEvent::ServerNotification(notification))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            } else if let Err(send_error) =
-                                event_tx.try_send(InProcessServerEvent::ServerNotification(notification))
+                            if forward_tx
+                                .send(InProcessServerEvent::ServerNotification(notification))
+                                .is_err()
                             {
-                                match send_error {
-                                    mpsc::error::TrySendError::Full(_) => {
-                                        warn!("dropping in-process server notification (queue full)");
-                                    }
-                                    mpsc::error::TrySendError::Closed(_) => {
-                                        break;
-                                    }
-                                }
+                                break;
                             }
                         }
                     }
@@ -712,6 +727,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
 
         drop(writer_rx);
         drop(processor_tx);
+        drop(forward_tx);
         outgoing_message_sender
             .cancel_all_requests(Some(internal_error(
                 "in-process app-server runtime is shutting down",
@@ -729,6 +745,10 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut processor_handle).await {
             processor_handle.abort();
             let _ = processor_handle.await;
+        }
+        if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut event_forward_handle).await {
+            event_forward_handle.abort();
+            let _ = event_forward_handle.await;
         }
         if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut outbound_handle).await {
             outbound_handle.abort();
