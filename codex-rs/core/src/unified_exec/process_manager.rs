@@ -195,20 +195,21 @@ fn exec_server_env_for_request(
     Option<codex_exec_server::ExecEnvPolicy>,
     HashMap<String, String>,
 ) {
-    let (env_policy, mut env) = if let Some(exec_server_env_config) = &request.exec_server_env_config {
-        let mut env =
-            env_overlay_for_exec_server(&request.env, &exec_server_env_config.local_policy_env);
-        if request.exec_server_managed_network.is_some() {
-            for (key, value) in &request.env {
-                if is_managed_proxy_env_var(key, value) {
-                    env.insert(key.clone(), value.clone());
+    let (env_policy, mut env) =
+        if let Some(exec_server_env_config) = &request.exec_server_env_config {
+            let mut env =
+                env_overlay_for_exec_server(&request.env, &exec_server_env_config.local_policy_env);
+            if request.exec_server_managed_network.is_some() {
+                for (key, value) in &request.env {
+                    if is_managed_proxy_env_var(key, value) {
+                        env.insert(key.clone(), value.clone());
+                    }
                 }
             }
-        }
-        (Some(exec_server_env_config.policy.clone()), env)
-    } else {
-        (None, request.env.clone())
-    };
+            (Some(exec_server_env_config.policy.clone()), env)
+        } else {
+            (None, request.env.clone())
+        };
     scrub_non_inheritable_env_vars(&mut env);
     (env_policy, env)
 }
