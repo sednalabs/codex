@@ -339,7 +339,7 @@ fn build_non_inheritable_safe_exec(
     trailing_args: &str,
 ) -> String {
     format!(
-        "exec /bin/sh -c \"$__codex_scrub_script\\n__codex_shell=\\$1\\n__codex_script=\\$2\\nshift 2\\nexec \\\"\\$__codex_shell\\\" -c \\\"\\$__codex_script\\\" \\\"\\$@\\\"\" sh '{original_shell}' '{original_script}'{trailing_args}"
+        "exec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"unset ENV BASH_ENV ZDOTDIR\\n$__codex_scrub_script\\n__codex_shell=\\$1\\n__codex_script=\\$2\\nshift 2\\nexec \\\"\\$__codex_shell\\\" -c \\\"\\$__codex_script\\\" \\\"\\$@\\\"\" sh '{original_shell}' '{original_script}'{trailing_args}"
     )
 }
 

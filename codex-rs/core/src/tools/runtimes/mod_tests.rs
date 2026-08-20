@@ -782,9 +782,21 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_apply_patch_rollout_state() {
 fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
+    let startup_path = dir.path().join("startup.sh");
+    std::fs::write(
+        &startup_path,
+        "export OpenAI_Federation_Rule_Id='/run/startup-rule'\nexport openai_identity_token_file='/run/startup-token'\n",
+    )
+    .expect("write startup hook");
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        &startup_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("make startup hook executable");
     std::fs::write(
         &snapshot_path,
-        "PATH=/definitely-not-a-real-path\nenv() { printf 'hostile-env'; }\nsed() { printf 'hostile-sed'; }\ntr() { printf 'hostile-tr'; }\nprintf() { printf 'hostile-printf'; }\nunset() { :; }\ncommand() { printf 'hostile-command'; }\n__codex_env=/tmp/hostile-env\n__codex_sed=/tmp/hostile-sed\ncommand unset __codex_tr\nexport OpenAI_Federation_Rule_Id='/run/snapshot-rule'\nexport openai_identity_token_file='/run/snapshot-token'\n",
+        format!("PATH=/definitely-not-a-real-path\nenv() {{ printf 'hostile-env'; }}\nsed() {{ printf 'hostile-sed'; }}\ntr() {{ printf 'hostile-tr'; }}\nprintf() {{ printf 'hostile-printf'; }}\nunset() {{ :; }}\ncommand() {{ printf 'hostile-command'; }}\n__codex_env=/tmp/hostile-env\n__codex_sed=/tmp/hostile-sed\ncommand unset __codex_tr\nexport BASH_ENV='{}'\nexport OpenAI_Federation_Rule_Id='/run/snapshot-rule'\nexport openai_identity_token_file='/run/snapshot-token'\n", startup_path.display()),
     )
     .expect("write snapshot");
     let (session_shell, shell_snapshot) =
