@@ -985,12 +985,15 @@ fn restart_decision(
 }
 
 #[cfg(unix)]
-fn should_reexec_updater(
+pub(crate) fn should_reexec_updater(
     updater_refresh_mode: UpdaterRefreshMode,
     outcome: RestartIfRunningOutcome,
 ) -> bool {
     updater_refresh_mode == UpdaterRefreshMode::ReexecIfManagedBinaryChanged
-        && outcome == RestartIfRunningOutcome::Restarted
+        && matches!(
+            outcome,
+            RestartIfRunningOutcome::NotRunning | RestartIfRunningOutcome::Restarted
+        )
 }
 
 #[cfg(unix)]
@@ -1051,7 +1054,7 @@ mod tests {
     }
 
     #[test]
-    fn updater_reexec_waits_for_validated_restart() {
+    fn changed_updater_reexecs_after_restart_or_when_app_server_is_stopped() {
         assert_eq!(
             [
                 RestartIfRunningOutcome::Busy,
@@ -1063,7 +1066,7 @@ mod tests {
             .map(|outcome| {
                 should_reexec_updater(UpdaterRefreshMode::ReexecIfManagedBinaryChanged, outcome)
             }),
-            [false, false, false, false, true]
+            [false, false, false, true, true]
         );
     }
 
