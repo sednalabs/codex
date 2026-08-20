@@ -1,7 +1,7 @@
 use crate::android_computer_use_provider::AndroidComputerUseOutcome;
 use crate::android_computer_use_provider::handle_android_computer_use;
 use crate::browser_computer_use_provider::BrowserComputerUseOutcome;
-use crate::browser_computer_use_provider::handle_browser_computer_use;
+use crate::browser_computer_use_provider::handle_browser_computer_use_for_codex_home;
 use crate::desktop_computer_use_provider::DesktopComputerUseOutcome;
 use crate::desktop_computer_use_provider::handle_desktop_computer_use;
 use codex_app_server_protocol::ComputerUseCallParams;
@@ -10,6 +10,7 @@ use codex_tools::COMPUTER_USE_ADAPTER_ANDROID;
 use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
 use codex_tools::COMPUTER_USE_ADAPTER_DESKTOP;
 use codex_tools::native_computer_use_provider_for_call;
+use std::path::Path;
 
 pub(crate) enum ComputerUseProviderOutcome {
     Handled(ComputerUseCallResponse),
@@ -18,10 +19,11 @@ pub(crate) enum ComputerUseProviderOutcome {
 
 pub(crate) async fn handle_computer_use(
     params: &ComputerUseCallParams,
+    codex_home: &Path,
 ) -> ComputerUseProviderOutcome {
     for provider in computer_use_providers() {
         if provider.supports(params) {
-            return provider.handle(params).await;
+            return provider.handle(params, codex_home).await;
         }
     }
     ComputerUseProviderOutcome::Unavailable
@@ -65,7 +67,11 @@ impl RegisteredComputerUseProvider {
             .is_some_and(|(provider, _)| provider.adapter == self.adapter)
     }
 
-    async fn handle(&self, params: &ComputerUseCallParams) -> ComputerUseProviderOutcome {
+    async fn handle(
+        &self,
+        params: &ComputerUseCallParams,
+        codex_home: &Path,
+    ) -> ComputerUseProviderOutcome {
         match self.handler {
             ComputerUseProviderHandler::Android => {
                 match handle_android_computer_use(params).await {
@@ -78,7 +84,7 @@ impl RegisteredComputerUseProvider {
                 }
             }
             ComputerUseProviderHandler::Browser => {
-                match handle_browser_computer_use(params).await {
+                match handle_browser_computer_use_for_codex_home(params, codex_home).await {
                     BrowserComputerUseOutcome::Handled(response) => {
                         ComputerUseProviderOutcome::Handled(response)
                     }
@@ -107,6 +113,8 @@ mod tests {
     use super::handle_computer_use;
     use codex_app_server_protocol::ComputerUseCallParams;
     use serde_json::json;
+    use std::path::Path;
+    use tempfile::tempdir;
 
     #[tokio::test]
     async fn browser_provider_requires_configured_backend() {
@@ -118,7 +126,7 @@ mod tests {
             adapter: "browser".to_string(),
             tool: "browser_observe".to_string(),
             arguments: json!({"scope": "viewport_and_page"}),
-        })
+        }, Path::new("/nonexistent-codex-home"))
         .await;
 
         assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));
@@ -134,7 +142,7 @@ mod tests {
             adapter: "browser".to_string(),
             tool: "browser_private_backend_probe".to_string(),
             arguments: json!({}),
-        })
+        }, Path::new("/nonexistent-codex-home"))
         .await;
 
         assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));
@@ -150,9 +158,52 @@ mod tests {
             adapter: "desktop".to_string(),
             tool: "desktop_observe".to_string(),
             arguments: json!({"scope": "screen_and_ui"}),
-        })
+        }, Path::new("/nonexistent-codex-home"))
         .await;
 
         assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn browser_provider_executes_from_explicit_session_codex_home() {
+        let ambient_home = tempdir().expect("ambient codex home");
+        let child_home = tempdir().expect("child codex home");
+        let config = r#"{"provider":"command","command":["sh","-c","cat >/dev/null; printf '{\"contentItems\":[{\"type\":\"inputText\",\"text\":\"child home\"}],\"success\":true}"]}"#;
+        std::fs::write(
+            ambient_home.path().join("browser-computer-use.json"),
+            config.replace("child home", "ambient home"),
+        )
+        .expect("write ambient browser provider config");
+        std::fs::write(
+            child_home.path().join("browser-computer-use.json"),
+            config,
+        )
+        .expect("write child browser provider config");
+
+        let outcome = handle_computer_use(
+            &ComputerUseCallParams {
+                thread_id: "thread-1".to_string(),
+                call_id: "call-browser-observe".to_string(),
+                turn_id: "turn-1".to_string(),
+                environment_id: Some("env-1".to_string()),
+                adapter: "browser".to_string(),
+                tool: "browser_observe".to_string(),
+                arguments: json!({}),
+            },
+            child_home.path(),
+        )
+        .await;
+
+        let ComputerUseProviderOutcome::Handled(response) = outcome else {
+            panic!("child session browser provider should handle the request");
+        };
+        assert!(response.success);
+        assert_eq!(
+            response.content_items,
+            vec![codex_app_server_protocol::ComputerUseCallOutputContentItem::InputText {
+                text: "child home".to_string(),
+            }]
+        );
     }
 }

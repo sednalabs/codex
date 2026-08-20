@@ -199,7 +199,7 @@ impl App {
     ) {
         if let ServerRequest::ComputerUseCall { request_id, params } = &request {
             let request_id = request_id.clone();
-            match handle_computer_use(params).await {
+            match handle_computer_use(params, self.config.codex_home.as_path()).await {
                 ComputerUseProviderOutcome::Handled(response) => {
                     let result = match serde_json::to_value(response) {
                         Ok(result) => result,
