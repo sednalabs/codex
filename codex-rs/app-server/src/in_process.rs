@@ -106,11 +106,19 @@ pub const DEFAULT_IN_PROCESS_CHANNEL_CAPACITY: usize = CHANNEL_CAPACITY;
 type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorError>;
 
 fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
+    // Keep the in-process runtime's delivery tier aligned with the client
+    // facade: transcript deltas and completed items are authoritative and
+    // must not be lost when the bounded consumer queue is saturated.
     matches!(
         notification,
         ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
+            | ServerNotification::ItemCompleted(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
+            | ServerNotification::AgentMessageDelta(_)
+            | ServerNotification::PlanDelta(_)
+            | ServerNotification::ReasoningSummaryTextDelta(_)
+            | ServerNotification::ReasoningTextDelta(_)
     )
 }
 
