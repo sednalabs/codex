@@ -105,6 +105,11 @@ fn standalone_update_requires_explicit_sedna_build_identity_and_release_version(
         (Some("openai/codex"), Some("v"), Some("1.2.3-sedna.1")),
         (Some("sednalabs/codex"), Some("v"), None),
         (Some("sednalabs/codex"), Some("v"), Some("1.2.3")),
+        (
+            Some("sednalabs/codex"),
+            Some("v"),
+            Some("1.2.3-alpha.1-sedna.1"),
+        ),
     ] {
         assert!(!is_sedna_standalone_update_eligible(
             identity.0, identity.1, identity.2
@@ -122,7 +127,11 @@ fn standalone_update_requires_a_supported_sedna_installer_target() {
         "linux",
         "x86_64",
     ));
-    for target in [("macos", "aarch64"), ("freebsd", "x86_64")] {
+    for target in [
+        ("macos", "x86_64"),
+        ("macos", "aarch64"),
+        ("freebsd", "x86_64"),
+    ] {
         assert!(
             !is_sedna_standalone_update_eligible_on_target(
                 Some("sednalabs/codex"),

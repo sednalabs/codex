@@ -201,48 +201,13 @@ fn is_sedna_standalone_update_eligible_on_target(
     target_os: &str,
     target_arch: &str,
 ) -> bool {
-    matches!(repository, Some("sednalabs/codex"))
-        && matches!(tag_prefix, Some("v"))
-        && release_version.is_some_and(is_sedna_release_version)
-        && codex_utils_version::is_sedna_standalone_update_target_supported(target_os, target_arch)
-}
-
-#[cfg(unix)]
-fn is_sedna_release_version(version: &str) -> bool {
-    let (version, metadata) = match version.split_once('+') {
-        Some((version, metadata)) => (version, Some(metadata)),
-        None => (version, None),
-    };
-    if metadata.is_some_and(|metadata| {
-        metadata.strip_prefix("upstream.").is_none_or(|distance| {
-            distance.is_empty() || !distance.bytes().all(|byte| byte.is_ascii_digit())
-        })
-    }) {
-        return false;
-    }
-    let Some((track, ordinal)) = version.rsplit_once("-sedna.") else {
-        return false;
-    };
-    if ordinal.is_empty() || !ordinal.bytes().all(|byte| byte.is_ascii_digit()) {
-        return false;
-    }
-    let (core, prerelease) = match track.split_once('-') {
-        Some((core, prerelease)) => (core, Some(prerelease)),
-        None => (track, None),
-    };
-    let mut core_parts = core.split('.');
-    let valid_core = (0..3).all(|_| {
-        core_parts
-            .next()
-            .is_some_and(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-    }) && core_parts.next().is_none();
-    valid_core
-        && prerelease.is_none_or(|prerelease| {
-            !prerelease.is_empty()
-                && prerelease.split('.').all(|identifier| {
-                    !identifier.is_empty()
-                        && identifier.bytes().all(|byte| byte.is_ascii_alphanumeric())
-                })
+    codex_utils_version::is_sedna_release_identity(repository, tag_prefix)
+        && release_version.is_some_and(|release_version| {
+            codex_utils_version::is_sedna_automatic_update_eligible(
+                release_version,
+                target_os,
+                target_arch,
+            )
         })
 }
 
