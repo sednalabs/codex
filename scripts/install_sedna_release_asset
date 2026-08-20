@@ -121,7 +121,12 @@ restore_link() {
   local source="$1"
   local temporary="$2"
   local destination="$3"
+  local expected_existing="$4"
   if [[ -e "$temporary" || -L "$temporary" ]]; then
+    return 1
+  fi
+  if [[ -e "$destination" || -L "$destination" ]] \
+      && [[ ! -L "$destination" || "$(readlink "$destination")" != "$expected_existing" ]]; then
     return 1
   fi
   if ! ln -s "$source" "$temporary"; then
@@ -148,23 +153,25 @@ cleanup() {
   if [[ "$activation_started" == "true" && "$activation_committed" != "true" ]]; then
     if [[ -n "$activation_previous_visible_link" ]]; then
       visible_restore="${bin_dir}/.codex.restore.${restore_suffix}"
-      if ! restore_link "$activation_previous_visible_link" "$visible_restore" "${bin_dir}/codex"; then
+      if ! restore_link "$activation_previous_visible_link" "$visible_restore" "${bin_dir}/codex" "${release_dir}/codex"; then
         remove_owned_link "${bin_dir}/codex" "${release_dir}/codex"
       fi
     elif [[ -n "$activation_visible_backup" && -e "$activation_visible_backup" ]]; then
-      rm -f "${bin_dir}/codex"
-      mv "$activation_visible_backup" "${bin_dir}/codex"
+      remove_owned_link "${bin_dir}/codex" "${release_dir}/codex"
+      if [[ ! -e "${bin_dir}/codex" && ! -L "${bin_dir}/codex" ]]; then
+        mv "$activation_visible_backup" "${bin_dir}/codex"
+      fi
     elif [[ "$activation_visible_created" == "true" && -L "${bin_dir}/codex" ]]; then
       rm -f "${bin_dir}/codex"
     fi
     current_path="${install_root}/current"
     if [[ -n "$activation_previous_current" ]]; then
       current_restore="${install_root}/.current.restore.${restore_suffix}"
-      if ! restore_link "$activation_previous_current" "$current_restore" "$current_path"; then
+      if ! restore_link "$activation_previous_current" "$current_restore" "$current_path" "$release_dir"; then
         remove_owned_link "$current_path" "$release_dir"
       fi
     elif [[ -L "$current_path" ]]; then
-      rm -f "$current_path"
+      remove_owned_link "$current_path" "$release_dir"
     fi
   fi
   if [[ "$activation_lock_kind" == "python-fcntl" && -n "$activation_lock_pid" ]]; then
@@ -797,13 +804,13 @@ fi
 release_dir="${install_root}/releases/${release_dir_name}"
 
 validate_activation_paths() {
-  python3 - "$install_root" "${install_root}/releases" "$bin_dir" "$release_dir" <<'PY'
+  python3 - "$install_root" "${install_root}/releases" "${install_root}/backups" "$bin_dir" "$release_dir" <<'PY'
 import os
 import pathlib
 import stat
 import sys
 
-install_root, releases_dir, bin_dir, release_dir = map(pathlib.Path, sys.argv[1:])
+install_root, releases_dir, backups_dir, bin_dir, release_dir = map(pathlib.Path, sys.argv[1:])
 home = pathlib.Path.home()
 for root in (install_root, bin_dir):
     for component in [root, *root.parents]:
@@ -814,6 +821,7 @@ for root in (install_root, bin_dir):
 for path, expected_dir in (
     (install_root, True),
     (releases_dir, True),
+    (backups_dir, True),
     (bin_dir, True),
     (release_dir, True),
 ):
@@ -935,6 +943,14 @@ activation_visible_created=true
 
 if [[ "${SEDNA_INSTALLER_TESTING:-}" == "1" \
     && "${SEDNA_INSTALLER_TEST_FAULT:-}" == "after-visible-replacement" ]]; then
+  exit 74
+fi
+if [[ "${SEDNA_INSTALLER_TESTING:-}" == "1" \
+    && "${SEDNA_INSTALLER_TEST_FAULT:-}" == "replace-before-rollback" ]]; then
+  current_path="${install_root}/current"
+  rm -f "$visible_codex" "$current_path"
+  ln -s "${SEDNA_INSTALLER_TEST_ATTACKER_VISIBLE:?}" "$visible_codex"
+  ln -s "${SEDNA_INSTALLER_TEST_ATTACKER_CURRENT:?}" "$current_path"
   exit 74
 fi
 

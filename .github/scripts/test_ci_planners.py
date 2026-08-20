@@ -7531,6 +7531,15 @@ class HelperScriptTests(unittest.TestCase):
                 (current_path.parent / ".current.restore.collision").symlink_to(
                     root / "attacker-current"
                 )
+            elif failure == "rollback_attacker_replacement":
+                predecessor_link = root / "previous-codex"
+                predecessor_link.write_text("previous\n", encoding="utf-8")
+                visible_path = root / "home" / ".local" / "bin" / "codex"
+                visible_path.parent.mkdir(parents=True)
+                visible_path.symlink_to(predecessor_link)
+                current_path = root / "home" / ".codex" / "packages" / "standalone" / "current"
+                current_path.parent.mkdir(parents=True)
+                current_path.symlink_to(root / "previous-current")
             if failure == "symlink_releases":
                 releases_path = root / "home" / ".codex" / "packages" / "standalone" / "releases"
                 releases_path.parent.mkdir(parents=True)
@@ -7549,6 +7558,10 @@ class HelperScriptTests(unittest.TestCase):
                 )
                 release_path.mkdir(parents=True)
                 (release_path / "codex").symlink_to(root / "outside-codex")
+            elif failure == "symlink_backups":
+                backups_path = root / "home" / ".codex" / "packages" / "standalone" / "backups"
+                backups_path.parent.mkdir(parents=True)
+                backups_path.symlink_to(root / "outside-backups")
 
             fake_curl = fake_bin / "curl"
             fake_curl.write_text(
@@ -7719,6 +7732,11 @@ fi
                 env["SEDNA_INSTALLER_TEST_FAULT"] = "after-visible-replacement"
                 env["SEDNA_INSTALLER_TESTING"] = "1"
                 env["SEDNA_INSTALLER_TEST_RESTORE_SUFFIX"] = "collision"
+            elif failure == "rollback_attacker_replacement":
+                env["SEDNA_INSTALLER_TEST_FAULT"] = "replace-before-rollback"
+                env["SEDNA_INSTALLER_TESTING"] = "1"
+                env["SEDNA_INSTALLER_TEST_ATTACKER_VISIBLE"] = str(root / "attacker-visible")
+                env["SEDNA_INSTALLER_TEST_ATTACKER_CURRENT"] = str(root / "attacker-current")
             elif failure == "activation_fault_inert":
                 env["SEDNA_INSTALLER_TEST_FAULT"] = "after-visible-predecessor"
                 env.pop("SEDNA_INSTALLER_TESTING", None)
@@ -7766,6 +7784,15 @@ fi
                 current_path = root / "home" / ".codex" / "packages" / "standalone" / "current"
                 self.assertFalse(visible_path.exists() or visible_path.is_symlink())
                 self.assertFalse(current_path.exists() or current_path.is_symlink())
+            if failure == "rollback_attacker_replacement":
+                self.assertEqual(
+                    (root / "home" / ".local" / "bin" / "codex").readlink(),
+                    root / "attacker-visible",
+                )
+                self.assertEqual(
+                    (root / "home" / ".codex" / "packages" / "standalone" / "current").readlink(),
+                    root / "attacker-current",
+                )
             return proc
 
     def test_sedna_release_installer_executes_hardened_linux_fixture(self) -> None:
@@ -7820,6 +7847,7 @@ fi
             "symlink_bin",
             "symlink_local_parent",
             "symlink_release_entry",
+            "symlink_backups",
         ):
             with self.subTest(failure=failure):
                 proc = self.run_sedna_installer_fixture(failure)
