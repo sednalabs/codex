@@ -1,6 +1,8 @@
 //! Informational, warning, update, and policy notice history cells.
 
 use super::*;
+use crate::version::installation_options_url;
+use crate::version::latest_release_notes_url;
 
 #[cfg_attr(debug_assertions, allow(dead_code))]
 #[derive(Debug)]
@@ -28,10 +30,11 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         } else {
             line![
                 "See ",
-                "https://github.com/openai/codex".cyan().underlined(),
+                installation_options_url().cyan().underlined(),
                 " for installation options."
             ]
         };
+        let release_notes_url = latest_release_notes_url();
 
         let content = text![
             line![
@@ -43,9 +46,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             update_instruction,
             "",
             "See full release notes:",
-            "https://github.com/openai/codex/releases/latest"
-                .cyan()
-                .underlined(),
+            release_notes_url.cyan().underlined(),
         ];
 
         let inner_width = content
@@ -60,7 +61,10 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         let update_instruction = if let Some(update_action) = self.update_action {
             format!("Run {} to update.", update_action.command_str())
         } else {
-            "See https://github.com/openai/codex for installation options.".to_string()
+            format!(
+                "See {} for installation options.",
+                installation_options_url()
+            )
         };
         vec![
             Line::from("Update available!"),
@@ -68,7 +72,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             Line::from(update_instruction),
             Line::from(""),
             Line::from("See full release notes:"),
-            Line::from("https://github.com/openai/codex/releases/latest"),
+            Line::from(latest_release_notes_url()),
         ]
     }
 

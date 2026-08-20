@@ -9,11 +9,56 @@ pub(crate) fn is_newer(latest: &str, current: &str) -> Option<bool> {
 }
 
 pub(crate) fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<String> {
-    latest_tag_name
+    let version = latest_tag_name
         .strip_prefix(CODEX_RELEASE_TAG_PREFIX)
-        .filter(|version| Version::parse(version).is_ok())
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))
+        .filter(|version| is_sedna_release_version(version))
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))?;
+    Ok(version.to_owned())
+}
+
+/// Matches the release-tag grammar used by `resolve_sedna_release_version.py`:
+/// `<track>-sedna.<ordinal>[+upstream.<distance>]`.
+///
+/// Keep this structural validation separate from [`Version::parse`]: the release
+/// resolver is the authority for which tags belong to this channel, while semver
+/// comparison may intentionally fail closed for values it cannot compare.
+pub(crate) fn is_sedna_release_version(version: &str) -> bool {
+    let (version, metadata) = match version.split_once('+') {
+        Some((version, metadata)) => (version, Some(metadata)),
+        None => (version, None),
+    };
+    if metadata.is_some_and(|metadata| {
+        metadata.strip_prefix("upstream.").is_none_or(|distance| {
+            distance.is_empty() || !distance.bytes().all(|b| b.is_ascii_digit())
+        })
+    }) {
+        return false;
+    }
+
+    let Some((track, ordinal)) = version.rsplit_once("-sedna.") else {
+        return false;
+    };
+    !ordinal.is_empty() && ordinal.bytes().all(|b| b.is_ascii_digit()) && is_sedna_track(track)
+}
+
+fn is_sedna_track(track: &str) -> bool {
+    let (core, prerelease) = match track.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (track, None),
+    };
+    let mut core_parts = core.split('.');
+    let valid_core = (0..3).all(|_| {
+        core_parts
+            .next()
+            .is_some_and(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    }) && core_parts.next().is_none();
+    valid_core
+        && prerelease.is_none_or(|prerelease| {
+            !prerelease.is_empty()
+                && prerelease.split('.').all(|identifier| {
+                    !identifier.is_empty() && identifier.bytes().all(|b| b.is_ascii_alphanumeric())
+                })
+        })
 }
 
 pub(crate) fn is_source_build_version(version: &str) -> bool {
@@ -37,14 +82,34 @@ mod tests {
             "1.5.0-sedna.1"
         );
         assert_eq!(
-            extract_version_from_latest_tag("v0.119.0-sedna.2").expect("failed to parse version"),
-            "0.119.0-sedna.2"
+            extract_version_from_latest_tag("v0.119.0-alpha.4-sedna.2+upstream.17")
+                .expect("failed to parse version"),
+            "0.119.0-alpha.4-sedna.2+upstream.17"
         );
     }
 
     #[test]
     fn latest_tag_without_version_prefix_is_invalid() {
         assert!(extract_version_from_latest_tag("release-1.5.0").is_err());
+    }
+
+    #[test]
+    fn only_sedna_release_tags_are_admitted() {
+        for tag in [
+            "rust-v1.5.0",
+            "v1.5.0",
+            "v1.5.0-sedna",
+            "v1.5.0-sedna.x",
+            "v1.5.0-sedna.1+build.2",
+            "v1.5.0-sedna.1+upstream.x",
+            "v1.5.0-rc-1-sedna.1",
+            "v1.5.0-sedna.1+upstream.2+extra",
+        ] {
+            assert!(
+                extract_version_from_latest_tag(tag).is_err(),
+                "accepted {tag}"
+            );
+        }
     }
 
     #[test]

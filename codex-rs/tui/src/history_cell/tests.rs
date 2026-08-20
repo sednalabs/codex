@@ -1171,6 +1171,21 @@ fn pnpm_update_available_history_cell_snapshot() {
 }
 
 #[test]
+fn update_available_history_cell_uses_configured_release_urls() {
+    let cell = UpdateAvailableHistoryCell::new("9.9.9".to_string(), None);
+    let raw = render_lines(&cell.raw_lines());
+
+    assert_eq!(
+        raw[2],
+        format!(
+            "See {} for installation options.",
+            crate::version::installation_options_url()
+        )
+    );
+    assert_eq!(raw[5], crate::version::latest_release_notes_url());
+}
+
+#[test]
 fn web_search_history_cell_without_detail_snapshot() {
     let cell = new_web_search_call("call-1".to_string(), String::new(), WebSearchAction::Other);
     let rendered = render_lines(&cell.display_lines(/*width*/ 64)).join("\n");

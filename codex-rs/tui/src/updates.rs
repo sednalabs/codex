@@ -7,6 +7,7 @@ use crate::update_action;
 use crate::update_action::UpdateAction;
 use crate::update_versions::extract_version_from_latest_tag;
 use crate::update_versions::is_newer;
+use crate::update_versions::is_sedna_release_version;
 use crate::update_versions::is_source_build_version;
 use crate::updates_cache::VersionInfo;
 use crate::updates_cache::read_version_info;
@@ -25,6 +26,7 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
     if !config.check_for_update_on_startup
         || is_source_build_version(CODEX_CLI_VERSION)
         || !crate::version::is_sedna_release_channel()
+        || !is_sedna_release_version(CODEX_CLI_VERSION)
     {
         return None;
     }
@@ -35,7 +37,10 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 
     if match &info {
         None => true,
-        Some(info) => info.last_checked_at < Utc::now() - Duration::hours(20),
+        Some(info) => {
+            !info.matches_current_channel()
+                || info.last_checked_at < Utc::now() - Duration::hours(20)
+        }
     } {
         // Refresh the cached latest version in the background so TUI startup
         // isn’t blocked by a network call. The UI reads the previously cached
@@ -103,12 +108,12 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
         }
     };
 
-    // Preserve any previously dismissed version if present.
+    // Preserve a dismissal only when it belongs to this release channel.
     let prev_info = read_version_info(version_file).ok();
     let info = VersionInfo::for_current_channel(
         latest_version,
         Utc::now(),
-        prev_info.and_then(|p| p.dismissed_version),
+        prev_info.and_then(|info| info.dismissed_version_for_current_channel()),
     );
 
     let json_line = format!("{}\n", serde_json::to_string(&info)?);
@@ -143,6 +148,7 @@ pub fn get_upgrade_version_for_popup(config: &Config) -> Option<String> {
     let latest = get_upgrade_version(config)?;
     // If the user dismissed this exact version previously, do not show the popup.
     if let Ok(info) = read_version_info(&version_file)
+        && info.matches_current_channel()
         && info.dismissed_version.as_deref() == Some(latest.as_str())
     {
         return None;
