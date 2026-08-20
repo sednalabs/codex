@@ -9,7 +9,7 @@ on:
         type: boolean
         default: true
       run_package:
-        description: Run package builder, installer, and npm staging checks.
+        description: Run package builder and installer checks.
         required: false
         type: boolean
         default: true
