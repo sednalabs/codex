@@ -233,6 +233,27 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn replace_or_show_selection_view(
+        &mut self,
+        view_id: &'static str,
+        params: SelectionViewParams,
+    ) {
+        if self.bottom_pane.is_selection_view_active(view_id) {
+            let replaced = self
+                .bottom_pane
+                .replace_selection_view_if_active(view_id, params);
+            debug_assert!(replaced, "active selection view should be replaceable");
+        } else {
+            self.bottom_pane.show_selection_view(params);
+        }
+        self.refresh_plan_mode_nudge();
+        self.request_redraw();
+    }
+
+    pub(crate) fn selection_view_search_query(&self, view_id: &'static str) -> Option<String> {
+        self.bottom_pane.search_query_for_active_view(view_id)
+    }
+
     pub(crate) fn no_modal_or_popup_active(&self) -> bool {
         self.bottom_pane.no_modal_or_popup_active()
     }
