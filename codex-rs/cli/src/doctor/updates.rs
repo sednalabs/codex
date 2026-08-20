@@ -43,7 +43,7 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
         format!("update action: {}", update_action_label(&install_context)),
     ];
     let version_file = config.codex_home.join(VERSION_FILE_NAME);
-    push_cached_version_details(&mut details, &version_file);
+    push_cached_version_details(&mut details, &version_file, &install_context);
 
     let mut status = CheckStatus::Ok;
     let mut summary = LOCALLY_CONSISTENT_SUMMARY.to_string();
@@ -101,12 +101,20 @@ const fn sedna_release_probe_failure_status() -> (CheckStatus, &'static str) {
     (CheckStatus::Warning, SEDNA_RELEASE_PROBE_WARNING_SUMMARY)
 }
 
-fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
+fn push_cached_version_details(
+    details: &mut Vec<String>,
+    version_file: &Path,
+    install_context: &InstallContext,
+) {
     details.push(format!("version cache: {}", version_file.display()));
     match std::fs::read_to_string(version_file) {
         Ok(contents) => match serde_json::from_str::<VersionInfo>(&contents) {
             Ok(info) => {
-                push_cache_info_details(details, &info, is_sedna_automatic_update_channel());
+                push_cache_info_details(
+                    details,
+                    &info,
+                    is_sedna_automatic_update_probe_available(install_context),
+                );
             }
             Err(err) => details.push(format!("version cache parse: {err}")),
         },
@@ -120,9 +128,12 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
 fn push_cache_info_details(
     details: &mut Vec<String>,
     info: &VersionInfo,
-    has_current_sedna_identity: bool,
+    automatic_update_probe_available: bool,
 ) {
-    if !has_current_sedna_identity || !info.matches_sedna_release_identity() {
+    if !automatic_update_probe_available {
+        return;
+    }
+    if !info.matches_sedna_release_identity() {
         details.push("version cache: ignored (untrusted release identity)".to_string());
         return;
     }
@@ -189,17 +200,6 @@ fn update_action_label_for_sedna_identity_on_target(
         | InstallMethod::Brew
         | InstallMethod::Other => "no automatic update action",
     }
-}
-
-fn is_sedna_automatic_update_channel() -> bool {
-    is_sedna_release_identity(
-        option_env!("CODEX_RELEASE_REPOSITORY"),
-        option_env!("CODEX_RELEASE_TAG_PREFIX"),
-    ) && is_sedna_automatic_update_eligible(
-        RELEASE_VERSION,
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-    )
 }
 
 fn is_sedna_automatic_update_probe_available(context: &InstallContext) -> bool {
@@ -499,6 +499,64 @@ mod tests {
 
         assert_eq!(
             details,
+            vec![
+                "cached latest version: 1.2.3-sedna.2",
+                "last checked at: 2026-08-20T00:00:00Z",
+                "dismissed version: 1.2.3-sedna.2",
+            ]
+        );
+    }
+
+    #[test]
+    fn cached_update_details_require_unix_standalone_install() {
+        let info = VersionInfo {
+            latest_version: "1.2.3-sedna.2".to_string(),
+            last_checked_at: Some("2026-08-20T00:00:00Z".to_string()),
+            dismissed_version: Some("1.2.3-sedna.2".to_string()),
+            release_repository: Some("sednalabs/codex".to_string()),
+            release_tag_prefix: Some("v".to_string()),
+        };
+        let native_release_dir = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
+            std::env::temp_dir().join("native-release"),
+        )
+        .expect("temp dir path should be absolute");
+        let unix = InstallContext {
+            method: InstallMethod::Standalone {
+                platform: StandalonePlatform::Unix,
+                release_dir: native_release_dir,
+                resources_dir: None,
+            },
+            package_layout: None,
+        };
+        let npm = InstallContext {
+            method: InstallMethod::Npm,
+            package_layout: None,
+        };
+
+        let mut npm_details = Vec::new();
+        let npm_probe_available = is_sedna_automatic_update_probe_available_on_target(
+            &npm,
+            true,
+            "1.2.3-sedna.4",
+            "linux",
+            "x86_64",
+        );
+        assert!(!npm_probe_available);
+        push_cache_info_details(&mut npm_details, &info, npm_probe_available);
+        assert!(npm_details.is_empty());
+
+        let mut unix_details = Vec::new();
+        let unix_probe_available = is_sedna_automatic_update_probe_available_on_target(
+            &unix,
+            true,
+            "1.2.3-sedna.4",
+            "linux",
+            "x86_64",
+        );
+        assert!(unix_probe_available);
+        push_cache_info_details(&mut unix_details, &info, unix_probe_available);
+        assert_eq!(
+            unix_details,
             vec![
                 "cached latest version: 1.2.3-sedna.2",
                 "last checked at: 2026-08-20T00:00:00Z",
