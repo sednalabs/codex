@@ -816,7 +816,7 @@ fn run_update_command() -> anyhow::Result<()> {
                 std::env::consts::ARCH,
             ) {
                 anyhow::bail!(
-                    "Automatic updates are available only for stable Sedna Linux releases. This build must be updated manually."
+                    "Automatic updates are available only for stable Sedna Linux releases. This build must be updated manually from https://github.com/sednalabs/codex/releases."
                 );
             }
             anyhow::bail!(
@@ -855,7 +855,7 @@ const fn update_manual_install_url_for_release_identity(
     tag_prefix: Option<&str>,
 ) -> &'static str {
     if codex_utils_version::is_sedna_release_identity(repository, tag_prefix) {
-        "https://github.com/sednalabs/codex/releases/latest"
+        "https://github.com/sednalabs/codex/releases"
     } else {
         "https://developers.openai.com/codex/cli/"
     }
@@ -2646,7 +2646,7 @@ mod tests {
     fn manual_update_url_uses_sedna_releases_only_for_sedna_identity() {
         assert_eq!(
             update_manual_install_url_for_release_identity(Some("sednalabs/codex"), Some("v")),
-            "https://github.com/sednalabs/codex/releases/latest"
+            "https://github.com/sednalabs/codex/releases"
         );
         assert_eq!(
             update_manual_install_url_for_release_identity(Some("openai/codex"), Some("v")),

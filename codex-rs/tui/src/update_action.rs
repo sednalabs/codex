@@ -27,10 +27,6 @@ impl UpdateAction {
         "-c",
         "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
     ];
-    const SEDNA_STANDALONE_UNIX_ARGS: &'static [&'static str] = &[
-        "-c",
-        "curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset | CODEX_NON_INTERACTIVE=1 bash -s -- --repository sednalabs/codex --release-tag latest --allow-prerelease",
-    ];
 
     #[cfg(any(not(debug_assertions), test))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
@@ -86,22 +82,51 @@ impl UpdateAction {
     }
 
     /// Returns the list of command-line arguments for invoking the update.
-    pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
+    pub fn command_args(self) -> (&'static str, Vec<String>) {
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
-            UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
+            UpdateAction::NpmGlobalLatest => (
+                "npm",
+                vec![
+                    "install".to_string(),
+                    "-g".to_string(),
+                    "@openai/codex".to_string(),
+                ],
+            ),
+            UpdateAction::BunGlobalLatest => (
+                "bun",
+                vec![
+                    "install".to_string(),
+                    "-g".to_string(),
+                    "@openai/codex".to_string(),
+                ],
+            ),
+            UpdateAction::PnpmGlobalLatest => (
+                "pnpm",
+                vec![
+                    "add".to_string(),
+                    "-g".to_string(),
+                    "@openai/codex".to_string(),
+                ],
+            ),
+            UpdateAction::BrewUpgrade => (
+                "brew",
+                vec![
+                    "upgrade".to_string(),
+                    "--cask".to_string(),
+                    "codex".to_string(),
+                ],
+            ),
             UpdateAction::StandaloneUnix => Self::standalone_unix_command_args_for_repository(
                 crate::version::CODEX_RELEASE_REPOSITORY,
             ),
             UpdateAction::StandaloneWindows => (
                 "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
+                vec![
+                    "-ExecutionPolicy".to_string(),
+                    "Bypass".to_string(),
+                    "-c".to_string(),
+                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
+                        .to_string(),
                 ],
             ),
         }
@@ -109,18 +134,33 @@ impl UpdateAction {
 
     fn standalone_unix_command_args_for_repository(
         repository: &str,
-    ) -> (&'static str, &'static [&'static str]) {
+    ) -> (&'static str, Vec<String>) {
         if repository.eq_ignore_ascii_case("sednalabs/codex") {
-            ("bash", Self::SEDNA_STANDALONE_UNIX_ARGS)
+            (
+                "bash",
+                vec![
+                    "-c".to_string(),
+                    format!(
+                        "curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset | CODEX_NON_INTERACTIVE=1 bash -s -- --repository sednalabs/codex --release-tag latest --require-newer-than {}",
+                        crate::version::CODEX_CLI_VERSION,
+                    ),
+                ],
+            )
         } else {
-            ("sh", Self::UPSTREAM_STANDALONE_UNIX_ARGS)
+            (
+                "sh",
+                Self::UPSTREAM_STANDALONE_UNIX_ARGS
+                    .iter()
+                    .map(|argument| (*argument).to_string())
+                    .collect(),
+            )
         }
     }
 
     /// Returns string representation of the command-line arguments for invoking the update.
     pub fn command_str(self) -> String {
         let (command, args) = self.command_args();
-        shlex::try_join(std::iter::once(command).chain(args.iter().copied()))
+        shlex::try_join(std::iter::once(command).chain(args.iter().map(String::as_str)))
             .unwrap_or_else(|_| format!("{command} {}", args.join(" ")))
     }
 }
@@ -333,22 +373,39 @@ mod tests {
     fn standalone_update_commands_rerun_latest_installer() {
         assert_eq!(
             UpdateAction::standalone_unix_command_args_for_repository("openai/codex"),
-            ("sh", UpdateAction::UPSTREAM_STANDALONE_UNIX_ARGS,)
+            (
+                "sh",
+                vec![
+                    "-c".to_string(),
+                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
+                        .to_string(),
+                ],
+            )
         );
         assert_eq!(
             UpdateAction::standalone_unix_command_args_for_repository("sednalabs/codex"),
-            ("bash", UpdateAction::SEDNA_STANDALONE_UNIX_ARGS,)
+            (
+                "bash",
+                vec![
+                    "-c".to_string(),
+                    format!(
+                        "curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset | CODEX_NON_INTERACTIVE=1 bash -s -- --repository sednalabs/codex --release-tag latest --require-newer-than {}",
+                        crate::version::CODEX_CLI_VERSION,
+                    ),
+                ],
+            )
         );
         assert_eq!(
             UpdateAction::StandaloneWindows.command_args(),
             (
                 "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
+                vec![
+                    "-ExecutionPolicy".to_string(),
+                    "Bypass".to_string(),
+                    "-c".to_string(),
                     "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
-                ][..],
+                        .to_string(),
+                ],
             )
         );
     }

@@ -173,7 +173,7 @@ async fn install_latest_standalone(http: &RouteAwareClientPool) -> Result<()> {
         option_env!("CODEX_RELEASE_TAG_PREFIX"),
         option_env!("CODEX_RELEASE_VERSION"),
     ) {
-        install_latest_sedna_standalone(http).await?;
+        install_latest_sedna_standalone(http, codex_utils_version::RELEASE_VERSION).await?;
     }
     Ok(())
 }
@@ -212,7 +212,10 @@ fn is_sedna_standalone_update_eligible_on_target(
 }
 
 #[cfg(unix)]
-async fn install_latest_sedna_standalone(http: &impl InstallerHttp) -> Result<()> {
+async fn install_latest_sedna_standalone(
+    http: &impl InstallerHttp,
+    current_release_version: &str,
+) -> Result<()> {
     let script = fetch_installer_script_from_url(http, SEDNA_STANDALONE_INSTALLER_URL).await?;
 
     let mut child = Command::new("bash")
@@ -223,8 +226,8 @@ async fn install_latest_sedna_standalone(http: &impl InstallerHttp) -> Result<()
             "sednalabs/codex",
             "--release-tag",
             "latest",
-            "--allow-prerelease",
         ])
+        .args(["--require-newer-than", current_release_version])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
