@@ -678,6 +678,7 @@ async fn terminal_idle_unload_defers_for_finalizer_then_retries() {
     assert_eq!(control.v2_residency.resident_count(), 1);
 
     first.thread.session.input_queue.finish_terminal_finalizer();
+    settle_terminal_idle_watcher().await;
     assert_thread_unloads_within_terminal_idle_intervals(
         &manager,
         first.thread_id,
