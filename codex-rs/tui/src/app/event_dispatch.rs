@@ -80,9 +80,14 @@ impl App {
             .chat_widget
             .thread_id()
             .is_some_and(|thread_id| self.is_replay_only_thread(thread_id));
-        let explicit_replay_only = Self::replay_only_event_targets_thread(event)
-            .is_some_and(|thread_id| self.is_replay_only_thread(thread_id));
-        if active_replay_only || explicit_replay_only {
+        let targeted_thread = Self::replay_only_event_targets_thread(event);
+        let replay_only = targeted_thread
+            .map(|thread_id| self.is_replay_only_thread(thread_id))
+            .unwrap_or(active_replay_only);
+        if replay_only {
+            if matches!(event, AppEvent::CodexOp(AppCommand::UserTurn { .. })) {
+                self.chat_widget.handle_replay_only_submission_rejection();
+            }
             self.chat_widget
                 .add_error_message("Replay-only transcripts do not accept mutations.".to_string());
             return true;
