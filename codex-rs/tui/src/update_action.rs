@@ -8,18 +8,8 @@ use codex_install_context::StandalonePlatform;
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via `npm install -g @openai/codex@latest`.
-    NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
-    BunGlobalLatest,
-    /// Update via `pnpm add -g @openai/codex@latest`.
-    PnpmGlobalLatest,
-    /// Update via `brew upgrade codex`.
-    BrewUpgrade,
-    /// Update via the standalone installer for the compiled release channel.
+    /// Update via the fork-owned standalone release installer.
     StandaloneUnix,
-    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
-    StandaloneWindows,
 }
 
 impl UpdateAction {
@@ -78,51 +68,7 @@ impl UpdateAction {
 
     /// Returns the list of command-line arguments for invoking the update.
     pub fn command_args(self) -> (&'static str, Vec<String>) {
-        match self {
-            UpdateAction::NpmGlobalLatest => (
-                "npm",
-                vec![
-                    "install".to_string(),
-                    "-g".to_string(),
-                    "@openai/codex".to_string(),
-                ],
-            ),
-            UpdateAction::BunGlobalLatest => (
-                "bun",
-                vec![
-                    "install".to_string(),
-                    "-g".to_string(),
-                    "@openai/codex".to_string(),
-                ],
-            ),
-            UpdateAction::PnpmGlobalLatest => (
-                "pnpm",
-                vec![
-                    "add".to_string(),
-                    "-g".to_string(),
-                    "@openai/codex".to_string(),
-                ],
-            ),
-            UpdateAction::BrewUpgrade => (
-                "brew",
-                vec![
-                    "upgrade".to_string(),
-                    "--cask".to_string(),
-                    "codex".to_string(),
-                ],
-            ),
-            UpdateAction::StandaloneUnix => Self::sedna_standalone_unix_command_args(),
-            UpdateAction::StandaloneWindows => (
-                "powershell",
-                vec![
-                    "-ExecutionPolicy".to_string(),
-                    "Bypass".to_string(),
-                    "-c".to_string(),
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
-                        .to_string(),
-                ],
-            ),
-        }
+        Self::sedna_standalone_unix_command_args()
     }
 
     fn sedna_standalone_unix_command_args() -> (&'static str, Vec<String>) {
@@ -353,7 +299,7 @@ mod tests {
     #[test]
     fn standalone_unix_update_uses_the_fork_installer() {
         assert_eq!(
-            UpdateAction::sedna_standalone_unix_command_args(),
+            UpdateAction::StandaloneUnix.command_args(),
             (
                 "bash",
                 vec![
@@ -362,19 +308,6 @@ mod tests {
                         "curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset | CODEX_NON_INTERACTIVE=1 bash -s -- --repository sednalabs/codex --release-tag latest --require-newer-than {}",
                         crate::version::CODEX_CLI_VERSION,
                     ),
-                ],
-            )
-        );
-        assert_eq!(
-            UpdateAction::StandaloneWindows.command_args(),
-            (
-                "powershell",
-                vec![
-                    "-ExecutionPolicy".to_string(),
-                    "Bypass".to_string(),
-                    "-c".to_string(),
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
-                        .to_string(),
                 ],
             )
         );

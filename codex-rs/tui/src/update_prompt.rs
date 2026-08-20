@@ -243,30 +243,17 @@ impl WidgetRef for &UpdatePromptScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_backend::VT100Backend;
     use crate::tui::FrameRequester;
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
-    use ratatui::Terminal;
-    use ratatui::widgets::FrameExt as _;
 
     fn new_prompt() -> UpdatePromptScreen {
         UpdatePromptScreen::new(
             FrameRequester::test_dummy(),
             "9.9.9".into(),
-            UpdateAction::NpmGlobalLatest,
+            UpdateAction::StandaloneUnix,
         )
-    }
-
-    #[test]
-    fn update_prompt_snapshot() {
-        let screen = new_prompt();
-        let mut terminal = Terminal::new(VT100Backend::new(80, 12)).expect("terminal");
-        terminal
-            .draw(|frame| frame.render_widget_ref(&screen, frame.area()))
-            .expect("render update prompt");
-        insta::assert_snapshot!("update_prompt_modal", terminal.backend());
     }
 
     #[test]
