@@ -144,6 +144,9 @@ impl ChatWidget {
         if self.blocks_direct_input {
             return false;
         }
+        if self.replay_only {
+            return false;
+        }
         if self.is_user_turn_pending_or_running() {
             return false;
         }
