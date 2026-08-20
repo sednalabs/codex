@@ -7831,6 +7831,10 @@ fi
         self.assertIn('activation_previous_current="$(readlink', script)
         self.assertIn("refusing to overwrite an existing installer backup", script)
         self.assertIn("while os.getppid() == parent_pid", script)
+        self.assertIn(
+            "same-UID process that concurrently replaces directories",
+            (REPO_ROOT / "docs/install.md").read_text(encoding="utf-8"),
+        )
 
     def test_sedna_release_installer_restores_visible_predecessor_on_failure(self) -> None:
         proc = self.run_sedna_installer_fixture(
