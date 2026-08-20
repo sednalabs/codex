@@ -22,6 +22,7 @@ use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::ThreadMetadataPatch;
 use crate::ThreadStore;
+use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use crate::UpdateThreadMetadataParams;
 use crate::thread_metadata_sync::ThreadMetadataSync;
@@ -107,6 +108,48 @@ impl LiveThread {
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
+    }
+
+    /// Create a child thread with inherited model context already durable.
+    pub async fn create_with_inherited_model_context(
+        thread_store: Arc<dyn ThreadStore>,
+        mut params: CreateThreadParams,
+        inherited_model_context: &[RolloutItem],
+    ) -> ThreadStoreResult<Self> {
+        let persisted_prefix_item_count =
+            persisted_rollout_items(inherited_model_context, params.history_mode).len();
+        params.subagent_history_start_ordinal = Some(
+            u64::try_from(persisted_prefix_item_count)
+                .map_err(|_| ThreadStoreError::Internal {
+                    message: "inherited model context is too large".to_string(),
+                })?
+                .checked_add(1)
+                .ok_or_else(|| ThreadStoreError::Internal {
+                    message: "inherited model context is too large".to_string(),
+                })?,
+        );
+        let live_thread = Self::create(Arc::clone(&thread_store), params).await?;
+        let _append_permit = live_thread
+            .append_gate
+            .acquire()
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let items = persisted_rollout_items(inherited_model_context, live_thread.history_mode);
+        if let Err(err) = thread_store
+            .append_items(AppendThreadItemsParams {
+                thread_id: live_thread.thread_id,
+                items,
+            })
+            .await
+        {
+            if let Err(discard_err) = live_thread.discard().await {
+                warn!(
+                    "failed to discard thread persistence after inherited context append failed: {discard_err}"
+                );
+            }
+            return Err(err);
+        }
+        Ok(live_thread)
     }
 
     pub async fn resume(
