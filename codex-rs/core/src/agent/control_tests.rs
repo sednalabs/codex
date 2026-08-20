@@ -30,6 +30,7 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
@@ -354,10 +355,30 @@ async fn agent_control_cold_resume_rederives_nonpersistent_browser_tools() {
 #[tokio::test]
 async fn agent_control_fork_rederives_browser_tools_from_child_config() {
     let (home, config) = test_config().await;
-    write_browser_provider_config(home.path());
     let harness = AgentControlHarness::new_with_config(home, config).await;
-    let (parent_thread_id, parent_thread) = harness.start_thread().await;
+    let persistent_helper = DynamicToolSpec {
+        namespace: None,
+        name: "persistent_helper".to_string(),
+        description: "survives fork".to_string(),
+        input_schema: serde_json::json!({"type": "object"}),
+        defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
+    };
+    let parent = harness
+        .manager
+        .start_thread(StartThreadOptions {
+            dynamic_tools: vec![persistent_helper.clone()],
+            ..StartThreadOptions::new(harness.config.clone())
+        })
+        .await
+        .expect("start parent with persistent custom tool");
+    let parent_thread_id = parent.thread_id;
+    let parent_thread = parent.thread;
     persist_thread_for_tree_resume(&parent_thread, "persist before fork").await;
+    // Configure Browser only after the parent is persisted; the fork must derive Browser tools
+    // from the child home while restoring the parent's custom persisted tool.
+    write_browser_provider_config(harness.config.codex_home.as_path());
     let child_thread_id = harness
         .spawn_anonymous_child(
             parent_thread_id,
@@ -375,6 +396,12 @@ async fn agent_control_fork_rederives_browser_tools_from_child_config() {
         .await
         .expect("forked child should be registered");
     assert_browser_dynamic_tools(&child_thread).await;
+    let helper = child_thread
+        .session
+        .dynamic_tool_by_name(&codex_protocol::ToolName::plain("persistent_helper"))
+        .await
+        .expect("persistent custom tool should survive fork");
+    assert_eq!(helper, persistent_helper);
 
     harness
         .control
