@@ -19,6 +19,8 @@ use crate::exec_env::CODEX_THREAD_ID_ENV_VAR;
 use crate::exec_env::create_env;
 use crate::exec_env::inject_apply_patch_env;
 use crate::exec_env::inject_permission_profile_env;
+use crate::exec_env::is_non_inheritable_env_var;
+use crate::exec_env::scrub_non_inheritable_env_vars;
 use crate::exec_policy::ExecApprovalRequest;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecRequest;
@@ -96,19 +98,6 @@ const INTERRUPT: &str = "\u{3}";
 // Keep launch-context credentials out of model-reachable child processes. The
 // protocol-level helper for this policy landed after the downstream base used
 // by this branch, so keep the narrow predicate local to this propagation seam.
-const NON_INHERITABLE_ENV_VARS: [&str; 2] =
-    ["OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE"];
-
-fn is_non_inheritable_env_var(name: &str) -> bool {
-    NON_INHERITABLE_ENV_VARS
-        .iter()
-        .any(|restricted| restricted.eq_ignore_ascii_case(name))
-}
-
-fn scrub_non_inheritable_env_vars(env: &mut HashMap<String, String>) {
-    env.retain(|name, _| !is_non_inheritable_env_var(name));
-}
-
 /// Test-only override for deterministic unified exec process IDs.
 ///
 /// In production builds this value should remain at its default (`false`) and
@@ -1199,10 +1188,12 @@ impl UnifiedExecProcessManager {
             } else {
                 None
             };
+        let mut local_env = request.env.clone();
+        scrub_non_inheritable_env_vars(&mut local_env);
         let spawn_result = codex_sandboxing::spawn_process(codex_sandboxing::SpawnRequest {
             command: &request.command,
             cwd: native_cwd.as_path(),
-            env: &request.env,
+            env: &local_env,
             arg0: &request.arg0,
             sandbox: request.sandbox,
             windows_sandbox,
@@ -1235,6 +1226,7 @@ impl UnifiedExecProcessManager {
         inject_apply_patch_env(&mut env, &context.turn.config.features);
         let active_permission_profile = context.turn.config.permissions.active_permission_profile();
         inject_permission_profile_env(&mut env, active_permission_profile.as_ref());
+        scrub_non_inheritable_env_vars(&mut env);
         let env = apply_unified_exec_env(env);
         let exec_server_env_config = ExecServerEnvConfig {
             policy: exec_env_policy_from_shell_policy(
