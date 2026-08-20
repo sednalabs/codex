@@ -1253,6 +1253,14 @@ impl UnifiedExecProcessManager {
                 prefix_rule: request.prefix_rule.clone(),
             })
             .await;
+        let mut explicit_env_overrides = context
+            .turn
+            .config
+            .permissions
+            .shell_environment_policy
+            .r#set
+            .clone();
+        scrub_non_inheritable_env_vars(&mut explicit_env_overrides);
         let req = UnifiedExecToolRequest {
             command: request.command.clone(),
             shell_type: request.shell_type,
@@ -1263,13 +1271,7 @@ impl UnifiedExecProcessManager {
             turn_environment: request.turn_environment.clone(),
             env,
             exec_server_env_config: Some(exec_server_env_config),
-            explicit_env_overrides: context
-                .turn
-                .config
-                .permissions
-                .shell_environment_policy
-                .r#set
-                .clone(),
+            explicit_env_overrides,
             network: request.network.clone(),
             tty: request.tty,
             sandbox_permissions: request.sandbox_permissions,
