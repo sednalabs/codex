@@ -54,7 +54,6 @@ use self::www_authenticate::insufficient_scope_challenge;
 mod tests;
 
 const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
-const EMPTY_RESPONSE_PROBE_TIMEOUT: Duration = Duration::from_millis(50);
 const JSON_MIME_TYPE: &str = "application/json";
 const HEADER_SESSION_ID: &str = "Mcp-Session-Id";
 const NON_JSON_RESPONSE_BODY_PREVIEW_BYTES: usize = 8_192;
@@ -210,6 +209,14 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
                 | JsonRpcMessage::Notification(_)
                 | JsonRpcMessage::Error(_)
         );
+        if status_is_success(response.status)
+            && accepts_empty_body
+            && response_header(&response.headers, reqwest::header::CONTENT_LENGTH)
+                .as_deref()
+                .is_some_and(|value| value.trim() == "0")
+        {
+            return Ok(StreamableHttpPostResponse::Accepted);
+        }
         if !status_is_success(response.status) {
             let body = collect_body(&mut body_stream).await?;
             if !retryable_post_response_status(mcp_method.as_deref(), response.status)
@@ -232,24 +239,7 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
         }
         match content_type.as_deref() {
             Some(content_type) if content_type.starts_with(EVENT_STREAM_MIME_TYPE) => {
-                let event_stream = if accepts_empty_body {
-                    match tokio::time::timeout(EMPTY_RESPONSE_PROBE_TIMEOUT, body_stream.recv())
-                        .await
-                    {
-                        Ok(Ok(None)) => return Ok(StreamableHttpPostResponse::Accepted),
-                        Ok(Ok(Some(first_chunk))) => {
-                            sse_stream_from_body_with_first_chunk(body_stream, Some(first_chunk))
-                        }
-                        Ok(Err(error)) => {
-                            return Err(StreamableHttpError::Client(
-                                StreamableHttpClientAdapterError::from(error),
-                            ));
-                        }
-                        Err(_) => sse_stream_from_body(body_stream),
-                    }
-                } else {
-                    sse_stream_from_body(body_stream)
-                };
+                let event_stream = sse_stream_from_body(body_stream);
                 Ok(StreamableHttpPostResponse::Sse(event_stream, session_id))
             }
             Some(content_type) if content_type.starts_with(JSON_MIME_TYPE) => {
@@ -611,21 +601,12 @@ async fn collect_body(
 fn sse_stream_from_body(
     body_stream: HttpResponseBodyStream,
 ) -> BoxStream<'static, std::result::Result<Sse, sse_stream::Error>> {
-    sse_stream_from_body_with_first_chunk(body_stream, None)
-}
-
-fn sse_stream_from_body_with_first_chunk(
-    body_stream: HttpResponseBodyStream,
-    first_chunk: Option<Vec<u8>>,
-) -> BoxStream<'static, std::result::Result<Sse, sse_stream::Error>> {
-    let body_stream = stream::iter(first_chunk.map(|bytes| Ok(Bytes::from(bytes)))).chain(
-        stream::unfold(body_stream, |mut body_stream| async move {
-            match body_stream.recv().await {
-                Ok(Some(bytes)) => Some((Ok(Bytes::from(bytes)), body_stream)),
-                Ok(None) => None,
-                Err(error) => Some((Err(io::Error::other(error)), body_stream)),
-            }
-        }),
-    );
-    SseStream::from_bytes_stream(body_stream).boxed()
+    SseStream::from_bytes_stream(stream::unfold(body_stream, |mut body_stream| async move {
+        match body_stream.recv().await {
+            Ok(Some(bytes)) => Some((Ok(Bytes::from(bytes)), body_stream)),
+            Ok(None) => None,
+            Err(error) => Some((Err(io::Error::other(error)), body_stream)),
+        }
+    }))
+    .boxed()
 }
