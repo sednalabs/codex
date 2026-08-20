@@ -1,6 +1,4 @@
 use pretty_assertions::assert_eq;
-use sha2::Digest;
-use sha2::Sha256;
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::Path;
@@ -12,6 +10,7 @@ use super::executable_identity_from_bytes;
 use super::managed_sedna_automatic_update_release_from_metadata;
 use super::parse_codex_version;
 use super::resolved_managed_standalone_release;
+use super::sha256_hex;
 
 #[test]
 fn parses_codex_cli_version_output() {
