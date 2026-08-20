@@ -111,6 +111,21 @@ async fn update_once(
         return Ok(UpdateLoopControl::Continue);
     };
     let installed_from_version = managed_sedna_release.version;
+
+    // Reconcile an already-activated release before asking the installer for a
+    // newer one. In particular, an equality/no-update installer result must
+    // not leave an A updater or app server running after current moved to B.
+    if let UpdateLoopControl::Stop = reconcile_running_processes_to_managed_release(
+        &daemon,
+        running_updater_identity,
+        &managed_release.executable,
+        terminate,
+    )
+    .await?
+    {
+        return Ok(UpdateLoopControl::Stop);
+    }
+
     install_latest_standalone(http, &installed_from_version).await?;
 
     let managed_release = resolved_managed_standalone_release(&daemon.managed_codex_bin).await?;
@@ -125,8 +140,23 @@ async fn update_once(
             "managed release after installation was not strictly newer than the release selected for update"
         ));
     }
-    let managed_codex_bin = managed_release.executable;
-    let managed_identity = executable_identity(&managed_codex_bin).await?;
+    reconcile_running_processes_to_managed_release(
+        &daemon,
+        running_updater_identity,
+        &managed_release.executable,
+        terminate,
+    )
+    .await
+}
+
+#[cfg(unix)]
+async fn reconcile_running_processes_to_managed_release(
+    daemon: &Daemon,
+    running_updater_identity: &ExecutableIdentity,
+    managed_codex_bin: &std::path::Path,
+    terminate: &mut Signal,
+) -> Result<UpdateLoopControl> {
+    let managed_identity = executable_identity(managed_codex_bin).await?;
     let (restart_mode, updater_refresh_mode) =
         update_modes_for_identities(running_updater_identity, &managed_identity);
 
@@ -135,7 +165,7 @@ async fn update_once(
             return Ok(UpdateLoopControl::Stop);
         }
         match daemon
-            .try_restart_if_running(restart_mode, updater_refresh_mode, &managed_codex_bin)
+            .try_restart_if_running(restart_mode, updater_refresh_mode, managed_codex_bin)
             .await?
         {
             RestartIfRunningOutcome::Busy => {

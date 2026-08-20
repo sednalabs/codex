@@ -10,9 +10,11 @@ use super::fetch_installer_script_from_url;
 use super::install_latest_sedna_standalone;
 use super::post_install_release_is_strictly_newer;
 use super::update_modes_for_identities;
+use crate::RestartIfRunningOutcome;
 use crate::RestartMode;
 use crate::UpdaterRefreshMode;
 use crate::managed_install::executable_identity_from_bytes;
+use crate::should_reexec_updater;
 
 #[test]
 fn unchanged_updater_uses_version_based_restart() {
@@ -37,6 +39,38 @@ fn changed_updater_forces_refresh_even_when_version_may_match() {
             UpdaterRefreshMode::ReexecIfManagedBinaryChanged,
         )
     );
+}
+
+#[test]
+fn out_of_band_activation_converges_a_processes_to_current_b_before_an_equal_update() {
+    let (restart_mode, updater_refresh_mode) = update_modes_for_identities(
+        &executable_identity_from_bytes(b"updater-a"),
+        &executable_identity_from_bytes(b"current-b"),
+    );
+
+    assert_eq!(restart_mode, RestartMode::Always);
+    assert_eq!(
+        updater_refresh_mode,
+        UpdaterRefreshMode::ReexecIfManagedBinaryChanged
+    );
+    assert!(should_reexec_updater(
+        updater_refresh_mode,
+        RestartIfRunningOutcome::Restarted
+    ));
+}
+
+#[test]
+fn self_installed_current_b_reexecs_updater_when_app_server_is_not_running() {
+    let (restart_mode, updater_refresh_mode) = update_modes_for_identities(
+        &executable_identity_from_bytes(b"updater-a"),
+        &executable_identity_from_bytes(b"current-b"),
+    );
+
+    assert_eq!(restart_mode, RestartMode::Always);
+    assert!(should_reexec_updater(
+        updater_refresh_mode,
+        RestartIfRunningOutcome::NotRunning
+    ));
 }
 
 #[test]
