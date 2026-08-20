@@ -33,6 +33,7 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::user_input::UserInput;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+use std::task::Context;
 use std::time::Duration;
 use tokio::task::yield_now;
 use tokio::time::advance;
@@ -288,33 +289,50 @@ async fn external_v2_unload_defers_for_pending_finalizers_and_submissions() {
         .input_queue
         .register_residency_submission("external-unload".to_string());
 
-    assert_eq!(
-        manager
-            .unload_v2_thread_for_external_teardown(&first.thread, |_| async {})
-            .await,
-        V2ThreadUnloadResult::Deferred
+    let residency_transition = first
+        .thread
+        .session
+        .input_queue
+        .lock_residency_transition()
+        .await;
+    let mut acknowledgement = Box::pin(
+        first
+            .thread
+            .session
+            .input_queue
+            .acknowledge_residency_submission("external-unload"),
+    );
+    assert!(
+        std::future::Future::poll(
+            acknowledgement.as_mut(),
+            &mut Context::from_waker(futures::task::noop_waker_ref()),
+        )
+        .is_pending()
+    );
+    assert!(
+        first
+            .thread
+            .session
+            .input_queue
+            .has_pending_residency_submissions()
+    );
+
+    let mut unload =
+        Box::pin(manager.unload_v2_thread_for_external_teardown(&first.thread, |_| async {}));
+    assert!(
+        std::future::Future::poll(
+            unload.as_mut(),
+            &mut Context::from_waker(futures::task::noop_waker_ref()),
+        )
+        .is_pending()
     );
     assert!(manager.get_thread(first.thread_id).await.is_ok());
     assert_eq!(control.v2_residency.resident_count(), 1);
 
+    drop(residency_transition);
+    acknowledgement.await;
     first.thread.session.input_queue.finish_terminal_finalizer();
-    assert_eq!(
-        manager
-            .unload_v2_thread_for_external_teardown(&first.thread, |_| async {})
-            .await,
-        V2ThreadUnloadResult::Deferred
-    );
-    first
-        .thread
-        .session
-        .input_queue
-        .finish_residency_submission("external-unload");
-    assert_eq!(
-        manager
-            .unload_v2_thread_for_external_teardown(&first.thread, |_| async {})
-            .await,
-        V2ThreadUnloadResult::Unloaded
-    );
+    assert_eq!(unload.await, V2ThreadUnloadResult::Unloaded);
     assert!(manager.get_thread(first.thread_id).await.is_err());
     assert_eq!(control.v2_residency.resident_count(), 0);
 }
