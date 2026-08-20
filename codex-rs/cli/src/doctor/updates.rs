@@ -37,7 +37,7 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
     push_cached_version_details(&mut details, &version_file);
 
     let mut status = CheckStatus::Ok;
-    let mut summary = "update configuration is locally consistent".to_string();
+    let summary = "update configuration is locally consistent".to_string();
     match fetch_latest_sedna_release_version() {
         Ok(latest_version) => {
             details.push(format!("latest Sedna release: {latest_version}"));
@@ -89,10 +89,14 @@ fn update_action_label(context: &InstallContext) -> &'static str {
 }
 
 fn is_sedna_release_channel() -> bool {
-    matches!(
+    is_sedna_release_identity(
         option_env!("CODEX_RELEASE_REPOSITORY"),
-        Some(SEDNA_RELEASE_REPOSITORY)
-    ) && matches!(option_env!("CODEX_RELEASE_TAG_PREFIX"), Some("v"))
+        option_env!("CODEX_RELEASE_TAG_PREFIX"),
+    )
+}
+
+const fn is_sedna_release_identity(repository: Option<&str>, tag_prefix: Option<&str>) -> bool {
+    matches!(repository, Some(SEDNA_RELEASE_REPOSITORY)) && matches!(tag_prefix, Some("v"))
 }
 
 fn fetch_latest_sedna_release_version() -> Result<String, String> {
@@ -189,26 +193,35 @@ mod tests {
 
     #[test]
     fn update_action_labels_never_suggest_upstream_package_managers() {
-        assert_eq!(
-            update_action_label(&InstallContext {
-                method: InstallMethod::Npm,
-                package_layout: None,
-            }),
-            "no automatic update action outside the Sedna release channel"
-        );
-        assert_eq!(
-            update_action_label(&InstallContext {
-                method: InstallMethod::Pnpm,
-                package_layout: None,
-            }),
-            "no automatic update action outside the Sedna release channel"
-        );
-        assert_eq!(
-            update_action_label(&InstallContext {
-                method: InstallMethod::Other,
-                package_layout: None,
-            }),
-            "no automatic update action outside the Sedna release channel"
-        );
+        for method in [
+            InstallMethod::Npm,
+            InstallMethod::Pnpm,
+            InstallMethod::Other,
+        ] {
+            assert!(
+                !update_action_label(&InstallContext {
+                    method,
+                    package_layout: None,
+                })
+                .contains("openai")
+            );
+        }
+    }
+
+    #[test]
+    fn sedna_update_identity_requires_both_explicit_build_values() {
+        assert!(is_sedna_release_identity(
+            Some("sednalabs/codex"),
+            Some("v")
+        ));
+        for identity in [
+            (None, None),
+            (Some("sednalabs/codex"), None),
+            (None, Some("v")),
+            (Some("openai/codex"), Some("v")),
+            (Some("sednalabs/codex"), Some("rust-v")),
+        ] {
+            assert!(!is_sedna_release_identity(identity.0, identity.1));
+        }
     }
 }

@@ -6,7 +6,6 @@ use crate::npm_registry::NpmPackageInfo;
 use crate::update_action;
 use crate::update_action::UpdateAction;
 use crate::update_versions::extract_version_from_latest_tag;
-use crate::update_versions::is_newer;
 use crate::update_versions::is_sedna_release_version;
 use crate::update_versions::is_source_build_version;
 use crate::updates_cache::VersionInfo;
@@ -39,6 +38,7 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
         None => true,
         Some(info) => {
             !info.matches_current_channel()
+                || !is_sedna_release_version(&info.latest_version)
                 || info.last_checked_at < Utc::now() - Duration::hours(20)
         }
     } {
@@ -52,14 +52,10 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
         });
     }
 
-    info.filter(|info| info.matches_current_channel())
-        .and_then(|info| {
-            if is_newer(&info.latest_version, CODEX_CLI_VERSION).unwrap_or(false) {
-                Some(info.latest_version)
-            } else {
-                None
-            }
-        })
+    info.and_then(|info| {
+        info.actionable_latest_version(CODEX_CLI_VERSION)
+            .map(str::to_owned)
+    })
 }
 
 // We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
