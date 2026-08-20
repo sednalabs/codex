@@ -45,9 +45,7 @@ use crate::managed_install::ExecutableIdentity;
 #[cfg(unix)]
 use crate::managed_install::executable_identity;
 #[cfg(unix)]
-use crate::managed_install::managed_sedna_automatic_update_release;
-#[cfg(unix)]
-use crate::managed_install::resolved_managed_codex_bin;
+use crate::managed_install::resolved_managed_standalone_release;
 
 #[cfg(unix)]
 const INITIAL_UPDATE_DELAY: Duration = Duration::from_secs(5 * 60);
@@ -108,14 +106,19 @@ async fn update_once(
     terminate: &mut Signal,
 ) -> Result<UpdateLoopControl> {
     let daemon = Daemon::from_environment()?;
-    let Some(managed_release) =
-        managed_sedna_automatic_update_release(&daemon.managed_codex_bin).await
-    else {
+    let managed_release = resolved_managed_standalone_release(&daemon.managed_codex_bin).await?;
+    let Some(managed_sedna_release) = managed_release.sedna_auto_update else {
         return Ok(UpdateLoopControl::Continue);
     };
-    install_latest_standalone(http, &managed_release.version).await?;
+    install_latest_standalone(http, &managed_sedna_release.version).await?;
 
-    let managed_codex_bin = resolved_managed_codex_bin(&daemon.managed_codex_bin).await?;
+    let managed_release = resolved_managed_standalone_release(&daemon.managed_codex_bin).await?;
+    if managed_release.sedna_auto_update.is_none() {
+        return Err(anyhow::anyhow!(
+            "managed release is no longer eligible for automatic updates after installation"
+        ));
+    }
+    let managed_codex_bin = managed_release.executable;
     let managed_identity = executable_identity(&managed_codex_bin).await?;
     let (restart_mode, updater_refresh_mode) =
         update_modes_for_identities(running_updater_identity, &managed_identity);
