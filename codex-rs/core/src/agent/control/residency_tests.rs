@@ -576,11 +576,7 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
     assert_eq!(control.v2_residency.resident_count(), 1);
 
     advance(Duration::from_millis(1)).await;
-    settle_terminal_idle_watcher().await;
-    assert!(
-        manager.get_thread(child_thread_id).await.is_err(),
-        "the watcher registered by normal spawn must unload at the idle deadline"
-    );
+    wait_for_thread_to_unload_after_terminal_idle_deadline(&manager, child_thread_id).await;
     assert_eq!(control.v2_residency.resident_count(), 0);
 }
 
@@ -958,12 +954,35 @@ async fn assert_thread_unloads_within_terminal_idle_intervals(
 ) {
     for _ in 0..max_intervals {
         advance(interval).await;
-        settle_terminal_idle_watcher().await;
-        if manager.get_thread(thread_id).await.is_err() {
+        if thread_unloads_after_terminal_idle_deadline(manager, thread_id).await {
             return;
         }
     }
     panic!("thread {thread_id} should unload within {max_intervals} terminal idle intervals");
+}
+
+async fn wait_for_thread_to_unload_after_terminal_idle_deadline(
+    manager: &ThreadManager,
+    thread_id: ThreadId,
+) {
+    assert!(
+        thread_unloads_after_terminal_idle_deadline(manager, thread_id).await,
+        "the watcher should unload after its terminal idle deadline"
+    );
+}
+
+async fn thread_unloads_after_terminal_idle_deadline(
+    manager: &ThreadManager,
+    thread_id: ThreadId,
+) -> bool {
+    const MAX_SETTLE_YIELDS: usize = 100;
+    for _ in 0..MAX_SETTLE_YIELDS {
+        if manager.get_thread(thread_id).await.is_err() {
+            return true;
+        }
+        yield_now().await;
+    }
+    false
 }
 
 #[tokio::test]
