@@ -586,11 +586,17 @@ async fn terminal_idle_unload_rearms_after_accepted_send_input_invalidates_deadl
         /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
     )
     .await;
+    let generation_before_initial_terminal = metadata
+        .lifecycle
+        .lock()
+        .await
+        .terminal_idle_unload_generation();
     mark_thread_status(
         first.thread.as_ref(),
         AgentStatus::Completed(Some("first turn complete".to_string())),
     )
     .await;
+    wait_for_terminal_idle_deadline_after(&metadata, generation_before_initial_terminal).await;
     advance(Duration::from_millis(50)).await;
 
     let submission_id = control
