@@ -564,9 +564,12 @@ impl App {
             self.refresh_agent_picker_thread_liveness(app_server, thread_id)
                 .await;
             if self.should_attach_live_thread_for_selection(thread_id) {
-                self.attach_live_thread_for_selection(app_server, thread_id)
+                let live_attached = self
+                    .attach_live_thread_for_selection(app_server, thread_id)
                     .await?;
-                self.chat_widget.set_replay_only_thread(false);
+                if live_attached {
+                    self.chat_widget.set_replay_only_thread(false);
+                }
             }
             return Ok(());
         }
