@@ -259,7 +259,7 @@ fn write_workflow_checksums(release: &Path, metadata: &[u8]) {
     fs::write(
         release.join("SHA256SUMS.txt"),
         format!(
-            "{}  codex-sedna-test-aarch64-unknown-linux-gnu.tar.gz\n{:x}  RELEASE-METADATA-aarch64-unknown-linux-gnu.json\n",
+            "{}  codex-sedna-test-aarch64-unknown-linux-gnu.tar.gz\n{}  RELEASE-METADATA-aarch64-unknown-linux-gnu.json\n",
             "0".repeat(64),
             sha256_hex(metadata),
         ),
@@ -271,7 +271,7 @@ fn write_installed_checksums(release: &Path, metadata: &[u8], executable: &[u8])
     fs::write(
         release.join("INSTALLED-SHA256SUMS.txt"),
         format!(
-            "{:x}  RELEASE-METADATA.json\n{:x}  codex\n",
+            "{}  RELEASE-METADATA.json\n{}  codex\n",
             sha256_hex(metadata),
             sha256_hex(executable),
         ),
