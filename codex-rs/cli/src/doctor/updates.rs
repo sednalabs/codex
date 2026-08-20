@@ -1,10 +1,8 @@
 //! Diagnoses whether Codex update paths target the running installation.
 //!
-//! Update diagnostics combine cached version metadata, install-channel hints,
-//! and bounded latest-version probes. For npm-managed launches, this module also
-//! verifies that npm install -g would update the package root that launched the
-//! current process, which catches PATH and prefix mismatches before the user runs
-//! an update command.
+//! Update diagnostics combine cache metadata with a bounded probe of the Sedna
+//! release channel. Other build channels fail closed: doctor must not suggest
+//! that an upstream package manager can update a Sedna binary.
 
 use std::path::Path;
 
@@ -15,15 +13,11 @@ use serde::Deserialize;
 
 use super::CheckStatus;
 use super::DoctorCheck;
-use super::NpmRootCheck;
 use super::doctor_install_context;
-use super::doctor_managed_by_npm;
-use super::npm_global_root_check;
 use super::run_command;
 
 const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
+const SEDNA_RELEASE_REPOSITORY: &str = "sednalabs/codex";
 
 /// Builds the update-health row for the current installation.
 ///
@@ -31,8 +25,7 @@ const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.jso
 /// warning instead of failing doctor outright; update freshness is useful
 /// support context but should not mask more direct install/config failures.
 pub(super) fn updates_check(config: &Config) -> DoctorCheck {
-    let current_exe = std::env::current_exe().ok();
-    let install_context = doctor_install_context(current_exe.as_deref());
+    let install_context = doctor_install_context(std::env::current_exe().ok().as_deref());
     let mut details = vec![
         format!(
             "check for update on startup: {}",
@@ -45,54 +38,10 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
 
     let mut status = CheckStatus::Ok;
     let mut summary = "update configuration is locally consistent".to_string();
-    let mut remediation = None;
-
-    if doctor_managed_by_npm(current_exe.as_deref()) {
-        match npm_global_root_check() {
-            NpmRootCheck::Match { package_root } => {
-                details.push(format!("npm update target: {}", package_root.display()));
-            }
-            NpmRootCheck::Mismatch {
-                running_package_root,
-                npm_package_root,
-            } => {
-                status = CheckStatus::Fail;
-                summary = "update would target a different npm install".to_string();
-                details.push(format!(
-                    "running package root: {}",
-                    running_package_root.display()
-                ));
-                details.push(format!("npm package root: {}", npm_package_root.display()));
-                remediation = Some(format!(
-                    "Fix PATH or npm prefix so the running package root ({}) matches the npm global package root ({}).",
-                    running_package_root.display(),
-                    npm_package_root.display()
-                ));
-            }
-            NpmRootCheck::MissingPackageRoot => {
-                status = status.max(CheckStatus::Warning);
-                summary = "npm update target could not be proven".to_string();
-                remediation = Some(
-                    "Reinstall or update Codex so the JS shim provides CODEX_MANAGED_PACKAGE_ROOT."
-                        .to_string(),
-                );
-            }
-            NpmRootCheck::NpmUnavailable(error) => {
-                status = status.max(CheckStatus::Warning);
-                summary = "npm update target could not be inspected".to_string();
-                details.push(format!("npm root -g failed: {error}"));
-            }
-        }
-    }
-
-    match fetch_latest_version(&install_context) {
+    match fetch_latest_sedna_release_version() {
         Ok(latest_version) => {
-            details.push(format!("latest version: {latest_version}"));
-            if is_newer(&latest_version, env!("CARGO_PKG_VERSION")) == Some(true) {
-                details.push("latest version status: newer version is available".to_string());
-            } else {
-                details.push("latest version status: current version is not older".to_string());
-            }
+            details.push(format!("latest Sedna release: {latest_version}"));
+            details.push("latest release status: Sedna release source verified".to_string());
         }
         Err(err) => {
             status = status.max(CheckStatus::Warning);
@@ -100,11 +49,7 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
         }
     }
 
-    let mut check = DoctorCheck::new("updates.status", "updates", status, summary).details(details);
-    if let Some(remediation) = remediation {
-        check = check.remediation(remediation);
-    }
-    check
+    DoctorCheck::new("updates.status", "updates", status, summary).details(details)
 }
 
 fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
@@ -130,47 +75,41 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
 }
 
 fn update_action_label(context: &InstallContext) -> &'static str {
-    match &context.method {
-        InstallMethod::Npm => "npm install -g @openai/codex",
-        InstallMethod::Bun => "bun install -g @openai/codex",
-        InstallMethod::Pnpm => "pnpm add -g @openai/codex",
-        InstallMethod::Brew => "brew upgrade --cask codex",
-        InstallMethod::Standalone { .. } => "standalone installer",
-        InstallMethod::Other => "manual or unknown",
+    if !is_sedna_release_channel() {
+        return "no automatic update action outside the Sedna release channel";
     }
-}
-
-fn fetch_latest_version(context: &InstallContext) -> Result<String, String> {
     match &context.method {
-        InstallMethod::Brew => fetch_homebrew_cask_version(),
+        InstallMethod::Standalone { .. } => "Sedna standalone installer",
         InstallMethod::Npm
         | InstallMethod::Bun
         | InstallMethod::Pnpm
-        | InstallMethod::Standalone { .. }
-        | InstallMethod::Other => fetch_latest_github_release_version(),
+        | InstallMethod::Brew
+        | InstallMethod::Other => "no automatic update action",
     }
 }
 
-fn fetch_latest_github_release_version() -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct ReleaseInfo {
-        tag_name: String,
-    }
-
-    let info = http_get_json::<ReleaseInfo>(GITHUB_LATEST_RELEASE_URL)?;
-    info.tag_name
-        .strip_prefix("rust-v")
-        .map(str::to_string)
-        .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
+fn is_sedna_release_channel() -> bool {
+    matches!(
+        option_env!("CODEX_RELEASE_REPOSITORY"),
+        Some(SEDNA_RELEASE_REPOSITORY)
+    ) && matches!(option_env!("CODEX_RELEASE_TAG_PREFIX"), Some("v"))
 }
 
-fn fetch_homebrew_cask_version() -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct HomebrewCaskInfo {
-        version: String,
+fn fetch_latest_sedna_release_version() -> Result<String, String> {
+    if !is_sedna_release_channel() {
+        return Err(
+            "latest release probe is unavailable outside the Sedna release channel".to_string(),
+        );
     }
+    let url = format!("https://api.github.com/repos/{SEDNA_RELEASE_REPOSITORY}/releases/latest");
+    let info = http_get_json::<ReleaseInfo>(&url)?;
+    parse_sedna_release_tag(&info.tag_name)
+        .ok_or_else(|| format!("failed to parse Sedna release tag {}", info.tag_name))
+}
 
-    http_get_json::<HomebrewCaskInfo>(HOMEBREW_CASK_API_URL).map(|info| info.version)
+#[derive(Deserialize)]
+struct ReleaseInfo {
+    tag_name: String,
 }
 
 fn http_get_json<T>(url: &str) -> Result<T, String>
@@ -181,19 +120,40 @@ where
     serde_json::from_str::<T>(&body).map_err(|err| err.to_string())
 }
 
-fn is_newer(latest: &str, current: &str) -> Option<bool> {
-    match (parse_version(latest), parse_version(current)) {
-        (Some(latest), Some(current)) => Some(latest > current),
-        (Some(_), None) | (None, Some(_)) | (None, None) => None,
+fn parse_sedna_release_tag(tag: &str) -> Option<String> {
+    let version = tag.strip_prefix('v')?;
+    let (version, metadata) = match version.split_once('+') {
+        Some((version, metadata)) => (version, Some(metadata)),
+        None => (version, None),
+    };
+    if metadata.is_some_and(|metadata| {
+        metadata.strip_prefix("upstream.").is_none_or(|distance| {
+            distance.is_empty() || !distance.bytes().all(|b| b.is_ascii_digit())
+        })
+    }) {
+        return None;
     }
-}
-
-fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = value.trim().split('.');
-    let major = parts.next()?.parse::<u64>().ok()?;
-    let minor = parts.next()?.parse::<u64>().ok()?;
-    let patch = parts.next()?.parse::<u64>().ok()?;
-    Some((major, minor, patch))
+    let (track, ordinal) = version.rsplit_once("-sedna.")?;
+    if ordinal.is_empty() || !ordinal.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (core, prerelease) = match track.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (track, None),
+    };
+    let mut core_parts = core.split('.');
+    let valid_core = (0..3).all(|_| {
+        core_parts
+            .next()
+            .is_some_and(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    }) && core_parts.next().is_none();
+    let valid_prerelease = prerelease.is_none_or(|prerelease| {
+        !prerelease.is_empty()
+            && prerelease.split('.').all(|identifier| {
+                !identifier.is_empty() && identifier.bytes().all(|b| b.is_ascii_alphanumeric())
+            })
+    });
+    (valid_core && valid_prerelease).then(|| version.to_string())
 }
 
 #[derive(Deserialize)]
@@ -210,34 +170,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_newer_compares_plain_semver() {
-        assert_eq!(is_newer("1.2.4", "1.2.3"), Some(true));
-        assert_eq!(is_newer("1.2.3", "1.2.4"), Some(false));
-        assert_eq!(is_newer("1.2.3-beta.1", "1.2.2"), None);
+    fn parses_only_sedna_release_tags() {
+        assert_eq!(
+            parse_sedna_release_tag("v1.2.3-alpha.4-sedna.2+upstream.17"),
+            Some("1.2.3-alpha.4-sedna.2+upstream.17".to_string())
+        );
+        for tag in [
+            "rust-v1.2.3",
+            "v1.2.3",
+            "v1.2.3-sedna.x",
+            "v1.2.3-sedna.1+build.2",
+            "v1.2.3-sedna.1+upstream.x",
+            "v1.2.3-rc-1-sedna.1",
+        ] {
+            assert_eq!(parse_sedna_release_tag(tag), None, "accepted {tag}");
+        }
     }
 
     #[test]
-    fn update_action_labels_install_contexts() {
+    fn update_action_labels_never_suggest_upstream_package_managers() {
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            "npm install -g @openai/codex"
+            "no automatic update action outside the Sedna release channel"
         );
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Pnpm,
                 package_layout: None,
             }),
-            "pnpm add -g @openai/codex"
+            "no automatic update action outside the Sedna release channel"
         );
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Other,
                 package_layout: None,
             }),
-            "manual or unknown"
+            "no automatic update action outside the Sedna release channel"
         );
     }
 }

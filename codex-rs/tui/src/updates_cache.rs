@@ -40,6 +40,12 @@ impl VersionInfo {
         self.release_repository.as_deref() == Some(CODEX_RELEASE_REPOSITORY)
             && self.release_tag_prefix.as_deref() == Some(CODEX_RELEASE_TAG_PREFIX)
     }
+
+    pub(crate) fn dismissed_version_for_current_channel(&self) -> Option<String> {
+        self.matches_current_channel()
+            .then(|| self.dismissed_version.clone())
+            .flatten()
+    }
 }
 
 const VERSION_FILENAME: &str = "version.json";
@@ -58,8 +64,11 @@ pub(crate) fn read_version_info(version_file: &Path) -> anyhow::Result<VersionIn
 pub(crate) async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<()> {
     let version_file = version_filepath(config);
     let mut info = match read_version_info(&version_file) {
-        Ok(info) => info,
+        Ok(info) if info.matches_current_channel() => info,
         Err(_) => {
+            VersionInfo::for_current_channel(version.to_string(), DateTime::<Utc>::UNIX_EPOCH, None)
+        }
+        Ok(_) => {
             VersionInfo::for_current_channel(version.to_string(), DateTime::<Utc>::UNIX_EPOCH, None)
         }
     };
