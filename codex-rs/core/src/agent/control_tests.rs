@@ -189,12 +189,7 @@ impl AgentControlHarness {
         config: Config,
         state_db: Option<StateDbHandle>,
     ) -> Self {
-        Self::new_with_config_and_manager_home(
-            home,
-            config,
-            state_db,
-            /*manager_home*/ None,
-        )
+        Self::new_with_config_and_manager_home(home, config, state_db, /*manager_home*/ None)
     }
 
     fn new_with_config_and_manager_home(
