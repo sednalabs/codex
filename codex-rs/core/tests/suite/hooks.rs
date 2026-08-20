@@ -3097,12 +3097,7 @@ async fn permission_request_hook_sees_raw_exec_command_input() -> Result<()> {
                 .expect("failed to write permission request hook test fixture");
         })
         .with_config(|config| {
-            config.use_experimental_unified_exec_tool = true;
             trust_discovered_hooks(config);
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
         });
     let test = builder.build(&server).await?;
 
@@ -3684,73 +3679,28 @@ Path(r"{hook_finished_path}").write_text("finished", encoding="utf-8")
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum BashRewriteSurface {
-    ExecCommand,
-}
-
-impl BashRewriteSurface {
-    fn slug(self) -> &'static str {
-        match self {
-            BashRewriteSurface::ExecCommand => "exec-command",
-        }
-    }
-
-    fn tool_call(self, call_id: &str, command_text: &str) -> Result<Value> {
-        match self {
-            BashRewriteSurface::ExecCommand => Ok(ev_function_call(
-                call_id,
-                "exec_command",
-                &serde_json::to_string(&serde_json::json!({ "cmd": command_text }))?,
-            )),
-        }
-    }
-
-    fn original_command(self, marker: &Path) -> String {
-        match self {
-            BashRewriteSurface::ExecCommand => {
-                format!("git init --quiet {}", marker.display())
-            }
-        }
-    }
-
-    fn rewritten_command(self, marker: &Path) -> String {
-        match self {
-            BashRewriteSurface::ExecCommand => {
-                format!("git init {}", marker.display())
-            }
-        }
-    }
-
-    fn configure(self, config: &mut Config) {
-        trust_discovered_hooks(config);
-        if matches!(self, BashRewriteSurface::ExecCommand) {
-            config.use_experimental_unified_exec_tool = true;
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
-        }
-    }
-}
-
-async fn assert_pre_tool_use_rewrites_bash_surface(surface: BashRewriteSurface) -> Result<()> {
+#[tokio::test]
+async fn pre_tool_use_rewrites_exec_command_before_execution() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let slug = surface.slug();
+    let slug = "exec-command";
     let call_id = format!("pretooluse-{slug}-rewrite");
     let marker_dir = TempDir::new()?;
     let original_marker = marker_dir.path().join("original");
     let rewritten_marker = marker_dir.path().join("rewritten");
-    let original_command = surface.original_command(&original_marker);
-    let rewritten_command = surface.rewritten_command(&rewritten_marker);
+    let original_command = format!("git init --quiet {}", original_marker.display());
+    let rewritten_command = format!("git init {}", rewritten_marker.display());
     let responses = mount_sse_sequence(
         &server,
         vec![
             sse(vec![
                 ev_response_created("resp-1"),
-                surface.tool_call(&call_id, &original_command)?,
+                ev_function_call(
+                    &call_id,
+                    "exec_command",
+                    &serde_json::to_string(&serde_json::json!({ "cmd": original_command }))?,
+                ),
                 ev_completed("resp-1"),
             ]),
             sse(vec![
@@ -3768,7 +3718,7 @@ async fn assert_pre_tool_use_rewrites_bash_surface(surface: BashRewriteSurface) 
             write_updating_pre_tool_use_hook(home, "^Bash$", &updated_input)
                 .expect("failed to write updating pre tool use hook fixture");
         })
-        .with_config(move |config| surface.configure(config));
+        .with_config(trust_discovered_hooks);
     let test = builder.build(&server).await?;
 
     test.submit_turn_with_permission_profile(
@@ -3794,11 +3744,6 @@ async fn assert_pre_tool_use_rewrites_bash_surface(surface: BashRewriteSurface) 
     assert_eq!(hook_inputs[0]["tool_input"]["command"], original_command);
 
     Ok(())
-}
-
-#[tokio::test]
-async fn pre_tool_use_rewrites_exec_command_before_execution() -> Result<()> {
-    assert_pre_tool_use_rewrites_bash_surface(BashRewriteSurface::ExecCommand).await
 }
 
 #[tokio::test]
@@ -4433,12 +4378,7 @@ async fn pre_tool_use_blocks_exec_command_before_execution() -> Result<()> {
                 .expect("failed to write pre tool use hook test fixture");
         })
         .with_config(|config| {
-            config.use_experimental_unified_exec_tool = true;
             trust_discovered_hooks(config);
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
         });
     let test = builder.build(&server).await?;
 
@@ -5057,12 +4997,7 @@ async fn post_tool_use_exit_two_replaces_one_shot_exec_command_output_with_feedb
                 .expect("failed to write post tool use hook test fixture");
         })
         .with_config(|config| {
-            config.use_experimental_unified_exec_tool = true;
             trust_discovered_hooks(config);
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
         });
     let test = builder.build(&server).await?;
 
@@ -5129,12 +5064,7 @@ async fn post_tool_use_spills_large_feedback_message() -> Result<()> {
             }
         })
         .with_config(|config| {
-            config.use_experimental_unified_exec_tool = true;
             trust_discovered_hooks(config);
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
         });
     let test = builder.build(&server).await?;
 
@@ -5213,12 +5143,7 @@ async fn post_tool_use_blocks_when_exec_session_completes_via_write_stdin() -> R
                 .expect("failed to write tool use hook test fixture");
         })
         .with_config(|config| {
-            config.use_experimental_unified_exec_tool = true;
             trust_discovered_hooks(config);
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
         });
     let test = builder.build(&server).await?;
 
