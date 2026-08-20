@@ -260,8 +260,16 @@ impl ChatWidget {
     }
 
     pub(crate) fn restore_user_message_to_composer(&mut self, user_message: UserMessage) {
+        self.restore_user_message_to_composer_with_pending_pastes(user_message, Vec::new());
+    }
+
+    pub(crate) fn restore_user_message_to_composer_with_pending_pastes(
+        &mut self,
+        user_message: UserMessage,
+        user_message_pending_pastes: Vec<(String, String)>,
+    ) {
         let draft = self.bottom_pane.composer_draft_snapshot();
-        let pending_pastes = draft.pending_pastes;
+        let composer_pending_pastes = draft.pending_pastes;
         let draft_message = UserMessage {
             text: draft.text,
             text_elements: draft.text_elements,
@@ -269,6 +277,15 @@ impl ChatWidget {
             remote_image_urls: draft.remote_image_urls,
             mention_bindings: draft.mention_bindings,
         };
+        let mut used_paste_placeholders = composer_pending_pastes
+            .iter()
+            .map(|(placeholder, _)| placeholder.clone())
+            .collect::<HashSet<_>>();
+        let (user_message, user_message_pending_pastes) = remap_colliding_paste_placeholders(
+            user_message,
+            user_message_pending_pastes,
+            &mut used_paste_placeholders,
+        );
         let mut messages = vec![user_message];
         if !draft_message.text.is_empty()
             || !draft_message.local_images.is_empty()
@@ -276,6 +293,8 @@ impl ChatWidget {
         {
             messages.push(draft_message);
         }
+        let mut pending_pastes = user_message_pending_pastes;
+        pending_pastes.extend(composer_pending_pastes);
         self.restore_composer_state(Self::composer_state_from_user_message(
             merge_user_messages(messages),
             pending_pastes,
