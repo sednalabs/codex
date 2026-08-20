@@ -2112,7 +2112,8 @@ fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
                 }),
                 root_thread_id.into(),
                 root_thread_id,
-            )?,
+            )
+            .expect("create persisted child rollout"),
         )?;
         let child_rollout = rollout_path(
             app.config.codex_home.as_path(),
