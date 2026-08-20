@@ -17,9 +17,6 @@ pub const CODEX_RELEASE_TAG_PREFIX: &str = match option_env!("CODEX_RELEASE_TAG_
     None => "v",
 };
 
-const SEDNA_RELEASE_REPOSITORY: &str = "sednalabs/codex";
-const SEDNA_RELEASE_TAG_PREFIX: &str = "v";
-
 /// The npm package used for self-update guidance when the binary is npm-managed.
 #[cfg_attr(debug_assertions, allow(dead_code))]
 pub const CODEX_UPDATE_NPM_PACKAGE: &str = match option_env!("CODEX_UPDATE_NPM_PACKAGE") {
@@ -36,17 +33,10 @@ pub const CODEX_UPDATE_BREW_CASK: &str = match option_env!("CODEX_UPDATE_BREW_CA
 
 /// Whether this binary was compiled for the Sedna release/update channel.
 pub const fn is_sedna_release_channel() -> bool {
-    is_sedna_release_identity(
+    codex_utils_version::is_sedna_release_identity(
         option_env!("CODEX_RELEASE_REPOSITORY"),
         option_env!("CODEX_RELEASE_TAG_PREFIX"),
     )
-}
-
-/// Requires an explicit build-time release identity. Display fallbacks must not
-/// turn an unconfigured binary into a release update channel.
-pub const fn is_sedna_release_identity(repository: Option<&str>, tag_prefix: Option<&str>) -> bool {
-    matches!(repository, Some(SEDNA_RELEASE_REPOSITORY))
-        && matches!(tag_prefix, Some(SEDNA_RELEASE_TAG_PREFIX))
 }
 
 #[cfg_attr(debug_assertions, allow(dead_code))]
@@ -70,7 +60,7 @@ mod tests {
 
     #[test]
     fn sedna_update_identity_requires_both_explicit_build_values() {
-        assert!(is_sedna_release_identity(
+        assert!(codex_utils_version::is_sedna_release_identity(
             Some("sednalabs/codex"),
             Some("v")
         ));
@@ -81,7 +71,9 @@ mod tests {
             (Some("openai/codex"), Some("v")),
             (Some("sednalabs/codex"), Some("rust-v")),
         ] {
-            assert!(!is_sedna_release_identity(identity.0, identity.1));
+            assert!(!codex_utils_version::is_sedna_release_identity(
+                identity.0, identity.1
+            ));
         }
     }
 }

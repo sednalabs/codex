@@ -808,6 +808,17 @@ fn run_update_command() -> anyhow::Result<()> {
     #[cfg(not(debug_assertions))]
     {
         let Some(action) = codex_tui::get_update_action() else {
+            if requires_manual_sedna_update(
+                option_env!("CODEX_RELEASE_REPOSITORY"),
+                option_env!("CODEX_RELEASE_TAG_PREFIX"),
+                codex_utils_version::RELEASE_VERSION,
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+            ) {
+                anyhow::bail!(
+                    "Automatic updates are available only for stable Sedna Linux releases. This build must be updated manually."
+                );
+            }
             anyhow::bail!(
                 "Could not detect the Codex installation method. Please update manually: {}",
                 update_manual_install_url()
@@ -815,6 +826,21 @@ fn run_update_command() -> anyhow::Result<()> {
         };
         run_update_action(action)
     }
+}
+
+fn requires_manual_sedna_update(
+    repository: Option<&str>,
+    tag_prefix: Option<&str>,
+    release_version: &str,
+    target_os: &str,
+    target_arch: &str,
+) -> bool {
+    codex_utils_version::is_sedna_release_identity(repository, tag_prefix)
+        && !codex_utils_version::is_sedna_automatic_update_eligible(
+            release_version,
+            target_os,
+            target_arch,
+        )
 }
 
 fn update_manual_install_url() -> &'static str {
@@ -828,7 +854,7 @@ const fn update_manual_install_url_for_release_identity(
     repository: Option<&str>,
     tag_prefix: Option<&str>,
 ) -> &'static str {
-    if matches!(repository, Some("sednalabs/codex")) && matches!(tag_prefix, Some("v")) {
+    if codex_utils_version::is_sedna_release_identity(repository, tag_prefix) {
         "https://github.com/sednalabs/codex/releases/latest"
     } else {
         "https://developers.openai.com/codex/cli/"
@@ -2630,6 +2656,31 @@ mod tests {
             update_manual_install_url_for_release_identity(Some("sednalabs/codex"), None),
             "https://developers.openai.com/codex/cli/"
         );
+    }
+
+    #[test]
+    fn sedna_prerelease_and_macos_builds_require_manual_updates() {
+        assert!(!requires_manual_sedna_update(
+            Some("sednalabs/codex"),
+            Some("v"),
+            "1.2.3-sedna.1",
+            "linux",
+            "x86_64",
+        ));
+        assert!(requires_manual_sedna_update(
+            Some("sednalabs/codex"),
+            Some("v"),
+            "1.2.3-alpha.1-sedna.1",
+            "linux",
+            "x86_64",
+        ));
+        assert!(requires_manual_sedna_update(
+            Some("sednalabs/codex"),
+            Some("v"),
+            "1.2.3-sedna.1",
+            "macos",
+            "x86_64",
+        ));
     }
 
     #[tokio::test]

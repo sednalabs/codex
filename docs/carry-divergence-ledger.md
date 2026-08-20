@@ -1909,6 +1909,15 @@ decisions.
   source is available only when those values remain `openai/codex` and
   `rust-v`; custom downstream origins always resolve and download through their
   configured GitHub repository.
+- Automatic update discovery, prompts, direct CLI actions, doctor probes, and
+  daemon installer fetches are intentionally limited to stable Sedna releases
+  on Linux `x86_64` and Linux `aarch64`. The common release-policy boundary in
+  `codex-rs/utils/version/src/lib.rs` owns explicit identity, strict release
+  parsing, component-aware ordering, stable-track classification, and target
+  eligibility. Prerelease builds are no-ops because GitHub `releases/latest`
+  excludes prereleases and can otherwise select an older release. macOS,
+  including the Intel preview, is also a no-op until a release-list plus
+  asset-aware resolver can prove the selected preview asset is intentional.
 - The manual branch-build workflow keeps Linux `x86_64` as its default, adds an explicit native
   Linux Arm64 preview mode, and offers an explicit macOS preview mode. The macOS mode builds one Intel x64
   artifact, applies ad hoc signatures for local execution, records that the
@@ -1945,11 +1954,17 @@ decisions.
   - `.github/scripts/isolate_workflow_paths_from_provenance.sh`
   - `.github/scripts/validation-lanes/artifact-build.sh`
   - `.github/scripts/test_ci_planners.py`
+  - `codex-rs/app-server-daemon/Cargo.toml`
   - `codex-rs/app-server-daemon/src/update_loop.rs`
+  - `codex-rs/app-server-daemon/src/update_loop_tests.rs`
   - `scripts/install_sedna_release_asset`
   - `codex-rs/utils/version/build.rs`
   - `codex-rs/utils/version/src/lib.rs`
   - `codex-rs/cli/src/main.rs`
+  - `codex-rs/cli/src/doctor/updates.rs`
+  - `codex-rs/tui/src/update_action.rs`
+  - `codex-rs/tui/src/updates.rs`
+  - `codex-rs/tui/src/update_versions.rs`
   - `scripts/install/install.sh`
   - `scripts/install/install.ps1`
   - `scripts/install/test_install_sh.py`

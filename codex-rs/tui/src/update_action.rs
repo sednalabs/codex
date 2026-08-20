@@ -65,8 +65,8 @@ impl UpdateAction {
         target_arch: &str,
     ) -> Option<Self> {
         if !has_sedna_identity
-            || !crate::update_versions::is_sedna_release_version(running_release_version)
-            || !codex_utils_version::is_sedna_standalone_update_target_supported(
+            || !codex_utils_version::is_sedna_automatic_update_eligible(
+                running_release_version,
                 target_os,
                 target_arch,
             )
@@ -292,7 +292,11 @@ mod tests {
             ),
             Some(UpdateAction::StandaloneUnix)
         );
-        for target in [("macos", "aarch64"), ("freebsd", "x86_64")] {
+        for target in [
+            ("macos", "x86_64"),
+            ("macos", "aarch64"),
+            ("freebsd", "x86_64"),
+        ] {
             assert_eq!(
                 UpdateAction::from_install_context_for_sedna_release_on_target(
                     &context,
@@ -308,10 +312,20 @@ mod tests {
             );
         }
         assert!(
-            codex_utils_version::is_sedna_standalone_update_target_supported("linux", "aarch64")
+            codex_utils_version::is_sedna_automatic_update_target_supported("linux", "aarch64")
         );
         assert!(
-            codex_utils_version::is_sedna_standalone_update_target_supported("macos", "x86_64")
+            !codex_utils_version::is_sedna_automatic_update_target_supported("macos", "x86_64")
+        );
+        assert_eq!(
+            UpdateAction::from_install_context_for_sedna_release_on_target(
+                &context,
+                true,
+                "1.2.3-alpha.1-sedna.1",
+                "linux",
+                "x86_64",
+            ),
+            None
         );
     }
 

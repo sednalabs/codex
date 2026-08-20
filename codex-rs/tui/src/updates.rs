@@ -25,7 +25,11 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
     if !config.check_for_update_on_startup
         || is_source_build_version(CODEX_CLI_VERSION)
         || !crate::version::is_sedna_release_channel()
-        || !is_sedna_release_version(CODEX_CLI_VERSION)
+        || !codex_utils_version::is_sedna_automatic_update_eligible(
+            CODEX_CLI_VERSION,
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
     {
         return None;
     }
@@ -71,7 +75,14 @@ struct HomebrewCaskInfo {
 }
 
 async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> anyhow::Result<()> {
-    if !crate::version::is_sedna_release_channel() || action.is_none() {
+    if !crate::version::is_sedna_release_channel()
+        || !codex_utils_version::is_sedna_automatic_update_eligible(
+            CODEX_CLI_VERSION,
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+        || action.is_none()
+    {
         return Ok(());
     }
     let latest_version = match action {

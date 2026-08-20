@@ -1,18 +1,14 @@
 use crate::version::CODEX_RELEASE_TAG_PREFIX;
 use semver::Version;
-use std::cmp::Ordering;
 
-pub(crate) fn is_newer(latest: &str, current: &str) -> Option<bool> {
-    let latest = SednaReleaseVersion::parse(latest)?;
-    let current = SednaReleaseVersion::parse(current)?;
-    Some(latest > current)
-}
+pub(crate) use codex_utils_version::is_newer_sedna_release as is_newer;
+pub(crate) use codex_utils_version::is_sedna_release_version;
 
 /// Cache values are untrusted across releases. A cached value may be compared
 /// only after it passes the Sedna release grammar used for live release tags.
 pub(crate) fn is_actionable_sedna_update(latest: &str, current: &str) -> bool {
-    is_sedna_release_version(latest)
-        && is_sedna_release_version(current)
+    codex_utils_version::is_stable_sedna_release_version(latest)
+        && codex_utils_version::is_stable_sedna_release_version(current)
         && is_newer(latest, current).unwrap_or(false)
 }
 
@@ -22,138 +18,6 @@ pub(crate) fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::
         .filter(|version| is_sedna_release_version(version))
         .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))?;
     Ok(version.to_owned())
-}
-
-/// Matches the release-tag grammar used by `resolve_sedna_release_version.py`:
-/// `<track>-sedna.<ordinal>[+upstream.<distance>]`.
-///
-/// Keep this structural validation separate from [`Version::parse`]: the release
-/// resolver is the authority for which tags belong to this channel, while Sedna
-/// release comparison may intentionally fail closed for values it cannot compare.
-pub(crate) fn is_sedna_release_version(version: &str) -> bool {
-    let (version, metadata) = match version.split_once('+') {
-        Some((version, metadata)) => (version, Some(metadata)),
-        None => (version, None),
-    };
-    if metadata.is_some_and(|metadata| {
-        metadata.strip_prefix("upstream.").is_none_or(|distance| {
-            distance.is_empty() || !distance.bytes().all(|b| b.is_ascii_digit())
-        })
-    }) {
-        return false;
-    }
-
-    let Some((track, ordinal)) = version.rsplit_once("-sedna.") else {
-        return false;
-    };
-    !ordinal.is_empty() && ordinal.bytes().all(|b| b.is_ascii_digit()) && is_sedna_track(track)
-}
-
-fn is_sedna_track(track: &str) -> bool {
-    let (core, prerelease) = match track.split_once('-') {
-        Some((core, prerelease)) => (core, Some(prerelease)),
-        None => (track, None),
-    };
-    let mut core_parts = core.split('.');
-    let valid_core = (0..3).all(|_| {
-        core_parts
-            .next()
-            .is_some_and(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-    }) && core_parts.next().is_none();
-    valid_core
-        && prerelease.is_none_or(|prerelease| {
-            !prerelease.is_empty()
-                && prerelease.split('.').all(|identifier| {
-                    !identifier.is_empty() && identifier.bytes().all(|b| b.is_ascii_alphanumeric())
-                })
-        })
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct SednaReleaseVersion {
-    core: [String; 3],
-    track_prerelease: Vec<String>,
-    ordinal: String,
-}
-
-impl SednaReleaseVersion {
-    fn parse(version: &str) -> Option<Self> {
-        if !is_sedna_release_version(version) {
-            return None;
-        }
-        let version_without_metadata = version.split_once('+').map_or(version, |(v, _)| v);
-        let (track, ordinal) = version_without_metadata.rsplit_once("-sedna.")?;
-        let (core, track_prerelease) = match track.split_once('-') {
-            Some((core, prerelease)) => (core, prerelease.split('.').map(str::to_owned).collect()),
-            None => (track, Vec::new()),
-        };
-        let mut core_parts = core.split('.').map(str::to_owned);
-        let core = [core_parts.next()?, core_parts.next()?, core_parts.next()?];
-        if core_parts.next().is_some() {
-            return None;
-        }
-        Some(Self {
-            core,
-            track_prerelease,
-            ordinal: ordinal.to_string(),
-        })
-    }
-}
-
-impl Ord for SednaReleaseVersion {
-    fn cmp(&self, other: &Self) -> Ordering {
-        for (left, right) in self.core.iter().zip(&other.core) {
-            let ordering = compare_numeric_identifiers(left, right);
-            if ordering != Ordering::Equal {
-                return ordering;
-            }
-        }
-        let prerelease_ordering = match (
-            self.track_prerelease.is_empty(),
-            other.track_prerelease.is_empty(),
-        ) {
-            (true, true) => Ordering::Equal,
-            (true, false) => Ordering::Greater,
-            (false, true) => Ordering::Less,
-            (false, false) => {
-                compare_prerelease_identifiers(&self.track_prerelease, &other.track_prerelease)
-            }
-        };
-        if prerelease_ordering != Ordering::Equal {
-            return prerelease_ordering;
-        }
-        compare_numeric_identifiers(&self.ordinal, &other.ordinal)
-    }
-}
-
-impl PartialOrd for SednaReleaseVersion {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-fn compare_prerelease_identifiers(left: &[String], right: &[String]) -> Ordering {
-    for (left, right) in left.iter().zip(right) {
-        let ordering = match (
-            left.bytes().all(|byte| byte.is_ascii_digit()),
-            right.bytes().all(|byte| byte.is_ascii_digit()),
-        ) {
-            (true, true) => compare_numeric_identifiers(left, right),
-            (true, false) => Ordering::Less,
-            (false, true) => Ordering::Greater,
-            (false, false) => left.cmp(right),
-        };
-        if ordering != Ordering::Equal {
-            return ordering;
-        }
-    }
-    left.len().cmp(&right.len())
-}
-
-fn compare_numeric_identifiers(left: &str, right: &str) -> Ordering {
-    let left = left.trim_start_matches('0');
-    let right = right.trim_start_matches('0');
-    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
 }
 
 pub(crate) fn is_source_build_version(version: &str) -> bool {
@@ -210,7 +74,12 @@ mod tests {
     #[test]
     fn cached_updates_must_be_sedna_releases_before_comparison() {
         assert!(is_actionable_sedna_update("1.5.0-sedna.2", "1.5.0-sedna.1"));
-        for cached_version in ["1.5.1", "1.5.1+upstream.4", "1.5.1-sedna.x"] {
+        for cached_version in [
+            "1.5.1",
+            "1.5.1+upstream.4",
+            "1.5.1-sedna.x",
+            "1.5.1-alpha.1-sedna.1",
+        ] {
             assert!(
                 !is_actionable_sedna_update(cached_version, "1.5.0-sedna.1"),
                 "accepted cached version {cached_version}"
