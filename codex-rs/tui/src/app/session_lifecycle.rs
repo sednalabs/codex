@@ -303,8 +303,10 @@ impl App {
                 .agent_navigation
                 .get(&thread_id)
                 .is_some_and(|entry| entry.is_closed);
-            let is_closed =
-                persisted_picker_thread_is_closed(thread.status.clone(), already_closed);
+            // A live channel is authoritative after an explicit selection-time resume. Do not
+            // let the stale persisted `NotLoaded` row close (or hide) the now-live picker entry.
+            let is_closed = !has_live_channel
+                && persisted_picker_thread_is_closed(thread.status.clone(), already_closed);
             self.upsert_agent_picker_thread(
                 thread_id,
                 thread.agent_nickname,
@@ -691,11 +693,32 @@ impl App {
                 (session, turns, false)
             }
         };
-        let channel = self.ensure_thread_channel(thread_id);
         if !live_attached {
-            channel.mark_replay_only();
+            self.ensure_thread_channel(thread_id).mark_replay_only();
+        } else {
+            // A successful resume is stronger than a stale persisted `NotLoaded` status. Reopen
+            // the cached picker row and mark it running so later `/agent` refreshes and activity
+            // notifications continue to treat the resumed thread as live.
+            let (agent_nickname, agent_role) = self
+                .agent_navigation
+                .get(&thread_id)
+                .map(|entry| (entry.agent_nickname.clone(), entry.agent_role.clone()))
+                .unwrap_or((None, None));
+            self.upsert_agent_picker_thread(
+                thread_id,
+                agent_nickname,
+                agent_role,
+                /*is_closed*/ false,
+            );
+            self.agent_navigation.mark_running(thread_id);
         }
-        let mut store = channel.store.lock().await;
+        let mut store = self
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("thread channel was ensured above")
+            .store
+            .lock()
+            .await;
         store.set_session(session, turns);
         Ok(live_attached)
     }
@@ -754,10 +777,13 @@ impl App {
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
             return Ok(());
         }
-        let mut is_replay_only = self
-            .agent_navigation
-            .get(&thread_id)
-            .is_some_and(|entry| entry.is_closed);
+        let mut is_replay_only = match self.thread_event_channels.get(&thread_id) {
+            Some(channel) => channel.attachment() == ThreadEventAttachment::ReplayOnly,
+            None => self
+                .agent_navigation
+                .get(&thread_id)
+                .is_some_and(|entry| entry.is_closed),
+        };
         let mut attached_replay_only = false;
         if self.should_attach_live_thread_for_selection(thread_id) {
             match self
@@ -766,9 +792,9 @@ impl App {
             {
                 Ok(live_attached) => {
                     attached_replay_only = !live_attached;
-                    if attached_replay_only {
-                        is_replay_only = true;
-                    }
+                    // `thread/read` may have classified a persisted ThreadSpawn row as closed,
+                    // but a successful resume establishes the authoritative live attachment.
+                    is_replay_only = !live_attached;
                 }
                 Err(err) => {
                     self.chat_widget.add_error_message(format!(
@@ -788,6 +814,10 @@ impl App {
             {
                 Ok(live_attached) => {
                     attached_replay_only = !live_attached;
+                    // The persisted status is only a discovery hint. The explicit attach result
+                    // determines whether this selection can resume queued input and receive live
+                    // TurnStarted/activity notifications.
+                    is_replay_only = !live_attached;
                 }
                 Err(err) => {
                     self.chat_widget.add_error_message(format!(
