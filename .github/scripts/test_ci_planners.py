@@ -7516,6 +7516,20 @@ class HelperScriptTests(unittest.TestCase):
                 visible_path = root / "home" / ".local" / "bin" / "codex"
                 visible_path.parent.mkdir(parents=True)
                 visible_path.symlink_to(predecessor_link)
+            if failure == "symlink_releases":
+                releases_path = root / "home" / ".codex" / "packages" / "standalone" / "releases"
+                releases_path.parent.mkdir(parents=True)
+                releases_path.symlink_to(root / "outside-releases")
+            elif failure == "symlink_bin":
+                bin_path = root / "home" / ".local" / "bin"
+                bin_path.parent.mkdir(parents=True)
+                bin_path.symlink_to(root / "outside-bin")
+            elif failure == "symlink_release_entry":
+                release_path = (
+                    root / "home" / ".codex" / "packages" / "standalone" / "releases" / release_tag
+                )
+                release_path.mkdir(parents=True)
+                (release_path / "codex").symlink_to(root / "outside-codex")
 
             fake_curl = fake_bin / "curl"
             fake_curl.write_text(
@@ -7747,6 +7761,13 @@ fi
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("installed sednalabs/codex@", proc.stdout)
+
+    def test_sedna_release_installer_rejects_symlinked_owned_paths(self) -> None:
+        for failure in ("symlink_releases", "symlink_bin", "symlink_release_entry"):
+            with self.subTest(failure=failure):
+                proc = self.run_sedna_installer_fixture(failure)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("refusing symlinked", proc.stderr)
 
     def test_sedna_release_installer_rejects_invalid_release_assets(self) -> None:
         cases = {

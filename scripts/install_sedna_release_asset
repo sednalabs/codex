@@ -771,6 +771,36 @@ if [[ "$target" != "x86_64-unknown-linux-gnu" ]]; then
   release_dir_name="${release_tag}-${target}"
 fi
 release_dir="${install_root}/releases/${release_dir_name}"
+
+validate_activation_paths() {
+  python3 - "$install_root" "${install_root}/releases" "$bin_dir" "$release_dir" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+install_root, releases_dir, bin_dir, release_dir = map(pathlib.Path, sys.argv[1:])
+for path, expected_dir in (
+    (install_root, True),
+    (releases_dir, True),
+    (bin_dir, True),
+    (release_dir, True),
+):
+    if not path.exists() and not path.is_symlink():
+        continue
+    mode = os.lstat(path).st_mode
+    if stat.S_ISLNK(mode):
+        raise SystemExit(f"error: refusing symlinked installer path: {path}")
+    if expected_dir and not stat.S_ISDIR(mode):
+        raise SystemExit(f"error: installer path is not a directory: {path}")
+    if path == release_dir:
+        for child in path.iterdir():
+            child_mode = os.lstat(child).st_mode
+            if stat.S_ISLNK(child_mode):
+                raise SystemExit(f"error: refusing symlinked release entry: {child}")
+PY
+}
+validate_activation_paths
 if [[ -d "$release_dir" ]]; then
   python3 - "$release_dir/RELEASE-METADATA.json" "$release_tag" "$target" <<'PY'
 import json
@@ -814,6 +844,7 @@ fi
 
 acquire_activation_lock
 activation_started=true
+validate_activation_paths
 mkdir -p "${install_root}/releases" "$bin_dir"
 if [[ -L "${install_root}/current" ]]; then
   activation_previous_current="$(readlink "${install_root}/current")"
