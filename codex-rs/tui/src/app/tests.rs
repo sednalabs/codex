@@ -2089,10 +2089,67 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
     let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
     let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let authoritative_thread_id = app_test_support::create_fake_rollout(
+        app.config.codex_home.as_path(),
+        "2026-08-21T00-00-00",
+        "2026-08-21T00:00:00Z",
+        "authoritative resumed output",
+        Some(&app.config.model_provider_id),
+        /*git_info*/ None,
+    )
+    .expect("materialized rollout should be created");
+    let authoritative_path = app_test_support::rollout_path(
+        app.config.codex_home.as_path(),
+        "2026-08-21T00-00-00",
+        &authoritative_thread_id,
+    );
+    for item in [
+        RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "authoritative-turn".to_string(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::default(),
+        })),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "authoritative-turn".to_string(),
+            last_agent_message: None,
+            error: None,
+            started_at: None,
+            compaction_events_in_turn: 0,
+            final_model: None,
+            model_snapshot: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        })),
+    ] {
+        codex_rollout::append_rollout_item_to_path(&authoritative_path, &item).await?;
+    }
+    let thread_id = ThreadId::from_string(&authoritative_thread_id)?;
     let started = app_server
-        .start_thread(app.chat_widget.config_ref())
+        .resume_thread(
+            app.chat_widget.config_ref().clone(),
+            thread_id,
+            crate::app_server_session::ResumeModelSettings::OverrideFromCurrentConfig,
+        )
         .await?;
-    let thread_id = started.session.thread_id;
+    assert!(
+        started.turns.iter().any(|turn| {
+            turn.items.iter().any(|item| {
+                matches!(
+                    item,
+                    ThreadItem::UserMessage { content, .. }
+                        if content.iter().any(|input| matches!(
+                            input,
+                            AppServerUserInput::Text { text, .. }
+                                if text == "authoritative resumed output"
+                        ))
+                )
+            })
+        }),
+        "resume should return the authoritative turn"
+    );
 
     let mut channel = ThreadEventChannel::new_with_session(
         THREAD_EVENT_CHANNEL_CAPACITY,
@@ -2169,6 +2226,19 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
             .await?
     );
     assert_eq!(app.chat_widget.current_model(), resumed_model);
+    let mut promoted_history = Vec::new();
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            promoted_history.push(lines_to_single_string(&cell.display_lines(/*width*/ 120)));
+            app.transcript_cells.push(cell.into());
+        }
+    }
+    assert!(
+        promoted_history
+            .iter()
+            .any(|transcript| transcript.contains("authoritative resumed output")),
+        "promotion should emit the authoritative resumed history"
+    );
     assert!(app
         .transcript_cells
         .iter()
