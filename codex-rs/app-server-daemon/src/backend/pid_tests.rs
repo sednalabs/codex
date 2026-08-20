@@ -113,10 +113,7 @@ async fn start_retries_stale_empty_pid_file_under_its_own_lock() {
     );
 
     let err = backend.start().await.expect_err("start");
-    assert!(
-        err.to_string()
-            .starts_with("failed to spawn detached app-server process using ")
-    );
+    assert!(err.to_string().starts_with("failed to read executable "));
 }
 
 #[tokio::test]
