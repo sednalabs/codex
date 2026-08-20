@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -11,10 +12,12 @@ use super::PidCommandKind;
 use super::PidFileState;
 use super::PidLogTail;
 use super::PidRecord;
+use super::live_executable_proof_matches;
 use super::read_process_start_time;
 use super::read_stderr_log_tail;
 use super::stderr_log_file_for_pid_file;
 use super::try_lock_file;
+use crate::managed_install::executable_identity_from_bytes;
 
 #[tokio::test]
 async fn locked_empty_pid_file_is_treated_as_active_reservation() {
@@ -192,6 +195,70 @@ async fn stop_reaps_untracked_app_server_child() {
     // `sleep` is not tracked by Tokio, so stop must reap it instead of leaving a zombie.
     result.expect("stop timed out").expect("stop");
     assert!(!pid_file.exists());
+}
+
+#[tokio::test]
+async fn failed_reexec_can_restore_the_previous_updater_identity_record() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let old_executable = temp_dir.path().join("codex-a");
+    let new_executable = temp_dir.path().join("codex-b");
+    tokio::fs::write(&old_executable, b"old updater")
+        .await
+        .expect("old binary");
+    tokio::fs::write(&new_executable, b"new updater")
+        .await
+        .expect("new binary");
+    let pid_file = temp_dir.path().join("app-server-updater.pid");
+    let mut child = std::process::Command::new("sleep")
+        .arg("5")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn updater shim");
+    let pid = child.id();
+    let original = PidRecord {
+        pid,
+        process_start_time: read_process_start_time(pid).await.expect("start time"),
+        executable: Some(old_executable.clone()),
+        executable_identity: Some(executable_identity_from_bytes(b"old updater")),
+    };
+    tokio::fs::write(
+        &pid_file,
+        serde_json::to_vec(&original).expect("serialize updater pid"),
+    )
+    .await
+    .expect("write updater pid");
+    let backend = PidBackend::new_update_loop(new_executable.clone(), pid_file);
+
+    let snapshot = backend
+        .update_running_executable_record()
+        .await
+        .expect("prepare reexec record");
+    backend
+        .restore_running_executable_record(snapshot)
+        .await
+        .expect("roll back failed reexec record");
+
+    assert_eq!(
+        backend
+            .read_pid_file_state()
+            .await
+            .expect("read updater pid"),
+        PidFileState::Running(original)
+    );
+    if matches!(child.try_wait(), Ok(None)) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+#[test]
+fn unavailable_live_executable_proof_is_not_treated_as_a_match() {
+    assert!(!live_executable_proof_matches(
+        None,
+        Path::new("/managed/codex")
+    ));
 }
 
 #[test]
