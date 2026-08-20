@@ -2,6 +2,7 @@ use super::*;
 use crate::extensions::send_thread_warning;
 use codex_core::V2ThreadUnloadResult;
 use codex_protocol::config_types::MultiAgentMode;
+use futures::future::BoxFuture;
 
 pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
 
@@ -212,7 +213,21 @@ pub(super) fn log_listener_attach_result(
     }
 }
 
-pub(super) async fn ensure_listener_task_running(
+pub(super) fn ensure_listener_task_running(
+    listener_task_context: ListenerTaskContext,
+    conversation_id: ThreadId,
+    conversation: Arc<CodexThread>,
+    thread_state: Arc<Mutex<ThreadState>>,
+) -> BoxFuture<'static, Result<(), JSONRPCErrorError>> {
+    Box::pin(ensure_listener_task_running_inner(
+        listener_task_context,
+        conversation_id,
+        conversation,
+        thread_state,
+    ))
+}
+
+async fn ensure_listener_task_running_inner(
     listener_task_context: ListenerTaskContext,
     conversation_id: ThreadId,
     conversation: Arc<CodexThread>,
@@ -338,12 +353,12 @@ pub(super) async fn ensure_listener_task_running(
                                     {
                                         let current_state =
                                             thread_state_manager.thread_state(conversation_id).await;
-                                        if let Err(err) = Box::pin(ensure_listener_task_running(
+                                        if let Err(err) = ensure_listener_task_running(
                                             restart_listener_task_context.clone(),
                                             conversation_id,
                                             current,
                                             current_state,
-                                        ))
+                                        )
                                         .await
                                         {
                                             warn!(
@@ -466,12 +481,12 @@ pub(super) async fn ensure_listener_task_running(
                             if let Ok(current) = thread_manager.get_thread(conversation_id).await {
                                 let current_state =
                                     thread_state_manager.thread_state(conversation_id).await;
-                                if let Err(err) = Box::pin(ensure_listener_task_running(
+                                if let Err(err) = ensure_listener_task_running(
                                     restart_listener_task_context.clone(),
                                     conversation_id,
                                     current,
                                     current_state,
-                                ))
+                                )
                                 .await
                                 {
                                     warn!(
