@@ -226,6 +226,7 @@ impl App {
             self.agent_navigation.begin_picker_page_sequence();
         }
         let cursor = self.agent_navigation.next_picker_page_cursor();
+        let is_continuation = cursor.is_some();
         let response = match app_server
             .thread_list(ThreadListParams {
                 cursor,
@@ -248,7 +249,9 @@ impl App {
             Ok(response) => response,
             Err(err) => {
                 tracing::warn!(%err, "failed to list persisted subagent picker descendants");
-                let _ = self.agent_navigation.set_next_picker_page_cursor(None);
+                if is_continuation {
+                    self.agent_navigation.defer_picker_page();
+                }
                 return;
             }
         };
