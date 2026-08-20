@@ -693,6 +693,10 @@ impl App {
                 (session, turns, false)
             }
         };
+        // Both live resumes and replay-only fallbacks need a local channel for the hydrated
+        // snapshot. The live path previously skipped channel creation and panicked below when it
+        // tried to seed the store.
+        self.ensure_thread_channel(thread_id);
         if !live_attached {
             self.ensure_thread_channel(thread_id).mark_replay_only();
         } else {
