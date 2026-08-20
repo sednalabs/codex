@@ -297,12 +297,12 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
     let runtime_path_prepend_exports =
         runtime_path_prepends.shell_exports_after_snapshot(explicit_env_overrides);
     let override_captures = join_shell_blocks([
-        non_inheritable_tool_captures,
+        non_inheritable_tool_captures.clone(),
         override_captures,
         proxy_captures,
     ]);
     let override_exports = join_shell_blocks([
-        non_inheritable_scrub,
+        non_inheritable_scrub.clone(),
         override_exports,
         proxy_exports,
         runtime_path_prepend_exports,
