@@ -192,6 +192,14 @@ enum RestartDecision {
     Restart,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdaterLifecycleAction {
+    Start,
+    Restart,
+    Stop,
+    None,
+}
+
 pub async fn run(command: LifecycleCommand) -> Result<LifecycleOutput> {
     ensure_supported_platform()?;
     Daemon::from_environment()?.run(command).await
@@ -609,18 +617,25 @@ impl Daemon {
 
         let backend = backend::pid_backend(self.backend_paths(&settings));
         backend.start().await?;
+        let auto_update_enabled = bootstrap_auto_update_enabled();
         let updater = backend::pid_update_loop_backend(self.backend_paths(&settings));
-        if updater.is_starting_or_running().await? {
-            updater.stop().await?;
+        match updater_lifecycle_action(auto_update_enabled, updater.is_starting_or_running().await?)
+        {
+            UpdaterLifecycleAction::Start => updater.start().await?,
+            UpdaterLifecycleAction::Restart => {
+                updater.stop().await?;
+                updater.start().await?;
+            }
+            UpdaterLifecycleAction::Stop => updater.stop().await?,
+            UpdaterLifecycleAction::None => {}
         }
-        updater.start().await?;
 
         let info = self.wait_until_ready().await?;
         let managed_codex_version = self.managed_codex_version_best_effort().await;
         Ok(BootstrapOutput {
             status: BootstrapStatus::Bootstrapped,
             backend: BackendKind::Pid,
-            auto_update_enabled: true,
+            auto_update_enabled,
             remote_control_enabled: settings.remote_control_enabled,
             managed_codex_path: self.managed_codex_bin.clone(),
             managed_codex_version,
@@ -787,6 +802,43 @@ impl Daemon {
     }
 }
 
+fn bootstrap_auto_update_enabled() -> bool {
+    update_loop::is_sedna_standalone_update_eligible(
+        option_env!("CODEX_RELEASE_REPOSITORY"),
+        option_env!("CODEX_RELEASE_TAG_PREFIX"),
+        option_env!("CODEX_RELEASE_VERSION"),
+    )
+}
+
+#[cfg(all(test, unix))]
+fn bootstrap_auto_update_enabled_on_target(
+    repository: Option<&str>,
+    tag_prefix: Option<&str>,
+    release_version: Option<&str>,
+    target_os: &str,
+    target_arch: &str,
+) -> bool {
+    update_loop::is_sedna_standalone_update_eligible_on_target(
+        repository,
+        tag_prefix,
+        release_version,
+        target_os,
+        target_arch,
+    )
+}
+
+fn updater_lifecycle_action(
+    auto_update_enabled: bool,
+    updater_is_running: bool,
+) -> UpdaterLifecycleAction {
+    match (auto_update_enabled, updater_is_running) {
+        (true, false) => UpdaterLifecycleAction::Start,
+        (true, true) => UpdaterLifecycleAction::Restart,
+        (false, true) => UpdaterLifecycleAction::Stop,
+        (false, false) => UpdaterLifecycleAction::None,
+    }
+}
+
 fn missing_managed_install_message(
     managed_codex_bin: &Path,
     release_repository: Option<&str>,
@@ -890,10 +942,13 @@ mod tests {
     use super::RestartDecision;
     use super::RestartIfRunningOutcome;
     use super::RestartMode;
+    use super::UpdaterLifecycleAction;
     use super::UpdaterRefreshMode;
+    use super::bootstrap_auto_update_enabled_on_target;
     use super::missing_managed_install_message;
     use super::restart_decision;
     use super::should_reexec_updater;
+    use super::updater_lifecycle_action;
     use crate::client::ProbeInfo;
     use std::path::Path;
 
@@ -934,6 +989,76 @@ mod tests {
             ]
             .map(|outcome| should_reexec_updater(UpdaterRefreshMode::None, outcome)),
             [false, false, false, false, false]
+        );
+    }
+
+    #[test]
+    fn bootstrap_auto_update_uses_the_shared_sedna_eligibility_predicate() {
+        for target_arch in ["x86_64", "aarch64"] {
+            assert!(bootstrap_auto_update_enabled_on_target(
+                Some("sednalabs/codex"),
+                Some("v"),
+                Some("1.2.3-sedna.1"),
+                "linux",
+                target_arch,
+            ));
+        }
+
+        for release in [
+            (
+                Some("sednalabs/codex"),
+                Some("v"),
+                Some("1.2.3-alpha.1-sedna.1"),
+                "linux",
+                "x86_64",
+            ),
+            (
+                Some("sednalabs/codex"),
+                Some("v"),
+                Some("1.2.3-sedna.1"),
+                "macos",
+                "aarch64",
+            ),
+            (
+                Some("openai/codex"),
+                Some("rust-v"),
+                Some("1.2.3-sedna.1"),
+                "linux",
+                "x86_64",
+            ),
+        ] {
+            assert!(
+                !bootstrap_auto_update_enabled_on_target(
+                    release.0, release.1, release.2, release.3, release.4,
+                ),
+                "unexpectedly enabled automatic updates for {release:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bootstrap_starts_an_updater_only_when_automatic_updates_are_eligible() {
+        assert_eq!(
+            [
+                updater_lifecycle_action(
+                    /*auto_update_enabled*/ true, /*updater_is_running*/ false
+                ),
+                updater_lifecycle_action(
+                    /*auto_update_enabled*/ true, /*updater_is_running*/ true
+                ),
+                updater_lifecycle_action(
+                    /*auto_update_enabled*/ false, /*updater_is_running*/ true
+                ),
+                updater_lifecycle_action(
+                    /*auto_update_enabled*/ false, /*updater_is_running*/ false
+                ),
+            ],
+            [
+                UpdaterLifecycleAction::Start,
+                UpdaterLifecycleAction::Restart,
+                UpdaterLifecycleAction::Stop,
+                UpdaterLifecycleAction::None,
+            ]
         );
     }
 

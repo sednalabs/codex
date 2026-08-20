@@ -178,8 +178,7 @@ async fn install_latest_standalone(http: &RouteAwareClientPool) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
-fn is_sedna_standalone_update_eligible(
+pub(crate) fn is_sedna_standalone_update_eligible(
     repository: Option<&str>,
     tag_prefix: Option<&str>,
     release_version: Option<&str>,
@@ -193,8 +192,7 @@ fn is_sedna_standalone_update_eligible(
     )
 }
 
-#[cfg(unix)]
-fn is_sedna_standalone_update_eligible_on_target(
+pub(crate) fn is_sedna_standalone_update_eligible_on_target(
     repository: Option<&str>,
     tag_prefix: Option<&str>,
     release_version: Option<&str>,
