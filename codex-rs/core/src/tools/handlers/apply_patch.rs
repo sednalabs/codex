@@ -572,7 +572,7 @@ pub(crate) async fn intercept_apply_patch(
     match codex_apply_patch::maybe_parse_apply_patch_verified_with_mode(
         command,
         cwd,
-        apply_patch_file_update_mode(turn),
+        apply_patch_file_update_mode(turn.as_ref()),
         fs,
         Some(&sandbox),
     )
