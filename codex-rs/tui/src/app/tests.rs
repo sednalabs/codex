@@ -2103,12 +2103,13 @@ fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
                 RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id: root_thread_id,
                     depth: 1,
-                    // Legacy/V1 ThreadSpawn rows may not persist an agent path. The picker cache
-                    // below restores the observed path, while the missing source path preserves
-                    // the server's writable legacy-thread capability for this regression.
+                    // Legacy/V1 ThreadSpawn rows may not persist an agent path or optional labels.
+                    // The picker cache below restores the observed path and labels, while the
+                    // missing source path preserves the server's writable legacy-thread
+                    // capability for this regression.
                     agent_path: None,
-                    agent_nickname: Some("worker".to_string()),
-                    agent_role: Some("worker".to_string()),
+                    agent_nickname: None,
+                    agent_role: None,
                 }),
                 root_thread_id.into(),
                 root_thread_id,
@@ -2169,20 +2170,32 @@ fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
         // A discovered live row may already have an empty listener channel from an earlier
         // notification. Selection must hydrate that placeholder instead of treating it as a
         // resumed session.
+        app.store_active_thread_receiver().await;
+        app.active_thread_id = None;
+        app.active_thread_rx = None;
         app.thread_event_channels
             .insert(child_thread_id, ThreadEventChannel::new(/*capacity*/ 1));
         let stale_warning = "stale placeholder notification";
+        app.activate_thread_channel(child_thread_id).await;
+        app.enqueue_thread_notification(
+            child_thread_id,
+            ServerNotification::Warning(WarningNotification {
+                thread_id: Some(child_thread_id.to_string()),
+                message: stale_warning.to_string(),
+            }),
+        )
+        .await?;
+        app.store_active_thread_receiver().await;
+        app.active_thread_id = None;
+        app.active_thread_rx = None;
         {
             let channel = app
                 .thread_event_channels
                 .get(&child_thread_id)
                 .expect("placeholder child channel");
-            let mut store = channel.store.lock().await;
-            store.push_notification(ServerNotification::Warning(WarningNotification {
-                thread_id: Some(child_thread_id.to_string()),
-                message: stale_warning.to_string(),
-            }));
+            let store = channel.store.lock().await;
             assert_eq!(store.buffer.len(), 1);
+            assert!(channel.receiver.is_some());
         }
 
         let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -2261,6 +2274,48 @@ fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
             "later TurnStarted must revive a live picker row"
         );
 
+        app_server.shutdown().await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn attach_live_thread_for_selection_hydrates_inferred_zero_turn_session() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let config = app.chat_widget.config_ref().clone();
+        let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+        let started = app_server.start_thread(&config).await?;
+        let thread_id = started.session.thread_id;
+        let mut channel = ThreadEventChannel::new(/*capacity*/ 4);
+        {
+            let mut store = channel.store.lock().await;
+            store.set_inferred_session(test_thread_session(
+                thread_id,
+                test_path_buf("/tmp/inferred"),
+            ));
+            assert!(store.session.is_some());
+            assert!(!store.has_hydrated_snapshot());
+        }
+        app.thread_event_channels.insert(thread_id, channel);
+
+        assert!(
+            app.attach_live_thread_for_selection(&mut app_server, thread_id)
+                .await?
+        );
+
+        let store = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("hydrated thread channel")
+            .store
+            .lock()
+            .await;
+        assert!(store.has_hydrated_snapshot());
+        assert_eq!(
+            store.session.as_ref().map(|session| session.thread_id),
+            Some(thread_id)
+        );
         app_server.shutdown().await?;
         Ok(())
     })
@@ -3777,6 +3832,14 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
             Vec::new(),
         ),
     );
+    app.agent_navigation.upsert(
+        agent_thread_id,
+        Some("Cached".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
 
     app.enqueue_thread_notification(
         agent_thread_id,
@@ -3804,8 +3867,8 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 source: codex_app_server_protocol::SessionSource::Unknown,
                 can_accept_direct_input: None,
                 thread_source: None,
-                agent_nickname: Some("Robie".to_string()),
-                agent_role: Some("explorer".to_string()),
+                agent_nickname: None,
+                agent_role: None,
                 git_info: None,
                 name: Some("agent thread".to_string()),
                 turns: Vec::new(),
@@ -3824,6 +3887,18 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
     let session = store.session.clone().expect("inferred session");
 
     assert_eq!(session.model, primary_session.model);
+    assert_eq!(
+        app.agent_navigation
+            .get(&agent_thread_id)
+            .and_then(|entry| entry.agent_nickname.clone()),
+        Some("Cached".to_string())
+    );
+    assert_eq!(
+        app.agent_navigation
+            .get(&agent_thread_id)
+            .and_then(|entry| entry.agent_role.clone()),
+        Some("worker".to_string())
+    );
 
     Ok(())
 }
