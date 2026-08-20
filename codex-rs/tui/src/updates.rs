@@ -22,11 +22,14 @@ use crate::version::CODEX_CLI_VERSION;
 pub(crate) use crate::updates_cache::dismiss_version;
 
 pub fn get_upgrade_version(config: &Config) -> Option<String> {
-    if !config.check_for_update_on_startup || is_source_build_version(CODEX_CLI_VERSION) {
+    if !config.check_for_update_on_startup
+        || is_source_build_version(CODEX_CLI_VERSION)
+        || !crate::version::is_sedna_release_channel()
+    {
         return None;
     }
 
-    let action = update_action::get_update_action();
+    let action = update_action::get_update_action()?;
     let version_file = version_filepath(config);
     let info = read_version_info(&version_file).ok();
 
@@ -44,19 +47,18 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
         });
     }
 
-    info.and_then(|info| {
-        if is_newer(&info.latest_version, CODEX_CLI_VERSION).unwrap_or(false) {
-            Some(info.latest_version)
-        } else {
-            None
-        }
-    })
+    info.filter(|info| info.matches_current_channel())
+        .and_then(|info| {
+            if is_newer(&info.latest_version, CODEX_CLI_VERSION).unwrap_or(false) {
+                Some(info.latest_version)
+            } else {
+                None
+            }
+        })
 }
 
 // We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
 const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-
 #[derive(Deserialize, Debug, Clone)]
 struct ReleaseInfo {
     tag_name: String,
@@ -68,6 +70,9 @@ struct HomebrewCaskInfo {
 }
 
 async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> anyhow::Result<()> {
+    if !crate::version::is_sedna_release_channel() || action.is_none() {
+        return Ok(());
+    }
     let latest_version = match action {
         Some(UpdateAction::BrewUpgrade) => {
             let HomebrewCaskInfo { version } = create_client()
@@ -100,11 +105,11 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
 
     // Preserve any previously dismissed version if present.
     let prev_info = read_version_info(version_file).ok();
-    let info = VersionInfo {
+    let info = VersionInfo::for_current_channel(
         latest_version,
-        last_checked_at: Utc::now(),
-        dismissed_version: prev_info.and_then(|p| p.dismissed_version),
-    };
+        Utc::now(),
+        prev_info.and_then(|p| p.dismissed_version),
+    );
 
     let json_line = format!("{}\n", serde_json::to_string(&info)?);
     if let Some(parent) = version_file.parent() {
@@ -118,7 +123,7 @@ async fn fetch_latest_github_release_version() -> anyhow::Result<String> {
     let ReleaseInfo {
         tag_name: latest_tag_name,
     } = create_client()
-        .get(LATEST_RELEASE_URL)
+        .get(crate::version::latest_release_api_url())
         .send()
         .await?
         .error_for_status()?

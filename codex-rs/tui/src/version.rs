@@ -31,6 +31,11 @@ pub const CODEX_UPDATE_BREW_CASK: &str = match option_env!("CODEX_UPDATE_BREW_CA
     None => "codex",
 };
 
+/// Whether this binary was compiled for the Sedna release/update channel.
+pub const fn is_sedna_release_channel() -> bool {
+    CODEX_RELEASE_REPOSITORY == "sednalabs/codex" && CODEX_RELEASE_TAG_PREFIX == "v"
+}
+
 #[cfg_attr(debug_assertions, allow(dead_code))]
 pub fn installation_options_url() -> String {
     format!("https://github.com/{CODEX_RELEASE_REPOSITORY}")

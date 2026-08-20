@@ -34,14 +34,16 @@ impl UpdateAction {
 
     #[cfg(any(not(debug_assertions), test))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
+        if !crate::version::is_sedna_release_channel() {
+            return None;
+        }
         match &context.method {
-            InstallMethod::Npm => Some(UpdateAction::NpmGlobalLatest),
-            InstallMethod::Bun => Some(UpdateAction::BunGlobalLatest),
-            InstallMethod::Pnpm => Some(UpdateAction::PnpmGlobalLatest),
-            InstallMethod::Brew => Some(UpdateAction::BrewUpgrade),
+            InstallMethod::Npm | InstallMethod::Bun | InstallMethod::Pnpm | InstallMethod::Brew => {
+                None
+            }
             InstallMethod::Standalone { platform, .. } => Some(match platform {
                 StandalonePlatform::Unix => UpdateAction::StandaloneUnix,
-                StandalonePlatform::Windows => UpdateAction::StandaloneWindows,
+                StandalonePlatform::Windows => return None,
             }),
             InstallMethod::Other => None,
         }
@@ -116,28 +118,28 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            Some(UpdateAction::NpmGlobalLatest)
+            None
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
                 method: InstallMethod::Bun,
                 package_layout: None,
             }),
-            Some(UpdateAction::BunGlobalLatest)
+            None
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
                 method: InstallMethod::Pnpm,
                 package_layout: None,
             }),
-            Some(UpdateAction::PnpmGlobalLatest)
+            None
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
                 method: InstallMethod::Brew,
                 package_layout: None,
             }),
-            Some(UpdateAction::BrewUpgrade)
+            None
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
@@ -159,7 +161,7 @@ mod tests {
                 },
                 package_layout: None,
             }),
-            Some(UpdateAction::StandaloneWindows)
+            None
         );
     }
 
