@@ -23,6 +23,7 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
+use codex_protocol::ToolName;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -94,6 +95,41 @@ fn text_input(text: &str) -> Vec<UserInput> {
         text: text.to_string(),
         text_elements: Vec::new(),
     }]
+}
+
+fn write_browser_provider_config(codex_home: &std::path::Path) {
+    std::fs::write(
+        codex_home.join("browser-computer-use.json"),
+        r#"{"provider":"playwright"}"#,
+    )
+    .expect("write browser provider config");
+}
+
+async fn assert_browser_dynamic_tools(thread: &CodexThread) {
+    for name in ["browser_observe", "browser_step"] {
+        let tool = thread
+            .session
+            .dynamic_tool_by_name(&ToolName::plain(name))
+            .await
+            .unwrap_or_else(|| panic!("{name} should be configured for the child session"));
+        assert!(
+            !tool.persist_on_resume,
+            "{name} should be re-derived from the current child config on resume"
+        );
+    }
+}
+
+async fn assert_browser_dynamic_tools_absent(thread: &CodexThread) {
+    for name in ["browser_observe", "browser_step"] {
+        assert!(
+            thread
+                .session
+                .dynamic_tool_by_name(&ToolName::plain(name))
+                .await
+                .is_none(),
+            "{name} should not leak from another config home"
+        );
+    }
 }
 
 fn assistant_message(text: &str, phase: Option<MessagePhase>) -> ResponseItem {
@@ -213,6 +249,186 @@ impl AgentControlHarness {
             .expect("child spawn should succeed")
             .thread_id
     }
+}
+
+#[tokio::test]
+async fn agent_control_fresh_spawn_resolves_browser_tools_for_legacy_and_v2() {
+    for multi_agent_v2 in [false, true] {
+        let (home, mut config) = test_config().await;
+        write_browser_provider_config(home.path());
+        if multi_agent_v2 {
+            let _ = config.features.enable(Feature::MultiAgentV2);
+        }
+        let harness = AgentControlHarness::new_with_config(home, config).await;
+        let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+        let child_thread_id = harness
+            .spawn_anonymous_child(
+                parent_thread_id,
+                SpawnAgentOptions {
+                    parent_thread_id: Some(parent_thread_id),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let child_thread = harness
+            .manager
+            .get_thread(child_thread_id)
+            .await
+            .expect("fresh child should be registered");
+        assert_browser_dynamic_tools(&child_thread).await;
+
+        harness
+            .control
+            .shutdown_agent_tree(parent_thread_id)
+            .await
+            .expect("test tree should shut down");
+    }
+}
+
+#[tokio::test]
+async fn agent_control_cold_resume_rederives_nonpersistent_browser_tools() {
+    let (home, config) = test_config().await;
+    write_browser_provider_config(home.path());
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+    let child_thread_id = harness
+        .spawn_anonymous_child(
+            parent_thread_id,
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                ..Default::default()
+            },
+        )
+        .await;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child should be registered");
+    assert_browser_dynamic_tools(&child_thread).await;
+    persist_thread_for_tree_resume(&child_thread, "persist before cold resume").await;
+    harness
+        .control
+        .shutdown_live_agent(child_thread_id)
+        .await
+        .expect("child should shut down");
+
+    let resumed_thread_id = harness
+        .control
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+        )
+        .await
+        .expect("child should cold resume");
+    let resumed_thread = harness
+        .manager
+        .get_thread(resumed_thread_id)
+        .await
+        .expect("resumed child should be registered");
+    assert_browser_dynamic_tools(&resumed_thread).await;
+
+    harness
+        .control
+        .shutdown_agent_tree(parent_thread_id)
+        .await
+        .expect("test tree should shut down");
+}
+
+#[tokio::test]
+async fn agent_control_fork_rederives_browser_tools_from_child_config() {
+    let (home, config) = test_config().await;
+    write_browser_provider_config(home.path());
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_thread_id, parent_thread) = harness.start_thread().await;
+    persist_thread_for_tree_resume(&parent_thread, "persist before fork").await;
+    let child_thread_id = harness
+        .spawn_anonymous_child(
+            parent_thread_id,
+            SpawnAgentOptions {
+                fork_parent_spawn_call_id: Some("browser-fork".to_string()),
+                fork_mode: Some(SpawnAgentForkMode::FullHistory),
+                parent_thread_id: Some(parent_thread_id),
+                ..Default::default()
+            },
+        )
+        .await;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("forked child should be registered");
+    assert_browser_dynamic_tools(&child_thread).await;
+
+    harness
+        .control
+        .shutdown_agent_tree(parent_thread_id)
+        .await
+        .expect("test tree should shut down");
+}
+
+#[tokio::test]
+async fn agent_control_omits_browser_tools_without_a_provider_in_its_config_home() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+    let child_thread_id = harness
+        .spawn_anonymous_child(
+            parent_thread_id,
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                ..Default::default()
+            },
+        )
+        .await;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child should be registered");
+    assert_browser_dynamic_tools_absent(&child_thread).await;
+
+    harness
+        .control
+        .shutdown_agent_tree(parent_thread_id)
+        .await
+        .expect("test tree should shut down");
+}
+
+#[tokio::test]
+async fn agent_control_does_not_read_browser_tools_from_another_codex_home() {
+    let ambient_home = TempDir::new().expect("create alternate codex home");
+    write_browser_provider_config(ambient_home.path());
+    let (child_home, config) = test_config().await;
+    let harness = AgentControlHarness::new_with_config(child_home, config).await;
+    let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+    let child_thread_id = harness
+        .spawn_anonymous_child(
+            parent_thread_id,
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                ..Default::default()
+            },
+        )
+        .await;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child should be registered");
+    assert_browser_dynamic_tools_absent(&child_thread).await;
+
+    harness
+        .control
+        .shutdown_agent_tree(parent_thread_id)
+        .await
+        .expect("test tree should shut down");
 }
 
 async fn persisted_originator(thread: &CodexThread) -> String {
