@@ -207,7 +207,11 @@ mod tests {
         let ComputerUseProviderOutcome::Handled(response) = outcome else {
             panic!("child session browser provider should handle the request");
         };
-        assert!(response.success);
+        assert!(
+            response.success,
+            "browser provider response: {}",
+            response.error.as_deref().unwrap_or("no error detail")
+        );
         assert_eq!(
             response.content_items,
             vec![
