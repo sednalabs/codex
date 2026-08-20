@@ -1006,13 +1006,20 @@ impl ChatWidget {
             .active_tab_id_for_active_view(PLUGINS_SELECTION_VIEW_ID)
             .map(str::to_string)
             .or_else(|| self.plugins_active_tab_id.clone());
+        let search_query = self
+            .selection_view_search_query(PLUGINS_SELECTION_VIEW_ID)
+            .filter(|query| !query.is_empty());
         let selected_idx = self
             .bottom_pane
             .selected_index_for_active_view(PLUGINS_SELECTION_VIEW_ID);
         self.plugins_active_tab_id = active_tab_id.clone();
-        let _ = self.bottom_pane.replace_selection_view_if_active(
-            PLUGINS_SELECTION_VIEW_ID,
-            self.plugins_popup_params(response, active_tab_id, selected_idx),
-        );
+        let mut params =
+            self.plugins_popup_params(response, active_tab_id, selected_idx);
+        params.initial_search_query = search_query;
+        // Replacing is intentionally conditional: an async refresh may arrive after
+        // the user dismissed the picker, in which case the result must not reopen it.
+        let _ = self
+            .bottom_pane
+            .replace_selection_view_if_active(PLUGINS_SELECTION_VIEW_ID, params);
     }
 }
