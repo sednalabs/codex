@@ -778,9 +778,24 @@ impl App {
                 }
             }
         } else if !self.thread_event_channels.contains_key(&thread_id) && is_replay_only {
-            self.chat_widget
-                .add_error_message(format!("Agent thread {thread_id} is no longer available."));
-            return Ok(());
+            // Persisted ThreadSpawn rows can report `NotLoaded` even though their rollout is
+            // still available for review. Hydrate that saved transcript on demand before
+            // declaring the picker row unavailable; terminal metadata-only rows still fail
+            // closed because `attach_live_thread_for_selection` rejects an empty replay.
+            match self
+                .attach_live_thread_for_selection(app_server, thread_id)
+                .await
+            {
+                Ok(live_attached) => {
+                    attached_replay_only = !live_attached;
+                }
+                Err(err) => {
+                    self.chat_widget.add_error_message(format!(
+                        "Agent thread {thread_id} is no longer available: {err}"
+                    ));
+                    return Ok(());
+                }
+            }
         }
         let previous_thread_id = self.active_thread_id;
         self.store_active_thread_receiver().await;
