@@ -18,6 +18,8 @@ use codex_app_server_protocol::RemoteControlConnectionStatus;
 use codex_app_server_protocol::RemoteControlPairingStartResponse;
 use codex_app_server_transport::app_server_control_socket_path;
 use codex_utils_home_dir::find_codex_home;
+#[cfg(unix)]
+use managed_install::executable_identity;
 use managed_install::managed_codex_bin;
 #[cfg(unix)]
 use managed_install::managed_codex_version;
@@ -198,6 +200,7 @@ enum RestartDecision {
 enum UpdaterLifecycleAction {
     Start,
     Preserve,
+    Replace,
     Stop,
 }
 
@@ -424,6 +427,10 @@ impl Daemon {
         };
 
         if should_reexec_updater(updater_refresh_mode, outcome) {
+            let updater = backend::pid_update_loop_backend(
+                self.backend_paths_with_bin(&settings, managed_codex_bin),
+            );
+            updater.update_running_executable_record().await?;
             crate::update_loop::reexec_managed_updater(managed_codex_bin)?;
         }
 
@@ -719,12 +726,27 @@ impl Daemon {
         let updater = backend::pid_update_loop_backend(
             self.backend_paths_with_bin(settings, &managed_release.executable),
         );
+        let updater_is_running = updater.is_starting_or_running().await?;
+        let updater_matches_managed_release =
+            if managed_release.sedna_auto_update.is_some() && updater_is_running {
+                let managed_identity = executable_identity(&managed_release.executable).await?;
+                updater
+                    .is_running_from_executable(&managed_release.executable, &managed_identity)
+                    .await?
+            } else {
+                false
+            };
         match updater_lifecycle_action(
             managed_release.sedna_auto_update.is_some(),
-            updater.is_starting_or_running().await?,
+            updater_is_running,
+            updater_matches_managed_release,
         ) {
             UpdaterLifecycleAction::Start => updater.start().await?,
             UpdaterLifecycleAction::Preserve => {}
+            UpdaterLifecycleAction::Replace => {
+                updater.stop().await?;
+                updater.start().await?;
+            }
             UpdaterLifecycleAction::Stop => updater.stop().await?,
         }
         Ok(())
@@ -867,12 +889,18 @@ impl Daemon {
 fn updater_lifecycle_action(
     auto_update_enabled: bool,
     updater_is_running: bool,
+    updater_matches_managed_release: bool,
 ) -> UpdaterLifecycleAction {
-    match (auto_update_enabled, updater_is_running) {
-        (true, false) => UpdaterLifecycleAction::Start,
-        (true, true) => UpdaterLifecycleAction::Preserve,
-        (false, true) => UpdaterLifecycleAction::Stop,
-        (false, false) => UpdaterLifecycleAction::Preserve,
+    match (
+        auto_update_enabled,
+        updater_is_running,
+        updater_matches_managed_release,
+    ) {
+        (true, false, _) => UpdaterLifecycleAction::Start,
+        (true, true, true) => UpdaterLifecycleAction::Preserve,
+        (true, true, false) => UpdaterLifecycleAction::Replace,
+        (false, true, _) => UpdaterLifecycleAction::Stop,
+        (false, false, _) => UpdaterLifecycleAction::Preserve,
     }
 }
 
@@ -1044,25 +1072,39 @@ mod tests {
     }
 
     #[test]
-    fn updater_reconciliation_starts_or_stops_only_when_the_current_release_requires_it() {
+    fn bootstrap_replaces_updater_a_after_current_moves_to_b_but_preserves_b() {
+        let updater_b_matches_current_b = true;
+        let updater_a_matches_current_b = false;
         assert_eq!(
             [
                 updater_lifecycle_action(
-                    /*auto_update_enabled*/ true, /*updater_is_running*/ false
+                    /*auto_update_enabled*/ true, /*updater_is_running*/ false,
+                    /*updater_matches_managed_release*/ false,
                 ),
                 updater_lifecycle_action(
-                    /*auto_update_enabled*/ true, /*updater_is_running*/ true
+                    /*auto_update_enabled*/ true,
+                    /*updater_is_running*/ true,
+                    updater_b_matches_current_b,
                 ),
                 updater_lifecycle_action(
-                    /*auto_update_enabled*/ false, /*updater_is_running*/ true
+                    /*auto_update_enabled*/ true,
+                    /*updater_is_running*/ true,
+                    updater_a_matches_current_b,
                 ),
                 updater_lifecycle_action(
-                    /*auto_update_enabled*/ false, /*updater_is_running*/ false
+                    /*auto_update_enabled*/ false, /*updater_is_running*/ true,
+                    /*updater_matches_managed_release*/ false,
+                ),
+                updater_lifecycle_action(
+                    /*auto_update_enabled*/ false, /*updater_is_running*/ false,
+                    /*updater_matches_managed_release*/ false,
                 ),
             ],
             [
                 UpdaterLifecycleAction::Start,
                 UpdaterLifecycleAction::Preserve,
+                // Updater A is live, but current now resolves to B: replace it for bootstrap.
+                UpdaterLifecycleAction::Replace,
                 UpdaterLifecycleAction::Stop,
                 UpdaterLifecycleAction::Preserve,
             ]
