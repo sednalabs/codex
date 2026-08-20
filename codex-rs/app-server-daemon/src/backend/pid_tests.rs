@@ -106,14 +106,22 @@ async fn start_retries_stale_empty_pid_file_under_its_own_lock() {
     tokio::fs::write(&pid_file, "")
         .await
         .expect("write pid file");
+    let non_executable = temp_dir.path().join("non-executable-codex");
+    tokio::fs::write(&non_executable, b"not an executable")
+        .await
+        .expect("write non-executable shim");
     let backend = PidBackend::new(
-        temp_dir.path().join("missing-codex"),
-        pid_file,
+        non_executable,
+        pid_file.clone(),
         /*remote_control_enabled*/ false,
     );
 
     let err = backend.start().await.expect_err("start");
-    assert!(err.to_string().starts_with("failed to read executable "));
+    assert!(
+        err.to_string()
+            .starts_with("failed to spawn detached app-server process using ")
+    );
+    assert!(!pid_file.exists());
 }
 
 #[tokio::test]
