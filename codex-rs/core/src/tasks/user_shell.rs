@@ -442,7 +442,8 @@ fn prepare_user_shell_exec_command_with_path_prepend(
     exec_env_map: &mut HashMap<String, String>,
     prepend_runtime_path: impl FnOnce(&mut HashMap<String, String>, &mut RuntimePathPrepends),
 ) -> Vec<String> {
-    let explicit_env_overrides = shell_environment_set.clone();
+    let mut explicit_env_overrides = shell_environment_set.clone();
+    scrub_non_inheritable_env_vars(&mut explicit_env_overrides);
     let mut runtime_path_prepends = RuntimePathPrepends::default();
     prepend_runtime_path(exec_env_map, &mut runtime_path_prepends);
     maybe_wrap_shell_lc_with_snapshot(
