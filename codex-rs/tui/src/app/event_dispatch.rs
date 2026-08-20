@@ -10,7 +10,6 @@ use crate::app_server_session::ForkGoalContinuation;
 use crate::chatwidget::UserMessage;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration_flow::ExternalAgentConfigMigrationFlowOutcome;
-use codex_protocol::config_types::CollaborationModeMask;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
@@ -2713,6 +2712,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::config_types::CollaborationModeMask;
 
     #[test]
     fn replay_only_gate_classifies_direct_mutations_and_safe_events() {
