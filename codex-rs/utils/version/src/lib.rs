@@ -62,7 +62,7 @@ pub const GIT_SHA: &str = env!("CODEX_GIT_SHA");
 pub const GIT_DESCRIBE: &str = env!("CODEX_GIT_DESCRIBE");
 
 /// Whether explicit build metadata identifies the Sedna release channel.
-pub const fn is_sedna_release_identity(repository: Option<&str>, tag_prefix: Option<&str>) -> bool {
+pub fn is_sedna_release_identity(repository: Option<&str>, tag_prefix: Option<&str>) -> bool {
     matches!(repository, Some(SEDNA_RELEASE_REPOSITORY))
         && matches!(tag_prefix, Some(SEDNA_RELEASE_TAG_PREFIX))
 }
@@ -71,7 +71,7 @@ pub const fn is_sedna_release_identity(repository: Option<&str>, tag_prefix: Opt
 ///
 /// Callers should pass `std::env::consts::OS` and `std::env::consts::ARCH`
 /// so this remains both exact for the running binary and directly testable.
-pub const fn is_sedna_automatic_update_target_supported(os: &str, arch: &str) -> bool {
+pub fn is_sedna_automatic_update_target_supported(os: &str, arch: &str) -> bool {
     matches!((os, arch), ("linux", "x86_64") | ("linux", "aarch64"))
 }
 
