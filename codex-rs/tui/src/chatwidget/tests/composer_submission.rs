@@ -22,10 +22,11 @@ async fn replay_only_rejects_queued_input_before_queue_or_history_mutation() {
     );
 
     assert!(chat.input_queue.queued_user_messages.is_empty());
-    assert!(chat
-        .input_queue
-        .queued_user_message_history_records
-        .is_empty());
+    assert!(
+        chat.input_queue
+            .queued_user_message_history_records
+            .is_empty()
+    );
     assert_no_submit_op(&mut op_rx);
     let rendered = drain_insert_history(&mut rx)
         .into_iter()
@@ -38,8 +39,7 @@ async fn replay_only_rejects_queued_input_before_queue_or_history_mutation() {
 
 #[tokio::test]
 async fn replay_only_queued_rejection_restores_paste_mapping_losslessly() {
-    let (mut chat, _rx, mut op_rx) =
-        make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
     chat.set_replay_only_thread(true);
     let placeholder = "[Pasted Content 4 chars]".to_string();
     let message = UserMessage {
