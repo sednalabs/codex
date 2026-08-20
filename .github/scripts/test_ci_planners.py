@@ -7331,6 +7331,7 @@ class HelperScriptTests(unittest.TestCase):
         hardened: bool = True,
         dry_run: bool = True,
         expect_installed_manifest: bool = False,
+        expect_missing_installed_manifest: bool = False,
         verification_args_override: list[str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         release_tag = "v0.146.0-alpha.8-sedna.99+upstream.3"
@@ -7492,7 +7493,12 @@ class HelperScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            if failure in ("existing_tampered", "existing_matching"):
+            if failure in (
+                "existing_tampered",
+                "existing_matching",
+                "existing_legacy",
+                "existing_legacy_tampered",
+            ):
                 release_dir = (
                     root
                     / "home"
@@ -7503,13 +7509,15 @@ class HelperScriptTests(unittest.TestCase):
                     / release_tag
                 )
                 release_dir.mkdir(parents=True)
-                for name in (
+                names = [
                     "codex",
                     "codex-responses-api-proxy",
                     "RELEASE-METADATA.json",
                     "SHA256SUMS.txt",
-                    "INSTALLED-SHA256SUMS.txt",
-                ):
+                ]
+                if failure not in ("existing_legacy", "existing_legacy_tampered"):
+                    names.append("INSTALLED-SHA256SUMS.txt")
+                for name in names:
                     source = {
                         "codex": codex,
                         "codex-responses-api-proxy": proxy,
@@ -7518,7 +7526,7 @@ class HelperScriptTests(unittest.TestCase):
                         "INSTALLED-SHA256SUMS.txt": installed_manifest,
                     }[name]
                     shutil.copy2(source, release_dir / name)
-                if failure == "existing_tampered":
+                if failure in ("existing_tampered", "existing_legacy_tampered"):
                     (release_dir / "codex").write_text(
                         "#!/usr/bin/env bash\necho tampered\n", encoding="utf-8"
                     )
@@ -7709,8 +7717,7 @@ fi
                 text=True,
                 env=env,
             )
-            if expect_installed_manifest:
-                self.assertEqual(proc.returncode, 0, proc.stderr)
+            if expect_installed_manifest or expect_missing_installed_manifest:
                 release_dir_name = (
                     release_tag if arch == "x86_64" else f"{release_tag}-{target}"
                 )
@@ -7724,10 +7731,24 @@ fi
                     / release_dir_name
                     / "INSTALLED-SHA256SUMS.txt"
                 )
+            if expect_installed_manifest:
+                self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertEqual(
                     manifest_path.read_text(encoding="utf-8"),
                     installed_manifest.read_text(encoding="utf-8"),
                 )
+                current = (
+                    root
+                    / "home"
+                    / ".codex"
+                    / "packages"
+                    / "standalone"
+                    / "current"
+                )
+                self.assertTrue(current.is_symlink())
+                self.assertEqual(current.resolve(), manifest_path.parent)
+            if expect_missing_installed_manifest:
+                self.assertFalse(manifest_path.exists())
             return proc
 
     def test_sedna_release_installer_executes_hardened_linux_fixture(self) -> None:
@@ -7818,6 +7839,28 @@ fi
             existing_matching_proc.returncode,
             0,
             existing_matching_proc.stderr,
+        )
+
+        existing_legacy_proc = self.run_sedna_installer_fixture(
+            "existing_legacy",
+            dry_run=False,
+            expect_installed_manifest=True,
+        )
+        self.assertEqual(
+            existing_legacy_proc.returncode,
+            0,
+            existing_legacy_proc.stderr,
+        )
+
+        existing_legacy_tampered_proc = self.run_sedna_installer_fixture(
+            "existing_legacy_tampered",
+            dry_run=False,
+            expect_missing_installed_manifest=True,
+        )
+        self.assertNotEqual(existing_legacy_tampered_proc.returncode, 0)
+        self.assertIn(
+            "does not match verified payload",
+            existing_legacy_tampered_proc.stderr,
         )
 
     def test_sedna_release_installer_python_elf_fallback(self) -> None:

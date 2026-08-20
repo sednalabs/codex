@@ -807,6 +807,7 @@ if [[ "$target" != "x86_64-unknown-linux-gnu" ]]; then
   release_dir_name="${release_tag}-${target}"
 fi
 release_dir="${install_root}/releases/${release_dir_name}"
+legacy_installed_manifest="false"
 if [[ -d "$release_dir" ]]; then
   python3 - "$release_dir/RELEASE-METADATA.json" "$release_tag" "$target" <<'PY'
 import json
@@ -830,7 +831,7 @@ PY
       exit 1
     fi
   done
-  for verified_file in codex codex-responses-api-proxy RELEASE-METADATA.json SHA256SUMS.txt INSTALLED-SHA256SUMS.txt; do
+  for verified_file in codex codex-responses-api-proxy RELEASE-METADATA.json SHA256SUMS.txt; do
     if [[ ! -f "$release_dir/$verified_file" ]]; then
       echo "error: existing release is missing verified file: $verified_file" >&2
       exit 1
@@ -840,6 +841,14 @@ PY
       exit 1
     fi
   done
+  if [[ -e "$release_dir/INSTALLED-SHA256SUMS.txt" ]]; then
+    if ! cmp -s "$staged/INSTALLED-SHA256SUMS.txt" "$release_dir/INSTALLED-SHA256SUMS.txt"; then
+      echo "error: existing release file does not match verified payload: INSTALLED-SHA256SUMS.txt" >&2
+      exit 1
+    fi
+  else
+    legacy_installed_manifest="true"
+  fi
 fi
 
 if [[ "$dry_run" == "true" ]]; then
@@ -849,6 +858,19 @@ if [[ "$dry_run" == "true" ]]; then
 fi
 
 mkdir -p "${install_root}/releases" "$bin_dir"
+if [[ "$legacy_installed_manifest" == "true" ]]; then
+  # Existing files above match the freshly verified payload. Backfill only the
+  # installer-owned manifest, atomically, so the daemon can continue to use
+  # the same fail-closed local authority as new installs.
+  installed_manifest_tmp="${release_dir}/.INSTALLED-SHA256SUMS.txt.tmp.$$"
+  cp "$staged/INSTALLED-SHA256SUMS.txt" "$installed_manifest_tmp"
+  python3 - "$installed_manifest_tmp" "$release_dir/INSTALLED-SHA256SUMS.txt" <<'PY'
+import os
+import sys
+
+os.replace(sys.argv[1], sys.argv[2])
+PY
+fi
 if [[ ! -d "$release_dir" ]]; then
   tmp_release="${install_root}/releases/.${release_dir_name}.tmp.$$"
   rm -rf "$tmp_release"
