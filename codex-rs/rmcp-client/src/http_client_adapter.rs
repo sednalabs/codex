@@ -246,6 +246,16 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
             }
             _ => {
                 let body = collect_body(&mut body_stream).await?;
+                if body.is_empty()
+                    && matches!(
+                        message,
+                        JsonRpcMessage::Response(_)
+                            | JsonRpcMessage::Notification(_)
+                            | JsonRpcMessage::Error(_)
+                    )
+                {
+                    return Ok(StreamableHttpPostResponse::Accepted);
+                }
                 let content_type = content_type.unwrap_or_else(|| "missing-content-type".into());
                 Err(StreamableHttpError::UnexpectedContentType(Some(format!(
                     "{content_type}; body: {}",
