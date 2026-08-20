@@ -120,6 +120,8 @@ fn exec_env_policy_excludes_runtime_permission_profile() {
             exclude: vec![
                 CODEX_PERMISSION_PROFILE_ENV_VAR.to_string(),
                 codex_apply_patch::CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
+                "OPENAI_FEDERATION_RULE_ID".to_string(),
+                "OPENAI_IDENTITY_TOKEN_FILE".to_string(),
             ],
             r#set: HashMap::from([("KEEP".to_string(), "value".to_string())]),
             include_only: Vec::new(),
