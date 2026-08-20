@@ -2099,7 +2099,7 @@ async fn replay_only_thread_rejects_direct_user_turn_without_server_mutation() {
     let op = AppCommand::user_turn(
         vec![UserInput::Text {
             text: "must not be submitted".to_string(),
-            text_elements: None,
+            text_elements: Vec::new(),
         }],
         app.config.cwd.to_path_buf(),
         AskForApproval::OnRequest,
