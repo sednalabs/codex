@@ -101,6 +101,11 @@ impl ChatWidget {
         history_record: UserMessageHistoryRecord,
         shell_escape_policy: ShellEscapePolicy,
     ) -> (bool, Option<AppCommand>) {
+        if self.replay_only {
+            self.restore_user_message_to_composer(user_message);
+            self.add_error_message("Replay-only transcripts do not accept input.".to_string());
+            return (false, None);
+        }
         if !self.is_session_configured() {
             tracing::warn!("cannot submit user message before session is configured; queueing");
             self.input_queue
