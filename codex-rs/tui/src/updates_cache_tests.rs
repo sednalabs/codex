@@ -109,7 +109,7 @@ fn current_identity_cache_rejects_non_sedna_latest_versions() {
         let info = VersionInfo::for_current_channel(
             cached_version.to_string(),
             DateTime::<Utc>::UNIX_EPOCH,
-            None,
+            /*dismissed_version*/ None,
         );
 
         assert_eq!(
