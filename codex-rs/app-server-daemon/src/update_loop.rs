@@ -108,6 +108,13 @@ async fn update_once(
     let daemon = Daemon::from_environment()?;
     let managed_release = resolved_managed_standalone_release(&daemon.managed_codex_bin).await?;
     let Some(managed_sedna_release) = managed_release.sedna_auto_update else {
+        // A manually selected or otherwise ineligible current release must not
+        // leave a previously eligible updater alive. Reconcile it against this
+        // validated release without attempting an automatic network update.
+        let settings = daemon.load_settings().await?;
+        daemon
+            .reconcile_updater(&settings, &managed_release)
+            .await?;
         return Ok(UpdateLoopControl::Continue);
     };
     let installed_from_version = managed_sedna_release.version;

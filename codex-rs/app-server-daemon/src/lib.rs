@@ -1126,6 +1126,17 @@ mod tests {
     }
 
     #[test]
+    fn manual_current_release_stops_a_running_automatic_updater() {
+        assert_eq!(
+            updater_lifecycle_action(
+                /*auto_update_enabled*/ false, /*updater_is_running*/ true,
+                /*updater_matches_managed_release*/ false,
+            ),
+            UpdaterLifecycleAction::Stop
+        );
+    }
+
+    #[test]
     fn persisted_bootstrap_keeps_repeated_remote_control_start_on_the_lifecycle_path() {
         assert_eq!(
             [
