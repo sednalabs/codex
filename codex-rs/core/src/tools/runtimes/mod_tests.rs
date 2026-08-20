@@ -34,8 +34,9 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
 use pretty_assertions::assert_eq;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tempfile::tempdir;
 
@@ -508,9 +509,19 @@ fn maybe_wrap_shell_lc_with_snapshot_uses_bash_bootstrap_shell() {
     assert!(rewritten[2].contains("__codex_source_snapshot"));
     assert_eq!(rewritten[8], "/bin/zsh");
     assert_eq!(rewritten[9], "echo hello");
-    let syntax = Command::new(&rewritten[0])
-        .args(["-n", &rewritten[2]])
-        .output()
+    let mut syntax = Command::new(&rewritten[0])
+        .arg("-n")
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("spawn rewritten shell parser");
+    syntax
+        .stdin
+        .take()
+        .expect("open rewritten shell parser stdin")
+        .write_all(rewritten[2].as_bytes())
+        .expect("write rewritten shell wrapper");
+    let syntax = syntax
+        .wait_with_output()
         .expect("parse rewritten shell wrapper");
     assert!(
         syntax.status.success(),
@@ -572,8 +583,8 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_trailing_args() {
     );
 
     assert_eq!(rewritten[9], "printf '%s %s' \"$0\" \"$1\"");
-    assert_eq!(rewritten[16], "arg0");
-    assert_eq!(rewritten[17], "arg1");
+    assert_eq!(rewritten[17], "arg0");
+    assert_eq!(rewritten[18], "arg1");
 }
 
 #[test]
@@ -784,8 +795,8 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_apply_patch_rollout_state() {
         .output()
         .expect("run rewritten command");
 
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(output.stdout, b"");
+    assert!(output.status.success(), "command failed: {output:?}");
+    assert_eq!(output.stdout, b"|unset");
 }
 
 #[test]
@@ -806,7 +817,7 @@ fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
     .expect("make startup hook executable");
     std::fs::write(
         &snapshot_path,
-        format!("PATH=/definitely-not-a-real-path\nenv() {{ printf 'hostile-env'; }}\nsed() {{ printf 'hostile-sed'; }}\ntr() {{ printf 'hostile-tr'; }}\nprintf() {{ printf 'hostile-printf'; }}\nunset() {{ :; }}\ncommand() {{ printf 'hostile-command'; }}\n__codex_env=/tmp/hostile-env\n__codex_sed=/tmp/hostile-sed\ncommand unset __codex_tr\nexport BASH_ENV='{}'\nexport OpenAI_Federation_Rule_Id='/run/snapshot-rule'\nexport openai_identity_token_file='/run/snapshot-token'\n", startup_path.display()),
+        format!("PATH=/definitely-not-a-real-path\nenv() {{ :; }}\nsed() {{ :; }}\ntr() {{ :; }}\nprintf() {{ :; }}\nunset() {{ :; }}\ncommand() {{ :; }}\n__codex_env=/tmp/hostile-env\n__codex_sed=/tmp/hostile-sed\ncommand unset __codex_tr\nexport BASH_ENV='{}'\nexport OpenAI_Federation_Rule_Id='/run/snapshot-rule'\nexport openai_identity_token_file='/run/snapshot-token'\n", startup_path.display()),
     )
     .expect("write snapshot");
     let (session_shell, shell_snapshot) =
