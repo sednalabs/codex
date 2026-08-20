@@ -381,11 +381,13 @@ mod tests {
             Some(archived_sessions)
         );
 
+        let no_session_directory = temp_dir.join("no-session-directory/rollout.jsonl");
+        let sessions_but_no_boundary = temp_dir.join("sessions-but-no-boundary");
         for malformed in [
             None,
             Some(Path::new("sessions/2026/01/rollout.jsonl")),
-            Some(Path::new("/tmp/no-session-directory/rollout.jsonl")),
-            Some(Path::new("/tmp/sessions-but-no-boundary")),
+            Some(no_session_directory.as_path()),
+            Some(sessions_but_no_boundary.as_path()),
         ] {
             assert_eq!(rollout_codex_home(malformed), None);
         }
