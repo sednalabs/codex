@@ -134,15 +134,19 @@ fn push_cache_info_details(
 }
 
 fn update_action_label(context: &InstallContext) -> &'static str {
-    update_action_label_for_sedna_identity(context, is_sedna_release_channel())
+    update_action_label_for_sedna_identity(context, is_sedna_release_channel(), RELEASE_VERSION)
 }
 
 fn update_action_label_for_sedna_identity(
     context: &InstallContext,
     has_sedna_identity: bool,
+    release_version: &str,
 ) -> &'static str {
     if !has_sedna_identity {
         return "no automatic update action outside the Sedna release channel";
+    }
+    if !is_valid_sedna_release_version(release_version) {
+        return "no automatic update action";
     }
     match &context.method {
         InstallMethod::Standalone {
@@ -159,6 +163,10 @@ fn update_action_label_for_sedna_identity(
         | InstallMethod::Brew
         | InstallMethod::Other => "no automatic update action",
     }
+}
+
+fn is_valid_sedna_release_version(release_version: &str) -> bool {
+    parse_sedna_release_tag(&format!("v{release_version}")).is_some()
 }
 
 fn is_sedna_release_channel() -> bool {
@@ -406,13 +414,20 @@ mod tests {
             package_layout: None,
         };
         assert_eq!(
-            update_action_label_for_sedna_identity(&unix, true),
+            update_action_label_for_sedna_identity(&unix, true, "1.2.3-sedna.4"),
             "Sedna standalone installer"
         );
         assert_eq!(
-            update_action_label_for_sedna_identity(&windows, true),
+            update_action_label_for_sedna_identity(&windows, true, "1.2.3-sedna.4"),
             "no automatic update action"
         );
+        for release_version in ["1.2.3", "not-a-Sedna-release"] {
+            assert_eq!(
+                update_action_label_for_sedna_identity(&unix, true, release_version),
+                "no automatic update action",
+                "accepted {release_version}"
+            );
+        }
     }
 
     #[test]
