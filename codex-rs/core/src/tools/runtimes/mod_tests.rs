@@ -825,6 +825,26 @@ fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
     assert!(!rewritten[2].contains("/run/snapshot-token"));
     assert!(!rewritten[2].contains("/run/override-rule"));
     assert!(!rewritten[2].contains("/run/override-token"));
+
+    let (session_shell, shell_snapshot) =
+        shell_with_snapshot(ShellType::Sh, "/bin/sh", snapshot_path.abs());
+    let rewritten = maybe_wrap_shell_lc_with_snapshot(
+        &command,
+        &session_shell,
+        Some(&shell_snapshot),
+        &explicit_env_overrides,
+        &HashMap::new(),
+        &RuntimePathPrepends::default(),
+    );
+    let output = Command::new(&rewritten[0])
+        .args(&rewritten[1..])
+        .env_remove("OPENAI_FEDERATION_RULE_ID")
+        .env_remove("OPENAI_IDENTITY_TOKEN_FILE")
+        .output()
+        .expect("run rewritten sh command");
+
+    assert!(output.status.success(), "sh command failed: {output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "unset|unset|");
 }
 
 #[test]
