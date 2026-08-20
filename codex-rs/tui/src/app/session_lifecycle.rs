@@ -11,6 +11,7 @@ use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_selected_description;
 use codex_config::types::ResumeCwdMode;
+use codex_app_server_protocol::ThreadLoadedListResponse;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
 
