@@ -324,11 +324,11 @@ fn build_non_inheritable_env_tool_captures() -> String {
     // Resolve these before sourcing the snapshot so a restored PATH or shell function cannot
     // redirect the scrub's command substitutions. `command -p` searches the shell's default
     // utility path rather than the snapshot-controlled PATH.
-    "__codex_env=$(command -p -v env)\n__codex_sed=$(command -p -v sed)\n__codex_tr=$(command -p -v tr)".to_string()
+    "__codex_env=$(command -p -v env)\n__codex_sed=$(command -p -v sed)\n__codex_tr=$(command -p -v tr)\ncommand readonly __codex_env __codex_sed __codex_tr".to_string()
 }
 
 fn build_non_inheritable_env_scrub() -> String {
-    "for __codex_snapshot_name in $(\"$__codex_env\" | \"$__codex_sed\" 's/=.*//'); do\n  case \"$(printf '%s' \"$__codex_snapshot_name\" | \"$__codex_tr\" '[:lower:]' '[:upper:]')\" in\n    OPENAI_FEDERATION_RULE_ID|OPENAI_IDENTITY_TOKEN_FILE) unset \"$__codex_snapshot_name\" ;;\n  esac\ndone\nunset __codex_env __codex_sed __codex_tr".to_string()
+    "for __codex_snapshot_name in $(\"$__codex_env\" | \"$__codex_sed\" 's/=.*//'); do\n  case \"$(command printf '%s' \"$__codex_snapshot_name\" | \"$__codex_tr\" '[:lower:]' '[:upper:]')\" in\n    OPENAI_FEDERATION_RULE_ID|OPENAI_IDENTITY_TOKEN_FILE) command unset \"$__codex_snapshot_name\" ;;\n  esac\ndone".to_string()
 }
 
 fn build_override_exports(
