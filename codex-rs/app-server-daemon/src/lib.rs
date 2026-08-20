@@ -33,6 +33,10 @@ const UPDATE_PID_FILE_NAME: &str = "app-server-updater.pid";
 const OPERATION_LOCK_FILE_NAME: &str = "daemon.lock";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const STATE_DIR_NAME: &str = "app-server-daemon";
+const SEDNA_RELEASES_URL: &str = "https://github.com/sednalabs/codex/releases";
+const UPSTREAM_RELEASE_REPOSITORY: &str = "openai/codex";
+const UPSTREAM_RELEASE_TAG_PREFIX: &str = "rust-v";
+const UPSTREAM_INSTALL_COMMAND: &str = "curl -fsSL https://chatgpt.com/codex/install.sh | sh";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleCommand {
@@ -669,14 +673,11 @@ impl Daemon {
             return Ok(());
         }
 
-        let managed_codex_path = self.managed_codex_bin.display();
-        Err(anyhow!(
-            "managed standalone Codex install not found at {managed_codex_path}\n\n\
-             This command requires the standalone install managed by the Codex installer, because \
-             the daemon starts and updates app-server from that fixed path.\n\n\
-             Install it with:\n  curl -fsSL https://chatgpt.com/codex/install.sh | sh\n\n\
-             Then rerun the command you just tried."
-        ))
+        Err(anyhow!(missing_managed_install_message(
+            &self.managed_codex_bin,
+            option_env!("CODEX_RELEASE_REPOSITORY"),
+            option_env!("CODEX_RELEASE_TAG_PREFIX"),
+        )))
     }
 
     #[cfg(unix)]
@@ -786,6 +787,32 @@ impl Daemon {
     }
 }
 
+fn missing_managed_install_message(
+    managed_codex_bin: &Path,
+    release_repository: Option<&str>,
+    release_tag_prefix: Option<&str>,
+) -> String {
+    let install_guidance =
+        if codex_utils_version::is_sedna_release_identity(release_repository, release_tag_prefix) {
+            format!("Install a compatible Sedna standalone release from:\n  {SEDNA_RELEASES_URL}")
+        } else if matches!(release_repository, Some(UPSTREAM_RELEASE_REPOSITORY))
+            && matches!(release_tag_prefix, Some(UPSTREAM_RELEASE_TAG_PREFIX))
+        {
+            format!("Install it with:\n  {UPSTREAM_INSTALL_COMMAND}")
+        } else {
+            "Install a compatible standalone release for this build before rerunning the command."
+                .to_string()
+        };
+    format!(
+        "managed standalone Codex install not found at {}\n\n\
+         This command requires the standalone install managed by the Codex installer, because \
+         the daemon starts and updates app-server from that fixed path.\n\n\
+         {install_guidance}\n\n\
+         Then rerun the command you just tried.",
+        managed_codex_bin.display(),
+    )
+}
+
 fn remote_control_status(mode: RemoteControlMode) -> RemoteControlStatus {
     match mode {
         RemoteControlMode::Enabled => RemoteControlStatus::Enabled,
@@ -864,9 +891,11 @@ mod tests {
     use super::RestartIfRunningOutcome;
     use super::RestartMode;
     use super::UpdaterRefreshMode;
+    use super::missing_managed_install_message;
     use super::restart_decision;
     use super::should_reexec_updater;
     use crate::client::ProbeInfo;
+    use std::path::Path;
 
     #[test]
     fn remote_control_status_uses_camel_case_json() {
@@ -1032,6 +1061,38 @@ mod tests {
                 daemon.managed_codex_bin.display(),
                 stderr_log.display()
             )
+        );
+    }
+
+    #[test]
+    fn missing_managed_install_message_uses_sedna_release_guidance() {
+        assert_eq!(
+            missing_managed_install_message(
+                Path::new("/tmp/missing-codex"),
+                Some("sednalabs/codex"),
+                Some("v"),
+            ),
+            "managed standalone Codex install not found at /tmp/missing-codex\n\n\
+             This command requires the standalone install managed by the Codex installer, because \
+             the daemon starts and updates app-server from that fixed path.\n\n\
+             Install a compatible Sedna standalone release from:\n  https://github.com/sednalabs/codex/releases\n\n\
+             Then rerun the command you just tried."
+        );
+    }
+
+    #[test]
+    fn missing_managed_install_message_preserves_upstream_guidance() {
+        assert_eq!(
+            missing_managed_install_message(
+                Path::new("/tmp/missing-codex"),
+                Some("openai/codex"),
+                Some("rust-v"),
+            ),
+            "managed standalone Codex install not found at /tmp/missing-codex\n\n\
+             This command requires the standalone install managed by the Codex installer, because \
+             the daemon starts and updates app-server from that fixed path.\n\n\
+             Install it with:\n  curl -fsSL https://chatgpt.com/codex/install.sh | sh\n\n\
+             Then rerun the command you just tried."
         );
     }
 }
