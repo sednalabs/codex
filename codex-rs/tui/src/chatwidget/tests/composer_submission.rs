@@ -211,6 +211,53 @@ async fn parent_owned_thread_preserves_queued_input_before_draining() {
 }
 
 #[tokio::test]
+async fn replay_only_thread_preserves_restored_queued_input_before_draining() {
+    let (mut live_chat, _rx, _op_rx) =
+        make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
+    live_chat.bottom_pane.set_task_running(/*running*/ true);
+    let queued_message = QueuedUserMessage {
+        user_message: UserMessage::from("keep this queued prompt"),
+        action: QueuedInputAction::ParseSlash,
+        pending_pastes: vec![(
+            "[Pasted Content 18 chars]".to_string(),
+            "pasted contents".to_string(),
+        )],
+    };
+    live_chat
+        .input_queue
+        .queued_user_messages
+        .push_back(queued_message.clone());
+    live_chat
+        .input_queue
+        .queued_user_message_history_records
+        .push_back(UserMessageHistoryRecord::UserMessageText);
+    let input_state = live_chat
+        .capture_thread_input_state()
+        .expect("thread input state");
+
+    let (mut restored_chat, _rx, mut op_rx) =
+        make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
+    restored_chat.restore_thread_input_state(
+        Some(input_state),
+        ThreadInputStateRestoreMode {
+            preserve_in_flight_turn: true,
+        },
+    );
+    restored_chat.set_replay_only_thread(true);
+
+    assert!(!restored_chat.maybe_send_next_queued_input());
+    assert_eq!(
+        restored_chat.input_queue.queued_user_messages,
+        VecDeque::from([queued_message.clone()])
+    );
+    assert_eq!(
+        restored_chat.input_queue.queued_user_messages[0].pending_pastes,
+        queued_message.pending_pastes
+    );
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
 async fn submission_preserves_text_elements_and_local_images() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
