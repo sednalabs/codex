@@ -130,6 +130,43 @@ fn exec_env_policy_excludes_runtime_permission_profile() {
 }
 
 #[test]
+fn no_config_exec_request_scrubs_non_inheritable_env_vars() {
+    let cwd: codex_utils_absolute_path::AbsolutePathBuf = std::env::current_dir()
+        .expect("current dir")
+        .try_into()
+        .expect("absolute path");
+    let request = ExecRequest::new(
+        vec!["bash".to_string()],
+        cwd,
+        HashMap::from([
+            (
+                "openai_identity_token_file".to_string(),
+                "/run/identity-token".to_string(),
+            ),
+            (
+                "OPENAI_FEDERATION_RULE_ID".to_string(),
+                "restricted".to_string(),
+            ),
+            ("KEEP".to_string(), "value".to_string()),
+        ]),
+        None,
+        None,
+        crate::exec::ExecExpiration::DefaultTimeout,
+        crate::exec::ExecCapturePolicy::ShellTool,
+        codex_sandboxing::SandboxType::None,
+        Vec::new(),
+        codex_protocol::config_types::WindowsSandboxLevel::Disabled,
+        false,
+        codex_protocol::models::PermissionProfile::Disabled,
+        None,
+    );
+
+    let (policy, env) = exec_server_env_for_request(&request);
+    assert!(policy.is_none());
+    assert_eq!(env, HashMap::from([(String::from("KEEP"), String::from("value"))]));
+}
+
+#[test]
 fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
     let cwd: codex_utils_absolute_path::AbsolutePathBuf = std::env::current_dir()
         .expect("current dir")
