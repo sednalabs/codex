@@ -18,6 +18,7 @@ use codex_app_server_protocol::RateLimitReachedType;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_protocol::ThreadId;
+use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
 use std::path::{Path, PathBuf};
 
 impl App {
@@ -201,10 +202,14 @@ impl App {
     ) {
         if let ServerRequest::ComputerUseCall { request_id, params } = &request {
             let request_id = request_id.clone();
-            let outcome = match self.codex_home_for_thread(&params.thread_id).await {
-                Some(codex_home) => handle_computer_use(params, codex_home.as_path()).await,
-                None => ComputerUseProviderOutcome::Unavailable,
+            // Only Browser needs a session home. Android and Desktop have their own
+            // provider configuration and must not be gated by rollout metadata.
+            let browser_codex_home = if params.adapter == COMPUTER_USE_ADAPTER_BROWSER {
+                self.codex_home_for_thread(&params.thread_id).await
+            } else {
+                None
             };
+            let outcome = handle_computer_use(params, browser_codex_home.as_deref()).await;
             match outcome {
                 ComputerUseProviderOutcome::Handled(response) => {
                     let result = match serde_json::to_value(response) {
@@ -287,13 +292,26 @@ impl App {
             None
         };
         if let Some(session) = session {
-            return rollout_codex_home(session.rollout_path.as_deref());
+            return session_effective_codex_home(session, &self.config.codex_home);
         }
 
         let channel = self.thread_event_channels.get(&thread_id)?;
         let store = channel.store.lock().await;
-        rollout_codex_home(store.session.as_ref()?.rollout_path.as_deref())
+        session_effective_codex_home(store.session.as_ref()?, &self.config.codex_home)
     }
+}
+
+fn session_effective_codex_home(
+    session: &crate::session_state::ThreadSessionState,
+    default_codex_home: &Path,
+) -> Option<PathBuf> {
+    // A present session with no rollout is an in-memory (ephemeral) session. Its
+    // effective home is the app-server home captured by this TUI config. An
+    // absent session remains unresolved and is handled by the caller as unavailable.
+    session
+        .rollout_path
+        .as_deref()
+        .map_or_else(|| Some(default_codex_home.to_path_buf()), |path| rollout_codex_home(Some(path)))
 }
 
 fn rollout_codex_home(rollout_path: Option<&Path>) -> Option<PathBuf> {
@@ -304,7 +322,7 @@ fn rollout_codex_home(rollout_path: Option<&Path>) -> Option<PathBuf> {
 
     let mut home = PathBuf::new();
     for component in rollout_path.components() {
-        if component.as_os_str() == "sessions" {
+        if matches!(component.as_os_str().to_str(), Some("sessions" | "archived_sessions")) {
             return (!home.as_os_str().is_empty()).then_some(home);
         }
         home.push(component.as_os_str());
@@ -330,6 +348,12 @@ mod tests {
                 "/tmp/child/sessions/2026/01/rollout.jsonl",
             )),
             Some(Path::new("/tmp/child").to_path_buf())
+        );
+        assert_eq!(
+            rollout_codex_home(Some(Path::new(
+                "/tmp/primary/archived_sessions/rollout.jsonl",
+            ))),
+            Some(Path::new("/tmp/primary").to_path_buf())
         );
 
         for malformed in [
