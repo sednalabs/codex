@@ -7509,6 +7509,14 @@ class HelperScriptTests(unittest.TestCase):
                     )
                     (release_dir / "codex").chmod(0o755)
 
+            predecessor_link = None
+            if failure == "activation_restore":
+                predecessor_link = root / "previous-codex"
+                predecessor_link.write_text("previous\n", encoding="utf-8")
+                visible_path = root / "home" / ".local" / "bin" / "codex"
+                visible_path.parent.mkdir(parents=True)
+                visible_path.symlink_to(predecessor_link)
+
             fake_curl = fake_bin / "curl"
             fake_curl.write_text(
                 """#!/usr/bin/env bash
@@ -7671,6 +7679,9 @@ fi
                 "HOME": str(root / "home"),
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
             }
+            if failure == "activation_restore":
+                env["SEDNA_INSTALLER_TEST_FAULT"] = "after-visible-predecessor"
+                env["SEDNA_INSTALLER_TESTING"] = "1"
             env.pop("GH_TOKEN", None)
             env.pop("GITHUB_TOKEN", None)
             verification_args = []
@@ -7678,7 +7689,7 @@ fi
                 verification_args = verification_args_override
             elif arch == "x86_64" and not hardened:
                 verification_args = ["--allow-historical-x86"]
-            return subprocess.run(
+            proc = subprocess.run(
                 [
                     str(REPO_ROOT / "scripts/install_sedna_release_asset"),
                     "--repository",
@@ -7694,6 +7705,11 @@ fi
                 text=True,
                 env=env,
             )
+            if predecessor_link is not None:
+                visible_path = root / "home" / ".local" / "bin" / "codex"
+                self.assertTrue(visible_path.is_symlink())
+                self.assertEqual(visible_path.readlink(), predecessor_link)
+            return proc
 
     def test_sedna_release_installer_executes_hardened_linux_fixture(self) -> None:
         for arch, target in (
@@ -7715,6 +7731,12 @@ fi
         self.assertIn('activation_previous_current="$(readlink', script)
         self.assertIn("refusing to overwrite an existing installer backup", script)
         self.assertIn("while os.getppid() == parent_pid", script)
+
+    def test_sedna_release_installer_restores_visible_predecessor_on_failure(self) -> None:
+        proc = self.run_sedna_installer_fixture(
+            "activation_restore", dry_run=False
+        )
+        self.assertEqual(proc.returncode, 73, proc.stderr)
 
     def test_sedna_release_installer_rejects_invalid_release_assets(self) -> None:
         cases = {

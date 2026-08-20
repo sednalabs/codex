@@ -110,8 +110,24 @@ activation_lock_pid=""
 activation_started=false
 activation_committed=false
 activation_previous_current=""
+activation_previous_visible_link=""
+activation_visible_backup=""
 cleanup() {
   if [[ "$activation_started" == "true" && "$activation_committed" != "true" ]]; then
+    if [[ -n "$activation_previous_visible_link" ]]; then
+      visible_restore="${bin_dir}/.codex.restore.$$"
+      ln -s "$activation_previous_visible_link" "$visible_restore" 2>/dev/null || true
+      if [[ -L "$visible_restore" ]]; then
+        python3 - "$visible_restore" "${bin_dir}/codex" <<'PY'
+import os
+import sys
+os.replace(sys.argv[1], sys.argv[2])
+PY
+      fi
+    elif [[ -n "$activation_visible_backup" && -e "$activation_visible_backup" ]]; then
+      rm -f "${bin_dir}/codex"
+      mv "$activation_visible_backup" "${bin_dir}/codex"
+    fi
     current_path="${install_root}/current"
     if [[ -n "$activation_previous_current" ]]; then
       current_restore="${install_root}/.current.restore.$$"
@@ -147,10 +163,10 @@ import time
 
 lock_path, ready_path = map(pathlib.Path, sys.argv[1:3])
 parent_pid = int(sys.argv[3])
-for component in lock_path.parent.parents:
+for component in [lock_path.parent, *lock_path.parent.parents]:
     if component == pathlib.Path.home():
         break
-    if component.is_symlink():
+    if component.exists() and component.is_symlink():
         raise SystemExit("error: refusing symlinked installer parent directory")
 lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -826,7 +842,9 @@ os.replace(sys.argv[1], sys.argv[2])
 PY
 
 visible_codex="${bin_dir}/codex"
-if [[ -e "$visible_codex" && ! -L "$visible_codex" ]]; then
+if [[ -L "$visible_codex" ]]; then
+  activation_previous_visible_link="$(readlink "$visible_codex")"
+elif [[ -e "$visible_codex" ]]; then
   mkdir -p "${install_root}/backups"
   backup="${install_root}/backups/codex.$(date +%s)"
   if [[ -e "$backup" || -L "$backup" ]]; then
@@ -834,7 +852,12 @@ if [[ -e "$visible_codex" && ! -L "$visible_codex" ]]; then
     exit 1
   fi
   mv "$visible_codex" "$backup"
+  activation_visible_backup="$backup"
   echo "backed up previous codex binary"
+fi
+
+if [[ "${SEDNA_INSTALLER_TEST_FAULT:-}" == "after-visible-predecessor" ]]; then
+  exit 73
 fi
 
 codex_tmp="${bin_dir}/.codex.tmp.$$"
