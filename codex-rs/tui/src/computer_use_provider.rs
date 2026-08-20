@@ -118,15 +118,18 @@ mod tests {
 
     #[tokio::test]
     async fn browser_provider_requires_configured_backend() {
-        let outcome = handle_computer_use(&ComputerUseCallParams {
-            thread_id: "thread-1".to_string(),
-            call_id: "call-browser-observe".to_string(),
-            turn_id: "turn-1".to_string(),
-            environment_id: Some("env-1".to_string()),
-            adapter: "browser".to_string(),
-            tool: "browser_observe".to_string(),
-            arguments: json!({"scope": "viewport_and_page"}),
-        }, Path::new("/nonexistent-codex-home"))
+        let outcome = handle_computer_use(
+            &ComputerUseCallParams {
+                thread_id: "thread-1".to_string(),
+                call_id: "call-browser-observe".to_string(),
+                turn_id: "turn-1".to_string(),
+                environment_id: Some("env-1".to_string()),
+                adapter: "browser".to_string(),
+                tool: "browser_observe".to_string(),
+                arguments: json!({"scope": "viewport_and_page"}),
+            },
+            Path::new("/nonexistent-codex-home"),
+        )
         .await;
 
         assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));
@@ -134,15 +137,18 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_computer_use_tool_is_not_claimed_by_provider_registry() {
-        let outcome = handle_computer_use(&ComputerUseCallParams {
-            thread_id: "thread-1".to_string(),
-            call_id: "call-unknown".to_string(),
-            turn_id: "turn-1".to_string(),
-            environment_id: Some("env-1".to_string()),
-            adapter: "browser".to_string(),
-            tool: "browser_private_backend_probe".to_string(),
-            arguments: json!({}),
-        }, Path::new("/nonexistent-codex-home"))
+        let outcome = handle_computer_use(
+            &ComputerUseCallParams {
+                thread_id: "thread-1".to_string(),
+                call_id: "call-unknown".to_string(),
+                turn_id: "turn-1".to_string(),
+                environment_id: Some("env-1".to_string()),
+                adapter: "browser".to_string(),
+                tool: "browser_private_backend_probe".to_string(),
+                arguments: json!({}),
+            },
+            Path::new("/nonexistent-codex-home"),
+        )
         .await;
 
         assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));
@@ -150,15 +156,18 @@ mod tests {
 
     #[tokio::test]
     async fn desktop_provider_requires_configured_command() {
-        let outcome = handle_computer_use(&ComputerUseCallParams {
-            thread_id: "thread-1".to_string(),
-            call_id: "call-desktop-observe".to_string(),
-            turn_id: "turn-1".to_string(),
-            environment_id: Some("env-1".to_string()),
-            adapter: "desktop".to_string(),
-            tool: "desktop_observe".to_string(),
-            arguments: json!({"scope": "screen_and_ui"}),
-        }, Path::new("/nonexistent-codex-home"))
+        let outcome = handle_computer_use(
+            &ComputerUseCallParams {
+                thread_id: "thread-1".to_string(),
+                call_id: "call-desktop-observe".to_string(),
+                turn_id: "turn-1".to_string(),
+                environment_id: Some("env-1".to_string()),
+                adapter: "desktop".to_string(),
+                tool: "desktop_observe".to_string(),
+                arguments: json!({"scope": "screen_and_ui"}),
+            },
+            Path::new("/nonexistent-codex-home"),
+        )
         .await;
 
         assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));
@@ -175,11 +184,8 @@ mod tests {
             config.replace("child home", "ambient home"),
         )
         .expect("write ambient browser provider config");
-        std::fs::write(
-            child_home.path().join("browser-computer-use.json"),
-            config,
-        )
-        .expect("write child browser provider config");
+        std::fs::write(child_home.path().join("browser-computer-use.json"), config)
+            .expect("write child browser provider config");
 
         let outcome = handle_computer_use(
             &ComputerUseCallParams {
@@ -201,9 +207,11 @@ mod tests {
         assert!(response.success);
         assert_eq!(
             response.content_items,
-            vec![codex_app_server_protocol::ComputerUseCallOutputContentItem::InputText {
-                text: "child home".to_string(),
-            }]
+            vec![
+                codex_app_server_protocol::ComputerUseCallOutputContentItem::InputText {
+                    text: "child home".to_string(),
+                }
+            ]
         );
     }
 }
