@@ -19,7 +19,8 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_protocol::ThreadId;
 use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 impl App {
     pub(super) fn refresh_mcp_startup_expected_servers_from_config(&mut self) {
@@ -308,10 +309,10 @@ fn session_effective_codex_home(
     // A present session with no rollout is an in-memory (ephemeral) session. Its
     // effective home is the app-server home captured by this TUI config. An
     // absent session remains unresolved and is handled by the caller as unavailable.
-    session
-        .rollout_path
-        .as_deref()
-        .map_or_else(|| Some(default_codex_home.to_path_buf()), |path| rollout_codex_home(Some(path)))
+    session.rollout_path.as_deref().map_or_else(
+        || Some(default_codex_home.to_path_buf()),
+        |path| rollout_codex_home(Some(path)),
+    )
 }
 
 fn rollout_codex_home(rollout_path: Option<&Path>) -> Option<PathBuf> {
@@ -323,7 +324,10 @@ fn rollout_codex_home(rollout_path: Option<&Path>) -> Option<PathBuf> {
     let mut home = PathBuf::new();
     let mut session_root_home = None;
     for component in rollout_path.components() {
-        if matches!(component.as_os_str().to_str(), Some("sessions" | "archived_sessions")) {
+        if matches!(
+            component.as_os_str().to_str(),
+            Some("sessions" | "archived_sessions")
+        ) {
             session_root_home = (!home.as_os_str().is_empty()).then_some(home.clone());
         }
         home.push(component.as_os_str());
@@ -341,12 +345,12 @@ mod tests {
         assert_eq!(
             rollout_codex_home(Some(Path::new(
                 "/tmp/primary/sessions/2026/01/rollout.jsonl",
-            )),
+            ))),
             Some(Path::new("/tmp/primary").to_path_buf())
         );
         assert_eq!(
-            rollout_codex_home(Some(Path::new(
-                "/tmp/child/sessions/2026/01/rollout.jsonl",
+            rollout_codex_home(Some(
+                Path::new("/tmp/child/sessions/2026/01/rollout.jsonl",)
             )),
             Some(Path::new("/tmp/child").to_path_buf())
         );
