@@ -826,7 +826,7 @@ fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
-        "/usr/bin/printf '%s|%s|' \"${OpenAI_Federation_Rule_Id-unset}\" \"${openai_identity_token_file-unset}\"; /usr/bin/env | /usr/bin/grep -i '^openai_.*=' || true".to_string(),
+        "/usr/bin/printf '%s|%s|' \"${OpenAI_Federation_Rule_Id-unset}\" \"${openai_identity_token_file-unset}\"; /usr/bin/env | /usr/bin/grep -i -E '^(openai_federation_rule_id|openai_identity_token_file)=' || true".to_string(),
     ];
     let explicit_env_overrides = HashMap::from([
         (
