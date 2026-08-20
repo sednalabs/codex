@@ -424,7 +424,9 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> Result<bool> {
-        if self.thread_event_channels.contains_key(&thread_id) {
+        if let Some(channel) = self.thread_event_channels.get(&thread_id)
+            && channel.attachment() == ThreadEventAttachment::Live
+        {
             return Ok(true);
         }
 
@@ -475,7 +477,9 @@ impl App {
             }
         };
         let channel = self.ensure_thread_channel(thread_id);
-        if !live_attached {
+        if live_attached {
+            channel.mark_live();
+        } else {
             channel.mark_replay_only();
         }
         let mut store = channel.store.lock().await;
@@ -658,11 +662,13 @@ impl App {
     }
 
     pub(super) fn should_attach_live_thread_for_selection(&self, thread_id: ThreadId) -> bool {
-        !self.thread_event_channels.contains_key(&thread_id)
+        self.agent_navigation
+            .get(&thread_id)
+            .is_none_or(|entry| !entry.is_closed)
             && self
-                .agent_navigation
+                .thread_event_channels
                 .get(&thread_id)
-                .is_none_or(|entry| !entry.is_closed)
+                .is_none_or(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
     }
 
     pub(super) fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {
