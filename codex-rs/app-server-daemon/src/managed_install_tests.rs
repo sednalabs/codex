@@ -92,7 +92,7 @@ fn managed_release_metadata_rejects_prerelease_and_wrong_target() {
 }
 
 #[tokio::test]
-async fn resolved_release_uses_the_installer_layout_and_rereads_current() {
+async fn resolved_release_uses_the_installer_manifest_and_rereads_current() {
     let temp = TempDir::new().expect("temporary Codex home");
     let standalone = temp.path().join("packages/standalone");
     let stable = write_release(
@@ -112,6 +112,10 @@ async fn resolved_release_uses_the_installer_layout_and_rereads_current() {
     );
     let current = standalone.join("current");
     symlink(&stable, &current).expect("initial current symlink");
+    let workflow_manifest =
+        fs::read_to_string(stable.join("SHA256SUMS.txt")).expect("workflow checksum manifest");
+    assert!(!workflow_manifest.contains("  codex\n"));
+    assert!(workflow_manifest.contains("RELEASE-METADATA-aarch64-unknown-linux-gnu.json"));
 
     let first = resolved_managed_standalone_release(&current.join("codex"))
         .await
@@ -191,7 +195,7 @@ async fn release_validation_fails_closed_for_outside_and_unverified_metadata() {
 
     let malformed = b"not json";
     fs::write(invalid.join("RELEASE-METADATA.json"), malformed).expect("malformed metadata");
-    write_checksums(&invalid, malformed, b"managed codex binary");
+    write_installed_checksums(&invalid, malformed, b"managed codex binary");
     assert_eq!(
         resolved_managed_standalone_release(&current.join("codex"))
             .await
@@ -202,7 +206,7 @@ async fn release_validation_fails_closed_for_outside_and_unverified_metadata() {
 
     let wrong_channel = release_metadata("openai/codex", "rust-v1.2.3", "1.2.3", current_target());
     fs::write(invalid.join("RELEASE-METADATA.json"), &wrong_channel).expect("upstream metadata");
-    write_checksums(&invalid, wrong_channel.as_bytes(), b"managed codex binary");
+    write_installed_checksums(&invalid, wrong_channel.as_bytes(), b"managed codex binary");
     assert_eq!(
         resolved_managed_standalone_release(&current.join("codex"))
             .await
@@ -219,7 +223,7 @@ async fn release_validation_fails_closed_for_outside_and_unverified_metadata() {
     );
     fs::write(invalid.join("RELEASE-METADATA.json"), &version_mismatch)
         .expect("mismatched metadata");
-    write_checksums(
+    write_installed_checksums(
         &invalid,
         version_mismatch.as_bytes(),
         b"managed codex binary",
@@ -247,13 +251,26 @@ fn write_release(standalone: &Path, release_name: &str, metadata: &str) -> PathB
     fs::create_dir_all(&release).expect("release directory");
     fs::write(release.join("codex"), b"managed codex binary").expect("managed binary");
     fs::write(release.join("RELEASE-METADATA.json"), metadata).expect("release metadata");
-    write_checksums(&release, metadata.as_bytes(), b"managed codex binary");
+    write_workflow_checksums(&release, metadata.as_bytes());
+    write_installed_checksums(&release, metadata.as_bytes(), b"managed codex binary");
     release
 }
 
-fn write_checksums(release: &Path, metadata: &[u8], executable: &[u8]) {
+fn write_workflow_checksums(release: &Path, metadata: &[u8]) {
     fs::write(
         release.join("SHA256SUMS.txt"),
+        format!(
+            "{}  codex-sedna-test-aarch64-unknown-linux-gnu.tar.gz\n{:x}  RELEASE-METADATA-aarch64-unknown-linux-gnu.json\n",
+            "0".repeat(64),
+            Sha256::digest(metadata),
+        ),
+    )
+    .expect("workflow checksums");
+}
+
+fn write_installed_checksums(release: &Path, metadata: &[u8], executable: &[u8]) {
+    fs::write(
+        release.join("INSTALLED-SHA256SUMS.txt"),
         format!(
             "{:x}  RELEASE-METADATA.json\n{:x}  codex\n",
             Sha256::digest(metadata),
