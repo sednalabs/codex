@@ -33,6 +33,13 @@ pub(super) struct LoadedSubagentBackfill {
     pub(super) refreshed_thread_ids: HashSet<ThreadId>,
 }
 
+fn persisted_picker_thread_is_running(status: codex_app_server_protocol::ThreadStatus) -> bool {
+    matches!(
+        status,
+        codex_app_server_protocol::ThreadStatus::Active { .. }
+    )
+}
+
 impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         let backfill = self.backfill_loaded_subagent_threads(app_server).await;
@@ -297,10 +304,10 @@ impl App {
             );
             self.agent_navigation
                 .set_agent_path(thread_id, source_agent_path(&thread.source));
-            if is_closed {
-                self.agent_navigation.mark_stopped(thread_id);
-            } else {
+            if persisted_picker_thread_is_running(thread.status) {
                 self.agent_navigation.mark_running(thread_id);
+            } else {
+                self.agent_navigation.mark_stopped(thread_id);
             }
         }
         if budget_exhausted || retryable_lineage_failure {
@@ -1346,6 +1353,20 @@ mod tests {
         );
 
         assert!(!App::is_terminal_thread_read_error(&err));
+    }
+
+    #[test]
+    fn persisted_picker_only_active_threads_are_running() {
+        use codex_app_server_protocol::ThreadStatus;
+
+        assert!(persisted_picker_thread_is_running(ThreadStatus::Active {
+            active_flags: Vec::new(),
+        }));
+        assert!(!persisted_picker_thread_is_running(ThreadStatus::Idle));
+        assert!(!persisted_picker_thread_is_running(
+            ThreadStatus::SystemError
+        ));
+        assert!(!persisted_picker_thread_is_running(ThreadStatus::NotLoaded));
     }
 
     #[test]
