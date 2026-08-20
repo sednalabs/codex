@@ -14,12 +14,12 @@ mod startup;
 mod turn_submission;
 
 use super::*;
-use app_test_support::create_fake_parented_rollout_with_source;
-use app_test_support::rollout_path;
 use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
 use crate::app_event::HistoryBatchEntryResponse;
+use app_test_support::create_fake_parented_rollout_with_source;
+use app_test_support::rollout_path;
 use codex_utils_absolute_path::test_support::PathExt;
 
 use crate::chatwidget::ChatWidgetInit;
@@ -2166,6 +2166,11 @@ fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
         );
         app.agent_navigation
             .set_agent_path(child_thread_id, Some("/root/worker".to_string()));
+        // A discovered live row may already have an empty listener channel from an earlier
+        // notification. Selection must hydrate that placeholder instead of treating it as a
+        // resumed session.
+        app.thread_event_channels
+            .insert(child_thread_id, ThreadEventChannel::new(/*capacity*/ 1));
 
         let mut tui = crate::tui::test_support::make_test_tui()?;
         app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
@@ -2175,8 +2180,14 @@ fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
             .agent_navigation
             .get(&child_thread_id)
             .expect("resumed child should remain in picker navigation");
-        assert!(!entry.is_closed, "successful resume must reopen the picker row");
-        assert!(entry.is_running, "successful resume must clear the stopped barrier");
+        assert!(
+            !entry.is_closed,
+            "successful resume must reopen the picker row"
+        );
+        assert!(
+            entry.is_running,
+            "successful resume must clear the stopped barrier"
+        );
         assert_eq!(
             app.thread_event_channels
                 .get(&child_thread_id)
@@ -2219,7 +2230,10 @@ fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
             .get(&child_thread_id)
             .expect("resumed child should remain visible in /agent");
         assert!(!entry.is_closed);
-        assert!(entry.is_running, "later TurnStarted must revive a live picker row");
+        assert!(
+            entry.is_running,
+            "later TurnStarted must revive a live picker row"
+        );
 
         app_server.shutdown().await?;
         Ok(())

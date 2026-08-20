@@ -47,6 +47,10 @@ fn persisted_picker_thread_is_closed(
     already_closed || matches!(status, codex_app_server_protocol::ThreadStatus::NotLoaded)
 }
 
+fn persisted_picker_source_kinds() -> Vec<ThreadSourceKind> {
+    vec![ThreadSourceKind::SubAgentThreadSpawn]
+}
+
 impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         let backfill = self.backfill_loaded_subagent_threads(app_server).await;
@@ -241,7 +245,7 @@ impl App {
                 sort_key: Some(ThreadSortKey::UpdatedAt),
                 sort_direction: Some(codex_app_server_protocol::SortDirection::Desc),
                 model_providers: None,
-                source_kinds: Some(vec![ThreadSourceKind::SubAgent]),
+                source_kinds: Some(persisted_picker_source_kinds()),
                 thread_sources: None,
                 archived: Some(false),
                 is_pinned: None,
@@ -643,8 +647,14 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> Result<bool> {
-        if self.thread_event_channels.contains_key(&thread_id) {
-            return Ok(true);
+        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+            if channel.attachment() == ThreadEventAttachment::ReplayOnly {
+                return Ok(false);
+            }
+            let store = channel.store.lock().await;
+            if store.session.is_some() {
+                return Ok(true);
+            }
         }
 
         let (session, turns, live_attached) = match app_server
@@ -789,7 +799,8 @@ impl App {
                 .is_some_and(|entry| entry.is_closed),
         };
         let mut attached_replay_only = false;
-        if self.should_attach_live_thread_for_selection(thread_id) {
+        let needs_live_hydration = self.live_thread_channel_needs_hydration(thread_id).await;
+        if self.should_attach_live_thread_for_selection(thread_id) || needs_live_hydration {
             match self
                 .attach_live_thread_for_selection(app_server, thread_id)
                 .await
@@ -890,6 +901,16 @@ impl App {
                 .agent_navigation
                 .get(&thread_id)
                 .is_none_or(|entry| !entry.is_closed)
+    }
+
+    async fn live_thread_channel_needs_hydration(&self, thread_id: ThreadId) -> bool {
+        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+            return false;
+        };
+        if channel.attachment() != ThreadEventAttachment::Live {
+            return false;
+        }
+        channel.store.lock().await.session.is_none()
     }
 
     pub(super) fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {
@@ -1456,6 +1477,14 @@ mod tests {
             ThreadStatus::Idle,
             false
         ));
+    }
+
+    #[test]
+    fn persisted_picker_lists_only_thread_spawn_descendants() {
+        assert_eq!(
+            persisted_picker_source_kinds(),
+            vec![ThreadSourceKind::SubAgentThreadSpawn]
+        );
     }
 
     #[test]
