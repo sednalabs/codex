@@ -2065,8 +2065,9 @@ mod tests {
             event_rx.recv().await,
             Some(InProcessServerEvent::Lagged { skipped: 1 })
         ));
-        assert_eq!(delivery.await, ForwardEventResult::Continue);
+        let delivery_result = delivery.as_mut().await;
         drop(delivery);
+        assert_eq!(delivery_result, ForwardEventResult::Continue);
         assert_eq!(skipped_events, 0);
         assert!(matches!(
             event_rx.recv().await,
@@ -2107,8 +2108,9 @@ mod tests {
                 event_rx.recv().await,
                 Some(InProcessServerEvent::Lagged { skipped: 1 })
             ));
-            assert_eq!(delivery.await, ForwardEventResult::Continue);
+            let delivery_result = delivery.as_mut().await;
             drop(delivery);
+            assert_eq!(delivery_result, ForwardEventResult::Continue);
             assert_eq!(skipped_events, 0);
             let delivered = event_rx.recv().await.expect("required event should arrive");
             let InProcessServerEvent::ServerNotification(delivered) = delivered else {
