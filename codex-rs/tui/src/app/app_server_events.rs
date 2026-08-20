@@ -17,6 +17,8 @@ use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::RateLimitReachedType;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_protocol::ThreadId;
+use std::path::{Path, PathBuf};
 
 impl App {
     pub(super) fn refresh_mcp_startup_expected_servers_from_config(&mut self) {
@@ -199,7 +201,11 @@ impl App {
     ) {
         if let ServerRequest::ComputerUseCall { request_id, params } = &request {
             let request_id = request_id.clone();
-            match handle_computer_use(params, self.config.codex_home.as_path()).await {
+            let outcome = match self.codex_home_for_thread(&params.thread_id).await {
+                Some(codex_home) => handle_computer_use(params, codex_home.as_path()).await,
+                None => ComputerUseProviderOutcome::Unavailable,
+            };
+            match outcome {
                 ComputerUseProviderOutcome::Handled(response) => {
                     let result = match serde_json::to_value(response) {
                         Ok(result) => result,
@@ -270,4 +276,38 @@ impl App {
             tracing::warn!("failed to enqueue app-server request: {err}");
         }
     }
+
+    /// Resolve the provider home from the session owning a server request. A request must never
+    /// fall back to the TUI root config: child sessions can deliberately use different homes.
+    async fn codex_home_for_thread(&self, thread_id: &str) -> Option<PathBuf> {
+        let thread_id = ThreadId::from_string(thread_id).ok()?;
+        let session = if self.primary_thread_id == Some(thread_id) {
+            self.primary_session_configured.as_ref()
+        } else {
+            None
+        };
+        if let Some(session) = session {
+            return rollout_codex_home(session.rollout_path.as_deref());
+        }
+
+        let channel = self.thread_event_channels.get(&thread_id)?;
+        let store = channel.store.lock().await;
+        rollout_codex_home(store.session.as_ref()?.rollout_path.as_deref())
+    }
+}
+
+fn rollout_codex_home(rollout_path: Option<&Path>) -> Option<PathBuf> {
+    let rollout_path = rollout_path?;
+    if !rollout_path.is_absolute() {
+        return None;
+    }
+
+    let mut home = PathBuf::new();
+    for component in rollout_path.components() {
+        if component.as_os_str() == "sessions" {
+            return (!home.as_os_str().is_empty()).then_some(home);
+        }
+        home.push(component.as_os_str());
+    }
+    None
 }
