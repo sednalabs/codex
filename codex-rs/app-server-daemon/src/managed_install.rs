@@ -129,7 +129,7 @@ pub(crate) async fn resolved_managed_standalone_release(
 async fn verified_sedna_auto_update_release(release_dir: &Path) -> Option<ManagedSednaRelease> {
     let metadata_path = release_dir.join("RELEASE-METADATA.json");
     let metadata = fs::read(&metadata_path).await.ok()?;
-    let checksums = fs::read_to_string(release_dir.join("SHA256SUMS.txt"))
+    let checksums = fs::read_to_string(release_dir.join("INSTALLED-SHA256SUMS.txt"))
         .await
         .ok()?;
     let executable = fs::read(release_dir.join(managed_codex_file_name()))

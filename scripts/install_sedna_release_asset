@@ -787,6 +787,21 @@ fi
 "$staged/codex" app-server --help >/dev/null
 "$staged/codex-responses-api-proxy" --help >/dev/null
 
+# This is an installer-owned manifest, not a release-asset checksum file. It
+# binds the normalized local metadata name and extracted executable only after
+# the archive, metadata, and optional signature/attestation checks above have
+# succeeded.
+python3 - "$staged/codex" "$staged/RELEASE-METADATA.json" <<'PY' > "$staged/INSTALLED-SHA256SUMS.txt"
+import hashlib
+import pathlib
+import sys
+
+for raw_path in sys.argv[1:]:
+    path = pathlib.Path(raw_path)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    print(f"{digest}  {path.name}")
+PY
+
 release_dir_name="${release_tag}"
 if [[ "$target" != "x86_64-unknown-linux-gnu" ]]; then
   release_dir_name="${release_tag}-${target}"
@@ -815,7 +830,7 @@ PY
       exit 1
     fi
   done
-  for verified_file in codex codex-responses-api-proxy RELEASE-METADATA.json SHA256SUMS.txt; do
+  for verified_file in codex codex-responses-api-proxy RELEASE-METADATA.json SHA256SUMS.txt INSTALLED-SHA256SUMS.txt; do
     if [[ ! -f "$release_dir/$verified_file" ]]; then
       echo "error: existing release is missing verified file: $verified_file" >&2
       exit 1
@@ -842,6 +857,7 @@ if [[ ! -d "$release_dir" ]]; then
   cp -p "$staged/codex-responses-api-proxy" "$tmp_release/codex-responses-api-proxy"
   cp "$staged/RELEASE-METADATA.json" "$tmp_release/RELEASE-METADATA.json"
   cp "$staged/SHA256SUMS.txt" "$tmp_release/SHA256SUMS.txt"
+  cp "$staged/INSTALLED-SHA256SUMS.txt" "$tmp_release/INSTALLED-SHA256SUMS.txt"
   mv "$tmp_release" "$release_dir"
 fi
 

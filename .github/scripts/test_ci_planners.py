@@ -7330,6 +7330,7 @@ class HelperScriptTests(unittest.TestCase):
         arch: str = "x86_64",
         hardened: bool = True,
         dry_run: bool = True,
+        expect_installed_manifest: bool = False,
         verification_args_override: list[str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         release_tag = "v0.146.0-alpha.8-sedna.99+upstream.3"
@@ -7429,6 +7430,18 @@ class HelperScriptTests(unittest.TestCase):
                 digest = hashlib.sha256((root / name).read_bytes()).hexdigest()
                 checksums.append(f"{digest}  {name}")
             (root / checksum_name).write_text("\n".join(checksums) + "\n", encoding="utf-8")
+            installed_manifest = root / "INSTALLED-SHA256SUMS.txt"
+            installed_manifest.write_text(
+                "\n".join(
+                    (
+                        f"{hashlib.sha256(codex.read_bytes()).hexdigest()}  codex",
+                        f"{hashlib.sha256((root / metadata_name).read_bytes()).hexdigest()}"
+                        "  RELEASE-METADATA.json",
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             if failure == "checksum_mismatch":
                 (root / codex_sigstore_name).write_text("tampered\n", encoding="utf-8")
 
@@ -7495,12 +7508,14 @@ class HelperScriptTests(unittest.TestCase):
                     "codex-responses-api-proxy",
                     "RELEASE-METADATA.json",
                     "SHA256SUMS.txt",
+                    "INSTALLED-SHA256SUMS.txt",
                 ):
                     source = {
                         "codex": codex,
                         "codex-responses-api-proxy": proxy,
                         "RELEASE-METADATA.json": root / metadata_name,
                         "SHA256SUMS.txt": root / checksum_name,
+                        "INSTALLED-SHA256SUMS.txt": installed_manifest,
                     }[name]
                     shutil.copy2(source, release_dir / name)
                 if failure == "existing_tampered":
@@ -7678,7 +7693,7 @@ fi
                 verification_args = verification_args_override
             elif arch == "x86_64" and not hardened:
                 verification_args = ["--allow-historical-x86"]
-            return subprocess.run(
+            proc = subprocess.run(
                 [
                     str(REPO_ROOT / "scripts/install_sedna_release_asset"),
                     "--repository",
@@ -7694,6 +7709,26 @@ fi
                 text=True,
                 env=env,
             )
+            if expect_installed_manifest:
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                release_dir_name = (
+                    release_tag if arch == "x86_64" else f"{release_tag}-{target}"
+                )
+                manifest_path = (
+                    root
+                    / "home"
+                    / ".codex"
+                    / "packages"
+                    / "standalone"
+                    / "releases"
+                    / release_dir_name
+                    / "INSTALLED-SHA256SUMS.txt"
+                )
+                self.assertEqual(
+                    manifest_path.read_text(encoding="utf-8"),
+                    installed_manifest.read_text(encoding="utf-8"),
+                )
+            return proc
 
     def test_sedna_release_installer_executes_hardened_linux_fixture(self) -> None:
         for arch, target in (
@@ -7705,6 +7740,16 @@ fi
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn(f"dry-run: verified sednalabs/codex@", proc.stdout)
                 self.assertIn(f"for {target}", proc.stdout)
+
+    def test_sedna_release_installer_writes_normalized_installed_manifest(self) -> None:
+        for arch in ("x86_64", "aarch64"):
+            with self.subTest(arch=arch):
+                proc = self.run_sedna_installer_fixture(
+                    arch=arch,
+                    dry_run=False,
+                    expect_installed_manifest=True,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_sedna_release_installer_rejects_invalid_release_assets(self) -> None:
         cases = {

@@ -60,8 +60,9 @@ The daemon always resolves `current/codex` to a canonical executable inside
 updater. Automatic updates are available only for stable Sedna releases on
 Linux `x86_64` and Linux `aarch64` that were installed through the fork-owned
 standalone release installer. The daemon verifies the resolved release's
-`RELEASE-METADATA.json` and executable against its installer-written checksum
-manifest, then validates its repository, version, and target. The binary that
+`RELEASE-METADATA.json` and executable against the installer-written
+`INSTALLED-SHA256SUMS.txt` manifest, then validates its repository, version,
+and target. The binary that
 invokes `bootstrap` does not grant update authority to a different managed
 release.
 
