@@ -29,6 +29,8 @@ use ratatui::text::Span;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+const MAX_PICKER_PAGE_CURSORS: usize = 128;
+
 /// Small state container for multi-agent picker ordering and labeling.
 ///
 /// `App` owns thread lifecycle and UI side effects. This type keeps the pure rules for stable
@@ -48,6 +50,10 @@ pub(crate) struct AgentNavigationState {
     stopped_threads: HashSet<ThreadId>,
     /// Spawned child threads whose instructions are owned by their parent agent.
     parent_owned_threads: HashSet<ThreadId>,
+    /// Opaque continuation for persisted descendant pages.
+    next_picker_page_cursor: Option<String>,
+    /// Cursors already observed in the current persisted pagination sequence.
+    seen_picker_page_cursors: HashSet<String>,
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -294,6 +300,34 @@ impl AgentNavigationState {
         self.order.clear();
         self.stopped_threads.clear();
         self.parent_owned_threads.clear();
+        self.next_picker_page_cursor = None;
+        self.seen_picker_page_cursors.clear();
+    }
+
+    pub(crate) fn begin_picker_page_sequence(&mut self) {
+        self.next_picker_page_cursor = None;
+        self.seen_picker_page_cursors.clear();
+    }
+
+    pub(crate) fn next_picker_page_cursor(&self) -> Option<String> {
+        self.next_picker_page_cursor.clone()
+    }
+
+    /// Retains a continuation only when it is fresh and within the bounded budget.
+    /// Repeated/cyclic cursors fail closed by ending pagination.
+    pub(crate) fn set_next_picker_page_cursor(&mut self, next_cursor: Option<String>) -> bool {
+        let Some(next_cursor) = next_cursor else {
+            self.next_picker_page_cursor = None;
+            return true;
+        };
+        if self.seen_picker_page_cursors.len() >= MAX_PICKER_PAGE_CURSORS
+            || !self.seen_picker_page_cursors.insert(next_cursor.clone())
+        {
+            self.next_picker_page_cursor = None;
+            return false;
+        }
+        self.next_picker_page_cursor = Some(next_cursor);
+        true
     }
 
     /// Removes a tracked thread entirely from picker metadata and traversal order.
@@ -930,5 +964,22 @@ mod tests {
         assert_eq!(parent_agent_path("/root/researcher/"), Some("/root"));
         assert_eq!(parent_agent_path("root/child"), None);
         assert_eq!(parent_agent_path(""), None);
+    }
+
+    #[test]
+    fn persisted_picker_cursor_repeats_fail_closed() {
+        let mut state = AgentNavigationState::default();
+        state.begin_picker_page_sequence();
+        assert!(state.set_next_picker_page_cursor(Some("page-a".to_string())));
+        assert!(!state.set_next_picker_page_cursor(Some("page-a".to_string())));
+        assert_eq!(state.next_picker_page_cursor(), None);
+    }
+
+    #[test]
+    fn persisted_picker_cursor_sequence_resets_between_opens() {
+        let mut state = AgentNavigationState::default();
+        assert!(state.set_next_picker_page_cursor(Some("page-a".to_string())));
+        state.begin_picker_page_sequence();
+        assert!(state.set_next_picker_page_cursor(Some("page-a".to_string())));
     }
 }

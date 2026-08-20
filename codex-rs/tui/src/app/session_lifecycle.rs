@@ -10,6 +10,11 @@ use crate::app_server_session::thread_blocks_direct_input;
 use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_selected_description;
+use codex_app_server_protocol::SessionSource;
+use codex_app_server_protocol::SubAgentSource;
+use codex_app_server_protocol::ThreadListParams;
+use codex_app_server_protocol::ThreadSortKey;
+use codex_app_server_protocol::ThreadSourceKind;
 use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
@@ -31,6 +36,7 @@ pub(super) struct LoadedSubagentBackfill {
 impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         let backfill = self.backfill_loaded_subagent_threads(app_server).await;
+        self.backfill_persisted_subagent_page(app_server).await;
         // V2 subagents are identified by canonical paths observed from activity events or loaded
         // thread metadata. A buffered active turn is positive liveness evidence; a completed
         // snapshot is terminal evidence. An empty store does not clear a successful spawn hint.
@@ -196,6 +202,138 @@ impl App {
             initial_selected_idx,
             ..Default::default()
         });
+    }
+
+    /// Loads one bounded page of persisted descendants for the active root. Persisted rows are
+    /// admitted only from the ThreadSpawn source and only after their parent chain reaches the
+    /// active root; any lineage or cursor ambiguity fails closed.
+    async fn backfill_persisted_subagent_page(&mut self, app_server: &mut AppServerSession) {
+        const PAGE_SIZE: u32 = 50;
+        const MAX_DEPTH: usize = 128;
+        let Some(root_id) = self.primary_thread_id else {
+            return;
+        };
+        let cursor = self.agent_navigation.next_picker_page_cursor();
+        if cursor.is_none() {
+            self.agent_navigation.begin_picker_page_sequence();
+        }
+        let cursor = self.agent_navigation.next_picker_page_cursor();
+        let response = match app_server
+            .thread_list(ThreadListParams {
+                cursor,
+                limit: Some(PAGE_SIZE),
+                sort_key: Some(ThreadSortKey::UpdatedAt),
+                sort_direction: Some(codex_app_server_protocol::SortDirection::Desc),
+                model_providers: None,
+                source_kinds: Some(vec![ThreadSourceKind::SubAgent]),
+                thread_sources: None,
+                archived: Some(false),
+                is_pinned: None,
+                cwd: None,
+                use_state_db_only: false,
+                search_term: None,
+                parent_thread_id: None,
+                ancestor_thread_id: Some(root_id.to_string()),
+            })
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                tracing::warn!(%err, "failed to list persisted subagent picker descendants");
+                let _ = self.agent_navigation.set_next_picker_page_cursor(None);
+                return;
+            }
+        };
+        if response.data.len() > PAGE_SIZE as usize {
+            tracing::warn!("discarding oversized persisted subagent picker page");
+            let _ = self.agent_navigation.set_next_picker_page_cursor(None);
+            return;
+        }
+        for thread in response.data {
+            if !matches!(
+                thread.source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+            ) || !self
+                .persisted_descendant_reaches_root(app_server, &thread, root_id, MAX_DEPTH)
+                .await
+            {
+                continue;
+            }
+            let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
+                continue;
+            };
+            let is_closed = matches!(
+                thread.status,
+                codex_app_server_protocol::ThreadStatus::NotLoaded
+            );
+            self.upsert_agent_picker_thread(
+                thread_id,
+                thread.agent_nickname,
+                thread.agent_role,
+                is_closed,
+            );
+            self.agent_navigation.update_identity(
+                thread_id,
+                thread.model,
+                thread.reasoning_effort,
+                Some(thread.model_provider),
+                thread.name.or_else(|| source_agent_path(&thread.source)),
+            );
+            self.agent_navigation
+                .set_agent_path(thread_id, source_agent_path(&thread.source));
+            if is_closed {
+                self.agent_navigation.mark_stopped(thread_id);
+            } else {
+                self.agent_navigation.mark_running(thread_id);
+            }
+        }
+        if !self
+            .agent_navigation
+            .set_next_picker_page_cursor(response.next_cursor)
+        {
+            tracing::warn!("discarding repeated or cyclic persisted picker cursor");
+        }
+        self.sync_active_agent_label();
+    }
+
+    async fn persisted_descendant_reaches_root(
+        &self,
+        app_server: &mut AppServerSession,
+        thread: &codex_app_server_protocol::Thread,
+        root_id: ThreadId,
+        max_depth: usize,
+    ) -> bool {
+        let mut current = match thread
+            .parent_thread_id
+            .as_deref()
+            .and_then(|id| ThreadId::from_string(id).ok())
+        {
+            Some(id) => id,
+            None => return false,
+        };
+        for _ in 0..max_depth {
+            if current == root_id {
+                return true;
+            }
+            let Ok(parent) = app_server.thread_read(current, false).await else {
+                return false;
+            };
+            if !matches!(
+                parent.source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+            ) {
+                return false;
+            }
+            current = match parent
+                .parent_thread_id
+                .as_deref()
+                .and_then(|id| ThreadId::from_string(id).ok())
+            {
+                Some(id) => id,
+                None => return current == root_id,
+            };
+        }
+        false
     }
 
     async fn agent_picker_thread_usage(
