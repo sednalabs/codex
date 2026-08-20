@@ -683,10 +683,10 @@ async fn process_matches_record(record: &PidRecord) -> Result<bool> {
 async fn live_process_uses_executable(pid: u32, executable: &Path) -> bool {
     #[cfg(target_os = "linux")]
     {
-        return live_executable_proof_matches(
+        live_executable_proof_matches(
             fs::canonicalize(format!("/proc/{pid}/exe")).await.ok(),
             executable,
-        );
+        )
     }
 
     #[cfg(not(target_os = "linux"))]
