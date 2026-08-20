@@ -47,8 +47,8 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
 
     let mut status = CheckStatus::Ok;
     let mut summary = LOCALLY_CONSISTENT_SUMMARY.to_string();
-    if is_sedna_automatic_update_channel() {
-        match fetch_latest_sedna_release_version() {
+    if is_sedna_automatic_update_probe_available(&install_context) {
+        match fetch_latest_sedna_release_version(&install_context) {
             Ok(latest_version) => {
                 details.push(format!("latest Sedna release: {latest_version}"));
                 let comparison = is_newer_sedna_release(&latest_version, RELEASE_VERSION);
@@ -202,10 +202,42 @@ fn is_sedna_automatic_update_channel() -> bool {
     )
 }
 
-fn fetch_latest_sedna_release_version() -> Result<String, String> {
-    if !is_sedna_automatic_update_channel() {
+fn is_sedna_automatic_update_probe_available(context: &InstallContext) -> bool {
+    is_sedna_automatic_update_probe_available_on_target(
+        context,
+        is_sedna_release_identity(
+            option_env!("CODEX_RELEASE_REPOSITORY"),
+            option_env!("CODEX_RELEASE_TAG_PREFIX"),
+        ),
+        RELEASE_VERSION,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+
+fn is_sedna_automatic_update_probe_available_on_target(
+    context: &InstallContext,
+    has_sedna_identity: bool,
+    release_version: &str,
+    target_os: &str,
+    target_arch: &str,
+) -> bool {
+    has_sedna_identity
+        && is_sedna_automatic_update_eligible(release_version, target_os, target_arch)
+        && matches!(
+            &context.method,
+            InstallMethod::Standalone {
+                platform: StandalonePlatform::Unix,
+                ..
+            }
+        )
+}
+
+fn fetch_latest_sedna_release_version(context: &InstallContext) -> Result<String, String> {
+    if !is_sedna_automatic_update_probe_available(context) {
         return Err(
-            "latest release probe is unavailable outside the Sedna release channel".to_string(),
+            "latest release probe is unavailable outside the Sedna standalone automatic-update policy"
+                .to_string(),
         );
     }
     let url = format!(
@@ -353,6 +385,41 @@ mod tests {
                 target.1
             );
         }
+    }
+
+    #[test]
+    fn sedna_release_probe_requires_unix_standalone_install() {
+        let native_release_dir = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
+            std::env::temp_dir().join("native-release"),
+        )
+        .expect("temp dir path should be absolute");
+        let unix = InstallContext {
+            method: InstallMethod::Standalone {
+                platform: StandalonePlatform::Unix,
+                release_dir: native_release_dir,
+                resources_dir: None,
+            },
+            package_layout: None,
+        };
+        let npm = InstallContext {
+            method: InstallMethod::Npm,
+            package_layout: None,
+        };
+
+        assert!(is_sedna_automatic_update_probe_available_on_target(
+            &unix,
+            true,
+            "1.2.3-sedna.4",
+            "linux",
+            "x86_64",
+        ));
+        assert!(!is_sedna_automatic_update_probe_available_on_target(
+            &npm,
+            true,
+            "1.2.3-sedna.4",
+            "linux",
+            "x86_64",
+        ));
     }
 
     #[test]
