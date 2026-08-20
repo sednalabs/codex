@@ -255,7 +255,8 @@ WHERE turn_id = ?
     }
 
     #[tokio::test]
-    async fn automatic_turn_error_uses_enclosing_submission_id_for_turn_correlation() -> Result<()> {
+    async fn automatic_turn_error_uses_enclosing_submission_id_for_turn_correlation() -> Result<()>
+    {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let thread_id = ThreadId::new();
         for (turn_id, attempt, expected) in [
