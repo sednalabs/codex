@@ -2171,10 +2171,36 @@ fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
         // resumed session.
         app.thread_event_channels
             .insert(child_thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+        let stale_warning = "stale placeholder notification";
+        {
+            let channel = app
+                .thread_event_channels
+                .get(&child_thread_id)
+                .expect("placeholder child channel");
+            let mut store = channel.store.lock().await;
+            store.push_notification(ServerNotification::Warning(WarningNotification {
+                thread_id: Some(child_thread_id.to_string()),
+                message: stale_warning.to_string(),
+            }));
+            assert_eq!(store.buffer.len(), 1);
+        }
 
         let mut tui = crate::tui::test_support::make_test_tui()?;
         app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
             .await?;
+
+        let mut replayed_history = String::new();
+        while let Ok(event) = app_event_rx.try_recv() {
+            if let AppEvent::InsertHistoryCell(cell) = event {
+                replayed_history.push_str(&lines_to_single_string(
+                    &cell.transcript_lines(/*width*/ 80),
+                ));
+            }
+        }
+        assert!(
+            !replayed_history.contains(stale_warning),
+            "stale placeholder events must not replay after session hydration"
+        );
 
         let entry = app
             .agent_navigation
