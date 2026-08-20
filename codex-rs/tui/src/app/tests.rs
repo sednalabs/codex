@@ -21,6 +21,7 @@ use crate::app_event::HistoryBatchEntryResponse;
 use codex_utils_absolute_path::test_support::PathExt;
 
 use crate::chatwidget::ChatWidgetInit;
+use crate::chatwidget::ThreadInputStateRestoreMode;
 use crate::chatwidget::create_initial_user_message;
 use crate::chatwidget::tests::helpers::render_bottom_popup;
 use crate::chatwidget::tests::helpers::set_active_cell;

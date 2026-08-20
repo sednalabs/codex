@@ -419,6 +419,7 @@ impl App {
     /// Resume-time backfill intentionally avoids creating empty placeholder channels, because those
     /// placeholders make stale `/agent` entries open blank transcripts. When a user later selects a
     /// still-live discovered thread, attach it on demand with a real resumed snapshot.
+    #[cfg(test)]
     pub(super) async fn attach_live_thread_for_selection(
         &mut self,
         app_server: &mut AppServerSession,
