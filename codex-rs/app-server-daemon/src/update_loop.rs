@@ -45,6 +45,8 @@ use crate::managed_install::ExecutableIdentity;
 #[cfg(unix)]
 use crate::managed_install::executable_identity;
 #[cfg(unix)]
+use crate::managed_install::managed_sedna_automatic_update_release;
+#[cfg(unix)]
 use crate::managed_install::resolved_managed_codex_bin;
 
 #[cfg(unix)]
@@ -105,9 +107,14 @@ async fn update_once(
     running_updater_identity: &ExecutableIdentity,
     terminate: &mut Signal,
 ) -> Result<UpdateLoopControl> {
-    install_latest_standalone(http).await?;
-
     let daemon = Daemon::from_environment()?;
+    let Some(managed_release) =
+        managed_sedna_automatic_update_release(&daemon.managed_codex_bin).await
+    else {
+        return Ok(UpdateLoopControl::Continue);
+    };
+    install_latest_standalone(http, &managed_release.version).await?;
+
     let managed_codex_bin = resolved_managed_codex_bin(&daemon.managed_codex_bin).await?;
     let managed_identity = executable_identity(&managed_codex_bin).await?;
     let (restart_mode, updater_refresh_mode) =
@@ -167,46 +174,11 @@ pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Res
 }
 
 #[cfg(unix)]
-async fn install_latest_standalone(http: &RouteAwareClientPool) -> Result<()> {
-    if is_sedna_standalone_update_eligible(
-        option_env!("CODEX_RELEASE_REPOSITORY"),
-        option_env!("CODEX_RELEASE_TAG_PREFIX"),
-        option_env!("CODEX_RELEASE_VERSION"),
-    ) {
-        install_latest_sedna_standalone(http, codex_utils_version::RELEASE_VERSION).await?;
-    }
-    Ok(())
-}
-
-pub(crate) fn is_sedna_standalone_update_eligible(
-    repository: Option<&str>,
-    tag_prefix: Option<&str>,
-    release_version: Option<&str>,
-) -> bool {
-    is_sedna_standalone_update_eligible_on_target(
-        repository,
-        tag_prefix,
-        release_version,
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-    )
-}
-
-pub(crate) fn is_sedna_standalone_update_eligible_on_target(
-    repository: Option<&str>,
-    tag_prefix: Option<&str>,
-    release_version: Option<&str>,
-    target_os: &str,
-    target_arch: &str,
-) -> bool {
-    codex_utils_version::is_sedna_release_identity(repository, tag_prefix)
-        && release_version.is_some_and(|release_version| {
-            codex_utils_version::is_sedna_automatic_update_eligible(
-                release_version,
-                target_os,
-                target_arch,
-            )
-        })
+async fn install_latest_standalone(
+    http: &RouteAwareClientPool,
+    managed_release_version: &str,
+) -> Result<()> {
+    install_latest_sedna_standalone(http, managed_release_version).await
 }
 
 #[cfg(unix)]
