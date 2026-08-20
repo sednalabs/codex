@@ -19,7 +19,6 @@ use tokio::io::AsyncSeekExt;
 use tokio::process::Command;
 use tokio::time::sleep;
 
-#[cfg(unix)]
 use crate::managed_install::ExecutableIdentity;
 #[cfg(unix)]
 use crate::managed_install::executable_identity;
