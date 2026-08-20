@@ -95,7 +95,6 @@ use codex_models_manager::test_support::construct_model_info_offline_for_tests;
 use codex_models_manager::test_support::get_model_offline_for_tests;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
-use codex_protocol::AgentPath;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
@@ -2104,9 +2103,10 @@ fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
                 RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id: root_thread_id,
                     depth: 1,
-                    agent_path: Some(
-                        AgentPath::try_from("/root/worker").expect("valid agent path"),
-                    ),
+                    // Legacy/V1 ThreadSpawn rows may not persist an agent path. The picker cache
+                    // below restores the observed path, while the missing source path preserves
+                    // the server's writable legacy-thread capability for this regression.
+                    agent_path: None,
                     agent_nickname: Some("worker".to_string()),
                     agent_role: Some("worker".to_string()),
                 }),
