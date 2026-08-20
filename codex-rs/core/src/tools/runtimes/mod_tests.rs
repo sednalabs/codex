@@ -838,6 +838,37 @@ fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
     assert!(!rewritten[2].contains("/run/override-rule"));
     assert!(!rewritten[2].contains("/run/override-token"));
 
+    let mut explicit_with_startup_hook = explicit_env_overrides.clone();
+    explicit_with_startup_hook.insert(
+        "BASH_ENV".to_string(),
+        startup_path.to_string_lossy().into_owned(),
+    );
+    let hook_command = vec![
+        "/bin/bash".to_string(),
+        "-lc".to_string(),
+        "/usr/bin/printf '%s|%s' \"${BASH_ENV-unset}\" \"${OpenAI_Federation_Rule_Id-unset}\""
+            .to_string(),
+    ];
+    let rewritten = maybe_wrap_shell_lc_with_snapshot(
+        &hook_command,
+        &session_shell,
+        Some(&shell_snapshot),
+        &explicit_with_startup_hook,
+        &HashMap::new(),
+        &RuntimePathPrepends::default(),
+    );
+    let output = Command::new(&rewritten[0])
+        .args(&rewritten[1..])
+        .env_remove("BASH_ENV")
+        .output()
+        .expect("run explicit startup hook command");
+
+    assert!(output.status.success(), "hook command failed: {output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("{}|unset", startup_path.display())
+    );
+
     let (session_shell, shell_snapshot) =
         shell_with_snapshot(ShellType::Sh, "/bin/sh", snapshot_path.abs());
     let rewritten = maybe_wrap_shell_lc_with_snapshot(

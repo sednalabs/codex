@@ -265,7 +265,10 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         );
         let managed_network =
             managed_network_for_sandbox_permissions(req.network.as_ref(), sandbox_permissions);
-        let env = exec_env_for_sandbox_permissions(&req.env, sandbox_permissions);
+        let mut env = exec_env_for_sandbox_permissions(&req.env, sandbox_permissions);
+        if shell_snapshot_location.is_some() {
+            crate::tools::runtimes::scrub_shell_startup_hook_env_vars(&mut env);
+        }
         let explicit_env_overrides = req.explicit_env_overrides.clone();
         #[cfg(unix)]
         let (env, runtime_path_prepends) = {
