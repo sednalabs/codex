@@ -162,7 +162,7 @@ cleanup() {
         mv "$activation_visible_backup" "${bin_dir}/codex"
       fi
     elif [[ "$activation_visible_created" == "true" && -L "${bin_dir}/codex" ]]; then
-      rm -f "${bin_dir}/codex"
+      remove_owned_link "${bin_dir}/codex" "${release_dir}/codex"
     fi
     current_path="${install_root}/current"
     if [[ -n "$activation_previous_current" ]]; then

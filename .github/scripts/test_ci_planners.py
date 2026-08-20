@@ -7540,6 +7540,8 @@ class HelperScriptTests(unittest.TestCase):
                 current_path = root / "home" / ".codex" / "packages" / "standalone" / "current"
                 current_path.parent.mkdir(parents=True)
                 current_path.symlink_to(root / "previous-current")
+            elif failure == "empty_attacker_replacement":
+                pass
             if failure == "symlink_releases":
                 releases_path = root / "home" / ".codex" / "packages" / "standalone" / "releases"
                 releases_path.parent.mkdir(parents=True)
@@ -7737,6 +7739,11 @@ fi
                 env["SEDNA_INSTALLER_TESTING"] = "1"
                 env["SEDNA_INSTALLER_TEST_ATTACKER_VISIBLE"] = str(root / "attacker-visible")
                 env["SEDNA_INSTALLER_TEST_ATTACKER_CURRENT"] = str(root / "attacker-current")
+            elif failure == "empty_attacker_replacement":
+                env["SEDNA_INSTALLER_TEST_FAULT"] = "replace-before-rollback"
+                env["SEDNA_INSTALLER_TESTING"] = "1"
+                env["SEDNA_INSTALLER_TEST_ATTACKER_VISIBLE"] = str(root / "attacker-visible")
+                env["SEDNA_INSTALLER_TEST_ATTACKER_CURRENT"] = str(root / "attacker-current")
             elif failure == "activation_fault_inert":
                 env["SEDNA_INSTALLER_TEST_FAULT"] = "after-visible-predecessor"
                 env.pop("SEDNA_INSTALLER_TESTING", None)
@@ -7793,6 +7800,15 @@ fi
                     (root / "home" / ".codex" / "packages" / "standalone" / "current").readlink(),
                     root / "attacker-current",
                 )
+            if failure == "empty_attacker_replacement":
+                self.assertEqual(
+                    (root / "home" / ".local" / "bin" / "codex").readlink(),
+                    root / "attacker-visible",
+                )
+                self.assertEqual(
+                    (root / "home" / ".codex" / "packages" / "standalone" / "current").readlink(),
+                    root / "attacker-current",
+                )
             return proc
 
     def test_sedna_release_installer_executes_hardened_linux_fixture(self) -> None:
@@ -7838,6 +7854,12 @@ fi
     def test_sedna_release_installer_fails_closed_on_restore_temp_collisions(self) -> None:
         proc = self.run_sedna_installer_fixture(
             "restore_temp_collision", dry_run=False
+        )
+        self.assertEqual(proc.returncode, 74, proc.stderr)
+
+    def test_sedna_release_installer_preserves_empty_predecessor_replacements(self) -> None:
+        proc = self.run_sedna_installer_fixture(
+            "empty_attacker_replacement", dry_run=False
         )
         self.assertEqual(proc.returncode, 74, proc.stderr)
 
