@@ -307,16 +307,20 @@ impl App {
                 .agent_navigation
                 .get(&thread_id)
                 .is_some_and(|entry| entry.is_closed);
+            let cached_entry = self.agent_navigation.get(&thread_id);
+            let agent_nickname = thread
+                .agent_nickname
+                .clone()
+                .or_else(|| cached_entry.and_then(|entry| entry.agent_nickname.clone()));
+            let agent_role = thread
+                .agent_role
+                .clone()
+                .or_else(|| cached_entry.and_then(|entry| entry.agent_role.clone()));
             // A live channel is authoritative after an explicit selection-time resume. Do not
             // let the stale persisted `NotLoaded` row close (or hide) the now-live picker entry.
             let is_closed = !has_live_channel
                 && persisted_picker_thread_is_closed(thread.status.clone(), already_closed);
-            self.upsert_agent_picker_thread(
-                thread_id,
-                thread.agent_nickname,
-                thread.agent_role,
-                is_closed,
-            );
+            self.upsert_agent_picker_thread(thread_id, agent_nickname, agent_role, is_closed);
             self.agent_navigation.update_identity(
                 thread_id,
                 thread.model,
@@ -652,7 +656,7 @@ impl App {
                 return Ok(false);
             }
             let store = channel.store.lock().await;
-            if store.session.is_some() {
+            if store.has_hydrated_snapshot() {
                 return Ok(true);
             }
         }
@@ -707,6 +711,7 @@ impl App {
         // snapshot. The live path previously skipped channel creation and panicked below when it
         // tried to seed the store.
         self.ensure_thread_channel(thread_id);
+        self.rebase_thread_event_receiver_after_session_refresh(thread_id);
         if !live_attached {
             self.ensure_thread_channel(thread_id).mark_replay_only();
         } else {
@@ -1177,6 +1182,13 @@ impl App {
         let mut refreshed_thread_ids = HashSet::new();
         for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
             let agent_path = thread.agent_path;
+            let cached_entry = self.agent_navigation.get(&thread.thread_id);
+            let agent_nickname = thread
+                .agent_nickname
+                .or_else(|| cached_entry.and_then(|entry| entry.agent_nickname.clone()));
+            let agent_role = thread
+                .agent_role
+                .or_else(|| cached_entry.and_then(|entry| entry.agent_role.clone()));
             let has_live_channel = self
                 .thread_event_channels
                 .get(&thread.thread_id)
@@ -1187,8 +1199,8 @@ impl App {
             }
             self.upsert_agent_picker_thread(
                 thread.thread_id,
-                thread.agent_nickname,
-                thread.agent_role,
+                agent_nickname,
+                agent_role,
                 is_closed,
             );
             self.agent_navigation

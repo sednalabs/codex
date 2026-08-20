@@ -41,6 +41,7 @@ pub(super) enum ThreadEventAttachment {
 #[derive(Debug)]
 pub(super) struct ThreadEventStore {
     pub(super) session: Option<ThreadSessionState>,
+    hydrated_snapshot: bool,
     pub(super) turns: Vec<Turn>,
     pub(super) buffer: VecDeque<ThreadBufferedEvent>,
     pub(super) pending_interactive_replay: PendingInteractiveReplayState,
@@ -66,6 +67,7 @@ impl ThreadEventStore {
     pub(super) fn new(capacity: usize) -> Self {
         Self {
             session: None,
+            hydrated_snapshot: false,
             turns: Vec::new(),
             buffer: VecDeque::new(),
             pending_interactive_replay: PendingInteractiveReplayState::default(),
@@ -84,14 +86,22 @@ impl ThreadEventStore {
         turns: Vec<Turn>,
     ) -> Self {
         let mut store = Self::new(capacity);
-        store.session = Some(session);
-        store.set_turns(turns);
+        store.set_session(session, turns);
         store
+    }
+
+    pub(super) fn set_inferred_session(&mut self, session: ThreadSessionState) {
+        self.session = Some(session);
     }
 
     pub(super) fn set_session(&mut self, session: ThreadSessionState, turns: Vec<Turn>) {
         self.session = Some(session);
+        self.hydrated_snapshot = true;
         self.set_turns(turns);
+    }
+
+    pub(super) fn has_hydrated_snapshot(&self) -> bool {
+        self.hydrated_snapshot
     }
 
     pub(super) fn rebase_buffer_after_session_refresh(&mut self) {
@@ -343,6 +353,30 @@ impl ThreadEventChannel {
         self.attachment
     }
 
+    pub(super) fn rebase_receiver_after_session_refresh(&mut self) {
+        let Some(receiver) = self.receiver.as_mut() else {
+            return;
+        };
+        Self::rebase_event_receiver_after_session_refresh(receiver, &self.sender);
+    }
+
+    pub(super) fn rebase_event_receiver_after_session_refresh(
+        receiver: &mut mpsc::Receiver<ThreadBufferedEvent>,
+        sender: &mpsc::Sender<ThreadBufferedEvent>,
+    ) {
+        let mut retained = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            if ThreadEventStore::event_survives_session_refresh(&event) {
+                retained.push(event);
+            }
+        }
+        for event in retained {
+            if sender.try_send(event).is_err() {
+                break;
+            }
+        }
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn new_with_session(
         capacity: usize,
@@ -577,6 +611,20 @@ mod tests {
         let mut refreshed_store = ThreadEventStore::new(/*capacity*/ 8);
         refreshed_store.set_session(session, turns);
         assert_eq!(refreshed_store.active_turn_id(), Some("turn-2"));
+    }
+
+    #[test]
+    fn inferred_session_is_not_a_hydrated_snapshot() {
+        let thread_id = ThreadId::new();
+        let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+
+        store.set_inferred_session(session.clone());
+        assert!(store.session.is_some());
+        assert!(!store.has_hydrated_snapshot());
+
+        store.set_session(session, Vec::new());
+        assert!(store.has_hydrated_snapshot());
     }
 
     #[test]
