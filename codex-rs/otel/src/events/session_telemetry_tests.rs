@@ -3,14 +3,14 @@ use crate::metrics::tags::APP_VERSION_TAG;
 use crate::metrics::tags::MODEL_TAG;
 use crate::metrics::tags::ORIGINATOR_TAG;
 use crate::metrics::tags::SESSION_SOURCE_TAG;
-use crate::sanitize_metric_tag_value;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::ThreadId;
 use pretty_assertions::assert_eq;
 
 #[test]
 fn session_metric_tags_sanitize_only_app_version_metric_value() {
-    let mut telemetry = SessionTelemetry::new(
+    let exact_app_version = "0.136.0-alpha.1+frodex.1";
+    let telemetry = SessionTelemetry::new_with_release_version(
         ThreadId::new(),
         "model",
         "slug",
@@ -21,10 +21,8 @@ fn session_metric_tags_sanitize_only_app_version_metric_value() {
         /*log_user_prompts*/ false,
         "unknown".to_string(),
         SessionSource::Cli,
+        exact_app_version,
     );
-    let exact_app_version = "0.136.0-alpha.1+frodex.1";
-    telemetry.metadata.app_version = exact_app_version;
-    telemetry.metric_app_version = sanitize_metric_tag_value(exact_app_version);
 
     let metric_tags = telemetry.metadata_tag_refs().expect("metric tags");
 
