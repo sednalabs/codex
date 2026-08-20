@@ -178,7 +178,7 @@ mod tests {
     async fn browser_provider_executes_from_explicit_session_codex_home() {
         let ambient_home = tempdir().expect("ambient codex home");
         let child_home = tempdir().expect("child codex home");
-        let config = r#"{"provider":"command","command":["sh","-c","cat >/dev/null; printf '{\"contentItems\":[{\"type\":\"inputText\",\"text\":\"child home\"}],\"success\":true}"]}"#;
+        let config = r#"{"provider":"command","command":["sh","-c","cat >/dev/null; printf '{\"contentItems\":[{\"type\":\"inputText\",\"text\":\"child home\"},{\"type\":\"inputImage\",\"imageUrl\":\"data:image/png;base64,AAAA\",\"detail\":\"high\"}],\"success\":true}"]}"#;
         std::fs::write(
             ambient_home.path().join("browser-computer-use.json"),
             config.replace("child home", "ambient home"),
@@ -210,6 +210,10 @@ mod tests {
             vec![
                 codex_app_server_protocol::ComputerUseCallOutputContentItem::InputText {
                     text: "child home".to_string(),
+                },
+                codex_app_server_protocol::ComputerUseCallOutputContentItem::InputImage {
+                    image_url: "data:image/png;base64,AAAA".to_string(),
+                    detail: Some("high".to_string()),
                 }
             ]
         );
