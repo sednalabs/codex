@@ -166,7 +166,7 @@ parent_pid = int(sys.argv[3])
 for component in [lock_path.parent, *lock_path.parent.parents]:
     if component == pathlib.Path.home():
         break
-    if component.exists() and component.is_symlink():
+    if component.is_symlink():
         raise SystemExit("error: refusing symlinked installer parent directory")
 lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -780,6 +780,13 @@ import stat
 import sys
 
 install_root, releases_dir, bin_dir, release_dir = map(pathlib.Path, sys.argv[1:])
+home = pathlib.Path.home()
+for root in (install_root, bin_dir):
+    for component in [root, *root.parents]:
+        if component == home:
+            break
+        if component.is_symlink():
+            raise SystemExit(f"error: refusing symlinked installer parent directory: {component}")
 for path, expected_dir in (
     (install_root, True),
     (releases_dir, True),

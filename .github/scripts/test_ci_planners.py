@@ -7524,6 +7524,10 @@ class HelperScriptTests(unittest.TestCase):
                 bin_path = root / "home" / ".local" / "bin"
                 bin_path.parent.mkdir(parents=True)
                 bin_path.symlink_to(root / "outside-bin")
+            elif failure == "symlink_local_parent":
+                local_path = root / "home" / ".local"
+                local_path.parent.mkdir(parents=True)
+                local_path.symlink_to(root / "outside-local")
             elif failure == "symlink_release_entry":
                 release_path = (
                     root / "home" / ".codex" / "packages" / "standalone" / "releases" / release_tag
@@ -7763,7 +7767,12 @@ fi
         self.assertIn("installed sednalabs/codex@", proc.stdout)
 
     def test_sedna_release_installer_rejects_symlinked_owned_paths(self) -> None:
-        for failure in ("symlink_releases", "symlink_bin", "symlink_release_entry"):
+        for failure in (
+            "symlink_releases",
+            "symlink_bin",
+            "symlink_local_parent",
+            "symlink_release_entry",
+        ):
             with self.subTest(failure=failure):
                 proc = self.run_sedna_installer_fixture(failure)
                 self.assertNotEqual(proc.returncode, 0)
