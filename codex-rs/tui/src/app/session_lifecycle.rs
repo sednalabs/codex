@@ -316,6 +316,8 @@ impl App {
                 .agent_role
                 .clone()
                 .or_else(|| cached_entry.and_then(|entry| entry.agent_role.clone()));
+            let agent_path = source_agent_path(&thread.source)
+                .or_else(|| cached_entry.and_then(|entry| entry.agent_path.clone()));
             // A live channel is authoritative after an explicit selection-time resume. Do not
             // let the stale persisted `NotLoaded` row close (or hide) the now-live picker entry.
             let is_closed = !has_live_channel
@@ -326,10 +328,10 @@ impl App {
                 thread.model,
                 thread.reasoning_effort,
                 Some(thread.model_provider),
-                thread.name.or_else(|| source_agent_path(&thread.source)),
+                thread.name.or_else(|| agent_path.clone()),
             );
-            self.agent_navigation
-                .set_agent_path(thread_id, source_agent_path(&thread.source));
+            self.agent_navigation.set_agent_path(thread_id, agent_path);
+            self.sync_agent_picker_identity(thread_id);
             if is_closed {
                 self.agent_navigation.mark_stopped(thread_id);
             } else if !has_live_channel {
@@ -563,7 +565,11 @@ impl App {
         {
             Ok(thread) => {
                 let is_parent_owned = thread_blocks_direct_input(&thread);
-                let agent_path = source_agent_path(&thread.source);
+                let agent_path = source_agent_path(&thread.source).or_else(|| {
+                    existing_entry
+                        .as_ref()
+                        .and_then(|entry| entry.agent_path.clone())
+                });
                 let is_running = matches!(
                     thread.status,
                     codex_app_server_protocol::ThreadStatus::Active { .. }
@@ -916,7 +922,7 @@ impl App {
         if channel.attachment() != ThreadEventAttachment::Live {
             return false;
         }
-        channel.store.lock().await.session.is_none()
+        !channel.store.lock().await.has_hydrated_snapshot()
     }
 
     pub(super) fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {
@@ -1181,8 +1187,10 @@ impl App {
 
         let mut refreshed_thread_ids = HashSet::new();
         for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
-            let agent_path = thread.agent_path;
             let cached_entry = self.agent_navigation.get(&thread.thread_id);
+            let agent_path = thread
+                .agent_path
+                .or_else(|| cached_entry.and_then(|entry| entry.agent_path.clone()));
             let agent_nickname = thread
                 .agent_nickname
                 .or_else(|| cached_entry.and_then(|entry| entry.agent_nickname.clone()));
@@ -1205,6 +1213,7 @@ impl App {
             );
             self.agent_navigation
                 .set_agent_path(thread.thread_id, agent_path);
+            self.sync_agent_picker_identity(thread.thread_id);
             // A live channel can have an empty store after a successful spawn. Only apply server
             // status for channels that would otherwise need another liveness read.
             if !has_live_channel {

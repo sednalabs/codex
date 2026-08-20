@@ -2167,6 +2167,16 @@ fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
         );
         app.agent_navigation
             .set_agent_path(child_thread_id, Some("/root/worker".to_string()));
+        // Opening the picker exercises the persisted ThreadSpawn backfill with nullable backend
+        // labels and an omitted source path; cached observed identity must survive that refresh.
+        app.open_agent_picker(&mut app_server).await;
+        let backfilled = app
+            .agent_navigation
+            .get(&child_thread_id)
+            .expect("persisted child should be backfilled into the picker");
+        assert_eq!(backfilled.agent_nickname.as_deref(), Some("worker"));
+        assert_eq!(backfilled.agent_role.as_deref(), Some("worker"));
+        assert_eq!(backfilled.agent_path.as_deref(), Some("/root/worker"));
         // A discovered live row may already have an empty listener channel from an earlier
         // notification. Selection must hydrate that placeholder instead of treating it as a
         // resumed session.
@@ -2316,6 +2326,56 @@ fn attach_live_thread_for_selection_hydrates_inferred_zero_turn_session() -> Res
             store.session.as_ref().map(|session| session.thread_id),
             Some(thread_id)
         );
+        app_server.shutdown().await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn select_agent_thread_hydrates_thread_started_zero_turn_session() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let config = app.chat_widget.config_ref().clone();
+        let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+        let root = app_server.start_thread(&config).await?;
+        app.enqueue_primary_thread_session(root.session, root.turns)
+            .await?;
+
+        let child = app_server.start_thread(&config).await?;
+        let child_thread = app_server
+            .thread_read(child.session.thread_id, /*include_turns*/ false)
+            .await?;
+        app.enqueue_thread_notification(
+            child.session.thread_id,
+            ServerNotification::ThreadStarted(ThreadStartedNotification {
+                thread: child_thread,
+            }),
+        )
+        .await?;
+
+        {
+            let channel = app
+                .thread_event_channels
+                .get(&child.session.thread_id)
+                .expect("inferred child channel");
+            let store = channel.store.lock().await;
+            assert!(store.session.is_some());
+            assert!(!store.has_hydrated_snapshot());
+            assert!(store.turns.is_empty());
+        }
+
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        app.select_agent_thread(&mut tui, &mut app_server, child.session.thread_id)
+            .await?;
+
+        let channel = app
+            .thread_event_channels
+            .get(&child.session.thread_id)
+            .expect("hydrated child channel");
+        let store = channel.store.lock().await;
+        assert!(store.has_hydrated_snapshot());
+        drop(store);
+        assert_eq!(app.active_thread_id, Some(child.session.thread_id));
         app_server.shutdown().await?;
         Ok(())
     })

@@ -1142,6 +1142,8 @@ impl App {
         session.message_history = None;
         session.rollout_path = rollout_path;
         let cached_entry = self.agent_navigation.get(&thread_id);
+        let agent_path = source_agent_path(&notification.thread.source)
+            .or_else(|| cached_entry.and_then(|entry| entry.agent_path.clone()));
         let agent_nickname = notification
             .thread
             .agent_nickname
@@ -1158,8 +1160,7 @@ impl App {
             agent_role,
             /*is_closed*/ false,
         );
-        self.agent_navigation
-            .set_agent_path(thread_id, source_agent_path(&notification.thread.source));
+        self.agent_navigation.set_agent_path(thread_id, agent_path);
         self.agent_navigation.update_identity(
             thread_id,
             notification
