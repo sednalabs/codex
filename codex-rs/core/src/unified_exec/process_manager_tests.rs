@@ -149,16 +149,16 @@ fn no_config_exec_request_scrubs_non_inheritable_env_vars() {
             ),
             ("KEEP".to_string(), "value".to_string()),
         ]),
-        None,
-        None,
+        /*network*/ None,
+        /*network_environment_id*/ None,
         crate::exec::ExecExpiration::DefaultTimeout,
         crate::exec::ExecCapturePolicy::ShellTool,
         codex_sandboxing::SandboxType::None,
         Vec::new(),
         codex_protocol::config_types::WindowsSandboxLevel::Disabled,
-        false,
+        /*windows_sandbox_private_desktop*/ false,
         codex_protocol::models::PermissionProfile::Disabled,
-        None,
+        /*arg0*/ None,
     );
 
     let (policy, env) = exec_server_env_for_request(&request);
