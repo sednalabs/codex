@@ -32,8 +32,9 @@ impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         let backfill = self.backfill_loaded_subagent_threads(app_server).await;
         // V2 subagents are identified by canonical paths observed from activity events or loaded
-        // thread metadata. A buffered active turn is positive liveness evidence; a completed
-        // snapshot is terminal evidence. An empty store does not clear a successful spawn hint.
+        // thread metadata. Refresh each path-backed channel against authoritative server state
+        // before using its local replay snapshot: a cached live channel can outlive a server-side
+        // unload, and local activity must not keep mutation guards open in that case.
         let path_backed_thread_ids: Vec<_> = self
             .agent_navigation
             .ordered_path_backed_subagent_threads(self.primary_thread_id)
@@ -41,25 +42,7 @@ impl App {
             .map(|(thread_id, _)| thread_id)
             .collect();
         for thread_id in path_backed_thread_ids.iter().copied() {
-            if let Some(channel) = self.thread_event_channels.get(&thread_id)
-                && channel.attachment() == ThreadEventAttachment::Live
-            {
-                let (has_active_turn, has_terminal_snapshot) = {
-                    let store = channel.store.lock().await;
-                    (
-                        store.active_turn_id().is_some(),
-                        store
-                            .turns
-                            .last()
-                            .is_some_and(|turn| !matches!(turn.status, TurnStatus::InProgress)),
-                    )
-                };
-                if has_active_turn {
-                    self.agent_navigation.mark_running(thread_id);
-                } else if has_terminal_snapshot {
-                    self.agent_navigation.mark_stopped(thread_id);
-                }
-            } else if !backfill.refreshed_thread_ids.contains(&thread_id) {
+            if !backfill.refreshed_thread_ids.contains(&thread_id) {
                 self.refresh_agent_picker_thread_liveness(app_server, thread_id)
                     .await;
             }
