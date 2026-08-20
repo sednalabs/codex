@@ -1,11 +1,11 @@
 use crate::version::CODEX_RELEASE_TAG_PREFIX;
 use semver::Version;
+use std::cmp::Ordering;
 
 pub(crate) fn is_newer(latest: &str, current: &str) -> Option<bool> {
-    match (parse_version(latest), parse_version(current)) {
-        (Some(l), Some(c)) => Some(l > c),
-        _ => None,
-    }
+    let latest = SednaReleaseVersion::parse(latest)?;
+    let current = SednaReleaseVersion::parse(current)?;
+    Some(latest > current)
 }
 
 /// Cache values are untrusted across releases. A cached value may be compared
@@ -28,8 +28,8 @@ pub(crate) fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::
 /// `<track>-sedna.<ordinal>[+upstream.<distance>]`.
 ///
 /// Keep this structural validation separate from [`Version::parse`]: the release
-/// resolver is the authority for which tags belong to this channel, while semver
-/// comparison may intentionally fail closed for values it cannot compare.
+/// resolver is the authority for which tags belong to this channel, while Sedna
+/// release comparison may intentionally fail closed for values it cannot compare.
 pub(crate) fn is_sedna_release_version(version: &str) -> bool {
     let (version, metadata) = match version.split_once('+') {
         Some((version, metadata)) => (version, Some(metadata)),
@@ -67,6 +67,93 @@ fn is_sedna_track(track: &str) -> bool {
                     !identifier.is_empty() && identifier.bytes().all(|b| b.is_ascii_alphanumeric())
                 })
         })
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct SednaReleaseVersion {
+    core: [String; 3],
+    track_prerelease: Vec<String>,
+    ordinal: String,
+}
+
+impl SednaReleaseVersion {
+    fn parse(version: &str) -> Option<Self> {
+        if !is_sedna_release_version(version) {
+            return None;
+        }
+        let version_without_metadata = version.split_once('+').map_or(version, |(v, _)| v);
+        let (track, ordinal) = version_without_metadata.rsplit_once("-sedna.")?;
+        let (core, track_prerelease) = match track.split_once('-') {
+            Some((core, prerelease)) => (core, prerelease.split('.').map(str::to_owned).collect()),
+            None => (track, Vec::new()),
+        };
+        let mut core_parts = core.split('.').map(str::to_owned);
+        let core = [core_parts.next()?, core_parts.next()?, core_parts.next()?];
+        if core_parts.next().is_some() {
+            return None;
+        }
+        Some(Self {
+            core,
+            track_prerelease,
+            ordinal: ordinal.to_string(),
+        })
+    }
+}
+
+impl Ord for SednaReleaseVersion {
+    fn cmp(&self, other: &Self) -> Ordering {
+        for (left, right) in self.core.iter().zip(&other.core) {
+            let ordering = compare_numeric_identifiers(left, right);
+            if ordering != Ordering::Equal {
+                return ordering;
+            }
+        }
+        let prerelease_ordering = match (
+            self.track_prerelease.is_empty(),
+            other.track_prerelease.is_empty(),
+        ) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            (false, false) => {
+                compare_prerelease_identifiers(&self.track_prerelease, &other.track_prerelease)
+            }
+        };
+        if prerelease_ordering != Ordering::Equal {
+            return prerelease_ordering;
+        }
+        compare_numeric_identifiers(&self.ordinal, &other.ordinal)
+    }
+}
+
+impl PartialOrd for SednaReleaseVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn compare_prerelease_identifiers(left: &[String], right: &[String]) -> Ordering {
+    for (left, right) in left.iter().zip(right) {
+        let ordering = match (
+            left.bytes().all(|byte| byte.is_ascii_digit()),
+            right.bytes().all(|byte| byte.is_ascii_digit()),
+        ) {
+            (true, true) => compare_numeric_identifiers(left, right),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => left.cmp(right),
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
+fn compare_numeric_identifiers(left: &str, right: &str) -> Ordering {
+    let left = left.trim_start_matches('0');
+    let right = right.trim_start_matches('0');
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
 }
 
 pub(crate) fn is_source_build_version(version: &str) -> bool {
@@ -133,26 +220,35 @@ mod tests {
 
     #[test]
     fn prerelease_version_is_not_considered_newer() {
-        assert_eq!(is_newer("0.11.0-beta.1", "0.11.0"), Some(false));
-        assert_eq!(is_newer("1.0.0-rc.1", "1.0.0"), Some(false));
+        assert_eq!(
+            is_newer("0.11.0-beta.1-sedna.1", "0.11.0-sedna.1"),
+            Some(false)
+        );
+        assert_eq!(is_newer("1.0.0-rc.1-sedna.1", "1.0.0-sedna.1"), Some(false));
     }
 
     #[test]
     fn fork_release_suffixes_compare_correctly() {
         assert_eq!(is_newer("0.117.0-sedna.2", "0.117.0-sedna.1"), Some(true));
-        assert_eq!(is_newer("0.117.0-sedna.1", "0.117.0+abcdef12"), Some(false));
+        assert_eq!(is_newer("0.117.0-sedna.1", "0.117.0+abcdef12"), None);
         assert_eq!(
             is_newer("0.119.0-sedna.2", "0.119.0-alpha.2-sedna.1"),
+            Some(true)
+        );
+        assert_eq!(
+            is_newer("0.119.0-alpha.10-sedna.1", "0.119.0-alpha.2-sedna.99"),
+            Some(true)
+        );
+        assert_eq!(
+            is_newer("0.119.0-alpha.10-sedna.2", "0.119.0-alpha.10-sedna.1"),
             Some(true)
         );
     }
 
     #[test]
-    fn plain_semver_comparisons_work() {
-        assert_eq!(is_newer("0.11.1", "0.11.0"), Some(true));
-        assert_eq!(is_newer("0.11.0", "0.11.1"), Some(false));
-        assert_eq!(is_newer("1.0.0", "0.9.9"), Some(true));
-        assert_eq!(is_newer("0.9.9", "1.0.0"), Some(false));
+    fn non_sedna_or_malformed_versions_fail_closed() {
+        assert_eq!(is_newer("0.11.1", "0.11.0"), None);
+        assert_eq!(is_newer("0.11.0-sedna.x", "0.11.0-sedna.1"), None);
     }
 
     #[test]
@@ -167,6 +263,6 @@ mod tests {
             parse_version(" 1.2.3 \n"),
             Some(Version::parse("1.2.3").expect("valid semver"))
         );
-        assert_eq!(is_newer(" 1.2.3 ", "1.2.2"), Some(true));
+        assert_eq!(is_newer(" 1.2.3-sedna.2 ", "1.2.3-sedna.1"), None);
     }
 }
