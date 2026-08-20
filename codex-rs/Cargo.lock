@@ -2831,6 +2831,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-apply-patch",
  "codex-async-utils",
+ "codex-browser-computer-use",
  "codex-code-mode",
  "codex-config",
  "codex-connectors",
