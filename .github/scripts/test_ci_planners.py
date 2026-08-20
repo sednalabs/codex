@@ -7516,6 +7516,21 @@ class HelperScriptTests(unittest.TestCase):
                 visible_path = root / "home" / ".local" / "bin" / "codex"
                 visible_path.parent.mkdir(parents=True)
                 visible_path.symlink_to(predecessor_link)
+            elif failure == "restore_temp_collision":
+                predecessor_link = root / "previous-codex"
+                predecessor_link.write_text("previous\n", encoding="utf-8")
+                visible_path = root / "home" / ".local" / "bin" / "codex"
+                visible_path.parent.mkdir(parents=True)
+                visible_path.symlink_to(predecessor_link)
+                current_path = root / "home" / ".codex" / "packages" / "standalone" / "current"
+                current_path.parent.mkdir(parents=True)
+                current_path.symlink_to(root / "previous-current")
+                (visible_path.parent / ".codex.restore.collision").symlink_to(
+                    root / "attacker-visible"
+                )
+                (current_path.parent / ".current.restore.collision").symlink_to(
+                    root / "attacker-current"
+                )
             if failure == "symlink_releases":
                 releases_path = root / "home" / ".codex" / "packages" / "standalone" / "releases"
                 releases_path.parent.mkdir(parents=True)
@@ -7700,6 +7715,10 @@ fi
             if failure == "activation_restore":
                 env["SEDNA_INSTALLER_TEST_FAULT"] = "after-visible-predecessor"
                 env["SEDNA_INSTALLER_TESTING"] = "1"
+            elif failure == "restore_temp_collision":
+                env["SEDNA_INSTALLER_TEST_FAULT"] = "after-visible-replacement"
+                env["SEDNA_INSTALLER_TESTING"] = "1"
+                env["SEDNA_INSTALLER_TEST_RESTORE_SUFFIX"] = "collision"
             elif failure == "activation_fault_inert":
                 env["SEDNA_INSTALLER_TEST_FAULT"] = "after-visible-predecessor"
                 env.pop("SEDNA_INSTALLER_TESTING", None)
@@ -7729,7 +7748,7 @@ fi
                 text=True,
                 env=env,
             )
-            if predecessor_link is not None:
+            if predecessor_link is not None and failure == "activation_restore":
                 visible_path = root / "home" / ".local" / "bin" / "codex"
                 self.assertTrue(visible_path.is_symlink())
                 self.assertEqual(visible_path.readlink(), predecessor_link)
@@ -7738,6 +7757,13 @@ fi
                 self.assertFalse(
                     (root / "home" / ".codex" / "packages" / "standalone" / "current").exists()
                 )
+            if failure == "restore_temp_collision":
+                visible_temp = root / "home" / ".local" / "bin" / ".codex.restore.collision"
+                current_temp = root / "home" / ".codex" / "packages" / "standalone" / ".current.restore.collision"
+                self.assertEqual(visible_temp.readlink(), root / "attacker-visible")
+                self.assertEqual(current_temp.readlink(), root / "attacker-current")
+                self.assertNotEqual((root / "home" / ".local" / "bin" / "codex").readlink(), root / "attacker-visible")
+                self.assertNotEqual((root / "home" / ".codex" / "packages" / "standalone" / "current").readlink(), root / "attacker-current")
             return proc
 
     def test_sedna_release_installer_executes_hardened_linux_fixture(self) -> None:
@@ -7777,6 +7803,12 @@ fi
     def test_sedna_release_installer_removes_new_links_on_empty_predecessor_failure(self) -> None:
         proc = self.run_sedna_installer_fixture(
             "activation_empty_restore", dry_run=False
+        )
+        self.assertEqual(proc.returncode, 74, proc.stderr)
+
+    def test_sedna_release_installer_fails_closed_on_restore_temp_collisions(self) -> None:
+        proc = self.run_sedna_installer_fixture(
+            "restore_temp_collision", dry_run=False
         )
         self.assertEqual(proc.returncode, 74, proc.stderr)
 
