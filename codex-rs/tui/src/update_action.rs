@@ -34,7 +34,18 @@ impl UpdateAction {
 
     #[cfg(any(not(debug_assertions), test))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
-        if !crate::version::is_sedna_release_channel() {
+        Self::from_install_context_for_sedna_identity(
+            context,
+            crate::version::is_sedna_release_channel(),
+        )
+    }
+
+    #[cfg(any(not(debug_assertions), test))]
+    fn from_install_context_for_sedna_identity(
+        context: &InstallContext,
+        has_sedna_identity: bool,
+    ) -> Option<Self> {
+        if !has_sedna_identity {
             return None;
         }
         match &context.method {
@@ -101,66 +112,108 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn maps_install_context_to_update_action() {
+    fn maps_install_context_to_update_action_when_identity_is_present() {
         let native_release_dir =
             AbsolutePathBuf::from_absolute_path(std::env::temp_dir().join("native-release"))
                 .expect("temp dir path should be absolute");
 
         assert_eq!(
-            UpdateAction::from_install_context(&InstallContext {
-                method: InstallMethod::Other,
-                package_layout: None,
-            }),
-            None
-        );
-        assert_eq!(
-            UpdateAction::from_install_context(&InstallContext {
-                method: InstallMethod::Npm,
-                package_layout: None,
-            }),
-            None
-        );
-        assert_eq!(
-            UpdateAction::from_install_context(&InstallContext {
-                method: InstallMethod::Bun,
-                package_layout: None,
-            }),
-            None
-        );
-        assert_eq!(
-            UpdateAction::from_install_context(&InstallContext {
-                method: InstallMethod::Pnpm,
-                package_layout: None,
-            }),
-            None
-        );
-        assert_eq!(
-            UpdateAction::from_install_context(&InstallContext {
-                method: InstallMethod::Brew,
-                package_layout: None,
-            }),
-            None
-        );
-        assert_eq!(
-            UpdateAction::from_install_context(&InstallContext {
-                method: InstallMethod::Standalone {
-                    platform: StandalonePlatform::Unix,
-                    release_dir: native_release_dir.clone(),
-                    resources_dir: Some(native_release_dir.join("codex-resources")),
+            UpdateAction::from_install_context_for_sedna_identity(
+                &InstallContext {
+                    method: InstallMethod::Other,
+                    package_layout: None,
                 },
-                package_layout: None,
-            }),
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            UpdateAction::from_install_context_for_sedna_identity(
+                &InstallContext {
+                    method: InstallMethod::Npm,
+                    package_layout: None,
+                },
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            UpdateAction::from_install_context_for_sedna_identity(
+                &InstallContext {
+                    method: InstallMethod::Bun,
+                    package_layout: None,
+                },
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            UpdateAction::from_install_context_for_sedna_identity(
+                &InstallContext {
+                    method: InstallMethod::Pnpm,
+                    package_layout: None,
+                },
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            UpdateAction::from_install_context_for_sedna_identity(
+                &InstallContext {
+                    method: InstallMethod::Brew,
+                    package_layout: None,
+                },
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            UpdateAction::from_install_context_for_sedna_identity(
+                &InstallContext {
+                    method: InstallMethod::Standalone {
+                        platform: StandalonePlatform::Unix,
+                        release_dir: native_release_dir.clone(),
+                        resources_dir: Some(native_release_dir.join("codex-resources")),
+                    },
+                    package_layout: None,
+                },
+                true
+            ),
             Some(UpdateAction::StandaloneUnix)
         );
         assert_eq!(
-            UpdateAction::from_install_context(&InstallContext {
-                method: InstallMethod::Standalone {
-                    platform: StandalonePlatform::Windows,
-                    release_dir: native_release_dir.clone(),
-                    resources_dir: Some(native_release_dir.join("codex-resources")),
+            UpdateAction::from_install_context_for_sedna_identity(
+                &InstallContext {
+                    method: InstallMethod::Standalone {
+                        platform: StandalonePlatform::Windows,
+                        release_dir: native_release_dir.clone(),
+                        resources_dir: Some(native_release_dir.join("codex-resources")),
+                    },
+                    package_layout: None,
                 },
-                package_layout: None,
-            }),
+                true
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn absent_identity_disables_standalone_update_action() {
+        let native_release_dir =
+            AbsolutePathBuf::from_absolute_path(std::env::temp_dir().join("native-release"))
+                .expect("temp dir path should be absolute");
+        assert_eq!(
+            UpdateAction::from_install_context_for_sedna_identity(
+                &InstallContext {
+                    method: InstallMethod::Standalone {
+                        platform: StandalonePlatform::Unix,
+                        release_dir: native_release_dir,
+                        resources_dir: None,
+                    },
+                    package_layout: None,
+                },
+                false,
+            ),
             None
         );
     }
