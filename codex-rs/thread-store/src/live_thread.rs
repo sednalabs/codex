@@ -129,19 +129,21 @@ impl LiveThread {
                 })?,
         );
         let live_thread = Self::create(Arc::clone(&thread_store), params).await?;
-        let _append_permit = live_thread
-            .append_gate
-            .acquire()
-            .await
-            .unwrap_or_else(|_| unreachable!());
-        let items = persisted_rollout_items(inherited_model_context, live_thread.history_mode);
-        if let Err(err) = thread_store
-            .append_items(AppendThreadItemsParams {
-                thread_id: live_thread.thread_id,
-                items,
-            })
-            .await
-        {
+        let append_result = {
+            let _append_permit = live_thread
+                .append_gate
+                .acquire()
+                .await
+                .unwrap_or_else(|_| unreachable!());
+            let items = persisted_rollout_items(inherited_model_context, live_thread.history_mode);
+            thread_store
+                .append_items(AppendThreadItemsParams {
+                    thread_id: live_thread.thread_id,
+                    items,
+                })
+                .await
+        };
+        if let Err(err) = append_result {
             if let Err(discard_err) = live_thread.discard().await {
                 warn!(
                     "failed to discard thread persistence after inherited context append failed: {discard_err}"
