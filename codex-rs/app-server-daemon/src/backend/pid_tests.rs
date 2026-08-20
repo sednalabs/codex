@@ -128,10 +128,14 @@ async fn stale_record_cleanup_preserves_replacement_record() {
     let stale = PidRecord {
         pid: 1,
         process_start_time: "old".to_string(),
+        executable: None,
+        executable_identity: None,
     };
     let replacement = PidRecord {
         pid: 2,
         process_start_time: "new".to_string(),
+        executable: None,
+        executable_identity: None,
     };
     tokio::fs::write(
         &pid_file,
@@ -164,6 +168,8 @@ async fn stop_reaps_untracked_app_server_child() {
     let record = PidRecord {
         pid,
         process_start_time: read_process_start_time(pid).await.expect("start time"),
+        executable: None,
+        executable_identity: None,
     };
     tokio::fs::write(
         &pid_file,

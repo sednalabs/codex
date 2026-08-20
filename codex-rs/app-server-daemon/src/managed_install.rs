@@ -10,6 +10,8 @@ use anyhow::anyhow;
 #[cfg(unix)]
 use serde::Deserialize;
 #[cfg(unix)]
+use serde::Serialize;
+#[cfg(unix)]
 use sha2::Digest;
 #[cfg(unix)]
 use sha2::Sha256;
@@ -193,7 +195,7 @@ fn expected_sedna_standalone_target(target_os: &str, target_arch: &str) -> Optio
 }
 
 #[cfg(unix)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ExecutableIdentity {
     digest: [u8; 32],
 }

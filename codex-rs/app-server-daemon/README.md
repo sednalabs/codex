@@ -119,8 +119,10 @@ so the new setting takes effect immediately.
 Top-level `codex remote-control` bootstraps with `--remote-control` only before
 initial setup. On every later start it preserves a running app-server and
 reconciles the updater against the current validated release: it starts a
-missing eligible updater, preserves an eligible running updater, stops an
-ineligible running updater, and leaves an ineligible missing updater absent.
+missing eligible updater, preserves an eligible updater only when its recorded
+executable identity matches the current release, replaces a stale eligible
+updater, stops an ineligible running updater, and leaves an ineligible missing
+updater absent.
 This also restores both services after a reboot when the current release is
 eligible.
 
