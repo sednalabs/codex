@@ -54,6 +54,8 @@ pub(crate) struct AgentNavigationState {
     next_picker_page_cursor: Option<String>,
     /// Cursors already observed in the current persisted pagination sequence.
     seen_picker_page_cursors: HashSet<String>,
+    /// Parent-lineage results reused when a persisted page is deferred by the read budget.
+    picker_lineage_cache: HashMap<ThreadId, (Option<ThreadId>, bool)>,
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -302,6 +304,7 @@ impl AgentNavigationState {
         self.parent_owned_threads.clear();
         self.next_picker_page_cursor = None;
         self.seen_picker_page_cursors.clear();
+        self.picker_lineage_cache.clear();
     }
 
     pub(crate) fn begin_picker_page_sequence(&mut self) {
@@ -328,6 +331,23 @@ impl AgentNavigationState {
         }
         self.next_picker_page_cursor = Some(next_cursor);
         true
+    }
+
+    pub(crate) fn picker_lineage_cache_get(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<(Option<ThreadId>, bool)> {
+        self.picker_lineage_cache.get(&thread_id).copied()
+    }
+
+    pub(crate) fn picker_lineage_cache_insert(
+        &mut self,
+        thread_id: ThreadId,
+        parent_thread_id: Option<ThreadId>,
+        is_thread_spawn: bool,
+    ) {
+        self.picker_lineage_cache
+            .insert(thread_id, (parent_thread_id, is_thread_spawn));
     }
 
     /// Removes a tracked thread entirely from picker metadata and traversal order.
