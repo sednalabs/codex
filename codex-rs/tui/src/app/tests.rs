@@ -2164,7 +2164,7 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
     app.active_thread_id = Some(thread_id);
     app.chat_widget
         .handle_thread_session(started.session.clone());
-    app.chat_widget.set_replay_only_thread(true);
+    app.chat_widget.set_replay_only_thread(/*replay_only*/ true);
 
     // Model the transcript already rendered while this channel was replay-only. Promotion must
     // clear these app-owned cells before replaying the authoritative resumed snapshot; otherwise
@@ -2196,7 +2196,8 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
     }));
 
     // Seed the same queued follow-up state that a replay-only snapshot restores.
-    app.chat_widget.set_replay_only_thread(false);
+    app.chat_widget
+        .set_replay_only_thread(/*replay_only*/ false);
     app.chat_widget.set_queue_autosend_suppressed(true);
     app.chat_widget.submit_user_message_with_mode(
         "queued during replay".to_string(),
@@ -2212,7 +2213,7 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
         .chat_widget
         .capture_thread_input_state()
         .expect("expected queued input state");
-    app.chat_widget.set_replay_only_thread(true);
+    app.chat_widget.set_replay_only_thread(/*replay_only*/ true);
     app.chat_widget.restore_thread_input_state(
         Some(input_state),
         ThreadInputStateRestoreMode {
