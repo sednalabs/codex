@@ -2086,7 +2086,7 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
 
 #[tokio::test]
 async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() -> Result<()> {
-    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
     let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
     let started = app_server
@@ -2102,9 +2102,40 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
     channel.mark_replay_only();
     app.thread_event_channels.insert(thread_id, channel);
     app.activate_thread_channel(thread_id).await;
+    app.active_thread_id = Some(thread_id);
     app.chat_widget
         .handle_thread_session(started.session.clone());
     app.chat_widget.set_replay_only_thread(true);
+
+    // Model the transcript already rendered while this channel was replay-only. Promotion must
+    // clear these app-owned cells before replaying the authoritative resumed snapshot; otherwise
+    // the old transcript is retained (and any matching resumed turns are duplicated).
+    app.chat_widget.replay_thread_turns(
+        vec![test_turn(
+            "stale-replay-turn",
+            TurnStatus::Completed,
+            vec![ThreadItem::UserMessage {
+                id: "stale-user".to_string(),
+                client_id: None,
+                content: vec![AppServerUserInput::Text {
+                    text: "stale replay output".to_string(),
+                    text_elements: Vec::new(),
+                }],
+            }],
+        )],
+        ReplayKind::ThreadSnapshot,
+    );
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            app.transcript_cells.push(cell.into());
+        }
+    }
+    assert!(app
+        .transcript_cells
+        .iter()
+        .any(|cell| cell.display_lines(120).iter().any(|line| {
+            line.to_string().contains("stale replay output")
+        })));
 
     // Seed the same queued follow-up state that a replay-only snapshot restores.
     app.chat_widget.set_replay_only_thread(false);
@@ -2138,6 +2169,12 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
             .await?
     );
     assert_eq!(app.chat_widget.current_model(), resumed_model);
+    assert!(app
+        .transcript_cells
+        .iter()
+        .all(|cell| !cell.display_lines(120).iter().any(|line| {
+            line.to_string().contains("stale replay output")
+        })));
     assert!(
         matches!(next_user_turn_op(&mut op_rx), Op::UserTurn { .. }),
         "promotion should drain the preserved queue after live session configuration"
