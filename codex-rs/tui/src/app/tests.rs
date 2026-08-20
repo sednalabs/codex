@@ -2074,6 +2074,57 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
     assert!(!app.should_attach_live_thread_for_selection(thread_id));
+
+    // A replay-only channel is stale local state, not proof that a thread is still closed. If the
+    // server reports the thread live again, selection must be allowed to re-establish a listener.
+    app.thread_event_channels
+        .get_mut(&thread_id)
+        .expect("thread channel should exist")
+        .mark_replay_only();
+    assert!(app.should_attach_live_thread_for_selection(thread_id));
+}
+
+#[tokio::test]
+async fn replay_only_thread_rejects_direct_user_turn_without_server_mutation() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let mut channel = ThreadEventChannel::new(/*capacity*/ 1);
+    channel.mark_replay_only();
+    app.thread_event_channels.insert(thread_id, channel);
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let op = AppCommand::user_turn(
+        vec![UserInput::Text {
+            text: "must not be submitted".to_string(),
+            text_elements: None,
+        }],
+        app.config.cwd.to_path_buf(),
+        AskForApproval::OnRequest,
+        None,
+        app.config.model.clone(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    app.submit_thread_op(&mut app_server, thread_id, op)
+        .await
+        .expect("replay-only input should be handled as a local rejection");
+    assert_eq!(app.active_thread_id, None);
+    let store = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("replay channel should remain")
+        .store
+        .lock()
+        .await;
+    assert!(store.active_turn_id().is_none());
+    assert!(store.turns.is_empty());
 }
 
 #[tokio::test]
