@@ -105,6 +105,10 @@ fn is_non_inheritable_env_var(name: &str) -> bool {
         .any(|restricted| restricted.eq_ignore_ascii_case(name))
 }
 
+fn scrub_non_inheritable_env_vars(env: &mut HashMap<String, String>) {
+    env.retain(|name, _| !is_non_inheritable_env_var(name));
+}
+
 /// Test-only override for deterministic unified exec process IDs.
 ///
 /// In production builds this value should remain at its default (`false`) and
@@ -191,7 +195,7 @@ fn exec_server_env_for_request(
     Option<codex_exec_server::ExecEnvPolicy>,
     HashMap<String, String>,
 ) {
-    if let Some(exec_server_env_config) = &request.exec_server_env_config {
+    let (env_policy, mut env) = if let Some(exec_server_env_config) = &request.exec_server_env_config {
         let mut env =
             env_overlay_for_exec_server(&request.env, &exec_server_env_config.local_policy_env);
         if request.exec_server_managed_network.is_some() {
@@ -204,7 +208,9 @@ fn exec_server_env_for_request(
         (Some(exec_server_env_config.policy.clone()), env)
     } else {
         (None, request.env.clone())
-    }
+    };
+    scrub_non_inheritable_env_vars(&mut env);
+    (env_policy, env)
 }
 
 fn exec_server_params_for_request(
