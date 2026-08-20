@@ -367,23 +367,15 @@ fn build_non_inheritable_safe_exec(
 }
 
 fn build_post_startup_scrub(
-    shell_path: &str,
-    original_shell: &str,
-    original_script: &str,
+    _shell_path: &str,
+    _original_shell: &str,
+    _original_script: &str,
     trailing_args: &str,
 ) -> String {
-    if shell_path.ends_with("/sh") {
-        return format!(
-            "__codex_post_scrub=\"$(\\\"$__codex_env\\\" | \\\"$__codex_awk\\\" -F= 'tolower($1) == \\\"openai_federation_rule_id\\\" || tolower($1) == \\\"openai_identity_token_file\\\" {{ print \\\"unset '\\047\\\" $1 \\\"'\\047\\\" }}')\"\nexec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"$__codex_post_scrub\nexec /bin/sh -c '{original_script}'\" sh{trailing_args}"
-        );
-    }
-    let builtin = if shell_path.ends_with("/bash") || shell_path.ends_with("/zsh") {
-        "builtin"
-    } else {
-        "command"
-    };
+    // Cross an exec boundary before scrubbing so readonly attributes from a
+    // startup file cannot survive into the payload shell.
     format!(
-        "IFS=' \\t\\n'\nfor __codex_startup_name in $(\"$__codex_env\" | \"$__codex_awk\" -F= 'tolower($1) == \"openai_federation_rule_id\" || tolower($1) == \"openai_identity_token_file\" {{ print $1 }}'); do\n  {builtin} unset \"$__codex_startup_name\"\ndone"
+        "__codex_post_scrub=\"$(\\\"$__codex_env\\\" | \\\"$__codex_awk\\\" -F= 'tolower($1) == \\\"openai_federation_rule_id\\\" || tolower($1) == \\\"openai_identity_token_file\\\" {{ print \\\"unset '\\047\\\" $1 \\\"'\\047\\\" }}')\"\nexec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"$__codex_post_scrub\\nexec \\\"$__codex_shell\\\" -c \\\"$__codex_script\\\" \\\"\\$@\\\"\" sh{trailing_args}"
     )
 }
 

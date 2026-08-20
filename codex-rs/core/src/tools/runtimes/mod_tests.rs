@@ -785,7 +785,7 @@ fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
     let startup_path = dir.path().join("startup.sh");
     std::fs::write(
         &startup_path,
-        "export OpenAI_Federation_Rule_Id='/run/startup-rule'\nexport openai_identity_token_file='/run/startup-token'\n",
+        "export -r OpenAI_Federation_Rule_Id='/run/startup-rule'\nexport -r openai_identity_token_file='/run/startup-token'\n",
     )
     .expect("write startup hook");
     #[cfg(unix)]
@@ -846,7 +846,7 @@ fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
     let hook_command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
-        "/usr/bin/printf '%s|%s' \"${BASH_ENV-unset}\" \"${OpenAI_Federation_Rule_Id-unset}\""
+        "/usr/bin/printf '%s|%s|%s' \"${BASH_ENV-unset}\" \"${OpenAI_Federation_Rule_Id-unset}\" \"${openai_identity_token_file-unset}\""
             .to_string(),
     ];
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
@@ -866,7 +866,7 @@ fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
     assert!(output.status.success(), "hook command failed: {output:?}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        format!("{}|unset", startup_path.display())
+        format!("{}|unset|unset", startup_path.display())
     );
 
     let (session_shell, shell_snapshot) =
