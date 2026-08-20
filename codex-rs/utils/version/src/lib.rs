@@ -52,3 +52,14 @@ pub const GIT_SHA: &str = env!("CODEX_GIT_SHA");
 
 /// The human-readable git describe string for this build.
 pub const GIT_DESCRIBE: &str = env!("CODEX_GIT_DESCRIBE");
+
+/// Whether the current target has a published Sedna standalone installer asset.
+///
+/// Callers should pass `std::env::consts::OS` and `std::env::consts::ARCH`
+/// so this remains both exact for the running binary and directly testable.
+pub const fn is_sedna_standalone_update_target_supported(os: &str, arch: &str) -> bool {
+    matches!(
+        (os, arch),
+        ("linux", "x86_64") | ("linux", "aarch64") | ("macos", "x86_64")
+    )
+}

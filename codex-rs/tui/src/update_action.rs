@@ -47,8 +47,29 @@ impl UpdateAction {
         has_sedna_identity: bool,
         running_release_version: &str,
     ) -> Option<Self> {
+        Self::from_install_context_for_sedna_release_on_target(
+            context,
+            has_sedna_identity,
+            running_release_version,
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )
+    }
+
+    #[cfg(any(not(debug_assertions), test))]
+    fn from_install_context_for_sedna_release_on_target(
+        context: &InstallContext,
+        has_sedna_identity: bool,
+        running_release_version: &str,
+        target_os: &str,
+        target_arch: &str,
+    ) -> Option<Self> {
         if !has_sedna_identity
             || !crate::update_versions::is_sedna_release_version(running_release_version)
+            || !codex_utils_version::is_sedna_standalone_update_target_supported(
+                target_os,
+                target_arch,
+            )
         {
             return None;
         }
@@ -177,7 +198,7 @@ mod tests {
             None
         );
         assert_eq!(
-            UpdateAction::from_install_context_for_sedna_release(
+            UpdateAction::from_install_context_for_sedna_release_on_target(
                 &InstallContext {
                     method: InstallMethod::Standalone {
                         platform: StandalonePlatform::Unix,
@@ -187,7 +208,9 @@ mod tests {
                     package_layout: None,
                 },
                 true,
-                "1.2.3-sedna.1"
+                "1.2.3-sedna.1",
+                "linux",
+                "x86_64",
             ),
             Some(UpdateAction::StandaloneUnix)
         );
@@ -242,6 +265,53 @@ mod tests {
                 "1.2.3",
             ),
             None
+        );
+    }
+
+    #[test]
+    fn standalone_update_action_requires_a_supported_sedna_installer_target() {
+        let native_release_dir =
+            AbsolutePathBuf::from_absolute_path(std::env::temp_dir().join("native-release"))
+                .expect("temp dir path should be absolute");
+        let context = InstallContext {
+            method: InstallMethod::Standalone {
+                platform: StandalonePlatform::Unix,
+                release_dir: native_release_dir,
+                resources_dir: None,
+            },
+            package_layout: None,
+        };
+
+        assert_eq!(
+            UpdateAction::from_install_context_for_sedna_release_on_target(
+                &context,
+                true,
+                "1.2.3-sedna.1",
+                "linux",
+                "x86_64",
+            ),
+            Some(UpdateAction::StandaloneUnix)
+        );
+        for target in [("macos", "aarch64"), ("freebsd", "x86_64")] {
+            assert_eq!(
+                UpdateAction::from_install_context_for_sedna_release_on_target(
+                    &context,
+                    true,
+                    "1.2.3-sedna.1",
+                    target.0,
+                    target.1,
+                ),
+                None,
+                "accepted unsupported target {}-{}",
+                target.0,
+                target.1
+            );
+        }
+        assert!(
+            codex_utils_version::is_sedna_standalone_update_target_supported("linux", "aarch64")
+        );
+        assert!(
+            codex_utils_version::is_sedna_standalone_update_target_supported("macos", "x86_64")
         );
     }
 

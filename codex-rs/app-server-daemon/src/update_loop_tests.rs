@@ -10,6 +10,8 @@ use super::fetch_installer_script_from_url;
 use super::install_latest_sedna_standalone;
 #[cfg(unix)]
 use super::is_sedna_standalone_update_eligible;
+#[cfg(unix)]
+use super::is_sedna_standalone_update_eligible_on_target;
 use super::update_modes_for_identities;
 use crate::RestartMode;
 use crate::UpdaterRefreshMode;
@@ -85,10 +87,12 @@ printf 'fixture updater diagnostic\n' >&2
 #[cfg(unix)]
 #[test]
 fn standalone_update_requires_explicit_sedna_build_identity_and_release_version() {
-    assert!(is_sedna_standalone_update_eligible(
+    assert!(is_sedna_standalone_update_eligible_on_target(
         Some("sednalabs/codex"),
         Some("v"),
-        Some("1.2.3-sedna.1")
+        Some("1.2.3-sedna.1"),
+        "linux",
+        "x86_64",
     ));
     for identity in [
         (None, Some("v"), Some("1.2.3-sedna.1")),
@@ -105,6 +109,32 @@ fn standalone_update_requires_explicit_sedna_build_identity_and_release_version(
         assert!(!is_sedna_standalone_update_eligible(
             identity.0, identity.1, identity.2
         ));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn standalone_update_requires_a_supported_sedna_installer_target() {
+    assert!(is_sedna_standalone_update_eligible_on_target(
+        Some("sednalabs/codex"),
+        Some("v"),
+        Some("1.2.3-sedna.1"),
+        "linux",
+        "x86_64",
+    ));
+    for target in [("macos", "aarch64"), ("freebsd", "x86_64")] {
+        assert!(
+            !is_sedna_standalone_update_eligible_on_target(
+                Some("sednalabs/codex"),
+                Some("v"),
+                Some("1.2.3-sedna.1"),
+                target.0,
+                target.1,
+            ),
+            "accepted unsupported target {}-{}",
+            target.0,
+            target.1
+        );
     }
 }
 
