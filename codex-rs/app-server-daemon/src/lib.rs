@@ -752,13 +752,17 @@ impl Daemon {
             updater_is_running,
             updater_matches_managed_release,
         ) {
-            UpdaterLifecycleAction::Start => updater.start().await?,
+            UpdaterLifecycleAction::Start => {
+                updater.start().await?;
+            }
             UpdaterLifecycleAction::Preserve => {}
             UpdaterLifecycleAction::Replace => {
                 updater.stop().await?;
                 updater.start().await?;
             }
-            UpdaterLifecycleAction::Stop => updater.stop().await?,
+            UpdaterLifecycleAction::Stop => {
+                updater.stop().await?;
+            }
         }
         Ok(())
     }

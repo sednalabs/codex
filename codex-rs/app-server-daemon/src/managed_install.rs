@@ -157,9 +157,13 @@ fn checksum_matches(checksums: &str, file_name: &str, contents: &[u8]) -> bool {
         (candidate == file_name).then_some(digest)
     });
     expected.is_some_and(|expected| {
+        let actual = Sha256::digest(contents)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         expected.len() == 64
             && expected.bytes().all(|byte| byte.is_ascii_hexdigit())
-            && expected.eq_ignore_ascii_case(&format!("{:x}", Sha256::digest(contents)))
+            && expected.eq_ignore_ascii_case(&actual)
     })
 }
 
