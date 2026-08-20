@@ -15,6 +15,19 @@ pub use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
 /// overwrite this value, so it must not be treated as proof of enforcement.
 pub const CODEX_PERMISSION_PROFILE_ENV_VAR: &str = "CODEX_PERMISSION_PROFILE";
 
+const NON_INHERITABLE_ENV_VARS: [&str; 2] =
+    ["OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE"];
+
+pub fn is_non_inheritable_env_var(name: &str) -> bool {
+    NON_INHERITABLE_ENV_VARS
+        .iter()
+        .any(|restricted| restricted.eq_ignore_ascii_case(name))
+}
+
+pub fn scrub_non_inheritable_env_vars(env: &mut HashMap<String, String>) {
+    env.retain(|name, _| !is_non_inheritable_env_var(name));
+}
+
 /// Construct an environment map based on the rules in the specified policy. The
 /// resulting map can be passed directly to `Command::envs()` after calling
 /// `env_clear()` to ensure no unintended variables are leaked to the spawned
