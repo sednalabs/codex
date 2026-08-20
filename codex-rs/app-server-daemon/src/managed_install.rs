@@ -8,6 +8,8 @@ use anyhow::Result;
 #[cfg(unix)]
 use anyhow::anyhow;
 #[cfg(unix)]
+use serde::Deserialize;
+#[cfg(unix)]
 use sha2::Digest;
 #[cfg(unix)]
 use sha2::Sha256;
@@ -61,6 +63,65 @@ pub(crate) async fn managed_codex_version(codex_bin: &Path) -> Result<String> {
         )
     })?;
     parse_codex_version(&stdout)
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedSednaRelease {
+    pub(crate) version: String,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Deserialize)]
+struct ManagedReleaseMetadata {
+    release_tag: String,
+    release_version: String,
+    repository: String,
+    target: String,
+}
+
+#[cfg(unix)]
+pub(crate) async fn managed_sedna_automatic_update_release(
+    codex_bin: &Path,
+) -> Option<ManagedSednaRelease> {
+    let resolved_bin = resolved_managed_codex_bin(codex_bin).await.ok()?;
+    let metadata_path = resolved_bin.parent()?.join("RELEASE-METADATA.json");
+    let metadata = fs::read_to_string(metadata_path).await.ok()?;
+    let metadata = serde_json::from_str(&metadata).ok()?;
+    managed_sedna_automatic_update_release_from_metadata(
+        &metadata,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+
+#[cfg(unix)]
+fn managed_sedna_automatic_update_release_from_metadata(
+    metadata: &ManagedReleaseMetadata,
+    target_os: &str,
+    target_arch: &str,
+) -> Option<ManagedSednaRelease> {
+    let metadata_version = codex_utils_version::parse_sedna_release_tag(&metadata.release_tag)?;
+    (metadata.repository == codex_utils_version::SEDNA_RELEASE_REPOSITORY
+        && metadata_version == metadata.release_version
+        && metadata.target == expected_sedna_standalone_target(target_os, target_arch)?
+        && codex_utils_version::is_sedna_automatic_update_eligible(
+            &metadata.release_version,
+            target_os,
+            target_arch,
+        ))
+    .then(|| ManagedSednaRelease {
+        version: metadata.release_version.clone(),
+    })
+}
+
+#[cfg(unix)]
+fn expected_sedna_standalone_target(target_os: &str, target_arch: &str) -> Option<&'static str> {
+    match (target_os, target_arch) {
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
+    }
 }
 
 #[cfg(unix)]

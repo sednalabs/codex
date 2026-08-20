@@ -21,6 +21,8 @@ use codex_utils_home_dir::find_codex_home;
 use managed_install::managed_codex_bin;
 #[cfg(unix)]
 use managed_install::managed_codex_version;
+#[cfg(unix)]
+use managed_install::managed_sedna_automatic_update_release;
 use serde::Serialize;
 use settings::DaemonSettings;
 use tokio::time::sleep;
@@ -198,6 +200,12 @@ enum UpdaterLifecycleAction {
     Restart,
     Stop,
     None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteControlStartAction {
+    Start,
+    Bootstrap,
 }
 
 pub async fn run(command: LifecycleCommand) -> Result<LifecycleOutput> {
@@ -506,20 +514,23 @@ impl Daemon {
     async fn ensure_remote_control_started(&self) -> Result<RemoteControlStartOutput> {
         let _operation_lock = self.acquire_operation_lock().await?;
         let settings = self.load_settings().await?;
-        if self.is_bootstrapped(&settings).await? {
-            let _ = self
-                .set_remote_control_locked(RemoteControlMode::Enabled)
-                .await?;
-            let output = self.start().await?;
-            return Ok(RemoteControlStartOutput::Start(output));
+        match remote_control_start_action(self.is_bootstrapped(&settings).await?) {
+            RemoteControlStartAction::Start => {
+                let _ = self
+                    .set_remote_control_locked(RemoteControlMode::Enabled)
+                    .await?;
+                let output = self.start().await?;
+                Ok(RemoteControlStartOutput::Start(output))
+            }
+            RemoteControlStartAction::Bootstrap => {
+                let output = self
+                    .bootstrap_locked(BootstrapOptions {
+                        remote_control_enabled: true,
+                    })
+                    .await?;
+                Ok(RemoteControlStartOutput::Bootstrap(output))
+            }
         }
-
-        let output = self
-            .bootstrap_locked(BootstrapOptions {
-                remote_control_enabled: true,
-            })
-            .await?;
-        Ok(RemoteControlStartOutput::Bootstrap(output))
     }
 
     async fn ensure_remote_control_ready(&self) -> Result<RemoteControlReadyOutput> {
@@ -599,8 +610,9 @@ impl Daemon {
     async fn bootstrap_locked(&self, options: BootstrapOptions) -> Result<BootstrapOutput> {
         self.ensure_managed_codex_bin()?;
 
-        let settings = DaemonSettings {
+        let mut settings = DaemonSettings {
             remote_control_enabled: options.remote_control_enabled,
+            bootstrapped: false,
         };
         if client::probe(&self.socket_path).await.is_ok()
             && self.running_backend(&settings).await?.is_none()
@@ -617,7 +629,7 @@ impl Daemon {
 
         let backend = backend::pid_backend(self.backend_paths(&settings));
         backend.start().await?;
-        let auto_update_enabled = bootstrap_auto_update_enabled();
+        let auto_update_enabled = self.managed_auto_update_enabled().await;
         let updater = backend::pid_update_loop_backend(self.backend_paths(&settings));
         match updater_lifecycle_action(auto_update_enabled, updater.is_starting_or_running().await?)
         {
@@ -631,6 +643,8 @@ impl Daemon {
         }
 
         let info = self.wait_until_ready().await?;
+        settings.bootstrapped = true;
+        settings.save(&self.settings_file).await?;
         let managed_codex_version = self.managed_codex_version_best_effort().await;
         Ok(BootstrapOutput {
             status: BootstrapStatus::Bootstrapped,
@@ -679,8 +693,28 @@ impl Daemon {
     }
 
     async fn is_bootstrapped(&self, settings: &DaemonSettings) -> Result<bool> {
+        if settings.bootstrapped {
+            return Ok(remote_control_bootstrap_ready(
+                /*persisted_bootstrap*/ true, /*legacy_updater_running*/ false,
+            ));
+        }
         let updater = backend::pid_update_loop_backend(self.backend_paths(settings));
-        updater.is_starting_or_running().await
+        Ok(remote_control_bootstrap_ready(
+            /*persisted_bootstrap*/ false,
+            updater.is_starting_or_running().await?,
+        ))
+    }
+
+    #[cfg(unix)]
+    async fn managed_auto_update_enabled(&self) -> bool {
+        managed_sedna_automatic_update_release(&self.managed_codex_bin)
+            .await
+            .is_some()
+    }
+
+    #[cfg(not(unix))]
+    async fn managed_auto_update_enabled(&self) -> bool {
+        false
     }
 
     fn ensure_managed_codex_bin(&self) -> Result<()> {
@@ -802,31 +836,6 @@ impl Daemon {
     }
 }
 
-fn bootstrap_auto_update_enabled() -> bool {
-    update_loop::is_sedna_standalone_update_eligible(
-        option_env!("CODEX_RELEASE_REPOSITORY"),
-        option_env!("CODEX_RELEASE_TAG_PREFIX"),
-        option_env!("CODEX_RELEASE_VERSION"),
-    )
-}
-
-#[cfg(all(test, unix))]
-fn bootstrap_auto_update_enabled_on_target(
-    repository: Option<&str>,
-    tag_prefix: Option<&str>,
-    release_version: Option<&str>,
-    target_os: &str,
-    target_arch: &str,
-) -> bool {
-    update_loop::is_sedna_standalone_update_eligible_on_target(
-        repository,
-        tag_prefix,
-        release_version,
-        target_os,
-        target_arch,
-    )
-}
-
 fn updater_lifecycle_action(
     auto_update_enabled: bool,
     updater_is_running: bool,
@@ -836,6 +845,18 @@ fn updater_lifecycle_action(
         (true, true) => UpdaterLifecycleAction::Restart,
         (false, true) => UpdaterLifecycleAction::Stop,
         (false, false) => UpdaterLifecycleAction::None,
+    }
+}
+
+fn remote_control_bootstrap_ready(persisted_bootstrap: bool, legacy_updater_running: bool) -> bool {
+    persisted_bootstrap || legacy_updater_running
+}
+
+fn remote_control_start_action(bootstrapped: bool) -> RemoteControlStartAction {
+    if bootstrapped {
+        RemoteControlStartAction::Start
+    } else {
+        RemoteControlStartAction::Bootstrap
     }
 }
 
@@ -937,6 +958,7 @@ mod tests {
     use super::Daemon;
     use super::LifecycleOutput;
     use super::LifecycleStatus;
+    use super::RemoteControlStartAction;
     use super::RemoteControlStartOutput;
     use super::RemoteControlStatus;
     use super::RestartDecision;
@@ -944,8 +966,9 @@ mod tests {
     use super::RestartMode;
     use super::UpdaterLifecycleAction;
     use super::UpdaterRefreshMode;
-    use super::bootstrap_auto_update_enabled_on_target;
     use super::missing_managed_install_message;
+    use super::remote_control_bootstrap_ready;
+    use super::remote_control_start_action;
     use super::restart_decision;
     use super::should_reexec_updater;
     use super::updater_lifecycle_action;
@@ -993,50 +1016,6 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_auto_update_uses_the_shared_sedna_eligibility_predicate() {
-        for target_arch in ["x86_64", "aarch64"] {
-            assert!(bootstrap_auto_update_enabled_on_target(
-                Some("sednalabs/codex"),
-                Some("v"),
-                Some("1.2.3-sedna.1"),
-                "linux",
-                target_arch,
-            ));
-        }
-
-        for release in [
-            (
-                Some("sednalabs/codex"),
-                Some("v"),
-                Some("1.2.3-alpha.1-sedna.1"),
-                "linux",
-                "x86_64",
-            ),
-            (
-                Some("sednalabs/codex"),
-                Some("v"),
-                Some("1.2.3-sedna.1"),
-                "macos",
-                "aarch64",
-            ),
-            (
-                Some("openai/codex"),
-                Some("rust-v"),
-                Some("1.2.3-sedna.1"),
-                "linux",
-                "x86_64",
-            ),
-        ] {
-            assert!(
-                !bootstrap_auto_update_enabled_on_target(
-                    release.0, release.1, release.2, release.3, release.4,
-                ),
-                "unexpectedly enabled automatic updates for {release:?}"
-            );
-        }
-    }
-
-    #[test]
     fn bootstrap_starts_an_updater_only_when_automatic_updates_are_eligible() {
         assert_eq!(
             [
@@ -1058,6 +1037,32 @@ mod tests {
                 UpdaterLifecycleAction::Restart,
                 UpdaterLifecycleAction::Stop,
                 UpdaterLifecycleAction::None,
+            ]
+        );
+    }
+
+    #[test]
+    fn persisted_bootstrap_keeps_repeated_remote_control_start_on_the_lifecycle_path() {
+        assert_eq!(
+            [
+                remote_control_start_action(remote_control_bootstrap_ready(
+                    /*persisted_bootstrap*/ true, /*legacy_updater_running*/ false,
+                )),
+                remote_control_start_action(remote_control_bootstrap_ready(
+                    /*persisted_bootstrap*/ true, /*legacy_updater_running*/ true,
+                )),
+                remote_control_start_action(remote_control_bootstrap_ready(
+                    /*persisted_bootstrap*/ false, /*legacy_updater_running*/ true,
+                )),
+                remote_control_start_action(remote_control_bootstrap_ready(
+                    /*persisted_bootstrap*/ false, /*legacy_updater_running*/ false,
+                )),
+            ],
+            [
+                RemoteControlStartAction::Start,
+                RemoteControlStartAction::Start,
+                RemoteControlStartAction::Start,
+                RemoteControlStartAction::Bootstrap,
             ]
         );
     }

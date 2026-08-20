@@ -56,7 +56,9 @@ when the release is eligible for the automatic Sedna channel.
 The daemon always launches the standalone managed binary under `CODEX_HOME`.
 Automatic updates are available only for stable Sedna releases on Linux
 `x86_64` and Linux `aarch64` that were installed through the fork-owned
-standalone release installer.
+standalone release installer. The daemon reads the resolved managed release's
+installer-validated `RELEASE-METADATA.json`; the binary that invokes
+`bootstrap` does not grant update authority to a different managed release.
 
 | Situation | What starts | Does this daemon fetch new binaries? | Does a running app-server eventually move to a newer binary on its own? |
 | --- | --- | --- | --- |
@@ -122,7 +124,7 @@ or `bootstrap` does not race another in-flight lifecycle operation.
 
 The daemon stores its local state under `CODEX_HOME/app-server-daemon/`:
 
-- `settings.json` for persisted launch settings
+- `settings.json` for persisted launch settings and bootstrap completion state
 - `app-server.pid` for the app-server process record
 - `app-server-updater.pid` for the pid-backed standalone updater loop
 - `daemon.lock` for daemon-wide lifecycle serialization
