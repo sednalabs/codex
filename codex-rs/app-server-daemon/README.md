@@ -48,9 +48,8 @@ $HOME/.codex/packages/standalone/current/codex app-server daemon bootstrap --rem
 
 `bootstrap` requires the standalone managed install. It records the daemon
 settings under `CODEX_HOME/app-server-daemon/`, starts app-server as a
-pidfile-backed detached process, and launches a detached updater loop. That
-loop activates fork updates only when the release is eligible for the automatic
-Sedna channel.
+pidfile-backed detached process, and launches a detached updater loop only
+when the release is eligible for the automatic Sedna channel.
 
 ## Installation and update cases
 
