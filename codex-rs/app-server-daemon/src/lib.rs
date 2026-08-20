@@ -22,7 +22,7 @@ use managed_install::managed_codex_bin;
 #[cfg(unix)]
 use managed_install::managed_codex_version;
 #[cfg(unix)]
-use managed_install::managed_sedna_automatic_update_release;
+use managed_install::resolved_managed_standalone_release;
 use serde::Serialize;
 use settings::DaemonSettings;
 use tokio::time::sleep;
@@ -197,9 +197,8 @@ enum RestartDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UpdaterLifecycleAction {
     Start,
-    Restart,
+    Preserve,
     Stop,
-    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,7 +339,10 @@ impl Daemon {
         }
 
         self.ensure_managed_codex_bin()?;
-        let pid = self.start_managed_backend(&settings).await?;
+        let managed_release = self.resolved_managed_release().await?;
+        let pid = self
+            .start_managed_backend_with_bin(&settings, &managed_release.executable)
+            .await?;
         let info = self.wait_until_ready().await?;
         Ok(self
             .output(
@@ -363,11 +365,14 @@ impl Daemon {
         }
 
         self.ensure_managed_codex_bin()?;
+        let managed_release = self.resolved_managed_release().await?;
         if let Some(backend) = self.running_backend_instance(&settings).await? {
             backend.stop().await?;
         }
 
-        let pid = self.start_managed_backend(&settings).await?;
+        let pid = self
+            .start_managed_backend_with_bin(&settings, &managed_release.executable)
+            .await?;
         let info = self.wait_until_ready().await?;
         Ok(self
             .output(
@@ -519,6 +524,14 @@ impl Daemon {
                 let _ = self
                     .set_remote_control_locked(RemoteControlMode::Enabled)
                     .await?;
+                let mut reconciled_settings = self.load_settings().await?;
+                let managed_release = self.resolved_managed_release().await?;
+                self.reconcile_updater(&reconciled_settings, &managed_release)
+                    .await?;
+                if !reconciled_settings.bootstrapped {
+                    reconciled_settings.bootstrapped = true;
+                    reconciled_settings.save(&self.settings_file).await?;
+                }
                 let output = self.start().await?;
                 Ok(RemoteControlStartOutput::Start(output))
             }
@@ -592,8 +605,11 @@ impl Daemon {
 
         let app_server_version = if let Some(backend) = backend {
             self.ensure_managed_codex_bin()?;
+            let managed_release = self.resolved_managed_release().await?;
             backend.stop().await?;
-            let _ = self.start_managed_backend(&settings).await?;
+            let _ = self
+                .start_managed_backend_with_bin(&settings, &managed_release.executable)
+                .await?;
             Some(self.wait_until_ready().await?.app_server_version)
         } else {
             None
@@ -609,6 +625,7 @@ impl Daemon {
 
     async fn bootstrap_locked(&self, options: BootstrapOptions) -> Result<BootstrapOutput> {
         self.ensure_managed_codex_bin()?;
+        let managed_release = self.resolved_managed_release().await?;
 
         let mut settings = DaemonSettings {
             remote_control_enabled: options.remote_control_enabled,
@@ -627,31 +644,25 @@ impl Daemon {
             backend.stop().await?;
         }
 
-        let backend = backend::pid_backend(self.backend_paths(&settings));
+        let backend = backend::pid_backend(
+            self.backend_paths_with_bin(&settings, &managed_release.executable),
+        );
         backend.start().await?;
-        let auto_update_enabled = self.managed_auto_update_enabled().await;
-        let updater = backend::pid_update_loop_backend(self.backend_paths(&settings));
-        match updater_lifecycle_action(auto_update_enabled, updater.is_starting_or_running().await?)
-        {
-            UpdaterLifecycleAction::Start => updater.start().await?,
-            UpdaterLifecycleAction::Restart => {
-                updater.stop().await?;
-                updater.start().await?;
-            }
-            UpdaterLifecycleAction::Stop => updater.stop().await?,
-            UpdaterLifecycleAction::None => {}
-        }
+        let auto_update_enabled = managed_release.sedna_auto_update.is_some();
+        self.reconcile_updater(&settings, &managed_release).await?;
 
         let info = self.wait_until_ready().await?;
         settings.bootstrapped = true;
         settings.save(&self.settings_file).await?;
-        let managed_codex_version = self.managed_codex_version_best_effort().await;
+        let managed_codex_version = managed_codex_version(&managed_release.executable)
+            .await
+            .ok();
         Ok(BootstrapOutput {
             status: BootstrapStatus::Bootstrapped,
             backend: BackendKind::Pid,
             auto_update_enabled,
             remote_control_enabled: settings.remote_control_enabled,
-            managed_codex_path: self.managed_codex_bin.clone(),
+            managed_codex_path: managed_release.executable,
             managed_codex_version,
             socket_path: self.socket_path.clone(),
             cli_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -677,11 +688,6 @@ impl Daemon {
         Ok(None)
     }
 
-    async fn start_managed_backend(&self, settings: &DaemonSettings) -> Result<Option<u32>> {
-        self.start_managed_backend_with_bin(settings, &self.managed_codex_bin)
-            .await
-    }
-
     async fn start_managed_backend_with_bin(
         &self,
         settings: &DaemonSettings,
@@ -705,16 +711,35 @@ impl Daemon {
         ))
     }
 
+    async fn reconcile_updater(
+        &self,
+        settings: &DaemonSettings,
+        managed_release: &managed_install::ManagedStandaloneRelease,
+    ) -> Result<()> {
+        let updater = backend::pid_update_loop_backend(
+            self.backend_paths_with_bin(settings, &managed_release.executable),
+        );
+        match updater_lifecycle_action(
+            managed_release.sedna_auto_update.is_some(),
+            updater.is_starting_or_running().await?,
+        ) {
+            UpdaterLifecycleAction::Start => updater.start().await?,
+            UpdaterLifecycleAction::Preserve => {}
+            UpdaterLifecycleAction::Stop => updater.stop().await?,
+        }
+        Ok(())
+    }
+
     #[cfg(unix)]
-    async fn managed_auto_update_enabled(&self) -> bool {
-        managed_sedna_automatic_update_release(&self.managed_codex_bin)
-            .await
-            .is_some()
+    async fn resolved_managed_release(&self) -> Result<managed_install::ManagedStandaloneRelease> {
+        resolved_managed_standalone_release(&self.managed_codex_bin).await
     }
 
     #[cfg(not(unix))]
-    async fn managed_auto_update_enabled(&self) -> bool {
-        false
+    async fn resolved_managed_release(&self) -> Result<managed_install::ManagedStandaloneRelease> {
+        Err(anyhow!(
+            "pid-managed standalone releases are unsupported on this platform"
+        ))
     }
 
     fn ensure_managed_codex_bin(&self) -> Result<()> {
@@ -731,7 +756,10 @@ impl Daemon {
 
     #[cfg(unix)]
     async fn managed_codex_version_best_effort(&self) -> Option<String> {
-        managed_codex_version(&self.managed_codex_bin).await.ok()
+        let managed_release = self.resolved_managed_release().await.ok()?;
+        managed_codex_version(&managed_release.executable)
+            .await
+            .ok()
     }
 
     #[cfg(not(unix))]
@@ -842,9 +870,9 @@ fn updater_lifecycle_action(
 ) -> UpdaterLifecycleAction {
     match (auto_update_enabled, updater_is_running) {
         (true, false) => UpdaterLifecycleAction::Start,
-        (true, true) => UpdaterLifecycleAction::Restart,
+        (true, true) => UpdaterLifecycleAction::Preserve,
         (false, true) => UpdaterLifecycleAction::Stop,
-        (false, false) => UpdaterLifecycleAction::None,
+        (false, false) => UpdaterLifecycleAction::Preserve,
     }
 }
 
@@ -1016,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_starts_an_updater_only_when_automatic_updates_are_eligible() {
+    fn updater_reconciliation_starts_or_stops_only_when_the_current_release_requires_it() {
         assert_eq!(
             [
                 updater_lifecycle_action(
@@ -1034,9 +1062,9 @@ mod tests {
             ],
             [
                 UpdaterLifecycleAction::Start,
-                UpdaterLifecycleAction::Restart,
+                UpdaterLifecycleAction::Preserve,
                 UpdaterLifecycleAction::Stop,
-                UpdaterLifecycleAction::None,
+                UpdaterLifecycleAction::Preserve,
             ]
         );
     }

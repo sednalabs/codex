@@ -1,9 +1,17 @@
 use pretty_assertions::assert_eq;
+use sha2::Digest;
+use sha2::Sha256;
+use std::fs;
+use std::os::unix::fs::symlink;
+use std::path::Path;
+use std::path::PathBuf;
+use tempfile::TempDir;
 
 use super::ManagedReleaseMetadata;
 use super::executable_identity_from_bytes;
 use super::managed_sedna_automatic_update_release_from_metadata;
 use super::parse_codex_version;
+use super::resolved_managed_standalone_release;
 
 #[test]
 fn parses_codex_cli_version_output() {
@@ -80,5 +88,191 @@ fn managed_release_metadata_rejects_prerelease_and_wrong_target() {
             managed_sedna_automatic_update_release_from_metadata(&metadata, "linux", "x86_64"),
             None
         );
+    }
+}
+
+#[tokio::test]
+async fn resolved_release_uses_the_installer_layout_and_rereads_current() {
+    let temp = TempDir::new().expect("temporary Codex home");
+    let standalone = temp.path().join("packages/standalone");
+    let stable = write_release(
+        &standalone,
+        "v1.2.3-sedna.1",
+        &release_metadata(
+            "sednalabs/codex",
+            "v1.2.3-sedna.1",
+            "1.2.3-sedna.1",
+            current_target(),
+        ),
+    );
+    let upstream = write_release(
+        &standalone,
+        "rust-v1.2.4",
+        &release_metadata("openai/codex", "rust-v1.2.4", "1.2.4", current_target()),
+    );
+    let current = standalone.join("current");
+    symlink(&stable, &current).expect("initial current symlink");
+
+    let first = resolved_managed_standalone_release(&current.join("codex"))
+        .await
+        .expect("managed stable release");
+    assert_eq!(
+        first.release_dir,
+        fs::canonicalize(&stable).expect("stable release")
+    );
+    assert_eq!(
+        first.executable,
+        fs::canonicalize(stable.join("codex")).expect("stable binary")
+    );
+    assert_eq!(
+        first.sedna_auto_update.is_some(),
+        matches!(
+            (std::env::consts::OS, std::env::consts::ARCH),
+            ("linux", "x86_64") | ("linux", "aarch64")
+        )
+    );
+
+    let next = standalone.join("current.next");
+    symlink(&upstream, &next).expect("replacement current symlink");
+    fs::rename(next, &current).expect("replace current symlink");
+
+    let second = resolved_managed_standalone_release(&current.join("codex"))
+        .await
+        .expect("managed upstream release");
+    assert_eq!(
+        second.release_dir,
+        fs::canonicalize(&upstream).expect("upstream release")
+    );
+    assert_eq!(
+        second.executable,
+        fs::canonicalize(upstream.join("codex")).expect("upstream binary")
+    );
+    assert_eq!(second.sedna_auto_update, None);
+}
+
+#[tokio::test]
+async fn release_validation_fails_closed_for_outside_and_unverified_metadata() {
+    let temp = TempDir::new().expect("temporary Codex home");
+    let standalone = temp.path().join("packages/standalone");
+    let current = standalone.join("current");
+    fs::create_dir_all(standalone.join("releases")).expect("releases root");
+
+    let outside = temp.path().join("outside");
+    fs::create_dir_all(&outside).expect("outside release");
+    fs::write(outside.join("codex"), b"outside binary").expect("outside binary");
+    symlink(&outside, &current).expect("outside current symlink");
+    assert!(
+        resolved_managed_standalone_release(&current.join("codex"))
+            .await
+            .is_err()
+    );
+
+    fs::remove_file(&current).expect("remove outside current symlink");
+    let invalid = write_release(
+        &standalone,
+        "invalid",
+        &release_metadata(
+            "sednalabs/codex",
+            "v1.2.3-sedna.1",
+            "1.2.3-sedna.1",
+            current_target(),
+        ),
+    );
+    symlink(&invalid, &current).expect("invalid current symlink");
+
+    fs::remove_file(invalid.join("RELEASE-METADATA.json")).expect("remove metadata");
+    assert_eq!(
+        resolved_managed_standalone_release(&current.join("codex"))
+            .await
+            .expect("manual release authority")
+            .sedna_auto_update,
+        None
+    );
+
+    let malformed = b"not json";
+    fs::write(invalid.join("RELEASE-METADATA.json"), malformed).expect("malformed metadata");
+    write_checksums(&invalid, malformed, b"managed codex binary");
+    assert_eq!(
+        resolved_managed_standalone_release(&current.join("codex"))
+            .await
+            .expect("manual release authority")
+            .sedna_auto_update,
+        None
+    );
+
+    let wrong_channel = release_metadata("openai/codex", "rust-v1.2.3", "1.2.3", current_target());
+    fs::write(invalid.join("RELEASE-METADATA.json"), &wrong_channel).expect("upstream metadata");
+    write_checksums(&invalid, wrong_channel.as_bytes(), b"managed codex binary");
+    assert_eq!(
+        resolved_managed_standalone_release(&current.join("codex"))
+            .await
+            .expect("manual release authority")
+            .sedna_auto_update,
+        None
+    );
+
+    let version_mismatch = release_metadata(
+        "sednalabs/codex",
+        "v1.2.3-sedna.1",
+        "1.2.4-sedna.1",
+        current_target(),
+    );
+    fs::write(invalid.join("RELEASE-METADATA.json"), &version_mismatch)
+        .expect("mismatched metadata");
+    write_checksums(
+        &invalid,
+        version_mismatch.as_bytes(),
+        b"managed codex binary",
+    );
+    assert_eq!(
+        resolved_managed_standalone_release(&current.join("codex"))
+            .await
+            .expect("manual release authority")
+            .sedna_auto_update,
+        None
+    );
+
+    fs::write(invalid.join("codex"), b"replaced executable").expect("tampered binary");
+    assert_eq!(
+        resolved_managed_standalone_release(&current.join("codex"))
+            .await
+            .expect("manual release authority")
+            .sedna_auto_update,
+        None
+    );
+}
+
+fn write_release(standalone: &Path, release_name: &str, metadata: &str) -> PathBuf {
+    let release = standalone.join("releases").join(release_name);
+    fs::create_dir_all(&release).expect("release directory");
+    fs::write(release.join("codex"), b"managed codex binary").expect("managed binary");
+    fs::write(release.join("RELEASE-METADATA.json"), metadata).expect("release metadata");
+    write_checksums(&release, metadata.as_bytes(), b"managed codex binary");
+    release
+}
+
+fn write_checksums(release: &Path, metadata: &[u8], executable: &[u8]) {
+    fs::write(
+        release.join("SHA256SUMS.txt"),
+        format!(
+            "{:x}  RELEASE-METADATA.json\n{:x}  codex\n",
+            Sha256::digest(metadata),
+            Sha256::digest(executable),
+        ),
+    )
+    .expect("release checksums");
+}
+
+fn release_metadata(repository: &str, tag: &str, version: &str, target: &str) -> String {
+    format!(
+        r#"{{"release_tag":"{tag}","release_version":"{version}","repository":"{repository}","target":"{target}"}}"#
+    )
+}
+
+fn current_target() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        _ => "unsupported-target",
     }
 }

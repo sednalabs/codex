@@ -65,10 +65,16 @@ pub(crate) async fn managed_codex_version(codex_bin: &Path) -> Result<String> {
     parse_codex_version(&stdout)
 }
 
-#[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedSednaRelease {
     pub(crate) version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedStandaloneRelease {
+    pub(crate) release_dir: PathBuf,
+    pub(crate) executable: PathBuf,
+    pub(crate) sedna_auto_update: Option<ManagedSednaRelease>,
 }
 
 #[cfg(unix)]
@@ -81,18 +87,80 @@ struct ManagedReleaseMetadata {
 }
 
 #[cfg(unix)]
-pub(crate) async fn managed_sedna_automatic_update_release(
+pub(crate) async fn resolved_managed_standalone_release(
     codex_bin: &Path,
-) -> Option<ManagedSednaRelease> {
-    let resolved_bin = resolved_managed_codex_bin(codex_bin).await.ok()?;
-    let metadata_path = resolved_bin.parent()?.join("RELEASE-METADATA.json");
-    let metadata = fs::read_to_string(metadata_path).await.ok()?;
-    let metadata = serde_json::from_str(&metadata).ok()?;
+) -> Result<ManagedStandaloneRelease> {
+    let standalone_root = codex_bin
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| anyhow!("managed Codex binary path has no standalone root"))?;
+    let releases_root = fs::canonicalize(standalone_root.join("releases"))
+        .await
+        .context("failed to resolve managed standalone releases root")?;
+    let executable = resolved_managed_codex_bin(codex_bin).await?;
+    let release_dir = executable
+        .parent()
+        .ok_or_else(|| anyhow!("managed Codex executable has no release directory"))?
+        .to_path_buf();
+    if release_dir.parent() != Some(releases_root.as_path()) {
+        return Err(anyhow!(
+            "managed Codex executable {} is outside managed standalone releases root {}",
+            executable.display(),
+            releases_root.display()
+        ));
+    }
+
+    let sedna_auto_update = verified_sedna_auto_update_release(&release_dir).await;
+    let resolved_again = resolved_managed_codex_bin(codex_bin).await?;
+    if resolved_again != executable {
+        return Err(anyhow!(
+            "managed Codex executable changed while validating release authority"
+        ));
+    }
+
+    Ok(ManagedStandaloneRelease {
+        release_dir,
+        executable,
+        sedna_auto_update,
+    })
+}
+
+#[cfg(unix)]
+async fn verified_sedna_auto_update_release(release_dir: &Path) -> Option<ManagedSednaRelease> {
+    let metadata_path = release_dir.join("RELEASE-METADATA.json");
+    let metadata = fs::read(&metadata_path).await.ok()?;
+    let checksums = fs::read_to_string(release_dir.join("SHA256SUMS.txt"))
+        .await
+        .ok()?;
+    let executable = fs::read(release_dir.join(managed_codex_file_name()))
+        .await
+        .ok()?;
+    if !checksum_matches(&checksums, "RELEASE-METADATA.json", &metadata)
+        || !checksum_matches(&checksums, managed_codex_file_name(), &executable)
+    {
+        return None;
+    }
+    let metadata = serde_json::from_slice(&metadata).ok()?;
     managed_sedna_automatic_update_release_from_metadata(
         &metadata,
         std::env::consts::OS,
         std::env::consts::ARCH,
     )
+}
+
+#[cfg(unix)]
+fn checksum_matches(checksums: &str, file_name: &str, contents: &[u8]) -> bool {
+    let expected = checksums.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let digest = fields.next()?;
+        let candidate = fields.next()?.trim_start_matches('*');
+        (candidate == file_name).then_some(digest)
+    });
+    expected.is_some_and(|expected| {
+        expected.len() == 64
+            && expected.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && expected.eq_ignore_ascii_case(&format!("{:x}", Sha256::digest(contents)))
+    })
 }
 
 #[cfg(unix)]
