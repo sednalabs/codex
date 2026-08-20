@@ -734,6 +734,7 @@ impl App {
             .lock()
             .await;
         store.set_session(session, turns);
+        store.rebase_buffer_after_session_refresh();
         Ok(live_attached)
     }
 
