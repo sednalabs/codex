@@ -54,6 +54,8 @@ pub(crate) struct AgentNavigationState {
     next_picker_page_cursor: Option<String>,
     /// Cursors already observed in the current persisted pagination sequence.
     seen_picker_page_cursors: HashSet<String>,
+    /// Whether the current persisted page must be retried before advancing its cursor.
+    picker_page_deferred: bool,
     /// Parent-lineage results reused when a persisted page is deferred by the read budget.
     picker_lineage_cache: HashMap<ThreadId, (Option<ThreadId>, bool)>,
 }
@@ -304,12 +306,26 @@ impl AgentNavigationState {
         self.parent_owned_threads.clear();
         self.next_picker_page_cursor = None;
         self.seen_picker_page_cursors.clear();
+        self.picker_page_deferred = false;
         self.picker_lineage_cache.clear();
     }
 
     pub(crate) fn begin_picker_page_sequence(&mut self) {
         self.next_picker_page_cursor = None;
         self.seen_picker_page_cursors.clear();
+        self.picker_page_deferred = false;
+    }
+
+    pub(crate) fn picker_page_deferred(&self) -> bool {
+        self.picker_page_deferred
+    }
+
+    pub(crate) fn defer_picker_page(&mut self) {
+        self.picker_page_deferred = true;
+    }
+
+    pub(crate) fn clear_deferred_picker_page(&mut self) {
+        self.picker_page_deferred = false;
     }
 
     pub(crate) fn next_picker_page_cursor(&self) -> Option<String> {

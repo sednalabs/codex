@@ -215,7 +215,7 @@ impl App {
             return;
         };
         let cursor = self.agent_navigation.next_picker_page_cursor();
-        if cursor.is_none() {
+        if cursor.is_none() && !self.agent_navigation.picker_page_deferred() {
             self.agent_navigation.begin_picker_page_sequence();
         }
         let cursor = self.agent_navigation.next_picker_page_cursor();
@@ -251,6 +251,7 @@ impl App {
             return;
         }
         let mut lineage_reads = 0;
+        let mut budget_exhausted = false;
         for thread in response.data {
             if !matches!(
                 thread.source,
@@ -263,9 +264,13 @@ impl App {
                     MAX_DEPTH,
                     MAX_LINEAGE_READS,
                     &mut lineage_reads,
+                    &mut budget_exhausted,
                 )
                 .await
             {
+                if budget_exhausted {
+                    break;
+                }
                 continue;
             }
             let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
@@ -296,6 +301,12 @@ impl App {
                 self.agent_navigation.mark_running(thread_id);
             }
         }
+        if budget_exhausted {
+            self.agent_navigation.defer_picker_page();
+            self.sync_active_agent_label();
+            return;
+        }
+        self.agent_navigation.clear_deferred_picker_page();
         if !self
             .agent_navigation
             .set_next_picker_page_cursor(response.next_cursor)
@@ -313,6 +324,7 @@ impl App {
         max_depth: usize,
         max_reads: usize,
         reads: &mut usize,
+        budget_exhausted: &mut bool,
     ) -> bool {
         let mut current = match thread
             .parent_thread_id
@@ -331,12 +343,11 @@ impl App {
                     cached
                 } else {
                     if *reads >= max_reads {
+                        *budget_exhausted = true;
                         return false;
                     }
                     *reads += 1;
                     let Ok(parent) = app_server.thread_read(current, false).await else {
-                        self.agent_navigation
-                            .picker_lineage_cache_insert(current, None, false);
                         return false;
                     };
                     let parent_thread_id = parent
