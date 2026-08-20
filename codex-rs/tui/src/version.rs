@@ -32,7 +32,7 @@ pub const CODEX_UPDATE_BREW_CASK: &str = match option_env!("CODEX_UPDATE_BREW_CA
 };
 
 /// Whether this binary was compiled for the Sedna release/update channel.
-pub const fn is_sedna_release_channel() -> bool {
+pub fn is_sedna_release_channel() -> bool {
     codex_utils_version::is_sedna_release_identity(
         option_env!("CODEX_RELEASE_REPOSITORY"),
         option_env!("CODEX_RELEASE_TAG_PREFIX"),

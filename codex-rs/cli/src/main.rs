@@ -839,7 +839,7 @@ fn update_manual_install_url() -> &'static str {
     )
 }
 
-const fn update_manual_install_url_for_release_identity(
+fn update_manual_install_url_for_release_identity(
     repository: Option<&str>,
     tag_prefix: Option<&str>,
 ) -> &'static str {
