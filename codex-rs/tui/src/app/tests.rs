@@ -2266,6 +2266,7 @@ async fn replay_only_thread_rejects_direct_user_turn_without_server_mutation() {
     ))
     .await
     .expect("embedded app server");
+    let model = get_model_offline_for_tests(app.config.model.as_deref());
     let op = AppCommand::user_turn(
         vec![UserInput::Text {
             text: "must not be submitted".to_string(),
@@ -2274,7 +2275,7 @@ async fn replay_only_thread_rejects_direct_user_turn_without_server_mutation() {
         app.config.cwd.to_path_buf(),
         AskForApproval::OnRequest,
         None,
-        app.config.model.clone(),
+        model,
         None,
         None,
         None,
