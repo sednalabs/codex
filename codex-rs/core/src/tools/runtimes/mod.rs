@@ -269,15 +269,7 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         return command.to_vec();
     }
 
-    let snapshot_path = snapshot.to_string_lossy();
-    let shell_path = session_shell.shell_path.to_string_lossy();
-    let original_shell = shell_single_quote(&command[0]);
-    let original_script = shell_single_quote(&command[2]);
-    let snapshot_path = shell_single_quote(snapshot_path.as_ref());
-    let trailing_args = command[3..]
-        .iter()
-        .map(|arg| format!(" '{}'", shell_single_quote(arg)))
-        .collect::<String>();
+    let shell_path = session_shell.shell_path.to_string_lossy().into_owned();
     let mut override_env = explicit_env_overrides
         .iter()
         .filter(|(key, _)| !is_protected_snapshot_override(key))
@@ -302,7 +294,7 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
     );
     let (proxy_captures, proxy_exports) = build_proxy_env_exports();
     let non_inheritable_tool_captures = build_non_inheritable_env_tool_captures();
-    let non_inheritable_scrub = build_non_inheritable_env_scrub();
+    let non_inheritable_scrub = build_non_inheritable_env_scrub_safe();
     let runtime_path_prepend_exports =
         runtime_path_prepends.shell_exports_after_snapshot(explicit_env_overrides);
     let override_captures = join_shell_blocks([
@@ -316,31 +308,31 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         proxy_exports,
         runtime_path_prepend_exports,
     ]);
-    let startup_hook_exports = build_startup_hook_exports(explicit_env_overrides);
-    let post_startup_scrub = build_post_startup_scrub(
-        &shell_path,
-        &original_shell,
-        &original_script,
-        &trailing_args,
-    );
-    let safe_exec = build_non_inheritable_safe_exec(
-        &original_shell,
-        &original_script,
-        &trailing_args,
-        &startup_hook_exports,
-        &post_startup_scrub,
-    );
+    let startup_hook_args = build_startup_hook_args(explicit_env_overrides);
+    let inner_script = build_snapshot_inner_script();
+    let target_script = build_snapshot_target_script();
+    let post_startup_script = build_post_startup_script();
     let rewritten_script = if override_exports.is_empty() {
         format!(
-            "{non_inheritable_tool_captures}\n\nif . '{snapshot_path}' >/dev/null 2>&1; then :; fi\n\n{non_inheritable_scrub}\n\n{safe_exec}"
+            "{non_inheritable_tool_captures}\n\n__codex_source_snapshot() {{ . \"$1\" >/dev/null 2>&1; }}\n__codex_source_snapshot \"$1\"\n\n{non_inheritable_scrub}\n\n__codex_inner_script=$2\n__codex_target_script=$3\n__codex_post_startup_script=$4\n__codex_original_shell=$5\n__codex_original_script=$6\n__codex_env_set=$7\n__codex_env_value=$8\n__codex_bash_env_set=$9\n__codex_bash_env_value=${{10}}\n__codex_zdotdir_set=${{11}}\n__codex_zdotdir_value=${{12}}\ncommand readonly __codex_inner_script __codex_target_script __codex_post_startup_script __codex_original_shell __codex_original_script __codex_env_set __codex_env_value __codex_bash_env_set __codex_bash_env_value __codex_zdotdir_set __codex_zdotdir_value\nshift 12\nexec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"$__codex_inner_script\" codex-inner \"$__codex_env\" \"$__codex_awk\" \"$__codex_target_script\" \"$__codex_post_startup_script\" \"$__codex_original_shell\" \"$__codex_original_script\" \"$__codex_env_set\" \"$__codex_env_value\" \"$__codex_bash_env_set\" \"$__codex_bash_env_value\" \"$__codex_zdotdir_set\" \"$__codex_zdotdir_value\" \"$@\""
         )
     } else {
         format!(
-            "{override_captures}\n\nif . '{snapshot_path}' >/dev/null 2>&1; then :; fi\n\n{override_exports}\n\n{safe_exec}"
+            "{override_captures}\n\n__codex_source_snapshot() {{ . \"$1\" >/dev/null 2>&1; }}\n__codex_source_snapshot \"$1\"\n\n{override_exports}\n\n__codex_inner_script=$2\n__codex_target_script=$3\n__codex_post_startup_script=$4\n__codex_original_shell=$5\n__codex_original_script=$6\n__codex_env_set=$7\n__codex_env_value=$8\n__codex_bash_env_set=$9\n__codex_bash_env_value=${{10}}\n__codex_zdotdir_set=${{11}}\n__codex_zdotdir_value=${{12}}\ncommand readonly __codex_inner_script __codex_target_script __codex_post_startup_script __codex_original_shell __codex_original_script __codex_env_set __codex_env_value __codex_bash_env_set __codex_bash_env_value __codex_zdotdir_set __codex_zdotdir_value\nshift 12\nexec \"$__codex_env\" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c \"$__codex_inner_script\" codex-inner \"$__codex_env\" \"$__codex_awk\" \"$__codex_target_script\" \"$__codex_post_startup_script\" \"$__codex_original_shell\" \"$__codex_original_script\" \"$__codex_env_set\" \"$__codex_env_value\" \"$__codex_bash_env_set\" \"$__codex_bash_env_value\" \"$__codex_zdotdir_set\" \"$__codex_zdotdir_value\" \"$@\""
         )
     };
 
-    vec![shell_path.to_string(), "-c".to_string(), rewritten_script]
+    let mut rewritten = vec![shell_path, "-c".to_string(), rewritten_script];
+    rewritten.push("codex-snapshot".to_string());
+    rewritten.push(snapshot.to_string_lossy().into_owned());
+    rewritten.push(inner_script);
+    rewritten.push(target_script);
+    rewritten.push(post_startup_script);
+    rewritten.push(command[0].clone());
+    rewritten.push(command[2].clone());
+    rewritten.extend(startup_hook_args);
+    rewritten.extend(command[3..].iter().cloned());
+    rewritten
 }
 
 fn build_non_inheritable_env_tool_captures() -> String {
@@ -350,11 +342,18 @@ fn build_non_inheritable_env_tool_captures() -> String {
     "__codex_env=$(command -p -v env)\n__codex_awk=$(command -p -v awk)\ncommand readonly __codex_env __codex_awk".to_string()
 }
 
+#[allow(dead_code)]
 fn build_non_inheritable_env_scrub() -> String {
     "__codex_scrub_script=\"$(__codex_env=\"$__codex_env\"; \"$__codex_env\" | \"$__codex_awk\" -F= 'tolower($1) == \"openai_federation_rule_id\" || tolower($1) == \"openai_identity_token_file\" { printf \"unset '\\047%s'\\047\\n\", $1 }')\"".to_string()
 }
 
-fn build_non_inheritable_safe_exec(
+fn build_non_inheritable_env_scrub_safe() -> String {
+    r#"__codex_scrub_script="$(__codex_env="$__codex_env"; "$__codex_env" | "$__codex_awk" -F= 'tolower($1) == "openai_federation_rule_id" || tolower($1) == "openai_identity_token_file" { printf "unset %s\n", $1 }')"#
+        .to_string()
+}
+
+#[allow(dead_code)]
+fn build_legacy_non_inheritable_safe_exec(
     original_shell: &str,
     original_script: &str,
     trailing_args: &str,
@@ -366,7 +365,8 @@ fn build_non_inheritable_safe_exec(
     )
 }
 
-fn build_post_startup_scrub(
+#[allow(dead_code)]
+fn build_legacy_post_startup_scrub(
     _shell_path: &str,
     _original_shell: &str,
     _original_script: &str,
@@ -379,7 +379,8 @@ fn build_post_startup_scrub(
     )
 }
 
-fn build_startup_hook_exports(explicit_env_overrides: &HashMap<String, String>) -> String {
+#[allow(dead_code)]
+fn build_legacy_startup_hook_exports(explicit_env_overrides: &HashMap<String, String>) -> String {
     explicit_env_overrides
         .iter()
         .filter_map(|(name, value)| {
@@ -396,6 +397,61 @@ fn build_startup_hook_exports(explicit_env_overrides: &HashMap<String, String>) 
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn build_snapshot_inner_script() -> String {
+    r#"unset ENV BASH_ENV ZDOTDIR
+__codex_env=$1
+__codex_awk=$2
+__codex_target_script=$3
+__codex_post_startup_script=$4
+__codex_original_shell=$5
+__codex_original_script=$6
+__codex_env_set=$7
+__codex_env_value=$8
+__codex_bash_env_set=$9
+__codex_bash_env_value=${10}
+__codex_zdotdir_set=${11}
+__codex_zdotdir_value=${12}
+command readonly __codex_env __codex_awk __codex_target_script __codex_post_startup_script __codex_original_shell __codex_original_script
+shift 12
+__codex_scrub_script=$("$__codex_env" | "$__codex_awk" -F= 'tolower($1) == "openai_federation_rule_id" || tolower($1) == "openai_identity_token_file" { printf "unset %s\n", $1 }')
+eval "$__codex_scrub_script"
+if [ "$__codex_env_set" = 1 ]; then export ENV="$__codex_env_value"; fi
+if [ "$__codex_bash_env_set" = 1 ]; then export BASH_ENV="$__codex_bash_env_value"; fi
+if [ "$__codex_zdotdir_set" = 1 ]; then export ZDOTDIR="$__codex_zdotdir_value"; fi
+exec "$__codex_original_shell" -c "$__codex_target_script" codex-target "$__codex_env" "$__codex_awk" "$__codex_post_startup_script" "$__codex_original_shell" "$__codex_original_script" "$@""#
+        .to_string()
+}
+
+fn build_snapshot_target_script() -> String {
+    r#"exec "$1" -u ENV -u BASH_ENV -u ZDOTDIR /bin/sh -c "$3" codex-post "$1" "$2" "$4" "$5" "$@""#
+        .to_string()
+}
+
+fn build_post_startup_script() -> String {
+    r#"__codex_env=$1
+__codex_awk=$2
+__codex_original_shell=$3
+__codex_original_script=$4
+shift 9
+__codex_scrub_script=$("$__codex_env" | "$__codex_awk" -F= 'tolower($1) == "openai_federation_rule_id" || tolower($1) == "openai_identity_token_file" { printf "unset %s\n", $1 }')
+eval "$__codex_scrub_script"
+exec "$__codex_original_shell" -c "$__codex_original_script" "$@""#
+        .to_string()
+}
+
+fn build_startup_hook_args(explicit_env_overrides: &HashMap<String, String>) -> Vec<String> {
+    ["ENV", "BASH_ENV", "ZDOTDIR"]
+        .into_iter()
+        .flat_map(|canonical| {
+            explicit_env_overrides
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(canonical))
+                .map(|(_, value)| vec!["1".to_string(), value.clone()])
+                .unwrap_or_else(|| vec!["0".to_string(), String::new()])
+        })
+        .collect()
 }
 
 fn build_override_exports(

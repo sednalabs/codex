@@ -451,8 +451,9 @@ fn maybe_wrap_shell_lc_with_snapshot_bootstraps_in_user_shell() {
 
     assert_eq!(rewritten[0], "/bin/zsh");
     assert_eq!(rewritten[1], "-c");
-    assert!(rewritten[2].contains("if . '"));
-    assert!(rewritten[2].contains("exec '/bin/bash' -c 'echo hello'"));
+    assert!(rewritten[2].contains("__codex_source_snapshot"));
+    assert_eq!(rewritten[8], "/bin/bash");
+    assert_eq!(rewritten[9], "echo hello");
 }
 
 #[test]
@@ -477,7 +478,7 @@ fn maybe_wrap_shell_lc_with_snapshot_escapes_single_quotes() {
         &RuntimePathPrepends::default(),
     );
 
-    assert!(rewritten[2].contains(r#"exec '/bin/bash' -c 'echo '"'"'hello'"'"''"#));
+    assert_eq!(rewritten[9], "echo 'hello'");
 }
 
 #[test]
@@ -504,8 +505,9 @@ fn maybe_wrap_shell_lc_with_snapshot_uses_bash_bootstrap_shell() {
 
     assert_eq!(rewritten[0], "/bin/bash");
     assert_eq!(rewritten[1], "-c");
-    assert!(rewritten[2].contains("if . '"));
-    assert!(rewritten[2].contains("exec '/bin/zsh' -c 'echo hello'"));
+    assert!(rewritten[2].contains("__codex_source_snapshot"));
+    assert_eq!(rewritten[8], "/bin/zsh");
+    assert_eq!(rewritten[9], "echo hello");
 }
 
 #[test]
@@ -532,8 +534,9 @@ fn maybe_wrap_shell_lc_with_snapshot_uses_sh_bootstrap_shell() {
 
     assert_eq!(rewritten[0], "/bin/sh");
     assert_eq!(rewritten[1], "-c");
-    assert!(rewritten[2].contains("if . '"));
-    assert!(rewritten[2].contains("exec '/bin/bash' -c 'echo hello'"));
+    assert!(rewritten[2].contains("__codex_source_snapshot"));
+    assert_eq!(rewritten[8], "/bin/bash");
+    assert_eq!(rewritten[9], "echo hello");
 }
 
 #[test]
@@ -560,10 +563,9 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_trailing_args() {
         &RuntimePathPrepends::default(),
     );
 
-    assert!(
-        rewritten[2]
-            .contains(r#"exec '/bin/bash' -c 'printf '"'"'%s %s'"'"' "$0" "$1"' 'arg0' 'arg1'"#)
-    );
+    assert_eq!(rewritten[9], "printf '%s %s' \"$0\" \"$1\"");
+    assert_eq!(rewritten[16], "arg0");
+    assert_eq!(rewritten[17], "arg1");
 }
 
 #[test]
@@ -785,7 +787,7 @@ fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
     let startup_path = dir.path().join("startup.sh");
     std::fs::write(
         &startup_path,
-        "export -r OpenAI_Federation_Rule_Id='/run/startup-rule'\nexport -r openai_identity_token_file='/run/startup-token'\n",
+        "OpenAI_Federation_Rule_Id='/run/startup-rule'\nreadonly OpenAI_Federation_Rule_Id\nexport OpenAI_Federation_Rule_Id\nopenai_identity_token_file='/run/startup-token'\nreadonly openai_identity_token_file\nexport openai_identity_token_file\n",
     )
     .expect("write startup hook");
     #[cfg(unix)]
