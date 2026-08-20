@@ -262,11 +262,6 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
 
     let snapshot_path = snapshot.to_string_lossy();
     let shell_path = session_shell.shell_path.to_string_lossy();
-    let builtin_prefix = if shell_path.ends_with("/bash") || shell_path.ends_with("/zsh") {
-        "builtin"
-    } else {
-        "command"
-    };
     let original_shell = shell_single_quote(&command[0]);
     let original_script = shell_single_quote(&command[2]);
     let snapshot_path = shell_single_quote(snapshot_path.as_ref());
@@ -298,7 +293,7 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
     );
     let (proxy_captures, proxy_exports) = build_proxy_env_exports();
     let non_inheritable_tool_captures = build_non_inheritable_env_tool_captures();
-    let non_inheritable_scrub = build_non_inheritable_env_scrub(builtin_prefix);
+    let non_inheritable_scrub = build_non_inheritable_env_scrub();
     let runtime_path_prepend_exports =
         runtime_path_prepends.shell_exports_after_snapshot(explicit_env_overrides);
     let override_captures = join_shell_blocks([
@@ -312,13 +307,15 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         proxy_exports,
         runtime_path_prepend_exports,
     ]);
+    let safe_exec =
+        build_non_inheritable_safe_exec(&original_shell, &original_script, &trailing_args);
     let rewritten_script = if override_exports.is_empty() {
         format!(
-            "if . '{snapshot_path}' >/dev/null 2>&1; then :; fi\n\nexec '{original_shell}' -c '{original_script}'{trailing_args}"
+            "{non_inheritable_tool_captures}\n\nif . '{snapshot_path}' >/dev/null 2>&1; then :; fi\n\n{non_inheritable_scrub}\n\n{safe_exec}"
         )
     } else {
         format!(
-            "{override_captures}\n\nif . '{snapshot_path}' >/dev/null 2>&1; then :; fi\n\n{override_exports}\n\nexec '{original_shell}' -c '{original_script}'{trailing_args}"
+            "{override_captures}\n\nif . '{snapshot_path}' >/dev/null 2>&1; then :; fi\n\n{override_exports}\n\n{safe_exec}"
         )
     };
 
@@ -329,12 +326,20 @@ fn build_non_inheritable_env_tool_captures() -> String {
     // Resolve these before sourcing the snapshot so a restored PATH or shell function cannot
     // redirect the scrub's command substitutions. `command -p` searches the shell's default
     // utility path rather than the snapshot-controlled PATH.
-    "__codex_env=$(command -p -v env)\n__codex_sed=$(command -p -v sed)\n__codex_tr=$(command -p -v tr)\ncommand readonly __codex_env __codex_sed __codex_tr".to_string()
+    "__codex_env=$(command -p -v env)\n__codex_awk=$(command -p -v awk)\ncommand readonly __codex_env __codex_awk".to_string()
 }
 
-fn build_non_inheritable_env_scrub(builtin_prefix: &str) -> String {
+fn build_non_inheritable_env_scrub() -> String {
+    "__codex_scrub_script=\"$(__codex_env=\"$__codex_env\"; \"$__codex_env\" | \"$__codex_awk\" -F= 'tolower($1) == \"openai_federation_rule_id\" || tolower($1) == \"openai_identity_token_file\" { printf \"unset '\\047%s'\\047\\n\", $1 }')\"".to_string()
+}
+
+fn build_non_inheritable_safe_exec(
+    original_shell: &str,
+    original_script: &str,
+    trailing_args: &str,
+) -> String {
     format!(
-        "for __codex_snapshot_name in $(\"$__codex_env\" | \"$__codex_sed\" 's/=.*//'); do\n  case \"$({builtin_prefix} printf '%s' \"$__codex_snapshot_name\" | \"$__codex_tr\" '[:lower:]' '[:upper:]')\" in\n    OPENAI_FEDERATION_RULE_ID|OPENAI_IDENTITY_TOKEN_FILE) {builtin_prefix} unset \"$__codex_snapshot_name\" ;;\n  esac\ndone"
+        "exec /bin/sh -c \"$__codex_scrub_script\\n__codex_shell=\\$1\\n__codex_script=\\$2\\nshift 2\\nexec \\\"\\$__codex_shell\\\" -c \\\"\\$__codex_script\\\" \\\"\\$@\\\"\" sh '{original_shell}' '{original_script}'{trailing_args}"
     )
 }
 
