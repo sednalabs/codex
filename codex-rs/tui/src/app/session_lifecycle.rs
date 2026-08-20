@@ -350,9 +350,17 @@ impl App {
                         return false;
                     }
                     *reads += 1;
-                    let Ok(parent) = app_server.thread_read(current, false).await else {
-                        *retryable_failure = true;
-                        return false;
+                    let parent = match app_server.thread_read(current, false).await {
+                        Ok(parent) => parent,
+                        Err(err) => {
+                            if Self::is_terminal_thread_read_error(&err) {
+                                self.agent_navigation
+                                    .picker_lineage_cache_insert(current, None, false);
+                            } else {
+                                *retryable_failure = true;
+                            }
+                            return false;
+                        }
                     };
                     let parent_thread_id = parent
                         .parent_thread_id
