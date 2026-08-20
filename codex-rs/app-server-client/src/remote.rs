@@ -950,6 +950,7 @@ where
 {
     let initialize_request_id = RequestId::String("initialize".to_string());
     let mut pending_events = Vec::new();
+    let mut server_requests = ServerRequestLedger::default();
     let mut server_version = None;
     let mut codex_home = None;
     write_jsonrpc_message(
@@ -1007,6 +1008,10 @@ where
                             let method = request.method.clone();
                             match ServerRequest::try_from(request) {
                                 Ok(request) => {
+                                    if !server_requests.register(request.id().clone()) {
+                                        warn!(%request_id, "ignoring duplicate remote app-server server request during initialize");
+                                        continue;
+                                    }
                                     pending_events.push(AppServerEvent::ServerRequest(request));
                                 }
                                 Err(err) => {
@@ -1274,6 +1279,15 @@ mod tests {
         assert!(ledger.begin_response(&request_id));
         assert!(!ledger.begin_response(&request_id));
         assert!(ledger.take_unanswered().is_empty());
+    }
+
+    #[test]
+    fn duplicate_server_request_registration_preserves_first_fifo_entry() {
+        let request_id = RequestId::Integer(1);
+        let mut ledger = ServerRequestLedger::default();
+        assert!(ledger.register(request_id.clone()));
+        assert!(!ledger.register(request_id.clone()));
+        assert_eq!(ledger.take_unanswered(), vec![request_id]);
     }
 
     #[tokio::test]

@@ -1947,6 +1947,33 @@ mod tests {
                 }),
             )
             .await;
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(JSONRPCRequest {
+                    id: request_id.clone(),
+                    method: "item/tool/requestUserInput".to_string(),
+                    params: Some(
+                        serde_json::to_value(ToolRequestUserInputParams {
+                            thread_id: "thread-1".to_string(),
+                            turn_id: "turn-1".to_string(),
+                            item_id: "call-1".to_string(),
+                            questions: vec![ToolRequestUserInputQuestion {
+                                id: "question-1".to_string(),
+                                header: "Mode".to_string(),
+                                question: "Pick one".to_string(),
+                                is_other: false,
+                                is_secret: false,
+                                options: Some(vec![]),
+                            }],
+                            is_blocking: true,
+                            auto_resolution_ms: None,
+                        })
+                        .expect("params should serialize"),
+                    ),
+                    trace: None,
+                }),
+            )
+            .await;
 
             let JSONRPCMessage::Error(error) = read_websocket_message(&mut websocket).await else {
                 panic!("shutdown should reject the unanswered request");
@@ -2020,6 +2047,33 @@ mod tests {
             .await;
             write_websocket_message(
                 &mut websocket,
+                JSONRPCMessage::Request(JSONRPCRequest {
+                    id: request_id.clone(),
+                    method: "item/tool/requestUserInput".to_string(),
+                    params: Some(
+                        serde_json::to_value(ToolRequestUserInputParams {
+                            thread_id: "thread-1".to_string(),
+                            turn_id: "turn-1".to_string(),
+                            item_id: "call-1".to_string(),
+                            questions: vec![ToolRequestUserInputQuestion {
+                                id: "question-1".to_string(),
+                                header: "Mode".to_string(),
+                                question: "Pick one".to_string(),
+                                is_other: false,
+                                is_secret: false,
+                                options: Some(vec![]),
+                            }],
+                            is_blocking: true,
+                            auto_resolution_ms: None,
+                        })
+                        .expect("params should serialize"),
+                    ),
+                    trace: None,
+                }),
+            )
+            .await;
+            write_websocket_message(
+                &mut websocket,
                 JSONRPCMessage::Response(JSONRPCResponse {
                     id: request.id,
                     result: serde_json::json!({}),
@@ -2052,6 +2106,12 @@ mod tests {
         else {
             panic!("expected server request event");
         };
+        assert!(
+            timeout(Duration::from_millis(100), client.next_event())
+                .await
+                .is_err(),
+            "duplicate initialization request must not be delivered"
+        );
         client
             .resolve_server_request(request.id().clone(), serde_json::json!({}))
             .await
