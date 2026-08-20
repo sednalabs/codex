@@ -251,16 +251,9 @@ impl RemoteAppServerClient {
                                     permit.send(AppServerEvent::Lagged {
                                         skipped: std::mem::take(&mut skipped_events),
                                     });
-                                } else if pending_required_event.is_some() {
-                                    permit.send(
-                                        pending_required_event
-                                            .take()
-                                            .expect("pending required event should exist"),
-                                    );
-                                } else {
-                                    let state = terminal_state
-                                        .as_mut()
-                                        .expect("pending disconnected event should have terminal state");
+                                } else if let Some(event) = pending_required_event.take() {
+                                    permit.send(event);
+                                } else if let Some(state) = terminal_state.as_mut() {
                                     permit.send(AppServerEvent::Disconnected {
                                         message: state.message.clone(),
                                     });
@@ -1171,6 +1164,7 @@ fn finish_remote_control_write(
         }
         Err(err) => {
             let message = format!("remote app server at `{endpoint}` write failed: {err}");
+            let fallback_error = IoError::new(ErrorKind::BrokenPipe, message.clone());
             enter_remote_terminal_state(
                 terminal_state,
                 pending_requests,
@@ -1180,8 +1174,8 @@ fn finish_remote_control_write(
             );
             let error = terminal_state
                 .as_ref()
-                .expect("failed control write should establish terminal state")
-                .error();
+                .map(RemoteTerminalState::error)
+                .unwrap_or(fallback_error);
             let _ = response_tx.send(Err(error));
         }
     }

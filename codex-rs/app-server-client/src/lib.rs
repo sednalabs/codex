@@ -532,12 +532,8 @@ impl InProcessAppServerClient {
                                     permit.send(InProcessServerEvent::Lagged {
                                         skipped: std::mem::take(&mut skipped_events),
                                     });
-                                } else {
-                                    permit.send(
-                                        pending_required_event
-                                            .take()
-                                            .expect("pending required event should exist"),
-                                    );
+                                } else if let Some(event) = pending_required_event.take() {
+                                    permit.send(event);
                                 }
                             }
                             Err(_) => {
@@ -2070,6 +2066,7 @@ mod tests {
             Some(InProcessServerEvent::Lagged { skipped: 1 })
         ));
         assert_eq!(delivery.await, ForwardEventResult::Continue);
+        drop(delivery);
         assert_eq!(skipped_events, 0);
         assert!(matches!(
             event_rx.recv().await,
@@ -2111,6 +2108,7 @@ mod tests {
                 Some(InProcessServerEvent::Lagged { skipped: 1 })
             ));
             assert_eq!(delivery.await, ForwardEventResult::Continue);
+            drop(delivery);
             assert_eq!(skipped_events, 0);
             let delivered = event_rx.recv().await.expect("required event should arrive");
             let InProcessServerEvent::ServerNotification(delivered) = delivered else {
@@ -2945,6 +2943,7 @@ mod tests {
                             is_secret: false,
                             options: Some(vec![]),
                         }],
+                        is_blocking: true,
                         auto_resolution_ms: None,
                     })
                     .expect("params should serialize"),
@@ -3007,6 +3006,7 @@ mod tests {
                                 is_secret: false,
                                 options: Some(vec![]),
                             }],
+                            is_blocking: true,
                             auto_resolution_ms: None,
                         })
                         .expect("params should serialize"),
