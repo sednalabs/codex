@@ -49,6 +49,12 @@ struct PidRecord {
     executable_identity: Option<ExecutableIdentity>,
 }
 
+#[cfg(unix)]
+#[derive(Debug)]
+pub(crate) struct PidRecordSnapshot {
+    record: PidRecord,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PidLogTail {
     pub(crate) path: PathBuf,
@@ -151,7 +157,7 @@ impl PidBackend {
     }
 
     #[cfg(unix)]
-    pub(crate) async fn update_running_executable_record(&self) -> Result<()> {
+    pub(crate) async fn update_running_executable_record(&self) -> Result<PidRecordSnapshot> {
         let executable_identity = executable_identity(&self.codex_bin).await?;
         let reservation_lock = self.acquire_reservation_lock().await?;
         let mut record = match self.read_pid_file_state_with_lock_held().await? {
@@ -160,8 +166,34 @@ impl PidBackend {
                 bail!("cannot update executable record for inactive pid-managed process")
             }
         };
+        let snapshot = PidRecordSnapshot {
+            record: record.clone(),
+        };
         record.executable = Some(self.codex_bin.clone());
         record.executable_identity = Some(executable_identity);
+        self.write_pid_record(&record).await?;
+        drop(reservation_lock);
+        Ok(snapshot)
+    }
+
+    #[cfg(unix)]
+    pub(crate) async fn restore_running_executable_record(
+        &self,
+        snapshot: PidRecordSnapshot,
+    ) -> Result<()> {
+        let reservation_lock = self.acquire_reservation_lock().await?;
+        let record = match self.read_pid_file_state_with_lock_held().await? {
+            PidFileState::Running(record)
+                if record.pid == snapshot.record.pid
+                    && record.process_start_time == snapshot.record.process_start_time
+                    && self.record_is_active(&record).await? =>
+            {
+                snapshot.record
+            }
+            PidFileState::Missing | PidFileState::Starting | PidFileState::Running(_) => {
+                bail!("cannot restore executable record for inactive pid-managed process")
+            }
+        };
         self.write_pid_record(&record).await?;
         drop(reservation_lock);
         Ok(())
@@ -651,17 +683,22 @@ async fn process_matches_record(record: &PidRecord) -> Result<bool> {
 async fn live_process_uses_executable(pid: u32, executable: &Path) -> bool {
     #[cfg(target_os = "linux")]
     {
-        return fs::canonicalize(format!("/proc/{pid}/exe"))
-            .await
-            .is_ok_and(|actual| actual == executable);
+        return live_executable_proof_matches(
+            fs::canonicalize(format!("/proc/{pid}/exe")).await.ok(),
+            executable,
+        );
     }
 
     #[cfg(not(target_os = "linux"))]
     {
         let _ = pid;
-        let _ = executable;
-        true
+        live_executable_proof_matches(None, executable)
     }
+}
+
+#[cfg(unix)]
+fn live_executable_proof_matches(observed: Option<PathBuf>, executable: &Path) -> bool {
+    observed.as_deref() == Some(executable)
 }
 
 #[cfg(not(unix))]

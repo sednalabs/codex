@@ -430,8 +430,19 @@ impl Daemon {
             let updater = backend::pid_update_loop_backend(
                 self.backend_paths_with_bin(&settings, managed_codex_bin),
             );
-            updater.update_running_executable_record().await?;
-            crate::update_loop::reexec_managed_updater(managed_codex_bin)?;
+            let previous_record = updater.update_running_executable_record().await?;
+            if let Err(reexec_error) = crate::update_loop::reexec_managed_updater(managed_codex_bin)
+            {
+                if let Err(restore_error) = updater
+                    .restore_running_executable_record(previous_record)
+                    .await
+                {
+                    return Err(reexec_error.context(format!(
+                        "failed to restore updater executable record after re-exec failure: {restore_error:#}"
+                    )));
+                }
+                return Err(reexec_error);
+            }
         }
 
         Ok(outcome)
