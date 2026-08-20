@@ -14,9 +14,12 @@ use codex_protocol::protocol::UserMessageEvent;
 use pretty_assertions::assert_eq;
 use tokio::sync::Barrier;
 use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
 
 use super::*;
 use crate::*;
+use crate::thread_metadata_sync::ThreadMetadataSync;
+use codex_rollout::RolloutPersistenceTelemetry;
 
 #[derive(Default)]
 struct ScriptedStore {
