@@ -111,6 +111,11 @@ impl ChatWidget {
         action: QueuedInputAction,
         pending_pastes: Vec<(String, String)>,
     ) {
+        if self.replay_only {
+            self.restore_user_message_to_composer(user_message);
+            self.add_error_message("Replay-only transcripts do not accept input.".to_string());
+            return;
+        }
         if !self.is_session_configured()
             || self.is_user_turn_pending_or_running()
             || self.input_queue.suppress_queue_autosend
