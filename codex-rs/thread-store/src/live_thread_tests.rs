@@ -17,8 +17,8 @@ use tokio::sync::Mutex;
 use tokio::sync::Semaphore;
 
 use super::*;
-use crate::*;
 use crate::thread_metadata_sync::ThreadMetadataSync;
+use crate::*;
 use codex_rollout::RolloutPersistenceTelemetry;
 
 #[derive(Default)]
