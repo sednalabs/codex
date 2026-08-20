@@ -779,6 +779,55 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_apply_patch_rollout_state() {
 }
 
 #[test]
+fn unified_exec_snapshot_filters_mixed_case_restricted_overrides() {
+    let dir = tempdir().expect("create temp dir");
+    let snapshot_path = dir.path().join("snapshot.sh");
+    std::fs::write(
+        &snapshot_path,
+        "export OpenAI_Federation_Rule_Id='/run/snapshot-rule'\nexport openai_identity_token_file='/run/snapshot-token'\n",
+    )
+    .expect("write snapshot");
+    let (session_shell, shell_snapshot) =
+        shell_with_snapshot(ShellType::Bash, "/bin/bash", snapshot_path.abs());
+    let command = vec![
+        "/bin/bash".to_string(),
+        "-lc".to_string(),
+        "printf '%s|%s' \"${OPENAI_FEDERATION_RULE_ID-unset}\" \"${OPENAI_IDENTITY_TOKEN_FILE-unset}\"".to_string(),
+    ];
+    let explicit_env_overrides = HashMap::from([
+        (
+            "oPeNaI_fEdErAtIoN_rUlE_iD".to_string(),
+            "/run/override-rule".to_string(),
+        ),
+        (
+            "OpEnAi_IdEnTiTy_ToKeN_FiLe".to_string(),
+            "/run/override-token".to_string(),
+        ),
+    ]);
+    let rewritten = maybe_wrap_shell_lc_with_snapshot(
+        &command,
+        &session_shell,
+        Some(&shell_snapshot),
+        &explicit_env_overrides,
+        &HashMap::new(),
+        &RuntimePathPrepends::default(),
+    );
+    let output = Command::new(&rewritten[0])
+        .args(&rewritten[1..])
+        .env_remove("OPENAI_FEDERATION_RULE_ID")
+        .env_remove("OPENAI_IDENTITY_TOKEN_FILE")
+        .output()
+        .expect("run rewritten command");
+
+    assert!(output.status.success(), "command failed: {output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "unset|unset");
+    assert!(!rewritten[2].contains("/run/snapshot-rule"));
+    assert!(!rewritten[2].contains("/run/snapshot-token"));
+    assert!(!rewritten[2].contains("/run/override-rule"));
+    assert!(!rewritten[2].contains("/run/override-token"));
+}
+
+#[test]
 fn maybe_wrap_shell_lc_with_snapshot_restores_proxy_env_from_process_env() {
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
