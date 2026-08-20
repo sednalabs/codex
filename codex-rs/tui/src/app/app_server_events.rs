@@ -321,13 +321,14 @@ fn rollout_codex_home(rollout_path: Option<&Path>) -> Option<PathBuf> {
     }
 
     let mut home = PathBuf::new();
+    let mut session_root_home = None;
     for component in rollout_path.components() {
         if matches!(component.as_os_str().to_str(), Some("sessions" | "archived_sessions")) {
-            return (!home.as_os_str().is_empty()).then_some(home);
+            session_root_home = (!home.as_os_str().is_empty()).then_some(home.clone());
         }
         home.push(component.as_os_str());
     }
-    None
+    session_root_home
 }
 
 #[cfg(test)]
@@ -354,6 +355,18 @@ mod tests {
                 "/tmp/primary/archived_sessions/rollout.jsonl",
             ))),
             Some(Path::new("/tmp/primary").to_path_buf())
+        );
+        assert_eq!(
+            rollout_codex_home(Some(Path::new(
+                "/tmp/sessions/sessions/2026/01/rollout.jsonl",
+            ))),
+            Some(Path::new("/tmp/sessions").to_path_buf())
+        );
+        assert_eq!(
+            rollout_codex_home(Some(Path::new(
+                "/tmp/archived_sessions/archived_sessions/rollout.jsonl",
+            ))),
+            Some(Path::new("/tmp/archived_sessions").to_path_buf())
         );
 
         for malformed in [
