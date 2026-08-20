@@ -348,7 +348,7 @@ fn build_non_inheritable_env_scrub() -> String {
 }
 
 fn build_non_inheritable_env_scrub_safe() -> String {
-    r#"__codex_scrub_script="$(__codex_env="$__codex_env"; "$__codex_env" | "$__codex_awk" -F= 'tolower($1) == "openai_federation_rule_id" || tolower($1) == "openai_identity_token_file" { printf "unset %s\n", $1 }')"#
+    r#"__codex_scrub_script=$("$__codex_env" | "$__codex_awk" -F= 'tolower($1) == "openai_federation_rule_id" || tolower($1) == "openai_identity_token_file" { printf "unset %s\n", $1 }')"#
         .to_string()
 }
 

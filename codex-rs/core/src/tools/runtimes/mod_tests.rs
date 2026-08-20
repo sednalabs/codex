@@ -508,6 +508,14 @@ fn maybe_wrap_shell_lc_with_snapshot_uses_bash_bootstrap_shell() {
     assert!(rewritten[2].contains("__codex_source_snapshot"));
     assert_eq!(rewritten[8], "/bin/zsh");
     assert_eq!(rewritten[9], "echo hello");
+    let syntax = Command::new(&rewritten[0])
+        .args(["-n", &rewritten[2]])
+        .output()
+        .expect("parse rewritten shell wrapper");
+    assert!(
+        syntax.status.success(),
+        "wrapper script is malformed: {syntax:?}"
+    );
 }
 
 #[test]
