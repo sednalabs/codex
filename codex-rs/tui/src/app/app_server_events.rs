@@ -311,3 +311,34 @@ fn rollout_codex_home(rollout_path: Option<&Path>) -> Option<PathBuf> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::rollout_codex_home;
+    use std::path::Path;
+
+    #[test]
+    fn rollout_codex_home_requires_absolute_sessions_path() {
+        assert_eq!(
+            rollout_codex_home(Some(Path::new(
+                "/tmp/primary/sessions/2026/01/rollout.jsonl",
+            )),
+            Some(Path::new("/tmp/primary").to_path_buf())
+        );
+        assert_eq!(
+            rollout_codex_home(Some(Path::new(
+                "/tmp/child/sessions/2026/01/rollout.jsonl",
+            )),
+            Some(Path::new("/tmp/child").to_path_buf())
+        );
+
+        for malformed in [
+            None,
+            Some(Path::new("sessions/2026/01/rollout.jsonl")),
+            Some(Path::new("/tmp/no-session-directory/rollout.jsonl")),
+            Some(Path::new("/tmp/sessions-but-no-boundary")),
+        ] {
+            assert_eq!(rollout_codex_home(malformed), None);
+        }
+    }
+}
