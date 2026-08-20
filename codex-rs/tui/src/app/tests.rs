@@ -2085,6 +2085,67 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
 }
 
 #[tokio::test]
+async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() -> Result<()> {
+    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let started = app_server
+        .start_thread(app.chat_widget.config_ref())
+        .await?;
+    let thread_id = started.session.thread_id;
+
+    let mut channel = ThreadEventChannel::new_with_session(
+        THREAD_EVENT_CHANNEL_CAPACITY,
+        started.session.clone(),
+        started.turns.clone(),
+    );
+    channel.mark_replay_only();
+    app.thread_event_channels.insert(thread_id, channel);
+    app.activate_thread_channel(thread_id).await;
+    app.chat_widget
+        .handle_thread_session(started.session.clone());
+    app.chat_widget.set_replay_only_thread(true);
+
+    // Seed the same queued follow-up state that a replay-only snapshot restores.
+    app.chat_widget.set_replay_only_thread(false);
+    app.chat_widget.set_queue_autosend_suppressed(true);
+    app.chat_widget.submit_user_message_with_mode(
+        "queued during replay".to_string(),
+        CollaborationModeMask {
+            name: "Default".to_string(),
+            mode: None,
+            model: None,
+            reasoning_effort: None,
+            developer_instructions: None,
+        },
+    );
+    let input_state = app
+        .chat_widget
+        .capture_thread_input_state()
+        .expect("expected queued input state");
+    app.chat_widget.set_replay_only_thread(true);
+    app.chat_widget.restore_thread_input_state(
+        Some(input_state),
+        ThreadInputStateRestoreMode {
+            preserve_in_flight_turn: true,
+        },
+    );
+    app.chat_widget.set_queue_autosend_suppressed(false);
+
+    let resumed_model = started.session.model.clone();
+    assert!(
+        app.attach_live_thread_for_selection(&mut app_server, thread_id)
+            .await?
+    );
+    assert_eq!(app.chat_widget.current_model(), resumed_model);
+    assert!(
+        matches!(next_user_turn_op(&mut op_rx), Op::UserTurn { .. }),
+        "promotion should drain the preserved queue after live session configuration"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn replay_only_thread_rejects_direct_user_turn_without_server_mutation() {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
