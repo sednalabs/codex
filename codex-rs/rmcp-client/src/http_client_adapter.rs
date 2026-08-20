@@ -54,6 +54,7 @@ use self::www_authenticate::insufficient_scope_challenge;
 mod tests;
 
 const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
+const EMPTY_RESPONSE_PROBE_TIMEOUT: Duration = Duration::from_millis(50);
 const JSON_MIME_TYPE: &str = "application/json";
 const HEADER_SESSION_ID: &str = "Mcp-Session-Id";
 const NON_JSON_RESPONSE_BODY_PREVIEW_BYTES: usize = 8_192;
@@ -232,15 +233,20 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
         match content_type.as_deref() {
             Some(content_type) if content_type.starts_with(EVENT_STREAM_MIME_TYPE) => {
                 let event_stream = if accepts_empty_body {
-                    let first_chunk = body_stream
-                        .recv()
+                    match tokio::time::timeout(EMPTY_RESPONSE_PROBE_TIMEOUT, body_stream.recv())
                         .await
-                        .map_err(StreamableHttpClientAdapterError::from)
-                        .map_err(StreamableHttpError::Client)?;
-                    if first_chunk.is_none() {
-                        return Ok(StreamableHttpPostResponse::Accepted);
+                    {
+                        Ok(Ok(None)) => return Ok(StreamableHttpPostResponse::Accepted),
+                        Ok(Ok(Some(first_chunk))) => {
+                            sse_stream_from_body_with_first_chunk(body_stream, Some(first_chunk))
+                        }
+                        Ok(Err(error)) => {
+                            return Err(StreamableHttpError::Client(
+                                StreamableHttpClientAdapterError::from(error),
+                            ));
+                        }
+                        Err(_) => sse_stream_from_body(body_stream),
                     }
-                    sse_stream_from_body_with_first_chunk(body_stream, first_chunk)
                 } else {
                     sse_stream_from_body(body_stream)
                 };
