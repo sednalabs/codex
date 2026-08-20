@@ -52,7 +52,7 @@ async fn replay_only_queued_rejection_restores_paste_mapping_losslessly() {
         remote_image_urls: Vec::new(),
         mention_bindings: Vec::new(),
     };
-    let pending_pastes = vec![(placeholder.clone(), "four".to_string())];
+    let pending_pastes = vec![(placeholder, "four".to_string())];
 
     chat.queue_user_message_with_options(
         message.clone(),
