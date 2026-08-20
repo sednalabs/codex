@@ -1914,7 +1914,10 @@ decisions.
   on Linux `x86_64` and Linux `aarch64`. The common release-policy boundary in
   `codex-rs/utils/version/src/lib.rs` owns explicit identity, strict release
   parsing, component-aware ordering, stable-track classification, and target
-  eligibility. Prerelease builds are no-ops because GitHub `releases/latest`
+  eligibility. Automatic callers pass the running release as a strict floor,
+  and the installer independently rejects malformed, prerelease, equal, or
+  older selected candidates before downloading assets or changing managed
+  current. Prerelease builds are no-ops because GitHub `releases/latest`
   excludes prereleases and can otherwise select an older release. macOS,
   including the Intel preview, is also a no-op until a release-list plus
   asset-aware resolver can prove the selected preview asset is intentional.
@@ -1965,6 +1968,7 @@ decisions.
   - `codex-rs/tui/src/update_action.rs`
   - `codex-rs/tui/src/updates.rs`
   - `codex-rs/tui/src/update_versions.rs`
+  - `docs/sedna-release.md`
   - `scripts/install/install.sh`
   - `scripts/install/install.ps1`
   - `scripts/install/test_install_sh.py`

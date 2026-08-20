@@ -51,6 +51,55 @@ builds use `rust-v<semver>@<upstream-sha>`, while builds whose upstream merge-ba
 tag use `rust-v<semver>+<distance>@<upstream-sha>`, for example
 `0.126.0-alpha.5-sedna.1+upstream.1 (up:rust-v0.126.0-alpha.5+1@4f1d5f00 down:82fafe27)`.
 
+### Updating installed releases
+
+Automatic updates apply only to stable, standalone Sedna releases on Linux `x86_64` and Linux
+`aarch64`. The updater resolves the current stable release and proceeds only when its strictly
+parsed Sedna version is newer than the running build. It takes no automatic action for prerelease
+builds, macOS (including Intel previews), package-manager installs, or unsupported targets.
+
+For a manual install, first choose and copy the exact release tag from the
+[Sedna releases page](https://github.com/sednalabs/codex/releases). Keep the repository argument
+explicit so the command stays bound to the fork release origin. Replace the example tag with the
+tag copied from that page; do not use `latest` for a prerelease or preview selection.
+
+Stable Linux release:
+
+```bash
+release_tag='v0.124.0-sedna.2' # replace with the exact selected release-page tag
+curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset \
+  | CODEX_NON_INTERACTIVE=1 bash -s -- \
+      --repository sednalabs/codex \
+      --release-tag "$release_tag"
+```
+
+Explicit prerelease release:
+
+```bash
+release_tag='v0.126.0-alpha.5-sedna.1' # replace with the exact selected release-page tag
+curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset \
+  | CODEX_NON_INTERACTIVE=1 bash -s -- \
+      --repository sednalabs/codex \
+      --release-tag "$release_tag" \
+      --allow-prerelease
+```
+
+Intel macOS preview release:
+
+```bash
+release_tag='v0.126.0-alpha.5-sedna.1' # replace with the exact selected release-page tag
+curl -fsSL https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset \
+  | CODEX_NON_INTERACTIVE=1 bash -s -- \
+      --repository sednalabs/codex \
+      --release-tag "$release_tag" \
+      --allow-prerelease \
+      --macos-preview
+```
+
+The macOS preview selector is required for its preview asset names. For package-manager installs
+or unsupported targets, use the release page to choose the appropriate manual installation path
+rather than invoking the standalone release-asset installer.
+
 ### GitHub Actions
 
 Use the `sedna-release` workflow for fork-owned GitHub releases.

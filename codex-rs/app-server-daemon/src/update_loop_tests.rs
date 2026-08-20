@@ -61,10 +61,10 @@ async fn sedna_installer_fetch_uses_exact_url_and_preserves_bytes() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn sedna_updater_executes_stale_client_argument_contract() {
+async fn sedna_updater_requires_a_newer_stable_release() {
     let script = br#"#!/usr/bin/env bash
 set -euo pipefail
-expected=(--repository sednalabs/codex --release-tag latest --allow-prerelease)
+expected=(--repository sednalabs/codex --release-tag latest --require-newer-than 1.2.3-sedna.4)
 [[ "$#" -eq "${#expected[@]}" ]]
 for expected_arg in "${expected[@]}"; do
   [[ "$1" == "$expected_arg" ]]
@@ -75,9 +75,9 @@ printf 'fixture updater diagnostic\n' >&2
     .to_vec();
     let http = FakeInstallerHttp::new(InstallerResponse::Success(script));
 
-    install_latest_sedna_standalone(&http)
+    install_latest_sedna_standalone(&http, "1.2.3-sedna.4")
         .await
-        .expect("Sedna updater should execute the legacy argument contract");
+        .expect("Sedna updater should require a newer stable release");
     assert_eq!(
         http.requested_urls(),
         vec![SEDNA_STANDALONE_INSTALLER_URL.to_string()]

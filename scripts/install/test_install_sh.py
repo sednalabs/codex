@@ -12,6 +12,7 @@ import unittest
 
 
 INSTALL_SCRIPT = Path(__file__).with_name("install.sh")
+SEDNA_INSTALL_SCRIPT = INSTALL_SCRIPT.parent.parent / "install_sedna_release_asset"
 VERSION = "0.142.5"
 MISMATCH_VERSION = "0.145.0"
 
@@ -874,6 +875,157 @@ def legacy_release_metadata_with_decoys() -> str:
         },
         separators=(",", ":"),
     )
+
+
+class SednaReleaseInstallerTest(unittest.TestCase):
+    def test_automatic_candidate_rejections_do_not_activate_managed_current(self) -> None:
+        current_version = "1.2.3-sedna.4"
+        for candidate, expected_error in (
+            ("v1.2.3-sedna.4", "is not newer than"),
+            ("v1.2.3-sedna.3", "is not newer than"),
+            ("v1.2.4-alpha.1-sedna.1", "must be a stable Sedna release"),
+            ("not-a-sedna-release", "release tag must look like"),
+        ):
+            with self.subTest(candidate=candidate):
+                result, requests, current_target = run_sedna_installer(
+                    candidate,
+                    current_version,
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected_error, result.stderr)
+                self.assertEqual(
+                    requests,
+                    ["https://api.github.com/repos/sednalabs/codex/releases/latest"],
+                )
+                self.assertEqual(current_target, "previous-managed-release")
+
+    def test_automatic_newer_stable_candidate_reaches_release_metadata_without_activation(
+        self,
+    ) -> None:
+        result, requests, current_target = run_sedna_installer(
+            "v1.2.4-sedna.1",
+            "1.2.3-sedna.4",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("automatic update candidate", result.stderr)
+        self.assertEqual(
+            requests,
+            [
+                "https://api.github.com/repos/sednalabs/codex/releases/latest",
+                "https://api.github.com/repos/sednalabs/codex/releases/tags/v1.2.4-sedna.1",
+            ],
+        )
+        self.assertEqual(current_target, "previous-managed-release")
+
+    def test_manual_prerelease_remains_an_explicit_opt_in(self) -> None:
+        result, requests, current_target = run_sedna_installer(
+            "v1.2.4-alpha.1-sedna.1",
+            "1.2.3-sedna.4",
+            allow_prerelease=True,
+            use_latest=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("automatic update candidate", result.stderr)
+        self.assertEqual(
+            requests,
+            [
+                "https://api.github.com/repos/sednalabs/codex/releases/tags/v1.2.4-alpha.1-sedna.1",
+            ],
+        )
+        self.assertEqual(current_target, "previous-managed-release")
+
+
+def run_sedna_installer(
+    selected_tag: str,
+    current_version: str,
+    *,
+    allow_prerelease: bool = False,
+    use_latest: bool = True,
+) -> tuple[subprocess.CompletedProcess[str], list[str], str]:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        latest_json = root / "latest-release.json"
+        latest_json.write_text(json.dumps({"tag_name": selected_tag}), encoding="utf-8")
+        request_log = root / "requests.log"
+
+        fake_uname = bin_dir / "uname"
+        fake_uname.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "$1" in\n'
+            "  -s) printf 'Linux\\n' ;;\n"
+            "  -m) printf 'x86_64\\n' ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        fake_uname.chmod(0o755)
+
+        fake_curl = bin_dir / "curl"
+        fake_curl.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            'output=""\n'
+            'url=""\n'
+            'while [[ "$#" -gt 0 ]]; do\n'
+            '  if [[ "$1" == "--output" ]]; then output="$2"; shift 2; continue; fi\n'
+            '  if [[ "$1" == http* ]]; then url="$1"; fi\n'
+            "  shift\n"
+            "done\n"
+            'printf "%s\\n" "$url" >> "$CODEX_TEST_REQUEST_LOG"\n'
+            'if [[ "$url" == */releases/latest ]]; then\n'
+            '  cp "$CODEX_TEST_LATEST_JSON" "$output"\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 22\n",
+            encoding="utf-8",
+        )
+        fake_curl.chmod(0o755)
+
+        home = root / "home"
+        current = home / ".codex" / "packages" / "standalone" / "current"
+        current.parent.mkdir(parents=True)
+        previous = current.parent / "previous-managed-release"
+        previous.mkdir()
+        current.symlink_to(previous.name, target_is_directory=True)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "CODEX_TEST_LATEST_JSON": str(latest_json),
+                "CODEX_TEST_REQUEST_LOG": str(request_log),
+                "HOME": str(home),
+                "PATH": f"{bin_dir}:/usr/bin:/bin",
+            }
+        )
+        installer_args = [
+            "bash",
+            str(SEDNA_INSTALL_SCRIPT),
+            "--repository",
+            "sednalabs/codex",
+            "--release-tag",
+            "latest" if use_latest else selected_tag,
+        ]
+        if allow_prerelease:
+            installer_args.append("--allow-prerelease")
+        else:
+            installer_args.extend(["--require-newer-than", current_version])
+        result = subprocess.run(
+            installer_args,
+            capture_output=True,
+            check=False,
+            env=env,
+            text=True,
+        )
+        requests = (
+            request_log.read_text(encoding="utf-8").splitlines()
+            if request_log.exists()
+            else []
+        )
+        return result, requests, os.readlink(current)
 
 
 if __name__ == "__main__":
