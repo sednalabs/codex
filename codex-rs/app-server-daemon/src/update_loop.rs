@@ -54,8 +54,6 @@ const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(unix)]
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 #[cfg(unix)]
-const INSTALL_URL: &str = "https://chatgpt.com/codex/install.sh";
-#[cfg(unix)]
 const SEDNA_STANDALONE_INSTALLER_URL: &str =
     "https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset";
 
@@ -170,51 +168,64 @@ pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Res
 
 #[cfg(unix)]
 async fn install_latest_standalone(http: &RouteAwareClientPool) -> Result<()> {
-    if release_repository().eq_ignore_ascii_case("sednalabs/codex") {
-        install_latest_sedna_standalone(http).await
-    } else {
-        install_latest_upstream_standalone(http).await
+    if is_sedna_standalone_update_eligible(
+        option_env!("CODEX_RELEASE_REPOSITORY"),
+        option_env!("CODEX_RELEASE_TAG_PREFIX"),
+        option_env!("CODEX_RELEASE_VERSION"),
+    ) {
+        install_latest_sedna_standalone(http).await?;
     }
+    Ok(())
 }
 
 #[cfg(unix)]
-fn release_repository() -> &'static str {
-    match option_env!("CODEX_RELEASE_REPOSITORY") {
-        Some(repository) => repository,
-        None => "sednalabs/codex",
-    }
+fn is_sedna_standalone_update_eligible(
+    repository: Option<&str>,
+    tag_prefix: Option<&str>,
+    release_version: Option<&str>,
+) -> bool {
+    matches!(repository, Some("sednalabs/codex"))
+        && matches!(tag_prefix, Some("v"))
+        && release_version.is_some_and(is_sedna_release_version)
 }
 
 #[cfg(unix)]
-async fn install_latest_upstream_standalone(http: &impl InstallerHttp) -> Result<()> {
-    let script = fetch_installer_script(http).await?;
-
-    let mut child = Command::new("/bin/sh")
-        .arg("-s")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to invoke standalone Codex updater")?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .context("standalone Codex updater stdin was unavailable")?;
-    stdin
-        .write_all(&script)
-        .await
-        .context("failed to pass standalone Codex updater to shell")?;
-    drop(stdin);
-    let status = child
-        .wait()
-        .await
-        .context("failed to wait for standalone Codex updater")?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("standalone Codex updater exited with status {status}")
+fn is_sedna_release_version(version: &str) -> bool {
+    let (version, metadata) = match version.split_once('+') {
+        Some((version, metadata)) => (version, Some(metadata)),
+        None => (version, None),
+    };
+    if metadata.is_some_and(|metadata| {
+        metadata.strip_prefix("upstream.").is_none_or(|distance| {
+            distance.is_empty() || !distance.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    }) {
+        return false;
     }
+    let Some((track, ordinal)) = version.rsplit_once("-sedna.") else {
+        return false;
+    };
+    if ordinal.is_empty() || !ordinal.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    let (core, prerelease) = match track.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (track, None),
+    };
+    let mut core_parts = core.split('.');
+    let valid_core = (0..3).all(|_| {
+        core_parts
+            .next()
+            .is_some_and(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    }) && core_parts.next().is_none();
+    valid_core
+        && prerelease.is_none_or(|prerelease| {
+            !prerelease.is_empty()
+                && prerelease.split('.').all(|identifier| {
+                    !identifier.is_empty()
+                        && identifier.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                })
+        })
 }
 
 #[cfg(unix)]
@@ -255,11 +266,6 @@ async fn install_latest_sedna_standalone(http: &impl InstallerHttp) -> Result<()
     } else {
         anyhow::bail!("Sedna standalone Codex updater exited with status {status}")
     }
-}
-
-#[cfg(unix)]
-async fn fetch_installer_script(http: &impl InstallerHttp) -> Result<Vec<u8>> {
-    fetch_installer_script_from_url(http, INSTALL_URL).await
 }
 
 #[cfg(unix)]

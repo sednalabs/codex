@@ -2,14 +2,14 @@ use std::sync::Mutex;
 
 use pretty_assertions::assert_eq;
 
-use super::INSTALL_URL;
 use super::InstallerHttp;
 use super::InstallerResponse;
 use super::SEDNA_STANDALONE_INSTALLER_URL;
-use super::fetch_installer_script;
 use super::fetch_installer_script_from_url;
 #[cfg(unix)]
 use super::install_latest_sedna_standalone;
+#[cfg(unix)]
+use super::is_sedna_standalone_update_eligible;
 use super::update_modes_for_identities;
 use crate::RestartMode;
 use crate::UpdaterRefreshMode;
@@ -38,32 +38,6 @@ fn changed_updater_forces_refresh_even_when_version_may_match() {
             UpdaterRefreshMode::ReexecIfManagedBinaryChanged,
         )
     );
-}
-
-#[tokio::test]
-async fn installer_fetch_uses_exact_url_and_preserves_bytes() {
-    let script = b"#!/bin/sh\nprintf 'update bytes'\n".to_vec();
-    let http = FakeInstallerHttp::new(InstallerResponse::Success(script.clone()));
-
-    assert_eq!(
-        fetch_installer_script(&http)
-            .await
-            .expect("installer fetch should succeed"),
-        script
-    );
-    assert_eq!(http.requested_urls(), vec![INSTALL_URL.to_string()]);
-}
-
-#[tokio::test]
-async fn installer_fetch_rejects_non_success_status() {
-    let http = FakeInstallerHttp::new(InstallerResponse::Unsuccessful { status: 503 });
-
-    let error = fetch_installer_script(&http)
-        .await
-        .expect_err("non-success response should fail");
-
-    assert!(error.to_string().contains("503"));
-    assert_eq!(http.requested_urls(), vec![INSTALL_URL.to_string()]);
 }
 
 #[tokio::test]
@@ -106,6 +80,32 @@ printf 'fixture updater diagnostic\n' >&2
         http.requested_urls(),
         vec![SEDNA_STANDALONE_INSTALLER_URL.to_string()]
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn standalone_update_requires_explicit_sedna_build_identity_and_release_version() {
+    assert!(is_sedna_standalone_update_eligible(
+        Some("sednalabs/codex"),
+        Some("v"),
+        Some("1.2.3-sedna.1")
+    ));
+    for identity in [
+        (None, Some("v"), Some("1.2.3-sedna.1")),
+        (Some("sednalabs/codex"), None, Some("1.2.3-sedna.1")),
+        (
+            Some("sednalabs/codex"),
+            Some("rust-v"),
+            Some("1.2.3-sedna.1"),
+        ),
+        (Some("openai/codex"), Some("v"), Some("1.2.3-sedna.1")),
+        (Some("sednalabs/codex"), Some("v"), None),
+        (Some("sednalabs/codex"), Some("v"), Some("1.2.3")),
+    ] {
+        assert!(!is_sedna_standalone_update_eligible(
+            identity.0, identity.1, identity.2
+        ));
+    }
 }
 
 struct FakeInstallerHttp {
