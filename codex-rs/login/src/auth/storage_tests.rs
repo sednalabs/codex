@@ -186,6 +186,31 @@ fn auth_lock_roots_isolate_precreated_user_components() -> anyhow::Result<()> {
 
 #[cfg(unix)]
 #[test]
+fn auth_lock_rejects_world_writable_creation_anchor() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempdir()?;
+    let world_writable = root.path().join("world-writable");
+    std::fs::create_dir(&world_writable)?;
+    let mut permissions = std::fs::metadata(&world_writable)?.permissions();
+    permissions.set_mode(0o777);
+    std::fs::set_permissions(&world_writable, permissions)?;
+    let precreated = lock_root_for_uid(
+        &world_writable,
+        // Model another user pre-creating the victim's old predictable root.
+        unsafe { libc::geteuid() as u64 },
+    );
+    let redirected = root.path().join("redirected");
+    std::fs::create_dir(&redirected)?;
+    std::os::unix::fs::symlink(&redirected, &precreated)?;
+
+    assert!(validate_private_lock_anchor(&world_writable).is_err());
+    assert!(precreated.is_symlink());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn absent_symlink_aliases_share_conditional_delete_identity() -> anyhow::Result<()> {
     let root = tempdir()?;
     let home = root.path().join("real-home");

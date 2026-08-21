@@ -21,6 +21,7 @@ codex-secrets = { workspace = true }
 codex-terminal-detection = { workspace = true }
 codex-utils-template = { workspace = true }
 codex-utils-version = { workspace = true }
+dirs = { workspace = true }
 http = { workspace = true }
 libc = { workspace = true }
 once_cell = { workspace = true }

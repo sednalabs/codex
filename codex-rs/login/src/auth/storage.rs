@@ -243,7 +243,7 @@ fn lock_auth_storage(codex_home: &Path) -> std::io::Result<File> {
     // different temporary-directory environments while sharing one CODEX_HOME.
     #[cfg(unix)]
     let lock_dir = lock_root_for_uid(
-        Path::new("/tmp"),
+        &private_lock_anchor(codex_home)?,
         // Keep the lock namespace private to the effective user. A different
         // unprivileged user must not be able to pre-create our shared root and
         // deny auth operations before ownership validation runs.
@@ -256,6 +256,46 @@ fn lock_auth_storage(codex_home: &Path) -> std::io::Result<File> {
 
 fn lock_root_for_uid(base: &Path, uid: u64) -> PathBuf {
     base.join(format!("codex-auth-locks-{uid}"))
+}
+
+#[cfg(unix)]
+fn private_lock_anchor(codex_home: &Path) -> std::io::Result<PathBuf> {
+    let absolute = std::path::absolute(codex_home)?;
+    let mut anchor = absolute.parent().unwrap_or(absolute.as_path());
+    while anchor.exists() {
+        if let Ok(private_anchor) = validate_private_lock_anchor(anchor) {
+            return Ok(private_anchor);
+        }
+        let Some(parent) = anchor.parent() else {
+            break;
+        };
+        anchor = parent;
+    }
+
+    if let Some(home) = dirs::home_dir()
+        && let Ok(private_anchor) = validate_private_lock_anchor(&home)
+    {
+        return Ok(private_anchor);
+    }
+    validate_private_lock_anchor(anchor)
+}
+
+#[cfg(unix)]
+fn validate_private_lock_anchor(anchor: &Path) -> std::io::Result<PathBuf> {
+    let metadata = std::fs::symlink_metadata(anchor)?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(std::io::Error::other(format!(
+            "auth lock anchor is not a directory: {}",
+            anchor.display()
+        )));
+    }
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.permissions().mode() & 0o022 != 0 {
+        return Err(std::io::Error::other(format!(
+            "auth lock anchor is not private to the current user: {}",
+            anchor.display()
+        )));
+    }
+    std::fs::canonicalize(anchor)
 }
 
 fn lock_auth_storage_at(codex_home: &Path, lock_dir: &Path) -> std::io::Result<File> {

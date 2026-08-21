@@ -2637,6 +2637,17 @@ impl AuthManager {
             return Ok(removed || cache_changed);
         }
 
+        let current_auth_matches_rejected = rejected_auth.is_none_or(|rejected| {
+            self.auth_cached()
+                .as_ref()
+                .is_some_and(|current| Self::auths_equal_for_refresh(Some(current), Some(rejected)))
+        });
+        if !current_auth_matches_rejected {
+            // The active source changed after the rejection snapshot was taken.
+            // Do not remove managed credentials belonging to that newer source.
+            return Ok(false);
+        }
+
         let removal_result = self.logout_stores_matching_rejected_auth(rejected_auth);
         let cache_changed = self.reload().await;
         let removed = removal_result?;

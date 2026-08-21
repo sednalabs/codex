@@ -3569,6 +3569,7 @@ dependencies = [
  "codex-utils-template",
  "codex-utils-version",
  "core_test_support",
+ "dirs",
  "http 1.4.2",
  "jsonwebtoken",
  "keyring",
