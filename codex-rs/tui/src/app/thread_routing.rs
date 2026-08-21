@@ -1467,6 +1467,17 @@ impl App {
         Ok(())
     }
 
+    /// Retries delivery copies after the active receiver consumes one event. The main event loop
+    /// reads the receiver directly, so picker/session drains are not the only points where a full
+    /// channel can make room for the bounded pending-delivery lane.
+    pub(super) fn flush_active_thread_pending_delivery(&self) {
+        if let Some(thread_id) = self.active_thread_id
+            && let Some(channel) = self.thread_event_channels.get(&thread_id)
+        {
+            channel.flush_pending_delivery();
+        }
+    }
+
     /// Returns `(closed_thread_id, primary_thread_id)` when a non-primary active
     /// thread has died and we should fail over to the primary thread.
     ///

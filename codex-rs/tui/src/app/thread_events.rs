@@ -156,9 +156,7 @@ impl ThreadBufferedEvent {
             ServerNotification::FileChangePatchUpdated(_) => {
                 LiveDeliveryKind::FileChangePatchUpdated
             }
-            ServerNotification::ServerRequestResolved(_) => {
-                LiveDeliveryKind::ServerRequestResolved
-            }
+            ServerNotification::ServerRequestResolved(_) => LiveDeliveryKind::ServerRequestResolved,
             ServerNotification::McpToolCallProgress(_) => LiveDeliveryKind::McpToolCallProgress,
             ServerNotification::ThreadRealtimeItemAdded(_) => {
                 LiveDeliveryKind::ThreadRealtimeItemAdded
