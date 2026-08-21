@@ -95,8 +95,7 @@ impl InboundServerRequestLedger {
     fn new(channel_capacity: usize) -> Self {
         let max_entries = channel_capacity
             .saturating_mul(4)
-            .min(MAX_INBOUND_SERVER_REQUEST_IDS)
-            .max(1);
+            .clamp(1, MAX_INBOUND_SERVER_REQUEST_IDS);
 
         Self {
             entries: HashMap::with_capacity(max_entries),
