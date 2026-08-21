@@ -249,6 +249,21 @@ impl From<RefreshTokenError> for std::io::Error {
 }
 
 impl CodexAuth {
+    fn loaded_auth_snapshot(&self) -> Option<LoadedAuth> {
+        match self {
+            Self::Chatgpt(auth) => auth.loaded_auth().ok(),
+            Self::ChatgptAuthTokens(_) => Some(LoadedAuth {
+                source: AuthStorageSource::Ephemeral,
+                auth: self.get_current_auth_json()?,
+            }),
+            Self::ApiKey(_)
+            | Self::Headers(_)
+            | Self::AgentIdentity(_)
+            | Self::PersonalAccessToken(_)
+            | Self::BedrockApiKey(_) => None,
+        }
+    }
+
     async fn from_auth_dot_json(
         codex_home: &Path,
         auth_dot_json: AuthDotJson,
@@ -1231,18 +1246,28 @@ fn logout_with_message(
     keyring_backend_kind: AuthKeyringBackendKind,
     rejected_auth: &CodexAuth,
 ) -> std::io::Result<()> {
-    let mode = if rejected_auth.is_external_chatgpt_tokens() {
+    let captured = rejected_auth.loaded_auth_snapshot();
+    let mode = if captured
+        .as_ref()
+        .is_some_and(|loaded| loaded.source == AuthStorageSource::Ephemeral)
+    {
         AuthCredentialsStoreMode::Ephemeral
     } else {
         auth_credentials_store_mode
     };
     let repository = create_auth_repository(codex_home.to_path_buf(), mode, keyring_backend_kind);
-    let removal_result = repository.load_active().and_then(|loaded| match loaded {
+    let removal_result = match captured {
         Some(loaded) if auth_dot_json_matches_rejected_auth(&loaded.auth, rejected_auth) => {
             repository.delete_if_matches(&loaded)
         }
-        _ => Ok(false),
-    });
+        Some(_) => Ok(false),
+        None => repository.load_active().and_then(|loaded| match loaded {
+            Some(loaded) if auth_dot_json_matches_rejected_auth(&loaded.auth, rejected_auth) => {
+                repository.delete_if_matches(&loaded)
+            }
+            _ => Ok(false),
+        }),
+    };
     let error_message = match removal_result {
         Ok(_) => message,
         Err(err) => format!("{message}. Failed to remove auth.json: {err}"),
@@ -2532,20 +2557,18 @@ impl AuthManager {
         result
     }
 
-    /// Log out by deleting the on‑disk auth.json (if present). Returns Ok(true)
-    /// if a file was removed, Ok(false) if no auth file existed. On success,
-    /// reloads the in‑memory auth cache so callers immediately observe the
-    /// unauthenticated state.
+    /// Log out from every managed durable store. The in-memory and external
+    /// state is cleared even when a later all-store result reports a partial
+    /// deletion failure.
     pub async fn logout(&self) -> std::io::Result<bool> {
-        let removed = logout_all_stores(
+        let result = logout_all_stores(
             &self.codex_home,
             self.auth_credentials_store_mode,
             self.keyring_backend_kind,
-        )?;
-        // Always reload to clear any cached auth (even if file absent).
+        );
         self.clear_external_auth();
-        self.reload().await;
-        Ok(removed)
+        self.set_cached_auth(None);
+        result
     }
 
     pub async fn logout_with_revoke(&self) -> std::io::Result<bool> {
@@ -2560,11 +2583,10 @@ impl AuthManager {
             &self.codex_home,
             self.auth_credentials_store_mode,
             self.keyring_backend_kind,
-        )?;
-        // Always reload to clear any cached auth (even if file absent).
+        );
         self.clear_external_auth();
-        self.reload().await;
-        Ok(result)
+        self.set_cached_auth(None);
+        result
     }
 
     /// Returns the precise kind of credentials backing the current authentication.
