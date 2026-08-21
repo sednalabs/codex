@@ -10013,7 +10013,12 @@ jobs:
 
 
 class ValidationLaneRunnerTests(unittest.TestCase):
-    def test_downstream_divergence_audit_preserves_failure_without_report(self) -> None:
+    def _run_downstream_divergence_audit_fixture(
+        self,
+        producer_source: str,
+        *,
+        stale_report: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir) / "repo"
             script_dir = repo_root / ".github/scripts/validation-lanes"
@@ -10036,12 +10041,7 @@ class ValidationLaneRunnerTests(unittest.TestCase):
                 encoding="utf-8",
             )
             audit_script = scripts_dir / "downstream-divergence-audit.py"
-            audit_script.write_text(
-                "import sys\n"
-                "print('producer failure: upstream audit aborted', file=sys.stderr)\n"
-                "raise SystemExit(17)\n",
-                encoding="utf-8",
-            )
+            audit_script.write_text(producer_source, encoding="utf-8")
 
             subprocess.run(
                 ["git", "init", "--initial-branch=main"],
@@ -10067,6 +10067,14 @@ class ValidationLaneRunnerTests(unittest.TestCase):
                 stdout=subprocess.DEVNULL,
             )
 
+            if stale_report is not None:
+                report = (
+                    repo_root
+                    / "target/downstream-divergence-audit/downstream-divergence-audit.json"
+                )
+                report.parent.mkdir(parents=True, exist_ok=True)
+                report.write_text(stale_report, encoding="utf-8")
+
             proc = subprocess.run(
                 [
                     "bash",
@@ -10081,9 +10089,63 @@ class ValidationLaneRunnerTests(unittest.TestCase):
                 text=True,
             )
 
-            self.assertEqual(proc.returncode, 17)
-            self.assertIn("producer failure: upstream audit aborted", proc.stderr)
-            self.assertNotIn("FileNotFoundError", proc.stderr)
+            return proc
+
+    def test_downstream_divergence_audit_preserves_failure_without_report(self) -> None:
+        proc = self._run_downstream_divergence_audit_fixture(
+            "import sys\n"
+            "print('producer failure: upstream audit aborted', file=sys.stderr)\n"
+            "raise SystemExit(17)\n"
+        )
+
+        self.assertEqual(proc.returncode, 17)
+        self.assertIn("producer failure: upstream audit aborted", proc.stderr)
+        self.assertNotIn("FileNotFoundError", proc.stderr)
+
+    def test_downstream_divergence_audit_discards_stale_report_on_failure(self) -> None:
+        proc = self._run_downstream_divergence_audit_fixture(
+            "import sys\n"
+            "from pathlib import Path\n"
+            "report = Path('target/downstream-divergence-audit/downstream-divergence-audit.json')\n"
+            "if report.exists():\n"
+            "    print('stale report was not removed', file=sys.stderr)\n"
+            "    raise SystemExit(19)\n"
+            "print('producer failure: upstream audit aborted', file=sys.stderr)\n"
+            "raise SystemExit(17)\n",
+            stale_report=json.dumps(
+                {
+                    "registry_reconciliation": {
+                        "uncovered_code_paths": [],
+                        "stale_entry_ids": ["stale-entry-from-previous-run"],
+                    }
+                }
+            ),
+        )
+
+        self.assertEqual(proc.returncode, 17)
+        self.assertIn("producer failure: upstream audit aborted", proc.stderr)
+        self.assertNotIn("stale report was not removed", proc.stderr)
+        self.assertNotIn("stale-entry-from-previous-run", proc.stderr)
+
+    def test_downstream_divergence_audit_rejects_malformed_success_report(self) -> None:
+        proc = self._run_downstream_divergence_audit_fixture(
+            "from pathlib import Path\n"
+            "output_dir = Path('target/downstream-divergence-audit')\n"
+            "output_dir.mkdir(parents=True, exist_ok=True)\n"
+            "(output_dir / 'downstream-divergence-audit.json').write_text('{not-json', encoding='utf-8')\n"
+        )
+
+        self.assertEqual(proc.returncode, 70)
+        self.assertIn("artifact-contract failure", proc.stderr)
+        self.assertIn("malformed downstream divergence audit report", proc.stderr)
+        self.assertIn("report validation failed", proc.stderr)
+
+    def test_downstream_divergence_audit_rejects_missing_success_report(self) -> None:
+        proc = self._run_downstream_divergence_audit_fixture("# successful producer\n")
+
+        self.assertEqual(proc.returncode, 70)
+        self.assertIn("artifact-contract failure", proc.stderr)
+        self.assertIn("did not produce", proc.stderr)
 
     def test_runner_executes_valid_paths_and_rejects_escape_attempts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
