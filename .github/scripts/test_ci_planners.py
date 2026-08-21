@@ -992,6 +992,32 @@ class RouteSelectionTests(unittest.TestCase):
             ["codex.skill-loader-fixture-hermeticity-targeted"],
         )
 
+    def test_app_server_client_route_selects_focused_client_lane(self) -> None:
+        changed_files = [
+            ".github/scripts/test_ci_planners.py",
+            ".github/validation-lanes.json",
+            ".github/workflows/sedna-heavy-tests.yml",
+            "codex-rs/app-server-client/src/lib.rs",
+            "codex-rs/app-server-client/src/remote.rs",
+            "docs/carry-divergence-ledger.md",
+            "docs/divergences/index.yaml",
+            "docs/downstream-regression-matrix.md",
+            "justfile",
+        ]
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            changed_files,
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.app-server-client-targeted",
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+                "codex.downstream-divergence-audit",
+            ],
+        )
+
     def test_skill_loader_fixture_lane_pins_both_hermeticity_tests(self) -> None:
         lane = next(
             lane
@@ -3115,14 +3141,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["run_selected_lanes"], "true")
         self.assertEqual(payload["run_smoke_gate"], "false")
-        self.assertEqual(len(payload["selected_matrix"]["include"]), 26)
-        self.assertEqual(payload["planned_job_count"], 16)
+        self.assertEqual(len(payload["selected_matrix"]["include"]), 27)
+        self.assertEqual(payload["planned_job_count"], 17)
         self.assertEqual(payload["rust_batching_mode"], "auto")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 9)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 7)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         for batch in (
@@ -3186,12 +3212,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
             str(REPO_ROOT / ".github/validation-lanes.json"),
         )
 
-        self.assertEqual(payload["planned_job_count"], 26)
+        self.assertEqual(payload["planned_job_count"], 27)
         self.assertEqual(payload["rust_batching_mode"], "off")
         self.assertEqual(payload["rust_batching_reason"], "disabled by workflow input")
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 17)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 0)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 9)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 10)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 0)
 
     def test_lab_product_surface_lane_set_returns_first_wave_lanes(self) -> None:
@@ -3443,7 +3469,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 13)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 2)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
@@ -6084,18 +6110,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
         self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 40)
+        self.assertEqual(payload["planned_job_count"], 41)
         self.assertEqual(payload["selected_workflow_lane_count"], 6)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 13)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 6)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "6")
         self.assertEqual(payload["node_max_parallel"], "2")
         self.assertEqual(payload["rust_minimal_max_parallel"], "24")
-        self.assertEqual(payload["rust_integration_max_parallel"], "24")
+        self.assertEqual(payload["rust_integration_max_parallel"], "25")
         self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
@@ -6119,16 +6145,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 44)
+        self.assertEqual(payload["planned_job_count"], 45)
         self.assertEqual(payload["selected_workflow_lane_count"], 7)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 14)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 6)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 7)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 13)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["rust_minimal_max_parallel"], "28")
-        self.assertEqual(payload["rust_integration_max_parallel"], "26")
+        self.assertEqual(payload["rust_integration_max_parallel"], "27")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {
