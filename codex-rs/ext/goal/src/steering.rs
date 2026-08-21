@@ -82,6 +82,7 @@ fn continuation_prompt(goal: &ThreadGoal) -> String {
         prompt.push_str(&format!(
             "
 
+<goal_multi_agent_stress_continuation_probe>
 Diagnostic continuation probe:
              - Before other substantive work in this automatic continuation, call the Multi-Agent V2 `spawn_agent` tool exposed in this turn exactly once.
              - Use task_name `{task_name}` and fork_turns `none`. Use the configured V2 namespace if this turn exposes one; do not substitute the legacy V1 collaboration tool.
