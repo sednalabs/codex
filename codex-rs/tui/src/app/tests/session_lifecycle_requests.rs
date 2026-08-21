@@ -66,9 +66,28 @@ async fn start_recording_app_server_with_status_script(
     start_recording_app_server_with_scripts(
         config,
         force_active_include_turns,
+        /*force_not_loaded_after_unsubscribe*/ false,
         /*force_resume_failure*/ false,
         /*resume_signal*/ None,
         /*event_recorded_signal*/ None,
+    )
+    .await
+}
+
+/// Starts the recording proxy with an immediate closed transition after unsubscribe. The real
+/// server unloads idle threads asynchronously, so this keeps selection tests deterministic while
+/// preserving the loaded status after a later resume.
+async fn start_recording_app_server_with_closed_transition(
+    config: &Config,
+) -> Result<(
+    AppServerSession,
+    Arc<Mutex<Vec<String>>>,
+    JoinHandle<Result<()>>,
+)> {
+    start_recording_app_server_with_scripts(
+        config, /*force_active_include_turns*/ false,
+        /*force_not_loaded_after_unsubscribe*/ true, /*force_resume_failure*/ false,
+        /*resume_signal*/ None, /*event_recorded_signal*/ None,
     )
     .await
 }
@@ -82,6 +101,7 @@ async fn start_recording_app_server_with_resume_failure(
     let (app_server, _requests, proxy) = start_recording_app_server_with_scripts(
         config,
         /*force_active_include_turns*/ false,
+        /*force_not_loaded_after_unsubscribe*/ false,
         /*force_resume_failure*/ true,
         Some(resume_signal),
         Some(event_recorded_signal),
@@ -93,6 +113,7 @@ async fn start_recording_app_server_with_resume_failure(
 async fn start_recording_app_server_with_scripts(
     config: &Config,
     force_active_include_turns: bool,
+    force_not_loaded_after_unsubscribe: bool,
     force_resume_failure: bool,
     resume_signal: Option<Arc<tokio::sync::Notify>>,
     event_recorded_signal: Option<Arc<tokio::sync::Notify>>,
@@ -125,6 +146,7 @@ async fn start_recording_app_server_with_scripts(
     let proxy = tokio::spawn(async move {
         let (stream, _) = listener.accept().await?;
         let mut websocket = accept_async(stream).await?;
+        let mut force_not_loaded = false;
         while let Some(frame) = websocket.next().await {
             let Message::Text(text) = frame? else {
                 continue;
@@ -151,6 +173,13 @@ async fn start_recording_app_server_with_scripts(
                         .expect("request recorder lock")
                         .push(request.method.clone());
                     let request_id = request.id.clone();
+                    if force_not_loaded_after_unsubscribe {
+                        if request.method == "thread/unsubscribe" {
+                            force_not_loaded = true;
+                        } else if request.method == "thread/resume" {
+                            force_not_loaded = false;
+                        }
+                    }
                     if force_resume_failure && request.method == "thread/resume" {
                         if let Some(signal) = &resume_signal {
                             signal.notify_one();
@@ -181,11 +210,22 @@ async fn start_recording_app_server_with_scripts(
                                 .and_then(serde_json::Value::as_bool)
                                 .unwrap_or(false)
                         });
+                    let force_not_loaded_status = force_not_loaded_after_unsubscribe
+                        && force_not_loaded
+                        && request.method == "thread/read";
                     let request =
                         serde_json::from_value::<ClientRequest>(serde_json::to_value(request)?)?;
                     let response = match embedded.request(request).await? {
                         Ok(mut result) => {
-                            if force_active_status && let Some(thread) = result.get_mut("thread") {
+                            if force_not_loaded_status {
+                                if let Some(thread) = result.get_mut("thread") {
+                                    thread["status"] = serde_json::json!({
+                                        "type": "notLoaded",
+                                    });
+                                }
+                            } else if force_active_status
+                                && let Some(thread) = result.get_mut("thread")
+                            {
                                 thread["status"] = serde_json::json!({
                                     "type": "active",
                                     "activeFlags": [],
@@ -668,7 +708,7 @@ fn closed_existing_stale_channel_refreshes_persisted_transcript() -> Result<()> 
                 );
 
                 let (mut app_server, requests, proxy) =
-                    start_recording_app_server(&app.config).await?;
+                    start_recording_app_server_with_closed_transition(&app.config).await?;
                 let started = app_server
                     .resume_thread(
                         app.config.clone(),
@@ -1070,7 +1110,7 @@ fn active_selected_thread_recovers_live_after_closed_refresh() -> Result<()> {
                     .expect("create active recovery rollout"),
                 )?;
                 let (mut app_server, _requests, proxy) =
-                    start_recording_app_server(&app.config).await?;
+                    start_recording_app_server_with_closed_transition(&app.config).await?;
 
                 // Select the loaded thread once so the TUI owns a live channel and an active
                 // selection before the server-side unload/reload transition.
