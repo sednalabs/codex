@@ -1453,6 +1453,31 @@ class RouteSelectionTests(unittest.TestCase):
             '"//patches:rules_rs_windows_gnullvm_exec_toolchain.patch"',
             module_bazel,
         )
+        root_build = (REPO_ROOT / "BUILD.bazel").read_text(encoding="utf-8")
+        self.assertIn(
+            'name = "windows_aarch64_gnullvm_rust_toolchain_for_health",',
+            root_build,
+        )
+        self.assertIn(
+            'toolchain = "@default_rust_toolchains//:windows_aarch64_gnullvm_1_95_0_rust_toolchain",',
+            root_build,
+        )
+        self.assertIn(
+            '"@llvm//constraints/windows/abi:gnullvm",',
+            root_build,
+        )
+        self.assertIn(
+            '"@llvm//constraints/windows/crt:msvcrt",',
+            root_build,
+        )
+        self.assertIn(
+            '"@rules_rust//rust/private:bootstrapped",',
+            root_build,
+        )
+        self.assertIn(
+            '"@rules_rust//rust/toolchain/channel:stable",',
+            root_build,
+        )
         gnullvm_exec_patch = (
             REPO_ROOT / "patches/rules_rs_windows_gnullvm_exec_toolchain.patch"
         ).read_text(encoding="utf-8")
@@ -1593,7 +1618,7 @@ class RouteSelectionTests(unittest.TestCase):
             analysis_run,
         )
         self.assertIn(
-            "--extra_toolchains=@default_rust_toolchains//:windows_aarch64_gnullvm_to_non_bpf_targets_1_95_0",
+            "--extra_toolchains=//:windows_aarch64_gnullvm_rust_toolchain_for_health",
             analysis_run,
         )
         self.assertIn("--include_artifacts=true", analysis_run)

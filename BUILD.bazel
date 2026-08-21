@@ -67,6 +67,32 @@ toolchain(
     toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
 )
 
+# The generated rules_rs wrapper remains the implementation of the Rust
+# toolchain. Keep this native selector's target and execution constraints
+# explicit so the ARM64 gnullvm health aquery cannot fall through to the
+# same-CPU MSVC toolchain.
+toolchain(
+    name = "windows_aarch64_gnullvm_rust_toolchain_for_health",
+    exec_compatible_with = [
+        "@platforms//cpu:aarch64",
+        "@platforms//os:windows",
+        "@llvm//constraints/windows/abi:gnullvm",
+        "@llvm//constraints/windows/crt:msvcrt",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:aarch64",
+        "@platforms//os:windows",
+        "@llvm//constraints/windows/abi:gnullvm",
+        "@llvm//constraints/windows/crt:msvcrt",
+    ],
+    target_settings = [
+        "@rules_rust//rust/private:bootstrapped",
+        "@rules_rust//rust/toolchain/channel:stable",
+    ],
+    toolchain = "@default_rust_toolchains//:windows_aarch64_gnullvm_1_95_0_rust_toolchain",
+    toolchain_type = "@rules_rust//rust:toolchain_type",
+)
+
 alias(
     name = "rbe",
     actual = "@rbe_platform",
