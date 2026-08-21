@@ -463,7 +463,7 @@ impl PendingInteractiveReplayState {
         }
     }
 
-    fn clear(&mut self) {
+    pub(super) fn clear(&mut self) {
         self.exec_approval_call_ids.clear();
         self.exec_approval_call_ids_by_turn_id.clear();
         self.patch_approval_call_ids.clear();

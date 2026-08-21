@@ -22,11 +22,8 @@ impl App {
                 !Self::replay_safe_op(op)
             }
             AppEvent::RetrySafetyBufferedTurn { .. }
-            | AppEvent::ExitSideConversation
             | AppEvent::Logout
-            | AppEvent::NewSession { .. }
-            | AppEvent::ClearUi { .. }
-            | AppEvent::ClearUiAndSubmitUserMessage { .. }
+            | AppEvent::OpenExternalAgentConfigMigration
             | AppEvent::AppendMessageHistoryEntry { .. }
             | AppEvent::SyncThreadGitBranch { .. }
             | AppEvent::ApproveRecentAutoReviewDenial { .. }
@@ -2795,13 +2792,8 @@ mod tests {
                 from_model: "gpt-4.1".to_string(),
                 to_model: "gpt-5.4".to_string(),
             },
-            AppEvent::ExitSideConversation,
             AppEvent::Logout,
-            AppEvent::NewSession { name: None },
-            AppEvent::ClearUi { name: None },
-            AppEvent::ClearUiAndSubmitUserMessage {
-                text: "new prompt".to_string(),
-            },
+            AppEvent::OpenExternalAgentConfigMigration,
             AppEvent::UpdateWorldWritableWarningAcknowledged(true),
             AppEvent::UpdateRateLimitSwitchPromptHidden(true),
             AppEvent::SkipNextWorldWritableScan,
@@ -2946,6 +2938,16 @@ mod tests {
         assert!(!App::replay_only_event_is_mutating(
             &AppEvent::SelectAgentThread(ThreadId::new())
         ));
+        for event in [
+            AppEvent::ExitSideConversation,
+            AppEvent::NewSession { name: None },
+            AppEvent::ClearUi { name: None },
+            AppEvent::ClearUiAndSubmitUserMessage {
+                text: "new prompt".to_string(),
+            },
+        ] {
+            assert!(!App::replay_only_event_is_mutating(&event));
+        }
         assert!(!App::replay_only_event_is_mutating(
             &AppEvent::OpenThreadGoalMenu {
                 thread_id: ThreadId::new(),
