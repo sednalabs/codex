@@ -50,6 +50,10 @@ impl App {
             | AppEvent::UpdateWorldWritableWarningAcknowledged(_)
             | AppEvent::UpdateRateLimitSwitchPromptHidden(_)
             | AppEvent::UpdatePlanModeReasoningEffort(_)
+            | AppEvent::SkipNextWorldWritableScan
+            | AppEvent::ConsumeRateLimitResetCredit { .. }
+            | AppEvent::SendAddCreditsNudgeEmail { .. }
+            | AppEvent::SubmitFeedback { .. }
             | AppEvent::PetSelected { .. }
             | AppEvent::PetDisabled
             | AppEvent::PetSelectionLoaded { .. }
@@ -2786,6 +2790,20 @@ mod tests {
             },
             AppEvent::UpdateWorldWritableWarningAcknowledged(true),
             AppEvent::UpdateRateLimitSwitchPromptHidden(true),
+            AppEvent::SkipNextWorldWritableScan,
+            AppEvent::ConsumeRateLimitResetCredit {
+                idempotency_key: "reset-1".to_string(),
+                credit_id: None,
+            },
+            AppEvent::SendAddCreditsNudgeEmail {
+                credit_type: codex_app_server_protocol::AddCreditsNudgeCreditType::Credits,
+            },
+            AppEvent::SubmitFeedback {
+                category: FeedbackCategory::Bug,
+                reason: None,
+                turn_id: None,
+                include_logs: false,
+            },
             AppEvent::PetSelected {
                 pet_id: "chefito".to_string(),
             },
