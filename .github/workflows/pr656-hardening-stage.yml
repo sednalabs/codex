@@ -21,10 +21,10 @@ jobs:
           ref: diag/pr656-hardening-stage-20260821
           fetch-depth: 0
 
-      - name: Verify staging source
+      - name: Verify staged source
         shell: bash
         run: |
-          git diff --exit-code 61b3178ee5dd67ae894fc4f69ff7d5c44e200ead -- \
+          git diff --exit-code 783d6fbe19d45502df98378ae0e73b36e8f6f6aa -- \
             codex-rs/core/src/agent/control/spawn.rs \
             codex-rs/core/src/diagnostic_flags.rs \
             codex-rs/core/src/session/turn.rs \
@@ -35,7 +35,7 @@ jobs:
             codex-rs/ext/goal/src/runtime.rs \
             codex-rs/ext/goal/src/steering.rs
 
-      - name: Apply hardening
+      - name: Apply lint cleanup
         shell: bash
         run: |
           python3 .github/scripts/pr656_hardening_stage.py
@@ -47,7 +47,12 @@ jobs:
         run: |
           cargo test --manifest-path codex-rs/Cargo.toml -p codex-core goal_diagnostic_ --lib
 
-      - name: Commit staged source
+      - name: Run repository argument-comment lint
+        uses: ./.github/actions/run-argument-comment-lint
+        with:
+          target: Linux
+
+      - name: Commit validated staged source
         shell: bash
         run: |
           git config user.name github-actions[bot]
@@ -62,5 +67,5 @@ jobs:
             codex-rs/ext/goal/src/extension.rs \
             codex-rs/ext/goal/src/runtime.rs \
             codex-rs/ext/goal/src/steering.rs
-          git commit -m "test: harden bounded goal diagnostics"
+          git commit -m "test: make diagnostic telemetry lint-clean"
           git push origin HEAD:diag/pr656-hardening-stage-20260821
