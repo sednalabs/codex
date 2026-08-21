@@ -23,6 +23,29 @@ struct FailingSaveKeyringStore {
 }
 
 #[derive(Debug)]
+struct WriteThenFailKeyringStore {
+    inner: MockKeyringStore,
+}
+
+impl KeyringStore for WriteThenFailKeyringStore {
+    fn load(&self, service: &str, account: &str) -> Result<Option<String>, CredentialStoreError> {
+        self.inner.load(service, account)
+    }
+
+    fn save(&self, service: &str, account: &str, value: &str) -> Result<(), CredentialStoreError> {
+        self.inner.save(service, account, value)?;
+        Err(CredentialStoreError::new(KeyringError::Invalid(
+            "error".into(),
+            "save-after-write".into(),
+        )))
+    }
+
+    fn delete(&self, service: &str, account: &str) -> Result<bool, CredentialStoreError> {
+        self.inner.delete(service, account)
+    }
+}
+
+#[derive(Debug)]
 struct FailingDeleteKeyringStore {
     inner: MockKeyringStore,
 }
@@ -807,6 +830,32 @@ fn auto_repository_refuses_shadow_file_when_keyring_contains_auth_and_write_fail
     assert_eq!(
         repository.load_active()?.map(|loaded| loaded.auth),
         Some(original)
+    );
+    assert!(!get_auth_file(codex_home.path()).exists());
+    Ok(())
+}
+
+#[test]
+fn auto_repository_fails_closed_when_keyring_writes_then_returns_an_error() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let mock_keyring = MockKeyringStore::default();
+    let repository = create_auth_repository_with_store(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::Auto,
+        Arc::new(WriteThenFailKeyringStore {
+            inner: mock_keyring,
+        }),
+        AuthKeyringBackendKind::Direct,
+    );
+    let replacement = auth_with_prefix("written-then-error");
+
+    assert!(repository.replace_for_login(&replacement).is_err());
+    assert_eq!(
+        repository.load_active()?,
+        Some(LoadedAuth {
+            source: AuthStorageSource::DirectKeyring,
+            auth: replacement,
+        })
     );
     assert!(!get_auth_file(codex_home.path()).exists());
     Ok(())
