@@ -242,10 +242,20 @@ fn lock_auth_storage(codex_home: &Path) -> std::io::Result<File> {
     // The lock root must not follow TMPDIR; cooperating Codex processes may have
     // different temporary-directory environments while sharing one CODEX_HOME.
     #[cfg(unix)]
-    let lock_dir = PathBuf::from("/tmp").join("codex-auth-locks");
+    let lock_dir = lock_root_for_uid(
+        Path::new("/tmp"),
+        // Keep the lock namespace private to the effective user. A different
+        // unprivileged user must not be able to pre-create our shared root and
+        // deny auth operations before ownership validation runs.
+        unsafe { libc::geteuid() as u64 },
+    );
     #[cfg(not(unix))]
     let lock_dir = std::env::temp_dir().join("codex-auth-locks");
     lock_auth_storage_at(codex_home, &lock_dir)
+}
+
+fn lock_root_for_uid(base: &Path, uid: u64) -> PathBuf {
+    base.join(format!("codex-auth-locks-{uid}"))
 }
 
 fn lock_auth_storage_at(codex_home: &Path, lock_dir: &Path) -> std::io::Result<File> {
