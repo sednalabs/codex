@@ -84,10 +84,18 @@ fn oversized_peer_carriers_cannot_inflate_retained_trace_state() {
 }
 
 fn process_start_request_with_id(id: i64, trace: W3cTraceContext) -> JSONRPCMessage {
+    process_start_request_for_process(id, "process-1", trace)
+}
+
+fn process_start_request_for_process(
+    id: i64,
+    process_id: &str,
+    trace: W3cTraceContext,
+) -> JSONRPCMessage {
     JSONRPCMessage::Request(JSONRPCRequest {
         id: RequestId::Integer(id),
         method: EXEC_METHOD.to_string(),
-        params: Some(serde_json::json!({"processId": "process-1"})),
+        params: Some(serde_json::json!({"processId": process_id})),
         trace: Some(trace),
     })
 }
@@ -322,4 +330,49 @@ fn unfinished_peer_ids_cannot_grow_trace_state_without_bound() {
         result: serde_json::Value::Null,
     });
     assert_eq!(context.return_trace(&newest_response), Some(trace));
+}
+
+#[test]
+fn evicting_closed_tombstone_also_drops_pending_request() {
+    let trace = trace_context();
+    let mut context = NoiseTraceContext::default();
+    context.observe_request(&process_start_request(trace.clone()));
+
+    let closed = JSONRPCMessage::Notification(JSONRPCNotification {
+        method: EXEC_CLOSED_METHOD.to_string(),
+        params: Some(serde_json::json!({"processId": "process-1"})),
+    });
+    assert_eq!(context.return_trace(&closed), Some(trace.clone()));
+
+    // Completed starts leave established process mappings behind while their
+    // requests are consumed. Once the process bound is exceeded, the closed
+    // tombstone is evicted and its pending request must be evicted with it.
+    for index in 0..MAX_TRACE_CONTEXT_ENTRIES {
+        let request_id = index as i64 + 1000;
+        let process_id = format!("process-fill-{index}");
+        context.observe_request(&process_start_request_for_process(
+            request_id,
+            &process_id,
+            trace.clone(),
+        ));
+        assert_eq!(
+            context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+                id: RequestId::Integer(request_id),
+                result: serde_json::Value::Null,
+            })),
+            Some(trace.clone())
+        );
+    }
+
+    // The late response cannot resurrect process-1 after its tombstone was
+    // evicted, because the request that could have promoted it was evicted as
+    // part of the same bounded operation.
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(7),
+            result: serde_json::Value::Null,
+        })),
+        None
+    );
+    assert_eq!(context.return_trace(&process_notification()), None);
 }
