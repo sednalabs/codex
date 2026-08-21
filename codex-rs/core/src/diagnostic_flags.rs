@@ -1,7 +1,20 @@
 const GOAL_ERROR_CONTINUATION_ENV: &str = "CODEX_EXPERIMENTAL_GOAL_ERROR_CONTINUATION";
+const GOAL_ERROR_RETRY_IN_PLACE_ENV: &str = "CODEX_EXPERIMENTAL_GOAL_ERROR_RETRY_IN_PLACE";
 
 pub fn goal_error_continuation_enabled() -> bool {
-    std::env::var(GOAL_ERROR_CONTINUATION_ENV)
+    env_enabled(GOAL_ERROR_CONTINUATION_ENV)
+}
+
+pub fn goal_error_retry_in_place_enabled() -> bool {
+    env_enabled(GOAL_ERROR_RETRY_IN_PLACE_ENV)
+}
+
+pub fn suppress_usage_limit_state_updates() -> bool {
+    goal_error_continuation_enabled() || goal_error_retry_in_place_enabled()
+}
+
+fn env_enabled(name: &str) -> bool {
+    std::env::var(name)
         .ok()
         .is_some_and(|value| is_truthy(value.as_str()))
 }
