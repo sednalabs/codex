@@ -1621,6 +1621,105 @@ impl<'de> Deserialize<'de> for BoundedRemoteRequestId {
     }
 }
 
+struct RemoteResponseErrorEnvelope;
+
+impl<'de> Deserialize<'de> for RemoteResponseErrorEnvelope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ErrorVisitor;
+
+        impl<'de> Visitor<'de> for ErrorVisitor {
+            type Value = RemoteResponseErrorEnvelope;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON-RPC error object")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut has_code = false;
+                let mut has_message = false;
+                while let Some(key) = map.next_key::<&str>()? {
+                    match key {
+                        "code" => {
+                            if has_code {
+                                return Err(M::Error::custom(
+                                    "JSON-RPC error object has duplicate code",
+                                ));
+                            }
+                            map.next_value::<i64>()?;
+                            has_code = true;
+                        }
+                        "message" => {
+                            if has_message {
+                                return Err(M::Error::custom(
+                                    "JSON-RPC error object has duplicate message",
+                                ));
+                            }
+                            map.next_value::<RemoteResponseString>()?;
+                            has_message = true;
+                        }
+                        "data" => {
+                            map.next_value::<IgnoredAny>()?;
+                        }
+                        _ => {
+                            map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+                if has_code && has_message {
+                    Ok(RemoteResponseErrorEnvelope)
+                } else {
+                    Err(M::Error::custom(
+                        "JSON-RPC error object is missing code or message",
+                    ))
+                }
+            }
+        }
+
+        deserializer.deserialize_map(ErrorVisitor)
+    }
+}
+
+struct RemoteResponseString;
+
+impl<'de> Deserialize<'de> for RemoteResponseString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct StringVisitor;
+
+        impl<'de> Visitor<'de> for StringVisitor {
+            type Value = RemoteResponseString;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON string")
+            }
+
+            fn visit_borrowed_str<E>(self, _value: &'de str) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                Ok(RemoteResponseString)
+            }
+
+            fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                Ok(RemoteResponseString)
+            }
+        }
+
+        deserializer.deserialize_str(StringVisitor)
+    }
+}
+
 struct RemoteResponseEnvelopeVisitor<'de> {
     marker: PhantomData<&'de ()>,
 }
@@ -1637,16 +1736,36 @@ impl<'de> Visitor<'de> for RemoteResponseEnvelopeVisitor<'de> {
         M: MapAccess<'de>,
     {
         let mut request_id = None;
-        let mut has_result_or_error = false;
+        let mut has_id = false;
+        let mut has_result = false;
+        let mut has_error = false;
         let mut has_method = false;
         while let Some(key) = map.next_key::<&str>()? {
             match key {
                 "id" => {
+                    if has_id {
+                        return Err(M::Error::custom("JSON-RPC response has duplicate id"));
+                    }
                     request_id = Some(map.next_value::<BoundedRemoteRequestId>()?.0);
+                    has_id = true;
                 }
-                "result" | "error" => {
-                    has_result_or_error = true;
+                "result" => {
+                    if has_result || has_error {
+                        return Err(M::Error::custom(
+                            "JSON-RPC response must contain exactly one of result or error",
+                        ));
+                    }
+                    has_result = true;
                     map.next_value::<IgnoredAny>()?;
+                }
+                "error" => {
+                    if has_result || has_error {
+                        return Err(M::Error::custom(
+                            "JSON-RPC response must contain exactly one of result or error",
+                        ));
+                    }
+                    has_error = true;
+                    map.next_value::<RemoteResponseErrorEnvelope>()?;
                 }
                 "method" => {
                     has_method = true;
@@ -1657,7 +1776,10 @@ impl<'de> Visitor<'de> for RemoteResponseEnvelopeVisitor<'de> {
                 }
             }
         }
-        Ok((has_result_or_error && !has_method)
+        if !has_id {
+            return Err(M::Error::custom("JSON-RPC response is missing id"));
+        }
+        Ok(((has_result || has_error) && !has_method)
             .then_some(request_id)
             .flatten())
     }
@@ -2272,6 +2394,24 @@ where
                 let Ok(Some(request_id)) = classify_remote_response(&text) else {
                     return Some(RemoteTerminal::response_budget_exhausted(endpoint));
                 };
+                // A large reservation may have been admitted because another
+                // history request or tombstone made the frame potentially
+                // eligible. Do not let that unrelated authorization turn an
+                // ordinary canceled response into a zero-charge large
+                // tombstone: only the exact matching canceled ID may use the
+                // larger history path.
+                if text.len() > REMOTE_RESPONSE_MAX_WIRE_BYTES
+                    && !pending_requests.get(&request_id).is_some_and(|pending| {
+                        pending.allow_large_response
+                            && pending.lifecycle.load(Ordering::Acquire) == REQUEST_CANCELLED
+                    })
+                    && !canceled_request_ids.allows_large_response(&request_id)
+                {
+                    return Some(RemoteTerminal::oversized_response_message(
+                        endpoint,
+                        text.len(),
+                    ));
+                }
                 if pending_requests.get(&request_id).is_some_and(|pending| {
                     pending.lifecycle.load(Ordering::Acquire) == REQUEST_CANCELLED
                 }) {
@@ -3320,6 +3460,31 @@ mod tests {
             config.max_message_size,
             Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE)
         );
+    }
+
+    #[test]
+    fn response_tombstone_classifier_requires_a_valid_jsonrpc_envelope() {
+        assert_eq!(
+            classify_remote_response(r#"{"id":1,"result":null}"#),
+            Ok(Some(RequestId::Integer(1)))
+        );
+        assert_eq!(
+            classify_remote_response(r#"{"id":1,"error":{"code":-32000,"message":"failed"}}"#),
+            Ok(Some(RequestId::Integer(1)))
+        );
+
+        for malformed in [
+            r#"{"id":1,"error":null}"#,
+            r#"{"id":1,"error":"failed"}"#,
+            r#"{"id":1,"result":null,"error":{"code":-32000,"message":"failed"}}"#,
+            r#"{"id":1,"error":{"code":-32000}}"#,
+            r#"{"result":null}"#,
+        ] {
+            assert!(
+                classify_remote_response(malformed).is_err(),
+                "malformed response should fail closed: {malformed}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -5265,6 +5430,56 @@ mod tests {
         );
         assert!(pending_requests.is_empty());
         assert!(canceled_request_ids.ids.is_empty());
+        assert_eq!(budget.large_used(), occupied_bytes);
+        drop(occupied);
+        assert_eq!(budget.large_used(), 0);
+    }
+
+    #[tokio::test]
+    async fn response_first_canceled_ordinary_response_cannot_use_unrelated_large_tombstone() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let budget = RemoteResponseByteBudget::shared();
+        let occupied = budget
+            .try_reserve_large(REMOTE_RESPONSE_MAX_WIRE_BYTES + 1)
+            .expect("test should occupy the retained large-response slot");
+        let occupied_bytes =
+            REMOTE_RESPONSE_MAX_WIRE_BYTES + 1 + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES;
+        let mut pending_requests = HashMap::new();
+        let mut canceled_request_ids = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        canceled_request_ids
+            .remember_with_policy(RequestId::Integer(1), true)
+            .expect("large tombstone should fit");
+        canceled_request_ids
+            .remember(RequestId::Integer(2))
+            .expect("ordinary tombstone should fit");
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+        let message = format!(
+            "{{\"id\":2,\"result\":{{\"padding\":\"{}\"}}}}",
+            "x".repeat(9 * 1024 * 1024)
+        );
+
+        let terminal = handle_remote_message(
+            Some(Ok(Message::Text(message.clone().into()))),
+            &mut stream,
+            "test://response-first-unrelated-large-tombstone",
+            &mut pending_requests,
+            &mut canceled_request_ids,
+            &mut backlog,
+            &mut deferred_events,
+            &budget,
+        )
+        .await
+        .expect("ordinary oversized tombstone must fail closed");
+        assert_eq!(terminal.error_kind, ErrorKind::InvalidData);
+        assert!(canceled_request_ids.contains(&RequestId::Integer(1)));
+        assert!(canceled_request_ids.contains(&RequestId::Integer(2)));
         assert_eq!(budget.large_used(), occupied_bytes);
         drop(occupied);
         assert_eq!(budget.large_used(), 0);
