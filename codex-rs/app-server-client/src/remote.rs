@@ -1954,10 +1954,10 @@ where
 {
     match message {
         Some(Ok(Message::Text(text))) => {
-            // Keep the ordinary path's reject-before-parse behavior. A large
-            // frame is decoded only while an explicitly admitted history
-            // request is pending; the exact response ID is checked below
-            // before the larger reservation is granted.
+            // Reserve custody before parsing peer-controlled text. A large
+            // frame is admitted to the parser only while an explicitly
+            // admitted history request is pending; the exact response ID is
+            // checked below before the message is routed.
             let may_be_large_history_response = text.len() > REMOTE_RESPONSE_MAX_WIRE_BYTES
                 && pending_requests
                     .values()
@@ -1968,17 +1968,7 @@ where
                     text.len(),
                 ));
             }
-            let parsed_message = serde_json::from_str::<JSONRPCMessage>(&text);
-            let allow_large_response = match &parsed_message {
-                Ok(JSONRPCMessage::Response(response)) => pending_requests
-                    .get(&response.id)
-                    .is_some_and(|pending| pending.allow_large_response),
-                Ok(JSONRPCMessage::Error(error)) => pending_requests
-                    .get(&error.id)
-                    .is_some_and(|pending| pending.allow_large_response),
-                _ => false,
-            };
-            let reservation = match if allow_large_response {
+            let reservation = match if may_be_large_history_response {
                 response_byte_budget.try_reserve_large(text.len())
             } else {
                 response_byte_budget.try_reserve(text.len())
@@ -1994,6 +1984,25 @@ where
                     return Some(RemoteTerminal::response_budget_exhausted(endpoint));
                 }
             };
+            let parsed_message = serde_json::from_str::<JSONRPCMessage>(&text);
+            let allow_large_response = match &parsed_message {
+                Ok(JSONRPCMessage::Response(response)) => pending_requests
+                    .get(&response.id)
+                    .is_some_and(|pending| pending.allow_large_response),
+                Ok(JSONRPCMessage::Error(error)) => pending_requests
+                    .get(&error.id)
+                    .is_some_and(|pending| pending.allow_large_response),
+                _ => false,
+            };
+            if parsed_message.is_ok()
+                && text.len() > REMOTE_RESPONSE_MAX_WIRE_BYTES
+                && !allow_large_response
+            {
+                return Some(RemoteTerminal::oversized_response_message(
+                    endpoint,
+                    text.len(),
+                ));
+            }
             match parsed_message {
                 Ok(JSONRPCMessage::Response(response)) => {
                     if let Some(pending) = pending_requests.remove(&response.id) {
@@ -3064,6 +3073,120 @@ mod tests {
             wire_bytes + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES
         );
         drop(delivered);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[tokio::test]
+    async fn large_pending_malformed_frame_reserves_custody_before_parsing() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let budget = RemoteResponseByteBudget::shared();
+        let request_slots = Arc::new(Semaphore::new(1));
+        let mut pending_requests = HashMap::new();
+        let mut tombstones = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+        let (response_tx, _response_rx) = oneshot::channel();
+        pending_requests.insert(
+            RequestId::Integer(1),
+            PendingRemoteRequest {
+                response_tx,
+                lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
+                allow_large_response: true,
+                _slot: request_slots
+                    .acquire_owned()
+                    .await
+                    .expect("test request slot should be available"),
+            },
+        );
+        let held: Vec<_> = (0..3)
+            .map(|_| {
+                budget
+                    .try_reserve(REMOTE_RESPONSE_MAX_WIRE_BYTES)
+                    .expect("three maximum retained responses should fit")
+            })
+            .collect();
+
+        let terminal = handle_remote_message(
+            Some(Ok(Message::Text(
+                "x".repeat(REMOTE_RESPONSE_MAX_WIRE_BYTES + 1).into(),
+            ))),
+            &mut stream,
+            "test://large-pending-malformed",
+            &mut pending_requests,
+            &mut tombstones,
+            &mut backlog,
+            &mut deferred_events,
+            &budget,
+        )
+        .await
+        .expect("saturated custody must reject before parsing malformed large text");
+        assert_eq!(terminal.error_kind, ErrorKind::WouldBlock);
+        assert_eq!(
+            budget.used(),
+            3 * (REMOTE_RESPONSE_MAX_WIRE_BYTES + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES)
+        );
+        drop(held);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[tokio::test]
+    async fn large_pending_nonmatching_frame_keeps_ordinary_response_limit() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let budget = RemoteResponseByteBudget::shared();
+        let request_slots = Arc::new(Semaphore::new(1));
+        let mut pending_requests = HashMap::new();
+        let mut tombstones = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+        let (response_tx, _response_rx) = oneshot::channel();
+        pending_requests.insert(
+            RequestId::Integer(1),
+            PendingRemoteRequest {
+                response_tx,
+                lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
+                allow_large_response: true,
+                _slot: request_slots
+                    .acquire_owned()
+                    .await
+                    .expect("test request slot should be available"),
+            },
+        );
+        let message = JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(2),
+            result: serde_json::json!({
+                "padding": "x".repeat(REMOTE_RESPONSE_MAX_WIRE_BYTES)
+            }),
+        });
+        let wire = serde_json::to_string(&message)
+            .expect("large nonmatching response should serialize");
+        assert!(wire.len() > REMOTE_RESPONSE_MAX_WIRE_BYTES);
+
+        let terminal = handle_remote_message(
+            Some(Ok(Message::Text(wire.into()))),
+            &mut stream,
+            "test://large-pending-nonmatching",
+            &mut pending_requests,
+            &mut tombstones,
+            &mut backlog,
+            &mut deferred_events,
+            &budget,
+        )
+        .await
+        .expect("nonmatching large response must exceed the ordinary limit");
+        assert_eq!(terminal.error_kind, ErrorKind::InvalidData);
+        assert!(terminal.message.contains("longer than"));
         assert_eq!(budget.used(), 0);
     }
 
