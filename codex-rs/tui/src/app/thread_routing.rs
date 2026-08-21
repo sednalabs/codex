@@ -76,16 +76,9 @@ impl App {
         &mut self,
         thread_id: ThreadId,
     ) {
-        let Some(sender) = self
-            .thread_event_channels
-            .get(&thread_id)
-            .map(|channel| channel.sender.clone())
-        else {
-            return;
-        };
         if self.active_thread_id == Some(thread_id) {
             if let Some(receiver) = self.active_thread_rx.as_mut() {
-                ThreadEventChannel::rebase_event_receiver_after_session_refresh(receiver, &sender);
+                ThreadEventChannel::discard_event_receiver_after_session_refresh(receiver);
             }
         } else if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
             channel.rebase_receiver_after_session_refresh();
@@ -113,8 +106,12 @@ impl App {
         thread_id: ThreadId,
     ) -> Option<(mpsc::Receiver<ThreadBufferedEvent>, ThreadEventSnapshot)> {
         let channel = self.thread_event_channels.get_mut(&thread_id)?;
-        let receiver = channel.receiver.take()?;
+        let mut receiver = channel.receiver.take()?;
         let mut store = channel.store.lock().await;
+        // A rebuilt view replays the store snapshot. Its queued receiver entries were already
+        // recorded there by the routing path, so retaining them would render every survivor
+        // twice. Events arriving after this boundary remain queued for normal live delivery.
+        ThreadEventChannel::discard_event_receiver_after_session_refresh(&mut receiver);
         store.active = true;
         let snapshot = store.snapshot();
         Some((receiver, snapshot))
