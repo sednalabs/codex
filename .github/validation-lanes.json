@@ -2493,7 +2493,9 @@
     {
       "route_id": "app-server-client",
       "lane_ids": [
-        "codex.app-server-client-targeted"
+        "codex.app-server-client-targeted",
+        "codex.workflow-ci-sanity",
+        "codex.downstream-docs-check"
       ],
       "allowed_paths": [
         "codex-rs/app-server-client/**",
