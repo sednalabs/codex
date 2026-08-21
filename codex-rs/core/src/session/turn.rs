@@ -166,6 +166,10 @@ pub(crate) async fn run_turn(
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
     turn_context.reset_terminal_response_model_identity().await;
+    // Install authoritative child request identity before any task text can be sampled,
+    // including a provider call made by pre-turn compaction.
+    sess.ensure_subagent_runtime_identity_context(turn_context.as_ref())
+        .await;
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
@@ -208,6 +212,9 @@ pub(crate) async fn run_turn(
         sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref()),
         turn_diff_display_roots(first_step_context.as_ref()),
     );
+    // Replacement history from pre-turn compaction may have removed the fragment.
+    sess.ensure_subagent_runtime_identity_context(turn_context.as_ref())
+        .await;
 
     let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
         &sess,

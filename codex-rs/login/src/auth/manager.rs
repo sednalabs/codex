@@ -1213,6 +1213,73 @@ fn logout_all_stores(
     Ok(removed_ephemeral || removed_managed)
 }
 
+fn logout_store_matching_rejected_auth(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    rejected_auth: &CodexAuth,
+) -> std::io::Result<bool> {
+    logout_store_if(
+        codex_home,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+        |auth| auth_dot_json_matches_rejected_auth(auth, rejected_auth),
+    )
+}
+
+fn logout_store_if(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    should_logout: impl Fn(&AuthDotJson) -> bool,
+) -> std::io::Result<bool> {
+    let storage = create_auth_storage(
+        codex_home.to_path_buf(),
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    );
+    storage.delete_if(&should_logout)
+}
+
+fn auth_dot_json_matches_rejected_auth(auth: &AuthDotJson, rejected: &CodexAuth) -> bool {
+    if auth.resolved_mode() != rejected.api_auth_mode() {
+        return false;
+    }
+    match rejected {
+        CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_) => {
+            let Some(rejected_auth) = rejected.get_current_auth_json() else {
+                return false;
+            };
+            let (Some(tokens), Some(rejected_tokens)) = (&auth.tokens, &rejected_auth.tokens)
+            else {
+                return false;
+            };
+            tokens.access_token == rejected_tokens.access_token
+                && tokens.refresh_token == rejected_tokens.refresh_token
+                && auth_dot_json_chatgpt_account_id(auth)
+                    == auth_dot_json_chatgpt_account_id(&rejected_auth)
+        }
+        CodexAuth::AgentIdentity(rejected) => auth
+            .agent_identity
+            .as_ref()
+            .and_then(AgentIdentityStorage::as_record)
+            .is_some_and(|record| record == rejected.record()),
+        CodexAuth::PersonalAccessToken(rejected) => {
+            auth.personal_access_token.as_deref() == Some(rejected.access_token())
+        }
+        CodexAuth::ApiKey(_) | CodexAuth::Headers(_) | CodexAuth::BedrockApiKey(_) => false,
+    }
+}
+
+fn auth_dot_json_chatgpt_account_id(auth: &AuthDotJson) -> Option<&str> {
+    auth.tokens.as_ref().and_then(|tokens| {
+        tokens
+            .account_id
+            .as_deref()
+            .or(tokens.id_token.chatgpt_account_id.as_deref())
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn load_auth(
     codex_home: &Path,
@@ -1590,6 +1657,8 @@ pub struct UnauthorizedRecovery {
     manager: Arc<AuthManager>,
     step: UnauthorizedRecoveryStep,
     expected_account_id: Option<String>,
+    rejected_auth: Option<CodexAuth>,
+    rejected_external_auth: Option<Arc<dyn ExternalAuth>>,
     mode: UnauthorizedRecoveryMode,
 }
 
@@ -1617,10 +1686,13 @@ impl UnauthorizedRecovery {
             UnauthorizedRecoveryMode::Managed => UnauthorizedRecoveryStep::Reload,
             UnauthorizedRecoveryMode::External => UnauthorizedRecoveryStep::ExternalRefresh,
         };
+        let rejected_external_auth = manager.external_auth();
         Self {
             manager,
             step,
             expected_account_id,
+            rejected_auth: cached_auth,
+            rejected_external_auth,
             mode,
         }
     }
@@ -1700,6 +1772,24 @@ impl UnauthorizedRecovery {
         }
     }
 
+    pub fn current_auth_uses_codex_backend(&self) -> bool {
+        self.manager.current_auth_uses_codex_backend()
+    }
+
+    pub async fn force_logout_due_to_server_auth_rejection(&mut self) -> std::io::Result<bool> {
+        self.step = UnauthorizedRecoveryStep::Done;
+        self.manager
+            .force_logout_due_to_server_auth_rejection_matching(
+                self.rejected_auth.as_ref(),
+                self.rejected_external_auth.as_ref(),
+            )
+            .await
+    }
+
+    fn track_current_auth_for_rejection(&mut self) {
+        self.rejected_auth = self.manager.auth_cached();
+    }
+
     pub async fn next(&mut self) -> Result<UnauthorizedRecoveryStepResult, RefreshTokenError> {
         if !self.has_next() {
             return Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
@@ -1717,12 +1807,14 @@ impl UnauthorizedRecovery {
                 {
                     ReloadOutcome::ReloadedChanged => {
                         self.step = UnauthorizedRecoveryStep::RefreshToken;
+                        self.track_current_auth_for_rejection();
                         return Ok(UnauthorizedRecoveryStepResult {
                             auth_state_changed: Some(true),
                         });
                     }
                     ReloadOutcome::ReloadedNoChange => {
                         self.step = UnauthorizedRecoveryStep::RefreshToken;
+                        self.track_current_auth_for_rejection();
                         return Ok(UnauthorizedRecoveryStepResult {
                             auth_state_changed: Some(false),
                         });
@@ -1739,6 +1831,7 @@ impl UnauthorizedRecovery {
             UnauthorizedRecoveryStep::RefreshToken => {
                 self.manager.refresh_token_from_authority().await?;
                 self.step = UnauthorizedRecoveryStep::Done;
+                self.track_current_auth_for_rejection();
                 return Ok(UnauthorizedRecoveryStepResult {
                     auth_state_changed: Some(true),
                 });
@@ -1746,6 +1839,7 @@ impl UnauthorizedRecovery {
             UnauthorizedRecoveryStep::ExternalRefresh => {
                 self.manager.refresh_token_from_authority().await?;
                 self.step = UnauthorizedRecoveryStep::Done;
+                self.track_current_auth_for_rejection();
                 return Ok(UnauthorizedRecoveryStepResult {
                     auth_state_changed: Some(true),
                 });
@@ -2250,9 +2344,10 @@ impl AuthManager {
         external_auth: Arc<dyn ExternalAuth>,
     ) -> Result<(), RefreshTokenError> {
         let auth = self.resolve_external_auth(&external_auth).await?;
-        *self.external_auth.write().map_err(|_| {
+        let mut external_auth_guard = self.external_auth.write().map_err(|_| {
             RefreshTokenError::Transient(std::io::Error::other("external auth lock is poisoned"))
-        })? = Some(external_auth);
+        })?;
+        *external_auth_guard = Some(external_auth);
         self.commit_external_auth(auth)
     }
 
@@ -2493,6 +2588,96 @@ impl AuthManager {
         Ok(result)
     }
 
+    pub async fn force_logout_due_to_server_auth_rejection(
+        &self,
+        rejected_auth: Option<&CodexAuth>,
+    ) -> std::io::Result<bool> {
+        let rejected_external_auth = self.external_auth();
+        self.force_logout_due_to_server_auth_rejection_matching(
+            rejected_auth,
+            rejected_external_auth.as_ref(),
+        )
+        .await
+    }
+
+    async fn force_logout_due_to_server_auth_rejection_matching(
+        &self,
+        rejected_auth: Option<&CodexAuth>,
+        rejected_external_auth: Option<&Arc<dyn ExternalAuth>>,
+    ) -> std::io::Result<bool> {
+        if !self.current_auth_uses_codex_backend() {
+            return Ok(false);
+        }
+        if rejected_auth.is_some_and(CodexAuth::is_external_chatgpt_tokens) {
+            let (removed, cache_changed) = {
+                let mut external_auth = self
+                    .external_auth
+                    .write()
+                    .map_err(|_| std::io::Error::other("external auth lock is poisoned"))?;
+                let provider_matches = external_auth
+                    .as_ref()
+                    .zip(rejected_external_auth)
+                    .is_some_and(|(current, rejected)| Arc::ptr_eq(current, rejected));
+                let auth_matches = self.auth_cached().as_ref().zip(rejected_auth).is_some_and(
+                    |(current, rejected)| Self::auths_equal(Some(current), Some(rejected)),
+                );
+                if !provider_matches || !auth_matches {
+                    return Ok(false);
+                }
+
+                let removed = self.logout_stores_matching_rejected_auth(rejected_auth)?;
+                external_auth.take();
+                let cache_changed = self.set_cached_auth(/*new_auth*/ None);
+                (removed, cache_changed)
+            };
+            self.reload().await;
+            return Ok(removed || cache_changed);
+        }
+
+        let removal_result = self.logout_stores_matching_rejected_auth(rejected_auth);
+        let cache_changed = self.reload().await;
+        let removed = removal_result?;
+        Ok(removed || cache_changed)
+    }
+
+    fn logout_stores_matching_rejected_auth(
+        &self,
+        rejected_auth: Option<&CodexAuth>,
+    ) -> std::io::Result<bool> {
+        let Some(rejected_auth) = rejected_auth else {
+            return logout_all_stores(
+                &self.codex_home,
+                self.auth_credentials_store_mode,
+                self.keyring_backend_kind,
+            );
+        };
+        if rejected_auth.is_external_chatgpt_tokens() {
+            let removed_ephemeral = logout_store_matching_rejected_auth(
+                &self.codex_home,
+                AuthCredentialsStoreMode::Ephemeral,
+                AuthKeyringBackendKind::default(),
+                rejected_auth,
+            )?;
+            // External credentials are mirrored only into the ephemeral store. A persisted
+            // credential may belong to another account and must remain available after the
+            // rejected external session is cleared.
+            return Ok(removed_ephemeral);
+        }
+        let removed_ephemeral = logout_store_matching_rejected_auth(
+            &self.codex_home,
+            AuthCredentialsStoreMode::Ephemeral,
+            AuthKeyringBackendKind::default(),
+            rejected_auth,
+        )?;
+        let removed_managed = logout_store_matching_rejected_auth(
+            &self.codex_home,
+            self.auth_credentials_store_mode,
+            self.keyring_backend_kind,
+            rejected_auth,
+        )?;
+        Ok(removed_ephemeral || removed_managed)
+    }
+
     /// Returns the precise kind of credentials backing the current authentication.
     pub fn get_api_auth_mode(&self) -> Option<AuthMode> {
         self.auth_cached().as_ref().map(CodexAuth::api_auth_mode)
@@ -2555,6 +2740,15 @@ impl AuthManager {
             .await
             .map_err(RefreshTokenError::Transient)?;
         self.validate_external_auth(&refreshed)?;
+        let external_auth_guard = self.external_auth.write().map_err(|_| {
+            RefreshTokenError::Transient(std::io::Error::other("external auth lock is poisoned"))
+        })?;
+        if !external_auth_guard
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &external_auth))
+        {
+            return Ok(());
+        }
         self.commit_external_auth(refreshed)?;
         Ok(())
     }
