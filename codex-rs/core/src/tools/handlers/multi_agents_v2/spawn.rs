@@ -162,13 +162,6 @@ async fn handle_spawn_agent(
     )
     .await
     .map_err(collab_spawn_error)?;
-    if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
-        turn.session_telemetry.counter(
-            "codex.diagnostic.goal_multi_agent_stress",
-            1,
-            &[("stage", "child_work_submitted")],
-        );
-    }
     let new_thread_id = spawned_agent.thread_id;
     let agent_snapshot = session
         .services
