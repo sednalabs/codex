@@ -1523,7 +1523,7 @@ impl RecentRemoteRequestIds {
     }
 
     fn remember(&mut self, request_id: RequestId) -> Result<(), ()> {
-        self.remember_with_policy(request_id, false)
+        self.remember_with_policy(request_id, /*allow_large_response*/ false)
     }
 
     fn remember_with_policy(
