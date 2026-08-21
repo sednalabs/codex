@@ -1220,16 +1220,6 @@ pub(crate) fn build_prompt(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(deprecated)]
-#[instrument(level = "trace",
-    skip_all,
-    fields(
-        turn_id = %step_context.turn.sub_id,
-        model = %step_context.turn.model_info.slug,
-        cwd = %step_context.turn.cwd.display()
-    )
-)]
 fn goal_multi_agent_stress_continuation_input(input: &[ResponseItem]) -> bool {
     input.iter().any(|item| {
         let ResponseItem::Message { content, .. } = item else {
@@ -1318,6 +1308,16 @@ async fn run_goal_multi_agent_stress_post_usage_limit_probe(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+#[allow(deprecated)]
+#[instrument(level = "trace",
+    skip_all,
+    fields(
+        turn_id = %step_context.turn.sub_id,
+        model = %step_context.turn.model_info.slug,
+        cwd = %step_context.turn.cwd.display()
+    )
+)]
 async fn run_sampling_request(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
