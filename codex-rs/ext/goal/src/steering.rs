@@ -76,7 +76,7 @@ fn continuation_prompt(goal: &ThreadGoal) -> String {
             panic!("embedded goals/continuation.md template failed to render: {err}")
         });
 
-    if codex_core::diagnostic_flags::goal_multi_agent_stress_enabled() {
+    if codex_core::diagnostic_flags::goal_multi_agent_stress_active() {
         let task_name =
             codex_core::diagnostic_flags::next_goal_multi_agent_probe_task_name("continuation");
         prompt.push_str(&format!(

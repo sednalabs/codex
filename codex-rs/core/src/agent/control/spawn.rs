@@ -783,9 +783,13 @@ impl AgentControl {
             && crate::diagnostic_flags::goal_multi_agent_stress_enabled()
         {
             new_thread.thread.session_telemetry().counter(
-                "codex.diagnostic.goal_multi_agent_stress",
+                crate::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
                 1,
-                &[("stage", "child_initial_work_submitted")],
+                &[(
+                    "stage",
+                    crate::diagnostic_flags::GoalMultiAgentStressStage::ChildInitialWorkSubmitted
+                        .as_str(),
+                )],
             );
             tracing::info!(
                 child_thread_id = %new_thread.thread_id,

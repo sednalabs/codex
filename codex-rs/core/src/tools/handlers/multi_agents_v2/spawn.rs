@@ -49,9 +49,12 @@ async fn handle_spawn_agent(
     } = invocation;
     if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
         turn.session_telemetry.counter(
-            "codex.diagnostic.goal_multi_agent_stress",
+            crate::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
             1,
-            &[("stage", "spawn_handler_attempt")],
+            &[(
+                "stage",
+                crate::diagnostic_flags::GoalMultiAgentStressStage::SpawnHandlerAttempt.as_str(),
+            )],
         );
         tracing::info!(
             turn_id = %turn.sub_id,
@@ -131,9 +134,12 @@ async fn handle_spawn_agent(
     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
     if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
         turn.session_telemetry.counter(
-            "codex.diagnostic.goal_multi_agent_stress",
+            crate::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
             1,
-            &[("stage", "spawn_control_attempt")],
+            &[(
+                "stage",
+                crate::diagnostic_flags::GoalMultiAgentStressStage::SpawnControlAttempt.as_str(),
+            )],
         );
         tracing::info!(
             turn_id = %turn.sub_id,
@@ -203,9 +209,12 @@ async fn handle_spawn_agent(
     );
     if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
         turn.session_telemetry.counter(
-            "codex.diagnostic.goal_multi_agent_stress",
+            crate::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
             1,
-            &[("stage", "spawn_published")],
+            &[(
+                "stage",
+                crate::diagnostic_flags::GoalMultiAgentStressStage::SpawnPublished.as_str(),
+            )],
         );
     }
     let task_name = String::from(new_agent_path);
@@ -256,19 +265,45 @@ impl CoreToolRuntime for Handler {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SpawnAgentArgs {
     message: String,
     task_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     agent_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     expected_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<ReasoningEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     expected_reasoning_effort: Option<ReasoningEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     fork_turns: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     fork_context: Option<bool>,
+}
+
+pub(crate) fn diagnostic_spawn_arguments(
+    message: String,
+    task_name: String,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&SpawnAgentArgs {
+        message,
+        task_name,
+        agent_type: None,
+        model: None,
+        expected_model: None,
+        reasoning_effort: None,
+        expected_reasoning_effort: None,
+        service_tier: None,
+        fork_turns: Some("none".to_string()),
+        fork_context: None,
+    })
 }
 
 impl SpawnAgentArgs {
@@ -405,5 +440,38 @@ impl ToolOutput for SpawnAgentResult {
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
         tool_output_code_mode_result(self, "spawn_agent")
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::SpawnAgentArgs;
+    use super::diagnostic_spawn_arguments;
+
+    #[test]
+    fn goal_diagnostic_spawn_arguments_round_trip_through_handler_schema() {
+        let arguments = diagnostic_spawn_arguments(
+            "inspect one thing".to_string(),
+            "goal_probe_test".to_string(),
+        )
+        .expect("diagnostic spawn arguments should serialize");
+        let parsed: SpawnAgentArgs =
+            serde_json::from_str(&arguments).expect("diagnostic arguments should parse");
+
+        assert_eq!(parsed.message, "inspect one thing");
+        assert_eq!(parsed.task_name, "goal_probe_test");
+        assert!(
+            parsed
+                .fork_mode()
+                .expect("fork mode should parse")
+                .is_none()
+        );
+        assert!(parsed.agent_type.is_none());
+        assert!(parsed.model.is_none());
+        assert!(parsed.expected_model.is_none());
+        assert!(parsed.reasoning_effort.is_none());
+        assert!(parsed.expected_reasoning_effort.is_none());
+        assert!(parsed.service_tier.is_none());
+        assert!(parsed.fork_context.is_none());
     }
 }

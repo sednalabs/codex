@@ -433,13 +433,40 @@ impl GoalRuntimeHandle {
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         }
+        let post_usage_limit_diagnostic =
+            codex_core::diagnostic_flags::goal_error_continuation_enabled()
+                && codex_core::diagnostic_flags::goal_diagnostic_usage_limit_observed();
+        if post_usage_limit_diagnostic
+            && !codex_core::diagnostic_flags::try_reserve_post_usage_limit_continuation()
+        {
+            if codex_core::diagnostic_flags::goal_multi_agent_stress_enabled() {
+                thread.session_telemetry().counter(
+                    codex_core::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
+                    1,
+                    &[(
+                        "stage",
+                        codex_core::diagnostic_flags::GoalMultiAgentStressStage::ContinuationBudgetExhausted
+                            .as_str(),
+                    )],
+                );
+            }
+            tracing::warn!(
+                "goal error diagnostic continuation budget exhausted or diagnostic window closed; leaving active goal idle"
+            );
+            return Ok(());
+        }
+
         let item = continuation_steering_item(&protocol_goal_from_state(goal));
-        let multi_agent_stress = codex_core::diagnostic_flags::goal_multi_agent_stress_enabled();
+        let multi_agent_stress = codex_core::diagnostic_flags::goal_multi_agent_stress_active();
         if multi_agent_stress {
             thread.session_telemetry().counter(
-                "codex.diagnostic.goal_multi_agent_stress",
+                codex_core::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
                 1,
-                &[("stage", "continuation_attempt")],
+                &[(
+                    "stage",
+                    codex_core::diagnostic_flags::GoalMultiAgentStressStage::ContinuationAttempt
+                        .as_str(),
+                )],
             );
         }
 
@@ -447,18 +474,26 @@ impl GoalRuntimeHandle {
             Ok(()) => {
                 if multi_agent_stress {
                     thread.session_telemetry().counter(
-                        "codex.diagnostic.goal_multi_agent_stress",
+                        codex_core::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
                         1,
-                        &[("stage", "continuation_started")],
+                        &[(
+                            "stage",
+                            codex_core::diagnostic_flags::GoalMultiAgentStressStage::ContinuationStarted
+                                .as_str(),
+                        )],
                     );
                 }
             }
             Err(err) => {
                 if multi_agent_stress {
                     thread.session_telemetry().counter(
-                        "codex.diagnostic.goal_multi_agent_stress",
+                        codex_core::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
                         1,
-                        &[("stage", "continuation_rejected")],
+                        &[(
+                            "stage",
+                            codex_core::diagnostic_flags::GoalMultiAgentStressStage::ContinuationRejected
+                                .as_str(),
+                        )],
                     );
                 }
                 let reason = err.reason();

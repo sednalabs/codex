@@ -1242,11 +1242,36 @@ fn goal_multi_agent_stress_continuation_input(input: &[ResponseItem]) -> bool {
     })
 }
 
+fn record_goal_multi_agent_stress_stage(
+    turn_context: &TurnContext,
+    stage: crate::diagnostic_flags::GoalMultiAgentStressStage,
+) {
+    turn_context.session_telemetry.counter(
+        crate::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
+        1,
+        &[("stage", stage.as_str())],
+    );
+}
+
 async fn run_goal_multi_agent_stress_post_usage_limit_probe(
     tool_runtime: ToolCallRuntime,
     turn_context: Arc<TurnContext>,
     cancellation_token: CancellationToken,
 ) {
+    use crate::diagnostic_flags::GoalMultiAgentStressStage;
+
+    if !crate::diagnostic_flags::try_reserve_post_usage_limit_spawn_probe() {
+        record_goal_multi_agent_stress_stage(
+            turn_context.as_ref(),
+            GoalMultiAgentStressStage::PostUsageLimitSpawnBudgetExhausted,
+        );
+        warn!(
+            turn_id = %turn_context.sub_id,
+            "multi-agent stress diagnostic post-usage-limit spawn budget exhausted or diagnostic window closed"
+        );
+        return;
+    }
+
     let task_name = crate::diagnostic_flags::next_goal_multi_agent_probe_task_name("post_429");
     let call_id = format!("diag_{task_name}");
     let tool_name = if turn_context.provider.capabilities().namespace_tools {
@@ -1260,22 +1285,35 @@ async fn run_goal_multi_agent_stress_post_usage_limit_probe(
     } else {
         ToolName::plain("spawn_agent")
     };
-    let arguments = serde_json::json!({
-        "message": "Run one bounded diagnostic child step: use an available read-only tool to inspect the current environment or worktree, then report one concise evidence-backed fact to the parent.",
-        "task_name": task_name,
-        "fork_turns": "none"
-    })
-    .to_string();
+    let arguments = match crate::tools::handlers::multi_agents_v2::diagnostic_spawn_arguments(
+        "Run one bounded diagnostic child step: use an available read-only tool to inspect the current environment or worktree, then report one concise evidence-backed fact to the parent."
+            .to_string(),
+        task_name,
+    ) {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            record_goal_multi_agent_stress_stage(
+                turn_context.as_ref(),
+                GoalMultiAgentStressStage::PostUsageLimitDispatchBuildFailed,
+            );
+            warn!(
+                turn_id = %turn_context.sub_id,
+                %call_id,
+                %error,
+                "multi-agent stress diagnostic failed to build V2 spawn arguments"
+            );
+            return;
+        }
+    };
     let call = crate::tools::router::ToolCall {
         tool_name: tool_name.clone(),
         call_id: call_id.clone(),
         payload: crate::tools::context::ToolPayload::Function { arguments },
     };
 
-    turn_context.session_telemetry.counter(
-        "codex.diagnostic.goal_multi_agent_stress",
-        1,
-        &[("stage", "post_usage_limit_dispatch_attempt")],
+    record_goal_multi_agent_stress_stage(
+        turn_context.as_ref(),
+        GoalMultiAgentStressStage::PostUsageLimitDispatchAttempt,
     );
     tracing::info!(
         turn_id = %turn_context.sub_id,
@@ -1284,30 +1322,52 @@ async fn run_goal_multi_agent_stress_post_usage_limit_probe(
         "multi-agent stress diagnostic dispatching bounded post-usage-limit V2 spawn"
     );
 
-    match tool_runtime
-        .handle_tool_call_with_source(
-            call,
-            crate::tools::router::ToolCallSource::Direct,
-            cancellation_token,
-        )
-        .await
-    {
-        Ok(_) => {
-            turn_context.session_telemetry.counter(
-                "codex.diagnostic.goal_multi_agent_stress",
-                1,
-                &[("stage", "post_usage_limit_dispatch_completed")],
-            );
-        }
-        Err(error) => {
-            turn_context.session_telemetry.counter(
-                "codex.diagnostic.goal_multi_agent_stress",
-                1,
-                &[("stage", "post_usage_limit_dispatch_failed")],
+    let probe_cancellation_token = cancellation_token.child_token();
+    let probe = tool_runtime.handle_tool_call_with_source(
+        call,
+        crate::tools::router::ToolCallSource::Direct,
+        probe_cancellation_token.clone(),
+    );
+    tokio::pin!(probe);
+    let (result, timed_out) = tokio::select! {
+        result = &mut probe => (result, false),
+        () = tokio::time::sleep(crate::diagnostic_flags::goal_multi_agent_probe_timeout()) => {
+            record_goal_multi_agent_stress_stage(
+                turn_context.as_ref(),
+                GoalMultiAgentStressStage::PostUsageLimitDispatchTimeoutCancelRequested,
             );
             warn!(
                 turn_id = %turn_context.sub_id,
                 %call_id,
+                "multi-agent stress diagnostic probe deadline reached; requesting cooperative tool cancellation"
+            );
+            probe_cancellation_token.cancel();
+            (probe.await, true)
+        }
+    };
+
+    match result {
+        Ok(_) if timed_out => {
+            record_goal_multi_agent_stress_stage(
+                turn_context.as_ref(),
+                GoalMultiAgentStressStage::PostUsageLimitDispatchSettledAfterTimeout,
+            );
+        }
+        Ok(_) => {
+            record_goal_multi_agent_stress_stage(
+                turn_context.as_ref(),
+                GoalMultiAgentStressStage::PostUsageLimitDispatchCompleted,
+            );
+        }
+        Err(error) => {
+            record_goal_multi_agent_stress_stage(
+                turn_context.as_ref(),
+                GoalMultiAgentStressStage::PostUsageLimitDispatchFailed,
+            );
+            warn!(
+                turn_id = %turn_context.sub_id,
+                %call_id,
+                timed_out,
                 %error,
                 "multi-agent stress diagnostic post-usage-limit V2 spawn failed"
             );
@@ -1353,7 +1413,7 @@ async fn run_sampling_request(
         Arc::clone(&turn_diff_tracker),
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
-    let multi_agent_stress_enabled = crate::diagnostic_flags::goal_multi_agent_stress_enabled();
+    let multi_agent_stress_enabled = crate::diagnostic_flags::goal_multi_agent_stress_active();
     if multi_agent_stress_enabled && goal_multi_agent_stress_continuation_input(&input) {
         turn_context.extension_data.insert(GoalMultiAgentStressTurn);
     }
@@ -1408,6 +1468,7 @@ async fn run_sampling_request(
                     return Err(err);
                 }
                 CodexErrorDetails::UsageLimitReached(e) => {
+                    crate::diagnostic_flags::goal_diagnostic_mark_usage_limit_observed();
                     if !crate::diagnostic_flags::suppress_usage_limit_state_updates() {
                         let rate_limits = e.rate_limits.clone();
                         if let Some(rate_limits) = rate_limits {
@@ -1446,7 +1507,7 @@ async fn run_sampling_request(
         }
 
         if matches!(err.details(), CodexErrorDetails::UsageLimitReached(_))
-            && crate::diagnostic_flags::goal_error_retry_in_place_enabled()
+            && crate::diagnostic_flags::goal_error_retry_in_place_active()
         {
             if usage_limit_retries >= max_retries {
                 return Err(err);
