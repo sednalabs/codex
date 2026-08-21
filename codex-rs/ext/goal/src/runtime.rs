@@ -434,13 +434,39 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
         let item = continuation_steering_item(&protocol_goal_from_state(goal));
-
-        if let Err(err) = thread.try_start_turn_if_idle(vec![item]).await {
-            let reason = err.reason();
-            tracing::debug!(
-                ?reason,
-                "skipping goal continuation because automatic idle work was rejected"
+        let multi_agent_stress = codex_core::diagnostic_flags::goal_multi_agent_stress_enabled();
+        if multi_agent_stress {
+            thread.session_telemetry().counter(
+                "codex.diagnostic.goal_multi_agent_stress",
+                1,
+                &[("stage", "continuation_attempt")],
             );
+        }
+
+        match thread.try_start_turn_if_idle(vec![item]).await {
+            Ok(()) => {
+                if multi_agent_stress {
+                    thread.session_telemetry().counter(
+                        "codex.diagnostic.goal_multi_agent_stress",
+                        1,
+                        &[("stage", "continuation_started")],
+                    );
+                }
+            }
+            Err(err) => {
+                if multi_agent_stress {
+                    thread.session_telemetry().counter(
+                        "codex.diagnostic.goal_multi_agent_stress",
+                        1,
+                        &[("stage", "continuation_rejected")],
+                    );
+                }
+                let reason = err.reason();
+                tracing::debug!(
+                    ?reason,
+                    "skipping goal continuation because automatic idle work was rejected"
+                );
+            }
         }
 
         let current_turn_is_goal_active = self
