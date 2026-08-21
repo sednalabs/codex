@@ -1132,6 +1132,42 @@ mod tests {
         }
     }
 
+    async fn assert_no_second_websocket_response<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let _ = timeout(Duration::from_secs(2), async {
+            loop {
+                let Some(frame) = websocket.next().await else {
+                    return;
+                };
+                let frame = frame.expect("frame should decode");
+                match frame {
+                    Message::Text(text) => {
+                        let message = serde_json::from_str::<JSONRPCMessage>(&text)
+                            .expect("text frame should be valid JSON-RPC");
+                        assert!(
+                            !matches!(
+                                message,
+                                JSONRPCMessage::Response(_) | JSONRPCMessage::Error(_)
+                            ),
+                            "unexpected second JSON-RPC response: {message:?}"
+                        );
+                    }
+                    Message::Close(_) => return,
+                    Message::Binary(_)
+                    | Message::Ping(_)
+                    | Message::Pong(_)
+                    | Message::Frame(_) => {
+                        continue;
+                    }
+                }
+            }
+        })
+        .await;
+    }
+
     async fn write_websocket_message<S>(
         websocket: &mut tokio_tungstenite::WebSocketStream<S>,
         message: JSONRPCMessage,
@@ -1960,7 +1996,7 @@ mod tests {
                 JSONRPCMessage::Request(remote_user_input_request(request_id)),
             )
             .await;
-            let _ = timeout(Duration::from_secs(2), websocket.next()).await;
+            assert_no_second_websocket_response(&mut websocket).await;
         })
         .await;
         let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
@@ -2025,7 +2061,7 @@ mod tests {
                 JSONRPCMessage::Request(remote_user_input_request(request_id)),
             )
             .await;
-            let _ = timeout(Duration::from_secs(2), websocket.next()).await;
+            assert_no_second_websocket_response(&mut websocket).await;
         })
         .await;
         let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
@@ -2184,7 +2220,7 @@ mod tests {
             };
             assert_eq!(response.id, request_id);
             write_websocket_message(&mut websocket, JSONRPCMessage::Request(request)).await;
-            let _ = timeout(Duration::from_secs(2), websocket.next()).await;
+            assert_no_second_websocket_response(&mut websocket).await;
         })
         .await;
         let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
