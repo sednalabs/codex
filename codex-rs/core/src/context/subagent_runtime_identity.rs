@@ -1,5 +1,6 @@
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
 
 use super::ContextualUserFragment;
@@ -29,10 +30,53 @@ impl SubagentRuntimeIdentity {
         }
     }
 
+    /// Build identity fields from the same resolved values used by the Responses request.
+    /// `ModelInfo` owns model slug and service-tier capability resolution; reasoning normalization
+    /// mirrors the wire mapping where Ultra is represented as Max.
+    pub(crate) fn from_snapshot_and_request(
+        snapshot: &ThreadConfigSnapshot,
+        model_info: &ModelInfo,
+        reasoning_effort: Option<ReasoningEffort>,
+        service_tier: Option<String>,
+    ) -> Self {
+        Self::from_request(
+            &snapshot.model_provider_id,
+            model_info,
+            reasoning_effort,
+            service_tier,
+        )
+    }
+
+    fn from_request(
+        model_provider_id: &str,
+        model_info: &ModelInfo,
+        reasoning_effort: Option<ReasoningEffort>,
+        service_tier: Option<String>,
+    ) -> Self {
+        Self {
+            effective_model: model_info.slug.clone(),
+            effective_model_provider_id: model_provider_id.to_string(),
+            effective_reasoning_effort: reasoning_effort.map(Self::reasoning_effort_for_request),
+            effective_service_tier: model_info.service_tier_for_request(service_tier),
+        }
+    }
+
+    fn reasoning_effort_for_request(effort: ReasoningEffort) -> ReasoningEffort {
+        match effort {
+            ReasoningEffort::Ultra => ReasoningEffort::Max,
+            effort => effort,
+        }
+    }
+
     pub(crate) fn matches_response_item(
         item: &ResponseItem,
         snapshot: &ThreadConfigSnapshot,
     ) -> bool {
+        let identity = Self::from_snapshot(snapshot);
+        Self::matches_identity_response_item(item, &identity)
+    }
+
+    pub(crate) fn matches_identity_response_item(item: &ResponseItem, identity: &Self) -> bool {
         let ResponseItem::Message { role, content, .. } = item else {
             return false;
         };
@@ -42,7 +86,7 @@ impl SubagentRuntimeIdentity {
         let [ContentItem::InputText { text }] = content.as_slice() else {
             return false;
         };
-        Self::from_snapshot(snapshot).matches_rendered_text(text)
+        identity.matches_rendered_text(text)
     }
 
     pub(crate) fn has_marked_response_item(item: &ResponseItem) -> bool {
@@ -219,5 +263,69 @@ mod tests {
             effective_service_tier: Some("t".repeat(MAX_IDENTITY_FIELD_BYTES)),
         };
         assert!(!overlong_fragment.is_bounded());
+    }
+
+    #[test]
+    fn identity_uses_wire_resolved_model_reasoning_and_service_tier() {
+        let model_info: ModelInfo = serde_json::from_value(serde_json::json!({
+            "slug": "resolved-model",
+            "display_name": "Resolved Model",
+            "description": null,
+            "default_reasoning_level": "medium",
+            "supported_reasoning_levels": [],
+            "shell_type": "shell_command",
+            "visibility": "list",
+            "supported_in_api": true,
+            "priority": 1,
+            "upgrade": null,
+            "base_instructions": "base",
+            "support_verbosity": false,
+            "default_verbosity": null,
+            "apply_patch_tool_type": null,
+            "truncation_policy": {"mode": "bytes", "limit": 10000},
+            "supports_parallel_tool_calls": false,
+            "context_window": 272000,
+            "experimental_supported_tools": [],
+            "service_tiers": [{"id": "priority", "name": "Priority", "description": "fast"}]
+        }))
+        .expect("model info should deserialize");
+        let identity = SubagentRuntimeIdentity::from_request(
+            "resolved-provider",
+            &model_info,
+            Some(ReasoningEffort::Ultra),
+            Some("default".to_string()),
+        );
+        let rendered = identity.render();
+        assert!(rendered.contains("\"effective_model\":\"resolved-model\""));
+        assert!(rendered.contains("\"effective_model_provider_id\":\"resolved-provider\""));
+        assert!(rendered.contains("\"effective_reasoning_effort\":\"max\""));
+        assert!(rendered.contains("\"effective_service_tier\":null"));
+
+        let identity = SubagentRuntimeIdentity::from_request(
+            "resolved-provider",
+            &model_info,
+            Some(ReasoningEffort::Ultra),
+            Some("priority".to_string()),
+        );
+        let item: ResponseItem = ContextualUserFragment::into(identity.clone());
+        assert!(SubagentRuntimeIdentity::matches_identity_response_item(
+            &item, &identity
+        ));
+        assert!(
+            identity
+                .render()
+                .contains("\"effective_service_tier\":\"priority\"")
+        );
+        let identity = SubagentRuntimeIdentity::from_request(
+            "resolved-provider",
+            &model_info,
+            Some(ReasoningEffort::Ultra),
+            Some("unsupported".to_string()),
+        );
+        assert!(
+            identity
+                .render()
+                .contains("\"effective_service_tier\":null")
+        );
     }
 }
