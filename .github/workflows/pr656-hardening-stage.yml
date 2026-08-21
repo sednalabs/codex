@@ -1,16 +1,19 @@
 name: Stage PR656 diagnostic hardening
 
 on:
-  push:
+  pull_request:
     branches:
-      - diag/pr656-hardening-stage-20260821
+      - main
+    types:
+      - opened
+      - synchronize
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'chore: trigger PR656 hardening stage'
+    if: github.head_ref == 'diag/pr656-hardening-stage-20260821' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
