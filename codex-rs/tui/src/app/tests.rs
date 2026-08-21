@@ -613,6 +613,48 @@ async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
 }
 
 #[tokio::test]
+async fn active_receiver_consumption_flushes_pending_delivery() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.activate_thread_channel(thread_id).await;
+
+    let first = thread_closed_notification(thread_id);
+    let second = thread_closed_notification(thread_id);
+    app.enqueue_thread_notification(thread_id, first).await?;
+    app.enqueue_thread_notification(thread_id, second.clone())
+        .await?;
+
+    let received_first = app
+        .active_thread_rx
+        .as_mut()
+        .expect("active receiver should be attached")
+        .try_recv()
+        .expect("first event should be immediately available");
+    assert!(matches!(
+        received_first,
+        ThreadBufferedEvent::Notification(_)
+    ));
+
+    // The ordinary active-thread loop consumes directly from `active_thread_rx`; flushing here
+    // proves a full-channel retry does not wait for a picker/session transition.
+    app.flush_active_thread_pending_delivery();
+    let received_second = app
+        .active_thread_rx
+        .as_mut()
+        .expect("active receiver should remain attached")
+        .try_recv()
+        .expect("pending delivery should flush after receiver consumption");
+    assert!(matches!(
+        received_second,
+        ThreadBufferedEvent::Notification(ServerNotification::ThreadClosed(_))
+    ));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn active_history_batch_is_delivered_without_replay_buffering() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
