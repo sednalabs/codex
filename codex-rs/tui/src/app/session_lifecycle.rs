@@ -538,18 +538,20 @@ impl App {
         Ok(live_attached)
     }
 
-    /// Hydrates a closed thread for read-only transcript replay.
+    /// Hydrates a closed thread for transcript replay and reports whether the authoritative read
+    /// found a still-loaded server thread that should be reattached live.
     ///
-    /// Closed metadata entries are intentionally not resumed: doing so could reopen a terminal
-    /// thread or attach a live listener where none is available. Instead, fetch the saved turns
-    /// with `thread/read`, seed a replay-only channel, and fail closed when the server cannot
-    /// provide a transcript. Any existing channel snapshot is replaced with the authoritative
-    /// persisted turns so a stale replay cannot hide later transcript updates.
+    /// Closed metadata entries are not resumed until an authoritative read confirms that the
+    /// server still has the thread loaded: resuming an actually terminal thread could reopen it or
+    /// attach a listener where none is available. Fetch the saved turns with `thread/read`, seed a
+    /// replay-only channel, and fail closed when the server cannot provide a transcript. Any
+    /// existing channel snapshot is replaced with the authoritative persisted turns so a stale
+    /// replay cannot hide later transcript updates.
     pub(super) async fn attach_closed_thread_for_selection(
         &mut self,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // Mark the channel replay-only before any async read so a stale live channel cannot
         // submit mutations while its persisted transcript is being hydrated.
         self.ensure_thread_channel(thread_id).mark_replay_only();
@@ -563,13 +565,51 @@ impl App {
             ));
         }
 
+        let thread_is_loaded = matches!(
+            &thread.status,
+            codex_app_server_protocol::ThreadStatus::Idle
+                | codex_app_server_protocol::ThreadStatus::Active { .. }
+        );
         let turns = thread.turns.clone();
         let session = self.session_state_for_thread_read(thread_id, &thread).await;
         let channel = self.ensure_thread_channel(thread_id);
         channel.mark_replay_only();
         let mut store = channel.store.lock().await;
         store.set_session(session, turns);
-        Ok(())
+        drop(store);
+
+        // A liveness read can race with this authoritative transcript read. If the server reports
+        // that the thread is loaded after the earlier read marked it closed, refresh picker state
+        // before routing through `thread/resume`; the channel stays replay-only until that live
+        // listener has been established.
+        if thread_is_loaded {
+            let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+            self.upsert_agent_picker_thread(
+                thread_id,
+                thread.agent_nickname.or_else(|| {
+                    existing_entry
+                        .as_ref()
+                        .and_then(|entry| entry.agent_nickname.clone())
+                }),
+                thread.agent_role.or_else(|| {
+                    existing_entry
+                        .as_ref()
+                        .and_then(|entry| entry.agent_role.clone())
+                }),
+                /*is_closed*/ false,
+            );
+            if matches!(
+                thread.status,
+                codex_app_server_protocol::ThreadStatus::Active { .. }
+            ) {
+                self.agent_navigation.mark_running(thread_id);
+            } else {
+                self.agent_navigation
+                    .set_running(thread_id, /*is_running*/ false);
+            }
+        }
+
+        Ok(thread_is_loaded)
     }
 
     /// Replaces the chat widget and re-seeds the new widget's collab metadata from the navigation
@@ -666,14 +706,34 @@ impl App {
                 }
             }
         } else if is_replay_only {
-            if let Err(err) = self
+            let loaded = match self
                 .attach_closed_thread_for_selection(app_server, thread_id)
                 .await
             {
-                self.chat_widget.add_error_message(format!(
-                    "Failed to load the closed transcript for agent thread {thread_id}: {err}"
-                ));
-                return Ok(());
+                Ok(loaded) => loaded,
+                Err(err) => {
+                    self.chat_widget.add_error_message(format!(
+                        "Failed to load the closed transcript for agent thread {thread_id}: {err}"
+                    ));
+                    return Ok(());
+                }
+            };
+            if loaded {
+                match self
+                    .attach_live_thread_for_selection_with_tui(app_server, thread_id, Some(tui))
+                    .await
+                {
+                    Ok(live_attached) => {
+                        attached_replay_only = !live_attached;
+                        is_replay_only = !live_attached;
+                    }
+                    Err(err) => {
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to attach to agent thread {thread_id}: {err}"
+                        ));
+                        return Ok(());
+                    }
+                }
             }
         }
         let previous_thread_id = self.active_thread_id;
