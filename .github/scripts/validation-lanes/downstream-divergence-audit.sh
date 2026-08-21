@@ -17,6 +17,8 @@ mapfile -t mirror_audit_args < <(
 )
 
 downstream_ref="$(git rev-parse HEAD)"
+audit_output_dir="target/downstream-divergence-audit"
+audit_report="${audit_output_dir}/downstream-divergence-audit.json"
 
 set +e
 python3 scripts/downstream-divergence-audit.py \
@@ -27,7 +29,7 @@ python3 scripts/downstream-divergence-audit.py \
   "${mirror_audit_args[@]}" \
   --expected-mirror-sha "${expected_mirror_sha}" \
   --registry-path docs/divergences/index.yaml \
-  --output-dir target/downstream-divergence-audit \
+  --output-dir "${audit_output_dir}" \
   --format both \
   --code-only \
   --enforce-registry
@@ -35,7 +37,8 @@ audit_exit=$?
 set -e
 
 if [[ "${audit_exit}" -ne 0 ]]; then
-  python3 - target/downstream-divergence-audit/downstream-divergence-audit.json <<'PY'
+  if [[ -f "${audit_report}" ]]; then
+    python3 - "${audit_report}" <<'PY'
 import json
 import sys
 
@@ -48,6 +51,7 @@ for path in registry["uncovered_code_paths"]:
 for entry_id in registry["stale_entry_ids"]:
     print(f"stale divergence entry: {entry_id}")
 PY
+  fi
 fi
 
 exit "${audit_exit}"

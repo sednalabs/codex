@@ -10013,6 +10013,78 @@ jobs:
 
 
 class ValidationLaneRunnerTests(unittest.TestCase):
+    def test_downstream_divergence_audit_preserves_failure_without_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            script_dir = repo_root / ".github/scripts/validation-lanes"
+            scripts_dir = repo_root / "scripts"
+            script_dir.mkdir(parents=True)
+            scripts_dir.mkdir()
+
+            (script_dir / "downstream-docs-check.sh").write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\n",
+                encoding="utf-8",
+            )
+            (script_dir / "downstream-docs-check.sh").chmod(0o755)
+            (repo_root / ".github/scripts/sync_upstream_mirror.py").parent.mkdir(
+                parents=True, exist_ok=True
+            )
+            (repo_root / ".github/scripts/sync_upstream_mirror.py").write_text(
+                "import json\n"
+                "print(json.dumps({'expected_mirror_sha': 'mirror', "
+                "'mirror_audit_args': []}))\n",
+                encoding="utf-8",
+            )
+            audit_script = scripts_dir / "downstream-divergence-audit.py"
+            audit_script.write_text(
+                "import sys\n"
+                "print('producer failure: upstream audit aborted', file=sys.stderr)\n"
+                "raise SystemExit(17)\n",
+                encoding="utf-8",
+            )
+
+            subprocess.run(
+                ["git", "init", "--initial-branch=main"],
+                cwd=repo_root,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "CI Planner Tests"],
+                cwd=repo_root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "ci-planner-tests@example.invalid"],
+                cwd=repo_root,
+                check=True,
+            )
+            subprocess.run(["git", "add", "."], cwd=repo_root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "fixture"],
+                cwd=repo_root,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(
+                        REPO_ROOT
+                        / ".github/scripts/validation-lanes/downstream-divergence-audit.sh"
+                    ),
+                ],
+                cwd=repo_root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(proc.returncode, 17)
+            self.assertIn("producer failure: upstream audit aborted", proc.stderr)
+            self.assertNotIn("FileNotFoundError", proc.stderr)
+
     def test_runner_executes_valid_paths_and_rejects_escape_attempts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir) / "repo"
