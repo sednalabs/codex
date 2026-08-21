@@ -28,6 +28,22 @@ pub(super) enum ThreadBufferedEvent {
 const PENDING_DELIVERY_MAX_EVENTS: usize = 256;
 const PENDING_DELIVERY_MAX_BYTES: usize = 4 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LiveDeliveryKind {
+    RawResponseItemCompleted,
+    FileChangePatchUpdated,
+    ServerRequestResolved,
+    McpToolCallProgress,
+    ThreadRealtimeItemAdded,
+    ThreadRealtimeOutputAudioDelta,
+    ThreadRealtimeSdp,
+    ThreadRealtimeTranscriptDelta,
+    ThreadRealtimeTranscriptDone,
+    CommandExecOutputDelta,
+    ProcessOutputDelta,
+    ProcessExited,
+}
+
 #[derive(Debug, Default)]
 struct PendingDeliveryQueue {
     events: VecDeque<ThreadBufferedEvent>,
@@ -53,9 +69,58 @@ impl PendingDeliveryQueue {
             || self.events.len() >= PENDING_DELIVERY_MAX_EVENTS
             || self.bytes.saturating_add(event_bytes) > PENDING_DELIVERY_MAX_BYTES
         {
+            if let Some(kind) = event.live_delivery_kind() {
+                if let Some(existing_index) = self
+                    .events
+                    .iter()
+                    .position(|existing| existing.live_delivery_kind() == Some(kind))
+                {
+                    let existing_bytes = self.events[existing_index].estimated_bytes();
+                    let replacement_bytes = self
+                        .bytes
+                        .saturating_sub(existing_bytes)
+                        .saturating_add(event_bytes);
+                    if replacement_bytes <= PENDING_DELIVERY_MAX_BYTES {
+                        self.events[existing_index] = event;
+                        self.bytes = replacement_bytes;
+                    } else {
+                        tracing::warn!(
+                            ?kind,
+                            event_bytes,
+                            max_bytes = PENDING_DELIVERY_MAX_BYTES,
+                            "dropping oversized live-only notification delivery copy"
+                        );
+                    }
+                    return;
+                }
+
+                // Live-only notifications have no store-backed recovery path. Reserve room for
+                // the newest notification by evicting oldest delivery copies; ordinary copies
+                // remain recoverable from the store at the next snapshot boundary.
+                while !self.events.is_empty()
+                    && (self.events.len() >= PENDING_DELIVERY_MAX_EVENTS
+                        || self.bytes.saturating_add(event_bytes) > PENDING_DELIVERY_MAX_BYTES)
+                {
+                    let _ = self.pop_front();
+                }
+                if event_bytes <= PENDING_DELIVERY_MAX_BYTES {
+                    self.bytes = self.bytes.saturating_add(event_bytes);
+                    self.events.push_back(event);
+                } else {
+                    tracing::warn!(
+                        ?kind,
+                        event_bytes,
+                        max_bytes = PENDING_DELIVERY_MAX_BYTES,
+                        "dropping oversized live-only notification delivery copy"
+                    );
+                }
+                return;
+            }
             // The event is already retained by ThreadEventStore. Drop only this live-delivery
-            // copy when the explicit safety budget is exhausted; a later snapshot replays the
-            // authoritative store entry without allowing the retry lane to grow unbounded.
+            // copy when the explicit safety budget is exhausted. Replay can recover ordinary
+            // events from the store; live-only notifications are coalesced above by kind and are
+            // otherwise dropped with bounded fail-closed behavior because they have no replay
+            // representation.
             return;
         }
         self.bytes = self.bytes.saturating_add(event_bytes);
@@ -80,6 +145,43 @@ impl PendingDeliveryQueue {
 }
 
 impl ThreadBufferedEvent {
+    fn live_delivery_kind(&self) -> Option<LiveDeliveryKind> {
+        let Self::Notification(notification) = self else {
+            return None;
+        };
+        Some(match notification {
+            ServerNotification::RawResponseItemCompleted(_) => {
+                LiveDeliveryKind::RawResponseItemCompleted
+            }
+            ServerNotification::FileChangePatchUpdated(_) => {
+                LiveDeliveryKind::FileChangePatchUpdated
+            }
+            ServerNotification::ServerRequestResolved(_) => {
+                LiveDeliveryKind::ServerRequestResolved
+            }
+            ServerNotification::McpToolCallProgress(_) => LiveDeliveryKind::McpToolCallProgress,
+            ServerNotification::ThreadRealtimeItemAdded(_) => {
+                LiveDeliveryKind::ThreadRealtimeItemAdded
+            }
+            ServerNotification::ThreadRealtimeOutputAudioDelta(_) => {
+                LiveDeliveryKind::ThreadRealtimeOutputAudioDelta
+            }
+            ServerNotification::ThreadRealtimeSdp(_) => LiveDeliveryKind::ThreadRealtimeSdp,
+            ServerNotification::ThreadRealtimeTranscriptDelta(_) => {
+                LiveDeliveryKind::ThreadRealtimeTranscriptDelta
+            }
+            ServerNotification::ThreadRealtimeTranscriptDone(_) => {
+                LiveDeliveryKind::ThreadRealtimeTranscriptDone
+            }
+            ServerNotification::CommandExecOutputDelta(_) => {
+                LiveDeliveryKind::CommandExecOutputDelta
+            }
+            ServerNotification::ProcessOutputDelta(_) => LiveDeliveryKind::ProcessOutputDelta,
+            ServerNotification::ProcessExited(_) => LiveDeliveryKind::ProcessExited,
+            _ => return None,
+        })
+    }
+
     fn estimated_bytes(&self) -> usize {
         match self {
             Self::Notification(notification) => serde_json::to_vec(notification)
@@ -1081,5 +1183,54 @@ mod tests {
             .expect("pending delivery mutex");
         assert!(pending.len() <= PENDING_DELIVERY_MAX_EVENTS);
         assert!(pending.bytes() <= PENDING_DELIVERY_MAX_BYTES);
+    }
+
+    #[test]
+    fn full_receiver_coalesces_live_only_notifications_instead_of_losing_latest() {
+        let thread_id = ThreadId::new();
+        let mut channel = ThreadEventChannel::new(/*capacity*/ 1);
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Notification(
+                hook_started_notification(thread_id, "turn-full"),
+            ))
+            .expect("receiver should accept the blocking event");
+
+        let live_notification = |message: &str| {
+            ThreadBufferedEvent::Notification(ServerNotification::McpToolCallProgress(
+                McpToolCallProgressNotification {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-full".to_string(),
+                    item_id: "mcp-1".to_string(),
+                    message: message.to_string(),
+                },
+            ))
+        };
+        channel.try_send_or_queue(live_notification("first"), thread_id);
+        for offset in 0..(PENDING_DELIVERY_MAX_EVENTS.saturating_sub(1)) {
+            channel.try_send_or_queue(
+                ThreadBufferedEvent::HistoryEntryResponse(HistoryLookupResponse::Entry {
+                    offset,
+                    log_id: offset as u64,
+                    entry: Some("replayable".to_string()),
+                }),
+                thread_id,
+            );
+        }
+        channel.try_send_or_queue(live_notification("latest"), thread_id);
+
+        let pending = channel
+            .pending_delivery
+            .lock()
+            .expect("pending delivery mutex");
+        assert_eq!(pending.len(), PENDING_DELIVERY_MAX_EVENTS);
+        assert!(pending.events.iter().any(|event| {
+            matches!(
+                event,
+                ThreadBufferedEvent::Notification(
+                    ServerNotification::McpToolCallProgress(notification)
+                ) if notification.message == "latest"
+            )
+        }));
     }
 }
