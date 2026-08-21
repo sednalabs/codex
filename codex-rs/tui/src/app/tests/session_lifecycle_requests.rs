@@ -18,6 +18,7 @@ use crossterm::event::KeyModifiers;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::net::TcpListener;
@@ -48,25 +49,9 @@ async fn start_recording_app_server(
     Arc<Mutex<Vec<String>>>,
     JoinHandle<Result<()>>,
 )> {
-    start_recording_app_server_with_status_script(config, /*force_active_include_turns*/ false)
-        .await
-}
-
-/// Starts the recording proxy with an optional status race script. When enabled, an authoritative
-/// `thread/read(includeTurns=true)` response is reported as active even if the embedded server has
-/// unloaded the thread, modeling a liveness read that raced with a subsequent status refresh.
-async fn start_recording_app_server_with_status_script(
-    config: &Config,
-    force_active_include_turns: bool,
-) -> Result<(
-    AppServerSession,
-    Arc<Mutex<Vec<String>>>,
-    JoinHandle<Result<()>>,
-)> {
     start_recording_app_server_with_scripts(
         config,
-        force_active_include_turns,
-        /*force_not_loaded_after_unsubscribe*/ false,
+        VecDeque::new(),
         /*force_resume_failure*/ false,
         /*resume_signal*/ None,
         /*event_recorded_signal*/ None,
@@ -85,9 +70,14 @@ async fn start_recording_app_server_with_closed_transition(
     JoinHandle<Result<()>>,
 )> {
     start_recording_app_server_with_scripts(
-        config, /*force_active_include_turns*/ false,
-        /*force_not_loaded_after_unsubscribe*/ true, /*force_resume_failure*/ false,
-        /*resume_signal*/ None, /*event_recorded_signal*/ None,
+        config,
+        VecDeque::from([ScriptedThreadRead {
+            include_turns: false,
+            status: ScriptedThreadStatus::NotLoaded,
+        }]),
+        /*force_resume_failure*/ false,
+        /*resume_signal*/ None,
+        /*event_recorded_signal*/ None,
     )
     .await
 }
@@ -100,8 +90,7 @@ async fn start_recording_app_server_with_resume_failure(
 ) -> Result<(AppServerSession, JoinHandle<Result<()>>)> {
     let (app_server, _requests, proxy) = start_recording_app_server_with_scripts(
         config,
-        /*force_active_include_turns*/ false,
-        /*force_not_loaded_after_unsubscribe*/ false,
+        VecDeque::new(),
         /*force_resume_failure*/ true,
         Some(resume_signal),
         Some(event_recorded_signal),
@@ -110,10 +99,21 @@ async fn start_recording_app_server_with_resume_failure(
     Ok((app_server, proxy))
 }
 
+#[derive(Clone, Copy)]
+enum ScriptedThreadStatus {
+    NotLoaded,
+    Active,
+}
+
+#[derive(Clone, Copy)]
+struct ScriptedThreadRead {
+    include_turns: bool,
+    status: ScriptedThreadStatus,
+}
+
 async fn start_recording_app_server_with_scripts(
     config: &Config,
-    force_active_include_turns: bool,
-    force_not_loaded_after_unsubscribe: bool,
+    post_unsubscribe_thread_reads: VecDeque<ScriptedThreadRead>,
     force_resume_failure: bool,
     resume_signal: Option<Arc<tokio::sync::Notify>>,
     event_recorded_signal: Option<Arc<tokio::sync::Notify>>,
@@ -146,7 +146,8 @@ async fn start_recording_app_server_with_scripts(
     let proxy = tokio::spawn(async move {
         let (stream, _) = listener.accept().await?;
         let mut websocket = accept_async(stream).await?;
-        let mut force_not_loaded = false;
+        let mut post_unsubscribe_thread_reads = post_unsubscribe_thread_reads;
+        let mut after_unsubscribe = false;
         while let Some(frame) = websocket.next().await {
             let Message::Text(text) = frame? else {
                 continue;
@@ -173,12 +174,8 @@ async fn start_recording_app_server_with_scripts(
                         .expect("request recorder lock")
                         .push(request.method.clone());
                     let request_id = request.id.clone();
-                    if force_not_loaded_after_unsubscribe {
-                        if request.method == "thread/unsubscribe" {
-                            force_not_loaded = true;
-                        } else if request.method == "thread/resume" {
-                            force_not_loaded = false;
-                        }
+                    if request.method == "thread/unsubscribe" {
+                        after_unsubscribe = true;
                     }
                     if force_resume_failure && request.method == "thread/resume" {
                         if let Some(signal) = &resume_signal {
@@ -202,34 +199,37 @@ async fn start_recording_app_server_with_scripts(
                             .await?;
                         continue;
                     }
-                    let force_active_status = force_active_include_turns
-                        && request.method == "thread/read"
-                        && request.params.as_ref().is_some_and(|params| {
+                    let scripted_status = if after_unsubscribe && request.method == "thread/read" {
+                        let include_turns = request.params.as_ref().is_some_and(|params| {
                             params
                                 .get("includeTurns")
                                 .and_then(serde_json::Value::as_bool)
                                 .unwrap_or(false)
                         });
-                    let force_not_loaded_status = force_not_loaded_after_unsubscribe
-                        && force_not_loaded
-                        && request.method == "thread/read";
+                        post_unsubscribe_thread_reads
+                            .front()
+                            .filter(|step| step.include_turns == include_turns)
+                            .copied()
+                    } else {
+                        None
+                    };
                     let request =
                         serde_json::from_value::<ClientRequest>(serde_json::to_value(request)?)?;
                     let response = match embedded.request(request).await? {
                         Ok(mut result) => {
-                            if force_not_loaded_status {
+                            if let Some(scripted_status) = scripted_status {
+                                post_unsubscribe_thread_reads.pop_front();
                                 if let Some(thread) = result.get_mut("thread") {
-                                    thread["status"] = serde_json::json!({
-                                        "type": "notLoaded",
-                                    });
+                                    thread["status"] = match scripted_status.status {
+                                        ScriptedThreadStatus::NotLoaded => serde_json::json!({
+                                            "type": "notLoaded",
+                                        }),
+                                        ScriptedThreadStatus::Active => serde_json::json!({
+                                            "type": "active",
+                                            "activeFlags": [],
+                                        }),
+                                    };
                                 }
-                            } else if force_active_status
-                                && let Some(thread) = result.get_mut("thread")
-                            {
-                                thread["status"] = serde_json::json!({
-                                    "type": "active",
-                                    "activeFlags": [],
-                                });
                             }
                             JSONRPCMessage::Response(JSONRPCResponse {
                                 id: request_id,
@@ -537,7 +537,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                     &root_thread_id.to_string(),
                 );
                 let (mut app_server, requests, proxy) =
-                    start_recording_app_server(&app.config).await?;
+                    start_recording_app_server_with_closed_transition(&app.config).await?;
                 let root = app_server
                     .resume_thread(
                         app.config.clone(),
@@ -918,8 +918,20 @@ fn closed_thread_status_race_reconciles_live_attachment() -> Result<()> {
                 // NotLoaded state after unsubscribe.
                 let (mut app_server, _requests, proxy) = start_recording_app_server_with_scripts(
                     &app.config,
-                    /*force_active_include_turns*/ true,
-                    /*force_not_loaded_after_unsubscribe*/ true,
+                    VecDeque::from([
+                        ScriptedThreadRead {
+                            include_turns: false,
+                            status: ScriptedThreadStatus::NotLoaded,
+                        },
+                        ScriptedThreadRead {
+                            include_turns: false,
+                            status: ScriptedThreadStatus::NotLoaded,
+                        },
+                        ScriptedThreadRead {
+                            include_turns: true,
+                            status: ScriptedThreadStatus::Active,
+                        },
+                    ]),
                     /*force_resume_failure*/ false,
                     /*resume_signal*/ None,
                     /*event_recorded_signal*/ None,
