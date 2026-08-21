@@ -426,6 +426,13 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> bool {
+        // Replay-only side threads are detached transcripts, not live server sessions. Navigation
+        // may discard their local picker state, but must not issue interrupt/unsubscribe RPCs
+        // against a thread whose live authority is unavailable.
+        if self.is_replay_only_thread(thread_id) {
+            self.discard_thread_local_state(thread_id).await;
+            return true;
+        }
         if let Err(message) = self.interrupt_side_thread(app_server, thread_id).await {
             tracing::warn!("{message}");
             self.chat_widget.add_error_message(message);

@@ -602,6 +602,34 @@ async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
 }
 
 #[tokio::test]
+async fn thread_closed_notification_immediately_gates_active_thread_mutations() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
+    app.thread_event_channels.insert(
+        thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            session.clone(),
+            Vec::new(),
+        ),
+    );
+    app.active_thread_id = Some(thread_id);
+    app.chat_widget.handle_thread_session(session);
+
+    app.enqueue_thread_notification(thread_id, thread_closed_notification(thread_id))
+        .await?;
+
+    assert!(app.is_replay_only_thread(thread_id));
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    app.submit_thread_op(&mut app_server, thread_id, Op::Interrupt)
+        .await?;
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn active_history_batch_is_delivered_without_replay_buffering() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
@@ -2198,13 +2226,18 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
             .get(&thread_id)
             .expect("replay channel");
         let mut store = channel.store.lock().await;
-        store.push_request(exec_approval_request(
+        let stale_request = exec_approval_request(
             thread_id,
             "stale-turn",
             "stale-approval",
             /*approval_id*/ None,
-        ));
+        );
+        store.push_request(stale_request.clone());
         assert!(store.has_pending_thread_approvals());
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Request(stale_request))
+            .expect("stale replay request should be queued");
     }
     app.chat_widget
         .handle_thread_session(started.session.clone());
@@ -2289,6 +2322,14 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
                 .all(|event| !matches!(event, ThreadBufferedEvent::Request(_)))
         );
     }
+    assert!(
+        app.active_thread_rx
+            .as_mut()
+            .expect("promoted thread receiver")
+            .try_recv()
+            .is_err(),
+        "promotion must fence requests queued by the prior replay attachment"
+    );
     assert_eq!(app.chat_widget.current_model(), resumed_model);
     let mut promoted_history = Vec::new();
     while let Ok(event) = app_event_rx.try_recv() {
@@ -2314,6 +2355,35 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
         "promotion should drain the preserved queue after live session configuration"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn replay_promotion_fences_inactive_channel_receiver_before_activation() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let mut channel = ThreadEventChannel::new(/*capacity*/ 4);
+    channel.mark_replay_only();
+    channel
+        .sender
+        .try_send(ThreadBufferedEvent::Notification(
+            ServerNotification::ThreadClosed(ThreadClosedNotification {
+                thread_id: thread_id.to_string(),
+            }),
+        ))
+        .expect("stale replay notification should be queued");
+    app.thread_event_channels.insert(thread_id, channel);
+
+    app.replace_thread_event_queue(thread_id).await;
+    app.activate_thread_channel(thread_id).await;
+
+    assert!(
+        app.active_thread_rx
+            .as_mut()
+            .expect("activated thread receiver")
+            .try_recv()
+            .is_err(),
+        "activation must not drain events queued by the prior replay attachment"
+    );
 }
 
 #[tokio::test]
@@ -4736,6 +4806,39 @@ async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
     assert!(!app.side_threads.contains_key(&side_thread_id));
     assert!(!app.thread_event_channels.contains_key(&side_thread_id));
     assert_eq!(app.agent_navigation.get(&side_thread_id), None);
+}
+
+#[tokio::test]
+async fn discard_replay_only_side_thread_removes_local_state_without_server_rpc() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let parent_thread_id = ThreadId::new();
+    let side_thread_id = ThreadId::new();
+    app.side_threads
+        .insert(side_thread_id, SideThreadState::new(parent_thread_id));
+    let mut channel = ThreadEventChannel::new(/*capacity*/ 4);
+    channel.mark_replay_only();
+    app.thread_event_channels.insert(side_thread_id, channel);
+    app.agent_navigation.upsert(
+        side_thread_id,
+        Some("Side".to_string()),
+        Some("side".to_string()),
+        /*is_closed*/ true,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+
+    assert!(
+        app.discard_side_thread(&mut app_server, side_thread_id)
+            .await
+    );
+
+    assert!(!app.side_threads.contains_key(&side_thread_id));
+    assert!(!app.thread_event_channels.contains_key(&side_thread_id));
+    assert_eq!(app.agent_navigation.get(&side_thread_id), None);
+    app_server.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]
