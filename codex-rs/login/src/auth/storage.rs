@@ -244,19 +244,23 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
         let file_guard = lock_auth_storage(self.codex_home())?;
         let snapshot = self.resolve_snapshot_unlocked()?;
         Ok(AuthStorageTransaction {
-            backend: self,
             _process_guard: process_guard,
             _file_guard: file_guard,
             snapshot,
+            save_to_source: Box::new(move |source, auth| {
+                self.save_to_source_unlocked(source, auth)
+            }),
+            delete_from_source: Box::new(move |source| self.delete_from_source_unlocked(source)),
         })
     }
 }
 
 pub(super) struct AuthStorageTransaction<'a> {
-    backend: &'a dyn AuthStorageBackend,
     _process_guard: MutexGuard<'static, ()>,
     _file_guard: File,
     snapshot: AuthStorageSnapshot,
+    save_to_source: Box<dyn Fn(AuthStorageSource, &AuthDotJson) -> std::io::Result<()> + 'a>,
+    delete_from_source: Box<dyn Fn(AuthStorageSource) -> std::io::Result<bool> + 'a>,
 }
 
 impl AuthStorageTransaction<'_> {
@@ -265,16 +269,13 @@ impl AuthStorageTransaction<'_> {
     }
 
     pub(super) fn save(&mut self, auth: &AuthDotJson) -> std::io::Result<()> {
-        self.backend
-            .save_to_source_unlocked(self.snapshot.source, auth)?;
+        (self.save_to_source)(self.snapshot.source, auth)?;
         self.snapshot.auth = Some(auth.clone());
         Ok(())
     }
 
     pub(super) fn delete(&mut self) -> std::io::Result<bool> {
-        let removed = self
-            .backend
-            .delete_from_source_unlocked(self.snapshot.source)?;
+        let removed = (self.delete_from_source)(self.snapshot.source)?;
         if removed {
             self.snapshot.auth = None;
         }
@@ -582,7 +583,10 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
                 ))
             })?;
         let file_removed = delete_file_if_exists(&self.codex_home)?;
-        let direct_removed = self.direct_storage.delete()?;
+        // The outer auth transaction already owns the process and file locks.
+        // Re-entering `delete` here would try to acquire the non-reentrant
+        // process lock a second time and deadlock the transaction.
+        let direct_removed = self.direct_storage.delete_unlocked()?;
         Ok(keyring_removed || file_removed || direct_removed)
     }
 }
