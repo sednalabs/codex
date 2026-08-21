@@ -1,5 +1,6 @@
 use super::*;
 use crate::auth::storage::FileAuthStorage;
+use crate::auth::storage::create_auth_repository;
 use crate::auth::storage::get_auth_file;
 use crate::token_data::IdTokenInfo;
 use codex_protocol::account::PlanType as AccountPlanType;
@@ -44,13 +45,18 @@ async fn refresh_without_id_token() {
     )
     .expect("failed to write auth file");
 
-    let storage = create_auth_storage(
+    let repository = create_auth_repository(
         codex_home.path().to_path_buf(),
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
     );
+    let loaded = repository
+        .load_active()
+        .expect("load auth snapshot")
+        .expect("auth snapshot should exist");
     let updated = super::persist_tokens(
-        &storage,
+        &repository,
+        &loaded,
         /*id_token*/ None,
         Some("new-access-token".to_string()),
         Some("new-refresh-token".to_string()),
@@ -998,6 +1004,7 @@ async fn refresh_failure_is_scoped_to_the_matching_auth_snapshot() {
         AuthCredentialsStoreMode::File,
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::Direct,
+        /*loaded_auth*/ None,
         /*agent_identity_authapi_base_url*/ None,
         &crate::test_support::transport_default_auth_route_config(),
     )
