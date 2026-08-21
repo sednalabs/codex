@@ -24,7 +24,7 @@ jobs:
       - name: Compare exact changed files
         id: compare
         if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
-        uses: actions/github-script@v9.0.0
+        uses: actions/github-script@v9
         with:
           script: |
             const full = (reason) => {

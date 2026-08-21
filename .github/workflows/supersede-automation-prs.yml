@@ -36,7 +36,7 @@ jobs:
         run: python3 .github/scripts/supersede_automation_prs.py --mode dependabot > "$PLAN_FILE"
       - name: Apply Dependabot supersession plan
         if: github.event_name != 'workflow_dispatch' || inputs.mode == 'dependabot'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           PLAN_FILE: ${{ runner.temp }}/dependabot-plan.json
         with:
@@ -79,7 +79,7 @@ jobs:
         run: python3 .github/scripts/supersede_automation_prs.py --mode models-json > "$PLAN_FILE"
       - name: Apply models.json supersession plan
         if: github.event_name != 'workflow_dispatch' || inputs.mode == 'models-json'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           PLAN_FILE: ${{ runner.temp }}/models-json-plan.json
         with:
