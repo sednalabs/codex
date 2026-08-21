@@ -94,6 +94,19 @@ impl ThreadEventStore {
         self.set_turns(turns);
     }
 
+    /// Replace this channel with an authoritative transcript, discarding buffered events from
+    /// the prior attachment so stale approvals or notifications cannot replay into the snapshot.
+    pub(super) fn replace_with_authoritative_snapshot(
+        &mut self,
+        session: ThreadSessionState,
+        turns: Vec<Turn>,
+    ) {
+        self.set_session(session, turns);
+        self.buffer.clear();
+        self.pending_interactive_replay.clear();
+        self.pending_interrupt_turn_id = None;
+    }
+
     pub(super) fn rebase_buffer_after_session_refresh(&mut self) {
         self.buffer.retain(Self::event_survives_session_refresh);
     }
@@ -657,6 +670,32 @@ mod tests {
         let snapshot = store.snapshot();
         assert!(snapshot.events.is_empty());
         assert_eq!(store.has_pending_thread_approvals(), false);
+    }
+
+    #[test]
+    fn authoritative_snapshot_replacement_discards_stale_interactive_events() {
+        let thread_id = ThreadId::new();
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        store.push_request(exec_approval_request(
+            thread_id,
+            "stale-turn",
+            "stale-approval",
+            /*approval_id*/ None,
+        ));
+        assert!(store.has_pending_thread_approvals());
+
+        store.replace_with_authoritative_snapshot(
+            test_thread_session(thread_id, test_path_buf("/tmp/project")),
+            vec![test_turn(
+                "authoritative-turn",
+                TurnStatus::Completed,
+                Vec::new(),
+            )],
+        );
+
+        assert!(store.buffer.is_empty());
+        assert!(!store.has_pending_thread_approvals());
+        assert!(store.snapshot().events.is_empty());
     }
 
     #[test]
