@@ -9,6 +9,9 @@ use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_protocol::AgentPath;
 use codex_state::SqliteConfig;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
@@ -36,6 +39,21 @@ fn take_backfill_counts(requests: &Arc<Mutex<Vec<String>>>) -> (usize, usize) {
 /// Starts an embedded app server behind a loopback WebSocket proxy that records JSON-RPC methods.
 async fn start_recording_app_server(
     config: &Config,
+) -> Result<(
+    AppServerSession,
+    Arc<Mutex<Vec<String>>>,
+    JoinHandle<Result<()>>,
+)> {
+    start_recording_app_server_with_status_script(config, /*force_active_include_turns*/ false)
+        .await
+}
+
+/// Starts the recording proxy with an optional status race script. When enabled, an authoritative
+/// `thread/read(includeTurns=true)` response is reported as active even if the embedded server has
+/// unloaded the thread, modeling a liveness read that raced with a subsequent status refresh.
+async fn start_recording_app_server_with_status_script(
+    config: &Config,
+    force_active_include_turns: bool,
 ) -> Result<(
     AppServerSession,
     Arc<Mutex<Vec<String>>>,
@@ -91,13 +109,29 @@ async fn start_recording_app_server(
                         .expect("request recorder lock")
                         .push(request.method.clone());
                     let request_id = request.id.clone();
+                    let force_active_status = force_active_include_turns
+                        && request.method == "thread/read"
+                        && request.params.as_ref().is_some_and(|params| {
+                            params
+                                .get("includeTurns")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false)
+                        });
                     let request =
                         serde_json::from_value::<ClientRequest>(serde_json::to_value(request)?)?;
                     let response = match embedded.request(request).await? {
-                        Ok(result) => JSONRPCMessage::Response(JSONRPCResponse {
-                            id: request_id,
-                            result,
-                        }),
+                        Ok(mut result) => {
+                            if force_active_status && let Some(thread) = result.get_mut("thread") {
+                                thread["status"] = serde_json::json!({
+                                    "type": "active",
+                                    "activeFlags": [],
+                                });
+                            }
+                            JSONRPCMessage::Response(JSONRPCResponse {
+                                id: request_id,
+                                result,
+                            })
+                        }
                         Err(error) => JSONRPCMessage::Error(JSONRPCError {
                             id: request_id,
                             error,
@@ -618,4 +652,107 @@ fn closed_existing_stale_channel_refreshes_persisted_transcript() -> Result<()> 
         })?
         .join()
         .expect("closed channel refresh test thread")
+}
+
+#[test]
+fn closed_thread_status_race_reconciles_live_attachment() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-closed-thread-status-race".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+                let codex_home = app.config.codex_home.as_path();
+                let thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home,
+                        "2026-01-01T00-00-00",
+                        "2026-01-01T00:00:00Z",
+                        "Saved status-race message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create status-race rollout"),
+                )?;
+
+                // The proxy turns the authoritative include-turns read into an active response,
+                // while the preceding liveness reads still observe the embedded server's
+                // NotLoaded state after unsubscribe.
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server_with_status_script(
+                        &app.config,
+                        /*force_active_include_turns*/ true,
+                    )
+                    .await?;
+                let started = app_server
+                    .resume_thread(app.config.clone(), thread_id, app.resume_model_settings())
+                    .await?;
+                let turns = started.turns.clone();
+                app.thread_event_channels.insert(
+                    thread_id,
+                    ThreadEventChannel::new_with_session(
+                        /*capacity*/ 4,
+                        started.session,
+                        turns,
+                    ),
+                );
+                app.agent_navigation.upsert(
+                    thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                    /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
+                );
+
+                app_server.thread_unsubscribe(thread_id).await?;
+                assert!(
+                    app.refresh_agent_picker_thread_liveness(&mut app_server, thread_id)
+                        .await
+                );
+                assert!(
+                    app.agent_navigation
+                        .get(&thread_id)
+                        .is_some_and(|entry| entry.is_closed)
+                );
+                assert!(app.is_replay_only_thread(thread_id));
+
+                let mut tui = crate::tui::test_support::make_test_tui()?;
+                app.select_agent_thread(&mut tui, &mut app_server, thread_id)
+                    .await?;
+
+                // The include-turns read reported Active, so selection must reconcile through
+                // resume and reopen the channel before exposing the composer to mutation.
+                assert_eq!(
+                    app.thread_event_channels
+                        .get(&thread_id)
+                        .expect("status-race channel")
+                        .attachment(),
+                    ThreadEventAttachment::Live
+                );
+                assert!(
+                    app.agent_navigation
+                        .get(&thread_id)
+                        .is_some_and(|entry| !entry.is_closed)
+                );
+                assert!(!app.is_replay_only_thread(thread_id));
+
+                while app_event_rx.try_recv().is_ok() {}
+                app.chat_widget
+                    .restore_user_message_to_composer("live status-race op".to_string());
+                app.chat_widget
+                    .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                assert!(
+                    std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                        .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+                );
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("closed thread status race test thread")
 }
