@@ -677,20 +677,21 @@ async fn active_history_batch_is_delivered_without_replay_buffering() -> Result<
     app.enqueue_thread_history_entry_response(thread_id, event.clone())
         .await?;
 
-    let channel = app
-        .thread_event_channels
-        .get_mut(&thread_id)
-        .expect("missing thread channel");
-    let store = channel.store.lock().await;
-    assert_eq!(store.buffer.len(), 1);
-    assert!(matches!(
-        store.buffer.front(),
-        Some(ThreadBufferedEvent::HistoryEntryResponse(
-            HistoryLookupResponse::Batch { .. }
-        ))
-    ));
-    drop(store);
-    let mut receiver = channel.receiver.take().expect("missing receiver");
+    let mut receiver = {
+        let channel = app
+            .thread_event_channels
+            .get_mut(&thread_id)
+            .expect("missing thread channel");
+        let store = channel.store.lock().await;
+        assert_eq!(store.buffer.len(), 1);
+        assert!(matches!(
+            store.buffer.front(),
+            Some(ThreadBufferedEvent::HistoryEntryResponse(
+                HistoryLookupResponse::Batch { .. }
+            ))
+        ));
+        channel.receiver.take().expect("missing receiver")
+    };
     let delivered = time::timeout(Duration::from_millis(50), receiver.recv())
         .await
         .expect("timed out waiting for history batch")
@@ -2354,9 +2355,27 @@ fn attach_live_thread_for_selection_hydrates_inferred_zero_turn_session() -> Res
     run_large_stack_app_test(|| async {
         let mut app = make_test_app().await;
         let config = app.chat_widget.config_ref().clone();
+        let thread_timestamp = "2026-01-01T00-00-00";
+        let thread_id = ThreadId::from_string(&app_test_support::create_fake_rollout(
+            config.codex_home.as_path(),
+            thread_timestamp,
+            "2026-01-01T00:00:00Z",
+            "unused preview",
+            Some(config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )?)?;
+        let thread_rollout = rollout_path(
+            config.codex_home.as_path(),
+            thread_timestamp,
+            &thread_id.to_string(),
+        );
+        let session_meta = std::fs::read_to_string(&thread_rollout)?
+            .lines()
+            .next()
+            .expect("fake rollout should have session metadata")
+            .to_string();
+        std::fs::write(&thread_rollout, format!("{session_meta}\n"))?;
         let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
-        let started = app_server.start_thread(&config).await?;
-        let thread_id = started.session.thread_id;
         let mut channel = ThreadEventChannel::new(/*capacity*/ 4);
         {
             let mut store = channel.store.lock().await;
@@ -2374,18 +2393,18 @@ fn attach_live_thread_for_selection_hydrates_inferred_zero_turn_session() -> Res
                 .await?
         );
 
-        let store = app
-            .thread_event_channels
-            .get(&thread_id)
-            .expect("hydrated thread channel")
-            .store
-            .lock()
-            .await;
-        assert!(store.has_hydrated_snapshot());
-        assert_eq!(
-            store.session.as_ref().map(|session| session.thread_id),
-            Some(thread_id)
-        );
+        {
+            let channel = app
+                .thread_event_channels
+                .get(&thread_id)
+                .expect("hydrated thread channel");
+            let store = channel.store.lock().await;
+            assert!(store.has_hydrated_snapshot());
+            assert_eq!(
+                store.session.as_ref().map(|session| session.thread_id),
+                Some(thread_id)
+            );
+        }
         app_server.shutdown().await?;
         Ok(())
     })
@@ -2401,12 +2420,40 @@ fn select_agent_thread_hydrates_thread_started_zero_turn_session() -> Result<()>
         app.enqueue_primary_thread_session(root.session, root.turns)
             .await?;
 
-        let child = app_server.start_thread(&config).await?;
+        let child_timestamp = "2026-01-01T00-00-01";
+        let child_thread_id = ThreadId::from_string(&create_fake_parented_rollout_with_source(
+            app.config.codex_home.as_path(),
+            child_timestamp,
+            "2026-01-01T00:00:01Z",
+            "unused child preview",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+            RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.session.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            root.session.thread_id.into(),
+            root.session.thread_id,
+        )?)?;
+        let child_rollout = rollout_path(
+            app.config.codex_home.as_path(),
+            child_timestamp,
+            &child_thread_id.to_string(),
+        );
+        let session_meta = std::fs::read_to_string(&child_rollout)?
+            .lines()
+            .next()
+            .expect("fake child rollout should have session metadata")
+            .to_string();
+        std::fs::write(&child_rollout, format!("{session_meta}\n"))?;
         let child_thread = app_server
-            .thread_read(child.session.thread_id, /*include_turns*/ false)
+            .thread_read(child_thread_id, /*include_turns*/ false)
             .await?;
         app.enqueue_thread_notification(
-            child.session.thread_id,
+            child_thread_id,
             ServerNotification::ThreadStarted(ThreadStartedNotification {
                 thread: child_thread,
             }),
@@ -2416,7 +2463,7 @@ fn select_agent_thread_hydrates_thread_started_zero_turn_session() -> Result<()>
         {
             let channel = app
                 .thread_event_channels
-                .get(&child.session.thread_id)
+                .get(&child_thread_id)
                 .expect("inferred child channel");
             let store = channel.store.lock().await;
             assert!(store.session.is_some());
@@ -2425,17 +2472,18 @@ fn select_agent_thread_hydrates_thread_started_zero_turn_session() -> Result<()>
         }
 
         let mut tui = crate::tui::test_support::make_test_tui()?;
-        app.select_agent_thread(&mut tui, &mut app_server, child.session.thread_id)
+        app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
             .await?;
 
-        let channel = app
-            .thread_event_channels
-            .get(&child.session.thread_id)
-            .expect("hydrated child channel");
-        let store = channel.store.lock().await;
-        assert!(store.has_hydrated_snapshot());
-        drop(store);
-        assert_eq!(app.active_thread_id, Some(child.session.thread_id));
+        {
+            let channel = app
+                .thread_event_channels
+                .get(&child_thread_id)
+                .expect("hydrated child channel");
+            let store = channel.store.lock().await;
+            assert!(store.has_hydrated_snapshot());
+        }
+        assert_eq!(app.active_thread_id, Some(child_thread_id));
         app_server.shutdown().await?;
         Ok(())
     })
