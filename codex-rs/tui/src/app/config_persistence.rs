@@ -559,7 +559,7 @@ impl App {
                     &feature_updates_to_apply,
                 )
                 .await;
-                if windows_sandbox_changed {
+                if windows_sandbox_changed && !self.is_displayed_thread_replay_only() {
                     self.propagate_windows_sandbox_turn_context();
                 }
             }
@@ -637,16 +637,18 @@ impl App {
                 /*collaboration_mode*/ None,
                 /*personality*/ None,
             );
-            let replay_state_op =
-                ThreadEventStore::op_can_change_pending_replay_state(&op).then(|| op.clone());
-            let submitted = self.chat_widget.submit_op(op);
-            if submitted && let Some(op) = replay_state_op.as_ref() {
-                self.note_active_thread_outbound_op(op).await;
-                self.refresh_pending_thread_approvals().await;
+            if !self.is_displayed_thread_replay_only() {
+                let replay_state_op =
+                    ThreadEventStore::op_can_change_pending_replay_state(&op).then(|| op.clone());
+                let submitted = self.chat_widget.submit_op(op);
+                if submitted && let Some(op) = replay_state_op.as_ref() {
+                    self.note_active_thread_outbound_op(op).await;
+                    self.refresh_pending_thread_approvals().await;
+                }
             }
         }
 
-        if windows_sandbox_changed {
+        if windows_sandbox_changed && !self.is_displayed_thread_replay_only() {
             self.propagate_windows_sandbox_turn_context();
         }
 
@@ -728,6 +730,9 @@ impl App {
         let Some(thread_id) = self.current_displayed_thread_id() else {
             return;
         };
+        if self.is_replay_only_thread(thread_id) {
+            return;
+        }
 
         let mode = if generate_memories {
             ThreadMemoryMode::Enabled
@@ -1081,6 +1086,11 @@ impl App {
         self.config.permissions.windows_sandbox_mode = Some(mode);
         self.chat_widget.set_windows_sandbox_mode(Some(mode));
         self.propagate_windows_sandbox_turn_context();
+    }
+
+    fn is_displayed_thread_replay_only(&self) -> bool {
+        self.current_displayed_thread_id()
+            .is_some_and(|thread_id| self.is_replay_only_thread(thread_id))
     }
 
     fn propagate_windows_sandbox_turn_context(&self) {

@@ -15,6 +15,9 @@ use codex_config::types::WindowsSandboxModeToml;
 const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 
 impl App {
+    // Replay-only mode fences transcript and thread mutations, but it must not make unrelated
+    // global configuration unavailable. Config handlers that also have a thread-scoped follow-up
+    // guard that follow-up at the call site while still applying the global change.
     fn replay_only_event_is_mutating(event: &AppEvent) -> bool {
         match event {
             AppEvent::SelectAgentThread(_) => false,
@@ -38,21 +41,14 @@ impl App {
             | AppEvent::ClearThreadGoal { .. }
             | AppEvent::UpdateReasoningEffort(_)
             | AppEvent::UpdateModel(_)
-            | AppEvent::UpdateCollaborationMode(_)
             | AppEvent::UpdatePersonality(_)
-            | AppEvent::SelectModel { .. }
             | AppEvent::ApplyAdvancedReasoning { .. }
             | AppEvent::UpdateAskForApprovalPolicy(_)
             | AppEvent::UpdateActivePermissionProfile(_)
             | AppEvent::SelectPermissionProfile(_)
             | AppEvent::UpdateApprovalsReviewer(_)
-            | AppEvent::UpdateFeatureFlags { .. }
-            | AppEvent::UpdateMemorySettings { .. }
             | AppEvent::ResetMemories
-            | AppEvent::UpdateWorldWritableWarningAcknowledged(_)
-            | AppEvent::UpdateRateLimitSwitchPromptHidden(_)
             | AppEvent::UpdatePlanModeReasoningEffort(_)
-            | AppEvent::SkipNextWorldWritableScan
             | AppEvent::ConsumeRateLimitResetCredit { .. }
             | AppEvent::SendAddCreditsNudgeEmail { .. }
             | AppEvent::SubmitFeedback { .. }
@@ -64,24 +60,10 @@ impl App {
             | AppEvent::FetchMarketplaceUpgrade { .. }
             | AppEvent::FetchPluginInstall { .. }
             | AppEvent::FetchPluginUninstall { .. }
-            | AppEvent::SetPluginEnabled { .. }
-            | AppEvent::SetSkillEnabled { .. }
-            | AppEvent::SetAppEnabled { .. }
-            | AppEvent::SetHookEnabled { .. }
-            | AppEvent::TrustHook { .. }
-            | AppEvent::TrustHooks { .. }
             | AppEvent::BeginWindowsSandboxGrantReadRoot { .. }
             | AppEvent::BeginWindowsSandboxElevatedSetup { .. }
             | AppEvent::BeginWindowsSandboxLegacySetup { .. }
             | AppEvent::EnableWindowsSandboxForAgentMode { .. }
-            | AppEvent::PersistModelSelection { .. }
-            | AppEvent::PersistPersonalitySelection { .. }
-            | AppEvent::PersistServiceTierSelection { .. }
-            | AppEvent::PersistRealtimeAudioDeviceSelection { .. }
-            | AppEvent::PersistWorldWritableWarningAcknowledged
-            | AppEvent::PersistRateLimitSwitchPromptHidden
-            | AppEvent::PersistPlanModeReasoningEffort(_)
-            | AppEvent::PersistModelMigrationPromptAcknowledged { .. }
             | AppEvent::StatusLineSetup { .. }
             | AppEvent::TerminalTitleSetup { .. }
             | AppEvent::SyntaxThemeSelected { .. }
@@ -2777,37 +2759,15 @@ mod tests {
                 prompt: UserMessage::from("edited"),
             }
         ));
-        assert!(App::replay_only_event_is_mutating(
+        assert!(!App::replay_only_event_is_mutating(
             &AppEvent::UpdateMemorySettings {
                 use_memories: true,
                 generate_memories: false,
             }
         ));
         for event in [
-            AppEvent::PersistModelSelection {
-                model: "gpt-5.4".to_string(),
-                effort: None,
-            },
-            AppEvent::PersistPersonalitySelection {
-                personality: Personality::Friendly,
-            },
-            AppEvent::PersistServiceTierSelection { service_tier: None },
-            AppEvent::PersistRealtimeAudioDeviceSelection {
-                kind: RealtimeAudioDeviceKind::Microphone,
-                name: None,
-            },
-            AppEvent::PersistPlanModeReasoningEffort(None),
-            AppEvent::PersistWorldWritableWarningAcknowledged,
-            AppEvent::PersistRateLimitSwitchPromptHidden,
-            AppEvent::PersistModelMigrationPromptAcknowledged {
-                from_model: "gpt-4.1".to_string(),
-                to_model: "gpt-5.4".to_string(),
-            },
             AppEvent::Logout,
             AppEvent::OpenExternalAgentConfigMigration,
-            AppEvent::UpdateWorldWritableWarningAcknowledged(true),
-            AppEvent::UpdateRateLimitSwitchPromptHidden(true),
-            AppEvent::SkipNextWorldWritableScan,
             AppEvent::ConsumeRateLimitResetCredit {
                 idempotency_key: "reset-1".to_string(),
                 credit_id: None,
@@ -2829,29 +2789,6 @@ mod tests {
                 request_id: 0,
                 pet_id: "chefito".to_string(),
                 result: Ok(None),
-            },
-            AppEvent::SetSkillEnabled {
-                path: codex_utils_absolute_path::AbsolutePathBuf::try_from("/skills/example")
-                    .expect("absolute skill path"),
-                enabled: true,
-            },
-            AppEvent::SetAppEnabled {
-                id: "example-app".to_string(),
-                enabled: true,
-            },
-            AppEvent::SetHookEnabled {
-                key: "example-hook".to_string(),
-                enabled: true,
-            },
-            AppEvent::TrustHook {
-                key: "example-hook".to_string(),
-                current_hash: "hash".to_string(),
-            },
-            AppEvent::TrustHooks {
-                updates: vec![crate::hooks_rpc::HookTrustUpdate {
-                    key: "example-hook".to_string(),
-                    current_hash: "hash".to_string(),
-                }],
             },
             AppEvent::FetchMarketplaceAdd {
                 cwd: std::path::PathBuf::from("/workspace"),
@@ -2878,11 +2815,6 @@ mod tests {
                 cwd: std::path::PathBuf::from("/workspace"),
                 plugin_id: "example-plugin".to_string(),
                 plugin_display_name: "Example Plugin".to_string(),
-            },
-            AppEvent::SetPluginEnabled {
-                cwd: std::path::PathBuf::from("/workspace"),
-                plugin_id: "example-plugin".to_string(),
-                enabled: true,
             },
             AppEvent::EnableWindowsSandboxForAgentMode {
                 preset: codex_utils_approval_presets::builtin_approval_presets()
@@ -2949,6 +2881,78 @@ mod tests {
         assert!(!App::replay_only_event_is_mutating(
             &AppEvent::SelectAgentThread(ThreadId::new())
         ));
+        for event in [
+            AppEvent::UpdateFeatureFlags {
+                updates: vec![(Feature::Collab, true)],
+            },
+            AppEvent::UpdateMemorySettings {
+                use_memories: true,
+                generate_memories: false,
+            },
+            AppEvent::UpdateCollaborationMode(CollaborationModeMask {
+                name: "default".to_string(),
+                mode: None,
+                model: None,
+                reasoning_effort: None,
+                developer_instructions: None,
+            }),
+            AppEvent::SelectModel {
+                model: "gpt-5.4".to_string(),
+                effort: None,
+            },
+            AppEvent::SetPluginEnabled {
+                cwd: std::path::PathBuf::from("/workspace"),
+                plugin_id: "example-plugin".to_string(),
+                enabled: true,
+            },
+            AppEvent::SetSkillEnabled {
+                path: codex_utils_absolute_path::AbsolutePathBuf::try_from("/skills/example")
+                    .expect("absolute skill path"),
+                enabled: true,
+            },
+            AppEvent::SetAppEnabled {
+                id: "example-app".to_string(),
+                enabled: true,
+            },
+            AppEvent::SetHookEnabled {
+                key: "example-hook".to_string(),
+                enabled: true,
+            },
+            AppEvent::TrustHook {
+                key: "example-hook".to_string(),
+                current_hash: "hash".to_string(),
+            },
+            AppEvent::TrustHooks {
+                updates: vec![crate::hooks_rpc::HookTrustUpdate {
+                    key: "example-hook".to_string(),
+                    current_hash: "hash".to_string(),
+                }],
+            },
+            AppEvent::PersistModelSelection {
+                model: "gpt-5.4".to_string(),
+                effort: None,
+            },
+            AppEvent::PersistPersonalitySelection {
+                personality: Personality::Friendly,
+            },
+            AppEvent::PersistServiceTierSelection { service_tier: None },
+            AppEvent::PersistRealtimeAudioDeviceSelection {
+                kind: RealtimeAudioDeviceKind::Microphone,
+                name: None,
+            },
+            AppEvent::PersistPlanModeReasoningEffort(None),
+            AppEvent::PersistWorldWritableWarningAcknowledged,
+            AppEvent::PersistRateLimitSwitchPromptHidden,
+            AppEvent::PersistModelMigrationPromptAcknowledged {
+                from_model: "gpt-4.1".to_string(),
+                to_model: "gpt-5.4".to_string(),
+            },
+            AppEvent::UpdateWorldWritableWarningAcknowledged(true),
+            AppEvent::UpdateRateLimitSwitchPromptHidden(true),
+            AppEvent::SkipNextWorldWritableScan,
+        ] {
+            assert!(!App::replay_only_event_is_mutating(&event));
+        }
         for event in [
             AppEvent::ExitSideConversation,
             AppEvent::NewSession { name: None },
