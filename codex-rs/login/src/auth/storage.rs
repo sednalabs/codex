@@ -350,9 +350,7 @@ const KEYRING_SERVICE: &str = "Codex Auth";
 
 // turns codex_home path into a stable, short key string
 fn compute_store_key(codex_home: &Path) -> std::io::Result<String> {
-    let canonical = codex_home
-        .canonicalize()
-        .unwrap_or_else(|_| codex_home.to_path_buf());
+    let canonical = canonical_storage_identity(codex_home)?;
     let path_str = canonical.to_string_lossy();
     let mut hasher = Sha256::new();
     hasher.update(path_str.as_bytes());

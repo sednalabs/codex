@@ -3127,6 +3127,14 @@ impl Session {
                 None
             } else {
                 let identity = SubagentRuntimeIdentity::from_snapshot(&snapshot);
+                if !identity.is_bounded() {
+                    tracing::warn!(
+                        model = %snapshot.model,
+                        model_provider_id = %snapshot.model_provider_id,
+                        "skipping subagent runtime identity injection because resolved fields exceed bounds"
+                    );
+                    return;
+                }
                 let history = state.history.raw_items();
                 let marked_count = history
                     .iter()
