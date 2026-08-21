@@ -4821,7 +4821,7 @@ mod tests {
     fn canceled_request_tombstones_retire_after_absorbed_response() {
         let mut tombstones = RecentRemoteRequestIds::new(/*capacity*/ 1);
         tombstones
-            .remember_with_policy(RequestId::Integer(1), true)
+            .remember_with_policy(RequestId::Integer(1), /*allow_large_response*/ true)
             .expect("first tombstone should fit");
         assert!(tombstones.allows_large_response(&RequestId::Integer(1)));
 
@@ -5213,7 +5213,7 @@ mod tests {
         let mut deferred_events = VecDeque::new();
 
         canceled_request_ids
-            .remember_with_policy(RequestId::Integer(1), true)
+            .remember_with_policy(RequestId::Integer(1), /*allow_large_response*/ true)
             .expect("unrelated large tombstone should fit");
         let (active_tx, _active_rx) = oneshot::channel();
         pending_requests.insert(
@@ -5455,7 +5455,7 @@ mod tests {
         let mut pending_requests = HashMap::new();
         let mut canceled_request_ids = RecentRemoteRequestIds::new(/*capacity*/ 4);
         canceled_request_ids
-            .remember_with_policy(RequestId::Integer(1), true)
+            .remember_with_policy(RequestId::Integer(1), /*allow_large_response*/ true)
             .expect("large tombstone should fit");
         canceled_request_ids
             .remember(RequestId::Integer(2))
