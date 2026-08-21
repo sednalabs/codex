@@ -1582,7 +1582,8 @@ mod tests {
         let cross_root_leaf = persisted_thread_spawn(leaf, Some(middle), foreign_root);
         assert_eq!(persisted_thread_spawn_parent(&cross_root_leaf), None);
 
-        let missing_metadata_parent = persisted_thread_spawn(leaf, None, middle);
+        let missing_metadata_parent =
+            persisted_thread_spawn(leaf, /*metadata_parent*/ None, middle);
         assert_eq!(
             persisted_thread_spawn_parent(&missing_metadata_parent),
             None
