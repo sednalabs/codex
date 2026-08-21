@@ -1283,6 +1283,21 @@ async fn output_free_esc_interrupt_keeps_prompt_and_opens_blank_composer() {
 }
 
 #[tokio::test]
+async fn replay_only_rejection_restores_optimistic_prompt_for_resend() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let prompt = "resend after close";
+    chat.thread_id = Some(ThreadId::new());
+    chat.submit_user_message(UserMessage::from(prompt));
+    assert_matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. });
+    assert!(chat.input_queue.user_turn_pending_start);
+
+    chat.handle_replay_only_submission_rejection();
+
+    assert_eq!(chat.bottom_pane.composer_text(), prompt);
+    assert!(!chat.input_queue.user_turn_pending_start);
+}
+
+#[tokio::test]
 async fn output_free_ctrl_c_interrupt_keeps_prompt_and_opens_blank_composer() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let prompt = "revise this prompt";
