@@ -142,7 +142,14 @@ pub(crate) struct CachedEndpointRecommendedPluginCandidates {
 }
 
 const POST_SAMPLING_TOKEN_ESTIMATE_TARGET: &str = "codex_core::post_sampling_token_estimate";
-const GOAL_MULTI_AGENT_STRESS_CONTINUATION_MARKER: &str = "Diagnostic continuation probe:";
+const GOAL_MULTI_AGENT_STRESS_CONTINUATION_MARKER: &str =
+    "<goal_multi_agent_stress_continuation_probe>";
+
+#[derive(Clone, Copy, Debug)]
+struct GoalMultiAgentStressTurn;
+
+#[derive(Clone, Copy, Debug)]
+struct GoalMultiAgentStressPostUsageLimitProbeDispatched;
 
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
@@ -1346,16 +1353,22 @@ async fn run_sampling_request(
         Arc::clone(&turn_diff_tracker),
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
-    let multi_agent_stress_goal_turn = crate::diagnostic_flags::goal_multi_agent_stress_enabled()
+    let multi_agent_stress_enabled = crate::diagnostic_flags::goal_multi_agent_stress_enabled();
+    if multi_agent_stress_enabled && goal_multi_agent_stress_continuation_input(&input) {
+        turn_context.extension_data.insert(GoalMultiAgentStressTurn);
+    }
+    let multi_agent_stress_goal_turn = multi_agent_stress_enabled
         && turn_context.multi_agent_version == codex_protocol::protocol::MultiAgentVersion::V2
         && !matches!(
             &turn_context.session_source,
             codex_protocol::protocol::SessionSource::SubAgent(_)
         )
-        && goal_multi_agent_stress_continuation_input(&input);
+        && turn_context
+            .extension_data
+            .get::<GoalMultiAgentStressTurn>()
+            .is_some();
     let mut retries = 0;
     let mut usage_limit_retries = 0;
-    let mut post_usage_limit_v2_probe_dispatched = false;
     let mut capacity_retries = 0;
     let mut initial_input = Some(input);
     let mut original_input = None;
@@ -1406,8 +1419,15 @@ async fn run_sampling_request(
                             "goal error diagnostic mode skipped rate-limit snapshot update"
                         );
                     }
-                    if multi_agent_stress_goal_turn && !post_usage_limit_v2_probe_dispatched {
-                        post_usage_limit_v2_probe_dispatched = true;
+                    if multi_agent_stress_goal_turn
+                        && turn_context
+                            .extension_data
+                            .get::<GoalMultiAgentStressPostUsageLimitProbeDispatched>()
+                            .is_none()
+                    {
+                        turn_context
+                            .extension_data
+                            .insert(GoalMultiAgentStressPostUsageLimitProbeDispatched);
                         run_goal_multi_agent_stress_post_usage_limit_probe(
                             tool_runtime.clone(),
                             Arc::clone(&turn_context),
