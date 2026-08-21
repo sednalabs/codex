@@ -956,7 +956,7 @@ fn repository_uses_an_os_lock_for_authority_transactions() -> anyhow::Result<()>
     let error = contender
         .try_lock()
         .expect_err("a second authority transaction must wait for the OS lock");
-    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    assert!(matches!(error, std::fs::TryLockError::WouldBlock));
     Ok(())
 }
 
@@ -1122,7 +1122,7 @@ fn repository_lock_is_stable_across_process_tmpdirs_and_blocks_stale_update() ->
     let error = lock_file
         .try_lock()
         .expect_err("the holder process must own the shared authority lock");
-    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    assert!(matches!(error, std::fs::TryLockError::WouldBlock));
 
     let mut writer = spawn_lock_test_child(
         &test_name,
