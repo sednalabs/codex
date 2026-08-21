@@ -3169,8 +3169,8 @@ mod tests {
                 "padding": "x".repeat(REMOTE_RESPONSE_MAX_WIRE_BYTES)
             }),
         });
-        let wire = serde_json::to_string(&message)
-            .expect("large nonmatching response should serialize");
+        let wire =
+            serde_json::to_string(&message).expect("large nonmatching response should serialize");
         assert!(wire.len() > REMOTE_RESPONSE_MAX_WIRE_BYTES);
 
         let terminal = handle_remote_message(
