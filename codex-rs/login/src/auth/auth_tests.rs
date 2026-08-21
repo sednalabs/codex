@@ -49,8 +49,10 @@ async fn refresh_without_id_token() {
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
     );
+    let expected_auth = storage.load().expect("auth should load").expect("auth");
     let updated = super::persist_tokens(
         &storage,
+        &expected_auth,
         /*id_token*/ None,
         Some("new-access-token".to_string()),
         Some("new-refresh-token".to_string()),
@@ -61,6 +63,168 @@ async fn refresh_without_id_token() {
     assert_eq!(tokens.id_token.raw_jwt, fake_jwt);
     assert_eq!(tokens.access_token, "new-access-token");
     assert_eq!(tokens.refresh_token, "new-refresh-token");
+}
+
+#[test]
+fn persist_tokens_aborts_when_durable_auth_switches_accounts() {
+    let codex_home = tempdir().expect("tempdir");
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some("account-a".to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("write account A auth");
+    let storage = create_auth_storage(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    );
+    let expected_auth = storage.load().expect("load account A").expect("auth");
+
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some("account-b".to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("write account B auth");
+
+    let error = super::persist_tokens(
+        &storage,
+        &expected_auth,
+        None,
+        Some("stale-account-a-access".to_string()),
+        Some("stale-account-a-refresh".to_string()),
+    )
+    .expect_err("stale account refresh must abort");
+    assert!(error.to_string().contains("logged out or signed in"));
+    let remaining = storage.load().expect("load account B").expect("auth");
+    assert_eq!(
+        remaining.tokens.expect("tokens").access_token,
+        "test-access-token"
+    );
+}
+
+#[test]
+fn persist_tokens_aborts_after_logout_without_resurrecting_auth() {
+    let codex_home = tempdir().expect("tempdir");
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some("account-a".to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("write account A auth");
+    let storage = create_auth_storage(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    );
+    let expected_auth = storage.load().expect("load account A").expect("auth");
+    assert!(
+        logout(
+            codex_home.path(),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("logout")
+    );
+
+    super::persist_tokens(
+        &storage,
+        &expected_auth,
+        None,
+        Some("stale-access".to_string()),
+        Some("stale-refresh".to_string()),
+    )
+    .expect_err("refresh after logout must abort");
+    assert_eq!(storage.load().expect("load after logout"), None);
+}
+
+#[test]
+fn persist_agent_identity_record_aborts_when_durable_auth_switches_accounts() {
+    let codex_home = tempdir().expect("tempdir");
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some("account-a".to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("write account A auth");
+    let storage = create_auth_storage(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    );
+    let expected_auth = storage.load().expect("load account A").expect("auth");
+    let auth_state = Arc::new(std::sync::Mutex::new(Some(expected_auth.clone())));
+
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some("account-b".to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("write account B auth");
+
+    persist_agent_identity_record(
+        &auth_state,
+        &storage,
+        &expected_auth,
+        agent_identity_record("account-a"),
+    )
+    .expect_err("stale account identity result must abort");
+    let remaining = storage.load().expect("load account B").expect("auth");
+    assert!(remaining.agent_identity.is_none());
+}
+
+#[test]
+fn persist_agent_identity_record_aborts_after_logout_without_resurrecting_auth() {
+    let codex_home = tempdir().expect("tempdir");
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some("account-a".to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("write account A auth");
+    let storage = create_auth_storage(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    );
+    let expected_auth = storage.load().expect("load account A").expect("auth");
+    let auth_state = Arc::new(std::sync::Mutex::new(Some(expected_auth.clone())));
+    assert!(
+        logout(
+            codex_home.path(),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("logout")
+    );
+
+    persist_agent_identity_record(
+        &auth_state,
+        &storage,
+        &expected_auth,
+        agent_identity_record("account-a"),
+    )
+    .expect_err("identity result after logout must abort");
+    assert_eq!(storage.load().expect("load after logout"), None);
 }
 
 #[test]

@@ -619,10 +619,11 @@ impl CodexAuth {
 
     fn persist_managed_chatgpt_agent_identity_record(
         &self,
+        expected_auth: &AuthDotJson,
         record: AgentIdentityAuthRecord,
     ) -> std::io::Result<()> {
         if let Self::Chatgpt(chatgpt_auth) = self {
-            chatgpt_auth.persist_agent_identity_record(record)?;
+            chatgpt_auth.persist_agent_identity_record(expected_auth, record)?;
         }
         Ok(())
     }
@@ -668,6 +669,11 @@ impl CodexAuth {
         let binding =
             ManagedChatGptAgentIdentityBinding::from_auth(self, forced_chatgpt_workspace_id)
                 .ok_or_else(|| std::io::Error::other("ChatGPT auth is unavailable"))?;
+        // Keep the exact auth snapshot that initiated this asynchronous
+        // bootstrap. A later login or logout must not receive its result.
+        let expected_auth = self
+            .get_current_auth_json()
+            .ok_or_else(|| std::io::Error::other("ChatGPT auth is unavailable"))?;
 
         // JWT auth is loaded as CodexAuth::AgentIdentity; this path only reuses
         // records created by the managed ChatGPT Agent Identity bootstrap.
@@ -683,7 +689,10 @@ impl CodexAuth {
             .await
             .map_err(|err| classify_bootstrap_error("agent task registration", err))?;
             if should_persist {
-                self.persist_managed_chatgpt_agent_identity_record(auth.record().clone())?;
+                self.persist_managed_chatgpt_agent_identity_record(
+                    &expected_auth,
+                    auth.record().clone(),
+                )?;
             }
             return Ok(auth);
         }
@@ -695,7 +704,7 @@ impl CodexAuth {
             auth_route_config,
         )
         .await?;
-        self.persist_managed_chatgpt_agent_identity_record(auth.record().clone())?;
+        self.persist_managed_chatgpt_agent_identity_record(&expected_auth, auth.record().clone())?;
         Ok(auth)
     }
 
@@ -811,27 +820,36 @@ impl ChatgptAuth {
 
     fn persist_agent_identity_record(
         &self,
+        expected_auth: &AuthDotJson,
         record: AgentIdentityAuthRecord,
     ) -> std::io::Result<()> {
-        persist_agent_identity_record(&self.state.auth_dot_json, &self.storage, record)
+        persist_agent_identity_record(
+            &self.state.auth_dot_json,
+            &self.storage,
+            expected_auth,
+            record,
+        )
     }
 }
 
 fn persist_agent_identity_record(
     auth_dot_json: &Arc<Mutex<Option<AuthDotJson>>>,
     storage: &Arc<dyn AuthStorageBackend>,
+    expected_auth: &AuthDotJson,
     record: AgentIdentityAuthRecord,
 ) -> std::io::Result<()> {
     let mut guard = auth_dot_json
         .lock()
         .map_err(|_| std::io::Error::other("failed to lock auth state"))?;
     let mut transaction = storage.begin_transaction()?;
-    let mut auth = transaction
-        .snapshot()
-        .auth
-        .clone()
-        .or_else(|| guard.clone())
-        .ok_or_else(|| std::io::Error::other("auth data is not available"))?;
+    if guard.as_ref() != Some(expected_auth)
+        || transaction.snapshot().auth.as_ref() != Some(expected_auth)
+    {
+        return Err(std::io::Error::other(
+            REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE,
+        ));
+    }
+    let mut auth = expected_auth.clone();
     auth.agent_identity = Some(AgentIdentityStorage::Record(record));
     transaction.save(&auth)?;
     *guard = Some(auth);
@@ -1368,16 +1386,18 @@ async fn load_auth(
 // Persist refreshed tokens into auth storage and update last_refresh.
 fn persist_tokens(
     storage: &Arc<dyn AuthStorageBackend>,
+    expected_auth: &AuthDotJson,
     id_token: Option<String>,
     access_token: Option<String>,
     refresh_token: Option<String>,
 ) -> std::io::Result<AuthDotJson> {
     let mut transaction = storage.begin_transaction()?;
-    let mut auth_dot_json = transaction
-        .snapshot()
-        .auth
-        .clone()
-        .ok_or(std::io::Error::other("Token data is not available."))?;
+    if transaction.snapshot().auth.as_ref() != Some(expected_auth) {
+        return Err(std::io::Error::other(
+            REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE,
+        ));
+    }
+    let mut auth_dot_json = expected_auth.clone();
 
     let tokens = auth_dot_json.tokens.get_or_insert_with(TokenData::default);
     if let Some(id_token) = id_token {
@@ -2665,10 +2685,14 @@ impl AuthManager {
         auth: &ChatgptAuth,
         refresh_token: String,
     ) -> Result<(), RefreshTokenError> {
+        let expected_auth = auth.current_auth_json().ok_or_else(|| {
+            RefreshTokenError::Transient(std::io::Error::other("Token data is not available."))
+        })?;
         let refresh_response = request_chatgpt_token_refresh(refresh_token, auth.client()).await?;
 
         persist_tokens(
             auth.storage(),
+            &expected_auth,
             refresh_response.id_token,
             refresh_response.access_token,
             refresh_response.refresh_token,
