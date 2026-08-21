@@ -1230,21 +1230,19 @@ impl App {
         let should_send = {
             let mut guard = store.lock().await;
             let should_send = guard.active;
-            // Active batch responses remain queued in the receiver across a concurrent detach, so
-            // retaining another deep copy for thread replay only accumulates already-delivered
-            // history data. Inactive responses still need the buffer because they are not sent.
-            if !should_send || !matches!(&event, HistoryLookupResponse::Batch { .. }) {
+            // History batches are authoritative replay data too. Retaining active batches in the
+            // store prevents a queued delivery copy from being lost when a picker detach drains
+            // the receiver or clears the pending-delivery retry lane.
+            guard
+                .buffer
+                .push_back(ThreadBufferedEvent::HistoryEntryResponse(event.clone()));
+            if guard.buffer.len() > guard.capacity
+                && let Some(removed) = guard.buffer.pop_front()
+                && let ThreadBufferedEvent::Request(request) = &removed
+            {
                 guard
-                    .buffer
-                    .push_back(ThreadBufferedEvent::HistoryEntryResponse(event.clone()));
-                if guard.buffer.len() > guard.capacity
-                    && let Some(removed) = guard.buffer.pop_front()
-                    && let ThreadBufferedEvent::Request(request) = &removed
-                {
-                    guard
-                        .pending_interactive_replay
-                        .note_evicted_server_request(request);
-                }
+                    .pending_interactive_replay
+                    .note_evicted_server_request(request);
             }
             should_send
         };

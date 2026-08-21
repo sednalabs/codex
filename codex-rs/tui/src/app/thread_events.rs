@@ -6,6 +6,7 @@
 //! together with the replay behavior that consumes them.
 
 use super::*;
+use crate::app_event::HistoryBatchEntryResponse;
 use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,95 @@ pub(super) enum ThreadBufferedEvent {
     Request(ServerRequest),
     HistoryEntryResponse(HistoryLookupResponse),
     FeedbackSubmission(FeedbackThreadEvent),
+}
+
+const PENDING_DELIVERY_MAX_EVENTS: usize = 256;
+const PENDING_DELIVERY_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Default)]
+struct PendingDeliveryQueue {
+    events: VecDeque<ThreadBufferedEvent>,
+    bytes: usize,
+}
+
+impl PendingDeliveryQueue {
+    fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn push_if_bounded(&mut self, event: ThreadBufferedEvent) {
+        let event_bytes = event.estimated_bytes();
+        if event_bytes > PENDING_DELIVERY_MAX_BYTES
+            || self.events.len() >= PENDING_DELIVERY_MAX_EVENTS
+            || self.bytes.saturating_add(event_bytes) > PENDING_DELIVERY_MAX_BYTES
+        {
+            // The event is already retained by ThreadEventStore. Drop only this live-delivery
+            // copy when the explicit safety budget is exhausted; a later snapshot replays the
+            // authoritative store entry without allowing the retry lane to grow unbounded.
+            return;
+        }
+        self.bytes = self.bytes.saturating_add(event_bytes);
+        self.events.push_back(event);
+    }
+
+    fn pop_front(&mut self) -> Option<ThreadBufferedEvent> {
+        let event = self.events.pop_front()?;
+        self.bytes = self.bytes.saturating_sub(event.estimated_bytes());
+        Some(event)
+    }
+
+    fn push_front(&mut self, event: ThreadBufferedEvent) {
+        self.bytes = self.bytes.saturating_add(event.estimated_bytes());
+        self.events.push_front(event);
+    }
+
+    fn clear(&mut self) {
+        self.events.clear();
+        self.bytes = 0;
+    }
+}
+
+impl ThreadBufferedEvent {
+    fn estimated_bytes(&self) -> usize {
+        match self {
+            Self::Notification(notification) => serde_json::to_vec(notification)
+                .map(|bytes| bytes.len())
+                .unwrap_or(PENDING_DELIVERY_MAX_BYTES.saturating_add(1)),
+            Self::Request(request) => serde_json::to_vec(request)
+                .map(|bytes| bytes.len())
+                .unwrap_or(PENDING_DELIVERY_MAX_BYTES.saturating_add(1)),
+            Self::HistoryEntryResponse(response) => match response {
+                HistoryLookupResponse::Entry { entry, .. } => {
+                    std::mem::size_of::<HistoryLookupResponse>()
+                        .saturating_add(entry.as_ref().map_or(0, String::len))
+                }
+                HistoryLookupResponse::Batch { entries, .. } => std::mem::size_of::<
+                    HistoryLookupResponse,
+                >()
+                .saturating_add(entries.iter().fold(0usize, |bytes, entry| {
+                    bytes.saturating_add(
+                        std::mem::size_of::<HistoryBatchEntryResponse>()
+                            .saturating_add(entry.entry.as_ref().map_or(0, String::len)),
+                    )
+                })),
+                HistoryLookupResponse::BatchError { .. } => {
+                    std::mem::size_of::<HistoryLookupResponse>()
+                }
+            },
+            Self::FeedbackSubmission(feedback) => std::mem::size_of::<FeedbackThreadEvent>()
+                .saturating_add(match &feedback.result {
+                    Ok(thread_id) | Err(thread_id) => thread_id.len(),
+                }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +150,7 @@ impl ThreadEventStore {
                 | ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::HookCompleted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::McpServerStatusUpdated(_))
+                | ThreadBufferedEvent::HistoryEntryResponse(_)
                 | ThreadBufferedEvent::FeedbackSubmission(_)
         )
     }
@@ -334,7 +425,7 @@ pub(super) struct ThreadEventChannel {
     /// Delivery copies that could not enter the bounded receiver immediately. The store remains
     /// the sole owner of replay state; this queue is only a live-delivery retry lane and is
     /// discarded whenever a receiver is drained for a snapshot boundary.
-    pub(super) pending_delivery: Arc<std::sync::Mutex<VecDeque<ThreadBufferedEvent>>>,
+    pub(super) pending_delivery: Arc<std::sync::Mutex<PendingDeliveryQueue>>,
     attachment: ThreadEventAttachment,
 }
 
@@ -345,7 +436,7 @@ impl ThreadEventChannel {
             sender,
             receiver: Some(receiver),
             store: Arc::new(Mutex::new(ThreadEventStore::new(capacity))),
-            pending_delivery: Arc::new(std::sync::Mutex::new(VecDeque::new())),
+            pending_delivery: Arc::new(std::sync::Mutex::new(PendingDeliveryQueue::default())),
             attachment: ThreadEventAttachment::Live,
         }
     }
@@ -394,12 +485,12 @@ impl ThreadEventChannel {
             .lock()
             .expect("pending thread delivery mutex poisoned");
         if !pending.is_empty() {
-            pending.push_back(event);
+            pending.push_if_bounded(event);
             return;
         }
         match self.sender.try_send(event) {
             Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(event)) => pending.push_back(event),
+            Err(mpsc::error::TrySendError::Full(event)) => pending.push_if_bounded(event),
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 tracing::warn!("thread {thread_id} event channel closed");
             }
@@ -442,7 +533,7 @@ impl ThreadEventChannel {
             store: Arc::new(Mutex::new(ThreadEventStore::new_with_session(
                 capacity, session, turns,
             ))),
-            pending_delivery: Arc::new(std::sync::Mutex::new(VecDeque::new())),
+            pending_delivery: Arc::new(std::sync::Mutex::new(PendingDeliveryQueue::default())),
             attachment: ThreadEventAttachment::Live,
         }
     }
@@ -920,5 +1011,75 @@ mod tests {
                 .try_recv()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn active_history_batch_survives_pending_delivery_boundary() {
+        let thread_id = ThreadId::new();
+        let batch = HistoryLookupResponse::Batch {
+            cursor: codex_message_history::HistoryBatchCursor::new(/*end_offset*/ 4),
+            log_id: 7,
+            entries: vec![HistoryBatchEntryResponse {
+                offset: 3,
+                entry: Some("history batch survives detach".to_string()),
+            }],
+            next_older_cursor: None,
+        };
+        let mut channel = ThreadEventChannel::new(/*capacity*/ 1);
+        {
+            let mut store = channel.store.blocking_lock();
+            store
+                .buffer
+                .push_back(ThreadBufferedEvent::HistoryEntryResponse(batch.clone()));
+        }
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Notification(
+                hook_started_notification(thread_id, "turn-batch"),
+            ))
+            .expect("receiver should accept the blocking event");
+        channel.try_send_or_queue(ThreadBufferedEvent::HistoryEntryResponse(batch), thread_id);
+
+        channel.rebase_receiver_after_session_refresh();
+        channel
+            .store
+            .blocking_lock()
+            .rebase_buffer_after_session_refresh();
+        let snapshot = channel.store.blocking_lock().snapshot();
+        assert!(matches!(
+            snapshot.events.as_slice(),
+            [ThreadBufferedEvent::HistoryEntryResponse(
+                HistoryLookupResponse::Batch { .. }
+            )]
+        ));
+    }
+
+    #[test]
+    fn pending_delivery_is_bounded_under_sustained_full_receiver() {
+        let thread_id = ThreadId::new();
+        let mut channel = ThreadEventChannel::new(/*capacity*/ 1);
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Notification(
+                hook_started_notification(thread_id, "turn-full"),
+            ))
+            .expect("receiver should accept the blocking event");
+
+        for index in 0..(PENDING_DELIVERY_MAX_EVENTS * 4) {
+            channel.try_send_or_queue(
+                ThreadBufferedEvent::Notification(hook_started_notification(
+                    thread_id,
+                    &format!("turn-{index}"),
+                )),
+                thread_id,
+            );
+        }
+
+        let pending = channel
+            .pending_delivery
+            .lock()
+            .expect("pending delivery mutex");
+        assert!(pending.len() <= PENDING_DELIVERY_MAX_EVENTS);
+        assert!(pending.bytes() <= PENDING_DELIVERY_MAX_BYTES);
     }
 }
