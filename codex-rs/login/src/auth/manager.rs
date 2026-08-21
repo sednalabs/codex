@@ -666,13 +666,11 @@ impl CodexAuth {
         auth_route_config: &AuthRouteConfig,
         session_source: SessionSource,
     ) -> std::io::Result<AgentIdentityAuth> {
-        let binding =
-            ManagedChatGptAgentIdentityBinding::from_auth(self, forced_chatgpt_workspace_id)
-                .ok_or_else(|| std::io::Error::other("ChatGPT auth is unavailable"))?;
-        // Keep the exact auth snapshot that initiated this asynchronous
-        // bootstrap. A later login or logout must not receive its result.
-        let expected_auth = self
-            .get_current_auth_json()
+        // Capture the binding and durable auth value under one state lock. Reading
+        // them separately lets an async login transition pair account A's binding
+        // with account B's auth record.
+        let (binding, expected_auth) = self
+            .managed_chatgpt_agent_identity_snapshot(forced_chatgpt_workspace_id)
             .ok_or_else(|| std::io::Error::other("ChatGPT auth is unavailable"))?;
 
         // JWT auth is loaded as CodexAuth::AgentIdentity; this path only reuses
@@ -688,6 +686,11 @@ impl CodexAuth {
             )
             .await
             .map_err(|err| classify_bootstrap_error("agent task registration", err))?;
+            if !record_matches_managed_chatgpt_binding(auth.record(), &binding) {
+                return Err(std::io::Error::other(
+                    REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE,
+                ));
+            }
             if should_persist {
                 self.persist_managed_chatgpt_agent_identity_record(
                     &expected_auth,
@@ -704,8 +707,35 @@ impl CodexAuth {
             auth_route_config,
         )
         .await?;
+        if !record_matches_managed_chatgpt_binding(auth.record(), &binding) {
+            return Err(std::io::Error::other(
+                REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE,
+            ));
+        }
         self.persist_managed_chatgpt_agent_identity_record(&expected_auth, auth.record().clone())?;
         Ok(auth)
+    }
+
+    fn managed_chatgpt_agent_identity_snapshot(
+        &self,
+        forced_chatgpt_workspace_id: Option<Vec<String>>,
+    ) -> Option<(ManagedChatGptAgentIdentityBinding, AuthDotJson)> {
+        let state = match self {
+            Self::Chatgpt(auth) => &auth.state,
+            Self::ChatgptAuthTokens(_)
+            | Self::ApiKey(_)
+            | Self::Headers(_)
+            | Self::AgentIdentity(_)
+            | Self::PersonalAccessToken(_)
+            | Self::BedrockApiKey(_) => return None,
+        };
+        #[expect(clippy::unwrap_used)]
+        let expected_auth = state.auth_dot_json.lock().unwrap().clone()?;
+        let binding = ManagedChatGptAgentIdentityBinding::from_auth_dot_json(
+            &expected_auth,
+            forced_chatgpt_workspace_id,
+        )?;
+        Some((binding, expected_auth))
     }
 
     /// Consider this private to integration tests.
@@ -769,7 +799,16 @@ impl ManagedChatGptAgentIdentityBinding {
             return None;
         }
 
-        let token_data = auth.get_token_data().ok()?;
+        let auth_dot_json = auth.get_current_auth_json()?;
+        Self::from_auth_dot_json(&auth_dot_json, forced_workspace_id)
+    }
+
+    fn from_auth_dot_json(
+        auth_dot_json: &AuthDotJson,
+        forced_workspace_id: Option<Vec<String>>,
+    ) -> Option<Self> {
+        let token_data = auth_dot_json.tokens.as_ref()?;
+
         let forced_workspace_id =
             forced_workspace_id
                 .as_deref()
@@ -793,9 +832,15 @@ impl ManagedChatGptAgentIdentityBinding {
             account_id,
             chatgpt_user_id,
             email: token_data.id_token.email.clone(),
-            plan_type: auth.account_plan_type().unwrap_or(AccountPlanType::Unknown),
-            chatgpt_account_is_fedramp: auth.is_fedramp_account(),
-            access_token: token_data.access_token,
+            plan_type: token_data
+                .id_token
+                .chatgpt_plan_type
+                .as_ref()
+                .cloned()
+                .map(AccountPlanType::from)
+                .unwrap_or(AccountPlanType::Unknown),
+            chatgpt_account_is_fedramp: token_data.id_token.chatgpt_account_is_fedramp,
+            access_token: token_data.access_token.clone(),
         })
     }
 }

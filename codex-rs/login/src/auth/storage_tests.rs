@@ -11,8 +11,38 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::tempdir;
 
+use codex_keyring_store::CredentialStoreError;
+use codex_keyring_store::KeyringStore;
 use codex_keyring_store::tests::MockKeyringStore;
 use keyring::Error as KeyringError;
+use std::sync::Mutex;
+
+#[derive(Debug)]
+struct ReadSuccessWriteFailureKeyring {
+    value: Mutex<Option<String>>,
+}
+
+impl KeyringStore for ReadSuccessWriteFailureKeyring {
+    fn load(&self, _service: &str, _account: &str) -> Result<Option<String>, CredentialStoreError> {
+        Ok(self.value.lock().expect("keyring value lock").clone())
+    }
+
+    fn save(
+        &self,
+        _service: &str,
+        _account: &str,
+        _value: &str,
+    ) -> Result<(), CredentialStoreError> {
+        Err(CredentialStoreError::new(KeyringError::Invalid(
+            "write unavailable".into(),
+            "save".into(),
+        )))
+    }
+
+    fn delete(&self, _service: &str, _account: &str) -> Result<bool, CredentialStoreError> {
+        Ok(false)
+    }
+}
 
 #[tokio::test]
 async fn file_storage_load_returns_auth_dot_json() -> anyhow::Result<()> {
@@ -774,6 +804,27 @@ fn auto_auth_storage_save_falls_back_when_keyring_errors() -> anyhow::Result<()>
         mock_keyring.saved_value(&key).is_none(),
         "keyring should not contain value when save fails"
     );
+    Ok(())
+}
+
+#[test]
+fn auto_auth_storage_save_falls_back_after_keyring_read_succeeds() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let keyring_auth = auth_with_prefix("existing-keyring");
+    let keyring = ReadSuccessWriteFailureKeyring {
+        value: Mutex::new(Some(serde_json::to_string(&keyring_auth)?)),
+    };
+    let storage = AutoAuthStorage::new(
+        codex_home.path().to_path_buf(),
+        Arc::new(keyring),
+        AuthKeyringBackendKind::Direct,
+    );
+
+    let expected = auth_with_prefix("file-fallback");
+    storage.save(&expected)?;
+
+    assert_eq!(storage.file_storage.load()?, Some(expected));
+    assert!(get_auth_file(codex_home.path()).exists());
     Ok(())
 }
 

@@ -204,7 +204,11 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
 
     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
         let mut transaction = self.begin_transaction()?;
-        transaction.save(auth)
+        // A direct save is a new Auto policy decision: prefer the keyring and
+        // fall back to the file when that backend is unavailable. Operations
+        // that already resolved an authority use `transaction.save` below so
+        // they remain pinned to their transaction snapshot.
+        transaction.save_preferred(auth)
     }
 
     fn delete(&self) -> std::io::Result<bool> {
@@ -250,6 +254,7 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
             save_to_source: Box::new(move |source, auth| {
                 self.save_to_source_unlocked(source, auth)
             }),
+            save_preferred: Box::new(move |auth| self.save_unlocked(auth)),
             delete_from_source: Box::new(move |source| self.delete_from_source_unlocked(source)),
         })
     }
@@ -260,6 +265,7 @@ pub(super) struct AuthStorageTransaction<'a> {
     _file_guard: File,
     snapshot: AuthStorageSnapshot,
     save_to_source: Box<dyn Fn(AuthStorageSource, &AuthDotJson) -> std::io::Result<()> + 'a>,
+    save_preferred: Box<dyn Fn(&AuthDotJson) -> std::io::Result<()> + 'a>,
     delete_from_source: Box<dyn Fn(AuthStorageSource) -> std::io::Result<bool> + 'a>,
 }
 
@@ -270,6 +276,12 @@ impl AuthStorageTransaction<'_> {
 
     pub(super) fn save(&mut self, auth: &AuthDotJson) -> std::io::Result<()> {
         (self.save_to_source)(self.snapshot.source, auth)?;
+        self.snapshot.auth = Some(auth.clone());
+        Ok(())
+    }
+
+    pub(super) fn save_preferred(&mut self, auth: &AuthDotJson) -> std::io::Result<()> {
+        (self.save_preferred)(auth)?;
         self.snapshot.auth = Some(auth.clone());
         Ok(())
     }
