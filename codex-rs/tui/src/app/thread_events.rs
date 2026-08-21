@@ -569,10 +569,7 @@ impl ThreadEventChannel {
     }
 
     pub(super) fn clear_pending_delivery(&self) {
-        self.pending_delivery
-            .lock()
-            .expect("pending thread delivery mutex poisoned")
-            .clear();
+        self.pending_delivery_guard().clear();
     }
 
     /// Delivers a live copy without spawning a sender that can cross a receiver/snapshot boundary.
@@ -580,10 +577,7 @@ impl ThreadEventChannel {
     /// itself has already been recorded by `ThreadEventStore`, which is the exactly-once replay
     /// owner.
     pub(super) fn try_send_or_queue(&self, event: ThreadBufferedEvent, thread_id: ThreadId) {
-        let mut pending = self
-            .pending_delivery
-            .lock()
-            .expect("pending thread delivery mutex poisoned");
+        let mut pending = self.pending_delivery_guard();
         if !pending.is_empty() {
             pending.push_if_bounded(event);
             return;
@@ -601,10 +595,7 @@ impl ThreadEventChannel {
     /// called only after the active receiver has been drained, so no asynchronous sender can race
     /// a picker refresh or snapshot replay.
     pub(super) fn flush_pending_delivery(&self) {
-        let mut pending = self
-            .pending_delivery
-            .lock()
-            .expect("pending thread delivery mutex poisoned");
+        let mut pending = self.pending_delivery_guard();
         while let Some(event) = pending.pop_front() {
             match self.sender.try_send(event) {
                 Ok(()) => {}
@@ -617,6 +608,13 @@ impl ThreadEventChannel {
                     break;
                 }
             }
+        }
+    }
+
+    fn pending_delivery_guard(&self) -> std::sync::MutexGuard<'_, PendingDeliveryQueue> {
+        match self.pending_delivery.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
         }
     }
 

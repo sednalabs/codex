@@ -283,7 +283,9 @@ impl App {
         };
         if response.data.len() > PAGE_SIZE as usize {
             tracing::warn!("discarding oversized persisted subagent picker page");
-            let _ = self.agent_navigation.set_next_picker_page_cursor(None);
+            let _ = self
+                .agent_navigation
+                .set_next_picker_page_cursor(/*next_cursor*/ None);
             return;
         }
         let mut lineage_reads = 0;
@@ -394,12 +396,17 @@ impl App {
                         return false;
                     }
                     *reads += 1;
-                    let parent = match app_server.thread_read(current, false).await {
+                    let parent = match app_server
+                        .thread_read(current, /*include_turns*/ false)
+                        .await
+                    {
                         Ok(parent) => parent,
                         Err(err) => {
                             if Self::is_terminal_thread_read_error(&err) {
-                                self.agent_navigation
-                                    .picker_lineage_cache_insert(current, None, false);
+                                self.agent_navigation.picker_lineage_cache_insert(
+                                    current, /*parent_thread_id*/ None,
+                                    /*is_thread_spawn*/ false,
+                                );
                             } else {
                                 *retryable_failure = true;
                             }
@@ -736,13 +743,12 @@ impl App {
             );
             self.agent_navigation.mark_running(thread_id);
         }
-        let mut store = self
-            .thread_event_channels
-            .get(&thread_id)
-            .expect("thread channel was ensured above")
-            .store
-            .lock()
-            .await;
+        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+            return Err(color_eyre::eyre::eyre!(
+                "thread channel was not created for {thread_id}"
+            ));
+        };
+        let mut store = channel.store.lock().await;
         store.set_session(session, turns);
         store.rebase_buffer_after_session_refresh();
         Ok(live_attached)
