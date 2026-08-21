@@ -129,36 +129,36 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
 
 /// Returns `true` for notifications that must survive backpressure.
 ///
-/// Transcript events (`AgentMessageDelta`, `PlanDelta`, reasoning deltas) and
-/// the authoritative `ItemCompleted` / `TurnCompleted` form the lossless tier
-/// of the event stream. Dropping any of these corrupts the visible assistant
-/// output or leaves surfaces waiting for a completion signal that already
-/// fired. Everything else (`CommandExecutionOutputDelta`, progress, etc.) is
-/// best-effort and may be dropped with only cosmetic impact.
+/// Server notifications are authoritative by default, including future
+/// protocol additions. Command-output progress is reconstructible from its
+/// completed item, and fuzzy-search updates are superseded by later full
+/// snapshots; those two variants are explicitly best-effort.
 ///
 /// Both the in-process and remote transports delegate to this function so the
 /// classification stays in sync.
 pub(crate) fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
-    matches!(
+    !matches!(
         notification,
-        ServerNotification::TurnCompleted(_)
-            | ServerNotification::ThreadSettingsUpdated(_)
-            | ServerNotification::ItemCompleted(_)
-            | ServerNotification::ExternalAgentConfigImportCompleted(_)
-            | ServerNotification::AgentMessageDelta(_)
-            | ServerNotification::PlanDelta(_)
-            | ServerNotification::ReasoningSummaryTextDelta(_)
-            | ServerNotification::ReasoningTextDelta(_)
+        ServerNotification::CommandExecutionOutputDelta(_)
+            | ServerNotification::FuzzyFileSearchSessionUpdated(_)
     )
 }
 
 /// Outcome of attempting to forward a single event to the consumer channel.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForwardEventResult {
     /// The event was delivered (or intentionally dropped); the stream is healthy.
     Continue,
     /// The consumer channel is closed; the caller should stop producing events.
     DisableStream,
+}
+
+fn skipped_event_count(event: &InProcessServerEvent) -> usize {
+    match event {
+        InProcessServerEvent::Lagged { skipped } => *skipped,
+        _ => 1,
+    }
 }
 
 /// Forwards a single in-process event to the consumer, respecting the
@@ -171,6 +171,7 @@ enum ForwardEventResult {
 ///
 /// If a dropped event is a `ServerRequest`, `reject_server_request` is called
 /// so the server does not wait for a response that will never come.
+#[cfg(test)]
 async fn forward_in_process_event<F>(
     event_tx: &mpsc::Sender<InProcessServerEvent>,
     skipped_events: &mut usize,
@@ -182,8 +183,6 @@ where
 {
     if *skipped_events > 0 {
         if event_requires_delivery(&event) {
-            // Surface lag before the lossless event, but do not let the lag marker itself cause
-            // us to drop the transcript/completion notification the caller is blocked on.
             if event_tx
                 .send(InProcessServerEvent::Lagged {
                     skipped: *skipped_events,
@@ -202,7 +201,7 @@ where
                     *skipped_events = 0;
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    *skipped_events = skipped_events.saturating_add(1);
+                    *skipped_events = skipped_events.saturating_add(skipped_event_count(&event));
                     warn!("dropping in-process app-server event because consumer queue is full");
                     if let InProcessServerEvent::ServerRequest(request) = event {
                         reject_server_request(request);
@@ -217,8 +216,6 @@ where
     }
 
     if event_requires_delivery(&event) {
-        // Block until the consumer catches up for transcript/completion notifications; this
-        // preserves the visible assistant output even when the queue is otherwise saturated.
         if event_tx.send(event).await.is_err() {
             return ForwardEventResult::DisableStream;
         }
@@ -228,7 +225,7 @@ where
     match event_tx.try_send(event) {
         Ok(()) => ForwardEventResult::Continue,
         Err(mpsc::error::TrySendError::Full(event)) => {
-            *skipped_events = skipped_events.saturating_add(1);
+            *skipped_events = skipped_events.saturating_add(skipped_event_count(&event));
             warn!("dropping in-process app-server event because consumer queue is full");
             if let InProcessServerEvent::ServerRequest(request) = event {
                 reject_server_request(request);
@@ -236,6 +233,50 @@ where
             ForwardEventResult::Continue
         }
         Err(mpsc::error::TrySendError::Closed(_)) => ForwardEventResult::DisableStream,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TryForwardEventResult {
+    Forwarded,
+    Pending,
+    Closed,
+}
+
+/// Attempts to forward one worker event without waiting for consumer capacity.
+fn try_forward_in_process_event<F>(
+    event_tx: &mpsc::Sender<InProcessServerEvent>,
+    skipped_events: &mut usize,
+    pending_event: &mut Option<InProcessServerEvent>,
+    event: InProcessServerEvent,
+    mut reject_server_request: F,
+) -> TryForwardEventResult
+where
+    F: FnMut(ServerRequest),
+{
+    if event_requires_delivery(&event) {
+        return match event_tx.try_send(event) {
+            Ok(()) => TryForwardEventResult::Forwarded,
+            Err(mpsc::error::TrySendError::Full(event)) => {
+                debug_assert!(pending_event.is_none());
+                *pending_event = Some(event);
+                TryForwardEventResult::Pending
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => TryForwardEventResult::Closed,
+        };
+    }
+
+    match event_tx.try_send(event) {
+        Ok(()) => TryForwardEventResult::Forwarded,
+        Err(mpsc::error::TrySendError::Full(event)) => {
+            *skipped_events = skipped_events.saturating_add(skipped_event_count(&event));
+            warn!("dropping in-process app-server event because consumer queue is full");
+            if let InProcessServerEvent::ServerRequest(request) = event {
+                reject_server_request(request);
+            }
+            TryForwardEventResult::Forwarded
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => TryForwardEventResult::Closed,
     }
 }
 
@@ -417,6 +458,12 @@ enum ClientCommand {
     Shutdown {
         response_tx: oneshot::Sender<IoResult<()>>,
     },
+    #[cfg(test)]
+    InjectServerEvent {
+        event: InProcessServerEvent,
+        started_tx: oneshot::Sender<()>,
+        response_tx: oneshot::Sender<TryForwardEventResult>,
+    },
 }
 
 /// Async facade over the in-process app-server runtime.
@@ -434,6 +481,8 @@ pub struct InProcessAppServerClient {
     command_tx: mpsc::Sender<ClientCommand>,
     event_rx: mpsc::Receiver<InProcessServerEvent>,
     worker_handle: tokio::task::JoinHandle<()>,
+    #[cfg(test)]
+    _test_pending_required_event: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Clone)]
@@ -465,12 +514,35 @@ impl InProcessAppServerClient {
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+        #[cfg(test)]
+        let test_pending_required_event = Arc::new(tokio::sync::Notify::new());
+        #[cfg(test)]
+        let worker_test_pending_required_event = Arc::clone(&test_pending_required_event);
 
         let worker_handle = tokio::spawn(async move {
             let mut event_stream_enabled = true;
             let mut skipped_events = 0usize;
+            let mut pending_required_event = None::<InProcessServerEvent>;
             loop {
                 tokio::select! {
+                    permit = event_tx.reserve(), if skipped_events > 0 || pending_required_event.is_some() => {
+                        match permit {
+                            Ok(permit) => {
+                                if skipped_events > 0 {
+                                    permit.send(InProcessServerEvent::Lagged {
+                                        skipped: std::mem::take(&mut skipped_events),
+                                    });
+                                } else if let Some(event) = pending_required_event.take() {
+                                    permit.send(event);
+                                }
+                            }
+                            Err(_) => {
+                                skipped_events = 0;
+                                pending_required_event = None;
+                                event_stream_enabled = false;
+                            }
+                        }
+                    }
                     command = command_rx.recv() => {
                         match command {
                             Some(ClientCommand::Request { request, response_tx }) => {
@@ -512,13 +584,38 @@ impl InProcessAppServerClient {
                                 let _ = response_tx.send(shutdown_result);
                                 break;
                             }
+                            #[cfg(test)]
+                            Some(ClientCommand::InjectServerEvent {
+                                event,
+                                started_tx,
+                                response_tx,
+                            }) => {
+                                let _ = started_tx.send(());
+                                assert!(
+                                    skipped_events == 0 && pending_required_event.is_none(),
+                                    "test injection requires an empty facade delivery state",
+                                );
+                                let result = try_forward_in_process_event(
+                                    &event_tx,
+                                    &mut skipped_events,
+                                    &mut pending_required_event,
+                                    event,
+                                    |_| {},
+                                );
+                                if result == TryForwardEventResult::Pending {
+                                    worker_test_pending_required_event.notify_one();
+                                } else if result == TryForwardEventResult::Closed {
+                                    event_stream_enabled = false;
+                                }
+                                let _ = response_tx.send(result);
+                            }
                             None => {
                                 let _ = handle.shutdown().await;
                                 break;
                             }
                         }
                     }
-                    event = handle.next_event(), if event_stream_enabled => {
+                    event = handle.next_event(), if event_stream_enabled && skipped_events == 0 && pending_required_event.is_none() => {
                         let Some(event) = event else {
                             break;
                         };
@@ -542,9 +639,10 @@ impl InProcessAppServerClient {
                             continue;
                         }
 
-                        match forward_in_process_event(
+                        match try_forward_in_process_event(
                             &event_tx,
                             &mut skipped_events,
+                            &mut pending_required_event,
                             event,
                             |request| {
                                 let _ = request_sender.fail_server_request(
@@ -557,11 +655,13 @@ impl InProcessAppServerClient {
                                     },
                                 );
                             },
-                        )
-                        .await
-                        {
-                            ForwardEventResult::Continue => {}
-                            ForwardEventResult::DisableStream => {
+                        ) {
+                            TryForwardEventResult::Forwarded => {}
+                            TryForwardEventResult::Pending => {
+                                #[cfg(test)]
+                                worker_test_pending_required_event.notify_one();
+                            }
+                            TryForwardEventResult::Closed => {
                                 event_stream_enabled = false;
                             }
                         }
@@ -574,6 +674,8 @@ impl InProcessAppServerClient {
             command_tx,
             event_rx,
             worker_handle,
+            #[cfg(test)]
+            _test_pending_required_event: test_pending_required_event,
         })
     }
 
@@ -737,12 +839,12 @@ impl InProcessAppServerClient {
             command_tx,
             event_rx,
             worker_handle,
+            ..
         } = self;
         let mut worker_handle = worker_handle;
         // Drop the caller-facing receiver before asking the worker to shut
-        // down. That unblocks any pending must-deliver `event_tx.send(..)`
-        // so the worker can reach `handle.shutdown()` instead of timing out
-        // and getting aborted with the runtime still attached.
+        // down. This releases any retained required event or pending lag state
+        // before the worker reaches `handle.shutdown()`.
         drop(event_rx);
         let (response_tx, response_rx) = oneshot::channel();
         if command_tx
@@ -1032,6 +1134,89 @@ mod tests {
         start_test_client_with_capacity(session_source, DEFAULT_IN_PROCESS_CHANNEL_CAPACITY).await
     }
 
+    fn required_thread_closed_event(thread_id: &str) -> InProcessServerEvent {
+        InProcessServerEvent::ServerNotification(ServerNotification::ThreadClosed(
+            codex_app_server_protocol::ThreadClosedNotification {
+                thread_id: thread_id.to_string(),
+            },
+        ))
+    }
+
+    async fn start_test_client_with_pending_facade_event() -> TestClient {
+        let client = start_test_client_with_capacity(SessionSource::Cli, 1).await;
+
+        let (first_started_tx, first_started_rx) = oneshot::channel();
+        let (first_response_tx, first_response_rx) = oneshot::channel();
+        client
+            .command_tx
+            .send(ClientCommand::InjectServerEvent {
+                event: required_thread_closed_event("queued"),
+                started_tx: first_started_tx,
+                response_tx: first_response_tx,
+            })
+            .await
+            .expect("first injection should reach the worker");
+        first_started_rx
+            .await
+            .expect("first injection should start");
+        assert_eq!(
+            first_response_rx
+                .await
+                .expect("first injection should finish"),
+            TryForwardEventResult::Forwarded
+        );
+
+        let pending_observed = client._test_pending_required_event.notified();
+        let (second_started_tx, second_started_rx) = oneshot::channel();
+        let (second_response_tx, second_response_rx) = oneshot::channel();
+        client
+            .command_tx
+            .send(ClientCommand::InjectServerEvent {
+                event: required_thread_closed_event("pending"),
+                started_tx: second_started_tx,
+                response_tx: second_response_tx,
+            })
+            .await
+            .expect("second injection should reach the worker");
+        second_started_rx
+            .await
+            .expect("second injection should start");
+        assert_eq!(
+            second_response_rx
+                .await
+                .expect("second injection should enter worker custody"),
+            TryForwardEventResult::Pending
+        );
+        timeout(Duration::from_secs(1), pending_observed)
+            .await
+            .expect("worker should report finite pending custody");
+
+        client
+    }
+
+    async fn assert_pending_facade_events_deliver_in_fifo(client: &mut TestClient) {
+        let first = timeout(Duration::from_secs(1), client.client.next_event())
+            .await
+            .expect("queued event should arrive")
+            .expect("facade event stream should stay open");
+        let second = timeout(Duration::from_secs(1), client.client.next_event())
+            .await
+            .expect("pending event should arrive after capacity is released")
+            .expect("facade event stream should stay open");
+        assert!(matches!(
+            first,
+            InProcessServerEvent::ServerNotification(ServerNotification::ThreadClosed(
+                notification
+            )) if notification.thread_id == "queued"
+        ));
+        assert!(matches!(
+            second,
+            InProcessServerEvent::ServerNotification(ServerNotification::ThreadClosed(
+                notification
+            )) if notification.thread_id == "pending"
+        ));
+    }
+
     async fn start_test_remote_server<F, Fut>(handler: F) -> String
     where
         F: FnOnce(tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>) -> Fut
@@ -1148,6 +1333,57 @@ mod tests {
             .expect("message should send");
     }
 
+    async fn write_remote_server_notification<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        notification: ServerNotification,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        write_websocket_message(
+            websocket,
+            JSONRPCMessage::Notification(
+                serde_json::from_value(
+                    serde_json::to_value(notification).expect("notification should serialize"),
+                )
+                .expect("notification should convert to JSON-RPC"),
+            ),
+        )
+        .await;
+    }
+
+    async fn expect_websocket_close<S>(websocket: &mut tokio_tungstenite::WebSocketStream<S>)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        loop {
+            let frame = websocket
+                .next()
+                .await
+                .expect("close frame should be available")
+                .expect("close frame should decode");
+            match frame {
+                Message::Close(_) => return,
+                Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
+                Message::Text(text) => panic!("unexpected text before close: {text}"),
+            }
+        }
+    }
+
+    fn remote_thread_closed_notification(thread_id: &str) -> ServerNotification {
+        ServerNotification::ThreadClosed(codex_app_server_protocol::ThreadClosedNotification {
+            thread_id: thread_id.to_string(),
+        })
+    }
+
+    fn remote_get_account_request(request_id: i64) -> ClientRequest {
+        ClientRequest::GetAccount {
+            request_id: RequestId::Integer(request_id),
+            params: codex_app_server_protocol::GetAccountParams {
+                refresh_token: false,
+            },
+        }
+    }
+
     fn command_execution_output_delta_notification(delta: &str) -> ServerNotification {
         ServerNotification::CommandExecutionOutputDelta(
             codex_app_server_protocol::CommandExecutionOutputDeltaNotification {
@@ -1157,6 +1393,306 @@ mod tests {
                 delta: delta.to_string(),
             },
         )
+    }
+
+    fn fuzzy_file_search_session_updated_notification(query: &str) -> ServerNotification {
+        ServerNotification::FuzzyFileSearchSessionUpdated(
+            codex_app_server_protocol::FuzzyFileSearchSessionUpdatedNotification {
+                session_id: "search".to_string(),
+                query: query.to_string(),
+                files: Vec::new(),
+            },
+        )
+    }
+
+    fn reviewed_consumer_state_notifications() -> Vec<ServerNotification> {
+        let thread_id = || "thread".to_string();
+        let turn_id = || "turn".to_string();
+        let item_id = || "item".to_string();
+        let token_usage = || {
+            let usage = codex_app_server_protocol::TokenUsageBreakdown {
+                total_tokens: 25,
+                input_tokens: 20,
+                cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                output_tokens: 5,
+                reasoning_output_tokens: 0,
+            };
+            codex_app_server_protocol::ThreadTokenUsage {
+                total: usage.clone(),
+                last: usage,
+                model_context_window: Some(100),
+            }
+        };
+
+        vec![
+            ServerNotification::ThreadStarted(
+                codex_app_server_protocol::ThreadStartedNotification {
+                    thread: codex_app_server_protocol::Thread {
+                        id: thread_id(),
+                        extra: None,
+                        session_id: thread_id(),
+                        forked_from_id: None,
+                        parent_thread_id: Some("parent".to_string()),
+                        preview: "child".to_string(),
+                        ephemeral: false,
+                        is_pinned: false,
+                        history_mode: Default::default(),
+                        model_provider: "openai".to_string(),
+                        model: Some("gpt-test".to_string()),
+                        reasoning_effort: None,
+                        created_at: 0,
+                        updated_at: 0,
+                        recency_at: None,
+                        status: codex_app_server_protocol::ThreadStatus::Idle,
+                        path: None,
+                        cwd: AbsolutePathBuf::from_absolute_path("/tmp")
+                            .expect("test cwd should be absolute"),
+                        cli_version: "test".to_string(),
+                        source: ApiSessionSource::Unknown,
+                        can_accept_direct_input: None,
+                        thread_source: None,
+                        agent_nickname: Some("Child".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                        git_info: None,
+                        name: None,
+                        turns: Vec::new(),
+                    },
+                },
+            ),
+            ServerNotification::ThreadClosed(codex_app_server_protocol::ThreadClosedNotification {
+                thread_id: thread_id(),
+            }),
+            ServerNotification::ThreadDeleted(
+                codex_app_server_protocol::ThreadDeletedNotification {
+                    thread_id: thread_id(),
+                },
+            ),
+            ServerNotification::ThreadArchived(
+                codex_app_server_protocol::ThreadArchivedNotification {
+                    thread_id: thread_id(),
+                },
+            ),
+            ServerNotification::ThreadUnarchived(
+                codex_app_server_protocol::ThreadUnarchivedNotification {
+                    thread_id: thread_id(),
+                },
+            ),
+            ServerNotification::ThreadStatusChanged(
+                codex_app_server_protocol::ThreadStatusChangedNotification {
+                    thread_id: thread_id(),
+                    status: codex_app_server_protocol::ThreadStatus::Idle,
+                },
+            ),
+            ServerNotification::ThreadGoalUpdated(
+                codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                    thread_id: thread_id(),
+                    turn_id: Some(turn_id()),
+                    goal: codex_app_server_protocol::ThreadGoal {
+                        thread_id: thread_id(),
+                        objective: "goal".to_string(),
+                        status: codex_app_server_protocol::ThreadGoalStatus::Active,
+                        token_budget: Some(100),
+                        tokens_used: 25,
+                        time_used_seconds: 1,
+                        created_at: 0,
+                        updated_at: 0,
+                    },
+                },
+            ),
+            ServerNotification::ThreadGoalCleared(
+                codex_app_server_protocol::ThreadGoalClearedNotification {
+                    thread_id: thread_id(),
+                },
+            ),
+            ServerNotification::ThreadTokenUsageUpdated(
+                codex_app_server_protocol::ThreadTokenUsageUpdatedNotification {
+                    thread_id: thread_id(),
+                    turn_id: turn_id(),
+                    token_usage: token_usage(),
+                },
+            ),
+            ServerNotification::ThreadNameUpdated(
+                codex_app_server_protocol::ThreadNameUpdatedNotification {
+                    thread_id: thread_id(),
+                    thread_name: Some("renamed".to_string()),
+                },
+            ),
+            ServerNotification::ServerRequestResolved(
+                codex_app_server_protocol::ServerRequestResolvedNotification {
+                    thread_id: thread_id(),
+                    request_id: RequestId::Integer(7),
+                },
+            ),
+            ServerNotification::AccountRateLimitsUpdated(
+                codex_app_server_protocol::AccountRateLimitsUpdatedNotification {
+                    rate_limits: codex_app_server_protocol::RateLimitSnapshot {
+                        limit_id: Some("codex".to_string()),
+                        limit_name: None,
+                        primary: None,
+                        secondary: None,
+                        credits: None,
+                        individual_limit: None,
+                        spend_control_reached: Some(true),
+                        plan_type: None,
+                        rate_limit_reached_type: None,
+                    },
+                },
+            ),
+            ServerNotification::AccountLoginCompleted(
+                codex_app_server_protocol::AccountLoginCompletedNotification {
+                    login_id: Some("login".to_string()),
+                    success: true,
+                    error: None,
+                },
+            ),
+            ServerNotification::AccountUpdated(
+                codex_app_server_protocol::AccountUpdatedNotification {
+                    auth_mode: None,
+                    plan_type: None,
+                },
+            ),
+            ServerNotification::McpServerOauthLoginCompleted(
+                codex_app_server_protocol::McpServerOauthLoginCompletedNotification {
+                    name: "server".to_string(),
+                    thread_id: Some(thread_id()),
+                    success: true,
+                    error: None,
+                },
+            ),
+            ServerNotification::ProcessExited(
+                codex_app_server_protocol::ProcessExitedNotification {
+                    process_handle: "process".to_string(),
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stdout_cap_reached: false,
+                    stderr: String::new(),
+                    stderr_cap_reached: false,
+                },
+            ),
+            ServerNotification::FuzzyFileSearchSessionCompleted(
+                codex_app_server_protocol::FuzzyFileSearchSessionCompletedNotification {
+                    session_id: "search".to_string(),
+                },
+            ),
+            ServerNotification::WindowsSandboxSetupCompleted(
+                codex_app_server_protocol::WindowsSandboxSetupCompletedNotification {
+                    mode: codex_app_server_protocol::WindowsSandboxSetupMode::Unelevated,
+                    success: true,
+                    error: None,
+                },
+            ),
+            ServerNotification::TurnStarted(codex_app_server_protocol::TurnStartedNotification {
+                thread_id: thread_id(),
+                turn: codex_app_server_protocol::Turn {
+                    id: turn_id(),
+                    items: Vec::new(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
+                    status: codex_app_server_protocol::TurnStatus::InProgress,
+                    error: None,
+                    started_at: Some(0),
+                    completed_at: None,
+                    duration_ms: None,
+                },
+            }),
+            turn_completed_notification(),
+            ServerNotification::ThreadSettingsUpdated(
+                codex_app_server_protocol::ThreadSettingsUpdatedNotification {
+                    thread_id: thread_id(),
+                    thread_settings: codex_app_server_protocol::ThreadSettings {
+                        cwd: AbsolutePathBuf::from_absolute_path("/tmp")
+                            .expect("test cwd should be absolute"),
+                        approval_policy: codex_app_server_protocol::AskForApproval::Never,
+                        approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,
+                        sandbox_policy: codex_app_server_protocol::SandboxPolicy::DangerFullAccess,
+                        active_permission_profile: None,
+                        model: "gpt-test".to_string(),
+                        model_provider: "openai".to_string(),
+                        service_tier: None,
+                        effort: None,
+                        summary: None,
+                        collaboration_mode: codex_protocol::config_types::CollaborationMode {
+                            mode: codex_protocol::config_types::ModeKind::Default,
+                            settings: codex_protocol::config_types::Settings {
+                                model: "gpt-test".to_string(),
+                                reasoning_effort: None,
+                                developer_instructions: None,
+                            },
+                        },
+                        multi_agent_mode: Default::default(),
+                        personality: None,
+                    },
+                },
+            ),
+            ServerNotification::ItemStarted(codex_app_server_protocol::ItemStartedNotification {
+                thread_id: thread_id(),
+                turn_id: turn_id(),
+                started_at_ms: 0,
+                item: codex_app_server_protocol::ThreadItem::AgentMessage {
+                    id: item_id(),
+                    text: "assistant".to_string(),
+                    phase: None,
+                    memory_citation: None,
+                },
+            }),
+            item_completed_notification("complete transcript"),
+            ServerNotification::ExternalAgentConfigImportCompleted(
+                codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification {
+                    import_id: "import".to_string(),
+                    item_type_results: Vec::new(),
+                },
+            ),
+            agent_message_delta_notification("assistant"),
+            ServerNotification::PlanDelta(codex_app_server_protocol::PlanDeltaNotification {
+                thread_id: thread_id(),
+                turn_id: turn_id(),
+                item_id: item_id(),
+                delta: "plan".to_string(),
+            }),
+            ServerNotification::ReasoningSummaryTextDelta(
+                codex_app_server_protocol::ReasoningSummaryTextDeltaNotification {
+                    thread_id: thread_id(),
+                    turn_id: turn_id(),
+                    item_id: item_id(),
+                    delta: "summary".to_string(),
+                    summary_index: 0,
+                },
+            ),
+            ServerNotification::ReasoningTextDelta(
+                codex_app_server_protocol::ReasoningTextDeltaNotification {
+                    thread_id: thread_id(),
+                    turn_id: turn_id(),
+                    item_id: item_id(),
+                    delta: "reasoning".to_string(),
+                    content_index: 0,
+                },
+            ),
+            ServerNotification::ThreadRealtimeStarted(
+                codex_app_server_protocol::ThreadRealtimeStartedNotification {
+                    thread_id: thread_id(),
+                    realtime_session_id: Some("realtime".to_string()),
+                    version: codex_protocol::protocol::RealtimeConversationVersion::V1,
+                },
+            ),
+            ServerNotification::ThreadRealtimeSdp(
+                codex_app_server_protocol::ThreadRealtimeSdpNotification {
+                    thread_id: thread_id(),
+                    sdp: "answer".to_string(),
+                },
+            ),
+            ServerNotification::ThreadRealtimeError(
+                codex_app_server_protocol::ThreadRealtimeErrorNotification {
+                    thread_id: thread_id(),
+                    message: "error".to_string(),
+                },
+            ),
+            ServerNotification::ThreadRealtimeClosed(
+                codex_app_server_protocol::ThreadRealtimeClosedNotification {
+                    thread_id: thread_id(),
+                    reason: Some("done".to_string()),
+                },
+            ),
+        ]
     }
 
     fn agent_message_delta_notification(delta: &str) -> ServerNotification {
@@ -1416,6 +1952,172 @@ mod tests {
                 notification
             )) if notification.turn.status == codex_app_server_protocol::TurnStatus::Completed
         ));
+    }
+
+    #[tokio::test]
+    async fn in_process_facade_aggregates_a_dropped_lower_lag_marker() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .send(InProcessServerEvent::ServerNotification(
+                command_execution_output_delta_notification("queued"),
+            ))
+            .await
+            .expect("initial event should enqueue");
+        let mut skipped_events = 0usize;
+
+        assert_eq!(
+            forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                InProcessServerEvent::Lagged { skipped: 7 },
+                |_| {},
+            )
+            .await,
+            ForwardEventResult::Continue
+        );
+        assert_eq!(skipped_events, 7);
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(InProcessServerEvent::ServerNotification(
+                ServerNotification::CommandExecutionOutputDelta(_)
+            ))
+        ));
+
+        let receive_task = tokio::spawn(async move {
+            let lag = event_rx.recv().await.expect("lag marker should arrive");
+            let required = event_rx.recv().await.expect("required event should arrive");
+            (lag, required)
+        });
+        assert_eq!(
+            forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                InProcessServerEvent::ServerNotification(agent_message_delta_notification(
+                    "required",
+                )),
+                |_| {},
+            )
+            .await,
+            ForwardEventResult::Continue
+        );
+        assert_eq!(skipped_events, 0);
+        let (lag, required) = receive_task.await.expect("receiver should join");
+        assert!(matches!(lag, InProcessServerEvent::Lagged { skipped: 7 }));
+        assert!(matches!(
+            required,
+            InProcessServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
+                notification
+            )) if notification.delta == "required"
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_process_facade_reports_dropped_fuzzy_snapshot_before_completion() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .send(InProcessServerEvent::ServerNotification(
+                command_execution_output_delta_notification("queued"),
+            ))
+            .await
+            .expect("initial event should enqueue");
+        let mut skipped_events = 0usize;
+
+        assert_eq!(
+            forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                InProcessServerEvent::ServerNotification(
+                    fuzzy_file_search_session_updated_notification("snapshot"),
+                ),
+                |_| {},
+            )
+            .await,
+            ForwardEventResult::Continue
+        );
+        assert_eq!(skipped_events, 1);
+
+        let completion = ServerNotification::FuzzyFileSearchSessionCompleted(
+            codex_app_server_protocol::FuzzyFileSearchSessionCompletedNotification {
+                session_id: "search".to_string(),
+            },
+        );
+        let delivery = forward_in_process_event(
+            &event_tx,
+            &mut skipped_events,
+            InProcessServerEvent::ServerNotification(completion),
+            |_| {},
+        );
+        tokio::pin!(delivery);
+        assert!(
+            timeout(Duration::from_millis(20), &mut delivery)
+                .await
+                .is_err(),
+            "completion should wait while the facade queue is saturated"
+        );
+
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(InProcessServerEvent::ServerNotification(
+                ServerNotification::CommandExecutionOutputDelta(_)
+            ))
+        ));
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(InProcessServerEvent::Lagged { skipped: 1 })
+        ));
+        let delivery_result = delivery.as_mut().await;
+        drop(delivery);
+        assert_eq!(delivery_result, ForwardEventResult::Continue);
+        assert_eq!(skipped_events, 0);
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(InProcessServerEvent::ServerNotification(
+                ServerNotification::FuzzyFileSearchSessionCompleted(_)
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_process_facade_preserves_reviewed_consumer_state_under_backpressure() {
+        let notifications = reviewed_consumer_state_notifications();
+        assert_eq!(notifications.len(), 32);
+
+        for notification in notifications {
+            let expected = std::mem::discriminant(&notification);
+            let (event_tx, mut event_rx) = mpsc::channel(1);
+            event_tx
+                .send(InProcessServerEvent::Lagged { skipped: 1 })
+                .await
+                .expect("initial event should enqueue");
+            let mut skipped_events = 0usize;
+            let delivery = forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                InProcessServerEvent::ServerNotification(notification),
+                |_| {},
+            );
+            tokio::pin!(delivery);
+
+            assert!(
+                timeout(Duration::from_millis(20), &mut delivery)
+                    .await
+                    .is_err(),
+                "required notification must block rather than be dropped"
+            );
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(InProcessServerEvent::Lagged { skipped: 1 })
+            ));
+            let delivery_result = delivery.as_mut().await;
+            drop(delivery);
+            assert_eq!(delivery_result, ForwardEventResult::Continue);
+            assert_eq!(skipped_events, 0);
+            let delivered = event_rx.recv().await.expect("required event should arrive");
+            let InProcessServerEvent::ServerNotification(delivered) = delivered else {
+                panic!("expected server notification");
+            };
+            assert_eq!(std::mem::discriminant(&delivered), expected);
+        }
     }
 
     #[tokio::test]
@@ -1859,6 +2561,370 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_pending_required_event_keeps_control_commands_responsive() {
+        let (controls_tx, controls_rx) = oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            for thread_id in ["queued", "pending"] {
+                let notification = ServerNotification::ThreadClosed(
+                    codex_app_server_protocol::ThreadClosedNotification {
+                        thread_id: thread_id.to_string(),
+                    },
+                );
+                write_websocket_message(
+                    &mut websocket,
+                    JSONRPCMessage::Notification(
+                        serde_json::from_value(
+                            serde_json::to_value(notification)
+                                .expect("notification should serialize"),
+                        )
+                        .expect("notification should convert to JSON-RPC"),
+                    ),
+                )
+                .await;
+            }
+
+            let mut controls = Vec::new();
+            let mut request_id = None;
+            for _ in 0..4 {
+                let message = read_websocket_message(&mut websocket).await;
+                if let JSONRPCMessage::Request(request) = &message {
+                    request_id = Some(request.id.clone());
+                }
+                controls.push(message);
+            }
+            controls_tx
+                .send(controls)
+                .expect("control observations should reach the test");
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Response(JSONRPCResponse {
+                    id: request_id.expect("account request should be observed"),
+                    result: serde_json::to_value(GetAccountResponse {
+                        account: None,
+                        requires_openai_auth: false,
+                    })
+                    .expect("response should serialize"),
+                }),
+            )
+            .await;
+            let _ = done_rx.await;
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            channel_capacity: 1,
+            ..test_remote_connect_args(websocket_url)
+        })
+        .await
+        .expect("remote client should connect");
+
+        timeout(
+            Duration::from_secs(1),
+            client._test_pending_required_event.notified(),
+        )
+        .await
+        .expect("second required event should enter finite remote custody");
+
+        let request_handle = client.request_handle();
+        let request_task = tokio::spawn(async move {
+            request_handle
+                .request_typed::<GetAccountResponse>(ClientRequest::GetAccount {
+                    request_id: RequestId::Integer(92),
+                    params: codex_app_server_protocol::GetAccountParams {
+                        refresh_token: false,
+                    },
+                })
+                .await
+        });
+        timeout(
+            Duration::from_secs(1),
+            client.notify(ClientNotification::Initialized),
+        )
+        .await
+        .expect("notify control should remain responsive")
+        .expect("notify should reach the WebSocket");
+        timeout(
+            Duration::from_secs(1),
+            client.resolve_server_request(
+                RequestId::String("synthetic-resolve".to_string()),
+                serde_json::json!({}),
+            ),
+        )
+        .await
+        .expect("resolve control should remain responsive")
+        .expect("resolve should reach the WebSocket");
+        timeout(
+            Duration::from_secs(1),
+            client.reject_server_request(
+                RequestId::String("synthetic-reject".to_string()),
+                JSONRPCErrorError {
+                    code: -32001,
+                    message: "test rejection".to_string(),
+                    data: None,
+                },
+            ),
+        )
+        .await
+        .expect("reject control should remain responsive")
+        .expect("reject should reach the WebSocket");
+
+        let controls = timeout(Duration::from_secs(1), controls_rx)
+            .await
+            .expect("server should observe all control messages")
+            .expect("control observation channel should stay open");
+        assert!(controls.iter().any(|message| matches!(
+            message,
+            JSONRPCMessage::Request(request) if request.method == "account/read"
+        )));
+        assert!(controls.iter().any(|message| matches!(
+            message,
+            JSONRPCMessage::Notification(notification) if notification.method == "initialized"
+        )));
+        assert!(controls.iter().any(|message| matches!(
+            message,
+            JSONRPCMessage::Response(response)
+                if response.id == RequestId::String("synthetic-resolve".to_string())
+        )));
+        assert!(controls.iter().any(|message| matches!(
+            message,
+            JSONRPCMessage::Error(error)
+                if error.id == RequestId::String("synthetic-reject".to_string())
+        )));
+
+        let first = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("queued event should arrive")
+            .expect("remote event stream should stay open");
+        let second = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("pending event should arrive after capacity is released")
+            .expect("remote event stream should stay open");
+        assert!(matches!(
+            first,
+            AppServerEvent::ServerNotification(ServerNotification::ThreadClosed(notification))
+                if notification.thread_id == "queued"
+        ));
+        assert!(matches!(
+            second,
+            AppServerEvent::ServerNotification(ServerNotification::ThreadClosed(notification))
+                if notification.thread_id == "pending"
+        ));
+        timeout(Duration::from_secs(1), request_task)
+            .await
+            .expect("request response should resume after event delivery")
+            .expect("request task should join")
+            .expect("request should succeed");
+
+        done_tx.send(()).expect("server should be released");
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_write_failure_preserves_pending_required_before_disconnect() {
+        let (close_seen_tx, close_seen_rx) = oneshot::channel();
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            write_remote_server_notification(
+                &mut websocket,
+                remote_thread_closed_notification("queued"),
+            )
+            .await;
+            write_remote_server_notification(
+                &mut websocket,
+                remote_thread_closed_notification("pending"),
+            )
+            .await;
+            expect_websocket_close(&mut websocket).await;
+            close_seen_tx
+                .send(())
+                .expect("close observation should reach the test");
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            channel_capacity: 1,
+            ..test_remote_connect_args(websocket_url)
+        })
+        .await
+        .expect("remote client should connect");
+
+        timeout(
+            Duration::from_secs(1),
+            client._test_pending_required_event.notified(),
+        )
+        .await
+        .expect("second required event should enter remote custody");
+        client
+            .close_stream_for_test()
+            .await
+            .expect("test stream close should succeed");
+        timeout(Duration::from_secs(1), close_seen_rx)
+            .await
+            .expect("server should observe the close frame")
+            .expect("close observation channel should stay open");
+
+        let request_error = timeout(
+            Duration::from_secs(1),
+            client.request(remote_get_account_request(/*request_id*/ 93)),
+        )
+        .await
+        .expect("failed request write should settle promptly")
+        .expect_err("request waiter should receive the terminal transport error");
+        assert_eq!(request_error.kind(), ErrorKind::BrokenPipe);
+        assert!(request_error.to_string().contains("write failed"));
+
+        let first = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("queued required event should arrive")
+            .expect("remote event stream should stay open");
+        let second = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("retained required event should arrive")
+            .expect("remote event stream should stay open");
+        let terminal = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("terminal event should arrive")
+            .expect("remote event stream should stay open");
+        assert!(matches!(
+            first,
+            AppServerEvent::ServerNotification(ServerNotification::ThreadClosed(notification))
+                if notification.thread_id == "queued"
+        ));
+        assert!(matches!(
+            second,
+            AppServerEvent::ServerNotification(ServerNotification::ThreadClosed(notification))
+                if notification.thread_id == "pending"
+        ));
+        assert!(matches!(
+            terminal,
+            AppServerEvent::Disconnected { message } if message.contains("write failed")
+        ));
+
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_write_failure_delivers_lag_before_disconnect() {
+        let (close_seen_tx, close_seen_rx) = oneshot::channel();
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            write_remote_server_notification(
+                &mut websocket,
+                remote_thread_closed_notification("queued"),
+            )
+            .await;
+            write_remote_server_notification(
+                &mut websocket,
+                command_execution_output_delta_notification("dropped"),
+            )
+            .await;
+            expect_websocket_close(&mut websocket).await;
+            close_seen_tx
+                .send(())
+                .expect("close observation should reach the test");
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            channel_capacity: 1,
+            ..test_remote_connect_args(websocket_url)
+        })
+        .await
+        .expect("remote client should connect");
+
+        timeout(Duration::from_secs(1), client._test_pending_lag.notified())
+            .await
+            .expect("dropped best-effort event should establish pending lag");
+        client
+            .close_stream_for_test()
+            .await
+            .expect("test stream close should succeed");
+        timeout(Duration::from_secs(1), close_seen_rx)
+            .await
+            .expect("server should observe the close frame")
+            .expect("close observation channel should stay open");
+
+        let request_error = timeout(
+            Duration::from_secs(1),
+            client.request(remote_get_account_request(/*request_id*/ 94)),
+        )
+        .await
+        .expect("failed request write should settle promptly")
+        .expect_err("request waiter should receive the terminal transport error");
+        assert_eq!(request_error.kind(), ErrorKind::BrokenPipe);
+
+        let first = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("queued required event should arrive")
+            .expect("remote event stream should stay open");
+        let lag = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("lag marker should arrive")
+            .expect("remote event stream should stay open");
+        let terminal = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("terminal event should arrive")
+            .expect("remote event stream should stay open");
+        assert!(matches!(
+            first,
+            AppServerEvent::ServerNotification(ServerNotification::ThreadClosed(notification))
+                if notification.thread_id == "queued"
+        ));
+        assert!(matches!(lag, AppServerEvent::Lagged { skipped: 1 }));
+        assert!(matches!(
+            terminal,
+            AppServerEvent::Disconnected { message } if message.contains("write failed")
+        ));
+
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_shutdown_closes_promptly_with_pending_required_event() {
+        let (close_seen_tx, close_seen_rx) = oneshot::channel();
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            write_remote_server_notification(
+                &mut websocket,
+                remote_thread_closed_notification("queued"),
+            )
+            .await;
+            write_remote_server_notification(
+                &mut websocket,
+                remote_thread_closed_notification("pending"),
+            )
+            .await;
+            expect_websocket_close(&mut websocket).await;
+            close_seen_tx
+                .send(())
+                .expect("close observation should reach the test");
+        })
+        .await;
+        let client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            channel_capacity: 1,
+            ..test_remote_connect_args(websocket_url)
+        })
+        .await
+        .expect("remote client should connect");
+
+        timeout(
+            Duration::from_secs(1),
+            client._test_pending_required_event.notified(),
+        )
+        .await
+        .expect("second required event should enter remote custody");
+        let shutdown_task = tokio::spawn(client.shutdown());
+        timeout(Duration::from_secs(1), close_seen_rx)
+            .await
+            .expect("server should promptly observe the shutdown close frame")
+            .expect("close observation channel should stay open");
+        timeout(Duration::from_secs(1), shutdown_task)
+            .await
+            .expect("shutdown should not wait for the fallback timeout")
+            .expect("shutdown task should join")
+            .expect("shutdown should complete");
+    }
+
+    #[tokio::test]
     async fn remote_server_request_resolution_roundtrip_works() {
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             expect_remote_initialize(&mut websocket).await;
@@ -2091,6 +3157,7 @@ mod tests {
             command_tx,
             event_rx,
             worker_handle,
+            _test_pending_required_event: Arc::new(tokio::sync::Notify::new()),
         };
 
         let event = timeout(Duration::from_secs(2), client.next_event())
@@ -2179,6 +3246,11 @@ mod tests {
                         delta: "stdout".to_string(),
                     }
                 )
+            )
+        ));
+        assert!(!event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(
+                fuzzy_file_search_session_updated_notification("coalescible")
             )
         ));
     }
@@ -2293,6 +3365,70 @@ mod tests {
             .expect("shutdown should complete");
     }
 
+    #[tokio::test]
+    async fn in_process_pending_required_event_still_allows_request_control() {
+        let mut client = start_test_client_with_pending_facade_event().await;
+        let _: ConfigRequirementsReadResponse = timeout(
+            Duration::from_secs(1),
+            client.request_typed(ClientRequest::ConfigRequirementsRead {
+                request_id: RequestId::Integer(91),
+                params: None,
+            }),
+        )
+        .await
+        .expect("request control should remain responsive")
+        .expect("request should succeed while a facade event is pending");
+        assert_pending_facade_events_deliver_in_fifo(&mut client).await;
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn in_process_pending_required_event_still_allows_resolve_control() {
+        let mut client = start_test_client_with_pending_facade_event().await;
+        timeout(
+            Duration::from_secs(1),
+            client.resolve_server_request(
+                RequestId::String("synthetic-resolve".to_string()),
+                serde_json::json!({}),
+            ),
+        )
+        .await
+        .expect("resolve control should remain responsive")
+        .expect("resolve should enter the in-process runtime");
+        assert_pending_facade_events_deliver_in_fifo(&mut client).await;
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn in_process_pending_required_event_still_allows_reject_control() {
+        let mut client = start_test_client_with_pending_facade_event().await;
+        timeout(
+            Duration::from_secs(1),
+            client.reject_server_request(
+                RequestId::String("synthetic-reject".to_string()),
+                JSONRPCErrorError {
+                    code: -32001,
+                    message: "test rejection".to_string(),
+                    data: None,
+                },
+            ),
+        )
+        .await
+        .expect("reject control should remain responsive")
+        .expect("reject should enter the in-process runtime");
+        assert_pending_facade_events_deliver_in_fifo(&mut client).await;
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn shutdown_releases_a_pending_required_facade_event() {
+        let client = start_test_client_with_pending_facade_event().await;
+        timeout(Duration::from_secs(1), client.shutdown())
+            .await
+            .expect("dropping the facade receiver should release pending custody")
+            .expect("facade and runtime shutdown should complete");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn shutdown_waits_for_in_process_drain() {
         use std::sync::atomic::AtomicBool;
@@ -2315,6 +3451,7 @@ mod tests {
             command_tx,
             event_rx,
             worker_handle,
+            _test_pending_required_event: Arc::new(tokio::sync::Notify::new()),
         };
 
         client.shutdown().await.expect("shutdown should complete");
