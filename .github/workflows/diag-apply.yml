@@ -1,20 +1,26 @@
 name: Apply bounded diagnostic patch
 
 on:
-  push:
+  pull_request:
     branches:
-      - diag/goal-error-continuation-probe-20260821
+      - main
+    types:
+      - opened
+      - synchronize
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: github.actor != 'github-actions[bot]'
+    if: >-
+      github.head_ref == 'diag/goal-error-continuation-probe-20260821' &&
+      github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: diag/goal-error-continuation-probe-20260821
           fetch-depth: 0
 
       - name: Apply patch
@@ -45,4 +51,4 @@ jobs:
             exit 0
           fi
           git commit -m "test: add goal continuation diagnostic mode"
-          git push
+          git push origin HEAD:diag/goal-error-continuation-probe-20260821
