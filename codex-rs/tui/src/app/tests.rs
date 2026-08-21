@@ -18,6 +18,8 @@ use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
 use crate::app_event::HistoryBatchEntryResponse;
+use app_test_support::create_fake_parented_rollout_with_source;
+use app_test_support::rollout_path;
 use codex_utils_absolute_path::test_support::PathExt;
 
 use crate::chatwidget::ChatWidgetInit;
@@ -2076,6 +2078,309 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
     assert!(!app.should_attach_live_thread_for_selection(thread_id));
 }
 
+#[test]
+fn selecting_persisted_not_loaded_thread_spawn_resumes_live() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+        let root = app_server
+            .start_thread(app.chat_widget.config_ref())
+            .await?;
+        let root_thread_id = root.session.thread_id;
+        app.enqueue_primary_thread_session(root.session, root.turns)
+            .await?;
+
+        let child_timestamp = "2026-01-01T00-00-01";
+        let child_thread_id = ThreadId::from_string(
+            &create_fake_parented_rollout_with_source(
+                app.config.codex_home.as_path(),
+                child_timestamp,
+                "2026-01-01T00:00:01Z",
+                "Saved child message",
+                Some(app.config.model_provider_id.as_str()),
+                /*git_info*/ None,
+                RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    // Legacy/V1 ThreadSpawn rows may not persist an agent path or optional labels.
+                    // The picker cache below restores the observed path and labels, while the
+                    // missing source path preserves the server's writable legacy-thread
+                    // capability for this regression.
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                }),
+                root_thread_id.into(),
+                root_thread_id,
+            )
+            .expect("create persisted child rollout"),
+        )?;
+        let child_rollout = rollout_path(
+            app.config.codex_home.as_path(),
+            child_timestamp,
+            &child_thread_id.to_string(),
+        );
+        codex_rollout::append_rollout_item_to_path(
+            &child_rollout,
+            &RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-child".to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: ModeKind::default(),
+            })),
+        )
+        .await?;
+        codex_rollout::append_rollout_item_to_path(
+            &child_rollout,
+            &RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-child".to_string(),
+                last_agent_message: None,
+                error: None,
+                started_at: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+                provider_usage: None,
+            })),
+        )
+        .await?;
+
+        let persisted = app_server
+            .thread_read(child_thread_id, /*include_turns*/ false)
+            .await?;
+        assert!(matches!(
+            persisted.status,
+            codex_app_server_protocol::ThreadStatus::NotLoaded
+        ));
+        app.agent_navigation.upsert(
+            child_thread_id,
+            Some("worker".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ true,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        app.agent_navigation
+            .set_agent_path(child_thread_id, Some("/root/worker".to_string()));
+        // Opening the picker exercises the persisted ThreadSpawn backfill with nullable backend
+        // labels and an omitted source path; cached observed identity must survive that refresh.
+        app.open_agent_picker(&mut app_server).await;
+        let backfilled = app
+            .agent_navigation
+            .get(&child_thread_id)
+            .expect("persisted child should be backfilled into the picker");
+        assert_eq!(backfilled.agent_nickname.as_deref(), Some("worker"));
+        assert_eq!(backfilled.agent_role.as_deref(), Some("worker"));
+        assert_eq!(backfilled.agent_path.as_deref(), Some("/root/worker"));
+        // A discovered live row may already have an empty listener channel from an earlier
+        // notification. Selection must hydrate that placeholder instead of treating it as a
+        // resumed session.
+        app.store_active_thread_receiver().await;
+        app.active_thread_id = None;
+        app.active_thread_rx = None;
+        app.thread_event_channels
+            .insert(child_thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+        let stale_warning = "stale placeholder notification";
+        app.activate_thread_channel(child_thread_id).await;
+        app.enqueue_thread_notification(
+            child_thread_id,
+            ServerNotification::Warning(WarningNotification {
+                thread_id: Some(child_thread_id.to_string()),
+                message: stale_warning.to_string(),
+            }),
+        )
+        .await?;
+        app.store_active_thread_receiver().await;
+        app.active_thread_id = None;
+        app.active_thread_rx = None;
+        {
+            let channel = app
+                .thread_event_channels
+                .get(&child_thread_id)
+                .expect("placeholder child channel");
+            let store = channel.store.lock().await;
+            assert_eq!(store.buffer.len(), 1);
+            assert!(channel.receiver.is_some());
+        }
+
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
+            .await?;
+
+        let mut replayed_history = String::new();
+        while let Ok(event) = app_event_rx.try_recv() {
+            if let AppEvent::InsertHistoryCell(cell) = event {
+                replayed_history.push_str(&lines_to_single_string(
+                    &cell.transcript_lines(/*width*/ 80),
+                ));
+            }
+        }
+        assert!(
+            !replayed_history.contains(stale_warning),
+            "stale placeholder events must not replay after session hydration"
+        );
+
+        let entry = app
+            .agent_navigation
+            .get(&child_thread_id)
+            .expect("resumed child should remain in picker navigation");
+        assert!(
+            !entry.is_closed,
+            "successful resume must reopen the picker row"
+        );
+        assert!(
+            entry.is_running,
+            "successful resume must clear the stopped barrier"
+        );
+        assert_eq!(
+            app.thread_event_channels
+                .get(&child_thread_id)
+                .expect("resumed child channel")
+                .attachment(),
+            ThreadEventAttachment::Live
+        );
+        assert!(
+            !app.thread_event_channels
+                .get(&child_thread_id)
+                .expect("resumed child channel")
+                .store
+                .lock()
+                .await
+                .turns
+                .is_empty(),
+            "selection should replay persisted turns from the live resume"
+        );
+
+        while app_event_rx.try_recv().is_ok() {}
+        app.chat_widget
+            .restore_user_message_to_composer("follow-up on resumed child".into());
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. }))),
+            "live resume must retain writable/queued follow-up behavior"
+        );
+
+        app.agent_navigation.mark_stopped(child_thread_id);
+        app.enqueue_thread_notification(
+            child_thread_id,
+            turn_started_notification(child_thread_id, "turn-next"),
+        )
+        .await?;
+        app.open_agent_picker(&mut app_server).await;
+        let entry = app
+            .agent_navigation
+            .get(&child_thread_id)
+            .expect("resumed child should remain visible in /agent");
+        assert!(!entry.is_closed);
+        assert!(
+            entry.is_running,
+            "later TurnStarted must revive a live picker row"
+        );
+
+        app_server.shutdown().await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn attach_live_thread_for_selection_hydrates_inferred_zero_turn_session() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let config = app.chat_widget.config_ref().clone();
+        let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+        let started = app_server.start_thread(&config).await?;
+        let thread_id = started.session.thread_id;
+        let mut channel = ThreadEventChannel::new(/*capacity*/ 4);
+        {
+            let mut store = channel.store.lock().await;
+            store.set_inferred_session(test_thread_session(
+                thread_id,
+                test_path_buf("/tmp/inferred"),
+            ));
+            assert!(store.session.is_some());
+            assert!(!store.has_hydrated_snapshot());
+        }
+        app.thread_event_channels.insert(thread_id, channel);
+
+        assert!(
+            app.attach_live_thread_for_selection(&mut app_server, thread_id)
+                .await?
+        );
+
+        let store = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("hydrated thread channel")
+            .store
+            .lock()
+            .await;
+        assert!(store.has_hydrated_snapshot());
+        assert_eq!(
+            store.session.as_ref().map(|session| session.thread_id),
+            Some(thread_id)
+        );
+        app_server.shutdown().await?;
+        Ok(())
+    })
+}
+
+#[test]
+fn select_agent_thread_hydrates_thread_started_zero_turn_session() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let config = app.chat_widget.config_ref().clone();
+        let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+        let root = app_server.start_thread(&config).await?;
+        app.enqueue_primary_thread_session(root.session, root.turns)
+            .await?;
+
+        let child = app_server.start_thread(&config).await?;
+        let child_thread = app_server
+            .thread_read(child.session.thread_id, /*include_turns*/ false)
+            .await?;
+        app.enqueue_thread_notification(
+            child.session.thread_id,
+            ServerNotification::ThreadStarted(ThreadStartedNotification {
+                thread: child_thread,
+            }),
+        )
+        .await?;
+
+        {
+            let channel = app
+                .thread_event_channels
+                .get(&child.session.thread_id)
+                .expect("inferred child channel");
+            let store = channel.store.lock().await;
+            assert!(store.session.is_some());
+            assert!(!store.has_hydrated_snapshot());
+            assert!(store.turns.is_empty());
+        }
+
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        app.select_agent_thread(&mut tui, &mut app_server, child.session.thread_id)
+            .await?;
+
+        let channel = app
+            .thread_event_channels
+            .get(&child.session.thread_id)
+            .expect("hydrated child channel");
+        let store = channel.store.lock().await;
+        assert!(store.has_hydrated_snapshot());
+        drop(store);
+        assert_eq!(app.active_thread_id, Some(child.session.thread_id));
+        app_server.shutdown().await?;
+        Ok(())
+    })
+}
+
 #[tokio::test]
 async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_threads() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
@@ -3587,6 +3892,14 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
             Vec::new(),
         ),
     );
+    app.agent_navigation.upsert(
+        agent_thread_id,
+        Some("Cached".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
 
     app.enqueue_thread_notification(
         agent_thread_id,
@@ -3614,8 +3927,8 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 source: codex_app_server_protocol::SessionSource::Unknown,
                 can_accept_direct_input: None,
                 thread_source: None,
-                agent_nickname: Some("Robie".to_string()),
-                agent_role: Some("explorer".to_string()),
+                agent_nickname: None,
+                agent_role: None,
                 git_info: None,
                 name: Some("agent thread".to_string()),
                 turns: Vec::new(),
@@ -3634,6 +3947,18 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
     let session = store.session.clone().expect("inferred session");
 
     assert_eq!(session.model, primary_session.model);
+    assert_eq!(
+        app.agent_navigation
+            .get(&agent_thread_id)
+            .and_then(|entry| entry.agent_nickname.clone()),
+        Some("Cached".to_string())
+    );
+    assert_eq!(
+        app.agent_navigation
+            .get(&agent_thread_id)
+            .and_then(|entry| entry.agent_role.clone()),
+        Some("worker".to_string())
+    );
 
     Ok(())
 }

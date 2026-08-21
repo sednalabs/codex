@@ -72,6 +72,26 @@ impl App {
         self.refresh_pending_thread_approvals().await;
     }
 
+    pub(super) fn rebase_thread_event_receiver_after_session_refresh(
+        &mut self,
+        thread_id: ThreadId,
+    ) {
+        let Some(sender) = self
+            .thread_event_channels
+            .get(&thread_id)
+            .map(|channel| channel.sender.clone())
+        else {
+            return;
+        };
+        if self.active_thread_id == Some(thread_id) {
+            if let Some(receiver) = self.active_thread_rx.as_mut() {
+                ThreadEventChannel::rebase_event_receiver_after_session_refresh(receiver, &sender);
+            }
+        } else if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+            channel.rebase_receiver_after_session_refresh();
+        }
+    }
+
     pub(super) async fn store_active_thread_receiver(&mut self) {
         let Some(active_id) = self.active_thread_id else {
             return;
@@ -982,7 +1002,7 @@ impl App {
             if guard.session.is_none()
                 && let Some(session) = inferred_session
             {
-                guard.session = Some(session);
+                guard.set_inferred_session(session);
             }
             let turn_stopped = match &notification {
                 ServerNotification::TurnCompleted(notification) => {
@@ -1121,14 +1141,26 @@ impl App {
         session.reasoning_effort = model_settings.reasoning_effort;
         session.message_history = None;
         session.rollout_path = rollout_path;
+        let cached_entry = self.agent_navigation.get(&thread_id);
+        let agent_path = source_agent_path(&notification.thread.source)
+            .or_else(|| cached_entry.and_then(|entry| entry.agent_path.clone()));
+        let agent_nickname = notification
+            .thread
+            .agent_nickname
+            .clone()
+            .or_else(|| cached_entry.and_then(|entry| entry.agent_nickname.clone()));
+        let agent_role = notification
+            .thread
+            .agent_role
+            .clone()
+            .or_else(|| cached_entry.and_then(|entry| entry.agent_role.clone()));
         self.upsert_agent_picker_thread(
             thread_id,
-            notification.thread.agent_nickname.clone(),
-            notification.thread.agent_role.clone(),
+            agent_nickname,
+            agent_role,
             /*is_closed*/ false,
         );
-        self.agent_navigation
-            .set_agent_path(thread_id, source_agent_path(&notification.thread.source));
+        self.agent_navigation.set_agent_path(thread_id, agent_path);
         self.agent_navigation.update_identity(
             thread_id,
             notification
