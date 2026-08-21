@@ -423,10 +423,10 @@ impl App {
                         is_closed,
                     );
                 }
-                if is_closed {
-                    if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
-                        channel.mark_replay_only();
-                    }
+                if is_closed
+                    && let Some(channel) = self.thread_event_channels.get_mut(&thread_id)
+                {
+                    channel.mark_replay_only();
                 }
                 self.sync_active_thread_replay_only_state(thread_id);
                 self.agent_navigation
