@@ -269,6 +269,18 @@ fn auth_lock_anchor_rejects_unsafe_parent_chain() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(not(unix))]
+#[test]
+fn portable_auth_lock_root_is_derived_from_codex_home() -> anyhow::Result<()> {
+    let root = tempdir()?;
+    let codex_home = root.path().join("codex-home");
+    assert_eq!(
+        portable_lock_root(&codex_home)?,
+        root.path().join(".codex-auth-locks")
+    );
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn absent_symlink_aliases_share_conditional_delete_identity() -> anyhow::Result<()> {
@@ -1030,6 +1042,27 @@ fn auto_auth_storage_delete_if_falls_back_to_file_when_keyring_errors() -> anyho
 
     assert!(storage.delete_if(&|current| current == &expected)?);
     assert!(!get_auth_file(codex_home.path()).exists());
+    Ok(())
+}
+
+#[test]
+fn auto_auth_storage_delete_if_preserves_distinct_file_fallback() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let mock_keyring = MockKeyringStore::default();
+    let storage = AutoAuthStorage::new(
+        codex_home.path().to_path_buf(),
+        Arc::new(mock_keyring.clone()),
+        AuthKeyringBackendKind::Secrets,
+    );
+    let keyring_auth = auth_with_prefix("keyring-a");
+    seed_secrets_backend_with_auth(&mock_keyring, codex_home.path(), &keyring_auth)?;
+    let fallback_auth = auth_with_prefix("file-b");
+    storage.file_storage.save(&fallback_auth)?;
+
+    assert_eq!(storage.load()?, Some(keyring_auth.clone()));
+    assert!(storage.delete_if(&|current| current == &keyring_auth)?);
+    assert_eq!(storage.load()?, Some(fallback_auth.clone()));
+    assert_eq!(storage.file_storage.load()?, Some(fallback_auth));
     Ok(())
 }
 
