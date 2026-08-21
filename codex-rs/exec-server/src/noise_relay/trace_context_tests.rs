@@ -125,6 +125,36 @@ fn correlates_response_and_terminal_notification_with_request_trace() {
 }
 
 #[test]
+fn closed_process_before_start_response_cannot_be_resurrected() {
+    let trace = trace_context();
+    let mut context = NoiseTraceContext::default();
+    context.observe_request(&process_start_request(trace.clone()));
+
+    // Output which races the start response still uses the provisional trace.
+    assert_eq!(
+        context.return_trace(&process_notification()),
+        Some(trace.clone())
+    );
+
+    let closed = JSONRPCMessage::Notification(JSONRPCNotification {
+        method: EXEC_CLOSED_METHOD.to_string(),
+        params: Some(serde_json::json!({"processId": "process-1"})),
+    });
+    assert_eq!(context.return_trace(&closed), Some(trace.clone()));
+
+    // The response itself is still correlated to its request, but it must not
+    // promote the already-closed process mapping.
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(7),
+            result: serde_json::Value::Null,
+        })),
+        Some(trace)
+    );
+    assert_eq!(context.return_trace(&process_notification()), None);
+}
+
+#[test]
 fn unrelated_request_process_ids_do_not_poison_notification_correlation() {
     let trace = trace_context();
     let mut context = NoiseTraceContext::default();

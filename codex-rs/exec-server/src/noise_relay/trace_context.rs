@@ -41,6 +41,10 @@ struct TrackedProcess {
     /// A process-start request which may still establish this mapping. `None`
     /// means the mapping has been promoted by a successful response.
     pending_request: Option<RequestId>,
+    /// The peer closed the process before its start response arrived. Keep a
+    /// tombstone until that response is consumed so a late success cannot
+    /// resurrect the closed process mapping.
+    closed: bool,
 }
 
 impl NoiseTraceContext {
@@ -78,7 +82,11 @@ impl NoiseTraceContext {
         if let Some(process_id) = process_id
             && request_id_bytes.is_some()
         {
-            if !self.processes.contains_key(&process_id) {
+            if self
+                .processes
+                .get(&process_id)
+                .map_or(true, |process| process.closed)
+            {
                 let process_entry_bytes =
                     process_id.len() + trace_bytes + request_id_bytes.unwrap_or_default();
                 insert_bounded(
@@ -89,6 +97,7 @@ impl NoiseTraceContext {
                     TrackedProcess {
                         trace: trace.clone(),
                         pending_request: Some(request.id.clone()),
+                        closed: false,
                     },
                     process_entry_bytes,
                 );
@@ -124,19 +133,29 @@ impl NoiseTraceContext {
                     return None;
                 }
                 let process_id = process_id.to_string();
-                let trace = self
-                    .processes
-                    .get(&process_id)
-                    .map(|process| process.trace.clone());
                 if notification.method == EXEC_CLOSED_METHOD {
+                    let Some(process) = self.processes.get(&process_id) else {
+                        return None;
+                    };
+                    let trace = process.trace.clone();
+                    if process.pending_request.is_some() {
+                        if let Some(process) = self.processes.get_mut(&process_id) {
+                            process.closed = true;
+                        }
+                        return Some(trace);
+                    }
                     remove_tracked(
                         &mut self.processes,
                         &mut self.process_order,
                         &mut self.process_bytes,
                         &process_id,
                     );
+                    return Some(trace);
                 }
-                trace
+                self.processes
+                    .get(&process_id)
+                    .filter(|process| !process.closed)
+                    .map(|process| process.trace.clone())
             }
             JSONRPCMessage::Request(request) => request.trace.clone(),
         }
@@ -158,16 +177,25 @@ impl NoiseTraceContext {
             }
             return;
         };
+        if process.pending_request.as_ref() != Some(request_id) {
+            return;
+        }
         if success {
+            if process.closed {
+                remove_tracked(
+                    &mut self.processes,
+                    &mut self.process_order,
+                    &mut self.process_bytes,
+                    &process_id,
+                );
+                return;
+            }
             // A duplicate successful start must never replace an established
             // mapping, regardless of response order.
             if let Some(process) = self.processes.get_mut(&process_id) {
                 process.pending_request = None;
             }
             self.process_bytes = retained_payload_bytes(&self.processes);
-            return;
-        }
-        if process.pending_request.as_ref() != Some(request_id) {
             return;
         }
         let next = self
@@ -205,6 +233,7 @@ impl NoiseTraceContext {
             TrackedProcess {
                 trace,
                 pending_request: None,
+                closed: false,
             },
             process_id.len() + trace_bytes,
         );

@@ -23,6 +23,8 @@ use crate::telemetry::ConnectionTransport;
 use crate::telemetry::ExecServerTelemetry;
 use codex_http_client::HttpClientFactory;
 
+const UNKNOWN_REQUEST_METHOD_ERROR: &str = "method not found";
+
 #[derive(Clone)]
 pub(crate) struct ConnectionProcessor {
     session_registry: Arc<SessionRegistry>,
@@ -179,10 +181,7 @@ async fn run_connection(
                         if outgoing_tx
                             .send(RpcServerOutboundMessage::Error {
                                 request_id: request.id,
-                                error: method_not_found(format!(
-                                    "exec-server stub does not implement `{}` yet",
-                                    request.method
-                                )),
+                                error: method_not_found(UNKNOWN_REQUEST_METHOD_ERROR.to_string()),
                             })
                             .await
                             .is_err()
@@ -338,6 +337,7 @@ mod tests {
 
     use super::request_span;
     use super::run_connection;
+    use super::UNKNOWN_REQUEST_METHOD_ERROR;
     use super::unknown_notification_method_label;
     use crate::ExecServerRuntimePaths;
     use crate::ProcessId;
@@ -460,6 +460,47 @@ mod tests {
                 status: EnvironmentStatusKind::Ready,
             }
         );
+
+        drop(writer);
+        drop(lines);
+        timeout(Duration::from_secs(1), task)
+            .await
+            .expect("processor should exit")
+            .expect("processor should join");
+    }
+
+    #[tokio::test]
+    async fn unknown_request_error_does_not_echo_peer_method() {
+        let registry = SessionRegistry::new(crate::ExecServerTelemetry::default());
+        let (mut writer, mut lines, task) = spawn_test_connection(registry, "unknown-method");
+        send_request(
+            &mut writer,
+            /*id*/ 1,
+            INITIALIZE_METHOD,
+            &InitializeParams {
+                client_name: "exec-server-test".to_string(),
+                resume_session_id: None,
+            },
+        )
+        .await;
+        let _: InitializeResponse = read_response(&mut lines, /*expected_id*/ 1).await;
+        send_notification(&mut writer, INITIALIZED_METHOD, &()).await;
+
+        let peer_method = format!("peer-controlled/{}", "x".repeat(16 * 1024));
+        send_request(&mut writer, /*id*/ 2, &peer_method, &()).await;
+        let line = lines
+            .next_line()
+            .await
+            .expect("read method-not-found response")
+            .expect("method-not-found response line");
+        let error = match serde_json::from_str::<JSONRPCMessage>(&line)
+            .expect("decode method-not-found response")
+        {
+            JSONRPCMessage::Error(error) => error,
+            other => panic!("expected JSON-RPC error, got {other:?}"),
+        };
+        assert_eq!(error.error.message, UNKNOWN_REQUEST_METHOD_ERROR);
+        assert!(!line.contains(&peer_method));
 
         drop(writer);
         drop(lines);
