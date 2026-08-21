@@ -2192,6 +2192,20 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
     app.thread_event_channels.insert(thread_id, channel);
     app.activate_thread_channel(thread_id).await;
     app.active_thread_id = Some(thread_id);
+    {
+        let channel = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("replay channel");
+        let mut store = channel.store.lock().await;
+        store.push_request(exec_approval_request(
+            thread_id,
+            "stale-turn",
+            "stale-approval",
+            /*approval_id*/ None,
+        ));
+        assert!(store.has_pending_thread_approvals());
+    }
     app.chat_widget
         .handle_thread_session(started.session.clone());
     app.chat_widget.set_replay_only_thread(/*replay_only*/ true);
@@ -2259,6 +2273,22 @@ async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() 
         app.attach_live_thread_for_selection(&mut app_server, thread_id)
             .await?
     );
+    {
+        let store = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("promoted channel")
+            .store
+            .lock()
+            .await;
+        assert!(!store.has_pending_thread_approvals());
+        assert!(
+            store
+                .buffer
+                .iter()
+                .all(|event| !matches!(event, ThreadBufferedEvent::Request(_)))
+        );
+    }
     assert_eq!(app.chat_widget.current_model(), resumed_model);
     let mut promoted_history = Vec::new();
     while let Ok(event) = app_event_rx.try_recv() {

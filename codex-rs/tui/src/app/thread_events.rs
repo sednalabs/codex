@@ -102,6 +102,13 @@ impl ThreadEventStore {
         turns: Vec<Turn>,
     ) {
         self.set_session(session, turns);
+        self.clear_stale_replay_state();
+    }
+
+    /// Fence buffered state from a prior replay attachment before a new live resume begins.
+    /// Notifications arriving during the resume request are then retained as fresh post-snapshot
+    /// events by the existing channel buffer.
+    pub(super) fn clear_stale_replay_state(&mut self) {
         self.buffer.clear();
         self.pending_interactive_replay.clear();
         self.pending_interrupt_turn_id = None;
