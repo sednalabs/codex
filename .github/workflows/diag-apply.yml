@@ -31,7 +31,7 @@ jobs:
             exit 0
           fi
           python3 .github/scripts/diag_apply.py
-          cargo fmt --all
+          cargo fmt --all --manifest-path codex-rs/Cargo.toml
 
       - name: Commit patch
         shell: bash
