@@ -1132,6 +1132,42 @@ mod tests {
         }
     }
 
+    async fn assert_no_second_websocket_response<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let _ = timeout(Duration::from_secs(2), async {
+            loop {
+                let Some(frame) = websocket.next().await else {
+                    return;
+                };
+                let frame = frame.expect("frame should decode");
+                match frame {
+                    Message::Text(text) => {
+                        let message = serde_json::from_str::<JSONRPCMessage>(&text)
+                            .expect("text frame should be valid JSON-RPC");
+                        assert!(
+                            !matches!(
+                                message,
+                                JSONRPCMessage::Response(_) | JSONRPCMessage::Error(_)
+                            ),
+                            "unexpected second JSON-RPC response: {message:?}"
+                        );
+                    }
+                    Message::Close(_) => return,
+                    Message::Binary(_)
+                    | Message::Ping(_)
+                    | Message::Pong(_)
+                    | Message::Frame(_) => {
+                        continue;
+                    }
+                }
+            }
+        })
+        .await;
+    }
+
     async fn write_websocket_message<S>(
         websocket: &mut tokio_tungstenite::WebSocketStream<S>,
         message: JSONRPCMessage,
@@ -1214,6 +1250,32 @@ mod tests {
             mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
             channel_capacity: 8,
+        }
+    }
+
+    fn remote_user_input_request(request_id: RequestId) -> JSONRPCRequest {
+        JSONRPCRequest {
+            id: request_id,
+            method: "item/tool/requestUserInput".to_string(),
+            params: Some(
+                serde_json::to_value(ToolRequestUserInputParams {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "call-1".to_string(),
+                    questions: vec![ToolRequestUserInputQuestion {
+                        id: "question-1".to_string(),
+                        header: "Mode".to_string(),
+                        question: "Pick one".to_string(),
+                        is_other: false,
+                        is_secret: false,
+                        options: Some(vec![]),
+                    }],
+                    is_blocking: true,
+                    auto_resolution_ms: None,
+                })
+                .expect("params should serialize"),
+            ),
+            trace: None,
         }
     }
 
@@ -1911,6 +1973,267 @@ mod tests {
             .await
             .expect("server request should resolve");
 
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_live_server_request_id_reuse_terminates_without_second_event_or_response() {
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            let request_id = RequestId::String("live-reuse".to_string());
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(remote_user_input_request(request_id.clone())),
+            )
+            .await;
+            let JSONRPCMessage::Response(response) = read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected first server request response");
+            };
+            assert_eq!(response.id, request_id);
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(remote_user_input_request(request_id)),
+            )
+            .await;
+            assert_no_second_websocket_response(&mut websocket).await;
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+            .await
+            .expect("remote client should connect");
+        let AppServerEvent::ServerRequest(request) = client
+            .next_event()
+            .await
+            .expect("first request event should arrive")
+        else {
+            panic!("expected first server request event");
+        };
+        client
+            .resolve_server_request(request.id().clone(), serde_json::json!({}))
+            .await
+            .expect("first server request should resolve");
+        let Some(AppServerEvent::Disconnected { message }) =
+            timeout(Duration::from_secs(2), client.next_event())
+                .await
+                .expect("duplicate request should terminate promptly")
+        else {
+            panic!("duplicate request should produce a disconnect event");
+        };
+        assert!(message.contains("duplicate inbound server request ID"));
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_initialize_server_request_id_reuse_terminates_without_second_response() {
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            let JSONRPCMessage::Request(initialize) = read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected initialize request");
+            };
+            let request_id = RequestId::String("initialize-reuse".to_string());
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(remote_user_input_request(request_id.clone())),
+            )
+            .await;
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Response(JSONRPCResponse {
+                    id: initialize.id,
+                    result: serde_json::json!({}),
+                }),
+            )
+            .await;
+            let JSONRPCMessage::Notification(notification) =
+                read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected initialized notification");
+            };
+            assert_eq!(notification.method, "initialized");
+            let JSONRPCMessage::Response(response) = read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected initialize-time server request response");
+            };
+            assert_eq!(response.id, request_id);
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(remote_user_input_request(request_id)),
+            )
+            .await;
+            assert_no_second_websocket_response(&mut websocket).await;
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+            .await
+            .expect("remote client should connect");
+        let AppServerEvent::ServerRequest(request) = client
+            .next_event()
+            .await
+            .expect("initialize-time request event should arrive")
+        else {
+            panic!("expected initialize-time server request event");
+        };
+        client
+            .resolve_server_request(request.id().clone(), serde_json::json!({}))
+            .await
+            .expect("initialize-time server request should resolve");
+        let Some(AppServerEvent::Disconnected { message }) =
+            timeout(Duration::from_secs(2), client.next_event())
+                .await
+                .expect("duplicate request should terminate promptly")
+        else {
+            panic!("duplicate request should produce a disconnect event");
+        };
+        assert!(message.contains("duplicate inbound server request ID"));
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_server_request_double_resolution_is_rejected_without_second_response() {
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            let request_id = RequestId::String("double-resolve".to_string());
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(remote_user_input_request(request_id.clone())),
+            )
+            .await;
+            let JSONRPCMessage::Response(response) = read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected server request response");
+            };
+            assert_eq!(response.id, request_id);
+            assert!(
+                timeout(
+                    Duration::from_millis(200),
+                    read_websocket_message(&mut websocket)
+                )
+                .await
+                .is_err(),
+                "double resolution must not write a second response"
+            );
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+            .await
+            .expect("remote client should connect");
+        let AppServerEvent::ServerRequest(request) = client
+            .next_event()
+            .await
+            .expect("request event should arrive")
+        else {
+            panic!("expected server request event");
+        };
+        let request_id = request.id().clone();
+        client
+            .resolve_server_request(request_id.clone(), serde_json::json!({}))
+            .await
+            .expect("first resolution should succeed");
+        let error = client
+            .resolve_server_request(request_id, serde_json::json!({}))
+            .await
+            .expect_err("double resolution should be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_inbound_server_request_ledger_exhaustion_fails_closed() {
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            // Admit and resolve each request before sending the next one.  If all five
+            // frames are sent in one burst, the worker can observe the exhausting
+            // request and close the connection before the client has written the
+            // response for the fourth admitted request, making this test race with a
+            // transport-level broken pipe instead of exercising the ledger boundary.
+            for index in 0..4 {
+                let request_id = RequestId::String(format!("bounded-{index}"));
+                write_websocket_message(
+                    &mut websocket,
+                    JSONRPCMessage::Request(remote_user_input_request(request_id.clone())),
+                )
+                .await;
+                let JSONRPCMessage::Response(response) =
+                    read_websocket_message(&mut websocket).await
+                else {
+                    panic!("expected response for admitted server request");
+                };
+                assert_eq!(response.id, request_id);
+            }
+
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(remote_user_input_request(RequestId::String(
+                    "bounded-4".to_string(),
+                ))),
+            )
+            .await;
+            let _ = timeout(Duration::from_secs(2), websocket.next()).await;
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            channel_capacity: 1,
+            ..test_remote_connect_args(websocket_url)
+        })
+        .await
+        .expect("remote client should connect");
+        for _ in 0..4 {
+            let AppServerEvent::ServerRequest(request) = client
+                .next_event()
+                .await
+                .expect("bounded requests should arrive before exhaustion")
+            else {
+                panic!("expected server request event before exhaustion");
+            };
+            client
+                .resolve_server_request(request.id().clone(), serde_json::json!({}))
+                .await
+                .expect("admitted request should resolve");
+        }
+        let Some(AppServerEvent::Disconnected { message }) =
+            timeout(Duration::from_secs(2), client.next_event())
+                .await
+                .expect("ledger exhaustion should terminate promptly")
+        else {
+            panic!("ledger exhaustion should produce a disconnect event");
+        };
+        assert!(message.contains("ledger is exhausted"));
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_unsupported_server_request_id_reuse_terminates_without_second_response() {
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            let request_id = RequestId::String("unsupported-reuse".to_string());
+            let request = JSONRPCRequest {
+                id: request_id.clone(),
+                method: "thread/unknown".to_string(),
+                params: None,
+                trace: None,
+            };
+            write_websocket_message(&mut websocket, JSONRPCMessage::Request(request.clone())).await;
+            let JSONRPCMessage::Error(response) = read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected unsupported request rejection");
+            };
+            assert_eq!(response.id, request_id);
+            write_websocket_message(&mut websocket, JSONRPCMessage::Request(request)).await;
+            assert_no_second_websocket_response(&mut websocket).await;
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+            .await
+            .expect("remote client should connect");
+        let Some(AppServerEvent::Disconnected { message }) =
+            timeout(Duration::from_secs(2), client.next_event())
+                .await
+                .expect("unsupported request reuse should terminate promptly")
+        else {
+            panic!("unsupported request reuse should produce a disconnect event");
+        };
+        assert!(message.contains("duplicate inbound server request ID"));
         client.shutdown().await.expect("shutdown should complete");
     }
 
