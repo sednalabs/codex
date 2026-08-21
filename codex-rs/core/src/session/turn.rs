@@ -142,6 +142,7 @@ pub(crate) struct CachedEndpointRecommendedPluginCandidates {
 }
 
 const POST_SAMPLING_TOKEN_ESTIMATE_TARGET: &str = "codex_core::post_sampling_token_estimate";
+const GOAL_MULTI_AGENT_STRESS_CONTINUATION_MARKER: &str = "Diagnostic continuation probe:";
 
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
@@ -1229,6 +1230,94 @@ pub(crate) fn build_prompt(
         cwd = %step_context.turn.cwd.display()
     )
 )]
+fn goal_multi_agent_stress_continuation_input(input: &[ResponseItem]) -> bool {
+    input.iter().any(|item| {
+        let ResponseItem::Message { content, .. } = item else {
+            return false;
+        };
+        content.iter().any(|content_item| {
+            matches!(
+                content_item,
+                ContentItem::InputText { text }
+                    if text.contains(GOAL_MULTI_AGENT_STRESS_CONTINUATION_MARKER)
+            )
+        })
+    })
+}
+
+async fn run_goal_multi_agent_stress_post_usage_limit_probe(
+    tool_runtime: ToolCallRuntime,
+    turn_context: Arc<TurnContext>,
+    cancellation_token: CancellationToken,
+) {
+    let task_name = crate::diagnostic_flags::next_goal_multi_agent_probe_task_name("post_429");
+    let call_id = format!("diag_{task_name}");
+    let tool_name = if turn_context.provider.capabilities().namespace_tools {
+        turn_context
+            .config
+            .multi_agent_v2
+            .tool_namespace
+            .as_deref()
+            .map(|namespace| ToolName::namespaced(namespace, "spawn_agent"))
+            .unwrap_or_else(|| ToolName::plain("spawn_agent"))
+    } else {
+        ToolName::plain("spawn_agent")
+    };
+    let arguments = serde_json::json!({
+        "message": "Run one bounded diagnostic child step: use an available read-only tool to inspect the current environment or worktree, then report one concise evidence-backed fact to the parent.",
+        "task_name": task_name,
+        "fork_turns": "none"
+    })
+    .to_string();
+    let call = crate::tools::router::ToolCall {
+        tool_name: tool_name.clone(),
+        call_id: call_id.clone(),
+        payload: crate::tools::context::ToolPayload::Function { arguments },
+    };
+
+    turn_context.session_telemetry.counter(
+        "codex.diagnostic.goal_multi_agent_stress",
+        1,
+        &[("stage", "post_usage_limit_dispatch_attempt")],
+    );
+    tracing::info!(
+        turn_id = %turn_context.sub_id,
+        %call_id,
+        tool = %tool_name,
+        "multi-agent stress diagnostic dispatching bounded post-usage-limit V2 spawn"
+    );
+
+    match tool_runtime
+        .handle_tool_call_with_source(
+            call,
+            crate::tools::router::ToolCallSource::Direct,
+            cancellation_token,
+        )
+        .await
+    {
+        Ok(_) => {
+            turn_context.session_telemetry.counter(
+                "codex.diagnostic.goal_multi_agent_stress",
+                1,
+                &[("stage", "post_usage_limit_dispatch_completed")],
+            );
+        }
+        Err(error) => {
+            turn_context.session_telemetry.counter(
+                "codex.diagnostic.goal_multi_agent_stress",
+                1,
+                &[("stage", "post_usage_limit_dispatch_failed")],
+            );
+            warn!(
+                turn_id = %turn_context.sub_id,
+                %call_id,
+                %error,
+                "multi-agent stress diagnostic post-usage-limit V2 spawn failed"
+            );
+        }
+    }
+}
+
 async fn run_sampling_request(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
@@ -1257,8 +1346,16 @@ async fn run_sampling_request(
         Arc::clone(&turn_diff_tracker),
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
+    let multi_agent_stress_goal_turn = crate::diagnostic_flags::goal_multi_agent_stress_enabled()
+        && turn_context.multi_agent_version == codex_protocol::protocol::MultiAgentVersion::V2
+        && !matches!(
+            &turn_context.session_source,
+            codex_protocol::protocol::SessionSource::SubAgent(_)
+        )
+        && goal_multi_agent_stress_continuation_input(&input);
     let mut retries = 0;
     let mut usage_limit_retries = 0;
+    let mut post_usage_limit_v2_probe_dispatched = false;
     let mut capacity_retries = 0;
     let mut initial_input = Some(input);
     let mut original_input = None;
@@ -1308,6 +1405,15 @@ async fn run_sampling_request(
                             turn_id = %turn_context.sub_id,
                             "goal error diagnostic mode skipped rate-limit snapshot update"
                         );
+                    }
+                    if multi_agent_stress_goal_turn && !post_usage_limit_v2_probe_dispatched {
+                        post_usage_limit_v2_probe_dispatched = true;
+                        run_goal_multi_agent_stress_post_usage_limit_probe(
+                            tool_runtime.clone(),
+                            Arc::clone(&turn_context),
+                            cancellation_token.child_token(),
+                        )
+                        .await;
                     }
                     err
                 }
