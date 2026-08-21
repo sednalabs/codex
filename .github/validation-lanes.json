@@ -2495,7 +2495,8 @@
       "lane_ids": [
         "codex.app-server-client-targeted",
         "codex.workflow-ci-sanity",
-        "codex.downstream-docs-check"
+        "codex.downstream-docs-check",
+        "codex.downstream-divergence-audit"
       ],
       "allowed_paths": [
         "codex-rs/app-server-client/**",
