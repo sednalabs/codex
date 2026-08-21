@@ -11,186 +11,28 @@ permissions:
 jobs:
   apply:
     if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Apply patch
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_one(path: str, old: str, new: str) -> None:
-              p = Path(path)
-              text = p.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{path}: expected exactly one match, found {count}")
-              p.write_text(text.replace(old, new, 1))
-
-          replace_one(
-              "codex-rs/core/src/lib.rs",
-              "pub mod config;\npub mod connectors;",
-              "pub mod config;\npub mod diagnostic_flags;\npub mod connectors;",
-          )
-
-          replace_one(
-              "codex-rs/core/src/session/turn.rs",
-              """                CodexErrorDetails::UsageLimitReached(e) => {
-                    let rate_limits = e.rate_limits.clone();
-                    if let Some(rate_limits) = rate_limits {
-                        sess.update_rate_limits(&turn_context, *rate_limits).await;
-                    }
-                    return Err(err);
-                }
-""",
-              """                CodexErrorDetails::UsageLimitReached(e) => {
-                    if !crate::diagnostic_flags::goal_error_continuation_enabled() {
-                        let rate_limits = e.rate_limits.clone();
-                        if let Some(rate_limits) = rate_limits {
-                            sess.update_rate_limits(&turn_context, *rate_limits).await;
-                        }
-                    } else {
-                        warn!(
-                            turn_id = %turn_context.sub_id,
-                            "goal error continuation diagnostic mode skipped rate-limit snapshot update"
-                        );
-                    }
-                    return Err(err);
-                }
-""",
-          )
-
-          replace_one(
-              "codex-rs/ext/goal/src/extension.rs",
-              """            let Some(runtime) = goal_runtime_handle(input.thread_store) else {
-                return;
-            };
-
-            let reason = match input.error {
-""",
-              """            let Some(runtime) = goal_runtime_handle(input.thread_store) else {
-                return;
-            };
-
-            if matches!(input.error, CodexErrorInfo::UsageLimitExceeded)
-                && codex_core::diagnostic_flags::goal_error_continuation_enabled()
-            {
-                if let Err(err) = runtime
-                    .preserve_active_goal_after_turn_error(input.turn_id)
-                    .await
-                {
-                    tracing::warn!(
-                        error = ?input.error,
-                        "failed to preserve active goal after turn error in diagnostic mode: {err}"
-                    );
-                }
-                return;
-            }
-
-            let reason = match input.error {
-""",
-          )
-
-          replace_one(
-              "codex-rs/ext/goal/src/runtime.rs",
-              """    pub async fn usage_limit_active_goal_for_turn(&self, turn_id: &str) -> Result<(), String> {
-        self.stop_active_goal_for_turn(turn_id, ActiveGoalStopReason::UsageLimit)
-            .await
-    }
-
-    /// Accounts the ending turn and stops its active goal after a terminal error.
-""",
-              """    pub async fn usage_limit_active_goal_for_turn(&self, turn_id: &str) -> Result<(), String> {
-        self.stop_active_goal_for_turn(turn_id, ActiveGoalStopReason::UsageLimit)
-            .await
-    }
-
-    pub(crate) async fn preserve_active_goal_after_turn_error(
-        &self,
-        turn_id: &str,
-    ) -> Result<(), String> {
-        if !self.is_enabled() {
-            return Ok(());
-        }
-
-        let _goal_state_permit = self.goal_state_permit().await?;
-        let accounting = self.accounting_state();
-        if !accounting.turn_is_current_active_goal(turn_id) {
-            accounting.finish_turn(turn_id);
-            return Ok(());
-        }
-
-        let goal = self
-            .inner
-            .state_dbs
-            .thread_goals()
-            .get_thread_goal(self.thread_id())
-            .await
-            .map_err(|err| err.to_string())?;
-
-        accounting.finish_turn(turn_id);
-        match goal {
-            Some(goal) if goal.status == codex_state::ThreadGoalStatus::Active => {
-                accounting.mark_idle_goal_active(goal.goal_id);
-            }
-            Some(_) | None => accounting.clear_active_goal(),
-        }
-        Ok(())
-    }
-
-    /// Accounts the ending turn and stops its active goal after a terminal error.
-""",
-          )
-
-          Path("codex-rs/core/src/diagnostic_flags.rs").write_text(
-              '''const GOAL_ERROR_CONTINUATION_ENV: &str =
-              "CODEX_EXPERIMENTAL_GOAL_ERROR_CONTINUATION";
-
-          pub fn goal_error_continuation_enabled() -> bool {
-              std::env::var(GOAL_ERROR_CONTINUATION_ENV)
-                  .ok()
-                  .is_some_and(|value| is_truthy(value.as_str()))
-          }
-
-          fn is_truthy(value: &str) -> bool {
-              let value = value.trim();
-              value == "1"
-                  || value.eq_ignore_ascii_case("true")
-                  || value.eq_ignore_ascii_case("yes")
-                  || value.eq_ignore_ascii_case("on")
-          }
-
-          #[cfg(test)]
-          mod tests {
-              use super::is_truthy;
-
-              #[test]
-              fn parses_truthy_values() {
-                  for value in ["1", "true", "TRUE", "yes", "On", " on "] {
-                      assert!(is_truthy(value), "expected {value:?} to be truthy");
-                  }
-              }
-
-              #[test]
-              fn rejects_other_values() {
-                  for value in ["", "0", "false", "off", "no", "anything"] {
-                      assert!(!is_truthy(value), "expected {value:?} to be falsey");
-                  }
-              }
-          }
-          '''.replace("          ", "")
-          )
-          PY
-
+          if [[ ! -f .github/scripts/diag_apply.py ]]; then
+            echo "patch script not present yet"
+            exit 0
+          fi
+          python3 .github/scripts/diag_apply.py
           cargo fmt --all
 
       - name: Commit patch
         shell: bash
         run: |
+          if [[ ! -f codex-rs/core/src/diagnostic_flags.rs ]]; then
+            exit 0
+          fi
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add codex-rs/core/src/lib.rs \
@@ -199,5 +41,8 @@ jobs:
                   codex-rs/ext/goal/src/extension.rs \
                   codex-rs/ext/goal/src/runtime.rs
           git diff --cached --check
+          if git diff --cached --quiet; then
+            exit 0
+          fi
           git commit -m "test: add goal continuation diagnostic mode"
           git push
