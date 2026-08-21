@@ -22,6 +22,7 @@ codex-terminal-detection = { workspace = true }
 codex-utils-template = { workspace = true }
 codex-utils-version = { workspace = true }
 http = { workspace = true }
+libc = { workspace = true }
 once_cell = { workspace = true }
 os_info = { workspace = true }
 rand = { workspace = true }

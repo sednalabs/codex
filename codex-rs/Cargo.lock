@@ -3572,6 +3572,7 @@ dependencies = [
  "http 1.4.2",
  "jsonwebtoken",
  "keyring",
+ "libc",
  "once_cell",
  "os_info",
  "pretty_assertions",

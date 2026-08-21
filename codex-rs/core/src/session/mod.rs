@@ -3133,7 +3133,7 @@ impl Session {
                         .reasoning_effort
                         .clone()
                         .or_else(|| turn_context.model_info.default_reasoning_level.clone()),
-                    turn_context.config.service_tier.clone(),
+                    turn_context.service_tier_for_remote_compaction(),
                 );
                 if !identity.is_bounded() {
                     tracing::warn!(

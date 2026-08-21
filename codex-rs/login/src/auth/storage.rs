@@ -11,7 +11,13 @@ use std::fs::OpenOptions;
 use std::io::Read;
 use std::io::Write;
 #[cfg(unix)]
+use std::os::unix::fs::DirBuilderExt;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -233,27 +239,127 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
 static AUTH_STORAGE_TRANSACTION_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 fn lock_auth_storage(codex_home: &Path) -> std::io::Result<File> {
-    let canonical_identity = canonical_storage_identity(codex_home)?;
-    let mut hasher = Sha256::new();
-    hasher.update(canonical_identity.to_string_lossy().as_bytes());
-    let lock_key = digest_hex(hasher.finalize());
     // The lock root must not follow TMPDIR; cooperating Codex processes may have
     // different temporary-directory environments while sharing one CODEX_HOME.
     #[cfg(unix)]
     let lock_dir = PathBuf::from("/tmp").join("codex-auth-locks");
     #[cfg(not(unix))]
     let lock_dir = std::env::temp_dir().join("codex-auth-locks");
-    std::fs::create_dir_all(&lock_dir)?;
+    lock_auth_storage_at(codex_home, &lock_dir)
+}
+
+fn lock_auth_storage_at(codex_home: &Path, lock_dir: &Path) -> std::io::Result<File> {
+    let canonical_identity = canonical_storage_identity(codex_home)?;
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_identity.to_string_lossy().as_bytes());
+    let lock_key = digest_hex(hasher.finalize());
+    ensure_secure_lock_dir(&lock_dir)?;
     let lock_path = lock_dir.join(lock_key);
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);
     #[cfg(unix)]
     {
         options.mode(0o600);
+        // The lock root is private, but also refuse a final-component symlink if
+        // an attacker manages to replace a lock file between metadata checks.
+        options.custom_flags(libc::O_NOFOLLOW);
     }
-    let lock_file = options.open(lock_path)?;
+    let lock_file = options.open(&lock_path)?;
+    validate_lock_file(&lock_file, &lock_path)?;
     lock_file.lock()?;
     Ok(lock_file)
+}
+
+fn ensure_secure_lock_dir(lock_dir: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(lock_dir) {
+        Ok(metadata) => {
+            validate_lock_dir(&metadata, lock_dir)?;
+            #[cfg(unix)]
+            if metadata.permissions().mode() & 0o077 != 0 {
+                let mut permissions = metadata.permissions();
+                permissions.set_mode(0o700);
+                std::fs::set_permissions(lock_dir, permissions)?;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            builder.mode(0o700);
+            match builder.create(lock_dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+            let metadata = std::fs::symlink_metadata(lock_dir)?;
+            validate_lock_dir(&metadata, lock_dir)?;
+            #[cfg(unix)]
+            if metadata.permissions().mode() & 0o077 != 0 {
+                let mut permissions = metadata.permissions();
+                permissions.set_mode(0o700);
+                std::fs::set_permissions(lock_dir, permissions)?;
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_lock_dir(metadata: &std::fs::Metadata, lock_dir: &Path) -> std::io::Result<()> {
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(std::io::Error::other(format!(
+            "auth lock path is not a directory: {}",
+            lock_dir.display()
+        )));
+    }
+    // A shared lock directory must be owned by this process and private from
+    // other users. Existing directories are tightened to 0700 below.
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other(format!(
+            "auth lock directory has unexpected owner: {}",
+            lock_dir.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_lock_dir(metadata: &std::fs::Metadata, lock_dir: &Path) -> std::io::Result<()> {
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(std::io::Error::other(format!(
+            "auth lock path is not a directory: {}",
+            lock_dir.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_lock_file(file: &File, lock_path: &Path) -> std::io::Result<()> {
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other(format!(
+            "auth lock path is not a private regular file: {}",
+            lock_path.display()
+        )));
+    }
+    if metadata.permissions().mode() & 0o077 != 0 {
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o600);
+        file.set_permissions(permissions)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_lock_file(file: &File, lock_path: &Path) -> std::io::Result<()> {
+    if !file.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::other(format!(
+            "auth lock path is not a regular file: {}",
+            lock_path.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Return a stable identity for an existing home, a symlink alias, or an absent
