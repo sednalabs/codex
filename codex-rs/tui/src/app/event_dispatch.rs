@@ -47,7 +47,17 @@ impl App {
             | AppEvent::UpdateFeatureFlags { .. }
             | AppEvent::UpdateMemorySettings { .. }
             | AppEvent::ResetMemories
+            | AppEvent::UpdateWorldWritableWarningAcknowledged(_)
+            | AppEvent::UpdateRateLimitSwitchPromptHidden(_)
             | AppEvent::UpdatePlanModeReasoningEffort(_)
+            | AppEvent::PersistModelSelection { .. }
+            | AppEvent::PersistPersonalitySelection { .. }
+            | AppEvent::PersistServiceTierSelection { .. }
+            | AppEvent::PersistRealtimeAudioDeviceSelection { .. }
+            | AppEvent::PersistWorldWritableWarningAcknowledged
+            | AppEvent::PersistRateLimitSwitchPromptHidden
+            | AppEvent::PersistPlanModeReasoningEffort(_)
+            | AppEvent::PersistModelMigrationPromptAcknowledged { .. }
             | AppEvent::SubmitUserMessageWithMode { .. } => true,
             _ => false,
         }
@@ -2711,6 +2721,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_event::RealtimeAudioDeviceKind;
     use crate::chatwidget::UserMessage;
     use codex_protocol::config_types::CollaborationModeMask;
 
@@ -2732,6 +2743,31 @@ mod tests {
                 generate_memories: false,
             }
         ));
+        for event in [
+            AppEvent::PersistModelSelection {
+                model: "gpt-5.4".to_string(),
+                effort: None,
+            },
+            AppEvent::PersistPersonalitySelection {
+                personality: Personality::Friendly,
+            },
+            AppEvent::PersistServiceTierSelection { service_tier: None },
+            AppEvent::PersistRealtimeAudioDeviceSelection {
+                kind: RealtimeAudioDeviceKind::Microphone,
+                name: None,
+            },
+            AppEvent::PersistPlanModeReasoningEffort(None),
+            AppEvent::PersistWorldWritableWarningAcknowledged,
+            AppEvent::PersistRateLimitSwitchPromptHidden,
+            AppEvent::PersistModelMigrationPromptAcknowledged {
+                from_model: "gpt-4.1".to_string(),
+                to_model: "gpt-5.4".to_string(),
+            },
+            AppEvent::UpdateWorldWritableWarningAcknowledged(true),
+            AppEvent::UpdateRateLimitSwitchPromptHidden(true),
+        ] {
+            assert!(App::replay_only_event_is_mutating(&event));
+        }
         assert!(App::replay_only_event_is_mutating(&AppEvent::CodexOp(
             AppCommand::set_thread_name("renamed".to_string())
         )));
