@@ -357,24 +357,18 @@ impl ThreadEventChannel {
         let Some(receiver) = self.receiver.as_mut() else {
             return;
         };
-        Self::rebase_event_receiver_after_session_refresh(receiver, &self.sender);
+        Self::discard_event_receiver_after_session_refresh(receiver);
     }
 
-    pub(super) fn rebase_event_receiver_after_session_refresh(
+    /// The event store is the sole owner of events that existed before a refreshed session
+    /// snapshot. Routing records every event in that store before attempting to notify an active
+    /// receiver, so receiver entries are delivery copies, not a second recovery source. Dropping
+    /// those copies avoids both duplicate replay and a drain-and-requeue `Full`/`Closed` loss
+    /// boundary; arrivals after this drain remain in the receiver for normal live delivery.
+    pub(super) fn discard_event_receiver_after_session_refresh(
         receiver: &mut mpsc::Receiver<ThreadBufferedEvent>,
-        sender: &mpsc::Sender<ThreadBufferedEvent>,
     ) {
-        let mut retained = Vec::new();
-        while let Ok(event) = receiver.try_recv() {
-            if ThreadEventStore::event_survives_session_refresh(&event) {
-                retained.push(event);
-            }
-        }
-        for event in retained {
-            if sender.try_send(event).is_err() {
-                break;
-            }
-        }
+        while receiver.try_recv().is_ok() {}
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -760,5 +754,54 @@ mod tests {
             serde_json::to_value(actual).expect("MCP notification should serialize"),
             serde_json::to_value(notification).expect("MCP notification should serialize"),
         );
+    }
+
+    #[test]
+    fn session_refresh_uses_the_store_as_the_exactly_once_survivor_owner() {
+        let thread_id = ThreadId::new();
+        let request = exec_approval_request(
+            thread_id,
+            "turn-approval",
+            "call-approval",
+            /*approval_id*/ None,
+        );
+        let hook = hook_started_notification(thread_id, "turn-hook");
+        let mut channel = ThreadEventChannel::new(/*capacity*/ 2);
+        {
+            let mut store = channel.store.blocking_lock();
+            store.push_request(request.clone());
+            store.push_notification(hook.clone());
+            store.rebase_buffer_after_session_refresh();
+        }
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Request(request))
+            .expect("receiver has capacity for delivery copy");
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Notification(hook))
+            .expect("receiver has capacity for delivery copy");
+
+        channel.rebase_receiver_after_session_refresh();
+        let receiver = channel.receiver.as_mut().expect("receiver is retained");
+        assert!(
+            receiver.try_recv().is_err(),
+            "delivery copies were discarded"
+        );
+
+        let snapshot = channel.store.blocking_lock().snapshot();
+        assert_eq!(
+            snapshot.events.len(),
+            2,
+            "survivors replay from the store once"
+        );
+        assert!(matches!(
+            snapshot.events[0],
+            ThreadBufferedEvent::Request(_)
+        ));
+        assert!(matches!(
+            snapshot.events[1],
+            ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
+        ));
     }
 }

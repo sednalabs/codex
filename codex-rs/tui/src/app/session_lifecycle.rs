@@ -40,15 +40,30 @@ fn persisted_picker_thread_is_running(status: codex_app_server_protocol::ThreadS
     )
 }
 
-fn persisted_picker_thread_is_closed(
-    status: codex_app_server_protocol::ThreadStatus,
-    already_closed: bool,
-) -> bool {
-    already_closed || matches!(status, codex_app_server_protocol::ThreadStatus::NotLoaded)
+fn persisted_picker_thread_is_closed(status: codex_app_server_protocol::ThreadStatus) -> bool {
+    matches!(status, codex_app_server_protocol::ThreadStatus::NotLoaded)
 }
 
 fn persisted_picker_source_kinds() -> Vec<ThreadSourceKind> {
     vec![ThreadSourceKind::SubAgentThreadSpawn]
+}
+
+/// Returns a ThreadSpawn parent only when the source-embedded lineage and the persisted thread
+/// metadata agree. Persisted descendant discovery is an admission boundary, so missing, invalid,
+/// or contradictory lineage is deliberately not repaired from either representation.
+fn persisted_thread_spawn_parent(thread: &codex_app_server_protocol::Thread) -> Option<ThreadId> {
+    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: source_parent,
+        ..
+    }) = &thread.source
+    else {
+        return None;
+    };
+    let metadata_parent = thread
+        .parent_thread_id
+        .as_deref()
+        .and_then(|parent| ThreadId::from_string(parent).ok())?;
+    (source_parent == &metadata_parent).then_some(*source_parent)
 }
 
 impl App {
@@ -275,21 +290,19 @@ impl App {
         let mut budget_exhausted = false;
         let mut retryable_lineage_failure = false;
         for thread in response.data {
-            if !matches!(
-                thread.source,
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-            ) || !self
-                .persisted_descendant_reaches_root(
-                    app_server,
-                    &thread,
-                    root_id,
-                    MAX_DEPTH,
-                    MAX_LINEAGE_READS,
-                    &mut lineage_reads,
-                    &mut budget_exhausted,
-                    &mut retryable_lineage_failure,
-                )
-                .await
+            if persisted_thread_spawn_parent(&thread).is_none()
+                || !self
+                    .persisted_descendant_reaches_root(
+                        app_server,
+                        &thread,
+                        root_id,
+                        MAX_DEPTH,
+                        MAX_LINEAGE_READS,
+                        &mut lineage_reads,
+                        &mut budget_exhausted,
+                        &mut retryable_lineage_failure,
+                    )
+                    .await
             {
                 if budget_exhausted || retryable_lineage_failure {
                     break;
@@ -303,10 +316,6 @@ impl App {
                 .thread_event_channels
                 .get(&thread_id)
                 .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
-            let already_closed = self
-                .agent_navigation
-                .get(&thread_id)
-                .is_some_and(|entry| entry.is_closed);
             let cached_entry = self.agent_navigation.get(&thread_id);
             let agent_nickname = thread
                 .agent_nickname
@@ -320,8 +329,8 @@ impl App {
                 .or_else(|| cached_entry.and_then(|entry| entry.agent_path.clone()));
             // A live channel is authoritative after an explicit selection-time resume. Do not
             // let the stale persisted `NotLoaded` row close (or hide) the now-live picker entry.
-            let is_closed = !has_live_channel
-                && persisted_picker_thread_is_closed(thread.status.clone(), already_closed);
+            let is_closed =
+                !has_live_channel && persisted_picker_thread_is_closed(thread.status.clone());
             self.upsert_agent_picker_thread(thread_id, agent_nickname, agent_role, is_closed);
             self.agent_navigation.update_identity(
                 thread_id,
@@ -368,11 +377,7 @@ impl App {
         budget_exhausted: &mut bool,
         retryable_failure: &mut bool,
     ) -> bool {
-        let mut current = match thread
-            .parent_thread_id
-            .as_deref()
-            .and_then(|id| ThreadId::from_string(id).ok())
-        {
+        let mut current = match persisted_thread_spawn_parent(thread) {
             Some(id) => id,
             None => return false,
         };
@@ -401,14 +406,8 @@ impl App {
                             return false;
                         }
                     };
-                    let parent_thread_id = parent
-                        .parent_thread_id
-                        .as_deref()
-                        .and_then(|id| ThreadId::from_string(id).ok());
-                    let is_thread_spawn = matches!(
-                        parent.source,
-                        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-                    );
+                    let parent_thread_id = persisted_thread_spawn_parent(&parent);
+                    let is_thread_spawn = parent_thread_id.is_some();
                     self.agent_navigation.picker_lineage_cache_insert(
                         current,
                         parent_thread_id,
@@ -1448,6 +1447,51 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_app_server_protocol::Thread;
+    use codex_utils_absolute_path::test_support::PathBufExt;
+    use codex_utils_absolute_path::test_support::test_path_buf;
+
+    fn persisted_thread_spawn(
+        thread_id: ThreadId,
+        metadata_parent: Option<ThreadId>,
+        source_parent: ThreadId,
+    ) -> Thread {
+        Thread {
+            id: thread_id.to_string(),
+            extra: None,
+            session_id: thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: metadata_parent.map(|parent| parent.to_string()),
+            preview: String::new(),
+            ephemeral: false,
+            is_pinned: false,
+            history_mode: Default::default(),
+            model_provider: "openai".to_string(),
+            model: None,
+            reasoning_effort: None,
+            created_at: 0,
+            updated_at: 0,
+            recency_at: Some(0),
+            status: codex_app_server_protocol::ThreadStatus::Idle,
+            path: None,
+            cwd: test_path_buf("/tmp").abs(),
+            cli_version: "0.0.0".to_string(),
+            source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: source_parent,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            can_accept_direct_input: None,
+            thread_source: None,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: None,
+            turns: Vec::new(),
+        }
+    }
 
     #[test]
     fn terminal_thread_read_error_detection_matches_not_loaded_errors() {
@@ -1482,22 +1526,16 @@ mod tests {
     }
 
     #[test]
-    fn persisted_terminal_status_or_thread_closed_event_outweighs_live_attachment() {
+    fn persisted_picker_status_is_authoritative_without_a_live_channel() {
         use codex_app_server_protocol::ThreadStatus;
 
-        assert!(persisted_picker_thread_is_closed(
-            ThreadStatus::NotLoaded,
-            false
-        ));
-        assert!(persisted_picker_thread_is_closed(
-            ThreadStatus::Active {
-                active_flags: vec![]
-            },
-            true
-        ));
+        assert!(persisted_picker_thread_is_closed(ThreadStatus::NotLoaded));
+        assert!(!persisted_picker_thread_is_closed(ThreadStatus::Active {
+            active_flags: vec![]
+        }));
+        assert!(!persisted_picker_thread_is_closed(ThreadStatus::Idle));
         assert!(!persisted_picker_thread_is_closed(
-            ThreadStatus::Idle,
-            false
+            ThreadStatus::SystemError
         ));
     }
 
@@ -1506,6 +1544,36 @@ mod tests {
         assert_eq!(
             persisted_picker_source_kinds(),
             vec![ThreadSourceKind::SubAgentThreadSpawn]
+        );
+    }
+
+    #[test]
+    fn persisted_picker_requires_consistent_thread_spawn_lineage_at_every_level() {
+        let root = ThreadId::new();
+        let middle = ThreadId::new();
+        let leaf = ThreadId::new();
+
+        let consistent_leaf = persisted_thread_spawn(leaf, Some(middle), middle);
+        let consistent_middle = persisted_thread_spawn(middle, Some(root), root);
+        assert_eq!(
+            persisted_thread_spawn_parent(&consistent_leaf),
+            Some(middle)
+        );
+        assert_eq!(
+            persisted_thread_spawn_parent(&consistent_middle),
+            Some(root)
+        );
+
+        let contradictory_leaf = persisted_thread_spawn(leaf, Some(middle), root);
+        assert_eq!(persisted_thread_spawn_parent(&contradictory_leaf), None);
+
+        let contradictory_middle = persisted_thread_spawn(middle, Some(root), leaf);
+        assert_eq!(persisted_thread_spawn_parent(&contradictory_middle), None);
+
+        let missing_metadata_parent = persisted_thread_spawn(leaf, None, middle);
+        assert_eq!(
+            persisted_thread_spawn_parent(&missing_metadata_parent),
+            None
         );
     }
 
