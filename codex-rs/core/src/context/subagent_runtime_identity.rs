@@ -7,6 +7,8 @@ use crate::ThreadConfigSnapshot;
 
 const IDENTITY_SEMANTICS: &str = "runtime_configured_request_identity";
 const USAGE_ACCOUNTING_SEMANTICS: &str = "not_terminal_provider_response_or_usage_accounting";
+const MAX_IDENTITY_FIELD_BYTES: usize = 256;
+const MAX_IDENTITY_FRAGMENT_BYTES: usize = 1_024;
 
 /// Runtime-owned request identity supplied to a spawned agent before sampling.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,7 +29,10 @@ impl SubagentRuntimeIdentity {
         }
     }
 
-    pub(crate) fn matches_response_item(item: &ResponseItem) -> bool {
+    pub(crate) fn matches_response_item(
+        item: &ResponseItem,
+        snapshot: &ThreadConfigSnapshot,
+    ) -> bool {
         let ResponseItem::Message { role, content, .. } = item else {
             return false;
         };
@@ -37,7 +42,32 @@ impl SubagentRuntimeIdentity {
         let [ContentItem::InputText { text }] = content.as_slice() else {
             return false;
         };
-        Self::matches_text(text)
+        Self::from_snapshot(snapshot).matches_rendered_text(text)
+    }
+
+    pub(crate) fn has_marked_response_item(item: &ResponseItem) -> bool {
+        let ResponseItem::Message { role, content, .. } = item else {
+            return false;
+        };
+        let [ContentItem::InputText { text }] = content.as_slice() else {
+            return false;
+        };
+        let (start, end) = Self::type_markers();
+        role == "developer" && text.starts_with(start) && text.ends_with(end)
+    }
+
+    fn is_bounded(&self) -> bool {
+        self.effective_model.len() <= MAX_IDENTITY_FIELD_BYTES
+            && self.effective_model_provider_id.len() <= MAX_IDENTITY_FIELD_BYTES
+            && self
+                .effective_service_tier
+                .as_deref()
+                .is_none_or(|tier| tier.len() <= MAX_IDENTITY_FIELD_BYTES)
+            && self.render().len() <= MAX_IDENTITY_FRAGMENT_BYTES
+    }
+
+    fn matches_rendered_text(&self, text: &str) -> bool {
+        self.is_bounded() && text == self.render()
     }
 }
 
@@ -83,8 +113,15 @@ mod tests {
             effective_reasoning_effort: None,
             effective_service_tier: Some("priority".to_string()),
         };
-        let item = ContextualUserFragment::into(identity);
-        assert!(SubagentRuntimeIdentity::matches_response_item(&item));
+        let item = ContextualUserFragment::into(identity.clone());
+        let rendered = match &item {
+            ResponseItem::Message { content, .. } => match &content[..] {
+                [ContentItem::InputText { text }] => text,
+                _ => panic!("identity must contain one text item"),
+            },
+            _ => panic!("identity must be a message"),
+        };
+        assert!(identity.matches_rendered_text(rendered));
         assert!(
             serde_json::to_string(&item)
                 .expect("serialize identity")
@@ -100,6 +137,6 @@ mod tests {
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         };
-        assert!(!SubagentRuntimeIdentity::matches_response_item(&spoof));
+        assert!(!SubagentRuntimeIdentity::has_marked_response_item(&spoof));
     }
 }
