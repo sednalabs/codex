@@ -370,3 +370,193 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
         .join()
         .expect("session lifecycle request test thread")
 }
+
+#[test]
+fn closed_existing_empty_channel_hydrates_persisted_transcript() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-closed-channel-hydration".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+                let codex_home = app.config.codex_home.as_path();
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home,
+                        "2026-01-01T00-00-00",
+                        "2026-01-01T00:00:00Z",
+                        "Saved root message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home,
+                        "2026-01-01T00-00-01",
+                        "2026-01-01T00:00:01Z",
+                        "Saved child message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: None,
+                            agent_nickname: Some("worker".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create child rollout"),
+                )?;
+
+                let (mut app_server, requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+                let started = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        child_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                assert!(!started.turns.is_empty());
+
+                // A spawn can leave an existing live channel with no local snapshot. The server
+                // can unload that thread independently, so this channel must be hydrated again
+                // before a closed-thread selection renders it.
+                app.thread_event_channels
+                    .insert(child_thread_id, ThreadEventChannel::new(/*capacity*/ 4));
+                app.agent_navigation.upsert(
+                    child_thread_id,
+                    Some("worker".to_string()),
+                    Some("worker".to_string()),
+                    /*is_closed*/ false,
+                    /*created_at*/ None,
+                    /*updated_at*/ None,
+                );
+                assert_eq!(
+                    app.thread_event_channels
+                        .get(&child_thread_id)
+                        .expect("existing channel")
+                        .attachment(),
+                    ThreadEventAttachment::Live
+                );
+                {
+                    let store = app
+                        .thread_event_channels
+                        .get(&child_thread_id)
+                        .expect("existing channel")
+                        .store
+                        .lock()
+                        .await;
+                    assert!(store.session.is_none());
+                    assert!(store.turns.is_empty());
+                }
+
+                app_server.thread_unsubscribe(child_thread_id).await?;
+                assert!(
+                    app.refresh_agent_picker_thread_liveness(&mut app_server, child_thread_id)
+                        .await
+                );
+                assert!(
+                    app.agent_navigation
+                        .get(&child_thread_id)
+                        .is_some_and(|entry| entry.is_closed)
+                );
+                assert_eq!(
+                    app.thread_event_channels
+                        .get(&child_thread_id)
+                        .expect("closed channel")
+                        .attachment(),
+                    ThreadEventAttachment::ReplayOnly
+                );
+                {
+                    let store = app
+                        .thread_event_channels
+                        .get(&child_thread_id)
+                        .expect("closed channel")
+                        .store
+                        .lock()
+                        .await;
+                    assert!(store.session.is_none());
+                    assert!(store.turns.is_empty());
+                }
+
+                // Replay-only mutation gates must remain closed while the persisted snapshot is
+                // still absent; selection below is the operation that hydrates this channel.
+                let op = AppCommand::user_turn(
+                    vec![UserInput::Text {
+                        text: "must not be submitted".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                    app.config.cwd.to_path_buf(),
+                    AskForApproval::OnRequest,
+                    /*active_permission_profile*/ None,
+                    get_model_offline_for_tests(app.config.model.as_deref()),
+                    /*effort*/ None,
+                    /*summary*/ None,
+                    /*service_tier*/ None,
+                    /*final_output_json_schema*/ None,
+                    /*collaboration_mode*/ None,
+                    /*personality*/ None,
+                );
+                app.submit_thread_op(&mut app_server, child_thread_id, op)
+                    .await?;
+                assert!(op_rx.try_recv().is_err());
+                while app_event_rx.try_recv().is_ok() {}
+
+                let mut tui = crate::tui::test_support::make_test_tui()?;
+                app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
+                    .await?;
+
+                let store = app
+                    .thread_event_channels
+                    .get(&child_thread_id)
+                    .expect("hydrated channel")
+                    .store
+                    .lock()
+                    .await;
+                assert!(store.session.is_some());
+                assert_eq!(store.turns, started.turns);
+                assert_eq!(
+                    app.thread_event_channels
+                        .get(&child_thread_id)
+                        .expect("hydrated channel")
+                        .attachment(),
+                    ThreadEventAttachment::ReplayOnly
+                );
+
+                let rendered = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                    .filter_map(|event| match event {
+                        AppEvent::InsertHistoryCell(cell) => {
+                            Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert!(
+                    rendered
+                        .iter()
+                        .any(|cell| cell.contains("Saved child message"))
+                );
+
+                let (_, reads) = take_backfill_counts(&requests);
+                assert!(
+                    reads >= 2,
+                    "closure refresh and transcript hydration must both read"
+                );
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("closed channel hydration test thread")
+}
