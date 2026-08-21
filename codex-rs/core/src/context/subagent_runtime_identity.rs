@@ -52,11 +52,10 @@ impl SubagentRuntimeIdentity {
         let [ContentItem::InputText { text }] = content.as_slice() else {
             return false;
         };
-        let (start, end) = Self::type_markers();
-        role == "developer" && text.starts_with(start) && text.ends_with(end)
+        role == "developer" && Self::has_reserved_markers(text)
     }
 
-    fn is_bounded(&self) -> bool {
+    pub(crate) fn is_bounded(&self) -> bool {
         self.effective_model.len() <= MAX_IDENTITY_FIELD_BYTES
             && self.effective_model_provider_id.len() <= MAX_IDENTITY_FIELD_BYTES
             && self
@@ -68,6 +67,20 @@ impl SubagentRuntimeIdentity {
 
     fn matches_rendered_text(&self, text: &str) -> bool {
         self.is_bounded() && text == self.render()
+    }
+
+    /// Marker matching is intentionally more permissive than identity matching. Marker
+    /// variants may have been serialized with surrounding whitespace or different case, but
+    /// only the exact canonical fragment can match the configured identity above.
+    fn has_reserved_markers(text: &str) -> bool {
+        let normalized = text
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .map(|character| character.to_ascii_lowercase())
+            .collect::<String>();
+        let (start, end) = Self::type_markers();
+        normalized.starts_with(&start.to_ascii_lowercase())
+            && normalized.ends_with(&end.to_ascii_lowercase())
     }
 }
 
@@ -138,5 +151,73 @@ mod tests {
             internal_chat_message_metadata_passthrough: None,
         };
         assert!(!SubagentRuntimeIdentity::has_marked_response_item(&spoof));
+    }
+
+    #[test]
+    fn reserved_markers_are_case_and_whitespace_insensitive_but_identity_is_exact() {
+        let variant = ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "  < SUBAGENT_RUNTIME_IDENTITY >\n{}\n</ SUBAGENT_RUNTIME_IDENTITY >  "
+                    .to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        };
+        assert!(SubagentRuntimeIdentity::has_marked_response_item(&variant));
+
+        let identity = SubagentRuntimeIdentity {
+            effective_model: "gpt-test".to_string(),
+            effective_model_provider_id: "provider".to_string(),
+            effective_reasoning_effort: None,
+            effective_service_tier: Some("priority".to_string()),
+        };
+        assert!(
+            !identity
+                .matches_rendered_text("<SUBAGENT_RUNTIME_IDENTITY>{}</SUBAGENT_RUNTIME_IDENTITY>")
+        );
+    }
+
+    #[test]
+    fn identity_rendering_exposes_the_resolved_request_shape() {
+        let identity = SubagentRuntimeIdentity {
+            effective_model: "gpt-test".to_string(),
+            effective_model_provider_id: "provider".to_string(),
+            effective_reasoning_effort: Some(ReasoningEffort::Low),
+            effective_service_tier: Some("priority".to_string()),
+        };
+        let rendered = identity.render();
+        let json: serde_json::Value = serde_json::from_str(
+            rendered
+                .trim()
+                .trim_start_matches("<subagent_runtime_identity>")
+                .trim_end_matches("</subagent_runtime_identity>")
+                .trim(),
+        )
+        .expect("identity body should be JSON");
+        assert_eq!(json["effective_model"], "gpt-test");
+        assert_eq!(json["effective_model_provider_id"], "provider");
+        assert_eq!(json["effective_reasoning_effort"], "low");
+        assert_eq!(json["effective_service_tier"], "priority");
+    }
+
+    #[test]
+    fn identity_bounds_cover_each_field_and_the_complete_fragment() {
+        let overlong_field = SubagentRuntimeIdentity {
+            effective_model: "m".repeat(MAX_IDENTITY_FIELD_BYTES + 1),
+            effective_model_provider_id: "provider".to_string(),
+            effective_reasoning_effort: None,
+            effective_service_tier: None,
+        };
+        assert!(!overlong_field.is_bounded());
+
+        let overlong_fragment = SubagentRuntimeIdentity {
+            effective_model: "m".repeat(MAX_IDENTITY_FIELD_BYTES),
+            effective_model_provider_id: "p".repeat(MAX_IDENTITY_FIELD_BYTES),
+            effective_reasoning_effort: Some(ReasoningEffort::High),
+            effective_service_tier: Some("t".repeat(MAX_IDENTITY_FIELD_BYTES)),
+        };
+        assert!(!overlong_fragment.is_bounded());
     }
 }

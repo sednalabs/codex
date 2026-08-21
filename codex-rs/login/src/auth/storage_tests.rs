@@ -134,6 +134,35 @@ fn canonical_storage_identity_unifies_symlink_alias_and_absent_child() -> anyhow
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn absent_symlink_aliases_share_conditional_delete_identity() -> anyhow::Result<()> {
+    let root = tempdir()?;
+    let home = root.path().join("real-home");
+    std::fs::create_dir(&home)?;
+    let alias = root.path().join("home-alias");
+    std::os::unix::fs::symlink(&home, &alias)?;
+    let real_absent = home.join("not-created");
+    let alias_absent = alias.join("not-created");
+    let auth = auth_with_prefix("alias");
+
+    let ephemeral_real = EphemeralAuthStorage::new(real_absent.clone());
+    let ephemeral_alias = EphemeralAuthStorage::new(alias_absent.clone());
+    ephemeral_real.save(&auth)?;
+    assert_eq!(ephemeral_alias.load()?, Some(auth.clone()));
+    assert!(ephemeral_alias.delete_if(&|current| current == &auth)?);
+    assert_eq!(ephemeral_real.load()?, None);
+
+    let keyring = MockKeyringStore::default();
+    let direct_real = DirectKeyringAuthStorage::new(real_absent, Arc::new(keyring.clone()));
+    let direct_alias = DirectKeyringAuthStorage::new(alias_absent, Arc::new(keyring.clone()));
+    direct_real.save(&auth)?;
+    assert_eq!(direct_alias.load()?, Some(auth.clone()));
+    assert!(direct_alias.delete_if(&|current| current == &auth)?);
+    assert_eq!(direct_real.load()?, None);
+    Ok(())
+}
+
 #[test]
 fn jwt_identity_match_requires_decodable_matching_credential() {
     let record = AgentIdentityAuthRecord {
@@ -566,7 +595,11 @@ fn keyring_auth_storage_compute_store_key_for_home_directory() -> anyhow::Result
 
     let key = compute_store_key(codex_home.as_path())?;
 
-    assert_eq!(key, "cli|940db7b1d0e4eb40");
+    let canonical = canonical_storage_identity(codex_home.as_path())?;
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.to_string_lossy().as_bytes());
+    let digest = digest_hex(hasher.finalize());
+    assert_eq!(key, format!("cli|{}", &digest[..16]));
     Ok(())
 }
 

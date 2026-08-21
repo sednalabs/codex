@@ -1268,7 +1268,8 @@ impl AgentControl {
 
         let parent_thread_id = *parent_thread_id;
         let parent_thread = state.get_thread(parent_thread_id).await?;
-        let parent_history_mode = parent_thread.config_snapshot().await.history_mode;
+        let parent_snapshot = parent_thread.config_snapshot().await;
+        let parent_history_mode = parent_snapshot.history_mode;
         // `record_conversation_items` only queues persistence writes asynchronously.
         // Flush before snapshotting store history for a fork.
         parent_thread.ensure_rollout_materialized().await;
@@ -1331,7 +1332,10 @@ impl AgentControl {
                 && !matches!(
                     item,
                     RolloutItem::ResponseItem(response_item)
-                        if SubagentRuntimeIdentity::matches_response_item(response_item)
+                        if SubagentRuntimeIdentity::matches_response_item(
+                            response_item,
+                            &parent_snapshot,
+                        )
                 )
         });
         if destination_history_mode == Some(ThreadHistoryMode::Paginated) {
@@ -1355,7 +1359,10 @@ impl AgentControl {
                     !is_multi_agent_v2_usage_hint_message(
                         response_item,
                         &multi_agent_v2_usage_hint_texts_to_filter,
-                    ) && !SubagentRuntimeIdentity::matches_response_item(response_item)
+                    ) && !SubagentRuntimeIdentity::matches_response_item(
+                        response_item,
+                        &parent_snapshot,
+                    )
                 });
             }
         }
