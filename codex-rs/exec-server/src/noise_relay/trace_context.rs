@@ -89,10 +89,7 @@ impl NoiseTraceContext {
             {
                 let process_entry_bytes =
                     process_id.len() + trace_bytes + request_id_bytes.unwrap_or_default();
-                insert_bounded(
-                    &mut self.processes,
-                    &mut self.process_order,
-                    &mut self.process_bytes,
+                self.insert_process_bounded(
                     process_id,
                     TrackedProcess {
                         trace: trace.clone(),
@@ -242,10 +239,7 @@ impl NoiseTraceContext {
         let Some(trace_bytes) = trace_context_bytes(&trace) else {
             return;
         };
-        insert_bounded(
-            &mut self.processes,
-            &mut self.process_order,
-            &mut self.process_bytes,
+        self.insert_process_bounded(
             process_id.clone(),
             TrackedProcess {
                 trace,
@@ -254,6 +248,50 @@ impl NoiseTraceContext {
             },
             process_id.len() + trace_bytes,
         );
+    }
+
+    /// Evict process mappings within the same entry and byte bounds as request
+    /// mappings. A closed provisional mapping is different from an ordinary
+    /// stale entry: retaining its request would allow a late successful start
+    /// response to recreate the process after its terminal notification. Drop
+    /// that associated request together with the tombstone when overflow
+    /// requires its eviction.
+    fn insert_process_bounded(&mut self, key: String, value: TrackedProcess, entry_bytes: usize) {
+        if entry_bytes > MAX_TRACE_CONTEXT_BYTES_PER_MAP {
+            return;
+        }
+        if self.processes.remove(&key).is_some() {
+            self.process_order.retain(|candidate| candidate != &key);
+            self.process_bytes = retained_payload_bytes(&self.processes);
+        }
+        while self.processes.len() >= MAX_TRACE_CONTEXT_ENTRIES
+            || self.process_bytes.saturating_add(entry_bytes) > MAX_TRACE_CONTEXT_BYTES_PER_MAP
+        {
+            let Some(oldest) = self.process_order.pop_front() else {
+                break;
+            };
+            let Some(evicted) = self.processes.remove(&oldest) else {
+                continue;
+            };
+            if evicted.closed
+                && let Some(pending_request) = evicted.pending_request
+                && self
+                    .requests
+                    .get(&pending_request)
+                    .is_some_and(|request| request.process_id.as_deref() == Some(oldest.as_str()))
+            {
+                remove_tracked(
+                    &mut self.requests,
+                    &mut self.request_order,
+                    &mut self.request_bytes,
+                    &pending_request,
+                );
+            }
+            self.process_bytes = retained_payload_bytes(&self.processes);
+        }
+        self.processes.insert(key.clone(), value);
+        self.process_order.push_back(key);
+        self.process_bytes += entry_bytes;
     }
 
     #[cfg(test)]
