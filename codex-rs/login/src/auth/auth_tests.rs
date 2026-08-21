@@ -998,6 +998,7 @@ async fn refresh_failure_is_scoped_to_the_matching_auth_snapshot() {
         AuthCredentialsStoreMode::File,
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::Direct,
+        /*loaded_auth*/ None,
         /*agent_identity_authapi_base_url*/ None,
         &crate::test_support::transport_default_auth_route_config(),
     )
