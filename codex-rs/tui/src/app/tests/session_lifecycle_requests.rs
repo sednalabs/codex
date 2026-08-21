@@ -417,7 +417,7 @@ fn closed_existing_stale_channel_refreshes_persisted_transcript() -> Result<()> 
                 .enable_all()
                 .build()?;
             runtime.block_on(async {
-                let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+                let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
                 let codex_home = app.config.codex_home.as_path();
                 let root_thread_id = ThreadId::from_string(
                     &create_fake_rollout(
@@ -640,9 +640,8 @@ fn closed_existing_stale_channel_refreshes_persisted_transcript() -> Result<()> 
                         .any(|cell| cell.contains("Saved later child message"))
                 );
 
-                let (_, reads) = take_backfill_counts(&requests);
                 assert!(
-                    reads >= 2,
+                    take_backfill_counts(&requests).1 >= 2,
                     "closure refresh and transcript hydration must both read"
                 );
                 app_server.shutdown().await?;
