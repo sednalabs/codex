@@ -417,7 +417,7 @@ fn closed_existing_stale_channel_refreshes_persisted_transcript() -> Result<()> 
                 .enable_all()
                 .build()?;
             runtime.block_on(async {
-                let (mut app, mut app_event_rx, op_rx) = make_test_app_with_channels().await;
+                let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
                 let codex_home = app.config.codex_home.as_path();
                 let root_thread_id = ThreadId::from_string(
                     &create_fake_rollout(
@@ -535,10 +535,9 @@ fn closed_existing_stale_channel_refreshes_persisted_transcript() -> Result<()> 
                 }
 
                 app_server.thread_unsubscribe(child_thread_id).await?;
-                assert!(
-                    app.refresh_agent_picker_thread_liveness(&mut app_server, child_thread_id)
-                        .await
-                );
+                // Preserve the picker metadata observed by a prior refresh while retaining the
+                // live channel. Selection must fence that channel before its next liveness read.
+                app.mark_agent_picker_thread_closed(child_thread_id);
                 assert!(
                     app.agent_navigation
                         .get(&child_thread_id)
@@ -547,44 +546,10 @@ fn closed_existing_stale_channel_refreshes_persisted_transcript() -> Result<()> 
                 assert_eq!(
                     app.thread_event_channels
                         .get(&child_thread_id)
-                        .expect("closed channel")
+                        .expect("retained channel")
                         .attachment(),
-                    ThreadEventAttachment::ReplayOnly
+                    ThreadEventAttachment::Live
                 );
-                {
-                    let store = app
-                        .thread_event_channels
-                        .get(&child_thread_id)
-                        .expect("closed channel")
-                        .store
-                        .lock()
-                        .await;
-                    assert!(store.session.is_some());
-                    assert_eq!(store.turns, old_turns);
-                }
-
-                // Replay-only mutation gates must remain closed while the authoritative refresh
-                // is pending; selection below is the operation that replaces this stale channel.
-                let op = AppCommand::user_turn(
-                    vec![UserInput::Text {
-                        text: "must not be submitted".to_string(),
-                        text_elements: Vec::new(),
-                    }],
-                    app.config.cwd.to_path_buf(),
-                    AskForApproval::OnRequest,
-                    /*active_permission_profile*/ None,
-                    get_model_offline_for_tests(app.config.model.as_deref()),
-                    /*effort*/ None,
-                    /*summary*/ None,
-                    /*service_tier*/ None,
-                    /*final_output_json_schema*/ None,
-                    /*collaboration_mode*/ None,
-                    /*personality*/ None,
-                );
-                app.submit_thread_op(&mut app_server, child_thread_id, op)
-                    .await?;
-                assert!(op_rx.try_recv().is_err());
-                while app_event_rx.try_recv().is_ok() {}
 
                 let mut tui = crate::tui::test_support::make_test_tui()?;
                 app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
