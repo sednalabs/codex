@@ -2760,7 +2760,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_event::{RealtimeAudioDeviceKind, WindowsSandboxEnableMode};
+    use crate::app_event::RealtimeAudioDeviceKind;
+    use crate::app_event::WindowsSandboxEnableMode;
     use crate::chatwidget::UserMessage;
     use codex_protocol::config_types::CollaborationModeMask;
 
