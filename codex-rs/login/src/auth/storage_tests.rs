@@ -165,6 +165,27 @@ fn auth_lock_rejects_symlinked_or_foreign_permission_lock_roots() -> anyhow::Res
 
 #[cfg(unix)]
 #[test]
+fn auth_lock_roots_isolate_precreated_user_components() -> anyhow::Result<()> {
+    let root = tempdir()?;
+    let codex_home = root.path().join("home");
+    std::fs::create_dir(&codex_home)?;
+    let precreated_uid_root = lock_root_for_uid(root.path(), 1001);
+    let active_uid_root = lock_root_for_uid(root.path(), 1002);
+    let redirected = root.path().join("redirected");
+    std::fs::create_dir(&redirected)?;
+    std::os::unix::fs::symlink(&redirected, &precreated_uid_root)?;
+
+    // A pre-created path for one UID must not affect another UID's isolated
+    // lock namespace, while the unsafe path itself remains rejected.
+    assert!(lock_auth_storage_at(&codex_home, &precreated_uid_root).is_err());
+    let lock = lock_auth_storage_at(&codex_home, &active_uid_root)?;
+    drop(lock);
+    assert_ne!(precreated_uid_root, active_uid_root);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn absent_symlink_aliases_share_conditional_delete_identity() -> anyhow::Result<()> {
     let root = tempdir()?;
     let home = root.path().join("real-home");
