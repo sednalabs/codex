@@ -1,0 +1,45 @@
+name: Apply bounded post-error V2 probe
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - synchronize
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: >-
+      github.event.pull_request.number == 656 &&
+      github.head_ref == 'diag/goal-error-continuation-probe-20260821' &&
+      github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: diag/goal-error-continuation-probe-20260821
+          fetch-depth: 0
+
+      - name: Apply patch
+        shell: bash
+        run: |
+          python3 .github/scripts/diag_post_429_v2_probe_apply.py
+          cargo fmt --manifest-path codex-rs/Cargo.toml --all
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add codex-rs/core/src/diagnostic_flags.rs \
+                  codex-rs/core/src/session/turn.rs \
+                  codex-rs/ext/goal/src/steering.rs
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "test: exercise V2 spawn after terminal goal error"
+          git push origin HEAD:diag/goal-error-continuation-probe-20260821
