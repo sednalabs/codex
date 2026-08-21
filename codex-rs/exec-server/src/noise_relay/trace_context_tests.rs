@@ -1,5 +1,8 @@
 use codex_exec_server_protocol::EXEC_CLOSED_METHOD;
 use codex_exec_server_protocol::EXEC_METHOD;
+use codex_exec_server_protocol::EXEC_OUTPUT_DELTA_METHOD;
+use codex_exec_server_protocol::JSONRPCError;
+use codex_exec_server_protocol::JSONRPCErrorError;
 use codex_exec_server_protocol::JSONRPCMessage;
 use codex_exec_server_protocol::JSONRPCNotification;
 use codex_exec_server_protocol::JSONRPCRequest;
@@ -80,12 +83,23 @@ fn oversized_peer_carriers_cannot_inflate_retained_trace_state() {
     assert!(context.retained_bytes() <= MAX_TRACE_CONTEXT_BYTES_PER_MAP * 2);
 }
 
-fn process_start_request(trace: W3cTraceContext) -> JSONRPCMessage {
+fn process_start_request_with_id(id: i64, trace: W3cTraceContext) -> JSONRPCMessage {
     JSONRPCMessage::Request(JSONRPCRequest {
-        id: RequestId::Integer(7),
+        id: RequestId::Integer(id),
         method: EXEC_METHOD.to_string(),
         params: Some(serde_json::json!({"processId": "process-1"})),
         trace: Some(trace),
+    })
+}
+
+fn process_start_request(trace: W3cTraceContext) -> JSONRPCMessage {
+    process_start_request_with_id(7, trace)
+}
+
+fn process_notification() -> JSONRPCMessage {
+    JSONRPCMessage::Notification(JSONRPCNotification {
+        method: EXEC_OUTPUT_DELTA_METHOD.to_string(),
+        params: Some(serde_json::json!({"processId": "process-1"})),
     })
 }
 
@@ -108,6 +122,111 @@ fn correlates_response_and_terminal_notification_with_request_trace() {
     });
     assert_eq!(context.return_trace(&closed), Some(trace));
     assert_eq!(context.return_trace(&closed), None);
+}
+
+#[test]
+fn unrelated_request_process_ids_do_not_poison_notification_correlation() {
+    let trace = trace_context();
+    let mut context = NoiseTraceContext::default();
+    context.observe_request(&JSONRPCMessage::Request(JSONRPCRequest {
+        id: RequestId::Integer(1),
+        method: "process/read".to_string(),
+        params: Some(serde_json::json!({"processId": "process-1"})),
+        trace: Some(trace.clone()),
+    }));
+
+    assert_eq!(context.return_trace(&process_notification()), None);
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(1),
+            result: serde_json::Value::Null,
+        })),
+        Some(trace)
+    );
+}
+
+#[test]
+fn failed_process_start_discards_provisional_notification_correlation() {
+    let trace = trace_context();
+    let mut context = NoiseTraceContext::default();
+    context.observe_request(&process_start_request(trace.clone()));
+
+    // Notifications can race the start response and use the provisional
+    // carrier, but a rejected start must not leave it behind.
+    assert_eq!(
+        context.return_trace(&process_notification()),
+        Some(trace.clone())
+    );
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Error(JSONRPCError {
+            id: RequestId::Integer(7),
+            error: JSONRPCErrorError {
+                code: -1,
+                message: "rejected".to_string(),
+                data: None,
+            },
+        })),
+        Some(trace)
+    );
+    assert_eq!(context.return_trace(&process_notification()), None);
+}
+
+#[test]
+fn duplicate_process_starts_preserve_first_trace_and_reassign_after_failure() {
+    let first_trace = trace_context();
+    let second_trace = W3cTraceContext {
+        traceparent: Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".to_string()),
+        tracestate: None,
+    };
+    let mut context = NoiseTraceContext::default();
+    context.observe_request(&process_start_request_with_id(1, first_trace.clone()));
+    context.observe_request(&process_start_request_with_id(2, second_trace.clone()));
+
+    // The early notification uses the first provisional carrier.
+    assert_eq!(
+        context.return_trace(&process_notification()),
+        Some(first_trace.clone())
+    );
+
+    // Once the first start fails, the outstanding duplicate becomes the
+    // provisional owner instead of being lost.
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Error(JSONRPCError {
+            id: RequestId::Integer(1),
+            error: JSONRPCErrorError {
+                code: -1,
+                message: "rejected".to_string(),
+                data: None,
+            },
+        })),
+        Some(first_trace.clone())
+    );
+    assert_eq!(
+        context.return_trace(&process_notification()),
+        Some(second_trace.clone())
+    );
+
+    // A successful duplicate promotes the mapping, and a later duplicate
+    // response cannot replace it.
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(2),
+            result: serde_json::Value::Null,
+        })),
+        Some(second_trace.clone())
+    );
+    context.observe_request(&process_start_request_with_id(3, first_trace));
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(3),
+            result: serde_json::Value::Null,
+        })),
+        Some(trace_context())
+    );
+    assert_eq!(
+        context.return_trace(&process_notification()),
+        Some(second_trace)
+    );
 }
 
 #[test]
