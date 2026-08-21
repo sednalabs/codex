@@ -1193,7 +1193,8 @@ fn active_selected_thread_recovers_live_after_closed_refresh() -> Result<()> {
 }
 
 #[tokio::test]
-async fn replay_only_model_persistence_does_not_write_config() -> Result<()> {
+async fn replay_only_global_model_persistence_allows_config_but_denies_thread_mutation()
+-> Result<()> {
     let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
     let mut channel = ThreadEventChannel::new(/*capacity*/ 1);
@@ -1219,11 +1220,27 @@ async fn replay_only_model_persistence_does_not_write_config() -> Result<()> {
     .await?;
 
     assert!(
-        !requests
+        requests
             .lock()
             .expect("request recorder lock")
             .iter()
             .any(|method| method == "config/batchWrite")
+    );
+
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::CodexOp(AppCommand::set_thread_name(
+            "must not be written".to_string(),
+        )),
+    )
+    .await?;
+    assert!(
+        !requests
+            .lock()
+            .expect("request recorder lock")
+            .iter()
+            .any(|method| method == "thread/name/set")
     );
 
     app_server.shutdown().await?;
