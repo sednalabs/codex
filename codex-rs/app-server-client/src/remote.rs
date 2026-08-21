@@ -3465,12 +3465,14 @@ mod tests {
     #[test]
     fn response_tombstone_classifier_requires_a_valid_jsonrpc_envelope() {
         assert_eq!(
-            classify_remote_response(r#"{"id":1,"result":null}"#),
-            Ok(Some(RequestId::Integer(1)))
+            classify_remote_response(r#"{"id":1,"result":null}"#)
+                .expect("valid response should classify"),
+            Some(RequestId::Integer(1))
         );
         assert_eq!(
-            classify_remote_response(r#"{"id":1,"error":{"code":-32000,"message":"failed"}}"#),
-            Ok(Some(RequestId::Integer(1)))
+            classify_remote_response(r#"{"id":1,"error":{"code":-32000,"message":"failed"}}"#)
+                .expect("valid error response should classify"),
+            Some(RequestId::Integer(1))
         );
 
         for malformed in [
@@ -3509,7 +3511,7 @@ mod tests {
                 response_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
                 allow_large_response: true,
-                _slot: request_slots
+                _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
                     .expect("test request slot should be available"),
@@ -3578,7 +3580,7 @@ mod tests {
                 response_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
                 allow_large_response: true,
-                _slot: request_slots
+                _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
                     .expect("test request slot should be available"),
@@ -3638,7 +3640,7 @@ mod tests {
                 response_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
                 allow_large_response: true,
-                _slot: request_slots
+                _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
                     .expect("test request slot should be available"),
@@ -3774,7 +3776,7 @@ mod tests {
                 response_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
                 allow_large_response: false,
-                _slot: request_slots
+                _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
                     .expect("second test request slot should be available"),
@@ -4853,7 +4855,7 @@ mod tests {
                 response_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_CANCELLED)),
                 allow_large_response: false,
-                _slot: request_slots
+                _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
                     .expect("test request slot should be available"),
@@ -4908,7 +4910,7 @@ mod tests {
                 response_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_CANCELLED)),
                 allow_large_response: false,
-                _slot: request_slots
+                _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
                     .expect("test request slot should be available"),
@@ -4967,7 +4969,7 @@ mod tests {
                     response_tx,
                     lifecycle: Arc::new(AtomicU8::new(REQUEST_CANCELLED)),
                     allow_large_response: false,
-                    _slot: request_slots
+                    _slot: Arc::clone(&request_slots)
                         .acquire_owned()
                         .await
                         .expect("retired tombstone should release the request slot"),
@@ -5141,7 +5143,7 @@ mod tests {
                 response_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_CANCELLED)),
                 allow_large_response: true,
-                _slot: request_slots
+                _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
                     .expect("test request slot should be available"),
@@ -5220,7 +5222,7 @@ mod tests {
                 response_tx: active_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
                 allow_large_response: true,
-                _slot: request_slots
+                _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
                     .expect("active history request slot should be available"),
@@ -5280,7 +5282,7 @@ mod tests {
                 response_tx: canceled_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_CANCELLED)),
                 allow_large_response: true,
-                _slot: request_slots
+                _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
                     .expect("canceled request slot should be available"),
@@ -5302,7 +5304,7 @@ mod tests {
                 response_tx: active_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
                 allow_large_response: true,
-                _slot: request_slots
+                _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
                     .expect("active history request slot should be available"),
@@ -5397,7 +5399,7 @@ mod tests {
                 response_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_CANCELLED)),
                 allow_large_response: true,
-                _slot: request_slots
+                _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
                     .expect("canceled request slot should be available"),
@@ -5516,7 +5518,7 @@ mod tests {
                 response_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_CANCELLED)),
                 allow_large_response: false,
-                _slot: request_slots
+                _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
                     .expect("canceled request slot should be available"),
