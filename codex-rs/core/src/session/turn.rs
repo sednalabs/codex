@@ -1258,6 +1258,7 @@ async fn run_sampling_request(
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
+    let mut usage_limit_retries = 0;
     let mut capacity_retries = 0;
     let mut initial_input = Some(input);
     let mut original_input = None;
@@ -1297,7 +1298,7 @@ async fn run_sampling_request(
                     return Err(err);
                 }
                 CodexErrorDetails::UsageLimitReached(e) => {
-                    if !crate::diagnostic_flags::goal_error_continuation_enabled() {
+                    if !crate::diagnostic_flags::suppress_usage_limit_state_updates() {
                         let rate_limits = e.rate_limits.clone();
                         if let Some(rate_limits) = rate_limits {
                             sess.update_rate_limits(&turn_context, *rate_limits).await;
@@ -1305,10 +1306,10 @@ async fn run_sampling_request(
                     } else {
                         warn!(
                             turn_id = %turn_context.sub_id,
-                            "goal error continuation diagnostic mode skipped rate-limit snapshot update"
+                            "goal error diagnostic mode skipped rate-limit snapshot update"
                         );
                     }
-                    return Err(err);
+                    err
                 }
                 _ => err,
             },
@@ -1316,6 +1317,29 @@ async fn run_sampling_request(
 
         if original_input.is_none() {
             original_input = Some(prompt.input);
+        }
+
+        if matches!(err.details(), CodexErrorDetails::UsageLimitReached(_))
+            && crate::diagnostic_flags::goal_error_retry_in_place_enabled()
+        {
+            if usage_limit_retries >= max_retries {
+                return Err(err);
+            }
+            usage_limit_retries += 1;
+            let retry_count = usage_limit_retries;
+            let delay = err
+                .retry_delay()
+                .unwrap_or_else(|| crate::util::backoff(retry_count));
+            warn!(
+                turn_id = %turn_context.sub_id,
+                retry_count,
+                max_retries,
+                ?delay,
+                "retrying usage-limit diagnostic sampling request in place"
+            );
+            tokio::time::sleep(delay).await;
+            turn_context.turn_timing_state.record_sampling_retry();
+            continue;
         }
 
         if matches!(err.details(), CodexErrorDetails::ServerOverloaded) {
