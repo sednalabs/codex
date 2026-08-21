@@ -5451,6 +5451,61 @@ async fn replace_goal_confirmation_snapshot() {
     );
 }
 
+#[tokio::test]
+async fn replay_only_config_toggle_completion_drops_queued_follow_up() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let mut app_server = start_config_write_test_app_server(&app).await?;
+    let thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            thread_id,
+            test_path_buf("/tmp/project"),
+        ));
+    let mut replay_channel = ThreadEventChannel::new(/*capacity*/ 1);
+    replay_channel.mark_replay_only();
+    app.thread_event_channels.insert(thread_id, replay_channel);
+    app.active_thread_id = Some(thread_id);
+    app.chat_widget.set_replay_only_thread(/*replay_only*/ true);
+    let cwd = app.chat_widget.config_ref().cwd.to_path_buf();
+
+    // Model two toggles: the first write is in flight and the second desired value is queued.
+    let plugin_id = "plugin.example".to_string();
+    app.pending_plugin_enabled_writes
+        .insert(plugin_id.clone(), Some(false));
+    app.pending_hook_enabled_writes
+        .insert("hook.example".to_string(), Some(false));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::PluginEnabledSet {
+            cwd: cwd.clone(),
+            plugin_id: plugin_id.clone(),
+            enabled: true,
+            result: Ok(()),
+        },
+    )
+    .await?;
+    assert!(!app.pending_plugin_enabled_writes.contains_key(&plugin_id));
+
+    let hook_key = "hook.example".to_string();
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::HookEnabledSet {
+            key: hook_key.clone(),
+            enabled: true,
+            result: Ok(()),
+        },
+    )
+    .await?;
+    assert!(!app.pending_hook_enabled_writes.contains_key(&hook_key));
+
+    app_server.shutdown().await?;
+    Ok(())
+}
+
 fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState {
     ThreadSessionState {
         thread_id,
