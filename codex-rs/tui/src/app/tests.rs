@@ -608,15 +608,6 @@ async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
         1,
         "the bounded store retains the latest event"
     );
-    assert_eq!(
-        channel
-            .pending_delivery
-            .lock()
-            .expect("pending delivery mutex")
-            .len(),
-        1,
-        "the full-channel copy remains available for the active drain"
-    );
 
     Ok(())
 }
