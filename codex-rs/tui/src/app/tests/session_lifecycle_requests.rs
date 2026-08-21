@@ -956,3 +956,42 @@ fn active_selected_thread_recovers_live_after_closed_refresh() -> Result<()> {
         .join()
         .expect("active selected thread live recovery test thread")
 }
+
+#[tokio::test]
+async fn replay_only_model_persistence_does_not_write_config() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let mut channel = ThreadEventChannel::new(/*capacity*/ 1);
+    channel.mark_replay_only();
+    app.thread_event_channels.insert(thread_id, channel);
+    app.active_thread_id = Some(thread_id);
+    app.chat_widget.handle_thread_session(test_thread_session(
+        thread_id,
+        test_path_buf("/tmp/project"),
+    ));
+    app.chat_widget.set_replay_only_thread(/*replay_only*/ true);
+
+    let (mut app_server, requests, proxy) = start_recording_app_server(&app.config).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::PersistModelSelection {
+            model: "gpt-5.4".to_string(),
+            effort: None,
+        },
+    )
+    .await?;
+
+    assert!(
+        !requests
+            .lock()
+            .expect("request recorder lock")
+            .iter()
+            .any(|method| method == "config/batchWrite")
+    );
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
