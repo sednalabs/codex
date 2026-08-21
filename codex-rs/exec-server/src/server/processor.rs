@@ -267,7 +267,11 @@ fn request_span(
     span_name: &str,
     request: &codex_exec_server_protocol::JSONRPCRequest,
 ) -> tracing::Span {
-    let method = request.method.as_str();
+    // `span_name` comes from the static route registry (or the fixed
+    // `unknown` label for an unrecognized request). Never attach the raw wire
+    // method to telemetry: it is controlled by the peer and can contain
+    // unbounded or sensitive data.
+    let method = span_name;
     let span = tracing::info_span!(
         "codex.exec_server.request",
         otel.kind = "server",
@@ -363,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn request_span_uses_bounded_name_wire_method_and_inbound_trace_parent() {
+    fn request_span_uses_bounded_name_and_inbound_trace_parent() {
         let span_exporter = InMemorySpanExporter::default();
         let tracer_provider = SdkTracerProvider::builder()
             .with_simple_exporter(span_exporter.clone())
@@ -407,7 +411,7 @@ mod tests {
                 .iter()
                 .find(|attribute| attribute.key.as_str() == "method")
                 .map(|attribute| attribute.value.clone()),
-            Some(opentelemetry::Value::String(method.into()))
+            Some(opentelemetry::Value::String("unknown".into()))
         );
         assert_eq!(request_span.span_context.trace_id(), trace_id);
         assert_eq!(request_span.parent_span_id, parent_span_id);
