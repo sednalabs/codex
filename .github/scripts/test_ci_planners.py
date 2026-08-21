@@ -1014,6 +1014,7 @@ class RouteSelectionTests(unittest.TestCase):
                 "codex.app-server-client-targeted",
                 "codex.workflow-ci-sanity",
                 "codex.downstream-docs-check",
+                "codex.downstream-divergence-audit",
             ],
         )
 
