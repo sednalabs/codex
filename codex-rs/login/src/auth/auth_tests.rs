@@ -706,6 +706,79 @@ async fn chatgpt_auth_retries_transient_agent_identity_registration() -> anyhow:
 
 #[tokio::test]
 #[serial(codex_auth_env)]
+async fn chatgpt_auth_agent_identity_registration_does_not_cross_auth_snapshot()
+-> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some("account-123".to_string()),
+        },
+        codex_home.path(),
+    )?;
+    let auth = super::load_auth(
+        codex_home.path(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::Direct,
+        /*agent_identity_authapi_base_url*/ None,
+        &crate::test_support::transport_default_auth_route_config(),
+    )
+    .await?
+    .expect("auth should load");
+    let (auth_state, expected_auth) = match &auth {
+        CodexAuth::Chatgpt(chatgpt) => (
+            Arc::clone(&chatgpt.state.auth_dot_json),
+            chatgpt.current_auth_json().expect("auth snapshot"),
+        ),
+        _ => panic!("expected ChatGPT auth"),
+    };
+    let mut replacement_auth = expected_auth.clone();
+    let replacement_tokens = replacement_auth.tokens.as_mut().expect("token data");
+    replacement_tokens.account_id = Some("account-456".to_string());
+    replacement_tokens.id_token.chatgpt_account_id = Some("account-456".to_string());
+    replacement_tokens.id_token.chatgpt_user_id = Some("user-456".to_string());
+
+    let server = MockServer::start().await;
+    let replacement_for_response = replacement_auth.clone();
+    Mock::given(method("POST"))
+        .and(path("/v1/agent/register"))
+        .respond_with(move |_request: &wiremock::Request| {
+            // Simulate a concurrent account transition after the registration
+            // request completes but before its result can be persisted.
+            *auth_state.lock().expect("auth state lock") = Some(replacement_for_response.clone());
+            ResponseTemplate::new(/*status*/ 200).set_body_json(json!({
+                "agent_runtime_id": "agent-runtime-123",
+            }))
+        })
+        .expect(/*requests*/ 1)
+        .mount(&server)
+        .await;
+    mock_agent_task_registration(&server, "", "agent-runtime-123", "task-123").await;
+
+    let error = auth
+        .agent_identity_auth(
+            AgentIdentityAuthPolicy::ChatGptAuth,
+            Some(&server.uri()),
+            /*forced_chatgpt_workspace_id*/ None,
+            &crate::test_support::transport_default_auth_route_config(),
+            SessionSource::Cli,
+        )
+        .await
+        .expect_err("registration result must not be persisted under a changed auth snapshot");
+
+    assert!(error.to_string().contains("logged out or signed in"));
+    let current = auth.get_current_auth_json().expect("replacement auth");
+    assert_eq!(current, replacement_auth);
+    assert_eq!(current.agent_identity, None);
+    Ok(())
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
 async fn chatgpt_auth_registration_retry_exhaustion_is_fallback_eligible() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     write_auth_file(
