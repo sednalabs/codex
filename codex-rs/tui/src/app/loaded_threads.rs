@@ -50,7 +50,7 @@ pub(crate) struct LoadedSubagentThread {
 /// possible because `ThreadId`s are server-assigned UUIDs and the server enforces acyclicity, but
 /// the `included` set guards against re-visiting regardless.
 pub(crate) fn find_loaded_subagent_threads_for_primary(
-    threads: Vec<Thread>,
+    threads: &[Thread],
     primary_thread_id: ThreadId,
 ) -> Vec<LoadedSubagentThread> {
     let mut threads_by_id = HashMap::new();
@@ -87,14 +87,14 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
         .into_iter()
         .filter_map(|thread_id| {
             threads_by_id
-                .remove(&thread_id)
+                .get(&thread_id)
                 .map(|thread| LoadedSubagentThread {
                     blocks_direct_input: thread_blocks_direct_input(&thread),
                     is_running: matches!(&thread.status, ThreadStatus::Active { .. }),
                     is_closed: matches!(&thread.status, ThreadStatus::NotLoaded),
                     thread_id,
-                    agent_nickname: thread.agent_nickname,
-                    agent_role: thread.agent_role,
+                    agent_nickname: thread.agent_nickname.clone(),
+                    agent_role: thread.agent_role.clone(),
                     agent_path: thread_spawn_agent_path(&thread.source),
                 })
         })
@@ -221,15 +221,13 @@ mod tests {
             thread_spawn_source(unrelated_parent_id, /*depth*/ 1, "Other", "researcher"),
         );
 
-        let loaded = find_loaded_subagent_threads_for_primary(
-            vec![
-                test_thread(primary_thread_id, SessionSource::Cli),
-                child,
-                grandchild,
-                unrelated_child,
-            ],
-            primary_thread_id,
-        );
+        let threads = vec![
+            test_thread(primary_thread_id, SessionSource::Cli),
+            child,
+            grandchild,
+            unrelated_child,
+        ];
+        let loaded = find_loaded_subagent_threads_for_primary(&threads, primary_thread_id);
 
         assert_eq!(
             loaded,

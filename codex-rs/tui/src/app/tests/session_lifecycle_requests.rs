@@ -247,7 +247,7 @@ async fn start_recording_app_server_with_options(
         let mut picker_page_request_count = 0;
         let mut legacy_page_request_count = 0;
         let mut replay_page_request_count = 0;
-        let mut replay_turn_template = None;
+        let mut replay_turn_template: Option<serde_json::Value> = None;
         while let Some(frame) = websocket.next().await {
             let Message::Text(text) = frame? else {
                 continue;
