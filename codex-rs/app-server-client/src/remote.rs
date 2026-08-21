@@ -1317,12 +1317,16 @@ enum RemoteResponseBudgetError {
 #[derive(Debug)]
 struct RemoteResponseByteBudget {
     used: AtomicUsize,
+    // A history response may use the transport's larger compatibility
+    // ceiling, but only one such retained response may be in flight at once.
+    large_used: AtomicUsize,
 }
 
 impl RemoteResponseByteBudget {
     fn shared() -> Arc<Self> {
         Arc::new(Self {
             used: AtomicUsize::new(0),
+            large_used: AtomicUsize::new(0),
         })
     }
 
@@ -1337,7 +1341,22 @@ impl RemoteResponseByteBudget {
         self: &Arc<Self>,
         wire_bytes: usize,
     ) -> Result<RemoteResponseReservation, RemoteResponseBudgetError> {
-        self.try_reserve_with_limit(wire_bytes, REMOTE_HISTORY_RESPONSE_MAX_WIRE_BYTES)
+        if wire_bytes > REMOTE_HISTORY_RESPONSE_MAX_WIRE_BYTES {
+            return Err(RemoteResponseBudgetError::OversizedWireMessage);
+        }
+        let bytes = wire_bytes.saturating_add(REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES);
+        if self
+            .large_used
+            .compare_exchange(0, bytes, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(RemoteResponseBudgetError::AggregateExhausted);
+        }
+        Ok(RemoteResponseReservation {
+            byte_budget: Arc::clone(self),
+            bytes,
+            large: true,
+        })
     }
 
     fn try_reserve_with_limit(
@@ -1367,6 +1386,7 @@ impl RemoteResponseByteBudget {
                     return Ok(RemoteResponseReservation {
                         byte_budget: Arc::clone(self),
                         bytes,
+                        large: false,
                     });
                 }
                 Err(observed) => current = observed,
@@ -1378,25 +1398,42 @@ impl RemoteResponseByteBudget {
     fn used(&self) -> usize {
         self.used.load(Ordering::Acquire)
     }
+
+    #[cfg(test)]
+    fn large_used(&self) -> usize {
+        self.large_used.load(Ordering::Acquire)
+    }
 }
 
 #[derive(Debug)]
 struct RemoteResponseReservation {
     byte_budget: Arc<RemoteResponseByteBudget>,
     bytes: usize,
+    large: bool,
 }
 
 impl Drop for RemoteResponseReservation {
     fn drop(&mut self) {
-        assert!(
-            self.byte_budget
-                .used
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                    used.checked_sub(self.bytes)
-                })
-                .is_ok(),
-            "remote response byte budget reservation must not underflow"
-        );
+        if self.large {
+            assert_eq!(
+                self.byte_budget
+                    .large_used
+                    .compare_exchange(self.bytes, 0, Ordering::AcqRel, Ordering::Acquire,)
+                    .ok(),
+                Some(self.bytes),
+                "remote large response byte budget reservation must not be released twice"
+            );
+        } else {
+            assert!(
+                self.byte_budget
+                    .used
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                        used.checked_sub(self.bytes)
+                    })
+                    .is_ok(),
+                "remote response byte budget reservation must not underflow"
+            );
+        }
     }
 }
 
@@ -3043,7 +3080,7 @@ mod tests {
         );
         let message = JSONRPCMessage::Response(JSONRPCResponse {
             id: RequestId::Integer(1),
-            result: serde_json::json!({"padding": "x".repeat(17 * 1024 * 1024)}),
+            result: serde_json::json!({"padding": "x".repeat(33 * 1024 * 1024)}),
         });
         let wire_bytes = serde_json::to_string(&message)
             .expect("large history response should serialize")
@@ -3069,10 +3106,16 @@ mod tests {
             .expect("large history response should not terminalize the connection");
         assert!(delivered.result.is_ok());
         assert_eq!(
-            budget.used(),
+            budget.large_used(),
             wire_bytes + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES
         );
+        assert_eq!(budget.used(), 0);
+        assert!(matches!(
+            budget.try_reserve_large(wire_bytes),
+            Err(RemoteResponseBudgetError::AggregateExhausted)
+        ));
         drop(delivered);
+        assert_eq!(budget.large_used(), 0);
         assert_eq!(budget.used(), 0);
     }
 
@@ -3125,12 +3168,13 @@ mod tests {
             &budget,
         )
         .await
-        .expect("saturated custody must reject before parsing malformed large text");
-        assert_eq!(terminal.error_kind, ErrorKind::WouldBlock);
+        .expect("malformed large text must terminalize after custody reservation");
+        assert_eq!(terminal.error_kind, ErrorKind::InvalidData);
         assert_eq!(
             budget.used(),
             3 * (REMOTE_RESPONSE_MAX_WIRE_BYTES + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES)
         );
+        assert_eq!(budget.large_used(), 0);
         drop(held);
         assert_eq!(budget.used(), 0);
     }
