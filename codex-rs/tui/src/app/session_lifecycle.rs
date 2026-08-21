@@ -543,8 +543,8 @@ impl App {
     /// Closed metadata entries are intentionally not resumed: doing so could reopen a terminal
     /// thread or attach a live listener where none is available. Instead, fetch the saved turns
     /// with `thread/read`, seed a replay-only channel, and fail closed when the server cannot
-    /// provide a transcript. Existing channels are reused only when they already contain both a
-    /// session and a non-empty turn snapshot; empty placeholders are refreshed from persistence.
+    /// provide a transcript. Any existing channel snapshot is replaced with the authoritative
+    /// persisted turns so a stale replay cannot hide later transcript updates.
     pub(super) async fn attach_closed_thread_for_selection(
         &mut self,
         app_server: &mut AppServerSession,
@@ -552,15 +552,7 @@ impl App {
     ) -> Result<()> {
         // Mark the channel replay-only before any async read so a stale live channel cannot
         // submit mutations while its persisted transcript is being hydrated.
-        let has_usable_snapshot = {
-            let channel = self.ensure_thread_channel(thread_id);
-            channel.mark_replay_only();
-            let store = channel.store.lock().await;
-            store.session.is_some() && !store.turns.is_empty()
-        };
-        if has_usable_snapshot {
-            return Ok(());
-        }
+        self.ensure_thread_channel(thread_id).mark_replay_only();
 
         let thread = app_server
             .thread_read(thread_id, /*include_turns*/ true)
