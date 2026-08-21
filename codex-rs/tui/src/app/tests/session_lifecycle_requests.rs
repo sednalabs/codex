@@ -372,11 +372,11 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
 }
 
 #[test]
-fn closed_existing_empty_channel_hydrates_persisted_transcript() -> Result<()> {
+fn closed_existing_stale_channel_refreshes_persisted_transcript() -> Result<()> {
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
     std::thread::Builder::new()
-        .name("tui-closed-channel-hydration".to_string())
+        .name("tui-closed-channel-refresh".to_string())
         .stack_size(TEST_STACK_SIZE_BYTES)
         .spawn(|| {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -416,6 +416,11 @@ fn closed_existing_empty_channel_hydrates_persisted_transcript() -> Result<()> {
                     )
                     .expect("create child rollout"),
                 )?;
+                let child_rollout_path = rollout_path(
+                    codex_home,
+                    "2026-01-01T00-00-01",
+                    &child_thread_id.to_string(),
+                );
 
                 let (mut app_server, requests, proxy) =
                     start_recording_app_server(&app.config).await?;
@@ -427,12 +432,47 @@ fn closed_existing_empty_channel_hydrates_persisted_transcript() -> Result<()> {
                     )
                     .await?;
                 assert!(!started.turns.is_empty());
+                let old_turns = started.turns.clone();
+                for item in [
+                    RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                        turn_id: "later-turn".to_string(),
+                        trace_id: None,
+                        started_at: None,
+                        model_context_window: None,
+                        collaboration_mode_kind: ModeKind::default(),
+                    })),
+                    RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                        message: "Saved later child message".to_string(),
+                        ..Default::default()
+                    })),
+                    RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                        turn_id: "later-turn".to_string(),
+                        last_agent_message: None,
+                        error: None,
+                        started_at: None,
+                        compaction_events_in_turn: 0,
+                        final_model: None,
+                        model_snapshot: None,
+                        provider_usage: None,
+                        completed_at: None,
+                        duration_ms: None,
+                        time_to_first_token_ms: None,
+                    })),
+                ] {
+                    codex_rollout::append_rollout_item_to_path(&child_rollout_path, &item).await?;
+                }
 
-                // A spawn can leave an existing live channel with no local snapshot. The server
-                // can unload that thread independently, so this channel must be hydrated again
-                // before a closed-thread selection renders it.
-                app.thread_event_channels
-                    .insert(child_thread_id, ThreadEventChannel::new(/*capacity*/ 4));
+                // A spawn can leave an existing live channel with an older local snapshot. The
+                // server can unload that thread independently, so a closed-thread selection must
+                // refresh it before rendering later persisted turns.
+                app.thread_event_channels.insert(
+                    child_thread_id,
+                    ThreadEventChannel::new_with_session(
+                        /*capacity*/ 4,
+                        started.session.clone(),
+                        old_turns.clone(),
+                    ),
+                );
                 app.agent_navigation.upsert(
                     child_thread_id,
                     Some("worker".to_string()),
@@ -456,8 +496,8 @@ fn closed_existing_empty_channel_hydrates_persisted_transcript() -> Result<()> {
                         .store
                         .lock()
                         .await;
-                    assert!(store.session.is_none());
-                    assert!(store.turns.is_empty());
+                    assert!(store.session.is_some());
+                    assert_eq!(store.turns, old_turns);
                 }
 
                 app_server.thread_unsubscribe(child_thread_id).await?;
@@ -485,12 +525,12 @@ fn closed_existing_empty_channel_hydrates_persisted_transcript() -> Result<()> {
                         .store
                         .lock()
                         .await;
-                    assert!(store.session.is_none());
-                    assert!(store.turns.is_empty());
+                    assert!(store.session.is_some());
+                    assert_eq!(store.turns, old_turns);
                 }
 
-                // Replay-only mutation gates must remain closed while the persisted snapshot is
-                // still absent; selection below is the operation that hydrates this channel.
+                // Replay-only mutation gates must remain closed while the authoritative refresh
+                // is pending; selection below is the operation that replaces this stale channel.
                 let op = AppCommand::user_turn(
                     vec![UserInput::Text {
                         text: "must not be submitted".to_string(),
@@ -524,7 +564,21 @@ fn closed_existing_empty_channel_hydrates_persisted_transcript() -> Result<()> {
                     .lock()
                     .await;
                 assert!(store.session.is_some());
-                assert_eq!(store.turns, started.turns);
+                assert!(store.turns.len() > old_turns.len());
+                assert!(store.turns.iter().any(|turn| {
+                    turn.items.iter().any(|item| {
+                        matches!(
+                            item,
+                            ThreadItem::UserMessage { content, .. }
+                                if content.iter().any(|input| matches!(
+                                    input,
+                                    AppServerUserInput::Text { text, .. }
+                                        if text == "Saved later child message"
+                                ))
+                        )
+                    })
+                }));
+                let hydrated_turns = store.turns.clone();
                 assert_eq!(
                     app.thread_event_channels
                         .get(&child_thread_id)
@@ -532,6 +586,11 @@ fn closed_existing_empty_channel_hydrates_persisted_transcript() -> Result<()> {
                         .attachment(),
                     ThreadEventAttachment::ReplayOnly
                 );
+                drop(store);
+                let persisted = app_server
+                    .thread_read(child_thread_id, /*include_turns*/ true)
+                    .await?;
+                assert_eq!(hydrated_turns, persisted.turns);
 
                 let rendered = std::iter::from_fn(|| app_event_rx.try_recv().ok())
                     .filter_map(|event| match event {
@@ -544,7 +603,7 @@ fn closed_existing_empty_channel_hydrates_persisted_transcript() -> Result<()> {
                 assert!(
                     rendered
                         .iter()
-                        .any(|cell| cell.contains("Saved child message"))
+                        .any(|cell| cell.contains("Saved later child message"))
                 );
 
                 let (_, reads) = take_backfill_counts(&requests);
@@ -558,5 +617,5 @@ fn closed_existing_empty_channel_hydrates_persisted_transcript() -> Result<()> {
             })
         })?
         .join()
-        .expect("closed channel hydration test thread")
+        .expect("closed channel refresh test thread")
 }
