@@ -1439,6 +1439,7 @@ impl Drop for RemoteResponseReservation {
 
 struct RecentRemoteRequestIds {
     ids: HashSet<RequestId>,
+    large_ids: HashSet<RequestId>,
     capacity: usize,
 }
 
@@ -1446,6 +1447,7 @@ impl RecentRemoteRequestIds {
     fn new(capacity: usize) -> Self {
         Self {
             ids: HashSet::new(),
+            large_ids: HashSet::new(),
             capacity,
         }
     }
@@ -1455,14 +1457,36 @@ impl RecentRemoteRequestIds {
     }
 
     fn remember(&mut self, request_id: RequestId) -> Result<(), ()> {
+        self.remember_with_policy(request_id, false)
+    }
+
+    fn remember_with_policy(
+        &mut self,
+        request_id: RequestId,
+        allow_large_response: bool,
+    ) -> Result<(), ()> {
         if self.ids.contains(&request_id) {
+            if allow_large_response {
+                self.large_ids.insert(request_id);
+            }
             return Ok(());
         }
         if self.ids.len() >= self.capacity {
             return Err(());
         }
+        if allow_large_response {
+            self.large_ids.insert(request_id.clone());
+        }
         self.ids.insert(request_id);
         Ok(())
+    }
+
+    fn allows_large_response(&self, request_id: &RequestId) -> bool {
+        self.large_ids.contains(request_id)
+    }
+
+    fn has_large_response(&self) -> bool {
+        !self.large_ids.is_empty()
     }
 }
 
@@ -1749,11 +1773,14 @@ fn cancel_pending_remote_requests(
     let canceled_ids: Vec<_> = pending_requests
         .iter()
         .filter(|(_, pending)| pending.lifecycle.load(Ordering::Acquire) == REQUEST_CANCELLED)
-        .map(|(request_id, _)| request_id.clone())
+        .map(|(request_id, pending)| (request_id.clone(), pending.allow_large_response))
         .collect();
-    for request_id in canceled_ids {
+    for (request_id, allow_large_response) in canceled_ids {
         if pending_requests.remove(&request_id).is_some() {
-            if canceled_request_ids.remember(request_id).is_err() {
+            if canceled_request_ids
+                .remember_with_policy(request_id, allow_large_response)
+                .is_err()
+            {
                 return Some(
                     RemoteTerminal::canceled_request_tombstone_capacity_exhausted(endpoint),
                 );
@@ -1994,11 +2021,15 @@ where
             // Reserve custody before parsing peer-controlled text. A large
             // frame is admitted to the parser only while an explicitly
             // admitted history request is pending; the exact response ID is
-            // checked below before the message is routed.
+            // checked below before the message is routed. A history-capable
+            // cancellation tombstone keeps the same bounded admission path
+            // open for its late response.
             let may_be_large_history_response = text.len() > REMOTE_RESPONSE_MAX_WIRE_BYTES
                 && pending_requests
                     .values()
-                    .any(|pending| pending.allow_large_response);
+                    .any(|pending| pending.allow_large_response)
+                || text.len() > REMOTE_RESPONSE_MAX_WIRE_BYTES
+                    && canceled_request_ids.has_large_response();
             if text.len() > REMOTE_RESPONSE_MAX_WIRE_BYTES && !may_be_large_history_response {
                 return Some(RemoteTerminal::oversized_response_message(
                     endpoint,
@@ -2023,12 +2054,18 @@ where
             };
             let parsed_message = serde_json::from_str::<JSONRPCMessage>(&text);
             let allow_large_response = match &parsed_message {
-                Ok(JSONRPCMessage::Response(response)) => pending_requests
-                    .get(&response.id)
-                    .is_some_and(|pending| pending.allow_large_response),
-                Ok(JSONRPCMessage::Error(error)) => pending_requests
-                    .get(&error.id)
-                    .is_some_and(|pending| pending.allow_large_response),
+                Ok(JSONRPCMessage::Response(response)) => {
+                    pending_requests
+                        .get(&response.id)
+                        .is_some_and(|pending| pending.allow_large_response)
+                        || canceled_request_ids.allows_large_response(&response.id)
+                }
+                Ok(JSONRPCMessage::Error(error)) => {
+                    pending_requests
+                        .get(&error.id)
+                        .is_some_and(|pending| pending.allow_large_response)
+                        || canceled_request_ids.allows_large_response(&error.id)
+                }
                 _ => false,
             };
             if parsed_message.is_ok()
@@ -2043,6 +2080,7 @@ where
             match parsed_message {
                 Ok(JSONRPCMessage::Response(response)) => {
                     if let Some(pending) = pending_requests.remove(&response.id) {
+                        let allow_large_response = pending.allow_large_response;
                         if pending
                             .lifecycle
                             .compare_exchange(
@@ -2057,7 +2095,10 @@ where
                                 result: Ok(response.result),
                                 _bytes: reservation,
                             }));
-                        } else if canceled_request_ids.remember(response.id).is_err() {
+                        } else if canceled_request_ids
+                            .remember_with_policy(response.id, allow_large_response)
+                            .is_err()
+                        {
                             return Some(
                                 RemoteTerminal::canceled_request_tombstone_capacity_exhausted(
                                     endpoint,
@@ -2073,6 +2114,7 @@ where
                 }
                 Ok(JSONRPCMessage::Error(error)) => {
                     if let Some(pending) = pending_requests.remove(&error.id) {
+                        let allow_large_response = pending.allow_large_response;
                         if pending
                             .lifecycle
                             .compare_exchange(
@@ -2087,7 +2129,10 @@ where
                                 result: Err(error.error),
                                 _bytes: reservation,
                             }));
-                        } else if canceled_request_ids.remember(error.id).is_err() {
+                        } else if canceled_request_ids
+                            .remember_with_policy(error.id, allow_large_response)
+                            .is_err()
+                        {
                             return Some(
                                 RemoteTerminal::canceled_request_tombstone_capacity_exhausted(
                                     endpoint,
@@ -4488,6 +4533,75 @@ mod tests {
         drop(handle);
         drop(event_rx);
         drop(peer);
+    }
+
+    #[tokio::test]
+    async fn canceled_large_history_response_is_admitted_and_absorbed_by_tombstone() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let budget = RemoteResponseByteBudget::shared();
+        let request_slots = Arc::new(Semaphore::new(1));
+        let mut pending_requests = HashMap::new();
+        let mut canceled_request_ids = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+        let (response_tx, _response_rx) = oneshot::channel();
+        pending_requests.insert(
+            RequestId::Integer(1),
+            PendingRemoteRequest {
+                response_tx,
+                lifecycle: Arc::new(AtomicU8::new(REQUEST_CANCELLED)),
+                allow_large_response: true,
+                _slot: request_slots
+                    .acquire_owned()
+                    .await
+                    .expect("test request slot should be available"),
+            },
+        );
+
+        assert!(
+            cancel_pending_remote_requests(
+                &mut pending_requests,
+                &mut canceled_request_ids,
+                "test://canceled-large-history",
+            )
+            .is_none()
+        );
+        assert!(pending_requests.is_empty());
+        assert!(canceled_request_ids.contains(&RequestId::Integer(1)));
+        assert!(canceled_request_ids.allows_large_response(&RequestId::Integer(1)));
+
+        let message = JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(1),
+            result: serde_json::json!({
+                "padding": "x".repeat(9 * 1024 * 1024)
+            }),
+        });
+        let wire_bytes = serde_json::to_string(&message)
+            .expect("late large history response should serialize")
+            .len();
+        assert!(wire_bytes > REMOTE_RESPONSE_MAX_WIRE_BYTES);
+        assert!(
+            handle_remote_message(
+                Some(Ok(text_message(message))),
+                &mut stream,
+                "test://canceled-large-history",
+                &mut pending_requests,
+                &mut canceled_request_ids,
+                &mut backlog,
+                &mut deferred_events,
+                &budget,
+            )
+            .await
+            .is_none()
+        );
+        assert_eq!(budget.large_used(), 0);
+        assert_eq!(budget.used(), 0);
     }
 
     #[tokio::test]
