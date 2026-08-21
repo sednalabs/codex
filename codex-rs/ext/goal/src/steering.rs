@@ -5,10 +5,6 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ThreadGoal;
 use codex_utils_template::Template;
 use std::sync::LazyLock;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 static CONTINUATION_PROMPT_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
     parse_embedded_template(
@@ -30,7 +26,6 @@ static OBJECTIVE_UPDATED_PROMPT_TEMPLATE: LazyLock<Template> = LazyLock::new(|| 
         "goals/objective_updated.md",
     )
 });
-static DIAGNOSTIC_GOAL_PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 fn parse_embedded_template(source: &'static str, template_name: &str) -> Template {
     match Template::parse(source) {
@@ -82,13 +77,14 @@ fn continuation_prompt(goal: &ThreadGoal) -> String {
         });
 
     if codex_core::diagnostic_flags::goal_multi_agent_stress_enabled() {
-        let task_name = diagnostic_goal_probe_task_name();
+        let task_name =
+            codex_core::diagnostic_flags::next_goal_multi_agent_probe_task_name("continuation");
         prompt.push_str(&format!(
             "
 
 Diagnostic continuation probe:
-             - Before other substantive work in this automatic continuation, call the plain `spawn_agent` tool exactly once.
-             - Use task_name `{task_name}` and fork_turns `none`. Do not substitute a namespaced/legacy collaboration spawn tool.
+             - Before other substantive work in this automatic continuation, call the Multi-Agent V2 `spawn_agent` tool exposed in this turn exactly once.
+             - Use task_name `{task_name}` and fork_turns `none`. Use the configured V2 namespace if this turn exposes one; do not substitute the legacy V1 collaboration tool.
              - In the child message, briefly restate the active objective and ask the child to perform one concrete tool-backed inspection or work step that advances it, then report evidence back.
              - The parent should continue its own useful work after issuing the spawn; do not wait for the child unless the normal task flow requires it.
              - If the plain `spawn_agent` call fails or is unavailable, keep the goal active and continue useful work. A later automatic continuation will try a fresh probe.
@@ -97,15 +93,6 @@ Diagnostic continuation probe:
     }
 
     prompt
-}
-
-fn diagnostic_goal_probe_task_name() -> String {
-    let epoch_millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let sequence = DIAGNOSTIC_GOAL_PROBE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("goal_probe_{epoch_millis}_{sequence}")
 }
 
 fn budget_limit_prompt(goal: &ThreadGoal) -> String {
