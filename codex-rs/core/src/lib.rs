@@ -48,6 +48,7 @@ mod context_manager;
 mod current_time;
 #[allow(dead_code)]
 mod custom_prompts;
+pub mod diagnostic_flags;
 mod elicitation;
 mod environment_selection;
 pub use codex_utils_path::env;
