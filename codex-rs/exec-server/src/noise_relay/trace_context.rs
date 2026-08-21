@@ -82,6 +82,13 @@ impl NoiseTraceContext {
         if let Some(process_id) = process_id
             && request_id_bytes.is_some()
         {
+            let replacing_closed_process = self
+                .processes
+                .get(&process_id)
+                .is_some_and(|process| process.closed);
+            if replacing_closed_process {
+                self.invalidate_process_requests(&process_id, Some(&request.id));
+            }
             if self
                 .processes
                 .get(&process_id)
@@ -141,6 +148,7 @@ impl NoiseTraceContext {
                         }
                         return Some(trace);
                     }
+                    self.invalidate_process_requests(&process_id, /*except_request_id*/ None);
                     remove_tracked(
                         &mut self.processes,
                         &mut self.process_order,
@@ -270,28 +278,35 @@ impl NoiseTraceContext {
             let Some(oldest) = self.process_order.pop_front() else {
                 break;
             };
-            let Some(evicted) = self.processes.remove(&oldest) else {
+            let Some(_evicted) = self.processes.remove(&oldest) else {
                 continue;
             };
-            if evicted.closed
-                && let Some(pending_request) = evicted.pending_request
-                && self
-                    .requests
-                    .get(&pending_request)
-                    .is_some_and(|request| request.process_id.as_deref() == Some(oldest.as_str()))
-            {
-                remove_tracked(
-                    &mut self.requests,
-                    &mut self.request_order,
-                    &mut self.request_bytes,
-                    &pending_request,
-                );
-            }
+            // An evicted process entry is a terminal association boundary. Any
+            // retained start request for this process belongs to the evicted
+            // generation and must not be allowed to recreate a mapping when
+            // its late response arrives. Keep the request itself so its trace
+            // response remains correlated, but sever its process association.
+            self.invalidate_process_requests(&oldest, /*except_request_id*/ None);
             self.process_bytes = retained_payload_bytes(&self.processes);
         }
         self.processes.insert(key.clone(), value);
         self.process_order.push_back(key);
         self.process_bytes += entry_bytes;
+    }
+
+    fn invalidate_process_requests(
+        &mut self,
+        process_id: &str,
+        except_request_id: Option<&RequestId>,
+    ) {
+        for (request_id, request) in &mut self.requests {
+            if Some(request_id) != except_request_id
+                && request.process_id.as_deref() == Some(process_id)
+            {
+                request.process_id = None;
+            }
+        }
+        self.request_bytes = retained_payload_bytes(&self.requests);
     }
 
     #[cfg(test)]
