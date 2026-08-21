@@ -202,9 +202,11 @@ async fn run_connection(
                 codex_exec_server_protocol::JSONRPCMessage::Notification(notification) => {
                     let Some(route) = router.notification_route(notification.method.as_str())
                     else {
+                        // Keep the peer-controlled method out of logs. Unknown
+                        // notification names are unbounded wire input.
                         warn!(
-                            "closing exec-server connection after unexpected notification: {}",
-                            notification.method
+                            method = unknown_notification_method_label(&notification.method),
+                            "closing exec-server connection after unexpected notification"
                         );
                         break;
                     };
@@ -287,6 +289,10 @@ fn request_span(
     span
 }
 
+fn unknown_notification_method_label(_method: &str) -> &'static str {
+    "unknown"
+}
+
 fn request_result(message: &Option<RpcServerOutboundMessage>) -> &'static str {
     match message {
         Some(RpcServerOutboundMessage::Error { .. }) => "error",
@@ -332,6 +338,7 @@ mod tests {
 
     use super::request_span;
     use super::run_connection;
+    use super::unknown_notification_method_label;
     use crate::ExecServerRuntimePaths;
     use crate::ProcessId;
     use crate::connection::JsonRpcConnection;
@@ -364,6 +371,12 @@ mod tests {
             Some(EXEC_TERMINATE_METHOD)
         );
         assert!(router.request_route("custom/method").is_none());
+    }
+
+    #[test]
+    fn unknown_notification_labels_do_not_include_peer_method_values() {
+        let method = format!("sensitive/{}", "x".repeat(16 * 1024));
+        assert_eq!(unknown_notification_method_label(&method), "unknown");
     }
 
     #[test]
