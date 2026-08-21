@@ -825,12 +825,15 @@ fn persist_agent_identity_record(
     let mut guard = auth_dot_json
         .lock()
         .map_err(|_| std::io::Error::other("failed to lock auth state"))?;
-    let mut auth = storage
-        .load()?
+    let mut transaction = storage.begin_transaction()?;
+    let mut auth = transaction
+        .snapshot()
+        .auth
+        .clone()
         .or_else(|| guard.clone())
         .ok_or_else(|| std::io::Error::other("auth data is not available"))?;
     auth.agent_identity = Some(AgentIdentityStorage::Record(record));
-    storage.save(&auth)?;
+    transaction.save(&auth)?;
     *guard = Some(auth);
     Ok(())
 }
@@ -1110,6 +1113,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
                 message,
                 config.auth_credentials_store_mode,
                 config.keyring_backend_kind,
+                &auth,
             );
         }
     }
@@ -1133,6 +1137,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
                             ),
                             config.auth_credentials_store_mode,
                             config.keyring_backend_kind,
+                            &auth,
                         );
                     }
                 };
@@ -1161,6 +1166,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
                 message,
                 config.auth_credentials_store_mode,
                 config.keyring_backend_kind,
+                &auth,
             );
         }
     }
@@ -1173,19 +1179,73 @@ fn logout_with_message(
     message: String,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
+    rejected_auth: &CodexAuth,
 ) -> std::io::Result<()> {
-    // External auth tokens live in the ephemeral store, but persistent auth may still exist
-    // from earlier logins. Clear both so a forced logout truly removes all active auth.
-    let removal_result = logout_all_stores(
+    let removal_result = logout_stores_matching_rejected_auth(
         codex_home,
         auth_credentials_store_mode,
         keyring_backend_kind,
+        rejected_auth,
     );
     let error_message = match removal_result {
         Ok(_) => message,
         Err(err) => format!("{message}. Failed to remove auth.json: {err}"),
     };
     Err(std::io::Error::other(error_message))
+}
+
+fn logout_stores_matching_rejected_auth(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    rejected_auth: &CodexAuth,
+) -> std::io::Result<bool> {
+    let remove_from = |mode, backend| -> std::io::Result<bool> {
+        let storage = create_auth_storage(codex_home.to_path_buf(), mode, backend);
+        let mut transaction = storage.begin_transaction()?;
+        let removed = transaction
+            .compare_delete(|stored| auth_dot_json_matches_rejected_auth(stored, rejected_auth))?;
+        Ok(removed)
+    };
+    let removed_ephemeral = remove_from(
+        AuthCredentialsStoreMode::Ephemeral,
+        AuthKeyringBackendKind::default(),
+    )?;
+    if auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral {
+        return Ok(removed_ephemeral);
+    }
+    let removed_managed = remove_from(auth_credentials_store_mode, keyring_backend_kind)?;
+    Ok(removed_ephemeral || removed_managed)
+}
+
+fn auth_dot_json_matches_rejected_auth(stored: &AuthDotJson, rejected: &CodexAuth) -> bool {
+    if stored.resolved_mode() != rejected.api_auth_mode() {
+        return false;
+    }
+    match rejected {
+        CodexAuth::ApiKey(auth) => stored.openai_api_key.as_deref() == Some(auth.api_key.as_str()),
+        CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_) => {
+            let Some(rejected) = rejected.get_current_auth_json() else {
+                return false;
+            };
+            let (Some(stored_tokens), Some(rejected_tokens)) = (&stored.tokens, &rejected.tokens)
+            else {
+                return false;
+            };
+            stored_tokens.access_token == rejected_tokens.access_token
+                && stored_tokens.refresh_token == rejected_tokens.refresh_token
+                && stored_tokens.account_id == rejected_tokens.account_id
+        }
+        CodexAuth::AgentIdentity(auth) => stored
+            .agent_identity
+            .as_ref()
+            .is_some_and(|identity| identity.matches_record(auth.record())),
+        CodexAuth::PersonalAccessToken(auth) => {
+            stored.personal_access_token.as_deref() == Some(auth.access_token())
+        }
+        CodexAuth::BedrockApiKey(auth) => stored.bedrock_api_key.as_ref() == Some(auth),
+        CodexAuth::Headers(_) => false,
+    }
 }
 
 fn logout_all_stores(
@@ -1312,8 +1372,11 @@ fn persist_tokens(
     access_token: Option<String>,
     refresh_token: Option<String>,
 ) -> std::io::Result<AuthDotJson> {
-    let mut auth_dot_json = storage
-        .load()?
+    let mut transaction = storage.begin_transaction()?;
+    let mut auth_dot_json = transaction
+        .snapshot()
+        .auth
+        .clone()
         .ok_or(std::io::Error::other("Token data is not available."))?;
 
     let tokens = auth_dot_json.tokens.get_or_insert_with(TokenData::default);
@@ -1327,7 +1390,7 @@ fn persist_tokens(
         tokens.refresh_token = refresh_token;
     }
     auth_dot_json.last_refresh = Some(Utc::now());
-    storage.save(&auth_dot_json)?;
+    transaction.save(&auth_dot_json)?;
     Ok(auth_dot_json)
 }
 
