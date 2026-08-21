@@ -240,6 +240,39 @@ impl GoalRuntimeHandle {
             .await
     }
 
+    pub(crate) async fn preserve_active_goal_after_turn_error(
+        &self,
+        turn_id: &str,
+    ) -> Result<(), String> {
+        if !self.is_enabled() {
+            return Ok(());
+        }
+
+        let _goal_state_permit = self.goal_state_permit().await?;
+        let accounting = self.accounting_state();
+        if !accounting.turn_is_current_active_goal(turn_id) {
+            accounting.finish_turn(turn_id);
+            return Ok(());
+        }
+
+        let goal = self
+            .inner
+            .state_dbs
+            .thread_goals()
+            .get_thread_goal(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?;
+
+        accounting.finish_turn(turn_id);
+        match goal {
+            Some(goal) if goal.status == codex_state::ThreadGoalStatus::Active => {
+                accounting.mark_idle_goal_active(goal.goal_id);
+            }
+            Some(_) | None => accounting.clear_active_goal(),
+        }
+        Ok(())
+    }
+
     /// Accounts the ending turn and stops its active goal after a terminal error.
     pub(crate) async fn stop_active_goal_for_turn(
         &self,
