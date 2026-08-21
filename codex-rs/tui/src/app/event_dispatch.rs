@@ -50,6 +50,13 @@ impl App {
             | AppEvent::UpdateWorldWritableWarningAcknowledged(_)
             | AppEvent::UpdateRateLimitSwitchPromptHidden(_)
             | AppEvent::UpdatePlanModeReasoningEffort(_)
+            | AppEvent::PetDisabled
+            | AppEvent::PetSelectionLoaded { .. }
+            | AppEvent::SetSkillEnabled { .. }
+            | AppEvent::SetAppEnabled { .. }
+            | AppEvent::SetHookEnabled { .. }
+            | AppEvent::TrustHook { .. }
+            | AppEvent::TrustHooks { .. }
             | AppEvent::PersistModelSelection { .. }
             | AppEvent::PersistPersonalitySelection { .. }
             | AppEvent::PersistServiceTierSelection { .. }
@@ -2765,6 +2772,35 @@ mod tests {
             },
             AppEvent::UpdateWorldWritableWarningAcknowledged(true),
             AppEvent::UpdateRateLimitSwitchPromptHidden(true),
+            AppEvent::PetDisabled,
+            AppEvent::PetSelectionLoaded {
+                request_id: 0,
+                pet_id: "chefito".to_string(),
+                result: Ok(None),
+            },
+            AppEvent::SetSkillEnabled {
+                path: codex_utils_absolute_path::AbsolutePathBuf::try_from("/skills/example")
+                    .expect("absolute skill path"),
+                enabled: true,
+            },
+            AppEvent::SetAppEnabled {
+                id: "example-app".to_string(),
+                enabled: true,
+            },
+            AppEvent::SetHookEnabled {
+                key: "example-hook".to_string(),
+                enabled: true,
+            },
+            AppEvent::TrustHook {
+                key: "example-hook".to_string(),
+                current_hash: "hash".to_string(),
+            },
+            AppEvent::TrustHooks {
+                updates: vec![crate::hooks_rpc::HookTrustUpdate {
+                    key: "example-hook".to_string(),
+                    current_hash: "hash".to_string(),
+                }],
+            },
         ] {
             assert!(App::replay_only_event_is_mutating(&event));
         }
