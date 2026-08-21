@@ -64,6 +64,7 @@ impl App {
             | AppEvent::SetHookEnabled { .. }
             | AppEvent::TrustHook { .. }
             | AppEvent::TrustHooks { .. }
+            | AppEvent::BeginWindowsSandboxGrantReadRoot { .. }
             | AppEvent::EnableWindowsSandboxForAgentMode { .. }
             | AppEvent::PersistModelSelection { .. }
             | AppEvent::PersistPersonalitySelection { .. }
@@ -2855,6 +2856,9 @@ mod tests {
                     .expect("built-in approval preset"),
                 mode: WindowsSandboxEnableMode::Legacy,
                 profile_selection: None,
+            },
+            AppEvent::BeginWindowsSandboxGrantReadRoot {
+                path: "/workspace/shared".to_string(),
             },
             AppEvent::StatusLineSetup {
                 items: Vec::new(),
