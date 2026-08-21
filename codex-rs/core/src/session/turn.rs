@@ -1297,9 +1297,16 @@ async fn run_sampling_request(
                     return Err(err);
                 }
                 CodexErrorDetails::UsageLimitReached(e) => {
-                    let rate_limits = e.rate_limits.clone();
-                    if let Some(rate_limits) = rate_limits {
-                        sess.update_rate_limits(&turn_context, *rate_limits).await;
+                    if !crate::diagnostic_flags::goal_error_continuation_enabled() {
+                        let rate_limits = e.rate_limits.clone();
+                        if let Some(rate_limits) = rate_limits {
+                            sess.update_rate_limits(&turn_context, *rate_limits).await;
+                        }
+                    } else {
+                        warn!(
+                            turn_id = %turn_context.sub_id,
+                            "goal error continuation diagnostic mode skipped rate-limit snapshot update"
+                        );
                     }
                     return Err(err);
                 }
