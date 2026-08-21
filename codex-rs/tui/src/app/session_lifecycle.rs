@@ -466,6 +466,14 @@ impl App {
             return Ok(true);
         }
 
+        // Fence requests and notifications from the prior replay attachment before resuming.
+        // The channel remains available to collect valid post-snapshot notifications that arrive
+        // while thread/resume is in flight.
+        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+            let mut store = channel.store.lock().await;
+            store.clear_stale_replay_state();
+        }
+
         let (session, turns, live_attached) = match app_server
             .resume_thread(self.config.clone(), thread_id, self.resume_model_settings())
             .await
