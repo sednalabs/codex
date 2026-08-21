@@ -1758,10 +1758,12 @@ decisions.
   the upstream fallback only when that message is absent. Provider-confirmed
   model identity remains emitted alongside this upstream retry mapping.
 - PR609 adds a bounded remote-client custody and lifecycle boundary around the
-  upstream request/response path. Peer-controlled inbound WebSocket messages
-  are capped at 8 MiB, while caller-controlled outbound payload compatibility
-  is unchanged. Each inbound text message takes a provisional wire-byte
-  reservation before JSON parsing; retained events and pending responses use
+  upstream request/response path. Ordinary peer-controlled responses are
+  capped at 8 MiB; history responses retain one explicit 128 MiB WebSocket
+  transport compatibility exception. Caller-controlled outbound payload
+  compatibility is otherwise unchanged. Each inbound text message takes a
+  provisional wire-byte reservation before JSON parsing; retained events and
+  pending responses use
   separate 32 MiB aggregate wire-byte budgets, with exact-byte RAII release.
   Inbound and outbound string request IDs are capped at 16 KiB. The remote
   client assigns connection-unique integer wire IDs so a delayed duplicate
@@ -1784,7 +1786,7 @@ decisions.
   `remote_typed_request_accepts_inbound_response_at_wire_limit`,
   `remote_oversized_initialize_metadata_is_rejected_without_retention`,
   `initialize_response_budget_rejection_happens_before_json_parsing`,
-  `remote_websocket_config_and_inbound_response_wire_limit_are_locked_to_eight_mib`,
+  `remote_websocket_config_preserves_128_mib_transport_and_8_mib_ordinary_response_limits`,
   `response_byte_budget_rejects_oversize_and_fourth_max_charge_then_releases`,
   `response_budget_rejections_terminalize_before_json_parsing`,
   `nonretained_text_paths_release_response_provisional_custody`,
