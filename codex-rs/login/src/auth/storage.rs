@@ -16,6 +16,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
 use tracing::warn;
 
 use super::BedrockApiKeyAuth;
@@ -211,16 +212,25 @@ pub(super) struct LoadedAuth {
 /// cleanup, which keeps a captured `LoadedAuth` a real authority boundary.
 #[derive(Clone, Debug)]
 pub(super) struct AuthRepository {
+    codex_home: PathBuf,
     mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
     file: Arc<FileAuthStorage>,
     direct: Arc<DirectKeyringAuthStorage>,
     secrets: Arc<SecretsKeyringAuthStorage>,
     ephemeral: Arc<EphemeralAuthStorage>,
-    lock: Arc<Mutex<()>>,
 }
 
-static AUTH_REPOSITORY_LOCK: Lazy<Arc<Mutex<()>>> = Lazy::new(|| Arc::new(Mutex::new(())));
+static AUTH_REPOSITORY_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+/// Holds both authority boundaries for one repository operation. The process
+/// mutex makes re-entrant in-process decisions deterministic; the OS lock is
+/// keyed by CODEX_HOME and remains held across the complete read/compare/write
+/// or read/compare/delete sequence for other Codex processes.
+struct AuthRepositoryTransaction<'a> {
+    _process_guard: MutexGuard<'a, ()>,
+    _file_lock: File,
+}
 
 impl AuthRepository {
     fn new(
@@ -230,6 +240,7 @@ impl AuthRepository {
         keyring_backend_kind: AuthKeyringBackendKind,
     ) -> Self {
         Self {
+            codex_home: codex_home.clone(),
             mode,
             keyring_backend_kind,
             file: Arc::new(FileAuthStorage::new(codex_home.clone())),
@@ -242,8 +253,30 @@ impl AuthRepository {
                 keyring_store,
             )),
             ephemeral: Arc::new(EphemeralAuthStorage::new(codex_home)),
-            lock: Arc::clone(&AUTH_REPOSITORY_LOCK),
         }
+    }
+
+    fn transaction(&self) -> std::io::Result<AuthRepositoryTransaction<'static>> {
+        let process_guard = AUTH_REPOSITORY_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("failed to lock auth repository"))?;
+        let lock_path = auth_repository_lock_path(&self.codex_home)?;
+        let lock_dir = lock_path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("auth repository lock path has no parent"))?;
+        std::fs::create_dir_all(&lock_dir)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            options.mode(0o600);
+        }
+        let file_lock = options.open(lock_path)?;
+        file_lock.lock()?;
+        Ok(AuthRepositoryTransaction {
+            _process_guard: process_guard,
+            _file_lock: file_lock,
+        })
     }
 
     fn selected_keyring_source(&self) -> AuthStorageSource {
@@ -288,18 +321,12 @@ impl AuthRepository {
     }
 
     pub(super) fn load_active(&self) -> std::io::Result<Option<LoadedAuth>> {
-        let _guard = self
-            .lock
-            .lock()
-            .map_err(|_| std::io::Error::other("failed to lock auth repository"))?;
+        let _transaction = self.transaction()?;
         self.load_active_locked()
     }
 
     pub(super) fn replace_for_login(&self, auth: &AuthDotJson) -> std::io::Result<LoadedAuth> {
-        let _guard = self
-            .lock
-            .lock()
-            .map_err(|_| std::io::Error::other("failed to lock auth repository"))?;
+        let _transaction = self.transaction()?;
         let source = match self.mode {
             AuthCredentialsStoreMode::File => AuthStorageSource::File,
             AuthCredentialsStoreMode::Keyring => self.selected_keyring_source(),
@@ -343,10 +370,7 @@ impl AuthRepository {
         expected: &LoadedAuth,
         updated: &AuthDotJson,
     ) -> std::io::Result<LoadedAuth> {
-        let _guard = self
-            .lock
-            .lock()
-            .map_err(|_| std::io::Error::other("failed to lock auth repository"))?;
+        let _transaction = self.transaction()?;
         if self.storage(expected.source).load()?.as_ref() != Some(&expected.auth) {
             return Err(std::io::Error::other("auth changed before update"));
         }
@@ -358,10 +382,7 @@ impl AuthRepository {
     }
 
     pub(super) fn delete_if_matches(&self, expected: &LoadedAuth) -> std::io::Result<bool> {
-        let _guard = self
-            .lock
-            .lock()
-            .map_err(|_| std::io::Error::other("failed to lock auth repository"))?;
+        let _transaction = self.transaction()?;
         if self.storage(expected.source).load()?.as_ref() != Some(&expected.auth) {
             return Ok(false);
         }
@@ -371,10 +392,7 @@ impl AuthRepository {
     /// User-initiated logout is deliberately independent of the configured
     /// policy. All stores are attempted even after one fails.
     pub(super) fn logout_all(&self) -> std::io::Result<bool> {
-        let _guard = self
-            .lock
-            .lock()
-            .map_err(|_| std::io::Error::other("failed to lock auth repository"))?;
+        let _transaction = self.transaction()?;
         let mut removed = false;
         let mut failures = Vec::new();
         for source in [
@@ -397,6 +415,17 @@ impl AuthRepository {
             )))
         }
     }
+}
+
+fn auth_repository_lock_path(codex_home: &Path) -> std::io::Result<PathBuf> {
+    let canonical_home = codex_home
+        .canonicalize()
+        .unwrap_or_else(|_| codex_home.to_path_buf());
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_home.to_string_lossy().as_bytes());
+    Ok(std::env::temp_dir()
+        .join("codex-auth-repository-locks")
+        .join(digest_hex(hasher.finalize())))
 }
 
 #[derive(Clone, Debug)]

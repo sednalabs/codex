@@ -9,6 +9,7 @@ use codex_secrets::SecretsManager;
 use codex_secrets::compute_keyring_account;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::fs::OpenOptions;
 use tempfile::tempdir;
 
 use codex_keyring_store::CredentialStoreError;
@@ -886,6 +887,51 @@ fn logout_all_reports_partial_failure_after_continuing_other_stores() -> anyhow:
         EphemeralAuthStorage::new(codex_home.path().to_path_buf())
             .load()?
             .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn repository_uses_an_os_lock_for_authority_transactions() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let repository = create_auth_repository_with_store(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+        Arc::new(MockKeyringStore::default()),
+        AuthKeyringBackendKind::Direct,
+    );
+    let lock_path = auth_repository_lock_path(codex_home.path())?;
+    let _transaction = repository.transaction()?;
+    let contender = OpenOptions::new().read(true).write(true).open(lock_path)?;
+    let error = contender
+        .try_lock()
+        .expect_err("a second authority transaction must wait for the OS lock");
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    Ok(())
+}
+
+#[test]
+fn source_bound_compare_update_rejects_a_mismatch_without_mutating() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let repository = create_auth_repository_with_store(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::Keyring,
+        Arc::new(MockKeyringStore::default()),
+        AuthKeyringBackendKind::Direct,
+    );
+    let original = auth_with_prefix("original");
+    let loaded = repository.replace_for_login(&original)?;
+    let replacement = auth_with_prefix("replacement");
+    repository.replace_for_login(&replacement)?;
+
+    assert!(
+        repository
+            .update_if_unchanged(&loaded, &auth_with_prefix("unexpected"))
+            .is_err()
+    );
+    assert_eq!(
+        repository.load_active()?.map(|loaded| loaded.auth),
+        Some(replacement)
     );
     Ok(())
 }
