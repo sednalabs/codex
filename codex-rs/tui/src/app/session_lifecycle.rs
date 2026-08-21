@@ -469,12 +469,10 @@ impl App {
         // while thread/resume is in flight.
         if self.thread_event_channels.contains_key(&thread_id) {
             self.replace_thread_event_queue(thread_id).await;
-            let channel = self
-                .thread_event_channels
-                .get(&thread_id)
-                .expect("thread channel should remain present");
-            let mut store = channel.store.lock().await;
-            store.clear_stale_replay_state();
+            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                let mut store = channel.store.lock().await;
+                store.clear_stale_replay_state();
+            }
         }
 
         let (session, turns, live_attached) = match app_server
@@ -718,10 +716,9 @@ impl App {
             .agent_navigation
             .get(&thread_id)
             .is_some_and(|entry| entry.is_closed)
+            && let Some(channel) = self.thread_event_channels.get_mut(&thread_id)
         {
-            if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
-                channel.mark_replay_only();
-            }
+            channel.mark_replay_only();
         }
 
         // A tracked side thread stays loaded until it is explicitly discarded and already has a

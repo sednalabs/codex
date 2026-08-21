@@ -342,27 +342,28 @@ async fn failed_resume_fallback_replaces_events_arriving_after_fence() -> Result
     );
     event_task.await?;
 
-    let channel = app
-        .thread_event_channels
-        .get(&thread_id)
-        .expect("fallback channel");
-    let store = channel.store.lock().await;
-    assert_eq!(store.turns.len(), 1);
-    assert!(!store.has_pending_thread_approvals());
-    assert!(
-        store
-            .buffer
-            .iter()
-            .all(|event| !matches!(event, ThreadBufferedEvent::Request(_)))
-    );
-    drop(store);
-    assert!(
-        channel
-            .receiver
-            .as_ref()
-            .expect("inactive fallback receiver")
-            .is_empty()
-    );
+    {
+        let channel = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("fallback channel");
+        let store = channel.store.lock().await;
+        assert_eq!(store.turns.len(), 1);
+        assert!(!store.has_pending_thread_approvals());
+        assert!(
+            store
+                .buffer
+                .iter()
+                .all(|event| !matches!(event, ThreadBufferedEvent::Request(_)))
+        );
+        assert!(
+            channel
+                .receiver
+                .as_ref()
+                .expect("inactive fallback receiver")
+                .is_empty()
+        );
+    }
 
     app_server.shutdown().await?;
     proxy.await??;
@@ -822,37 +823,38 @@ fn closed_existing_stale_channel_refreshes_persisted_transcript() -> Result<()> 
                     "closed hydration must fence events queued by the prior attachment"
                 );
 
-                let store = app
-                    .thread_event_channels
-                    .get(&child_thread_id)
-                    .expect("hydrated channel")
-                    .store
-                    .lock()
-                    .await;
-                assert!(store.session.is_some());
-                assert!(store.turns.len() > old_turns.len());
-                assert!(store.turns.iter().any(|turn| {
-                    turn.items.iter().any(|item| {
-                        matches!(
-                            item,
-                            ThreadItem::UserMessage { content, .. }
-                                if content.iter().any(|input| matches!(
-                                    input,
-                                    AppServerUserInput::Text { text, .. }
-                                        if text == "Saved later child message"
-                                ))
-                        )
-                    })
-                }));
-                let hydrated_turns = store.turns.clone();
-                assert_eq!(
-                    app.thread_event_channels
+                let hydrated_turns = {
+                    let store = app
+                        .thread_event_channels
                         .get(&child_thread_id)
                         .expect("hydrated channel")
-                        .attachment(),
-                    ThreadEventAttachment::ReplayOnly
-                );
-                drop(store);
+                        .store
+                        .lock()
+                        .await;
+                    assert!(store.session.is_some());
+                    assert!(store.turns.len() > old_turns.len());
+                    assert!(store.turns.iter().any(|turn| {
+                        turn.items.iter().any(|item| {
+                            matches!(
+                                item,
+                                ThreadItem::UserMessage { content, .. }
+                                    if content.iter().any(|input| matches!(
+                                        input,
+                                        AppServerUserInput::Text { text, .. }
+                                            if text == "Saved later child message"
+                                    ))
+                            )
+                        })
+                    }));
+                    assert_eq!(
+                        app.thread_event_channels
+                            .get(&child_thread_id)
+                            .expect("hydrated channel")
+                            .attachment(),
+                        ThreadEventAttachment::ReplayOnly
+                    );
+                    store.turns.clone()
+                };
                 let persisted = app_server
                     .thread_read(child_thread_id, /*include_turns*/ true)
                     .await?;
@@ -914,12 +916,15 @@ fn closed_thread_status_race_reconciles_live_attachment() -> Result<()> {
                 // The proxy turns the authoritative include-turns read into an active response,
                 // while the preceding liveness reads still observe the embedded server's
                 // NotLoaded state after unsubscribe.
-                let (mut app_server, _requests, proxy) =
-                    start_recording_app_server_with_status_script(
-                        &app.config,
-                        /*force_active_include_turns*/ true,
-                    )
-                    .await?;
+                let (mut app_server, _requests, proxy) = start_recording_app_server_with_scripts(
+                    &app.config,
+                    /*force_active_include_turns*/ true,
+                    /*force_not_loaded_after_unsubscribe*/ true,
+                    /*force_resume_failure*/ false,
+                    /*resume_signal*/ None,
+                    /*event_recorded_signal*/ None,
+                )
+                .await?;
                 let started = app_server
                     .resume_thread(app.config.clone(), thread_id, app.resume_model_settings())
                     .await?;
