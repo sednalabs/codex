@@ -93,13 +93,15 @@ struct InboundServerRequestLedger {
 
 impl InboundServerRequestLedger {
     fn new(channel_capacity: usize) -> Self {
+        let max_entries = channel_capacity
+            .saturating_mul(4)
+            .min(MAX_INBOUND_SERVER_REQUEST_IDS)
+            .max(1);
+
         Self {
-            entries: HashMap::new(),
+            entries: HashMap::with_capacity(max_entries),
             retained_string_id_bytes: 0,
-            max_entries: channel_capacity
-                .saturating_mul(4)
-                .min(MAX_INBOUND_SERVER_REQUEST_IDS)
-                .max(1),
+            max_entries,
         }
     }
 
