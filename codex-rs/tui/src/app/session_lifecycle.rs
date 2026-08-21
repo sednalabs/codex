@@ -655,6 +655,10 @@ impl App {
             // when already selected so a thread that became live again is promoted in place.
             self.refresh_agent_picker_thread_liveness(app_server, thread_id)
                 .await;
+            // Liveness refresh can close the selected thread and mark its channel replay-only.
+            // Keep the widget's composer gate in sync before any early return or re-attach path.
+            self.chat_widget
+                .set_replay_only_thread(self.is_replay_only_thread(thread_id));
             if self.should_attach_live_thread_for_selection(thread_id) {
                 let live_attached = self
                     .attach_live_thread_for_selection_with_tui(app_server, thread_id, Some(tui))

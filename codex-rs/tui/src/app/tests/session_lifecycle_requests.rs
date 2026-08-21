@@ -756,3 +756,91 @@ fn closed_thread_status_race_reconciles_live_attachment() -> Result<()> {
         .join()
         .expect("closed thread status race test thread")
 }
+
+#[test]
+fn active_thread_liveness_refresh_blocks_replay_input_without_optimistic_prompt() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-active-thread-replay-gate".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+                let codex_home = app.config.codex_home.as_path();
+                let thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home,
+                        "2026-01-01T00-00-00",
+                        "2026-01-01T00:00:00Z",
+                        "Saved active-thread message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create active-thread rollout"),
+                )?;
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+
+                // Load the persisted thread so the first selection creates a real live channel
+                // and configures the widget before the later unload/liveness transition.
+                app_server
+                    .resume_thread(app.config.clone(), thread_id, app.resume_model_settings())
+                    .await?;
+                app.agent_navigation.upsert(
+                    thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                    /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
+                );
+                let mut tui = crate::tui::test_support::make_test_tui()?;
+                app.select_agent_thread(&mut tui, &mut app_server, thread_id)
+                    .await?;
+                assert_eq!(app.active_thread_id, Some(thread_id));
+                assert_eq!(
+                    app.thread_event_channels
+                        .get(&thread_id)
+                        .expect("live channel")
+                        .attachment(),
+                    ThreadEventAttachment::Live
+                );
+                while app_event_rx.try_recv().is_ok() {}
+
+                // The selected thread is unloaded after selection. The active-thread branch must
+                // synchronize the widget gate in the same turn as this liveness refresh.
+                app_server.thread_unsubscribe(thread_id).await?;
+                app.select_agent_thread(&mut tui, &mut app_server, thread_id)
+                    .await?;
+                assert!(app.is_replay_only_thread(thread_id));
+
+                let prompt = "draft stays while thread is detached".to_string();
+                app.chat_widget
+                    .restore_user_message_to_composer(prompt.clone());
+                let draft = app.chat_widget.composer_text_with_pending();
+                app.chat_widget
+                    .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                let events =
+                    std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect::<Vec<_>>();
+
+                assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
+                assert!(
+                    !events
+                        .iter()
+                        .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+                );
+                assert!(!events.iter().any(|event| match event {
+                    AppEvent::InsertHistoryCell(cell) => {
+                        lines_to_single_string(&cell.display_lines(/*width*/ 120)).contains(&prompt)
+                    }
+                    _ => false,
+                }));
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("active thread replay gate test thread")
+}
