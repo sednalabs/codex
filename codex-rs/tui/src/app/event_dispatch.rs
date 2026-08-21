@@ -928,11 +928,16 @@ impl App {
                 enabled,
                 result,
             } => {
+                let replay_only = self
+                    .chat_widget
+                    .thread_id()
+                    .is_some_and(|thread_id| self.is_replay_only_thread(thread_id));
                 let queued_enabled = self
                     .pending_plugin_enabled_writes
                     .get_mut(&plugin_id)
                     .and_then(Option::take);
-                let should_apply_result = if let Some(queued_enabled) = queued_enabled
+                let should_apply_result = if !replay_only
+                    && let Some(queued_enabled) = queued_enabled
                     && (result.is_err() || queued_enabled != enabled)
                 {
                     self.spawn_plugin_enabled_write(
@@ -2262,11 +2267,16 @@ impl App {
                 enabled,
                 result,
             } => {
+                let replay_only = self
+                    .chat_widget
+                    .thread_id()
+                    .is_some_and(|thread_id| self.is_replay_only_thread(thread_id));
                 let queued_enabled = self
                     .pending_hook_enabled_writes
                     .get_mut(&key)
                     .and_then(Option::take);
-                let should_apply_result = if let Some(queued_enabled) = queued_enabled
+                let should_apply_result = if !replay_only
+                    && let Some(queued_enabled) = queued_enabled
                     && (result.is_err() || queued_enabled != enabled)
                 {
                     self.spawn_hook_enabled_write(app_server, key.clone(), queued_enabled);
