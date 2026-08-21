@@ -9,10 +9,90 @@ use codex_secrets::SecretsManager;
 use codex_secrets::compute_keyring_account;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::fs::OpenOptions;
+use std::path::Path;
+use std::process::Command;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 use tempfile::tempdir;
 
+use codex_keyring_store::CredentialStoreError;
+use codex_keyring_store::KeyringStore;
 use codex_keyring_store::tests::MockKeyringStore;
 use keyring::Error as KeyringError;
+
+#[derive(Debug)]
+struct FailingSaveKeyringStore {
+    inner: MockKeyringStore,
+}
+
+#[derive(Debug)]
+struct WriteThenFailKeyringStore {
+    inner: MockKeyringStore,
+}
+
+impl KeyringStore for WriteThenFailKeyringStore {
+    fn load(&self, service: &str, account: &str) -> Result<Option<String>, CredentialStoreError> {
+        self.inner.load(service, account)
+    }
+
+    fn save(&self, service: &str, account: &str, value: &str) -> Result<(), CredentialStoreError> {
+        self.inner.save(service, account, value)?;
+        Err(CredentialStoreError::new(KeyringError::Invalid(
+            "error".into(),
+            "save-after-write".into(),
+        )))
+    }
+
+    fn delete(&self, service: &str, account: &str) -> Result<bool, CredentialStoreError> {
+        self.inner.delete(service, account)
+    }
+}
+
+#[derive(Debug)]
+struct FailingDeleteKeyringStore {
+    inner: MockKeyringStore,
+}
+
+impl KeyringStore for FailingDeleteKeyringStore {
+    fn load(&self, service: &str, account: &str) -> Result<Option<String>, CredentialStoreError> {
+        self.inner.load(service, account)
+    }
+
+    fn save(&self, service: &str, account: &str, value: &str) -> Result<(), CredentialStoreError> {
+        self.inner.save(service, account, value)
+    }
+
+    fn delete(&self, _service: &str, _account: &str) -> Result<bool, CredentialStoreError> {
+        Err(CredentialStoreError::new(KeyringError::Invalid(
+            "error".into(),
+            "delete".into(),
+        )))
+    }
+}
+
+impl KeyringStore for FailingSaveKeyringStore {
+    fn load(&self, service: &str, account: &str) -> Result<Option<String>, CredentialStoreError> {
+        self.inner.load(service, account)
+    }
+
+    fn save(
+        &self,
+        _service: &str,
+        _account: &str,
+        _value: &str,
+    ) -> Result<(), CredentialStoreError> {
+        Err(CredentialStoreError::new(KeyringError::Invalid(
+            "error".into(),
+            "save".into(),
+        )))
+    }
+
+    fn delete(&self, service: &str, account: &str) -> Result<bool, CredentialStoreError> {
+        self.inner.delete(service, account)
+    }
+}
 
 #[tokio::test]
 async fn file_storage_load_returns_auth_dot_json() -> anyhow::Result<()> {
@@ -476,7 +556,7 @@ fn keyring_auth_storage_compute_store_key_for_home_directory() -> anyhow::Result
 }
 
 #[test]
-fn direct_keyring_auth_storage_saves_legacy_keyring_entry() -> anyhow::Result<()> {
+fn direct_keyring_auth_storage_is_source_local() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     let mock_keyring = MockKeyringStore::default();
     let storage = DirectKeyringAuthStorage::new(
@@ -496,15 +576,15 @@ fn direct_keyring_auth_storage_saves_legacy_keyring_entry() -> anyhow::Result<()
     assert_eq!(saved_value, serde_json::to_string(&auth)?);
     assert!(!encrypted_auth_file(codex_home.path()).exists());
     assert!(
-        !auth_file.exists(),
-        "fallback auth.json should be removed after keyring save"
+        auth_file.exists(),
+        "direct keyring save must not touch auth.json"
     );
     assert_eq!(storage.load()?, Some(auth));
     Ok(())
 }
 
 #[test]
-fn direct_keyring_auth_storage_delete_removes_keyring_and_file() -> anyhow::Result<()> {
+fn direct_keyring_auth_storage_delete_is_source_local() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     let mock_keyring = MockKeyringStore::default();
     let storage = DirectKeyringAuthStorage::new(
@@ -527,8 +607,8 @@ fn direct_keyring_auth_storage_delete_removes_keyring_and_file() -> anyhow::Resu
         "legacy keyring auth entry should be removed"
     );
     assert!(
-        !auth_file.exists(),
-        "fallback auth.json should be removed after keyring delete"
+        auth_file.exists(),
+        "direct keyring delete must not touch auth.json"
     );
     assert!(!encrypted_auth_file(codex_home.path()).exists());
     Ok(())
@@ -573,7 +653,7 @@ fn factory_uses_secrets_backend_only_when_requested() -> anyhow::Result<()> {
 }
 
 #[test]
-fn secrets_keyring_auth_storage_save_persists_and_removes_fallback_file() -> anyhow::Result<()> {
+fn secrets_keyring_auth_storage_is_source_local() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     let mock_keyring = MockKeyringStore::default();
     let storage = SecretsKeyringAuthStorage::new(
@@ -599,12 +679,22 @@ fn secrets_keyring_auth_storage_save_persists_and_removes_fallback_file() -> any
 
     storage.save(&auth)?;
 
-    assert_keyring_saved_auth_and_removed_fallback(&mock_keyring, codex_home.path(), &auth)?;
+    let manager = SecretsManager::new_with_keyring_store_and_namespace(
+        codex_home.path().to_path_buf(),
+        SecretsBackendKind::Local,
+        Arc::new(mock_keyring),
+        LocalSecretsNamespace::CodexAuth,
+    );
+    assert_eq!(
+        manager.get(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME)?,
+        Some(serde_json::to_string(&auth)?)
+    );
+    assert!(auth_file.exists(), "secrets save must not touch auth.json");
     Ok(())
 }
 
 #[test]
-fn secrets_keyring_auth_storage_delete_removes_keyring_and_file() -> anyhow::Result<()> {
+fn secrets_keyring_auth_storage_delete_is_source_local() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     let mock_keyring = MockKeyringStore::default();
     let storage = SecretsKeyringAuthStorage::new(
@@ -623,14 +713,15 @@ fn secrets_keyring_auth_storage_delete_removes_keyring_and_file() -> anyhow::Res
     assert!(removed, "delete should report removal");
     assert_eq!(storage.load()?, None, "encrypted auth should be removed");
     assert!(
-        !auth_file.exists(),
-        "fallback auth.json should be removed after keyring delete"
+        auth_file.exists(),
+        "secrets delete must not touch auth.json"
     );
     Ok(())
 }
 
 #[test]
-fn secrets_keyring_auth_storage_delete_removes_legacy_direct_keyring_entry() -> anyhow::Result<()> {
+fn secrets_keyring_auth_storage_delete_does_not_remove_direct_keyring_entry() -> anyhow::Result<()>
+{
     let codex_home = tempdir()?;
     let mock_keyring = MockKeyringStore::default();
     let direct_storage = DirectKeyringAuthStorage::new(
@@ -655,151 +746,413 @@ fn secrets_keyring_auth_storage_delete_removes_legacy_direct_keyring_entry() -> 
     assert_eq!(storage.load()?, None, "encrypted auth should be removed");
     assert_eq!(
         direct_storage.load()?,
-        None,
-        "legacy direct keyring auth should be removed"
+        Some(auth_with_prefix("legacy-direct"))
     );
-    assert!(
-        !auth_file.exists(),
-        "fallback auth.json should be removed after keyring delete"
-    );
-    Ok(())
-}
-
-#[test]
-fn auto_auth_storage_load_prefers_keyring_value() -> anyhow::Result<()> {
-    let codex_home = tempdir()?;
-    let mock_keyring = MockKeyringStore::default();
-    let storage = AutoAuthStorage::new(
-        codex_home.path().to_path_buf(),
-        Arc::new(mock_keyring.clone()),
-        AuthKeyringBackendKind::Secrets,
-    );
-    let keyring_auth = auth_with_prefix("keyring");
-    seed_secrets_backend_with_auth(&mock_keyring, codex_home.path(), &keyring_auth)?;
-
-    let file_auth = auth_with_prefix("file");
-    storage.file_storage.save(&file_auth)?;
-
-    let loaded = storage.load()?;
-    assert_eq!(loaded, Some(keyring_auth));
-    Ok(())
-}
-
-#[test]
-fn auto_auth_storage_load_uses_file_when_keyring_empty() -> anyhow::Result<()> {
-    let codex_home = tempdir()?;
-    let mock_keyring = MockKeyringStore::default();
-    let storage = AutoAuthStorage::new(
-        codex_home.path().to_path_buf(),
-        Arc::new(mock_keyring),
-        AuthKeyringBackendKind::Secrets,
-    );
-
-    let expected = auth_with_prefix("file-only");
-    storage.file_storage.save(&expected)?;
-
-    let loaded = storage.load()?;
-    assert_eq!(loaded, Some(expected));
-    Ok(())
-}
-
-#[test]
-fn auto_auth_storage_load_falls_back_when_keyring_errors() -> anyhow::Result<()> {
-    let codex_home = tempdir()?;
-    let mock_keyring = MockKeyringStore::default();
-    let storage = AutoAuthStorage::new(
-        codex_home.path().to_path_buf(),
-        Arc::new(mock_keyring.clone()),
-        AuthKeyringBackendKind::Secrets,
-    );
-    let key = compute_keyring_account(codex_home.path());
-
-    let encrypted = auth_with_prefix("encrypted");
-    seed_secrets_backend_with_auth(&mock_keyring, codex_home.path(), &encrypted)?;
-    mock_keyring.set_error(&key, KeyringError::Invalid("error".into(), "load".into()));
-
-    let expected = auth_with_prefix("fallback");
-    storage.file_storage.save(&expected)?;
-
-    let loaded = storage.load()?;
-    assert_eq!(loaded, Some(expected));
-    Ok(())
-}
-
-#[test]
-fn auto_auth_storage_save_prefers_keyring() -> anyhow::Result<()> {
-    let codex_home = tempdir()?;
-    let mock_keyring = MockKeyringStore::default();
-    let storage = AutoAuthStorage::new(
-        codex_home.path().to_path_buf(),
-        Arc::new(mock_keyring.clone()),
-        AuthKeyringBackendKind::Secrets,
-    );
-    let stale = auth_with_prefix("stale");
-    storage.file_storage.save(&stale)?;
-
-    let expected = auth_with_prefix("to-save");
-    storage.save(&expected)?;
-
-    assert_keyring_saved_auth_and_removed_fallback(&mock_keyring, codex_home.path(), &expected)?;
-    Ok(())
-}
-
-#[test]
-fn auto_auth_storage_save_falls_back_when_keyring_errors() -> anyhow::Result<()> {
-    let codex_home = tempdir()?;
-    let mock_keyring = MockKeyringStore::default();
-    let storage = AutoAuthStorage::new(
-        codex_home.path().to_path_buf(),
-        Arc::new(mock_keyring.clone()),
-        AuthKeyringBackendKind::Secrets,
-    );
-    let key = compute_keyring_account(codex_home.path());
-    mock_keyring.set_error(&key, KeyringError::Invalid("error".into(), "save".into()));
-
-    let auth = auth_with_prefix("fallback");
-    storage.save(&auth)?;
-
-    let auth_file = get_auth_file(codex_home.path());
     assert!(
         auth_file.exists(),
-        "fallback auth.json should be created when keyring save fails"
-    );
-    let saved = storage
-        .file_storage
-        .load()?
-        .context("fallback auth should exist")?;
-    assert_eq!(saved, auth);
-    assert!(
-        mock_keyring.saved_value(&key).is_none(),
-        "keyring should not contain value when save fails"
+        "secrets delete must not touch auth.json"
     );
     Ok(())
 }
 
 #[test]
-fn auto_auth_storage_delete_removes_keyring_and_file() -> anyhow::Result<()> {
+fn auto_repository_prefers_keyring_and_returns_its_exact_source() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     let mock_keyring = MockKeyringStore::default();
-    let storage = AutoAuthStorage::new(
+    let repository = create_auth_repository_with_store(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::Auto,
+        Arc::new(mock_keyring.clone()),
+        AuthKeyringBackendKind::Direct,
+    );
+    let keyring_auth = auth_with_prefix("keyring");
+    DirectKeyringAuthStorage::new(codex_home.path().to_path_buf(), Arc::new(mock_keyring))
+        .save(&keyring_auth)?;
+    FileAuthStorage::new(codex_home.path().to_path_buf()).save(&auth_with_prefix("file"))?;
+
+    assert_eq!(
+        repository.load_active()?,
+        Some(LoadedAuth {
+            source: AuthStorageSource::DirectKeyring,
+            auth: keyring_auth,
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn auto_repository_falls_back_only_after_a_positive_empty_keyring_read() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let repository = create_auth_repository_with_store(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::Auto,
+        Arc::new(FailingSaveKeyringStore {
+            inner: MockKeyringStore::default(),
+        }),
+        AuthKeyringBackendKind::Direct,
+    );
+    let replacement = auth_with_prefix("replacement");
+
+    assert_eq!(
+        repository.replace_for_login(&replacement)?.source,
+        AuthStorageSource::File
+    );
+    assert_eq!(
+        repository.load_active()?.map(|loaded| loaded.auth),
+        Some(replacement)
+    );
+    Ok(())
+}
+
+#[test]
+fn auto_repository_refuses_shadow_file_when_keyring_contains_auth_and_write_fails()
+-> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let mock_keyring = MockKeyringStore::default();
+    let keyring = DirectKeyringAuthStorage::new(
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
-        AuthKeyringBackendKind::Secrets,
     );
-    let auth = auth_with_prefix("to-delete");
-    let auth_file = seed_secrets_backend_and_fallback_auth_file_for_delete(
-        &mock_keyring,
-        codex_home.path(),
-        &auth,
-    )?;
+    let original = auth_with_prefix("original");
+    keyring.save(&original)?;
+    let repository = create_auth_repository_with_store(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::Auto,
+        Arc::new(FailingSaveKeyringStore {
+            inner: mock_keyring,
+        }),
+        AuthKeyringBackendKind::Direct,
+    );
 
-    let removed = storage.delete()?;
-
-    assert!(removed, "delete should report removal");
-    assert_eq!(storage.load()?, None, "encrypted auth should be removed");
     assert!(
-        !auth_file.exists(),
-        "fallback auth.json should be removed after delete"
+        repository
+            .replace_for_login(&auth_with_prefix("replacement"))
+            .is_err()
+    );
+    assert_eq!(
+        repository.load_active()?.map(|loaded| loaded.auth),
+        Some(original)
+    );
+    assert!(!get_auth_file(codex_home.path()).exists());
+    Ok(())
+}
+
+#[test]
+fn auto_repository_fails_closed_when_keyring_writes_then_returns_an_error() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let replacement = auth_with_prefix("written-then-error");
+    let repository = create_auth_repository_with_store(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::Auto,
+        Arc::new(WriteThenFailKeyringStore {
+            inner: MockKeyringStore::default(),
+        }),
+        AuthKeyringBackendKind::Direct,
+    );
+
+    assert!(repository.replace_for_login(&replacement).is_err());
+    assert_eq!(
+        repository.load_active()?,
+        Some(LoadedAuth {
+            source: AuthStorageSource::DirectKeyring,
+            auth: replacement,
+        })
+    );
+    assert!(!get_auth_file(codex_home.path()).exists());
+    Ok(())
+}
+
+#[test]
+fn compare_delete_and_logout_keep_source_and_user_policy_separate() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let mock_keyring = MockKeyringStore::default();
+    let repository = create_auth_repository_with_store(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::Keyring,
+        Arc::new(mock_keyring.clone()),
+        AuthKeyringBackendKind::Direct,
+    );
+    let direct = DirectKeyringAuthStorage::new(
+        codex_home.path().to_path_buf(),
+        Arc::new(mock_keyring.clone()),
+    );
+    let secrets =
+        SecretsKeyringAuthStorage::new(codex_home.path().to_path_buf(), Arc::new(mock_keyring));
+    let ephemeral = EphemeralAuthStorage::new(codex_home.path().to_path_buf());
+    let direct_auth = auth_with_prefix("direct");
+    direct.save(&direct_auth)?;
+    FileAuthStorage::new(codex_home.path().to_path_buf()).save(&auth_with_prefix("file"))?;
+    secrets.save(&auth_with_prefix("secrets"))?;
+    ephemeral.save(&auth_with_prefix("ephemeral"))?;
+
+    assert!(repository.delete_if_matches(&LoadedAuth {
+        source: AuthStorageSource::DirectKeyring,
+        auth: direct_auth,
+    })?);
+    assert!(
+        FileAuthStorage::new(codex_home.path().to_path_buf())
+            .load()?
+            .is_some()
+    );
+    assert!(secrets.load()?.is_some());
+    assert!(ephemeral.load()?.is_some());
+    assert!(repository.logout_all()?);
+    assert!(
+        FileAuthStorage::new(codex_home.path().to_path_buf())
+            .load()?
+            .is_none()
+    );
+    assert!(secrets.load()?.is_none());
+    assert!(ephemeral.load()?.is_none());
+    Ok(())
+}
+
+#[test]
+fn logout_all_reports_partial_failure_after_continuing_other_stores() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let mock_keyring = MockKeyringStore::default();
+    let repository = create_auth_repository_with_store(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+        Arc::new(FailingDeleteKeyringStore {
+            inner: mock_keyring,
+        }),
+        AuthKeyringBackendKind::Direct,
+    );
+    FileAuthStorage::new(codex_home.path().to_path_buf()).save(&auth_with_prefix("file"))?;
+    EphemeralAuthStorage::new(codex_home.path().to_path_buf())
+        .save(&auth_with_prefix("ephemeral"))?;
+
+    let error = repository
+        .logout_all()
+        .expect_err("keyring delete should fail");
+    assert!(error.to_string().contains("partial auth logout"));
+    assert!(error.to_string().contains("DirectKeyring"));
+    assert!(
+        FileAuthStorage::new(codex_home.path().to_path_buf())
+            .load()?
+            .is_none()
+    );
+    assert!(
+        EphemeralAuthStorage::new(codex_home.path().to_path_buf())
+            .load()?
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn repository_uses_an_os_lock_for_authority_transactions() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let repository = create_auth_repository_with_store(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::File,
+        Arc::new(MockKeyringStore::default()),
+        AuthKeyringBackendKind::Direct,
+    );
+    let lock_path = auth_repository_lock_path(codex_home.path())?;
+    let _transaction = repository.transaction()?;
+    let contender = OpenOptions::new().read(true).write(true).open(lock_path)?;
+    let error = contender
+        .try_lock()
+        .expect_err("a second authority transaction must wait for the OS lock");
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    Ok(())
+}
+
+#[test]
+fn source_bound_compare_update_rejects_a_mismatch_without_mutating() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let repository = create_auth_repository_with_store(
+        codex_home.path().to_path_buf(),
+        AuthCredentialsStoreMode::Keyring,
+        Arc::new(MockKeyringStore::default()),
+        AuthKeyringBackendKind::Direct,
+    );
+    let original = auth_with_prefix("original");
+    let loaded = repository.replace_for_login(&original)?;
+    let replacement = auth_with_prefix("replacement");
+    repository.replace_for_login(&replacement)?;
+
+    assert!(
+        repository
+            .update_if_unchanged(&loaded, &auth_with_prefix("unexpected"))
+            .is_err()
+    );
+    assert_eq!(
+        repository.load_active()?.map(|loaded| loaded.auth),
+        Some(replacement)
+    );
+    Ok(())
+}
+
+const AUTH_LOCK_TEST_ROLE: &str = "CODEX_AUTH_LOCK_TEST_ROLE";
+const AUTH_LOCK_TEST_HOME: &str = "CODEX_AUTH_LOCK_TEST_HOME";
+const AUTH_LOCK_TEST_SYNC: &str = "CODEX_AUTH_LOCK_TEST_SYNC";
+
+fn lock_test_path(sync: &Path, name: &str) -> PathBuf {
+    sync.join(name)
+}
+
+fn write_lock_test_signal(sync: &Path, name: &str) -> anyhow::Result<()> {
+    std::fs::write(lock_test_path(sync, name), "ready")?;
+    Ok(())
+}
+
+fn wait_for_lock_test_signal(sync: &Path, name: &str) -> anyhow::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !lock_test_path(sync, name).exists() {
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for lock-test signal {name}");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+fn lock_test_repository(codex_home: PathBuf) -> AuthRepository {
+    create_auth_repository_with_store(
+        codex_home,
+        AuthCredentialsStoreMode::File,
+        Arc::new(MockKeyringStore::default()),
+        AuthKeyringBackendKind::Direct,
+    )
+}
+
+fn run_lock_test_holder(codex_home: PathBuf, sync: PathBuf) -> anyhow::Result<()> {
+    let repository = lock_test_repository(codex_home);
+    std::fs::write(
+        lock_test_path(&sync, "holder-tmpdir"),
+        std::env::var("TMPDIR")?,
+    )?;
+    let stale = repository
+        .load_active()?
+        .context("holder must capture the original credential")?;
+    write_lock_test_signal(&sync, "stale-snapshot")?;
+    let transaction = repository.transaction()?;
+    write_lock_test_signal(&sync, "holder-locked")?;
+    wait_for_lock_test_signal(&sync, "release-holder")?;
+    drop(transaction);
+    wait_for_lock_test_signal(&sync, "writer-finished")?;
+    assert!(
+        repository
+            .update_if_unchanged(&stale, &auth_with_prefix("stale-overwrite"))
+            .is_err()
+    );
+    assert_eq!(
+        repository.load_active()?.map(|loaded| loaded.auth),
+        Some(auth_with_prefix("newer"))
+    );
+    write_lock_test_signal(&sync, "stale-update-rejected")
+}
+
+fn run_lock_test_writer(codex_home: PathBuf, sync: PathBuf) -> anyhow::Result<()> {
+    let repository = lock_test_repository(codex_home);
+    std::fs::write(
+        lock_test_path(&sync, "writer-tmpdir"),
+        std::env::var("TMPDIR")?,
+    )?;
+    write_lock_test_signal(&sync, "writer-started")?;
+    repository.replace_for_login(&auth_with_prefix("newer"))?;
+    write_lock_test_signal(&sync, "writer-finished")
+}
+
+fn spawn_lock_test_child(
+    test_name: &str,
+    role: &str,
+    codex_home: &Path,
+    sync: &Path,
+    tmpdir: &Path,
+) -> anyhow::Result<std::process::Child> {
+    Ok(Command::new(std::env::current_exe()?)
+        .arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .env(AUTH_LOCK_TEST_ROLE, role)
+        .env(AUTH_LOCK_TEST_HOME, codex_home)
+        .env(AUTH_LOCK_TEST_SYNC, sync)
+        .env("TMPDIR", tmpdir)
+        .spawn()?)
+}
+
+#[test]
+fn repository_lock_is_stable_across_process_tmpdirs_and_blocks_stale_update() -> anyhow::Result<()>
+{
+    let role = std::env::var(AUTH_LOCK_TEST_ROLE).ok();
+    if let Some(role) = role.as_deref() {
+        let codex_home = PathBuf::from(std::env::var(AUTH_LOCK_TEST_HOME)?);
+        let sync = PathBuf::from(std::env::var(AUTH_LOCK_TEST_SYNC)?);
+        return match role {
+            "holder" => run_lock_test_holder(codex_home, sync),
+            "writer" => run_lock_test_writer(codex_home, sync),
+            _ => anyhow::bail!("unknown auth-lock test role {role}"),
+        };
+    }
+
+    let codex_home = tempdir()?;
+    let sync = tempdir()?;
+    let tmpdir_a = tempdir()?;
+    let tmpdir_b = tempdir()?;
+    let repository = lock_test_repository(codex_home.path().to_path_buf());
+    repository.replace_for_login(&auth_with_prefix("original"))?;
+    let test_name = thread::current()
+        .name()
+        .context("libtest must name the current test")?
+        .to_owned();
+
+    let mut holder = spawn_lock_test_child(
+        &test_name,
+        "holder",
+        codex_home.path(),
+        sync.path(),
+        tmpdir_a.path(),
+    )?;
+    wait_for_lock_test_signal(sync.path(), "stale-snapshot")?;
+    wait_for_lock_test_signal(sync.path(), "holder-locked")?;
+    assert_eq!(
+        std::fs::read_to_string(lock_test_path(sync.path(), "holder-tmpdir"))?,
+        tmpdir_a.path().to_string_lossy().to_string(),
+        "holder must run with its assigned TMPDIR"
+    );
+
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(auth_repository_lock_path(codex_home.path())?)?;
+    let error = lock_file
+        .try_lock()
+        .expect_err("the holder process must own the shared authority lock");
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+
+    let mut writer = spawn_lock_test_child(
+        &test_name,
+        "writer",
+        codex_home.path(),
+        sync.path(),
+        tmpdir_b.path(),
+    )?;
+    wait_for_lock_test_signal(sync.path(), "writer-started")?;
+    assert_eq!(
+        std::fs::read_to_string(lock_test_path(sync.path(), "writer-tmpdir"))?,
+        tmpdir_b.path().to_string_lossy().to_string(),
+        "writer must run with a distinct TMPDIR"
+    );
+    assert_ne!(tmpdir_a.path(), tmpdir_b.path());
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !lock_test_path(sync.path(), "writer-finished").exists(),
+        "writer must remain excluded while the distinct holder process owns the lock"
+    );
+    assert!(writer.try_wait()?.is_none(), "writer must still be blocked");
+
+    write_lock_test_signal(sync.path(), "release-holder")?;
+    wait_for_lock_test_signal(sync.path(), "writer-finished")?;
+    wait_for_lock_test_signal(sync.path(), "stale-update-rejected")?;
+    assert!(holder.wait()?.success(), "holder child failed");
+    assert!(writer.wait()?.success(), "writer child failed");
+    assert_eq!(
+        repository.load_active()?.map(|loaded| loaded.auth),
+        Some(auth_with_prefix("newer"))
     );
     Ok(())
 }
