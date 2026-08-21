@@ -182,12 +182,29 @@ impl NoiseTraceContext {
         }
         if success {
             if process.closed {
-                remove_tracked(
-                    &mut self.processes,
-                    &mut self.process_order,
-                    &mut self.process_bytes,
-                    &process_id,
-                );
+                let next = self
+                    .request_order
+                    .iter()
+                    .filter_map(|candidate_id| {
+                        let candidate = self.requests.get(candidate_id)?;
+                        (candidate.process_id.as_deref() == Some(process_id.as_str()))
+                            .then_some((candidate_id.clone(), candidate.trace.clone()))
+                    })
+                    .next();
+                if let Some((next_request_id, next_trace)) = next {
+                    if let Some(process) = self.processes.get_mut(&process_id) {
+                        process.trace = next_trace;
+                        process.pending_request = Some(next_request_id);
+                    }
+                    self.process_bytes = retained_payload_bytes(&self.processes);
+                } else {
+                    remove_tracked(
+                        &mut self.processes,
+                        &mut self.process_order,
+                        &mut self.process_bytes,
+                        &process_id,
+                    );
+                }
                 return;
             }
             // A duplicate successful start must never replace an established

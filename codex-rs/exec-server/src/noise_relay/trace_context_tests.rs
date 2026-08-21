@@ -155,6 +155,42 @@ fn closed_process_before_start_response_cannot_be_resurrected() {
 }
 
 #[test]
+fn closed_process_tombstone_survives_duplicate_start_responses() {
+    let first_trace = trace_context();
+    let second_trace = W3cTraceContext {
+        traceparent: Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".to_string()),
+        tracestate: None,
+    };
+    let mut context = NoiseTraceContext::default();
+    context.observe_request(&process_start_request_with_id(1, first_trace.clone()));
+    context.observe_request(&process_start_request_with_id(2, second_trace.clone()));
+
+    let closed = JSONRPCMessage::Notification(JSONRPCNotification {
+        method: EXEC_CLOSED_METHOD.to_string(),
+        params: Some(serde_json::json!({"processId": "process-1"})),
+    });
+    assert_eq!(context.return_trace(&closed), Some(first_trace.clone()));
+
+    // Both late responses remain request-correlated, but neither may restore
+    // a process mapping after the terminal notification.
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(1),
+            result: serde_json::Value::Null,
+        })),
+        Some(first_trace)
+    );
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(2),
+            result: serde_json::Value::Null,
+        })),
+        Some(second_trace)
+    );
+    assert_eq!(context.return_trace(&process_notification()), None);
+}
+
+#[test]
 fn unrelated_request_process_ids_do_not_poison_notification_correlation() {
     let trace = trace_context();
     let mut context = NoiseTraceContext::default();
