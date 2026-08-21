@@ -994,17 +994,28 @@ class RouteSelectionTests(unittest.TestCase):
 
     def test_app_server_client_route_selects_focused_client_lane(self) -> None:
         changed_files = [
+            ".github/scripts/test_ci_planners.py",
+            ".github/validation-lanes.json",
+            ".github/workflows/sedna-heavy-tests.yml",
             "codex-rs/app-server-client/src/lib.rs",
             "codex-rs/app-server-client/src/remote.rs",
             "docs/carry-divergence-ledger.md",
             "docs/divergences/index.yaml",
             "docs/downstream-regression-matrix.md",
+            "justfile",
         ]
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             changed_files,
             self.routes,
         )
-        self.assertEqual(lanes, ["codex.app-server-client-targeted"])
+        self.assertEqual(
+            lanes,
+            [
+                "codex.app-server-client-targeted",
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+            ],
+        )
 
     def test_skill_loader_fixture_lane_pins_both_hermeticity_tests(self) -> None:
         lane = next(
