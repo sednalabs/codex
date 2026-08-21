@@ -311,7 +311,7 @@ fn session_effective_codex_home(
     // absent session remains unresolved and is handled by the caller as unavailable.
     session.rollout_path.as_deref().map_or_else(
         || Some(default_codex_home.to_path_buf()),
-        |path| rollout_codex_home(path),
+        rollout_codex_home,
     )
 }
 
