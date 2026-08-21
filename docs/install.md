@@ -21,6 +21,11 @@ the explicit `--allow-historical-x86` flag cannot downgrade a current release. L
 older than the Ubuntu 24.04 hosted verification environment are not part of the release
 compatibility proof.
 
+The installer validates its owned custody paths without following pre-existing symlinks and
+serializes activation among cooperating installer processes. These checks are not a sandbox
+against a same-UID process that concurrently replaces directories after validation; operators
+must protect the home directory and installer-owned parents from concurrent mutation.
+
 The supported downstream Linux install and release targets are `x86_64` and Arm64 GNU. Intel macOS `x86_64` is also supported by the release contract. Other upstream platform paths remain in the repository for future re-enablement, but Sedna does not currently publish or validate them as supported targets.
 
 ### DotSlash
