@@ -665,7 +665,17 @@ impl App {
             // when already selected so a thread that became live again is promoted in place.
             self.refresh_agent_picker_thread_liveness(app_server, thread_id)
                 .await;
-            if self.should_attach_live_thread_for_selection(thread_id) {
+            // The generic selection predicate is intentionally conservative around cached
+            // channels. For an already-selected thread, however, a successful liveness refresh
+            // is the authoritative transition: if it reopened a replay-only channel, explicitly
+            // resume it before reopening the composer gate. The closed row check prevents a
+            // terminal NotLoaded refresh from attempting to resume the thread.
+            let recovered_active_thread = self.is_replay_only_thread(thread_id)
+                && self
+                    .agent_navigation
+                    .get(&thread_id)
+                    .is_some_and(|entry| !entry.is_closed);
+            if recovered_active_thread || self.should_attach_live_thread_for_selection(thread_id) {
                 let live_attached = self
                     .attach_live_thread_for_selection_with_tui(app_server, thread_id, Some(tui))
                     .await?;
