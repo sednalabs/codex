@@ -1,0 +1,63 @@
+name: Stage PR656 diagnostic hardening
+
+on:
+  push:
+    branches:
+      - diag/pr656-hardening-stage-20260821
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'chore: trigger PR656 hardening stage'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: diag/pr656-hardening-stage-20260821
+          fetch-depth: 0
+
+      - name: Verify staging source
+        shell: bash
+        run: |
+          git diff --exit-code 61b3178ee5dd67ae894fc4f69ff7d5c44e200ead -- \
+            codex-rs/core/src/agent/control/spawn.rs \
+            codex-rs/core/src/diagnostic_flags.rs \
+            codex-rs/core/src/session/turn.rs \
+            codex-rs/core/src/session/turn_tests.rs \
+            codex-rs/core/src/tools/handlers/multi_agents_v2.rs \
+            codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs \
+            codex-rs/ext/goal/src/extension.rs \
+            codex-rs/ext/goal/src/runtime.rs \
+            codex-rs/ext/goal/src/steering.rs
+
+      - name: Apply hardening
+        shell: bash
+        run: |
+          python3 .github/scripts/pr656_hardening_stage.py
+          cargo fmt --manifest-path codex-rs/Cargo.toml --all
+          git diff --check
+
+      - name: Run focused tests
+        shell: bash
+        run: |
+          cargo test --manifest-path codex-rs/Cargo.toml -p codex-core goal_diagnostic_ --lib
+
+      - name: Commit staged source
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            codex-rs/core/src/agent/control/spawn.rs \
+            codex-rs/core/src/diagnostic_flags.rs \
+            codex-rs/core/src/session/turn.rs \
+            codex-rs/core/src/session/turn_tests.rs \
+            codex-rs/core/src/tools/handlers/multi_agents_v2.rs \
+            codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs \
+            codex-rs/ext/goal/src/extension.rs \
+            codex-rs/ext/goal/src/runtime.rs \
+            codex-rs/ext/goal/src/steering.rs
+          git commit -m "test: harden bounded goal diagnostics"
+          git push origin HEAD:diag/pr656-hardening-stage-20260821
