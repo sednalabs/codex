@@ -22,6 +22,11 @@ impl App {
                 !Self::replay_safe_op(op)
             }
             AppEvent::RetrySafetyBufferedTurn { .. }
+            | AppEvent::ExitSideConversation
+            | AppEvent::Logout
+            | AppEvent::NewSession { .. }
+            | AppEvent::ClearUi { .. }
+            | AppEvent::ClearUiAndSubmitUserMessage { .. }
             | AppEvent::AppendMessageHistoryEntry { .. }
             | AppEvent::SyncThreadGitBranch { .. }
             | AppEvent::ApproveRecentAutoReviewDenial { .. }
@@ -69,6 +74,8 @@ impl App {
             | AppEvent::TrustHook { .. }
             | AppEvent::TrustHooks { .. }
             | AppEvent::BeginWindowsSandboxGrantReadRoot { .. }
+            | AppEvent::BeginWindowsSandboxElevatedSetup { .. }
+            | AppEvent::BeginWindowsSandboxLegacySetup { .. }
             | AppEvent::EnableWindowsSandboxForAgentMode { .. }
             | AppEvent::PersistModelSelection { .. }
             | AppEvent::PersistPersonalitySelection { .. }
@@ -2788,6 +2795,13 @@ mod tests {
                 from_model: "gpt-4.1".to_string(),
                 to_model: "gpt-5.4".to_string(),
             },
+            AppEvent::ExitSideConversation,
+            AppEvent::Logout,
+            AppEvent::NewSession { name: None },
+            AppEvent::ClearUi { name: None },
+            AppEvent::ClearUiAndSubmitUserMessage {
+                text: "new prompt".to_string(),
+            },
             AppEvent::UpdateWorldWritableWarningAcknowledged(true),
             AppEvent::UpdateRateLimitSwitchPromptHidden(true),
             AppEvent::SkipNextWorldWritableScan,
@@ -2873,6 +2887,20 @@ mod tests {
                     .next()
                     .expect("built-in approval preset"),
                 mode: WindowsSandboxEnableMode::Legacy,
+                profile_selection: None,
+            },
+            AppEvent::BeginWindowsSandboxElevatedSetup {
+                preset: codex_utils_approval_presets::builtin_approval_presets()
+                    .into_iter()
+                    .next()
+                    .expect("built-in approval preset"),
+                profile_selection: None,
+            },
+            AppEvent::BeginWindowsSandboxLegacySetup {
+                preset: codex_utils_approval_presets::builtin_approval_presets()
+                    .into_iter()
+                    .next()
+                    .expect("built-in approval preset"),
                 profile_selection: None,
             },
             AppEvent::BeginWindowsSandboxGrantReadRoot {
