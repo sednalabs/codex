@@ -65,9 +65,121 @@ use url::Url;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE: usize = 128 << 20;
+// Inbound request IDs are retained for the entire connection lifetime so a
+// peer cannot recycle an ID after its response has been written.  Keep both
+// the number of entries and the bytes held by string IDs bounded; entries are
+// never evicted because eviction would reopen the ID-reuse protocol gap.
+const MAX_INBOUND_SERVER_REQUEST_IDS: usize = 512;
+const MAX_INBOUND_SERVER_REQUEST_ID_STRING_BYTES: usize = 16 * 1024;
+const INBOUND_SERVER_REQUEST_ID_BYTES: usize = 9 * 1024 * 1024;
+const INBOUND_SERVER_REQUEST_ID_ENTRY_OVERHEAD_BYTES: usize = 256;
 // Tungstenite still needs an HTTP request URI for the WebSocket handshake;
 // the bytes travel over the Unix socket, not TCP.
 const UDS_WEBSOCKET_HANDSHAKE_URL: &str = "ws://localhost/rpc";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InboundServerRequestState {
+    Pending,
+    Responded,
+    Rejected,
+}
+
+#[derive(Debug)]
+struct InboundServerRequestLedger {
+    entries: HashMap<RequestId, InboundServerRequestState>,
+    retained_string_id_bytes: usize,
+    max_entries: usize,
+}
+
+impl InboundServerRequestLedger {
+    fn new(channel_capacity: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            retained_string_id_bytes: 0,
+            max_entries: channel_capacity
+                .saturating_mul(4)
+                .min(MAX_INBOUND_SERVER_REQUEST_IDS)
+                .max(1),
+        }
+    }
+
+    fn claim(&mut self, request_id: &RequestId) -> IoResult<()> {
+        if self.entries.contains_key(request_id) {
+            return Err(IoError::new(
+                ErrorKind::InvalidData,
+                "duplicate inbound server request ID on this connection",
+            ));
+        }
+
+        if self.entries.len() >= self.max_entries {
+            return Err(IoError::new(
+                ErrorKind::InvalidData,
+                "inbound server request ID ledger is exhausted",
+            ));
+        }
+
+        if let RequestId::String(value) = request_id {
+            if value.len() > MAX_INBOUND_SERVER_REQUEST_ID_STRING_BYTES {
+                return Err(IoError::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "inbound server request ID is longer than {MAX_INBOUND_SERVER_REQUEST_ID_STRING_BYTES} bytes (received {} bytes)",
+                        value.len()
+                    ),
+                ));
+            }
+            let retained = value
+                .len()
+                .saturating_add(INBOUND_SERVER_REQUEST_ID_ENTRY_OVERHEAD_BYTES);
+            let Some(next) = self.retained_string_id_bytes.checked_add(retained) else {
+                return Err(IoError::new(
+                    ErrorKind::InvalidData,
+                    "inbound server request ID byte ledger is exhausted",
+                ));
+            };
+            if next > INBOUND_SERVER_REQUEST_ID_BYTES {
+                return Err(IoError::new(
+                    ErrorKind::InvalidData,
+                    "inbound server request ID byte ledger is exhausted",
+                ));
+            }
+            self.retained_string_id_bytes = next;
+        }
+
+        self.entries
+            .insert(request_id.clone(), InboundServerRequestState::Pending);
+        Ok(())
+    }
+
+    fn finish(
+        &mut self,
+        request_id: &RequestId,
+        terminal_state: InboundServerRequestState,
+    ) -> IoResult<()> {
+        match self.entries.get_mut(request_id) {
+            Some(state @ InboundServerRequestState::Pending) => {
+                *state = terminal_state;
+                Ok(())
+            }
+            Some(_) => Err(IoError::new(
+                ErrorKind::InvalidData,
+                "inbound server request is no longer pending",
+            )),
+            None => Err(IoError::new(
+                ErrorKind::InvalidData,
+                "unknown inbound server request ID",
+            )),
+        }
+    }
+
+    fn respond(&mut self, request_id: &RequestId) -> IoResult<()> {
+        self.finish(request_id, InboundServerRequestState::Responded)
+    }
+
+    fn reject(&mut self, request_id: &RequestId) -> IoResult<()> {
+        self.finish(request_id, InboundServerRequestState::Rejected)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteAppServerEndpoint {
@@ -202,11 +314,13 @@ impl RemoteAppServerClient {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut stream = stream;
+        let mut inbound_server_request_ledger = InboundServerRequestLedger::new(channel_capacity);
         let (pending_events, server_version, codex_home) = initialize_remote_connection(
             &mut stream,
             &endpoint,
             initialize_params,
             INITIALIZE_TIMEOUT,
+            &mut inbound_server_request_ledger,
         )
         .await?;
 
@@ -215,6 +329,7 @@ impl RemoteAppServerClient {
         let worker_handle = tokio::spawn(async move {
             let mut pending_requests =
                 HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
+            let mut inbound_server_request_ledger = inbound_server_request_ledger;
             let mut worker_exit_error: Option<(ErrorKind, String)> = None;
             let mut skipped_events = 0usize;
             loop {
@@ -280,6 +395,10 @@ impl RemoteAppServerClient {
                                 result,
                                 response_tx,
                             } => {
+                                if let Err(err) = inbound_server_request_ledger.respond(&request_id) {
+                                    let _ = response_tx.send(Err(err));
+                                    continue;
+                                }
                                 let result = write_jsonrpc_message(
                                     &mut stream,
                                     JSONRPCMessage::Response(JSONRPCResponse {
@@ -296,6 +415,10 @@ impl RemoteAppServerClient {
                                 error,
                                 response_tx,
                             } => {
+                                if let Err(err) = inbound_server_request_ledger.reject(&request_id) {
+                                    let _ = response_tx.send(Err(err));
+                                    continue;
+                                }
                                 let result = write_jsonrpc_message(
                                     &mut stream,
                                     JSONRPCMessage::Error(JSONRPCError {
@@ -352,6 +475,25 @@ impl RemoteAppServerClient {
                                     }
                                     Ok(JSONRPCMessage::Request(request)) => {
                                         let request_id = request.id.clone();
+                                        if let Err(err) = inbound_server_request_ledger.claim(&request_id) {
+                                            let message = format!(
+                                                "remote app server at `{endpoint}` sent an invalid inbound server request: {err}"
+                                            );
+                                            if let Err(deliver_err) = deliver_event(
+                                                &event_tx,
+                                                &mut skipped_events,
+                                                AppServerEvent::Disconnected {
+                                                    message: message.clone(),
+                                                },
+                                            )
+                                            .await
+                                            {
+                                                warn!(%deliver_err, "failed to deliver remote app-server disconnect event");
+                                            }
+                                            worker_exit_error = Some((ErrorKind::InvalidData, message));
+                                            let _ = stream.close(None).await;
+                                            break;
+                                        }
                                         let method = request.method.clone();
                                         match ServerRequest::try_from(request) {
                                             Ok(request) => {
@@ -368,6 +510,16 @@ impl RemoteAppServerClient {
                                             }
                                             Err(err) => {
                                                 warn!(%err, method, "rejecting unknown remote app-server request");
+                                                if let Err(ledger_err) =
+                                                    inbound_server_request_ledger.reject(&request_id)
+                                                {
+                                                    let message = format!(
+                                                        "remote app server at `{endpoint}` could not reject inbound server request: {ledger_err}"
+                                                    );
+                                                    worker_exit_error =
+                                                        Some((ErrorKind::InvalidData, message));
+                                                    break;
+                                                }
                                                 if let Err(reject_err) = write_jsonrpc_message(
                                                     &mut stream,
                                                     JSONRPCMessage::Error(JSONRPCError {
@@ -835,6 +987,7 @@ async fn initialize_remote_connection<S>(
     endpoint: &str,
     params: InitializeParams,
     initialize_timeout: Duration,
+    inbound_server_request_ledger: &mut InboundServerRequestLedger,
 ) -> IoResult<(Vec<AppServerEvent>, Option<String>, Option<String>)>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -895,6 +1048,7 @@ where
                         }
                         JSONRPCMessage::Request(request) => {
                             let request_id = request.id.clone();
+                            inbound_server_request_ledger.claim(&request_id)?;
                             let method = request.method.clone();
                             match ServerRequest::try_from(request) {
                                 Ok(request) => {
@@ -902,6 +1056,7 @@ where
                                 }
                                 Err(err) => {
                                     warn!(%err, method, "rejecting unknown remote app-server request during initialize");
+                                    inbound_server_request_ledger.reject(&request_id)?;
                                     write_jsonrpc_message(
                                         stream,
                                         JSONRPCMessage::Error(JSONRPCError {
