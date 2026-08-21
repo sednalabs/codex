@@ -1114,7 +1114,9 @@ impl App {
             Err(err) => {
                 tracing::warn!(%err, "failed to list persisted descendants for subagent backfill");
                 if is_continuation && Self::is_invalid_thread_list_cursor_error(&err) {
-                    let _ = self.agent_navigation.set_next_picker_page_cursor(None);
+                    let _ = self
+                        .agent_navigation
+                        .set_next_picker_page_cursor(/*next_cursor*/ None);
                 }
                 let legacy_fallback_completed = if !is_continuation
                     && self.agent_navigation.needs_legacy_relation_fallback_check()
@@ -1155,7 +1157,9 @@ impl App {
                 tracing::warn!(
                     "discarding persisted descendant page because its lineage could not be proven within budget"
                 );
-                let _ = self.agent_navigation.set_next_picker_page_cursor(None);
+                let _ = self
+                    .agent_navigation
+                    .set_next_picker_page_cursor(/*next_cursor*/ None);
                 self.sync_active_agent_label();
                 return LoadedSubagentBackfill {
                     completed: false,
@@ -1469,11 +1473,10 @@ impl App {
         }
 
         threads.retain(|thread| Self::validated_spawn_parent(thread).is_ok());
-        let descendants =
-            find_loaded_subagent_threads_for_primary(threads.clone(), primary_thread_id)
-                .into_iter()
-                .map(|thread| thread.thread_id)
-                .collect::<HashSet<_>>();
+        let descendants = find_loaded_subagent_threads_for_primary(&threads, primary_thread_id)
+            .into_iter()
+            .map(|thread| thread.thread_id)
+            .collect::<HashSet<_>>();
         for thread in threads {
             if ThreadId::from_string(&thread.id)
                 .is_ok_and(|thread_id| descendants.contains(&thread_id))
@@ -1566,7 +1569,7 @@ impl App {
             cursor = Some(next_cursor);
         }
         let descendants =
-            find_loaded_subagent_threads_for_primary(scanned_threads.clone(), primary_thread_id)
+            find_loaded_subagent_threads_for_primary(&scanned_threads, primary_thread_id)
                 .into_iter()
                 .map(|thread| thread.thread_id)
                 .collect::<HashSet<_>>();
