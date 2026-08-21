@@ -262,14 +262,14 @@ fn lock_root_for_uid(base: &Path, uid: u64) -> PathBuf {
 fn private_lock_anchor(codex_home: &Path) -> std::io::Result<PathBuf> {
     let absolute = std::path::absolute(codex_home)?;
     let mut anchor = absolute.parent().unwrap_or(absolute.as_path());
-    while anchor.exists() {
-        if let Ok(private_anchor) = validate_private_lock_anchor(anchor) {
-            return Ok(private_anchor);
-        }
+    while !anchor.exists() {
         let Some(parent) = anchor.parent() else {
             break;
         };
         anchor = parent;
+    }
+    if let Ok(private_anchor) = validate_private_lock_anchor(anchor) {
+        return Ok(private_anchor);
     }
 
     if let Some(home) = dirs::home_dir()
@@ -282,20 +282,41 @@ fn private_lock_anchor(codex_home: &Path) -> std::io::Result<PathBuf> {
 
 #[cfg(unix)]
 fn validate_private_lock_anchor(anchor: &Path) -> std::io::Result<PathBuf> {
-    let metadata = std::fs::symlink_metadata(anchor)?;
-    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+    let canonical_anchor = std::fs::canonicalize(anchor)?;
+    let mut current = canonical_anchor.as_path();
+    loop {
+        let metadata = std::fs::symlink_metadata(current)?;
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            return Err(std::io::Error::other(format!(
+                "auth lock anchor is not a directory: {}",
+                current.display()
+            )));
+        }
+        if metadata.permissions().mode() & 0o022 != 0 {
+            return Err(std::io::Error::other(format!(
+                "auth lock anchor has an unsafe writable parent: {}",
+                current.display()
+            )));
+        }
+        if current == Path::new("/") {
+            break;
+        }
+        current = current.parent().ok_or_else(|| {
+            std::io::Error::other(format!(
+                "auth lock anchor has no canonical parent: {}",
+                canonical_anchor.display()
+            ))
+        })?;
+    }
+
+    let metadata = std::fs::symlink_metadata(&canonical_anchor)?;
+    if metadata.uid() != unsafe { libc::geteuid() } {
         return Err(std::io::Error::other(format!(
-            "auth lock anchor is not a directory: {}",
-            anchor.display()
+            "auth lock anchor is not owned by the current user: {}",
+            canonical_anchor.display()
         )));
     }
-    if metadata.uid() != unsafe { libc::geteuid() } || metadata.permissions().mode() & 0o022 != 0 {
-        return Err(std::io::Error::other(format!(
-            "auth lock anchor is not private to the current user: {}",
-            anchor.display()
-        )));
-    }
-    std::fs::canonicalize(anchor)
+    Ok(canonical_anchor)
 }
 
 fn lock_auth_storage_at(codex_home: &Path, lock_dir: &Path) -> std::io::Result<File> {
@@ -742,8 +763,21 @@ impl AuthStorageBackend for AutoAuthStorage {
     }
 
     fn delete_unlocked(&self) -> std::io::Result<bool> {
-        // Keyring storage will delete from disk as well
-        self.keyring_storage.delete_unlocked()
+        match self.keyring_storage.delete_unlocked() {
+            Ok(keyring_removed) => {
+                // Keyring backends normally remove the fallback file themselves, but
+                // keep Auto semantics aligned with load: a file fallback is never
+                // retained merely because keyring deletion returned no value.
+                let file_removed = self.file_storage.delete_unlocked()?;
+                Ok(keyring_removed || file_removed)
+            }
+            Err(err) => {
+                warn!(
+                    "failed to delete CLI auth from keyring, falling back to file storage: {err}"
+                );
+                self.file_storage.delete_unlocked()
+            }
+        }
     }
 }
 
