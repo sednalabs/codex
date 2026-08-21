@@ -50,13 +50,21 @@ impl App {
             | AppEvent::UpdateWorldWritableWarningAcknowledged(_)
             | AppEvent::UpdateRateLimitSwitchPromptHidden(_)
             | AppEvent::UpdatePlanModeReasoningEffort(_)
+            | AppEvent::PetSelected { .. }
             | AppEvent::PetDisabled
             | AppEvent::PetSelectionLoaded { .. }
+            | AppEvent::FetchMarketplaceAdd { .. }
+            | AppEvent::FetchMarketplaceRemove { .. }
+            | AppEvent::FetchMarketplaceUpgrade { .. }
+            | AppEvent::FetchPluginInstall { .. }
+            | AppEvent::FetchPluginUninstall { .. }
+            | AppEvent::SetPluginEnabled { .. }
             | AppEvent::SetSkillEnabled { .. }
             | AppEvent::SetAppEnabled { .. }
             | AppEvent::SetHookEnabled { .. }
             | AppEvent::TrustHook { .. }
             | AppEvent::TrustHooks { .. }
+            | AppEvent::EnableWindowsSandboxForAgentMode { .. }
             | AppEvent::PersistModelSelection { .. }
             | AppEvent::PersistPersonalitySelection { .. }
             | AppEvent::PersistServiceTierSelection { .. }
@@ -65,6 +73,11 @@ impl App {
             | AppEvent::PersistRateLimitSwitchPromptHidden
             | AppEvent::PersistPlanModeReasoningEffort(_)
             | AppEvent::PersistModelMigrationPromptAcknowledged { .. }
+            | AppEvent::StatusLineSetup { .. }
+            | AppEvent::TerminalTitleSetup { .. }
+            | AppEvent::SyntaxThemeSelected { .. }
+            | AppEvent::KeymapCaptured { .. }
+            | AppEvent::KeymapCleared { .. }
             | AppEvent::SubmitUserMessageWithMode { .. } => true,
             _ => false,
         }
@@ -2772,6 +2785,9 @@ mod tests {
             },
             AppEvent::UpdateWorldWritableWarningAcknowledged(true),
             AppEvent::UpdateRateLimitSwitchPromptHidden(true),
+            AppEvent::PetSelected {
+                pet_id: "chefito".to_string(),
+            },
             AppEvent::PetDisabled,
             AppEvent::PetSelectionLoaded {
                 request_id: 0,
@@ -2800,6 +2816,63 @@ mod tests {
                     key: "example-hook".to_string(),
                     current_hash: "hash".to_string(),
                 }],
+            },
+            AppEvent::FetchMarketplaceAdd {
+                cwd: std::path::PathBuf::from("/workspace"),
+                source: "https://example.com/marketplace.git".to_string(),
+            },
+            AppEvent::FetchMarketplaceRemove {
+                cwd: std::path::PathBuf::from("/workspace"),
+                marketplace_name: "example-marketplace".to_string(),
+                marketplace_display_name: "Example Marketplace".to_string(),
+            },
+            AppEvent::FetchMarketplaceUpgrade {
+                cwd: std::path::PathBuf::from("/workspace"),
+                marketplace_name: None,
+            },
+            AppEvent::FetchPluginInstall {
+                cwd: std::path::PathBuf::from("/workspace"),
+                location: PluginLocation::Remote {
+                    marketplace_name: "example-marketplace".to_string(),
+                },
+                plugin_name: "example-plugin".to_string(),
+                plugin_display_name: "Example Plugin".to_string(),
+            },
+            AppEvent::FetchPluginUninstall {
+                cwd: std::path::PathBuf::from("/workspace"),
+                plugin_id: "example-plugin".to_string(),
+                plugin_display_name: "Example Plugin".to_string(),
+            },
+            AppEvent::SetPluginEnabled {
+                cwd: std::path::PathBuf::from("/workspace"),
+                plugin_id: "example-plugin".to_string(),
+                enabled: true,
+            },
+            AppEvent::EnableWindowsSandboxForAgentMode {
+                preset: codex_utils_approval_presets::builtin_approval_presets()
+                    .into_iter()
+                    .next()
+                    .expect("built-in approval preset"),
+                mode: WindowsSandboxEnableMode::Legacy,
+                profile_selection: None,
+            },
+            AppEvent::StatusLineSetup {
+                items: Vec::new(),
+                use_theme_colors: true,
+            },
+            AppEvent::TerminalTitleSetup { items: Vec::new() },
+            AppEvent::SyntaxThemeSelected {
+                name: "default".to_string(),
+            },
+            AppEvent::KeymapCaptured {
+                context: "global".to_string(),
+                action: "quit".to_string(),
+                key: "q".to_string(),
+                intent: crate::app_event::KeymapEditIntent::ReplaceAll,
+            },
+            AppEvent::KeymapCleared {
+                context: "global".to_string(),
+                action: "quit".to_string(),
             },
         ] {
             assert!(App::replay_only_event_is_mutating(&event));
