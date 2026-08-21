@@ -1355,7 +1355,29 @@ impl RemoteResponseByteBudget {
         Ok(RemoteResponseReservation {
             byte_budget: Arc::clone(self),
             bytes,
-            large: true,
+            kind: RemoteResponseReservationKind::Large,
+        })
+    }
+
+    // A canceled history response is parsed only to identify its tombstone
+    // ID and is then discarded. If the retained-large-response slot is held
+    // by another request, borrow that custody decision without charging a
+    // second retained response. The worker processes one websocket message at
+    // a time, and the tombstone path never transfers the reservation onward.
+    fn try_reserve_large_tombstone(
+        self: &Arc<Self>,
+        wire_bytes: usize,
+    ) -> Result<RemoteResponseReservation, RemoteResponseBudgetError> {
+        if wire_bytes > REMOTE_HISTORY_RESPONSE_MAX_WIRE_BYTES {
+            return Err(RemoteResponseBudgetError::OversizedWireMessage);
+        }
+        if self.large_used.load(Ordering::Acquire) == 0 {
+            return self.try_reserve_large(wire_bytes);
+        }
+        Ok(RemoteResponseReservation {
+            byte_budget: Arc::clone(self),
+            bytes: 0,
+            kind: RemoteResponseReservationKind::LargeTombstone,
         })
     }
 
@@ -1386,7 +1408,7 @@ impl RemoteResponseByteBudget {
                     return Ok(RemoteResponseReservation {
                         byte_budget: Arc::clone(self),
                         bytes,
-                        large: false,
+                        kind: RemoteResponseReservationKind::Ordinary,
                     });
                 }
                 Err(observed) => current = observed,
@@ -1409,30 +1431,41 @@ impl RemoteResponseByteBudget {
 struct RemoteResponseReservation {
     byte_budget: Arc<RemoteResponseByteBudget>,
     bytes: usize,
-    large: bool,
+    kind: RemoteResponseReservationKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RemoteResponseReservationKind {
+    Ordinary,
+    Large,
+    LargeTombstone,
 }
 
 impl Drop for RemoteResponseReservation {
     fn drop(&mut self) {
-        if self.large {
-            assert_eq!(
-                self.byte_budget
-                    .large_used
-                    .compare_exchange(self.bytes, 0, Ordering::AcqRel, Ordering::Acquire,)
-                    .ok(),
-                Some(self.bytes),
-                "remote large response byte budget reservation must not be released twice"
-            );
-        } else {
-            assert!(
-                self.byte_budget
-                    .used
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                        used.checked_sub(self.bytes)
-                    })
-                    .is_ok(),
-                "remote response byte budget reservation must not underflow"
-            );
+        match self.kind {
+            RemoteResponseReservationKind::Large => {
+                assert_eq!(
+                    self.byte_budget
+                        .large_used
+                        .compare_exchange(self.bytes, 0, Ordering::AcqRel, Ordering::Acquire,)
+                        .ok(),
+                    Some(self.bytes),
+                    "remote large response byte budget reservation must not be released twice"
+                );
+            }
+            RemoteResponseReservationKind::Ordinary => {
+                assert!(
+                    self.byte_budget
+                        .used
+                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                            used.checked_sub(self.bytes)
+                        })
+                        .is_ok(),
+                    "remote response byte budget reservation must not underflow"
+                );
+            }
+            RemoteResponseReservationKind::LargeTombstone => {}
         }
     }
 }
@@ -1487,6 +1520,12 @@ impl RecentRemoteRequestIds {
 
     fn has_large_response(&self) -> bool {
         !self.large_ids.is_empty()
+    }
+
+    fn retire(&mut self, request_id: &RequestId) -> bool {
+        let removed = self.ids.remove(request_id);
+        self.large_ids.remove(request_id);
+        removed
     }
 }
 
@@ -2042,6 +2081,23 @@ where
                 response_byte_budget.try_reserve(text.len())
             } {
                 Ok(reservation) => reservation,
+                Err(RemoteResponseBudgetError::AggregateExhausted)
+                    if may_be_large_history_response
+                        && canceled_request_ids.has_large_response() =>
+                {
+                    match response_byte_budget.try_reserve_large_tombstone(text.len()) {
+                        Ok(reservation) => reservation,
+                        Err(RemoteResponseBudgetError::OversizedWireMessage) => {
+                            return Some(RemoteTerminal::oversized_response_message(
+                                endpoint,
+                                text.len(),
+                            ));
+                        }
+                        Err(RemoteResponseBudgetError::AggregateExhausted) => {
+                            return Some(RemoteTerminal::response_budget_exhausted(endpoint));
+                        }
+                    }
+                }
                 Err(RemoteResponseBudgetError::OversizedWireMessage) => {
                     return Some(RemoteTerminal::oversized_response_message(
                         endpoint,
@@ -2105,9 +2161,11 @@ where
                                 ),
                             );
                         }
-                    } else if canceled_request_ids.contains(&response.id) {
+                    } else if canceled_request_ids.retire(&response.id) {
                         // A response racing caller cancellation belongs to the
                         // canceled request and must not be routed to a reused ID.
+                        // Once this matching late response has been absorbed,
+                        // release both the ID and its large-response metadata.
                         return None;
                     }
                     None
@@ -2139,9 +2197,10 @@ where
                                 ),
                             );
                         }
-                    } else if canceled_request_ids.contains(&error.id) {
+                    } else if canceled_request_ids.retire(&error.id) {
                         // See the response branch: absorb late errors for
-                        // canceled requests without retaining their payload.
+                        // canceled requests without retaining their payload,
+                        // then retire the matching tombstone metadata.
                         return None;
                     }
                     None
@@ -4423,6 +4482,86 @@ mod tests {
         assert!(!tombstones.contains(&RequestId::Integer(4)));
     }
 
+    #[test]
+    fn canceled_request_tombstones_retire_after_absorbed_response() {
+        let mut tombstones = RecentRemoteRequestIds::new(/*capacity*/ 1);
+        tombstones
+            .remember_with_policy(RequestId::Integer(1), true)
+            .expect("first tombstone should fit");
+        assert!(tombstones.allows_large_response(&RequestId::Integer(1)));
+
+        assert!(tombstones.retire(&RequestId::Integer(1)));
+        assert!(!tombstones.contains(&RequestId::Integer(1)));
+        assert!(!tombstones.allows_large_response(&RequestId::Integer(1)));
+        tombstones
+            .remember(RequestId::Integer(2))
+            .expect("retiring an absorbed response should free tombstone capacity");
+    }
+
+    #[tokio::test]
+    async fn canceled_request_tombstones_reuse_capacity_after_repeated_absorption() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let budget = RemoteResponseByteBudget::shared();
+        let request_slots = Arc::new(Semaphore::new(1));
+        let mut pending_requests = HashMap::new();
+        let mut canceled_request_ids = RecentRemoteRequestIds::new(/*capacity*/ 1);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+
+        for id in 1..=8 {
+            let (response_tx, _response_rx) = oneshot::channel();
+            pending_requests.insert(
+                RequestId::Integer(id),
+                PendingRemoteRequest {
+                    response_tx,
+                    lifecycle: Arc::new(AtomicU8::new(REQUEST_CANCELLED)),
+                    allow_large_response: false,
+                    _slot: request_slots
+                        .acquire_owned()
+                        .await
+                        .expect("retired tombstone should release the request slot"),
+                },
+            );
+            assert!(
+                cancel_pending_remote_requests(
+                    &mut pending_requests,
+                    &mut canceled_request_ids,
+                    "test://repeated-tombstones",
+                )
+                .is_none()
+            );
+            assert!(canceled_request_ids.contains(&RequestId::Integer(id)));
+
+            let message = JSONRPCMessage::Response(JSONRPCResponse {
+                id: RequestId::Integer(id),
+                result: serde_json::json!({"late": id}),
+            });
+            assert!(
+                handle_remote_message(
+                    Some(Ok(text_message(message))),
+                    &mut stream,
+                    "test://repeated-tombstones",
+                    &mut pending_requests,
+                    &mut canceled_request_ids,
+                    &mut backlog,
+                    &mut deferred_events,
+                    &budget,
+                )
+                .await
+                .is_none()
+            );
+            assert!(!canceled_request_ids.contains(&RequestId::Integer(id)));
+        }
+        assert!(pending_requests.is_empty());
+        assert!(canceled_request_ids.ids.is_empty());
+    }
+
     #[tokio::test]
     async fn canceled_request_tombstone_exhaustion_terminalizes_the_worker_before_id_reuse() {
         let (client_socket, peer_socket) = tokio::io::duplex(64 * 1024);
@@ -4602,6 +4741,119 @@ mod tests {
         );
         assert_eq!(budget.large_used(), 0);
         assert_eq!(budget.used(), 0);
+    }
+
+    #[tokio::test]
+    async fn canceled_large_history_response_is_absorbed_while_large_slot_is_occupied() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let budget = RemoteResponseByteBudget::shared();
+        let request_slots = Arc::new(Semaphore::new(2));
+        let mut pending_requests = HashMap::new();
+        let mut canceled_request_ids = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+
+        let (canceled_tx, _canceled_rx) = oneshot::channel();
+        pending_requests.insert(
+            RequestId::Integer(1),
+            PendingRemoteRequest {
+                response_tx: canceled_tx,
+                lifecycle: Arc::new(AtomicU8::new(REQUEST_CANCELLED)),
+                allow_large_response: true,
+                _slot: request_slots
+                    .acquire_owned()
+                    .await
+                    .expect("canceled request slot should be available"),
+            },
+        );
+        assert!(
+            cancel_pending_remote_requests(
+                &mut pending_requests,
+                &mut canceled_request_ids,
+                "test://occupied-large-slot",
+            )
+            .is_none()
+        );
+
+        let (active_tx, active_rx) = oneshot::channel();
+        pending_requests.insert(
+            RequestId::Integer(2),
+            PendingRemoteRequest {
+                response_tx: active_tx,
+                lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
+                allow_large_response: true,
+                _slot: request_slots
+                    .acquire_owned()
+                    .await
+                    .expect("active history request slot should be available"),
+            },
+        );
+        let active_message = JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(2),
+            result: serde_json::json!({"padding": "x".repeat(9 * 1024 * 1024)}),
+        });
+        let active_wire_bytes = serde_json::to_string(&active_message)
+            .expect("active large response should serialize")
+            .len();
+        assert!(active_wire_bytes > REMOTE_RESPONSE_MAX_WIRE_BYTES);
+        assert!(
+            handle_remote_message(
+                Some(Ok(text_message(active_message))),
+                &mut stream,
+                "test://occupied-large-slot",
+                &mut pending_requests,
+                &mut canceled_request_ids,
+                &mut backlog,
+                &mut deferred_events,
+                &budget,
+            )
+            .await
+            .is_none()
+        );
+        let active_response = active_rx
+            .await
+            .expect("active history response should reach its waiter")
+            .expect("active history response should not terminalize the connection");
+        assert_eq!(
+            budget.large_used(),
+            active_wire_bytes + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES
+        );
+
+        let tombstone_message = JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(1),
+            result: serde_json::json!({"padding": "x".repeat(9 * 1024 * 1024)}),
+        });
+        let tombstone_wire_bytes = serde_json::to_string(&tombstone_message)
+            .expect("late large tombstone response should serialize")
+            .len();
+        assert!(tombstone_wire_bytes > REMOTE_RESPONSE_MAX_WIRE_BYTES);
+        assert!(
+            handle_remote_message(
+                Some(Ok(text_message(tombstone_message))),
+                &mut stream,
+                "test://occupied-large-slot",
+                &mut pending_requests,
+                &mut canceled_request_ids,
+                &mut backlog,
+                &mut deferred_events,
+                &budget,
+            )
+            .await
+            .is_none()
+        );
+        assert!(!canceled_request_ids.contains(&RequestId::Integer(1)));
+        assert_eq!(
+            budget.large_used(),
+            active_wire_bytes + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES
+        );
+        drop(active_response);
+        assert_eq!(budget.large_used(), 0);
     }
 
     #[tokio::test]
