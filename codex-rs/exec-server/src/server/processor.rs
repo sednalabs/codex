@@ -335,9 +335,9 @@ mod tests {
     use tracing_subscriber::filter::filter_fn;
     use tracing_subscriber::prelude::*;
 
+    use super::UNKNOWN_REQUEST_METHOD_ERROR;
     use super::request_span;
     use super::run_connection;
-    use super::UNKNOWN_REQUEST_METHOD_ERROR;
     use super::unknown_notification_method_label;
     use crate::ExecServerRuntimePaths;
     use crate::ProcessId;
