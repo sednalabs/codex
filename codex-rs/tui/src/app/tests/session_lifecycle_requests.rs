@@ -757,7 +757,7 @@ fn closed_thread_status_race_reconciles_live_attachment() -> Result<()> {
 }
 
 #[test]
-fn active_thread_liveness_refresh_blocks_replay_input_without_optimistic_prompt() -> Result<()> {
+fn active_thread_picker_refresh_blocks_replay_input_without_optimistic_prompt() -> Result<()> {
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
     std::thread::Builder::new()
@@ -806,9 +806,17 @@ fn active_thread_liveness_refresh_blocks_replay_input_without_optimistic_prompt(
                 );
                 while app_event_rx.try_recv().is_ok() {}
 
-                // The selected thread is unloaded after selection. The active-thread branch must
-                // synchronize the widget gate in the same turn as this liveness refresh.
+                // The selected thread is unloaded after selection. The picker refresh must
+                // synchronize the widget gate before the composer can accept another draft.
                 app_server.thread_unsubscribe(thread_id).await?;
+                assert!(
+                    app.refresh_agent_picker_thread_liveness(&mut app_server, thread_id)
+                        .await
+                );
+                assert!(app.is_replay_only_thread(thread_id));
+
+                // The active-thread branch performs the same refresh when the already-selected
+                // row is revisited; keep this check to cover that path as well.
                 app.select_agent_thread(&mut tui, &mut app_server, thread_id)
                     .await?;
                 assert!(app.is_replay_only_thread(thread_id));
