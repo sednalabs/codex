@@ -1402,6 +1402,7 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertEqual(payload.get("name"), "Native Windows Bazel health")
         triggers = payload.get("on") or {}
+        self.assertEqual(triggers.get("workflow_call"), {})
         self.assertEqual((triggers.get("push") or {}).get("branches"), ["main"])
         dispatch_inputs = (triggers.get("workflow_dispatch") or {}).get("inputs") or {}
         self.assertEqual(
@@ -1591,6 +1592,10 @@ class RouteSelectionTests(unittest.TestCase):
             "--extra_execution_platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm",
             analysis_run,
         )
+        self.assertIn(
+            "--extra_toolchains=@default_rust_toolchains//:windows_aarch64_gnullvm_to_non_bpf_targets_1_95_0",
+            analysis_run,
+        )
         self.assertIn("--include_artifacts=true", analysis_run)
         self.assertIn("//codex-rs/otel:otel", analysis_run)
         self.assertIn(
@@ -1628,6 +1633,42 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(
             (analysis_cache_save.get("with") or {}).get("key"),
             "${{ steps.prepare_bazel.outputs.repository-cache-key }}",
+        )
+
+        blocking = load_workflow_payload(REPO_ROOT / ".github/workflows/blocking-ci.yml")
+        blocking_jobs = blocking.get("jobs") or {}
+        native_caller = blocking_jobs.get("native-windows-bazel-health") or {}
+        self.assertEqual(
+            native_caller.get("uses"),
+            "./.github/workflows/native-windows-bazel-health.yml",
+        )
+        self.assertEqual(
+            native_caller.get("if"),
+            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
+        )
+        native_required = blocking_jobs.get("native-windows-bazel-health-required") or {}
+        self.assertEqual(
+            native_required.get("name"),
+            "Native Windows Bazel health required gate",
+        )
+        self.assertEqual(native_required.get("if"), "${{ always() }}")
+        self.assertEqual(native_required.get("needs"), ["native-windows-bazel-health"])
+        native_required_steps = native_required.get("steps") or []
+        native_required_run = next(
+            step
+            for step in native_required_steps
+            if step.get("name") == "Require native health on candidate events"
+        ).get("run") or ""
+        self.assertIn("check_ci_results.py", native_required_run)
+        self.assertIn('NATIVE_RESULT', native_required_run)
+        self.assertIn(
+            '[[ "${EVENT_NAME}" == "pull_request" || "${EVENT_NAME}" == "merge_group" ]]',
+            native_required_run,
+        )
+        self.assertNotIn("continue-on-error", native_required)
+        self.assertIn(
+            "native-windows-bazel-health-required",
+            (blocking_jobs.get("required") or {}).get("needs") or [],
         )
 
     def test_bazel_ci_docs_only_plan_is_fail_closed_and_preserves_required_signal(self) -> None:

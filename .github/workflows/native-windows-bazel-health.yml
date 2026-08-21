@@ -1,6 +1,10 @@
 name: Native Windows Bazel health
 
 on:
+  # The blocking-ci caller uses this reusable entrypoint for PR and merge-queue
+  # candidates. Keep the direct post-merge push trigger below for health
+  # monitoring on the integrated main branch.
+  workflow_call: {}
   # Keep the slower native Windows check as a post-merge health signal. The
   # required Bazel workflow still covers merge-queue and PR candidates.
   push:
@@ -60,6 +64,7 @@ jobs:
             aquery \
             --platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm \
             --extra_execution_platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm \
+            --extra_toolchains=@default_rust_toolchains//:windows_aarch64_gnullvm_to_non_bpf_targets_1_95_0 \
             --include_artifacts=true \
             --output=text \
             //codex-rs/otel:otel \

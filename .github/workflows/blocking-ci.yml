@@ -137,6 +137,46 @@ jobs:
     uses: ./.github/workflows/codespell.yml
     secrets: inherit
 
+  native-windows-bazel-health:
+    name: Native Windows Bazel health
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+    uses: ./.github/workflows/native-windows-bazel-health.yml
+    secrets: inherit
+
+  # Keep this caller-level status stable for branch protection. The reusable
+  # health workflow is selected only for PR and merge-queue candidates; direct
+  # pushes retain the separate post-merge workflow, so a skipped caller is the
+  # expected push result rather than a failed required dependency.
+  native-windows-bazel-health-required:
+    name: Native Windows Bazel health required gate
+    if: ${{ always() }}
+    needs:
+      - native-windows-bazel-health
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Require native health on candidate events
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          NEEDS: ${{ toJSON(needs) }}
+          NATIVE_RESULT: ${{ needs.native-windows-bazel-health.result }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" == "pull_request" || "${EVENT_NAME}" == "merge_group" ]]; then
+            python3 .github/scripts/check_ci_results.py
+          else
+            [[ "${NATIVE_RESULT}" == "skipped" ]] || {
+              echo "Native Windows Bazel health caller was not selected but concluded unexpectedly: ${NATIVE_RESULT}" >&2
+              exit 1
+            }
+            echo "Native Windows Bazel health is monitored by the direct post-merge workflow on ${EVENT_NAME}."
+          fi
+
   repo-checks:
     name: repo-checks
     needs: scope
@@ -172,6 +212,7 @@ jobs:
       - blob-size-policy
       - cargo-deny
       - codespell
+      - native-windows-bazel-health-required
       - repo-checks
       - rust-ci
       - sdk
