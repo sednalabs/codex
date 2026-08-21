@@ -290,12 +290,68 @@ fn private_lock_anchor(codex_home: &Path) -> std::io::Result<PathBuf> {
         return Ok(private_anchor);
     }
 
-    if let Some(home) = dirs::home_dir()
+    // `dirs::home_dir` follows environment overrides such as HOME. Two
+    // cooperating processes can therefore select different lock roots for the
+    // same CODEX_HOME when their environments differ. Resolve the passwd
+    // entry for the effective UID instead so the fallback is stable across
+    // processes while retaining the private-anchor checks below.
+    if let Some(home) = passwd_home_dir()
         && let Ok(private_anchor) = validate_private_lock_anchor(&home)
     {
         return Ok(private_anchor);
     }
     validate_private_lock_anchor(anchor)
+}
+
+#[cfg(unix)]
+fn passwd_home_dir() -> Option<PathBuf> {
+    use std::ffi::CStr;
+    use std::mem::MaybeUninit;
+    use std::ptr;
+
+    let uid = unsafe { libc::geteuid() };
+    let suggested_buffer_len = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+    let buffer_len = usize::try_from(suggested_buffer_len)
+        .ok()
+        .filter(|len| *len > 0)
+        .unwrap_or(1024);
+    let mut buffer = vec![0; buffer_len];
+    let mut passwd = MaybeUninit::<libc::passwd>::uninit();
+
+    loop {
+        let mut result = ptr::null_mut();
+        let status = unsafe {
+            libc::getpwuid_r(
+                uid,
+                passwd.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if status == 0 {
+            if result.is_null() {
+                return None;
+            }
+            let passwd = unsafe { passwd.assume_init_ref() };
+            if passwd.pw_dir.is_null() {
+                return None;
+            }
+            return Some(PathBuf::from(
+                unsafe { CStr::from_ptr(passwd.pw_dir) }
+                    .to_string_lossy()
+                    .into_owned(),
+            ));
+        }
+        if status != libc::ERANGE {
+            return None;
+        }
+        let new_len = buffer.len().checked_mul(2)?;
+        if new_len > 1024 * 1024 {
+            return None;
+        }
+        buffer.resize(new_len, 0);
+    }
 }
 
 #[cfg(unix)]
