@@ -85,3 +85,29 @@ async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
         Some("plan contributed assistant text")
     );
 }
+
+fn goal_diagnostic_input_text_message(text: &str) -> ResponseItem {
+    ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: text.to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+#[test]
+fn goal_diagnostic_continuation_marker_is_detected() {
+    let input = vec![goal_diagnostic_input_text_message(&format!(
+        "before {GOAL_MULTI_AGENT_STRESS_CONTINUATION_MARKER} after"
+    ))];
+    assert!(goal_multi_agent_stress_continuation_input(&input));
+}
+
+#[test]
+fn goal_diagnostic_continuation_marker_does_not_match_unmarked_input() {
+    let input = vec![goal_diagnostic_input_text_message("ordinary continuation")];
+    assert!(!goal_multi_agent_stress_continuation_input(&input));
+}
