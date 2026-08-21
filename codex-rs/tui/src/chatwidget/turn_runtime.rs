@@ -392,7 +392,11 @@ impl ChatWidget {
     /// state are all reconciled without persisting a prompt that never reached the server.
     pub(crate) fn handle_replay_only_submission_rejection(&mut self) {
         if self.input_queue.user_turn_pending_start {
+            let submitted_message = self.safety_buffering_prompt.take();
             self.on_error("Replay-only transcripts do not accept input.".to_string());
+            if let Some(submitted_message) = submitted_message {
+                self.restore_user_message_to_composer(submitted_message);
+            }
         }
     }
 

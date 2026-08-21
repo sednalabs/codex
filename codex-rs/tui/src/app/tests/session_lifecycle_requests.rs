@@ -4,9 +4,12 @@ use app_test_support::create_fake_rollout;
 use app_test_support::rollout_path;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::RequestId as AppServerRequestId;
+use codex_app_server_protocol::ServerRequest;
 use codex_protocol::AgentPath;
 use codex_state::SqliteConfig;
 use crossterm::event::KeyCode;
@@ -15,6 +18,7 @@ use crossterm::event::KeyModifiers;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -54,6 +58,44 @@ async fn start_recording_app_server(
 async fn start_recording_app_server_with_status_script(
     config: &Config,
     force_active_include_turns: bool,
+) -> Result<(
+    AppServerSession,
+    Arc<Mutex<Vec<String>>>,
+    JoinHandle<Result<()>>,
+)> {
+    start_recording_app_server_with_scripts(
+        config,
+        force_active_include_turns,
+        /*force_resume_failure*/ false,
+        /*resume_signal*/ None,
+        /*event_recorded_signal*/ None,
+    )
+    .await
+}
+
+/// Starts the recording proxy with deterministic resume failure injection for fallback tests.
+async fn start_recording_app_server_with_resume_failure(
+    config: &Config,
+    resume_signal: Arc<tokio::sync::Notify>,
+    event_recorded_signal: Arc<tokio::sync::Notify>,
+) -> Result<(AppServerSession, JoinHandle<Result<()>>)> {
+    let (app_server, _requests, proxy) = start_recording_app_server_with_scripts(
+        config,
+        /*force_active_include_turns*/ false,
+        /*force_resume_failure*/ true,
+        Some(resume_signal),
+        Some(event_recorded_signal),
+    )
+    .await?;
+    Ok((app_server, proxy))
+}
+
+async fn start_recording_app_server_with_scripts(
+    config: &Config,
+    force_active_include_turns: bool,
+    force_resume_failure: bool,
+    resume_signal: Option<Arc<tokio::sync::Notify>>,
+    event_recorded_signal: Option<Arc<tokio::sync::Notify>>,
 ) -> Result<(
     AppServerSession,
     Arc<Mutex<Vec<String>>>,
@@ -109,6 +151,28 @@ async fn start_recording_app_server_with_status_script(
                         .expect("request recorder lock")
                         .push(request.method.clone());
                     let request_id = request.id.clone();
+                    if force_resume_failure && request.method == "thread/resume" {
+                        if let Some(signal) = &resume_signal {
+                            signal.notify_one();
+                        }
+                        if let Some(signal) = &event_recorded_signal {
+                            signal.notified().await;
+                        }
+                        websocket
+                            .send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Error(JSONRPCError {
+                                    id: request_id,
+                                    error: codex_app_server_protocol::JSONRPCErrorError {
+                                        code: -32000,
+                                        data: None,
+                                        message: "forced resume failure".to_string(),
+                                    },
+                                }))?
+                                .into(),
+                            ))
+                            .await?;
+                        continue;
+                    }
                     let force_active_status = force_active_include_turns
                         && request.method == "thread/read"
                         && request.params.as_ref().is_some_and(|params| {
@@ -170,6 +234,153 @@ async fn start_recording_app_server_with_status_script(
         requests,
         proxy,
     ))
+}
+
+#[tokio::test]
+async fn failed_resume_fallback_replaces_events_arriving_after_fence() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            app.config.codex_home.as_path(),
+            "2026-08-21T02-00-00",
+            "2026-08-21T02:00:00Z",
+            "authoritative fallback output",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .expect("fallback rollout should be created"),
+    )?;
+    let resume_signal = Arc::new(tokio::sync::Notify::new());
+    let event_recorded_signal = Arc::new(tokio::sync::Notify::new());
+    let (mut app_server, proxy) = start_recording_app_server_with_resume_failure(
+        &app.config,
+        Arc::clone(&resume_signal),
+        Arc::clone(&event_recorded_signal),
+    )
+    .await?;
+
+    let mut channel = ThreadEventChannel::new(/*capacity*/ 4);
+    channel.mark_replay_only();
+    let sender = channel.sender.clone();
+    let store = Arc::clone(&channel.store);
+    app.thread_event_channels.insert(thread_id, channel);
+    let stale_request = ServerRequest::CommandExecutionRequestApproval {
+        request_id: AppServerRequestId::Integer(901),
+        params: CommandExecutionRequestApprovalParams {
+            thread_id: thread_id.to_string(),
+            turn_id: "stale-turn".to_string(),
+            item_id: "stale-approval".to_string(),
+            started_at_ms: 0,
+            approval_id: None,
+            environment_id: None,
+            reason: None,
+            network_approval_context: None,
+            command: Some("echo stale".to_string()),
+            cwd: None,
+            command_actions: None,
+            additional_permissions: None,
+            proposed_execpolicy_amendment: None,
+            proposed_network_policy_amendments: None,
+            available_decisions: None,
+        },
+    };
+    let event_task = tokio::spawn(async move {
+        resume_signal.notified().await;
+        {
+            let mut store = store.lock().await;
+            store.push_request(stale_request.clone());
+        }
+        event_recorded_signal.notify_one();
+        let _ = sender
+            .send(ThreadBufferedEvent::Request(stale_request))
+            .await;
+    });
+
+    assert!(
+        !app.attach_live_thread_for_selection(&mut app_server, thread_id)
+            .await?
+    );
+    event_task.await?;
+
+    let channel = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("fallback channel");
+    let store = channel.store.lock().await;
+    assert_eq!(store.turns.len(), 1);
+    assert!(!store.has_pending_thread_approvals());
+    assert!(
+        store
+            .buffer
+            .iter()
+            .all(|event| !matches!(event, ThreadBufferedEvent::Request(_)))
+    );
+    drop(store);
+    assert!(
+        channel
+            .receiver
+            .as_ref()
+            .expect("inactive fallback receiver")
+            .is_empty()
+    );
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn shutdown_skips_unsubscribe_for_replay_only_widget_thread() -> Result<()> {
+    let (mut app_server, requests, proxy) = {
+        let app = make_test_app().await;
+        start_recording_app_server(app.chat_widget.config_ref()).await?
+    };
+
+    let replay_thread_id = ThreadId::new();
+    let mut replay_app = make_test_app().await;
+    let mut replay_channel = ThreadEventChannel::new(/*capacity*/ 4);
+    replay_channel.mark_replay_only();
+    replay_app
+        .thread_event_channels
+        .insert(replay_thread_id, replay_channel);
+    replay_app
+        .chat_widget
+        .handle_thread_session(test_thread_session(
+            replay_thread_id,
+            test_path_buf("/tmp/replay-shutdown"),
+        ));
+    replay_app.shutdown_current_thread(&mut app_server).await;
+    assert!(
+        !requests
+            .lock()
+            .expect("request recorder lock")
+            .iter()
+            .any(|method| method == "thread/unsubscribe")
+    );
+
+    let live_thread_id = ThreadId::new();
+    let mut live_app = make_test_app().await;
+    live_app
+        .thread_event_channels
+        .insert(live_thread_id, ThreadEventChannel::new(/*capacity*/ 4));
+    live_app
+        .chat_widget
+        .handle_thread_session(test_thread_session(
+            live_thread_id,
+            test_path_buf("/tmp/live-shutdown"),
+        ));
+    live_app.shutdown_current_thread(&mut app_server).await;
+    assert!(
+        requests
+            .lock()
+            .expect("request recorder lock")
+            .iter()
+            .any(|method| method == "thread/unsubscribe")
+    );
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
 }
 
 #[test]
@@ -550,10 +761,26 @@ fn closed_existing_stale_channel_refreshes_persisted_transcript() -> Result<()> 
                         .attachment(),
                     ThreadEventAttachment::Live
                 );
+                app.thread_event_channels
+                    .get(&child_thread_id)
+                    .expect("retained channel")
+                    .sender
+                    .try_send(ThreadBufferedEvent::Notification(
+                        thread_closed_notification(child_thread_id),
+                    ))
+                    .expect("stale retained-channel event should be queued");
 
                 let mut tui = crate::tui::test_support::make_test_tui()?;
                 app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
                     .await?;
+                assert!(
+                    app.active_thread_rx
+                        .as_mut()
+                        .expect("hydrated thread receiver")
+                        .try_recv()
+                        .is_err(),
+                    "closed hydration must fence events queued by the prior attachment"
+                );
 
                 let store = app
                     .thread_event_channels
