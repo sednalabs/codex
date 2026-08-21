@@ -1798,14 +1798,17 @@ decisions.
   `canceled_request_tombstones_fail_closed_at_capacity_without_eviction`,
   `canceled_request_tombstone_exhaustion_terminalizes_the_worker_before_id_reuse`,
   `canceled_remote_request_releases_slot_and_absorbs_late_response`,
+  `response_tombstone_classifier_requires_a_valid_jsonrpc_envelope`,
+  `response_first_canceled_large_history_response_is_absorbed_while_slot_is_occupied`,
+  `response_first_canceled_ordinary_response_cannot_use_unrelated_large_tombstone`,
+  `response_first_canceled_ordinary_response_is_absorbed_at_aggregate_limit`,
+  `cancellation_racing_consumed_result_does_not_leave_tombstone`,
+  `cancellation_racing_consumed_error_does_not_leave_tombstone`,
   `lagged_boundary_preserves_deferred_event_arrival_order`,
   `reused_local_request_id_gets_unique_wire_id_and_rejects_stale_response`, and
   `full_deferred_fifo_accounts_best_effort_loss_without_terminalizing`.
-- Hosted guardrails are `codex.app-server-client-targeted`,
-  `codex.app-server-protocol-test`,
-  `codex.app-server-v2-contract-targeted`,
-  `codex.app-server-thread-cwd-targeted`, `rust-ci-full`, and the GitHub
-  `blocking-ci` Bazel tests.
+- The PR609 hosted guardrails are the direct Cargo lane
+  `codex.app-server-client-targeted` and `rust-ci-full`.
 - Native `ComputerUseCall`, dynamic-tool protocol methods, generated-schema
   compatibility, and TypeScript response export remain additive to upstream's
   explicit request wire names. `codex.app-server-protocol-test`,
