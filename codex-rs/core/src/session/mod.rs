@@ -3126,7 +3126,15 @@ impl Session {
             if !snapshot.session_source.is_non_root_agent() {
                 None
             } else {
-                let identity = SubagentRuntimeIdentity::from_snapshot(&snapshot);
+                let identity = SubagentRuntimeIdentity::from_snapshot_and_request(
+                    &snapshot,
+                    &turn_context.model_info,
+                    turn_context
+                        .reasoning_effort
+                        .clone()
+                        .or_else(|| turn_context.model_info.default_reasoning_level.clone()),
+                    turn_context.config.service_tier.clone(),
+                );
                 if !identity.is_bounded() {
                     tracing::warn!(
                         model = %snapshot.model,
@@ -3141,9 +3149,9 @@ impl Session {
                     .filter(|item| SubagentRuntimeIdentity::has_marked_response_item(item))
                     .count();
                 if marked_count == 1
-                    && history
-                        .iter()
-                        .any(|item| SubagentRuntimeIdentity::matches_response_item(item, &snapshot))
+                    && history.iter().any(|item| {
+                        SubagentRuntimeIdentity::matches_identity_response_item(item, &identity)
+                    })
                 {
                     None
                 } else {
@@ -3153,7 +3161,9 @@ impl Session {
                         .cloned()
                         .collect::<Vec<_>>();
                     let reference_context_item = state.history.reference_context_item();
-                    state.history.replace(retained);
+                    state
+                        .history
+                        .replace_preserving_world_state_baseline(retained);
                     state
                         .history
                         .set_reference_context_item(reference_context_item);

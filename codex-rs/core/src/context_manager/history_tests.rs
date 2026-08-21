@@ -162,6 +162,26 @@ fn world_state_baseline_deduplicates_until_history_is_replaced() {
 }
 
 #[test]
+fn world_state_baseline_survives_identity_fragment_replacement() {
+    let world_state = || {
+        let mut state = WorldState::default();
+        state.add_section(TestWorldStateSection);
+        state
+    };
+    let mut history = ContextManager::new();
+
+    let (_, initial_item) = history.update_world_state(&world_state());
+    assert!(initial_item.is_some_and(|item| item.full));
+
+    // Identity cleanup rewrites the response-item vector while leaving the model-visible world
+    // state unchanged. The next update must therefore remain a no-op rather than reinjecting it.
+    history.replace_preserving_world_state_baseline(Vec::new());
+    let (fragments, rollout_item) = history.update_world_state(&world_state());
+    assert!(fragments.is_empty());
+    assert_eq!(rollout_item, None);
+}
+
+#[test]
 fn world_state_reconciles_matching_legacy_history_once() {
     let item = crate::context::ContextualUserFragment::into(UserInstructions {
         directory: None,
