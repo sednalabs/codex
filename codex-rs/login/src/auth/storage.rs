@@ -343,9 +343,25 @@ impl AuthRepository {
                     None => match self.storage(keyring_source).save(auth) {
                         Ok(()) => keyring_source,
                         Err(err) => {
-                            warn!("failed to save auth to empty keyring; using file store: {err}");
-                            self.storage(AuthStorageSource::File).save(auth)?;
-                            AuthStorageSource::File
+                            // A failed save is not proof of no mutation: some
+                            // keyring implementations can durably write and
+                            // still return an error. Re-read the exact source
+                            // under this transaction before considering the
+                            // only safe File fallback.
+                            match self.storage(keyring_source).load()? {
+                                None => {
+                                    warn!(
+                                        "failed to save auth to empty keyring; using file store: {err}"
+                                    );
+                                    self.storage(AuthStorageSource::File).save(auth)?;
+                                    AuthStorageSource::File
+                                }
+                                Some(_) => {
+                                    return Err(std::io::Error::other(format!(
+                                        "keyring save failed after changing or retaining auth state: {err}"
+                                    )));
+                                }
+                            }
                         }
                     },
                 }
@@ -354,9 +370,9 @@ impl AuthRepository {
         let loaded = self
             .load_active_locked()?
             .ok_or_else(|| std::io::Error::other("auth disappeared after save"))?;
-        if loaded.auth != *auth {
+        if loaded.source != source || loaded.auth != *auth {
             return Err(std::io::Error::other(
-                "auth storage selected a different credential after save",
+                "auth storage selected a different source or credential after save",
             ));
         }
         Ok(LoadedAuth {
