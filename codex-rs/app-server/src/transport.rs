@@ -64,6 +64,7 @@ pub(crate) struct OutboundConnectionState {
     pub(crate) experimental_api_enabled: Arc<AtomicBool>,
     pub(crate) opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
     pub(crate) writer: mpsc::Sender<QueuedOutgoingMessage>,
+    response_writer: Option<mpsc::Sender<QueuedOutgoingMessage>>,
     disconnect_sender: Option<CancellationToken>,
 }
 
@@ -80,8 +81,17 @@ impl OutboundConnectionState {
             experimental_api_enabled,
             opted_out_notification_methods,
             writer,
+            response_writer: None,
             disconnect_sender,
         }
+    }
+
+    pub(crate) fn with_response_writer(
+        mut self,
+        response_writer: mpsc::Sender<QueuedOutgoingMessage>,
+    ) -> Self {
+        self.response_writer = Some(response_writer);
+        self
     }
 
     fn can_disconnect(&self) -> bool {
@@ -146,7 +156,16 @@ async fn send_message_to_connection(
         return false;
     }
 
-    let writer = connection_state.writer.clone();
+    let writer = match &message {
+        OutgoingMessage::Response(_) | OutgoingMessage::Error(_) => connection_state
+            .response_writer
+            .as_ref()
+            .unwrap_or(&connection_state.writer)
+            .clone(),
+        OutgoingMessage::Request(_) | OutgoingMessage::AppServerNotification(_) => {
+            connection_state.writer.clone()
+        }
+    };
     let queued_message = QueuedOutgoingMessage {
         message,
         write_complete_tx,

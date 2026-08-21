@@ -26,7 +26,9 @@
 //! # Backpressure
 //!
 //! Command submission uses `try_send` and can return `WouldBlock`, while event
-//! fanout may drop notifications under saturation. Server requests are never
+//! fanout keeps authoritative notifications lossless and drops only
+//! reconstructible progress under saturation, with a lag marker for consumers.
+//! Server requests are never
 //! silently abandoned: if they cannot be queued they are failed back into
 //! `MessageProcessor` with overload or internal errors so approval flows do
 //! not hang indefinitely.
@@ -105,12 +107,72 @@ pub const DEFAULT_IN_PROCESS_CHANNEL_CAPACITY: usize = CHANNEL_CAPACITY;
 type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorError>;
 
 fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
-    matches!(
+    // This runtime queue is upstream of the `codex-app-server-client` facade.
+    // Treat new notification kinds as authoritative by default so protocol
+    // growth cannot silently create another droppable terminal/control state.
+    // Command output is reconstructible from its completed item, and fuzzy
+    // search updates are superseded by later full snapshots. Lag reports any
+    // dropped progress before later writer traffic.
+    !matches!(
         notification,
-        ServerNotification::TurnCompleted(_)
-            | ServerNotification::ThreadSettingsUpdated(_)
-            | ServerNotification::ExternalAgentConfigImportCompleted(_)
+        ServerNotification::CommandExecutionOutputDelta(_)
+            | ServerNotification::FuzzyFileSearchSessionUpdated(_)
     )
+}
+
+/// Result of attempting to forward one notification to the in-process client.
+///
+/// `Pending` is retained by the runtime loop itself. This preserves one bounded
+/// authoritative event without parking the loop on `event_tx.send`, which would
+/// make shutdown and client control messages unresponsive.
+enum InProcessNotificationForward {
+    Forwarded,
+    Pending(InProcessServerEvent),
+    Closed,
+}
+
+struct PendingInProcessNotificationForward {
+    event: InProcessServerEvent,
+    write_complete_tx: Option<oneshot::Sender<()>>,
+}
+
+/// Attempts a non-blocking notification forward.
+///
+/// Authoritative state remains pending under saturation. Reconstructible
+/// progress stays best-effort and increments `skipped_events`; the runtime loop
+/// emits that count as a `Lagged` marker before it reads another outgoing event.
+fn try_forward_in_process_server_notification(
+    event_tx: &mpsc::Sender<InProcessServerEvent>,
+    event: InProcessServerEvent,
+    skipped_events: &mut usize,
+) -> InProcessNotificationForward {
+    let notification = match &event {
+        InProcessServerEvent::ServerNotification(notification) => notification,
+        _ => unreachable!("only notification events reach the notification queue"),
+    };
+
+    if server_notification_requires_delivery(notification) {
+        return match event_tx.try_send(event) {
+            Ok(()) => InProcessNotificationForward::Forwarded,
+            Err(mpsc::error::TrySendError::Full(event)) => {
+                InProcessNotificationForward::Pending(event)
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => InProcessNotificationForward::Closed,
+        };
+    }
+
+    match event_tx.try_send(event) {
+        Ok(()) => InProcessNotificationForward::Forwarded,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            *skipped_events = (*skipped_events).saturating_add(1);
+            warn!(
+                skipped = *skipped_events,
+                "dropping best-effort in-process server notification (queue full)"
+            );
+            InProcessNotificationForward::Forwarded
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => InProcessNotificationForward::Closed,
+    }
 }
 
 /// Input needed to start an in-process app-server runtime.
@@ -266,6 +328,10 @@ pub struct InProcessClientHandle {
     runtime_handle: tokio::task::JoinHandle<()>,
     #[cfg(test)]
     _test_codex_home: Option<tempfile::TempDir>,
+    #[cfg(test)]
+    _test_outgoing_message_sender: Option<Arc<OutgoingMessageSender>>,
+    #[cfg(test)]
+    _test_pending_required_notification: Arc<tokio::sync::Notify>,
 }
 
 impl InProcessClientHandle {
@@ -323,6 +389,13 @@ impl InProcessClientHandle {
     /// if graceful drain does not complete in time.
     pub async fn shutdown(self) -> IoResult<()> {
         let mut runtime_handle = self.runtime_handle;
+        #[cfg(test)]
+        let test_outgoing_message_sender = self._test_outgoing_message_sender;
+        // Test-only injection retains an otherwise-live sender. Drop it before
+        // requesting shutdown so the runtime's outbound-router join observes
+        // the same last-sender closure as production.
+        #[cfg(test)]
+        drop(test_outgoing_message_sender);
         let (done_tx, done_rx) = oneshot::channel();
 
         if self
@@ -388,6 +461,13 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+    #[cfg(test)]
+    let (test_outgoing_message_tx, test_outgoing_message_rx) = oneshot::channel();
+    #[cfg(test)]
+    let test_pending_required_notification = Arc::new(tokio::sync::Notify::new());
+    #[cfg(test)]
+    let runtime_test_pending_required_notification =
+        Arc::clone(&test_pending_required_notification);
 
     let runtime_handle = tokio::spawn(async move {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
@@ -401,8 +481,12 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             outgoing_tx,
             analytics_events_client.clone(),
         ));
+        #[cfg(test)]
+        let _ = test_outgoing_message_tx.send(Arc::clone(&outgoing_message_sender));
 
         let (writer_tx, mut writer_rx) = mpsc::channel::<QueuedOutgoingMessage>(channel_capacity);
+        let (response_writer_tx, mut response_writer_rx) =
+            mpsc::channel::<QueuedOutgoingMessage>(channel_capacity);
         let outbound_initialized = Arc::new(AtomicBool::new(false));
         let outbound_experimental_api_enabled = Arc::new(AtomicBool::new(false));
         let outbound_opted_out_notification_methods = Arc::new(RwLock::new(HashSet::new()));
@@ -416,7 +500,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 Arc::clone(&outbound_experimental_api_enabled),
                 Arc::clone(&outbound_opted_out_notification_methods),
                 /*disconnect_sender*/ None,
-            ),
+            )
+            .with_response_writer(response_writer_tx),
         );
         let mut outbound_handle = tokio::spawn(async move {
             while let Some(envelope) = outgoing_rx.recv().await {
@@ -537,9 +622,32 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         let mut pending_request_responses =
             HashMap::<RequestId, oneshot::Sender<PendingClientRequestResponse>>::new();
         let mut shutdown_ack = None;
+        let mut pending_authoritative_notification = None::<PendingInProcessNotificationForward>;
+        let mut skipped_events = 0usize;
 
         loop {
             tokio::select! {
+                permit = event_tx.reserve(), if skipped_events > 0 || pending_authoritative_notification.is_some() => {
+                    match permit {
+                        Ok(permit) => {
+                            if skipped_events > 0 {
+                                permit.send(InProcessServerEvent::Lagged {
+                                    skipped: std::mem::take(&mut skipped_events),
+                                });
+                            } else if let Some(pending) =
+                                pending_authoritative_notification.take()
+                            {
+                                permit.send(pending.event);
+                                if let Some(write_complete_tx) = pending.write_complete_tx {
+                                    let _ = write_complete_tx.send(());
+                                }
+                            } else {
+                                continue;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
                 message = client_rx.recv() => {
                     match message {
                         Some(InProcessClientMessage::Request { request, response_tx }) => {
@@ -613,11 +721,46 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                     }
                 }
-                queued_message = writer_rx.recv() => {
+                queued_message = response_writer_rx.recv() => {
+                    let Some(queued_message) = queued_message else {
+                        break;
+                    };
+                    let write_complete_tx = queued_message.write_complete_tx;
+                    match queued_message.message {
+                        OutgoingMessage::Response(response) => {
+                            if let Some(response_tx) = pending_request_responses.remove(&response.id) {
+                                let _ = response_tx.send(Ok(response.result));
+                            } else {
+                                warn!(
+                                    request_id = ?response.id,
+                                    "dropping unmatched in-process response"
+                                );
+                            }
+                        }
+                        OutgoingMessage::Error(error) => {
+                            if let Some(response_tx) = pending_request_responses.remove(&error.id) {
+                                let _ = response_tx.send(Err(error.error));
+                            } else {
+                                warn!(
+                                    request_id = ?error.id,
+                                    "dropping unmatched in-process error response"
+                                );
+                            }
+                        }
+                        OutgoingMessage::Request(_) | OutgoingMessage::AppServerNotification(_) => {
+                            unreachable!("only responses use the in-process response writer")
+                        }
+                    }
+                    if let Some(write_complete_tx) = write_complete_tx {
+                        let _ = write_complete_tx.send(());
+                    }
+                }
+                queued_message = writer_rx.recv(), if skipped_events == 0 && pending_authoritative_notification.is_none() => {
                     let Some(queued_message) = queued_message else {
                         break;
                     };
                     let outgoing_message = queued_message.message;
+                    let write_complete_tx = queued_message.write_complete_tx;
                     match outgoing_message {
                         OutgoingMessage::Response(response) => {
                             if let Some(response_tx) = pending_request_responses.remove(&response.id) {
@@ -672,37 +815,46 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                         OutgoingMessage::AppServerNotification(envelope) => {
-                            let notification = envelope.notification;
-                            if server_notification_requires_delivery(&notification) {
-                                if event_tx
-                                    .send(InProcessServerEvent::ServerNotification(notification))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
+                            match try_forward_in_process_server_notification(
+                                &event_tx,
+                                InProcessServerEvent::ServerNotification(envelope.notification),
+                                &mut skipped_events,
+                            ) {
+                                InProcessNotificationForward::Forwarded => {}
+                                InProcessNotificationForward::Pending(event) => {
+                                    pending_authoritative_notification =
+                                        Some(PendingInProcessNotificationForward {
+                                            event,
+                                            write_complete_tx,
+                                        });
+                                    #[cfg(test)]
+                                    runtime_test_pending_required_notification.notify_one();
+                                    continue;
                                 }
-                            } else if let Err(send_error) =
-                                event_tx.try_send(InProcessServerEvent::ServerNotification(notification))
-                            {
-                                match send_error {
-                                    mpsc::error::TrySendError::Full(_) => {
-                                        warn!("dropping in-process server notification (queue full)");
-                                    }
-                                    mpsc::error::TrySendError::Closed(_) => {
-                                        break;
-                                    }
-                                }
+                                InProcessNotificationForward::Closed => break,
                             }
                         }
                     }
-                    if let Some(write_complete_tx) = queued_message.write_complete_tx {
+                    if let Some(write_complete_tx) = write_complete_tx {
                         let _ = write_complete_tx.send(());
                     }
                 }
             }
         }
 
+        if pending_authoritative_notification.is_some() || skipped_events > 0 {
+            warn!(
+                skipped = skipped_events,
+                pending_authoritative = pending_authoritative_notification.is_some(),
+                "discarding pending in-process delivery state during shutdown or closed event stream"
+            );
+        }
+        // A retained write-completion sender can keep its producer waiting
+        // while that producer still owns an outgoing sender. Release it before
+        // draining dependent tasks so shutdown cannot form a custody cycle.
+        drop(pending_authoritative_notification.take());
         drop(writer_rx);
+        drop(response_writer_rx);
         drop(processor_tx);
         outgoing_message_sender
             .cancel_all_requests(Some(internal_error(
@@ -734,12 +886,24 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         }
     });
 
+    #[cfg(test)]
+    let test_outgoing_message_sender = test_outgoing_message_rx.await.map_err(|err| {
+        IoError::new(
+            ErrorKind::BrokenPipe,
+            format!("in-process runtime exited before exposing test outgoing sender: {err}"),
+        )
+    })?;
+
     Ok(InProcessClientHandle {
         client: InProcessClientSender { client_tx },
         event_rx,
         runtime_handle,
         #[cfg(test)]
         _test_codex_home: None,
+        #[cfg(test)]
+        _test_outgoing_message_sender: Some(test_outgoing_message_sender),
+        #[cfg(test)]
+        _test_pending_required_notification: test_pending_required_notification,
     })
 }
 
@@ -757,6 +921,7 @@ mod tests {
     use codex_app_server_protocol::TurnItemsView;
     use codex_app_server_protocol::TurnStatus;
     use codex_core::config::ConfigBuilder;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use std::path::Path;
     use tempfile::TempDir;
@@ -818,6 +983,356 @@ mod tests {
 
     async fn start_test_client(session_source: SessionSource) -> InProcessClientHandle {
         start_test_client_with_capacity(session_source, DEFAULT_IN_PROCESS_CHANNEL_CAPACITY).await
+    }
+
+    fn thread_goal_updated_notification(objective: &str) -> ServerNotification {
+        ServerNotification::ThreadGoalUpdated(
+            codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                thread_id: "thread".to_string(),
+                turn_id: Some("turn".to_string()),
+                goal: codex_app_server_protocol::ThreadGoal {
+                    thread_id: "thread".to_string(),
+                    objective: objective.to_string(),
+                    status: codex_app_server_protocol::ThreadGoalStatus::Active,
+                    token_budget: Some(100),
+                    tokens_used: 25,
+                    time_used_seconds: 1,
+                    created_at: 0,
+                    updated_at: 0,
+                },
+            },
+        )
+    }
+
+    fn reviewed_consumer_state_notifications() -> Vec<ServerNotification> {
+        let thread_id = || "thread".to_string();
+        let turn_id = || "turn".to_string();
+        let item_id = || "item".to_string();
+        let token_usage = || {
+            let usage = codex_app_server_protocol::TokenUsageBreakdown {
+                total_tokens: 25,
+                input_tokens: 20,
+                cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                output_tokens: 5,
+                reasoning_output_tokens: 0,
+            };
+            codex_app_server_protocol::ThreadTokenUsage {
+                total: usage.clone(),
+                last: usage,
+                model_context_window: Some(100),
+            }
+        };
+
+        vec![
+            ServerNotification::ThreadStarted(
+                codex_app_server_protocol::ThreadStartedNotification {
+                    thread: codex_app_server_protocol::Thread {
+                        id: thread_id(),
+                        extra: None,
+                        session_id: thread_id(),
+                        forked_from_id: None,
+                        parent_thread_id: Some("parent".to_string()),
+                        preview: "child".to_string(),
+                        ephemeral: false,
+                        is_pinned: false,
+                        history_mode: Default::default(),
+                        model_provider: "openai".to_string(),
+                        model: Some("gpt-test".to_string()),
+                        reasoning_effort: None,
+                        created_at: 0,
+                        updated_at: 0,
+                        recency_at: None,
+                        status: codex_app_server_protocol::ThreadStatus::Idle,
+                        path: None,
+                        cwd: AbsolutePathBuf::from_absolute_path("/tmp")
+                            .expect("test cwd should be absolute"),
+                        cli_version: "test".to_string(),
+                        source: ApiSessionSource::Unknown,
+                        can_accept_direct_input: None,
+                        thread_source: None,
+                        agent_nickname: Some("Child".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                        git_info: None,
+                        name: None,
+                        turns: Vec::new(),
+                    },
+                },
+            ),
+            ServerNotification::ThreadClosed(codex_app_server_protocol::ThreadClosedNotification {
+                thread_id: thread_id(),
+            }),
+            ServerNotification::ThreadDeleted(
+                codex_app_server_protocol::ThreadDeletedNotification {
+                    thread_id: thread_id(),
+                },
+            ),
+            ServerNotification::ThreadArchived(
+                codex_app_server_protocol::ThreadArchivedNotification {
+                    thread_id: thread_id(),
+                },
+            ),
+            ServerNotification::ThreadUnarchived(
+                codex_app_server_protocol::ThreadUnarchivedNotification {
+                    thread_id: thread_id(),
+                },
+            ),
+            ServerNotification::ThreadStatusChanged(
+                codex_app_server_protocol::ThreadStatusChangedNotification {
+                    thread_id: thread_id(),
+                    status: codex_app_server_protocol::ThreadStatus::Idle,
+                },
+            ),
+            thread_goal_updated_notification("goal"),
+            ServerNotification::ThreadGoalCleared(
+                codex_app_server_protocol::ThreadGoalClearedNotification {
+                    thread_id: thread_id(),
+                },
+            ),
+            ServerNotification::ThreadTokenUsageUpdated(
+                codex_app_server_protocol::ThreadTokenUsageUpdatedNotification {
+                    thread_id: thread_id(),
+                    turn_id: turn_id(),
+                    token_usage: token_usage(),
+                },
+            ),
+            ServerNotification::ThreadNameUpdated(
+                codex_app_server_protocol::ThreadNameUpdatedNotification {
+                    thread_id: thread_id(),
+                    thread_name: Some("renamed".to_string()),
+                },
+            ),
+            ServerNotification::ServerRequestResolved(
+                codex_app_server_protocol::ServerRequestResolvedNotification {
+                    thread_id: thread_id(),
+                    request_id: RequestId::Integer(7),
+                },
+            ),
+            ServerNotification::AccountRateLimitsUpdated(
+                codex_app_server_protocol::AccountRateLimitsUpdatedNotification {
+                    rate_limits: codex_app_server_protocol::RateLimitSnapshot {
+                        limit_id: Some("codex".to_string()),
+                        limit_name: None,
+                        primary: None,
+                        secondary: None,
+                        credits: None,
+                        individual_limit: None,
+                        spend_control_reached: Some(true),
+                        plan_type: None,
+                        rate_limit_reached_type: None,
+                    },
+                },
+            ),
+            ServerNotification::AccountLoginCompleted(
+                codex_app_server_protocol::AccountLoginCompletedNotification {
+                    login_id: Some("login".to_string()),
+                    success: true,
+                    error: None,
+                },
+            ),
+            ServerNotification::AccountUpdated(
+                codex_app_server_protocol::AccountUpdatedNotification {
+                    auth_mode: None,
+                    plan_type: None,
+                },
+            ),
+            ServerNotification::McpServerOauthLoginCompleted(
+                codex_app_server_protocol::McpServerOauthLoginCompletedNotification {
+                    name: "server".to_string(),
+                    thread_id: Some(thread_id()),
+                    success: true,
+                    error: None,
+                },
+            ),
+            ServerNotification::ProcessExited(
+                codex_app_server_protocol::ProcessExitedNotification {
+                    process_handle: "process".to_string(),
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stdout_cap_reached: false,
+                    stderr: String::new(),
+                    stderr_cap_reached: false,
+                },
+            ),
+            ServerNotification::FuzzyFileSearchSessionCompleted(
+                codex_app_server_protocol::FuzzyFileSearchSessionCompletedNotification {
+                    session_id: "search".to_string(),
+                },
+            ),
+            ServerNotification::WindowsSandboxSetupCompleted(
+                codex_app_server_protocol::WindowsSandboxSetupCompletedNotification {
+                    mode: codex_app_server_protocol::WindowsSandboxSetupMode::Unelevated,
+                    success: true,
+                    error: None,
+                },
+            ),
+            ServerNotification::TurnStarted(codex_app_server_protocol::TurnStartedNotification {
+                thread_id: thread_id(),
+                turn: Turn {
+                    id: turn_id(),
+                    items: Vec::new(),
+                    items_view: TurnItemsView::NotLoaded,
+                    status: TurnStatus::InProgress,
+                    error: None,
+                    started_at: Some(0),
+                    completed_at: None,
+                    duration_ms: None,
+                },
+            }),
+            ServerNotification::TurnCompleted(TurnCompletedNotification {
+                thread_id: thread_id(),
+                turn: Turn {
+                    id: turn_id(),
+                    items: Vec::new(),
+                    items_view: TurnItemsView::NotLoaded,
+                    status: TurnStatus::Completed,
+                    error: None,
+                    started_at: None,
+                    completed_at: Some(0),
+                    duration_ms: None,
+                },
+                final_model: None,
+                model_snapshot: None,
+            }),
+            ServerNotification::ThreadSettingsUpdated(
+                codex_app_server_protocol::ThreadSettingsUpdatedNotification {
+                    thread_id: thread_id(),
+                    thread_settings: codex_app_server_protocol::ThreadSettings {
+                        cwd: AbsolutePathBuf::from_absolute_path("/tmp")
+                            .expect("test cwd should be absolute"),
+                        approval_policy: codex_app_server_protocol::AskForApproval::Never,
+                        approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,
+                        sandbox_policy: codex_app_server_protocol::SandboxPolicy::DangerFullAccess,
+                        active_permission_profile: None,
+                        model: "gpt-test".to_string(),
+                        model_provider: "openai".to_string(),
+                        service_tier: None,
+                        effort: None,
+                        summary: None,
+                        collaboration_mode: codex_protocol::config_types::CollaborationMode {
+                            mode: codex_protocol::config_types::ModeKind::Default,
+                            settings: codex_protocol::config_types::Settings {
+                                model: "gpt-test".to_string(),
+                                reasoning_effort: None,
+                                developer_instructions: None,
+                            },
+                        },
+                        multi_agent_mode: Default::default(),
+                        personality: None,
+                    },
+                },
+            ),
+            ServerNotification::ItemStarted(codex_app_server_protocol::ItemStartedNotification {
+                thread_id: thread_id(),
+                turn_id: turn_id(),
+                started_at_ms: 0,
+                item: codex_app_server_protocol::ThreadItem::AgentMessage {
+                    id: item_id(),
+                    text: "assistant".to_string(),
+                    phase: None,
+                    memory_citation: None,
+                },
+            }),
+            item_completed_notification("complete transcript"),
+            ServerNotification::ExternalAgentConfigImportCompleted(
+                ExternalAgentConfigImportCompletedNotification {
+                    import_id: "import".to_string(),
+                    item_type_results: Vec::new(),
+                },
+            ),
+            ServerNotification::AgentMessageDelta(
+                codex_app_server_protocol::AgentMessageDeltaNotification {
+                    thread_id: thread_id(),
+                    turn_id: turn_id(),
+                    item_id: item_id(),
+                    delta: "assistant".to_string(),
+                },
+            ),
+            ServerNotification::PlanDelta(codex_app_server_protocol::PlanDeltaNotification {
+                thread_id: thread_id(),
+                turn_id: turn_id(),
+                item_id: item_id(),
+                delta: "plan".to_string(),
+            }),
+            ServerNotification::ReasoningSummaryTextDelta(
+                codex_app_server_protocol::ReasoningSummaryTextDeltaNotification {
+                    thread_id: thread_id(),
+                    turn_id: turn_id(),
+                    item_id: item_id(),
+                    delta: "summary".to_string(),
+                    summary_index: 0,
+                },
+            ),
+            ServerNotification::ReasoningTextDelta(
+                codex_app_server_protocol::ReasoningTextDeltaNotification {
+                    thread_id: thread_id(),
+                    turn_id: turn_id(),
+                    item_id: item_id(),
+                    delta: "reasoning".to_string(),
+                    content_index: 0,
+                },
+            ),
+            ServerNotification::ThreadRealtimeStarted(
+                codex_app_server_protocol::ThreadRealtimeStartedNotification {
+                    thread_id: thread_id(),
+                    realtime_session_id: Some("realtime".to_string()),
+                    version: codex_protocol::protocol::RealtimeConversationVersion::V1,
+                },
+            ),
+            ServerNotification::ThreadRealtimeSdp(
+                codex_app_server_protocol::ThreadRealtimeSdpNotification {
+                    thread_id: thread_id(),
+                    sdp: "answer".to_string(),
+                },
+            ),
+            ServerNotification::ThreadRealtimeError(
+                codex_app_server_protocol::ThreadRealtimeErrorNotification {
+                    thread_id: thread_id(),
+                    message: "error".to_string(),
+                },
+            ),
+            ServerNotification::ThreadRealtimeClosed(
+                codex_app_server_protocol::ThreadRealtimeClosedNotification {
+                    thread_id: thread_id(),
+                    reason: Some("done".to_string()),
+                },
+            ),
+        ]
+    }
+
+    fn command_execution_output_delta_notification(delta: &str) -> ServerNotification {
+        ServerNotification::CommandExecutionOutputDelta(
+            codex_app_server_protocol::CommandExecutionOutputDeltaNotification {
+                thread_id: "thread".to_string(),
+                turn_id: "turn".to_string(),
+                item_id: "item".to_string(),
+                delta: delta.to_string(),
+            },
+        )
+    }
+
+    fn fuzzy_file_search_session_updated_notification(query: &str) -> ServerNotification {
+        ServerNotification::FuzzyFileSearchSessionUpdated(
+            codex_app_server_protocol::FuzzyFileSearchSessionUpdatedNotification {
+                session_id: "search".to_string(),
+                query: query.to_string(),
+                files: Vec::new(),
+            },
+        )
+    }
+
+    fn item_completed_notification(text: &str) -> ServerNotification {
+        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+            thread_id: "thread".to_string(),
+            turn_id: "turn".to_string(),
+            completed_at_ms: 0,
+            item: codex_app_server_protocol::ThreadItem::AgentMessage {
+                id: "item".to_string(),
+                text: text.to_string(),
+                phase: None,
+                memory_citation: None,
+            },
+        })
     }
 
     #[tokio::test]
@@ -896,6 +1411,208 @@ mod tests {
             .expect("in-process runtime should shutdown cleanly");
     }
 
+    #[tokio::test]
+    async fn tiny_event_queue_preserves_required_fifo_and_reports_dropped_progress() {
+        for best_effort_notification in [
+            command_execution_output_delta_notification("reconstructible progress"),
+            fuzzy_file_search_session_updated_notification("coalescible snapshot"),
+        ] {
+            let mut client =
+                start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
+            let outgoing = Arc::clone(
+                client
+                    ._test_outgoing_message_sender
+                    .as_ref()
+                    .expect("test runtime should expose its outbound sender"),
+            );
+
+            // The first required event occupies the only event slot. Waiting
+            // for the best-effort write acknowledgement makes its drop
+            // deterministic. Each variant uses a fresh runtime so the lag
+            // marker is drained before any later writer traffic is processed.
+            outgoing
+                .send_server_notification_to_connection_and_wait(
+                    IN_PROCESS_CONNECTION_ID,
+                    thread_goal_updated_notification("first"),
+                )
+                .await;
+            outgoing
+                .send_server_notification_to_connection_and_wait(
+                    IN_PROCESS_CONNECTION_ID,
+                    best_effort_notification,
+                )
+                .await;
+            outgoing
+                .send_server_notification(thread_goal_updated_notification("second"))
+                .await;
+
+            let first = timeout(Duration::from_secs(1), client.next_event())
+                .await
+                .expect("first required event should arrive")
+                .expect("event stream should remain open");
+            assert!(matches!(
+                first,
+                InProcessServerEvent::ServerNotification(ServerNotification::ThreadGoalUpdated(
+                    notification
+                )) if notification.goal.objective == "first"
+            ));
+
+            let lag = timeout(Duration::from_secs(1), client.next_event())
+                .await
+                .expect("lag marker should arrive")
+                .expect("event stream should remain open");
+            assert!(matches!(lag, InProcessServerEvent::Lagged { skipped: 1 }));
+
+            let second = timeout(Duration::from_secs(1), client.next_event())
+                .await
+                .expect("second required event should arrive")
+                .expect("event stream should remain open");
+            assert!(matches!(
+                second,
+                InProcessServerEvent::ServerNotification(ServerNotification::ThreadGoalUpdated(
+                    notification
+                )) if notification.goal.objective == "second"
+            ));
+
+            drop(outgoing);
+            client
+                .shutdown()
+                .await
+                .expect("in-process runtime should shutdown cleanly");
+        }
+    }
+
+    #[tokio::test]
+    async fn full_required_event_queue_still_allows_orderly_runtime_shutdown() {
+        let client =
+            start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
+        let outgoing = Arc::clone(
+            client
+                ._test_outgoing_message_sender
+                .as_ref()
+                .expect("test runtime should expose its outbound sender"),
+        );
+
+        outgoing
+            .send_server_notification_to_connection_and_wait(
+                IN_PROCESS_CONNECTION_ID,
+                thread_goal_updated_notification("queued"),
+            )
+            .await;
+        let pending_observed = client._test_pending_required_notification.notified();
+        outgoing
+            .send_server_notification(thread_goal_updated_notification("pending"))
+            .await;
+        timeout(Duration::from_secs(1), pending_observed)
+            .await
+            .expect("second required notification should become pending");
+        drop(outgoing);
+
+        timeout(Duration::from_secs(1), client.shutdown())
+            .await
+            .expect("a full required event queue must not delay shutdown acknowledgement")
+            .expect("runtime should complete orderly shutdown without parent-task abort");
+    }
+
+    #[tokio::test]
+    async fn pending_required_notification_does_not_block_request_response() {
+        let client =
+            start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
+        let outgoing = Arc::clone(
+            client
+                ._test_outgoing_message_sender
+                .as_ref()
+                .expect("test runtime should expose its outbound sender"),
+        );
+
+        outgoing
+            .send_server_notification_to_connection_and_wait(
+                IN_PROCESS_CONNECTION_ID,
+                thread_goal_updated_notification("queued"),
+            )
+            .await;
+        let pending_observed = client._test_pending_required_notification.notified();
+        outgoing
+            .send_server_notification(thread_goal_updated_notification("pending"))
+            .await;
+        timeout(Duration::from_secs(1), pending_observed)
+            .await
+            .expect("second required notification should become pending");
+
+        let response = timeout(
+            Duration::from_secs(1),
+            client.request(ClientRequest::ConfigRequirementsRead {
+                request_id: RequestId::Integer(91),
+                params: None,
+            }),
+        )
+        .await
+        .expect("request response should not wait for required-event delivery")
+        .expect("request transport should remain open")
+        .expect("request should succeed while the notification remains pending");
+        let _: ConfigRequirementsReadResponse =
+            serde_json::from_value(response).expect("response should match v2 schema");
+
+        drop(outgoing);
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[tokio::test]
+    async fn shutdown_releases_pending_required_write_completion_before_task_joins() {
+        let client =
+            start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
+        let outgoing = Arc::clone(
+            client
+                ._test_outgoing_message_sender
+                .as_ref()
+                .expect("test runtime should expose its outbound sender"),
+        );
+
+        outgoing
+            .send_server_notification_to_connection_and_wait(
+                IN_PROCESS_CONNECTION_ID,
+                thread_goal_updated_notification("queued"),
+            )
+            .await;
+        let pending_observed = client._test_pending_required_notification.notified();
+        let (producer_released_tx, mut producer_released_rx) = oneshot::channel();
+        let producer_handle = tokio::spawn(async move {
+            outgoing
+                .send_server_notification_to_connection_and_wait(
+                    IN_PROCESS_CONNECTION_ID,
+                    thread_goal_updated_notification("pending"),
+                )
+                .await;
+            let _ = producer_released_tx.send(());
+        });
+        timeout(Duration::from_secs(1), pending_observed)
+            .await
+            .expect("second required notification should become pending");
+        assert_eq!(
+            producer_released_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty),
+            "the real write-completion producer should remain blocked while its payload is pending"
+        );
+
+        let shutdown_handle = tokio::spawn(client.shutdown());
+        timeout(Duration::from_secs(1), &mut producer_released_rx)
+            .await
+            .expect("shutdown should cancel the pending write-completion wait")
+            .expect("pending write-completion producer should report release");
+        timeout(Duration::from_secs(1), producer_handle)
+            .await
+            .expect("released producer should drop its outgoing sender promptly")
+            .expect("write-completion producer should not panic");
+        timeout(Duration::from_secs(1), shutdown_handle)
+            .await
+            .expect("shutdown should finish before its five-second task fallback")
+            .expect("shutdown task should not panic")
+            .expect("runtime should complete graceful shutdown with no stranded task sender");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn in_process_shutdown_waits_for_analytics_flush_budget() {
         let (client_tx, mut client_rx) = mpsc::channel(/*buffer*/ 1);
@@ -916,6 +1633,8 @@ mod tests {
             event_rx,
             runtime_handle,
             _test_codex_home: None,
+            _test_outgoing_message_sender: None,
+            _test_pending_required_notification: Arc::new(tokio::sync::Notify::new()),
         };
 
         client
@@ -926,31 +1645,19 @@ mod tests {
     }
 
     #[test]
-    fn guaranteed_delivery_helpers_cover_terminal_server_notifications() {
-        assert!(server_notification_requires_delivery(
-            &ServerNotification::TurnCompleted(TurnCompletedNotification {
-                thread_id: "thread-1".to_string(),
-                turn: Turn {
-                    id: "turn-1".to_string(),
-                    items: Vec::new(),
-                    items_view: TurnItemsView::NotLoaded,
-                    status: TurnStatus::Completed,
-                    error: None,
-                    started_at: None,
-                    completed_at: Some(0),
-                    duration_ms: None,
-                },
-                final_model: None,
-                model_snapshot: None,
-            })
+    fn delivery_classifier_preserves_reviewed_consumer_state_notifications() {
+        let notifications = reviewed_consumer_state_notifications();
+        assert_eq!(notifications.len(), 32);
+        assert!(
+            notifications
+                .iter()
+                .all(server_notification_requires_delivery)
+        );
+        assert!(!server_notification_requires_delivery(
+            &command_execution_output_delta_notification("best effort")
         ));
-        assert!(server_notification_requires_delivery(
-            &ServerNotification::ExternalAgentConfigImportCompleted(
-                ExternalAgentConfigImportCompletedNotification {
-                    import_id: "import".to_string(),
-                    item_type_results: Vec::new(),
-                },
-            )
+        assert!(!server_notification_requires_delivery(
+            &fuzzy_file_search_session_updated_notification("coalescible")
         ));
     }
 }
