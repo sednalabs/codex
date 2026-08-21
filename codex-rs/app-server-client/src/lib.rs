@@ -2106,15 +2106,33 @@ mod tests {
     async fn remote_inbound_server_request_ledger_exhaustion_fails_closed() {
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             expect_remote_initialize(&mut websocket).await;
-            for index in 0..5 {
+            // Admit and resolve each request before sending the next one.  If all five
+            // frames are sent in one burst, the worker can observe the exhausting
+            // request and close the connection before the client has written the
+            // response for the fourth admitted request, making this test race with a
+            // transport-level broken pipe instead of exercising the ledger boundary.
+            for index in 0..4 {
+                let request_id = RequestId::String(format!("bounded-{index}"));
                 write_websocket_message(
                     &mut websocket,
-                    JSONRPCMessage::Request(remote_user_input_request(RequestId::String(format!(
-                        "bounded-{index}"
-                    )))),
+                    JSONRPCMessage::Request(remote_user_input_request(request_id.clone())),
                 )
                 .await;
+                let JSONRPCMessage::Response(response) =
+                    read_websocket_message(&mut websocket).await
+                else {
+                    panic!("expected response for admitted server request");
+                };
+                assert_eq!(response.id, request_id);
             }
+
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(remote_user_input_request(RequestId::String(
+                    "bounded-4".to_string(),
+                ))),
+            )
+            .await;
             let _ = timeout(Duration::from_secs(2), websocket.next()).await;
         })
         .await;
