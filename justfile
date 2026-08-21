@@ -466,7 +466,7 @@ app-server-thread-cwd-targeted:
 
 # Focused remote app-server client transport and lifecycle slice.
 app-server-client-targeted:
-    cargo test --locked -p codex-app-server-client -- --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server-client -- --test-threads=1
 
 # Focused app-server v2 contract slice for high-signal client-facing RPCs.
 app-server-v2-contract-targeted:
