@@ -333,7 +333,7 @@ fn unfinished_peer_ids_cannot_grow_trace_state_without_bound() {
 }
 
 #[test]
-fn evicting_closed_tombstone_also_drops_pending_request() {
+fn evicting_closed_tombstone_fences_pending_request() {
     let trace = trace_context();
     let mut context = NoiseTraceContext::default();
     context.observe_request(&process_start_request(trace.clone()));
@@ -364,15 +364,175 @@ fn evicting_closed_tombstone_also_drops_pending_request() {
         );
     }
 
-    // The late response cannot resurrect process-1 after its tombstone was
-    // evicted, because the request that could have promoted it was evicted as
-    // part of the same bounded operation.
+    // The late response remains request-correlated, but its evicted process
+    // generation cannot recreate process-1.
     assert_eq!(
         context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
             id: RequestId::Integer(7),
             result: serde_json::Value::Null,
         })),
-        None
+        Some(trace)
+    );
+    assert_eq!(context.return_trace(&process_notification()), None);
+}
+
+#[test]
+fn evicting_closed_tombstone_fences_duplicate_start_requests() {
+    let first_trace = trace_context();
+    let second_trace = W3cTraceContext {
+        traceparent: Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".to_string()),
+        tracestate: None,
+    };
+    let mut context = NoiseTraceContext::default();
+    context.observe_request(&process_start_request_with_id(1, first_trace.clone()));
+    context.observe_request(&process_start_request_with_id(2, second_trace.clone()));
+
+    let closed = JSONRPCMessage::Notification(JSONRPCNotification {
+        method: EXEC_CLOSED_METHOD.to_string(),
+        params: Some(serde_json::json!({"processId": "process-1"})),
+    });
+    assert_eq!(context.return_trace(&closed), Some(first_trace.clone()));
+
+    // Fill the process bound so the closed tombstone is evicted while the
+    // second start request remains retained in the request map.
+    for index in 0..MAX_TRACE_CONTEXT_ENTRIES {
+        let request_id = index as i64 + 1000;
+        let process_id = format!("process-fill-{index}");
+        context.observe_request(&process_start_request_for_process(
+            request_id,
+            &process_id,
+            first_trace.clone(),
+        ));
+        assert_eq!(
+            context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+                id: RequestId::Integer(request_id),
+                result: serde_json::Value::Null,
+            })),
+            Some(first_trace.clone())
+        );
+    }
+
+    // The late duplicate response is still request-correlated, but its
+    // evicted process generation can no longer recreate process-1.
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(2),
+            result: serde_json::Value::Null,
+        })),
+        Some(second_trace)
+    );
+    assert_eq!(context.return_trace(&process_notification()), None);
+}
+
+#[test]
+fn evicting_open_provisional_process_fences_late_start_response() {
+    let trace = trace_context();
+    let mut context = NoiseTraceContext::default();
+    context.observe_request(&process_start_request(trace.clone()));
+
+    // Evict process-1 while its start is still provisional. The request is
+    // retained for response tracing, but its process association is fenced.
+    for index in 0..MAX_TRACE_CONTEXT_ENTRIES {
+        let request_id = index as i64 + 1000;
+        let process_id = format!("process-fill-{index}");
+        context.observe_request(&process_start_request_for_process(
+            request_id,
+            &process_id,
+            trace.clone(),
+        ));
+        assert_eq!(
+            context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+                id: RequestId::Integer(request_id),
+                result: serde_json::Value::Null,
+            })),
+            Some(trace.clone())
+        );
+    }
+
+    let closed = JSONRPCMessage::Notification(JSONRPCNotification {
+        method: EXEC_CLOSED_METHOD.to_string(),
+        params: Some(serde_json::json!({"processId": "process-1"})),
+    });
+    assert_eq!(context.return_trace(&closed), None);
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(7),
+            result: serde_json::Value::Null,
+        })),
+        Some(trace)
+    );
+    assert_eq!(context.return_trace(&process_notification()), None);
+}
+
+#[test]
+fn closing_established_process_fences_retained_duplicate_start() {
+    let first_trace = trace_context();
+    let second_trace = W3cTraceContext {
+        traceparent: Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".to_string()),
+        tracestate: None,
+    };
+    let mut context = NoiseTraceContext::default();
+    context.observe_request(&process_start_request_with_id(1, first_trace.clone()));
+    context.observe_request(&process_start_request_with_id(2, second_trace.clone()));
+
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(1),
+            result: serde_json::Value::Null,
+        })),
+        Some(first_trace.clone())
+    );
+    let closed = JSONRPCMessage::Notification(JSONRPCNotification {
+        method: EXEC_CLOSED_METHOD.to_string(),
+        params: Some(serde_json::json!({"processId": "process-1"})),
+    });
+    assert_eq!(context.return_trace(&closed), Some(first_trace));
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(2),
+            result: serde_json::Value::Null,
+        })),
+        Some(second_trace)
+    );
+    assert_eq!(context.return_trace(&process_notification()), None);
+}
+
+#[test]
+fn replacing_closed_process_fences_previous_generation_requests() {
+    let first_trace = trace_context();
+    let second_trace = W3cTraceContext {
+        traceparent: Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".to_string()),
+        tracestate: None,
+    };
+    let mut context = NoiseTraceContext::default();
+    context.observe_request(&process_start_request_with_id(1, first_trace.clone()));
+
+    let closed = JSONRPCMessage::Notification(JSONRPCNotification {
+        method: EXEC_CLOSED_METHOD.to_string(),
+        params: Some(serde_json::json!({"processId": "process-1"})),
+    });
+    assert_eq!(context.return_trace(&closed), Some(first_trace.clone()));
+
+    // A new generation may reuse the process ID, but a failure in that
+    // generation must not promote the old request that was already closed.
+    context.observe_request(&process_start_request_with_id(2, second_trace.clone()));
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Error(JSONRPCError {
+            id: RequestId::Integer(2),
+            error: JSONRPCErrorError {
+                code: -1,
+                message: "rejected".to_string(),
+                data: None,
+            },
+        })),
+        Some(second_trace)
+    );
+    assert_eq!(
+        context.return_trace(&JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(1),
+            result: serde_json::Value::Null,
+        })),
+        Some(first_trace)
     );
     assert_eq!(context.return_trace(&process_notification()), None);
 }
