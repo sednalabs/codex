@@ -851,3 +851,108 @@ fn active_thread_picker_refresh_blocks_replay_input_without_optimistic_prompt() 
         .join()
         .expect("active thread replay gate test thread")
 }
+
+#[test]
+fn active_selected_thread_recovers_live_after_closed_refresh() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-active-thread-live-recovery".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+                let codex_home = app.config.codex_home.as_path();
+                let thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home,
+                        "2026-01-01T00-00-00",
+                        "2026-01-01T00:00:00Z",
+                        "Saved active recovery message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create active recovery rollout"),
+                )?;
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+
+                // Select the loaded thread once so the TUI owns a live channel and an active
+                // selection before the server-side unload/reload transition.
+                app_server
+                    .resume_thread(app.config.clone(), thread_id, app.resume_model_settings())
+                    .await?;
+                app.agent_navigation.upsert(
+                    thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                    /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
+                );
+                let mut tui = crate::tui::test_support::make_test_tui()?;
+                app.select_agent_thread(&mut tui, &mut app_server, thread_id)
+                    .await?;
+                assert_eq!(app.active_thread_id, Some(thread_id));
+                assert_eq!(
+                    app.thread_event_channels
+                        .get(&thread_id)
+                        .expect("initial live channel")
+                        .attachment(),
+                    ThreadEventAttachment::Live
+                );
+                while app_event_rx.try_recv().is_ok() {}
+
+                // The selected thread is unloaded. Its existing channel must become replay-only,
+                // and the active branch must keep the composer closed until the next liveness
+                // read proves that the server has loaded it again.
+                app_server.thread_unsubscribe(thread_id).await?;
+                app.select_agent_thread(&mut tui, &mut app_server, thread_id)
+                    .await?;
+                assert!(app.is_replay_only_thread(thread_id));
+                assert!(
+                    app.agent_navigation
+                        .get(&thread_id)
+                        .is_some_and(|entry| entry.is_closed)
+                );
+
+                // Reload the server-side thread without replacing the TUI's replay channel. The
+                // next active selection must explicitly resume/listen on that existing channel.
+                app_server
+                    .resume_thread(app.config.clone(), thread_id, app.resume_model_settings())
+                    .await?;
+                app.select_agent_thread(&mut tui, &mut app_server, thread_id)
+                    .await?;
+                assert_eq!(
+                    app.thread_event_channels
+                        .get(&thread_id)
+                        .expect("recovered live channel")
+                        .attachment(),
+                    ThreadEventAttachment::Live
+                );
+                assert!(
+                    app.agent_navigation
+                        .get(&thread_id)
+                        .is_some_and(|entry| !entry.is_closed)
+                );
+                assert!(!app.is_replay_only_thread(thread_id));
+
+                // A recovered active selection must be writable again, with no optimistic replay
+                // prompt left behind by the detached interval.
+                while app_event_rx.try_recv().is_ok() {}
+                app.chat_widget
+                    .restore_user_message_to_composer("recovered active op".to_string());
+                app.chat_widget
+                    .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                assert!(
+                    std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                        .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+                );
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("active selected thread live recovery test thread")
+}
