@@ -325,6 +325,13 @@ impl App {
         self.sync_active_agent_label();
     }
 
+    fn sync_active_thread_replay_only_state(&mut self, thread_id: ThreadId) {
+        if self.active_thread_id == Some(thread_id) {
+            self.chat_widget
+                .set_replay_only_thread(self.is_replay_only_thread(thread_id));
+        }
+    }
+
     pub(super) async fn refresh_agent_picker_thread_liveness(
         &mut self,
         app_server: &mut AppServerSession,
@@ -369,6 +376,7 @@ impl App {
                         channel.mark_replay_only();
                     }
                 }
+                self.sync_active_thread_replay_only_state(thread_id);
                 if is_parent_owned {
                     self.agent_navigation.mark_parent_owned(thread_id);
                 }
@@ -397,6 +405,7 @@ impl App {
             Err(err) => {
                 if Self::is_terminal_thread_read_error(&err) && !has_replay_channel {
                     self.agent_navigation.remove(thread_id);
+                    self.sync_active_thread_replay_only_state(thread_id);
                     return false;
                 }
                 let is_closed = Self::closed_state_for_thread_read_error(
@@ -421,6 +430,7 @@ impl App {
                         channel.mark_replay_only();
                     }
                 }
+                self.sync_active_thread_replay_only_state(thread_id);
                 self.agent_navigation
                     .set_running(thread_id, /*is_running*/ false);
                 true
@@ -655,10 +665,6 @@ impl App {
             // when already selected so a thread that became live again is promoted in place.
             self.refresh_agent_picker_thread_liveness(app_server, thread_id)
                 .await;
-            // Liveness refresh can close the selected thread and mark its channel replay-only.
-            // Keep the widget's composer gate in sync before any early return or re-attach path.
-            self.chat_widget
-                .set_replay_only_thread(self.is_replay_only_thread(thread_id));
             if self.should_attach_live_thread_for_selection(thread_id) {
                 let live_attached = self
                     .attach_live_thread_for_selection_with_tui(app_server, thread_id, Some(tui))
