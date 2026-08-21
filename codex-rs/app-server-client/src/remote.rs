@@ -80,10 +80,10 @@ use url::Url;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
-// This only limits peer-controlled websocket messages received by this client.
-// Other caller-controlled outbound messages deliberately retain their existing
-// compatibility behavior.
+// Ordinary peer-controlled responses remain capped at 8 MiB while the
+// transport retains the historical 128 MiB compatibility ceiling below.
 pub(super) const REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
+pub(super) const REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE: usize = 128 << 20;
 // This aggregate event budget covers the private backlog, deferred FIFO, and
 // public channel together. Response custody is deliberately separate below.
 const REMOTE_EVENT_AGGREGATE_RETAINED_BYTES: usize = 32 * 1024 * 1024;
@@ -94,6 +94,7 @@ const REMOTE_EVENT_RETAINED_OVERHEAD_BYTES: usize = 256;
 // that ownership independently from `RemoteEventByteBudget`.
 const REMOTE_RESPONSE_AGGREGATE_RETAINED_BYTES: usize = 32 * 1024 * 1024;
 const REMOTE_RESPONSE_MAX_WIRE_BYTES: usize = REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE;
+const REMOTE_HISTORY_RESPONSE_MAX_WIRE_BYTES: usize = REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE;
 const REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES: usize = 256;
 // These strings are retained for the lifetime of the remote client, unlike
 // initialize response payloads that are released once classification finishes.
@@ -1296,6 +1297,7 @@ struct InitializedRemoteConnection {
 struct PendingRemoteRequest {
     response_tx: oneshot::Sender<IoResult<PendingRemoteResponse>>,
     lifecycle: Arc<AtomicU8>,
+    allow_large_response: bool,
     _slot: OwnedSemaphorePermit,
 }
 
@@ -1328,7 +1330,22 @@ impl RemoteResponseByteBudget {
         self: &Arc<Self>,
         wire_bytes: usize,
     ) -> Result<RemoteResponseReservation, RemoteResponseBudgetError> {
-        if wire_bytes > REMOTE_RESPONSE_MAX_WIRE_BYTES {
+        self.try_reserve_with_limit(wire_bytes, REMOTE_RESPONSE_MAX_WIRE_BYTES)
+    }
+
+    fn try_reserve_large(
+        self: &Arc<Self>,
+        wire_bytes: usize,
+    ) -> Result<RemoteResponseReservation, RemoteResponseBudgetError> {
+        self.try_reserve_with_limit(wire_bytes, REMOTE_HISTORY_RESPONSE_MAX_WIRE_BYTES)
+    }
+
+    fn try_reserve_with_limit(
+        self: &Arc<Self>,
+        wire_bytes: usize,
+        max_wire_bytes: usize,
+    ) -> Result<RemoteResponseReservation, RemoteResponseBudgetError> {
+        if wire_bytes > max_wire_bytes {
             return Err(RemoteResponseBudgetError::OversizedWireMessage);
         }
         let bytes = wire_bytes.saturating_add(REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES);
@@ -1775,6 +1792,10 @@ where
             };
             *next_wire_request_id = next_request_id;
             request.id = request_id.clone();
+            let allow_large_response = matches!(
+                request.method.as_str(),
+                "thread/read" | "thread/resume" | "thread/fork" | "thread/rollback"
+            );
             if pending_requests.contains_key(&request_id)
                 || canceled_request_ids.contains(&request_id)
             {
@@ -1800,6 +1821,7 @@ where
                 PendingRemoteRequest {
                     response_tx,
                     lifecycle,
+                    allow_large_response,
                     _slot,
                 },
             );
@@ -1932,7 +1954,35 @@ where
 {
     match message {
         Some(Ok(Message::Text(text))) => {
-            let reservation = match response_byte_budget.try_reserve(text.len()) {
+            // Keep the ordinary path's reject-before-parse behavior. A large
+            // frame is decoded only while an explicitly admitted history
+            // request is pending; the exact response ID is checked below
+            // before the larger reservation is granted.
+            let may_be_large_history_response = text.len() > REMOTE_RESPONSE_MAX_WIRE_BYTES
+                && pending_requests
+                    .values()
+                    .any(|pending| pending.allow_large_response);
+            if text.len() > REMOTE_RESPONSE_MAX_WIRE_BYTES && !may_be_large_history_response {
+                return Some(RemoteTerminal::oversized_response_message(
+                    endpoint,
+                    text.len(),
+                ));
+            }
+            let parsed_message = serde_json::from_str::<JSONRPCMessage>(&text);
+            let allow_large_response = match &parsed_message {
+                Ok(JSONRPCMessage::Response(response)) => pending_requests
+                    .get(&response.id)
+                    .is_some_and(|pending| pending.allow_large_response),
+                Ok(JSONRPCMessage::Error(error)) => pending_requests
+                    .get(&error.id)
+                    .is_some_and(|pending| pending.allow_large_response),
+                _ => false,
+            };
+            let reservation = match if allow_large_response {
+                response_byte_budget.try_reserve_large(text.len())
+            } else {
+                response_byte_budget.try_reserve(text.len())
+            } {
                 Ok(reservation) => reservation,
                 Err(RemoteResponseBudgetError::OversizedWireMessage) => {
                     return Some(RemoteTerminal::oversized_response_message(
@@ -1944,7 +1994,7 @@ where
                     return Some(RemoteTerminal::response_budget_exhausted(endpoint));
                 }
             };
-            match serde_json::from_str::<JSONRPCMessage>(&text) {
+            match parsed_message {
                 Ok(JSONRPCMessage::Response(response)) => {
                     if let Some(pending) = pending_requests.remove(&response.id) {
                         if pending
@@ -2545,8 +2595,8 @@ async fn connect_unix_socket_endpoint(
 
 fn remote_websocket_config() -> WebSocketConfig {
     WebSocketConfig::default()
-        .max_frame_size(Some(REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE))
-        .max_message_size(Some(REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE))
+        .max_frame_size(Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE))
+        .max_message_size(Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE))
 }
 
 async fn initialize_remote_connection<S>(
@@ -2932,22 +2982,89 @@ mod tests {
     }
 
     #[test]
-    fn remote_websocket_config_and_inbound_response_wire_limit_are_locked_to_eight_mib() {
+    fn remote_websocket_config_preserves_128_mib_transport_and_8_mib_ordinary_response_limits() {
         let config = remote_websocket_config();
 
         assert_eq!(
             REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE,
             8 * 1024 * 1024
         );
+        assert_eq!(
+            REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE,
+            128 * 1024 * 1024
+        );
         assert_eq!(REMOTE_RESPONSE_MAX_WIRE_BYTES, 8 * 1024 * 1024);
         assert_eq!(
             config.max_frame_size,
-            Some(REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE)
+            Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE)
         );
         assert_eq!(
             config.max_message_size,
-            Some(REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE)
+            Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE)
         );
+    }
+
+    #[tokio::test]
+    async fn large_history_response_is_admitted_only_for_history_requests() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let budget = RemoteResponseByteBudget::shared();
+        let request_slots = Arc::new(Semaphore::new(2));
+        let mut pending_requests = HashMap::new();
+        let mut tombstones = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+        let (response_tx, response_rx) = oneshot::channel();
+        pending_requests.insert(
+            RequestId::Integer(1),
+            PendingRemoteRequest {
+                response_tx,
+                lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
+                allow_large_response: true,
+                _slot: request_slots
+                    .acquire_owned()
+                    .await
+                    .expect("test request slot should be available"),
+            },
+        );
+        let message = JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(1),
+            result: serde_json::json!({"padding": "x".repeat(17 * 1024 * 1024)}),
+        });
+        let wire_bytes = serde_json::to_string(&message)
+            .expect("large history response should serialize")
+            .len();
+        assert!(wire_bytes > REMOTE_RESPONSE_MAX_WIRE_BYTES);
+        assert!(
+            handle_remote_message(
+                Some(Ok(text_message(message))),
+                &mut stream,
+                "test://large-history",
+                &mut pending_requests,
+                &mut tombstones,
+                &mut backlog,
+                &mut deferred_events,
+                &budget,
+            )
+            .await
+            .is_none()
+        );
+        let delivered = response_rx
+            .await
+            .expect("large history response should reach its waiter")
+            .expect("large history response should not terminalize the connection");
+        assert!(delivered.result.is_ok());
+        assert_eq!(
+            budget.used(),
+            wire_bytes + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES
+        );
+        drop(delivered);
+        assert_eq!(budget.used(), 0);
     }
 
     #[test]
@@ -2997,6 +3114,7 @@ mod tests {
             PendingRemoteRequest {
                 response_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
+                allow_large_response: false,
                 _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
@@ -3051,6 +3169,7 @@ mod tests {
             PendingRemoteRequest {
                 response_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
+                allow_large_response: false,
                 _slot: request_slots
                     .acquire_owned()
                     .await
@@ -3242,6 +3361,7 @@ mod tests {
             PendingRemoteRequest {
                 response_tx,
                 lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
+                allow_large_response: false,
                 _slot: Arc::clone(&request_slots)
                     .acquire_owned()
                     .await
