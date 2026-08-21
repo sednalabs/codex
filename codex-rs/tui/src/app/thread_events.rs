@@ -331,6 +331,10 @@ pub(super) struct ThreadEventChannel {
     pub(super) sender: mpsc::Sender<ThreadBufferedEvent>,
     pub(super) receiver: Option<mpsc::Receiver<ThreadBufferedEvent>>,
     pub(super) store: Arc<Mutex<ThreadEventStore>>,
+    /// Delivery copies that could not enter the bounded receiver immediately. The store remains
+    /// the sole owner of replay state; this queue is only a live-delivery retry lane and is
+    /// discarded whenever a receiver is drained for a snapshot boundary.
+    pub(super) pending_delivery: Arc<std::sync::Mutex<VecDeque<ThreadBufferedEvent>>>,
     attachment: ThreadEventAttachment,
 }
 
@@ -341,6 +345,7 @@ impl ThreadEventChannel {
             sender,
             receiver: Some(receiver),
             store: Arc::new(Mutex::new(ThreadEventStore::new(capacity))),
+            pending_delivery: Arc::new(std::sync::Mutex::new(VecDeque::new())),
             attachment: ThreadEventAttachment::Live,
         }
     }
@@ -354,6 +359,7 @@ impl ThreadEventChannel {
     }
 
     pub(super) fn rebase_receiver_after_session_refresh(&mut self) {
+        self.clear_pending_delivery();
         let Some(receiver) = self.receiver.as_mut() else {
             return;
         };
@@ -371,6 +377,58 @@ impl ThreadEventChannel {
         while receiver.try_recv().is_ok() {}
     }
 
+    pub(super) fn clear_pending_delivery(&self) {
+        self.pending_delivery
+            .lock()
+            .expect("pending thread delivery mutex poisoned")
+            .clear();
+    }
+
+    /// Delivers a live copy without spawning a sender that can cross a receiver/snapshot boundary.
+    /// If the bounded channel is full, retain the copy in the channel-local retry lane; the event
+    /// itself has already been recorded by `ThreadEventStore`, which is the exactly-once replay
+    /// owner.
+    pub(super) fn try_send_or_queue(&self, event: ThreadBufferedEvent, thread_id: ThreadId) {
+        let mut pending = self
+            .pending_delivery
+            .lock()
+            .expect("pending thread delivery mutex poisoned");
+        if !pending.is_empty() {
+            pending.push_back(event);
+            return;
+        }
+        match self.sender.try_send(event) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(event)) => pending.push_back(event),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::warn!("thread {thread_id} event channel closed");
+            }
+        }
+    }
+
+    /// Moves as many queued live-delivery copies as capacity permits into the receiver. This is
+    /// called only after the active receiver has been drained, so no asynchronous sender can race
+    /// a picker refresh or snapshot replay.
+    pub(super) fn flush_pending_delivery(&self) {
+        let mut pending = self
+            .pending_delivery
+            .lock()
+            .expect("pending thread delivery mutex poisoned");
+        while let Some(event) = pending.pop_front() {
+            match self.sender.try_send(event) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(event)) => {
+                    pending.push_front(event);
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    pending.clear();
+                    break;
+                }
+            }
+        }
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn new_with_session(
         capacity: usize,
@@ -384,6 +442,7 @@ impl ThreadEventChannel {
             store: Arc::new(Mutex::new(ThreadEventStore::new_with_session(
                 capacity, session, turns,
             ))),
+            pending_delivery: Arc::new(std::sync::Mutex::new(VecDeque::new())),
             attachment: ThreadEventAttachment::Live,
         }
     }
@@ -803,5 +862,63 @@ mod tests {
             snapshot.events[1],
             ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
         ));
+    }
+
+    #[test]
+    fn blocked_live_delivery_is_discarded_at_snapshot_boundary() {
+        let thread_id = ThreadId::new();
+        let request = exec_approval_request(
+            thread_id,
+            "turn-blocked",
+            "call-blocked",
+            /*approval_id*/ None,
+        );
+        let mut channel = ThreadEventChannel::new(/*capacity*/ 1);
+        {
+            let mut store = channel.store.blocking_lock();
+            store.push_request(request.clone());
+        }
+
+        // Occupy the bounded receiver, then queue the delivery copy that used to be held by an
+        // async `sender.send`. A picker/session snapshot must discard that copy and replay the
+        // store-owned request exactly once.
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Notification(
+                hook_started_notification(thread_id, "turn-blocked"),
+            ))
+            .expect("receiver should accept the blocking event");
+        channel.try_send_or_queue(ThreadBufferedEvent::Request(request), thread_id);
+        assert_eq!(
+            channel
+                .pending_delivery
+                .lock()
+                .expect("pending delivery mutex")
+                .len(),
+            1
+        );
+
+        channel.rebase_receiver_after_session_refresh();
+        let snapshot = channel.store.blocking_lock().snapshot();
+        assert_eq!(snapshot.events.len(), 1);
+        assert!(matches!(
+            snapshot.events[0],
+            ThreadBufferedEvent::Request(_)
+        ));
+        assert!(
+            channel
+                .pending_delivery
+                .lock()
+                .expect("pending delivery mutex")
+                .is_empty()
+        );
+        assert!(
+            channel
+                .receiver
+                .as_mut()
+                .expect("receiver is retained")
+                .try_recv()
+                .is_err()
+        );
     }
 }

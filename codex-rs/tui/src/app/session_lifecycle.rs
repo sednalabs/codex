@@ -1550,6 +1550,7 @@ mod tests {
     #[test]
     fn persisted_picker_requires_consistent_thread_spawn_lineage_at_every_level() {
         let root = ThreadId::new();
+        let foreign_root = ThreadId::new();
         let middle = ThreadId::new();
         let leaf = ThreadId::new();
 
@@ -1569,6 +1570,11 @@ mod tests {
 
         let contradictory_middle = persisted_thread_spawn(middle, Some(root), leaf);
         assert_eq!(persisted_thread_spawn_parent(&contradictory_middle), None);
+
+        // A loaded leaf whose source claims a different root must not be admitted merely because
+        // its top-level parent metadata points into the active root's chain.
+        let cross_root_leaf = persisted_thread_spawn(leaf, Some(middle), foreign_root);
+        assert_eq!(persisted_thread_spawn_parent(&cross_root_leaf), None);
 
         let missing_metadata_parent = persisted_thread_spawn(leaf, None, middle);
         assert_eq!(

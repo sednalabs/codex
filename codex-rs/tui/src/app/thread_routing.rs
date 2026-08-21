@@ -80,6 +80,9 @@ impl App {
             if let Some(receiver) = self.active_thread_rx.as_mut() {
                 ThreadEventChannel::discard_event_receiver_after_session_refresh(receiver);
             }
+            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                channel.clear_pending_delivery();
+            }
         } else if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
             channel.rebase_receiver_after_session_refresh();
         }
@@ -95,6 +98,7 @@ impl App {
             let mut store = channel.store.lock().await;
             store.active = false;
             store.input_state = input_state;
+            channel.clear_pending_delivery();
             if let Some(receiver) = receiver {
                 channel.receiver = Some(receiver);
             }
@@ -112,6 +116,7 @@ impl App {
         // recorded there by the routing path, so retaining them would render every survivor
         // twice. Events arriving after this boundary remain queued for normal live delivery.
         ThreadEventChannel::discard_event_receiver_after_session_refresh(&mut receiver);
+        channel.clear_pending_delivery();
         store.active = true;
         let snapshot = store.snapshot();
         Some((receiver, snapshot))
@@ -990,9 +995,9 @@ impl App {
             .await;
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
-        let (sender, store) = {
+        let store = {
             let channel = self.ensure_thread_channel(thread_id);
-            (channel.sender.clone(), Arc::clone(&channel.store))
+            Arc::clone(&channel.store)
         };
         let (notification, pending_status, turn_stopped) = {
             let mut guard = store.lock().await;
@@ -1028,18 +1033,9 @@ impl App {
         }
 
         if let Some(notification) = notification {
-            match sender.try_send(ThreadBufferedEvent::Notification(notification)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(event)) => {
-                    tokio::spawn(async move {
-                        if let Err(err) = sender.send(event).await {
-                            tracing::warn!("thread {thread_id} event channel closed: {err}");
-                        }
-                    });
-                }
-                Err(TrySendError::Closed(_)) => {
-                    tracing::warn!("thread {thread_id} event channel closed");
-                }
+            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                channel
+                    .try_send_or_queue(ThreadBufferedEvent::Notification(notification), thread_id);
             }
         }
         if let Some(status) = pending_status {
@@ -1193,9 +1189,9 @@ impl App {
         } else {
             None
         };
-        let (sender, store) = {
+        let store = {
             let channel = self.ensure_thread_channel(thread_id);
-            (channel.sender.clone(), Arc::clone(&channel.store))
+            Arc::clone(&channel.store)
         };
 
         let (should_send, pending_status) = {
@@ -1206,18 +1202,8 @@ impl App {
         let request_status = SideParentStatus::for_request(&request);
 
         if should_send {
-            match sender.try_send(ThreadBufferedEvent::Request(request)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(event)) => {
-                    tokio::spawn(async move {
-                        if let Err(err) = sender.send(event).await {
-                            tracing::warn!("thread {thread_id} event channel closed: {err}");
-                        }
-                    });
-                }
-                Err(TrySendError::Closed(_)) => {
-                    tracing::warn!("thread {thread_id} event channel closed");
-                }
+            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                channel.try_send_or_queue(ThreadBufferedEvent::Request(request), thread_id);
             }
         } else if self.active_side_parent_thread_id().is_none()
             && let Some(request) = inactive_interactive_request
@@ -1236,9 +1222,9 @@ impl App {
         thread_id: ThreadId,
         event: HistoryLookupResponse,
     ) -> Result<()> {
-        let (sender, store) = {
+        let store = {
             let channel = self.ensure_thread_channel(thread_id);
-            (channel.sender.clone(), Arc::clone(&channel.store))
+            Arc::clone(&channel.store)
         };
 
         let should_send = {
@@ -1264,18 +1250,9 @@ impl App {
         };
 
         if should_send {
-            match sender.try_send(ThreadBufferedEvent::HistoryEntryResponse(event)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(event)) => {
-                    tokio::spawn(async move {
-                        if let Err(err) = sender.send(event).await {
-                            tracing::warn!("thread {thread_id} event channel closed: {err}");
-                        }
-                    });
-                }
-                Err(TrySendError::Closed(_)) => {
-                    tracing::warn!("thread {thread_id} event channel closed");
-                }
+            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                channel
+                    .try_send_or_queue(ThreadBufferedEvent::HistoryEntryResponse(event), thread_id);
             }
         }
         Ok(())
@@ -1476,6 +1453,11 @@ impl App {
         }
 
         if !disconnected {
+            if let Some(thread_id) = self.active_thread_id
+                && let Some(channel) = self.thread_event_channels.get(&thread_id)
+            {
+                channel.flush_pending_delivery();
+            }
             self.active_thread_rx = Some(rx);
         } else {
             self.clear_active_thread().await;

@@ -594,10 +594,29 @@ async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
         .await
         .expect("timed out waiting for first event")
         .expect("channel closed unexpectedly");
-    time::timeout(Duration::from_millis(50), rx.recv())
-        .await
-        .expect("timed out waiting for second event")
-        .expect("channel closed unexpectedly");
+    assert!(
+        rx.try_recv().is_err(),
+        "a full-channel delivery copy must not race a later snapshot"
+    );
+    let channel = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("missing thread channel");
+    let store = channel.store.lock().await;
+    assert_eq!(
+        store.buffer.len(),
+        1,
+        "the bounded store retains the latest event"
+    );
+    assert_eq!(
+        channel
+            .pending_delivery
+            .lock()
+            .expect("pending delivery mutex")
+            .len(),
+        1,
+        "the full-channel copy remains available for the active drain"
+    );
 
     Ok(())
 }
