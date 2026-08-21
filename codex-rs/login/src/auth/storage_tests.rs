@@ -136,6 +136,35 @@ fn canonical_storage_identity_unifies_symlink_alias_and_absent_child() -> anyhow
 
 #[cfg(unix)]
 #[test]
+fn auth_lock_rejects_symlinked_or_foreign_permission_lock_roots() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempdir()?;
+    let codex_home = root.path().join("home");
+    std::fs::create_dir(&codex_home)?;
+    let lock_dir = root.path().join("locks");
+    let redirected = root.path().join("redirected");
+    std::fs::create_dir(&redirected)?;
+    std::os::unix::fs::symlink(&redirected, &lock_dir)?;
+
+    assert!(lock_auth_storage_at(&codex_home, &lock_dir).is_err());
+
+    std::fs::remove_file(&lock_dir)?;
+    std::fs::create_dir(&lock_dir)?;
+    let mut permissions = std::fs::metadata(&lock_dir)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&lock_dir, permissions)?;
+    let lock = lock_auth_storage_at(&codex_home, &lock_dir)?;
+    assert_eq!(
+        std::fs::metadata(&lock_dir)?.permissions().mode() & 0o777,
+        0o700
+    );
+    drop(lock);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn absent_symlink_aliases_share_conditional_delete_identity() -> anyhow::Result<()> {
     let root = tempdir()?;
     let home = root.path().join("real-home");
