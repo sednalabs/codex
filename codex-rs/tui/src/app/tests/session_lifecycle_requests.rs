@@ -417,7 +417,7 @@ fn closed_existing_stale_channel_refreshes_persisted_transcript() -> Result<()> 
                 .enable_all()
                 .build()?;
             runtime.block_on(async {
-                let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+                let (mut app, mut app_event_rx, op_rx) = make_test_app_with_channels().await;
                 let codex_home = app.config.codex_home.as_path();
                 let root_thread_id = ThreadId::from_string(
                     &create_fake_rollout(
@@ -739,7 +739,7 @@ fn closed_thread_status_race_reconciles_live_attachment() -> Result<()> {
 
                 while app_event_rx.try_recv().is_ok() {}
                 app.chat_widget
-                    .restore_user_message_to_composer("live status-race op".to_string());
+                    .restore_user_message_to_composer("live status-race op".to_string().into());
                 app.chat_widget
                     .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
                 assert!(
@@ -823,7 +823,7 @@ fn active_thread_picker_refresh_blocks_replay_input_without_optimistic_prompt() 
 
                 let prompt = "draft stays while thread is detached".to_string();
                 app.chat_widget
-                    .restore_user_message_to_composer(prompt.clone());
+                    .restore_user_message_to_composer(prompt.clone().into());
                 let draft = app.chat_widget.composer_text_with_pending();
                 app.chat_widget
                     .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -940,7 +940,7 @@ fn active_selected_thread_recovers_live_after_closed_refresh() -> Result<()> {
                 // prompt left behind by the detached interval.
                 while app_event_rx.try_recv().is_ok() {}
                 app.chat_widget
-                    .restore_user_message_to_composer("recovered active op".to_string());
+                    .restore_user_message_to_composer("recovered active op".to_string().into());
                 app.chat_widget
                     .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
                 assert!(
