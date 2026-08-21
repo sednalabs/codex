@@ -2152,7 +2152,6 @@ where
             match parsed_message {
                 Ok(JSONRPCMessage::Response(response)) => {
                     if let Some(pending) = pending_requests.remove(&response.id) {
-                        let allow_large_response = pending.allow_large_response;
                         if pending
                             .lifecycle
                             .compare_exchange(
@@ -2167,15 +2166,13 @@ where
                                 result: Ok(response.result),
                                 _bytes: reservation,
                             }));
-                        } else if canceled_request_ids
-                            .remember_with_policy(response.id, allow_large_response)
-                            .is_err()
-                        {
-                            return Some(
-                                RemoteTerminal::canceled_request_tombstone_capacity_exhausted(
-                                    endpoint,
-                                ),
-                            );
+                        } else {
+                            // The response has already been consumed and
+                            // removed from pending_requests. Cancellation
+                            // became visible while it was being routed, so
+                            // there is no late response left to tombstone.
+                            // Tombstones are created only when cancellation
+                            // removes a still-pending request.
                         }
                     } else if canceled_request_ids.retire(&response.id) {
                         // A response racing caller cancellation belongs to the
@@ -2188,7 +2185,6 @@ where
                 }
                 Ok(JSONRPCMessage::Error(error)) => {
                     if let Some(pending) = pending_requests.remove(&error.id) {
-                        let allow_large_response = pending.allow_large_response;
                         if pending
                             .lifecycle
                             .compare_exchange(
@@ -2203,15 +2199,11 @@ where
                                 result: Err(error.error),
                                 _bytes: reservation,
                             }));
-                        } else if canceled_request_ids
-                            .remember_with_policy(error.id, allow_large_response)
-                            .is_err()
-                        {
-                            return Some(
-                                RemoteTerminal::canceled_request_tombstone_capacity_exhausted(
-                                    endpoint,
-                                ),
-                            );
+                        } else {
+                            // See the response branch: this error was already
+                            // consumed while cancellation became visible, so
+                            // retaining a tombstone would leak bounded ID
+                            // capacity for a response that cannot arrive late.
                         }
                     } else if canceled_request_ids.retire(&error.id) {
                         // See the response branch: absorb late errors for
@@ -4512,6 +4504,118 @@ mod tests {
         tombstones
             .remember(RequestId::Integer(2))
             .expect("retiring an absorbed response should free tombstone capacity");
+    }
+
+    #[tokio::test]
+    async fn cancellation_racing_consumed_result_does_not_leave_tombstone() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let budget = RemoteResponseByteBudget::shared();
+        let request_slots = Arc::new(Semaphore::new(1));
+        let mut pending_requests = HashMap::new();
+        let mut canceled_request_ids = RecentRemoteRequestIds::new(/*capacity*/ 1);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+        let (response_tx, _response_rx) = oneshot::channel();
+        pending_requests.insert(
+            RequestId::Integer(1),
+            PendingRemoteRequest {
+                response_tx,
+                lifecycle: Arc::new(AtomicU8::new(REQUEST_CANCELLED)),
+                allow_large_response: false,
+                _slot: request_slots
+                    .acquire_owned()
+                    .await
+                    .expect("test request slot should be available"),
+            },
+        );
+
+        assert!(
+            handle_remote_message(
+                Some(Ok(text_message(JSONRPCMessage::Response(
+                    JSONRPCResponse {
+                        id: RequestId::Integer(1),
+                        result: serde_json::json!({"value": true}),
+                    },
+                )))),
+                &mut stream,
+                "test://consumed-result-race",
+                &mut pending_requests,
+                &mut canceled_request_ids,
+                &mut backlog,
+                &mut deferred_events,
+                &budget,
+            )
+            .await
+            .is_none()
+        );
+        assert!(pending_requests.is_empty());
+        assert!(canceled_request_ids.ids.is_empty());
+        canceled_request_ids
+            .remember(RequestId::Integer(2))
+            .expect("a consumed result must not consume tombstone capacity");
+    }
+
+    #[tokio::test]
+    async fn cancellation_racing_consumed_error_does_not_leave_tombstone() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let budget = RemoteResponseByteBudget::shared();
+        let request_slots = Arc::new(Semaphore::new(1));
+        let mut pending_requests = HashMap::new();
+        let mut canceled_request_ids = RecentRemoteRequestIds::new(/*capacity*/ 1);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+        let (response_tx, _response_rx) = oneshot::channel();
+        pending_requests.insert(
+            RequestId::Integer(1),
+            PendingRemoteRequest {
+                response_tx,
+                lifecycle: Arc::new(AtomicU8::new(REQUEST_CANCELLED)),
+                allow_large_response: false,
+                _slot: request_slots
+                    .acquire_owned()
+                    .await
+                    .expect("test request slot should be available"),
+            },
+        );
+
+        assert!(
+            handle_remote_message(
+                Some(Ok(text_message(JSONRPCMessage::Error(JSONRPCError {
+                    id: RequestId::Integer(1),
+                    error: JSONRPCErrorError {
+                        code: -32000,
+                        message: "cancelled race".to_string(),
+                        data: None,
+                    },
+                })))),
+                &mut stream,
+                "test://consumed-error-race",
+                &mut pending_requests,
+                &mut canceled_request_ids,
+                &mut backlog,
+                &mut deferred_events,
+                &budget,
+            )
+            .await
+            .is_none()
+        );
+        assert!(pending_requests.is_empty());
+        assert!(canceled_request_ids.ids.is_empty());
+        canceled_request_ids
+            .remember(RequestId::Integer(2))
+            .expect("a consumed error must not consume tombstone capacity");
     }
 
     #[tokio::test]
