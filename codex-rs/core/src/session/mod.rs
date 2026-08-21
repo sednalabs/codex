@@ -3114,29 +3114,50 @@ impl Session {
         world_state
     }
 
-    /// Ensure a spawned agent receives one runtime-authored request identity fragment.
-    /// User task text containing the same markers cannot satisfy this developer-message check.
+    /// Ensure a spawned agent receives exactly one current, runtime-authored request identity.
+    /// Stale or malformed developer fragments are replaced after any history rewrite.
     pub(crate) async fn ensure_subagent_runtime_identity_context(
         &self,
         turn_context: &TurnContext,
     ) {
-        let identity = {
-            let state = self.state.lock().await;
+        let replacement = {
+            let mut state = self.state.lock().await;
             let snapshot = state.session_configuration.thread_config_snapshot();
-            if !snapshot.session_source.is_non_root_agent()
-                || state
-                    .history
-                    .raw_items()
+            if !snapshot.session_source.is_non_root_agent() {
+                None
+            } else {
+                let identity = SubagentRuntimeIdentity::from_snapshot(&snapshot);
+                let history = state.history.raw_items();
+                let marked_count = history
                     .iter()
-                    .any(SubagentRuntimeIdentity::matches_response_item)
-            {
-                return;
+                    .filter(|item| SubagentRuntimeIdentity::has_marked_response_item(item))
+                    .count();
+                if marked_count == 1
+                    && history
+                        .iter()
+                        .any(|item| SubagentRuntimeIdentity::matches_response_item(item, &snapshot))
+                {
+                    None
+                } else {
+                    let retained = history
+                        .iter()
+                        .filter(|item| !SubagentRuntimeIdentity::has_marked_response_item(item))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let reference_context_item = state.history.reference_context_item();
+                    state.history.replace(retained);
+                    state
+                        .history
+                        .set_reference_context_item(reference_context_item);
+                    Some(identity)
+                }
             }
-            SubagentRuntimeIdentity::from_snapshot(&snapshot)
         };
-        let item: ResponseItem = ContextualUserFragment::into(identity);
-        self.record_conversation_items(turn_context, std::slice::from_ref(&item))
-            .await;
+        if let Some(identity) = replacement {
+            let item: ResponseItem = ContextualUserFragment::into(identity);
+            self.record_conversation_items(turn_context, std::slice::from_ref(&item))
+                .await;
+        }
     }
 
     /// Captures one request-scoped view of dynamic state.
@@ -3298,6 +3319,7 @@ impl Session {
 
     pub(crate) async fn replace_compacted_history(
         &self,
+        turn_context: &TurnContext,
         items: Vec<ResponseItem>,
         reference_context_item: Option<TurnContextItem>,
         world_state_baseline: Option<Arc<WorldState>>,
@@ -3338,6 +3360,10 @@ impl Session {
             self.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item)])
                 .await;
         }
+        // Every compaction is a history-replacement boundary. Reinstall the current
+        // identity before the next sampling request, including mid-turn compaction.
+        self.ensure_subagent_runtime_identity_context(turn_context)
+            .await;
         {
             let mut state = self.state.lock().await;
             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
@@ -3771,6 +3797,7 @@ impl Session {
             .await;
         let turn_context_item = turn_context.to_turn_context_item();
         self.replace_compacted_history(
+            turn_context,
             context_items,
             Some(turn_context_item),
             Some(world_state),

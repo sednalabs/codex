@@ -1262,8 +1262,7 @@ fn auth_dot_json_matches_rejected_auth(auth: &AuthDotJson, rejected: &CodexAuth)
         CodexAuth::AgentIdentity(rejected) => auth
             .agent_identity
             .as_ref()
-            .and_then(AgentIdentityStorage::as_record)
-            .is_some_and(|record| record == rejected.record()),
+            .is_some_and(|stored| stored.matches_record(rejected.record())),
         CodexAuth::PersonalAccessToken(rejected) => {
             auth.personal_access_token.as_deref() == Some(rejected.access_token())
         }
@@ -2608,7 +2607,9 @@ impl AuthManager {
         if !self.current_auth_uses_codex_backend() {
             return Ok(false);
         }
-        if rejected_auth.is_some_and(CodexAuth::is_external_chatgpt_tokens) {
+        if rejected_auth.is_some_and(|auth| {
+            auth.is_external_chatgpt_tokens() || matches!(auth, CodexAuth::Headers(_))
+        }) {
             let (removed, cache_changed) = {
                 let mut external_auth = self
                     .external_auth
@@ -2619,7 +2620,9 @@ impl AuthManager {
                     .zip(rejected_external_auth)
                     .is_some_and(|(current, rejected)| Arc::ptr_eq(current, rejected));
                 let auth_matches = self.auth_cached().as_ref().zip(rejected_auth).is_some_and(
-                    |(current, rejected)| Self::auths_equal(Some(current), Some(rejected)),
+                    |(current, rejected)| {
+                        Self::auths_equal_for_refresh(Some(current), Some(rejected))
+                    },
                 );
                 if !provider_matches || !auth_matches {
                     return Ok(false);
@@ -2651,7 +2654,9 @@ impl AuthManager {
                 self.keyring_backend_kind,
             );
         };
-        if rejected_auth.is_external_chatgpt_tokens() {
+        if rejected_auth.is_external_chatgpt_tokens()
+            || matches!(rejected_auth, CodexAuth::Headers(_))
+        {
             let removed_ephemeral = logout_store_matching_rejected_auth(
                 &self.codex_home,
                 AuthCredentialsStoreMode::Ephemeral,

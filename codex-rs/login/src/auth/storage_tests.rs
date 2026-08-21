@@ -114,6 +114,50 @@ fn conditional_delete_cannot_erase_concurrent_replacement() -> anyhow::Result<()
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn canonical_storage_identity_unifies_symlink_alias_and_absent_child() -> anyhow::Result<()> {
+    let root = tempdir()?;
+    let home = root.path().join("real-home");
+    std::fs::create_dir(&home)?;
+    let alias = root.path().join("home-alias");
+    std::os::unix::fs::symlink(&home, &alias)?;
+
+    assert_eq!(
+        canonical_storage_identity(&home)?,
+        canonical_storage_identity(&alias)?
+    );
+    assert_eq!(
+        canonical_storage_identity(&home.join("not-created"))?,
+        canonical_storage_identity(&alias.join("not-created"))?
+    );
+    Ok(())
+}
+
+#[test]
+fn jwt_identity_match_requires_decodable_matching_credential() {
+    let record = AgentIdentityAuthRecord {
+        agent_runtime_id: "runtime".to_string(),
+        agent_private_key: "private-key".to_string(),
+        account_id: "account".to_string(),
+        chatgpt_user_id: "user".to_string(),
+        email: None,
+        plan_type: AccountPlanType::Pro,
+        chatgpt_account_is_fedramp: false,
+        task_id: Some("runtime-only-task".to_string()),
+    };
+    let jwt = jwt_with_payload(json!({
+        "agent_runtime_id": "runtime",
+        "agent_private_key": "private-key",
+        "account_id": "account",
+        "chatgpt_user_id": "user",
+        "plan_type": "pro",
+        "chatgpt_account_is_fedramp": false,
+    }));
+    assert!(AgentIdentityStorage::Jwt(jwt).matches_record(&record));
+    assert!(!AgentIdentityStorage::Jwt("malformed".to_string()).matches_record(&record));
+}
+
 #[tokio::test]
 async fn file_storage_round_trips_agent_identity_auth() -> anyhow::Result<()> {
     let codex_home = tempdir()?;

@@ -324,6 +324,7 @@ async fn run_remote_compact_task_inner_impl(
         });
     }
     sess.replace_compacted_history(
+        compaction_turn_context,
         new_history,
         reference_context_item,
         world_state_baseline,

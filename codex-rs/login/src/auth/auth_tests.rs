@@ -1474,6 +1474,41 @@ async fn external_auth_provider_can_install_headers() {
     );
 }
 
+#[tokio::test]
+async fn restricted_rejection_clears_current_external_headers_only() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::AUTHORIZATION,
+        http::HeaderValue::from_static("Bearer rejected"),
+    );
+    let rejected = CodexAuth::Headers(AuthHeaders::new(headers));
+    let codex_home = tempdir().expect("tempdir");
+    let manager = AuthManager::shared(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::Ephemeral,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        crate::test_support::transport_default_auth_route_config(),
+    )
+    .await;
+    manager
+        .set_external_auth(Arc::new(StaticExternalAuth(rejected.clone())))
+        .await
+        .expect("install header auth");
+    let mut recovery = manager.unauthorized_recovery();
+
+    assert!(
+        recovery
+            .force_logout_due_to_server_auth_rejection()
+            .await
+            .expect("clear rejected header auth")
+    );
+    assert!(!manager.has_external_auth());
+    assert_eq!(manager.auth_cached(), None);
+}
+
 struct ProviderAuthScript {
     tempdir: TempDir,
     command: String,

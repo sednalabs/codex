@@ -84,6 +84,18 @@ impl AgentIdentityStorage {
             Self::Record(record) => Some(record),
         }
     }
+
+    /// Compare persisted identity material with a live identity without treating an
+    /// undecodable JWT as an authorization to delete it. JWTs are intentionally
+    /// normalized through the same claims-to-record conversion used at load time.
+    pub(crate) fn matches_record(&self, record: &AgentIdentityAuthRecord) -> bool {
+        match self {
+            Self::Jwt(jwt) => AgentIdentityAuthRecord::from_agent_identity_jwt(jwt)
+                .ok()
+                .is_some_and(|stored| stored.same_credential(record)),
+            Self::Record(stored) => stored.same_credential(record),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
@@ -129,6 +141,16 @@ impl AgentIdentityAuthRecord {
             decode_agent_identity_jwt(jwt, /*jwks*/ None).map_err(std::io::Error::other)?;
 
         Ok(claims.into())
+    }
+
+    /// Task registration is deliberately excluded: it is runtime state, not the
+    /// credential that authorizes an agent identity. The remaining fields bind the
+    /// private key to the issued account identity.
+    pub(crate) fn same_credential(&self, other: &Self) -> bool {
+        self.agent_runtime_id == other.agent_runtime_id
+            && self.agent_private_key == other.agent_private_key
+            && self.account_id == other.account_id
+            && self.chatgpt_user_id == other.chatgpt_user_id
     }
 }
 
@@ -211,10 +233,15 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
 static AUTH_STORAGE_TRANSACTION_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 fn lock_auth_storage(codex_home: &Path) -> std::io::Result<File> {
-    let absolute_codex_home = std::path::absolute(codex_home)?;
+    let canonical_identity = canonical_storage_identity(codex_home)?;
     let mut hasher = Sha256::new();
-    hasher.update(absolute_codex_home.to_string_lossy().as_bytes());
+    hasher.update(canonical_identity.to_string_lossy().as_bytes());
     let lock_key = digest_hex(hasher.finalize());
+    // The lock root must not follow TMPDIR; cooperating Codex processes may have
+    // different temporary-directory environments while sharing one CODEX_HOME.
+    #[cfg(unix)]
+    let lock_dir = PathBuf::from("/tmp").join("codex-auth-locks");
+    #[cfg(not(unix))]
     let lock_dir = std::env::temp_dir().join("codex-auth-locks");
     std::fs::create_dir_all(&lock_dir)?;
     let lock_path = lock_dir.join(lock_key);
@@ -227,6 +254,30 @@ fn lock_auth_storage(codex_home: &Path) -> std::io::Result<File> {
     let lock_file = options.open(lock_path)?;
     lock_file.lock()?;
     Ok(lock_file)
+}
+
+/// Return a stable identity for an existing home, a symlink alias, or an absent
+/// configured home. For the latter, canonicalize the nearest existing ancestor
+/// and append the missing path suffix instead of failing before a first login.
+fn canonical_storage_identity(codex_home: &Path) -> std::io::Result<PathBuf> {
+    let absolute = std::path::absolute(codex_home)?;
+    let mut existing = absolute.as_path();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            return Ok(absolute);
+        };
+        missing.push(name.to_os_string());
+        let Some(parent) = existing.parent() else {
+            return Ok(absolute);
+        };
+        existing = parent;
+    }
+    let mut identity = std::fs::canonicalize(existing)?;
+    for component in missing.iter().rev() {
+        identity.push(component);
+    }
+    Ok(identity)
 }
 
 #[derive(Clone, Debug)]
