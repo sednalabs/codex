@@ -681,12 +681,15 @@ async fn active_history_batch_is_delivered_without_replay_buffering() -> Result<
         .thread_event_channels
         .get_mut(&thread_id)
         .expect("missing thread channel");
+    let store = channel.store.lock().await;
+    assert_eq!(store.buffer.len(), 1);
     assert!(matches!(
-        channel.store.lock().await.buffer.as_slice(),
-        [ThreadBufferedEvent::HistoryEntryResponse(
+        store.buffer.front(),
+        Some(ThreadBufferedEvent::HistoryEntryResponse(
             HistoryLookupResponse::Batch { .. }
-        )]
+        ))
     ));
+    drop(store);
     let mut receiver = channel.receiver.take().expect("missing receiver");
     let delivered = time::timeout(Duration::from_millis(50), receiver.recv())
         .await
