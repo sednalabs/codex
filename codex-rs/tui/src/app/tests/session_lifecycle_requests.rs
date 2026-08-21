@@ -51,6 +51,7 @@ async fn start_recording_app_server(
 )> {
     start_recording_app_server_with_scripts(
         config,
+        None,
         VecDeque::new(),
         /*force_resume_failure*/ false,
         /*resume_signal*/ None,
@@ -64,6 +65,7 @@ async fn start_recording_app_server(
 /// preserving the loaded status after a later resume.
 async fn start_recording_app_server_with_closed_transition(
     config: &Config,
+    thread_id: ThreadId,
 ) -> Result<(
     AppServerSession,
     Arc<Mutex<Vec<String>>>,
@@ -71,6 +73,7 @@ async fn start_recording_app_server_with_closed_transition(
 )> {
     start_recording_app_server_with_scripts(
         config,
+        Some(thread_id.to_string()),
         VecDeque::from([ScriptedThreadRead {
             include_turns: false,
             status: ScriptedThreadStatus::NotLoaded,
@@ -90,6 +93,7 @@ async fn start_recording_app_server_with_resume_failure(
 ) -> Result<(AppServerSession, JoinHandle<Result<()>>)> {
     let (app_server, _requests, proxy) = start_recording_app_server_with_scripts(
         config,
+        None,
         VecDeque::new(),
         /*force_resume_failure*/ true,
         Some(resume_signal),
@@ -113,6 +117,7 @@ struct ScriptedThreadRead {
 
 async fn start_recording_app_server_with_scripts(
     config: &Config,
+    scripted_thread_id: Option<String>,
     post_unsubscribe_thread_reads: VecDeque<ScriptedThreadRead>,
     force_resume_failure: bool,
     resume_signal: Option<Arc<tokio::sync::Notify>>,
@@ -174,7 +179,14 @@ async fn start_recording_app_server_with_scripts(
                         .expect("request recorder lock")
                         .push(request.method.clone());
                     let request_id = request.id.clone();
-                    if request.method == "thread/unsubscribe" {
+                    let request_thread_id = request
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("threadId"))
+                        .and_then(serde_json::Value::as_str);
+                    if request.method == "thread/unsubscribe"
+                        && scripted_thread_id.as_deref() == request_thread_id
+                    {
                         after_unsubscribe = true;
                     }
                     if force_resume_failure && request.method == "thread/resume" {
@@ -199,7 +211,10 @@ async fn start_recording_app_server_with_scripts(
                             .await?;
                         continue;
                     }
-                    let scripted_status = if after_unsubscribe && request.method == "thread/read" {
+                    let scripted_status = if after_unsubscribe
+                        && request.method == "thread/read"
+                        && scripted_thread_id.as_deref() == request_thread_id
+                    {
                         let include_turns = request.params.as_ref().is_some_and(|params| {
                             params
                                 .get("includeTurns")
@@ -537,7 +552,8 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                     &root_thread_id.to_string(),
                 );
                 let (mut app_server, requests, proxy) =
-                    start_recording_app_server_with_closed_transition(&app.config).await?;
+                    start_recording_app_server_with_closed_transition(&app.config, child_thread_id)
+                        .await?;
                 let root = app_server
                     .resume_thread(
                         app.config.clone(),
@@ -709,7 +725,8 @@ fn closed_existing_stale_channel_refreshes_persisted_transcript() -> Result<()> 
                 );
 
                 let (mut app_server, requests, proxy) =
-                    start_recording_app_server_with_closed_transition(&app.config).await?;
+                    start_recording_app_server_with_closed_transition(&app.config, child_thread_id)
+                        .await?;
                 let started = app_server
                     .resume_thread(
                         app.config.clone(),
@@ -918,6 +935,7 @@ fn closed_thread_status_race_reconciles_live_attachment() -> Result<()> {
                 // NotLoaded state after unsubscribe.
                 let (mut app_server, _requests, proxy) = start_recording_app_server_with_scripts(
                     &app.config,
+                    Some(thread_id.to_string()),
                     VecDeque::from([
                         ScriptedThreadRead {
                             include_turns: false,
@@ -1031,7 +1049,8 @@ fn active_thread_picker_refresh_blocks_replay_input_without_optimistic_prompt() 
                     .expect("create active-thread rollout"),
                 )?;
                 let (mut app_server, _requests, proxy) =
-                    start_recording_app_server(&app.config).await?;
+                    start_recording_app_server_with_closed_transition(&app.config, thread_id)
+                        .await?;
 
                 // Load the persisted thread so the first selection creates a real live channel
                 // and configures the widget before the later unload/liveness transition.
@@ -1127,7 +1146,8 @@ fn active_selected_thread_recovers_live_after_closed_refresh() -> Result<()> {
                     .expect("create active recovery rollout"),
                 )?;
                 let (mut app_server, _requests, proxy) =
-                    start_recording_app_server_with_closed_transition(&app.config).await?;
+                    start_recording_app_server_with_closed_transition(&app.config, thread_id)
+                        .await?;
 
                 // Select the loaded thread once so the TUI owns a live channel and an active
                 // selection before the server-side unload/reload transition.
