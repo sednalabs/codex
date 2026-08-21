@@ -214,7 +214,7 @@
       ],
       "owner": "downstream",
       "notes": "This stage defines and bounds the contract only. Runtime transport emission, terminal arbitration, persistence and query projection, pricing, and identity reconciliation remain separate owners. Preserve the carry until upstream provides an equivalent payload-free lifecycle contract, exact correlation, explicit evidence provenance, and compatible unknown-event consumption; then drop the downstream event and guardrail together.",
-      "upstreamability_tier": "upstream-candidate",
+      "upstreamability_tier": "upstream-pr",
       "boundary_type": "protocol-extension",
       "hotspot_files": [
         "codex-rs/protocol/src/protocol.rs"
