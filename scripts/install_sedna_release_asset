@@ -105,10 +105,119 @@ install_root="${HOME}/.codex/packages/standalone"
 bin_dir="${HOME}/.local/bin"
 
 work_dir="$(mktemp -d -t sedna-release-install.XXXXXX)"
+activation_lock_kind=""
+activation_lock_pid=""
+activation_started=false
+activation_committed=false
+activation_previous_current=""
+activation_previous_visible_link=""
+activation_visible_backup=""
+activation_visible_created=false
+restore_suffix="$$"
+if [[ "${SEDNA_INSTALLER_TESTING:-}" == "1" && -n "${SEDNA_INSTALLER_TEST_RESTORE_SUFFIX:-}" ]]; then
+  restore_suffix="$SEDNA_INSTALLER_TEST_RESTORE_SUFFIX"
+fi
+restore_link() {
+  local source="$1"
+  local temporary="$2"
+  local destination="$3"
+  local expected_existing="$4"
+  if [[ -e "$temporary" || -L "$temporary" ]]; then
+    return 1
+  fi
+  if [[ -e "$destination" || -L "$destination" ]] \
+      && [[ ! -L "$destination" || "$(readlink "$destination")" != "$expected_existing" ]]; then
+    return 1
+  fi
+  if ! ln -s "$source" "$temporary"; then
+    return 1
+  fi
+  if [[ "$(readlink "$temporary")" != "$source" ]]; then
+    rm -f "$temporary"
+    return 1
+  fi
+  python3 - "$temporary" "$destination" <<'PY'
+import os
+import sys
+os.replace(sys.argv[1], sys.argv[2])
+PY
+}
+remove_owned_link() {
+  local path="$1"
+  local expected="$2"
+  if [[ -L "$path" && "$(readlink "$path")" == "$expected" ]]; then
+    rm -f "$path"
+  fi
+}
 cleanup() {
+  if [[ "$activation_started" == "true" && "$activation_committed" != "true" ]]; then
+    if [[ -n "$activation_previous_visible_link" ]]; then
+      visible_restore="${bin_dir}/.codex.restore.${restore_suffix}"
+      if ! restore_link "$activation_previous_visible_link" "$visible_restore" "${bin_dir}/codex" "${release_dir}/codex"; then
+        remove_owned_link "${bin_dir}/codex" "${release_dir}/codex"
+      fi
+    elif [[ -n "$activation_visible_backup" && -e "$activation_visible_backup" ]]; then
+      remove_owned_link "${bin_dir}/codex" "${release_dir}/codex"
+      if [[ ! -e "${bin_dir}/codex" && ! -L "${bin_dir}/codex" ]]; then
+        mv "$activation_visible_backup" "${bin_dir}/codex"
+      fi
+    elif [[ "$activation_visible_created" == "true" && -L "${bin_dir}/codex" ]]; then
+      remove_owned_link "${bin_dir}/codex" "${release_dir}/codex"
+    fi
+    current_path="${install_root}/current"
+    if [[ -n "$activation_previous_current" ]]; then
+      current_restore="${install_root}/.current.restore.${restore_suffix}"
+      if ! restore_link "$activation_previous_current" "$current_restore" "$current_path" "$release_dir"; then
+        remove_owned_link "$current_path" "$release_dir"
+      fi
+    elif [[ -L "$current_path" ]]; then
+      remove_owned_link "$current_path" "$release_dir"
+    fi
+  fi
+  if [[ "$activation_lock_kind" == "python-fcntl" && -n "$activation_lock_pid" ]]; then
+    kill "$activation_lock_pid" 2>/dev/null || true
+    wait "$activation_lock_pid" 2>/dev/null || true
+  fi
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
+
+acquire_activation_lock() {
+  local lock_file="${install_root}/.release-activation.lock"
+  local lock_ready="${work_dir}/activation-lock-ready"
+  python3 - "$lock_file" "$lock_ready" "$$" <<'PY' &
+import fcntl
+import os
+import pathlib
+import sys
+import time
+
+lock_path, ready_path = map(pathlib.Path, sys.argv[1:3])
+parent_pid = int(sys.argv[3])
+for component in [lock_path.parent, *lock_path.parent.parents]:
+    if component == pathlib.Path.home():
+        break
+    if component.is_symlink():
+        raise SystemExit("error: refusing symlinked installer parent directory")
+lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+with os.fdopen(fd, "a+") as lock_file:
+    fcntl.flock(lock_file, fcntl.LOCK_EX)
+    ready_path.write_text("locked\n", encoding="utf-8")
+    while os.getppid() == parent_pid:
+        time.sleep(0.1)
+PY
+  activation_lock_pid="$!"
+  activation_lock_kind="python-fcntl"
+  while [[ ! -f "$lock_ready" ]]; do
+    if ! kill -0 "$activation_lock_pid" 2>/dev/null; then
+      wait "$activation_lock_pid" || true
+      echo "error: failed to acquire release activation lock" >&2
+      exit 1
+    fi
+    sleep 0.05
+  done
+}
 
 github_header=(
   -H "User-Agent: sedna-release-install"
@@ -693,6 +802,44 @@ if [[ "$target" != "x86_64-unknown-linux-gnu" ]]; then
   release_dir_name="${release_tag}-${target}"
 fi
 release_dir="${install_root}/releases/${release_dir_name}"
+
+validate_activation_paths() {
+  python3 - "$install_root" "${install_root}/releases" "${install_root}/backups" "$bin_dir" "$release_dir" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+install_root, releases_dir, backups_dir, bin_dir, release_dir = map(pathlib.Path, sys.argv[1:])
+home = pathlib.Path.home()
+for root in (install_root, bin_dir):
+    for component in [root, *root.parents]:
+        if component == home:
+            break
+        if component.is_symlink():
+            raise SystemExit(f"error: refusing symlinked installer parent directory: {component}")
+for path, expected_dir in (
+    (install_root, True),
+    (releases_dir, True),
+    (backups_dir, True),
+    (bin_dir, True),
+    (release_dir, True),
+):
+    if not path.exists() and not path.is_symlink():
+        continue
+    mode = os.lstat(path).st_mode
+    if stat.S_ISLNK(mode):
+        raise SystemExit(f"error: refusing symlinked installer path: {path}")
+    if expected_dir and not stat.S_ISDIR(mode):
+        raise SystemExit(f"error: installer path is not a directory: {path}")
+    if path == release_dir:
+        for child in path.iterdir():
+            child_mode = os.lstat(child).st_mode
+            if stat.S_ISLNK(child_mode):
+                raise SystemExit(f"error: refusing symlinked release entry: {child}")
+PY
+}
+validate_activation_paths
 if [[ -d "$release_dir" ]]; then
   python3 - "$release_dir/RELEASE-METADATA.json" "$release_tag" "$target" <<'PY'
 import json
@@ -734,7 +881,16 @@ if [[ "$dry_run" == "true" ]]; then
   exit 0
 fi
 
+acquire_activation_lock
+activation_started=true
+validate_activation_paths
 mkdir -p "${install_root}/releases" "$bin_dir"
+if [[ -L "${install_root}/current" ]]; then
+  activation_previous_current="$(readlink "${install_root}/current")"
+elif [[ -e "${install_root}/current" ]]; then
+  echo "error: install-root current path exists but is not a symlink" >&2
+  exit 1
+fi
 if [[ ! -d "$release_dir" ]]; then
   tmp_release="${install_root}/releases/.${release_dir_name}.tmp.$$"
   rm -rf "$tmp_release"
@@ -756,11 +912,23 @@ os.replace(sys.argv[1], sys.argv[2])
 PY
 
 visible_codex="${bin_dir}/codex"
-if [[ -e "$visible_codex" && ! -L "$visible_codex" ]]; then
+if [[ -L "$visible_codex" ]]; then
+  activation_previous_visible_link="$(readlink "$visible_codex")"
+elif [[ -e "$visible_codex" ]]; then
   mkdir -p "${install_root}/backups"
   backup="${install_root}/backups/codex.$(date +%s)"
+  if [[ -e "$backup" || -L "$backup" ]]; then
+    echo "error: refusing to overwrite an existing installer backup: $backup" >&2
+    exit 1
+  fi
   mv "$visible_codex" "$backup"
+  activation_visible_backup="$backup"
   echo "backed up previous codex binary"
+fi
+
+if [[ "${SEDNA_INSTALLER_TESTING:-}" == "1" \
+    && "${SEDNA_INSTALLER_TEST_FAULT:-}" == "after-visible-predecessor" ]]; then
+  exit 73
 fi
 
 codex_tmp="${bin_dir}/.codex.tmp.$$"
@@ -771,6 +939,20 @@ import sys
 
 os.replace(sys.argv[1], sys.argv[2])
 PY
+activation_visible_created=true
+
+if [[ "${SEDNA_INSTALLER_TESTING:-}" == "1" \
+    && "${SEDNA_INSTALLER_TEST_FAULT:-}" == "after-visible-replacement" ]]; then
+  exit 74
+fi
+if [[ "${SEDNA_INSTALLER_TESTING:-}" == "1" \
+    && "${SEDNA_INSTALLER_TEST_FAULT:-}" == "replace-before-rollback" ]]; then
+  current_path="${install_root}/current"
+  rm -f "$visible_codex" "$current_path"
+  ln -s "${SEDNA_INSTALLER_TEST_ATTACKER_VISIBLE:?}" "$visible_codex"
+  ln -s "${SEDNA_INSTALLER_TEST_ATTACKER_CURRENT:?}" "$current_path"
+  exit 74
+fi
 
 visible_version_output="$("$visible_codex" --version 2>&1)"
 if [[ "$visible_version_output" != *"$release_version"* ]]; then
@@ -778,5 +960,6 @@ if [[ "$visible_version_output" != *"$release_version"* ]]; then
   exit 1
 fi
 
+activation_committed=true
 echo "installed sednalabs/codex@${release_tag}"
 echo "$visible_version_output"
