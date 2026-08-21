@@ -690,6 +690,19 @@ impl App {
             return Ok(());
         }
 
+        // A closed picker row can retain a live channel from before the server unloaded the
+        // thread. Fence that channel before the liveness read so no buffered mutation can cross
+        // the closed-thread selection boundary while the authoritative transcript is hydrated.
+        if self
+            .agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed)
+        {
+            if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+                channel.mark_replay_only();
+            }
+        }
+
         // A tracked side thread stays loaded until it is explicitly discarded and already has a
         // replay channel, so another liveness read cannot add anything before selection.
         if !(self.side_threads.contains_key(&thread_id)
