@@ -325,7 +325,7 @@ impl App {
         self.sync_active_agent_label();
     }
 
-    fn sync_active_thread_replay_only_state(&mut self, thread_id: ThreadId) {
+    pub(super) fn sync_active_thread_replay_only_state(&mut self, thread_id: ThreadId) {
         if self.active_thread_id == Some(thread_id) {
             self.chat_widget
                 .set_replay_only_thread(self.is_replay_only_thread(thread_id));
@@ -458,7 +458,7 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
-        mut tui: Option<&mut tui::Tui>,
+        tui: Option<&mut tui::Tui>,
     ) -> Result<bool> {
         if let Some(channel) = self.thread_event_channels.get(&thread_id)
             && channel.attachment() == ThreadEventAttachment::Live
@@ -469,7 +469,12 @@ impl App {
         // Fence requests and notifications from the prior replay attachment before resuming.
         // The channel remains available to collect valid post-snapshot notifications that arrive
         // while thread/resume is in flight.
-        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+        if self.thread_event_channels.contains_key(&thread_id) {
+            self.replace_thread_event_queue(thread_id).await;
+            let channel = self
+                .thread_event_channels
+                .get(&thread_id)
+                .expect("thread channel should remain present");
             let mut store = channel.store.lock().await;
             store.clear_stale_replay_state();
         }
@@ -528,7 +533,11 @@ impl App {
             channel.mark_replay_only();
         }
         let mut store = channel.store.lock().await;
-        store.set_session(session.clone(), turns.clone());
+        if live_attached {
+            store.set_session(session.clone(), turns.clone());
+        } else {
+            store.replace_with_authoritative_snapshot(session.clone(), turns.clone());
+        }
         drop(store);
 
         // A replay-only channel can be selected while its server-side thread is temporarily
@@ -573,6 +582,9 @@ impl App {
         // Mark the channel replay-only before any async read so a stale live channel cannot
         // submit mutations while its persisted transcript is being hydrated.
         self.ensure_thread_channel(thread_id).mark_replay_only();
+        // Replace the receiver generation before the authoritative read so queued events from
+        // the prior live/replay attachment cannot drain after the persisted snapshot is installed.
+        self.replace_thread_event_queue(thread_id).await;
 
         let thread = app_server
             .thread_read(thread_id, /*include_turns*/ true)
@@ -590,6 +602,9 @@ impl App {
         );
         let turns = thread.turns.clone();
         let session = self.session_state_for_thread_read(thread_id, &thread).await;
+        // Events that arrived while the read was in flight are not proven to follow its
+        // authoritative transcript, so fence that queue generation before replacing the store.
+        self.replace_thread_event_queue(thread_id).await;
         let channel = self.ensure_thread_channel(thread_id);
         channel.mark_replay_only();
         let mut store = channel.store.lock().await;
@@ -951,6 +966,9 @@ impl App {
         let tracked_thread_ids: Vec<ThreadId> =
             self.thread_event_channels.keys().copied().collect();
         for thread_id in tracked_thread_ids {
+            if self.is_replay_only_thread(thread_id) {
+                continue;
+            }
             if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
                 tracing::warn!("failed to unsubscribe tracked thread {thread_id}: {err}");
             }

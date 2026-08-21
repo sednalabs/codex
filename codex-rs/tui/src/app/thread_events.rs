@@ -367,6 +367,16 @@ impl ThreadEventChannel {
         self.attachment
     }
 
+    /// Replaces the receiver queue so events sent through stale sender clones cannot be replayed
+    /// after a new authoritative thread snapshot is attached.
+    pub(super) async fn replace_event_queue(&mut self) -> mpsc::Receiver<ThreadBufferedEvent> {
+        let capacity = self.store.lock().await.capacity;
+        let (sender, receiver) = mpsc::channel(capacity);
+        self.sender = sender;
+        self.receiver = None;
+        receiver
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn new_with_session(
         capacity: usize,
