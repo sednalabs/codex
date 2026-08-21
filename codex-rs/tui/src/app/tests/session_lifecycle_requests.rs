@@ -1134,12 +1134,15 @@ fn active_selected_thread_recovers_live_after_closed_refresh() -> Result<()> {
                 );
                 while app_event_rx.try_recv().is_ok() {}
 
-                // The selected thread is unloaded. Its existing channel must become replay-only,
-                // and the active branch must keep the composer closed until the next liveness
-                // read proves that the server has loaded it again.
+                // The selected thread is unloaded. The explicit liveness refresh must fence its
+                // existing channel before the active selection can be revisited; the active branch
+                // must keep the composer closed until the next liveness read proves that the
+                // server has loaded it again.
                 app_server.thread_unsubscribe(thread_id).await?;
-                app.select_agent_thread(&mut tui, &mut app_server, thread_id)
-                    .await?;
+                assert!(
+                    app.refresh_agent_picker_thread_liveness(&mut app_server, thread_id)
+                        .await
+                );
                 assert!(app.is_replay_only_thread(thread_id));
                 assert!(
                     app.agent_navigation
