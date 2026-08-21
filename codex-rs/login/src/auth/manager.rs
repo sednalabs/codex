@@ -47,8 +47,10 @@ pub use crate::auth::storage::AgentIdentityAuthRecord;
 pub use crate::auth::storage::AgentIdentityStorage;
 pub use crate::auth::storage::AuthDotJson;
 pub use crate::auth::storage::AuthKeyringBackendKind;
-use crate::auth::storage::AuthStorageBackend;
-use crate::auth::storage::create_auth_storage;
+use crate::auth::storage::AuthRepository;
+use crate::auth::storage::AuthStorageSource;
+use crate::auth::storage::LoadedAuth;
+use crate::auth::storage::create_auth_repository;
 use crate::auth::util::try_parse_error_message;
 use crate::default_client::create_client;
 use crate::default_client::create_default_auth_client;
@@ -165,7 +167,8 @@ pub struct ApiKeyAuth {
 #[derive(Debug, Clone)]
 pub struct ChatgptAuth {
     state: ChatgptAuthState,
-    storage: Arc<dyn AuthStorageBackend>,
+    repository: Arc<AuthRepository>,
+    loaded_auth: Arc<Mutex<LoadedAuth>>,
 }
 
 #[derive(Debug, Clone)]
@@ -252,6 +255,7 @@ impl CodexAuth {
         auth_credentials_store_mode: AuthCredentialsStoreMode,
         chatgpt_base_url: Option<&str>,
         keyring_backend_kind: AuthKeyringBackendKind,
+        loaded_auth: Option<LoadedAuth>,
         agent_identity_authapi_base_url: Option<&str>,
         auth_route_config: &AuthRouteConfig,
     ) -> std::io::Result<Self> {
@@ -328,12 +332,22 @@ impl CodexAuth {
 
         match auth_mode {
             AuthMode::Chatgpt => {
-                let storage = create_auth_storage(
+                let repository = create_auth_repository(
                     codex_home.to_path_buf(),
                     storage_mode,
                     keyring_backend_kind,
                 );
-                Ok(Self::Chatgpt(ChatgptAuth { state, storage }))
+                let loaded_auth = match loaded_auth {
+                    Some(loaded_auth) => loaded_auth,
+                    None => repository.load_active()?.ok_or_else(|| {
+                        std::io::Error::other("auth disappeared before it could be bound")
+                    })?,
+                };
+                Ok(Self::Chatgpt(ChatgptAuth {
+                    state,
+                    repository,
+                    loaded_auth: Arc::new(Mutex::new(loaded_auth)),
+                }))
             }
             AuthMode::ChatgptAuthTokens => Ok(Self::ChatgptAuthTokens(ChatgptAuthTokens { state })),
             AuthMode::ApiKey => unreachable!("api key mode is handled above"),
@@ -721,12 +735,28 @@ impl CodexAuth {
             client: create_client(),
         };
         let dummy_auth_id = NEXT_DUMMY_AUTH_ID.fetch_add(1, Ordering::Relaxed);
-        let storage = create_auth_storage(
+        let repository = create_auth_repository(
             PathBuf::from(format!("dummy-chatgpt-auth-{dummy_auth_id}")),
             AuthCredentialsStoreMode::Ephemeral,
             AuthKeyringBackendKind::default(),
         );
-        Self::Chatgpt(ChatgptAuth { state, storage })
+        let loaded_auth = LoadedAuth {
+            source: AuthStorageSource::Ephemeral,
+            auth: state
+                .auth_dot_json
+                .lock()
+                .expect("dummy auth lock")
+                .clone()
+                .expect("dummy auth"),
+        };
+        repository
+            .replace_for_login(&loaded_auth.auth)
+            .expect("save dummy auth");
+        Self::Chatgpt(ChatgptAuth {
+            state,
+            repository,
+            loaded_auth: Arc::new(Mutex::new(loaded_auth)),
+        })
     }
 
     /// Constructs in-memory ChatGPT auth from externally managed tokens.
@@ -801,8 +831,15 @@ impl ChatgptAuth {
         self.current_auth_json().and_then(|auth| auth.tokens)
     }
 
-    fn storage(&self) -> &Arc<dyn AuthStorageBackend> {
-        &self.storage
+    fn repository(&self) -> &Arc<AuthRepository> {
+        &self.repository
+    }
+
+    fn loaded_auth(&self) -> std::io::Result<LoadedAuth> {
+        self.loaded_auth
+            .lock()
+            .map(|loaded_auth| loaded_auth.clone())
+            .map_err(|_| std::io::Error::other("failed to lock loaded auth"))
     }
 
     fn client(&self) -> &HttpClient {
@@ -813,24 +850,37 @@ impl ChatgptAuth {
         &self,
         record: AgentIdentityAuthRecord,
     ) -> std::io::Result<()> {
-        persist_agent_identity_record(&self.state.auth_dot_json, &self.storage, record)
+        persist_agent_identity_record(
+            &self.state.auth_dot_json,
+            &self.repository,
+            &self.loaded_auth,
+            record,
+        )
     }
 }
 
 fn persist_agent_identity_record(
     auth_dot_json: &Arc<Mutex<Option<AuthDotJson>>>,
-    storage: &Arc<dyn AuthStorageBackend>,
+    repository: &Arc<AuthRepository>,
+    loaded_auth: &Arc<Mutex<LoadedAuth>>,
     record: AgentIdentityAuthRecord,
 ) -> std::io::Result<()> {
     let mut guard = auth_dot_json
         .lock()
         .map_err(|_| std::io::Error::other("failed to lock auth state"))?;
-    let mut auth = storage
-        .load()?
-        .or_else(|| guard.clone())
-        .ok_or_else(|| std::io::Error::other("auth data is not available"))?;
+    let expected = loaded_auth
+        .lock()
+        .map_err(|_| std::io::Error::other("failed to lock loaded auth"))?
+        .clone();
+    if guard.as_ref() != Some(&expected.auth) {
+        return Err(std::io::Error::other("auth changed before identity update"));
+    }
+    let mut auth = expected.auth.clone();
     auth.agent_identity = Some(AgentIdentityStorage::Record(record));
-    storage.save(&auth)?;
+    let updated = repository.update_if_unchanged(&expected, &auth)?;
+    *loaded_auth
+        .lock()
+        .map_err(|_| std::io::Error::other("failed to lock loaded auth"))? = updated;
     *guard = Some(auth);
     Ok(())
 }
@@ -861,19 +911,20 @@ fn read_non_empty_env_var(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// Delete the auth.json file inside `codex_home` if it exists. Returns `Ok(true)`
-/// if a file was removed, `Ok(false)` if no auth file was present.
+/// Delete all managed auth representations inside `codex_home`. Returns
+/// `Ok(true)` if any source was removed and surfaces a partial failure only
+/// after attempting every physical store.
 pub fn logout(
     codex_home: &Path,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<bool> {
-    let storage = create_auth_storage(
+    let repository = create_auth_repository(
         codex_home.to_path_buf(),
         auth_credentials_store_mode,
         keyring_backend_kind,
     );
-    storage.delete()
+    repository.logout_all()
 }
 
 pub async fn logout_with_revoke(
@@ -1013,12 +1064,12 @@ pub fn save_auth(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<()> {
-    let storage = create_auth_storage(
+    let repository = create_auth_repository(
         codex_home.to_path_buf(),
         auth_credentials_store_mode,
         keyring_backend_kind,
     );
-    storage.save(auth)
+    repository.replace_for_login(auth).map(|_| ())
 }
 
 /// Load the raw stored auth payload without applying environment overrides.
@@ -1031,12 +1082,14 @@ pub fn load_auth_dot_json(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<Option<AuthDotJson>> {
-    let storage = create_auth_storage(
+    let repository = create_auth_repository(
         codex_home.to_path_buf(),
         auth_credentials_store_mode,
         keyring_backend_kind,
     );
-    storage.load()
+    repository
+        .load_active()
+        .map(|auth| auth.map(|auth| auth.auth))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1110,6 +1163,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
                 message,
                 config.auth_credentials_store_mode,
                 config.keyring_backend_kind,
+                &auth,
             );
         }
     }
@@ -1133,6 +1187,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
                             ),
                             config.auth_credentials_store_mode,
                             config.keyring_backend_kind,
+                            &auth,
                         );
                     }
                 };
@@ -1161,6 +1216,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
                 message,
                 config.auth_credentials_store_mode,
                 config.keyring_backend_kind,
+                &auth,
             );
         }
     }
@@ -1173,14 +1229,20 @@ fn logout_with_message(
     message: String,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
+    rejected_auth: &CodexAuth,
 ) -> std::io::Result<()> {
-    // External auth tokens live in the ephemeral store, but persistent auth may still exist
-    // from earlier logins. Clear both so a forced logout truly removes all active auth.
-    let removal_result = logout_all_stores(
-        codex_home,
-        auth_credentials_store_mode,
-        keyring_backend_kind,
-    );
+    let mode = if rejected_auth.is_external_chatgpt_tokens() {
+        AuthCredentialsStoreMode::Ephemeral
+    } else {
+        auth_credentials_store_mode
+    };
+    let repository = create_auth_repository(codex_home.to_path_buf(), mode, keyring_backend_kind);
+    let removal_result = repository.load_active().and_then(|loaded| match loaded {
+        Some(loaded) if auth_dot_json_matches_rejected_auth(&loaded.auth, rejected_auth) => {
+            repository.delete_if_matches(&loaded)
+        }
+        _ => Ok(false),
+    });
     let error_message = match removal_result {
         Ok(_) => message,
         Err(err) => format!("{message}. Failed to remove auth.json: {err}"),
@@ -1188,29 +1250,38 @@ fn logout_with_message(
     Err(std::io::Error::other(error_message))
 }
 
+fn auth_dot_json_matches_rejected_auth(stored: &AuthDotJson, rejected: &CodexAuth) -> bool {
+    if stored.resolved_mode() != rejected.api_auth_mode() {
+        return false;
+    }
+    match rejected {
+        CodexAuth::ApiKey(auth) => stored.openai_api_key.as_deref() == Some(auth.api_key.as_str()),
+        CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_) => rejected
+            .get_current_auth_json()
+            .is_some_and(|rejected| stored == &rejected),
+        CodexAuth::AgentIdentity(auth) => stored
+            .agent_identity
+            .as_ref()
+            .is_some_and(|identity| identity.matches_record(auth.record())),
+        CodexAuth::PersonalAccessToken(auth) => {
+            stored.personal_access_token.as_deref() == Some(auth.access_token())
+        }
+        CodexAuth::BedrockApiKey(auth) => stored.bedrock_api_key.as_ref() == Some(auth),
+        CodexAuth::Headers(_) => false,
+    }
+}
+
 fn logout_all_stores(
     codex_home: &Path,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<bool> {
-    if auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral {
-        return logout(
-            codex_home,
-            AuthCredentialsStoreMode::Ephemeral,
-            AuthKeyringBackendKind::default(),
-        );
-    }
-    let removed_ephemeral = logout(
-        codex_home,
-        AuthCredentialsStoreMode::Ephemeral,
-        AuthKeyringBackendKind::default(),
-    )?;
-    let removed_managed = logout(
-        codex_home,
+    create_auth_repository(
+        codex_home.to_path_buf(),
         auth_credentials_store_mode,
         keyring_backend_kind,
-    )?;
-    Ok(removed_ephemeral || removed_managed)
+    )
+    .logout_all()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1231,18 +1302,20 @@ async fn load_auth(
 
     // External ChatGPT auth tokens live in the in-memory (ephemeral) store. Always check this
     // first so external auth takes precedence over any persisted credentials.
-    let ephemeral_storage = create_auth_storage(
+    let ephemeral_repository = create_auth_repository(
         codex_home.to_path_buf(),
         AuthCredentialsStoreMode::Ephemeral,
         AuthKeyringBackendKind::default(),
     );
-    if let Some(auth_dot_json) = ephemeral_storage.load()? {
+    if let Some(loaded_auth) = ephemeral_repository.load_active()? {
+        let auth_dot_json = loaded_auth.auth.clone();
         let auth = CodexAuth::from_auth_dot_json(
             codex_home,
             auth_dot_json,
             AuthCredentialsStoreMode::Ephemeral,
             chatgpt_base_url,
             keyring_backend_kind,
+            Some(loaded_auth),
             agent_identity_authapi_base_url,
             auth_route_config,
         )
@@ -1279,15 +1352,16 @@ async fn load_auth(
     }
 
     // Fall back to the configured persistent store (file/keyring/auto) for managed auth.
-    let storage = create_auth_storage(
+    let repository = create_auth_repository(
         codex_home.to_path_buf(),
         auth_credentials_store_mode,
         keyring_backend_kind,
     );
-    let auth_dot_json = match storage.load()? {
+    let loaded_auth = match repository.load_active()? {
         Some(auth) => auth,
         None => return Ok(None),
     };
+    let auth_dot_json = loaded_auth.auth.clone();
 
     let auth = CodexAuth::from_auth_dot_json(
         codex_home,
@@ -1295,6 +1369,7 @@ async fn load_auth(
         auth_credentials_store_mode,
         chatgpt_base_url,
         keyring_backend_kind,
+        Some(loaded_auth),
         agent_identity_authapi_base_url,
         auth_route_config,
     )
@@ -1307,14 +1382,13 @@ async fn load_auth(
 
 // Persist refreshed tokens into auth storage and update last_refresh.
 fn persist_tokens(
-    storage: &Arc<dyn AuthStorageBackend>,
+    repository: &Arc<AuthRepository>,
+    expected: &LoadedAuth,
     id_token: Option<String>,
     access_token: Option<String>,
     refresh_token: Option<String>,
 ) -> std::io::Result<AuthDotJson> {
-    let mut auth_dot_json = storage
-        .load()?
-        .ok_or(std::io::Error::other("Token data is not available."))?;
+    let mut auth_dot_json = expected.auth.clone();
 
     let tokens = auth_dot_json.tokens.get_or_insert_with(TokenData::default);
     if let Some(id_token) = id_token {
@@ -1327,7 +1401,7 @@ fn persist_tokens(
         tokens.refresh_token = refresh_token;
     }
     auth_dot_json.last_refresh = Some(Utc::now());
-    storage.save(&auth_dot_json)?;
+    repository.update_if_unchanged(expected, &auth_dot_json)?;
     Ok(auth_dot_json)
 }
 
@@ -2602,10 +2676,12 @@ impl AuthManager {
         auth: &ChatgptAuth,
         refresh_token: String,
     ) -> Result<(), RefreshTokenError> {
+        let expected = auth.loaded_auth().map_err(RefreshTokenError::from)?;
         let refresh_response = request_chatgpt_token_refresh(refresh_token, auth.client()).await?;
 
         persist_tokens(
-            auth.storage(),
+            auth.repository(),
+            &expected,
             refresh_response.id_token,
             refresh_response.access_token,
             refresh_response.refresh_token,
