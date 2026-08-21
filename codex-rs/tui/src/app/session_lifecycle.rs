@@ -585,7 +585,7 @@ impl App {
         let channel = self.ensure_thread_channel(thread_id);
         channel.mark_replay_only();
         let mut store = channel.store.lock().await;
-        store.set_session(session, turns);
+        store.replace_with_authoritative_snapshot(session, turns);
         drop(store);
 
         // A liveness read can race with this authoritative transcript read. If the server reports
