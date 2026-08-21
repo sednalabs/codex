@@ -246,6 +246,32 @@ fn auth_lock_anchor_resolves_symlinked_home_alias() -> anyhow::Result<()> {
 
 #[cfg(unix)]
 #[test]
+fn auth_lock_anchor_uses_stable_passwd_home_for_unsafe_codex_home() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let passwd_home = passwd_home_dir().context("passwd home should be available")?;
+    validate_private_lock_anchor(&passwd_home)
+        .context("passwd home should satisfy the private-anchor contract")?;
+
+    let root = tempdir()?;
+    let mut root_permissions = std::fs::metadata(root.path())?.permissions();
+    root_permissions.set_mode(0o777);
+    std::fs::set_permissions(root.path(), root_permissions)?;
+    let codex_home = root.path().join("shared-codex-home");
+    std::fs::create_dir(&codex_home)?;
+    let mut home_permissions = std::fs::metadata(&codex_home)?.permissions();
+    home_permissions.set_mode(0o700);
+    std::fs::set_permissions(&codex_home, home_permissions)?;
+
+    // An unsafe CODEX_HOME parent cannot be used as a lock anchor. The
+    // effective-UID passwd home is the deterministic fallback, independent of
+    // each process's HOME environment.
+    assert_eq!(private_lock_anchor(&codex_home)?, passwd_home);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn auth_lock_anchor_rejects_unsafe_parent_chain() -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
