@@ -218,11 +218,10 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
         self.delete_unlocked()
     }
 
-    fn delete_if(&self, should_delete: &dyn Fn(&AuthDotJson) -> bool) -> std::io::Result<bool> {
-        let _guard = AUTH_STORAGE_TRANSACTION_LOCK
-            .lock()
-            .map_err(|_| std::io::Error::other("failed to lock auth storage"))?;
-        let _file_guard = lock_auth_storage(self.codex_home())?;
+    fn delete_unlocked_if(
+        &self,
+        should_delete: &dyn Fn(&AuthDotJson) -> bool,
+    ) -> std::io::Result<bool> {
         let Some(auth) = self.load_unlocked()? else {
             return Ok(false);
         };
@@ -230,6 +229,18 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
             return Ok(false);
         }
         self.delete_unlocked()
+    }
+
+    fn delete_unlocked_preserving_file(&self) -> std::io::Result<bool> {
+        self.delete_unlocked()
+    }
+
+    fn delete_if(&self, should_delete: &dyn Fn(&AuthDotJson) -> bool) -> std::io::Result<bool> {
+        let _guard = AUTH_STORAGE_TRANSACTION_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("failed to lock auth storage"))?;
+        let _file_guard = lock_auth_storage(self.codex_home())?;
+        self.delete_unlocked_if(should_delete)
     }
 }
 
@@ -250,8 +261,15 @@ fn lock_auth_storage(codex_home: &Path) -> std::io::Result<File> {
         unsafe { libc::geteuid() as u64 },
     );
     #[cfg(not(unix))]
-    let lock_dir = std::env::temp_dir().join("codex-auth-locks");
+    let lock_dir = portable_lock_root(codex_home)?;
     lock_auth_storage_at(codex_home, &lock_dir)
+}
+
+#[cfg(not(unix))]
+fn portable_lock_root(codex_home: &Path) -> std::io::Result<PathBuf> {
+    let canonical_home = canonical_storage_identity(codex_home)?;
+    let parent = canonical_home.parent().unwrap_or(canonical_home.as_path());
+    Ok(parent.join(".codex-auth-locks"))
 }
 
 fn lock_root_for_uid(base: &Path, uid: u64) -> PathBuf {
@@ -614,15 +632,24 @@ impl AuthStorageBackend for DirectKeyringAuthStorage {
     }
 
     fn delete_unlocked(&self) -> std::io::Result<bool> {
+        let keyring_removed = self.delete_keyring_unlocked()?;
+        let file_removed = delete_file_if_exists(&self.codex_home)?;
+        Ok(keyring_removed || file_removed)
+    }
+
+    fn delete_unlocked_preserving_file(&self) -> std::io::Result<bool> {
+        self.delete_keyring_unlocked()
+    }
+}
+
+impl DirectKeyringAuthStorage {
+    fn delete_keyring_unlocked(&self) -> std::io::Result<bool> {
         let key = compute_store_key(&self.codex_home)?;
-        let keyring_removed = self
-            .keyring_store
+        self.keyring_store
             .delete(KEYRING_SERVICE, &key)
             .map_err(|err| {
                 std::io::Error::other(format!("failed to delete auth from keyring: {err}"))
-            })?;
-        let file_removed = delete_file_if_exists(&self.codex_home)?;
-        Ok(keyring_removed || file_removed)
+            })
     }
 }
 
@@ -699,6 +726,18 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
     }
 
     fn delete_unlocked(&self) -> std::io::Result<bool> {
+        let keyring_removed = self.delete_keyring_unlocked()?;
+        let file_removed = delete_file_if_exists(&self.codex_home)?;
+        Ok(keyring_removed || file_removed)
+    }
+
+    fn delete_unlocked_preserving_file(&self) -> std::io::Result<bool> {
+        self.delete_keyring_unlocked()
+    }
+}
+
+impl SecretsKeyringAuthStorage {
+    fn delete_keyring_unlocked(&self) -> std::io::Result<bool> {
         let keyring_removed = self
             .secrets_manager
             .delete(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME)
@@ -707,9 +746,8 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
                     "failed to delete auth from encrypted auth storage: {err}"
                 ))
             })?;
-        let file_removed = delete_file_if_exists(&self.codex_home)?;
-        let direct_removed = self.direct_storage.delete_unlocked()?;
-        Ok(keyring_removed || file_removed || direct_removed)
+        let direct_removed = self.direct_storage.delete_keyring_unlocked()?;
+        Ok(keyring_removed || direct_removed)
     }
 }
 
@@ -776,6 +814,29 @@ impl AuthStorageBackend for AutoAuthStorage {
                     "failed to delete CLI auth from keyring, falling back to file storage: {err}"
                 );
                 self.file_storage.delete_unlocked()
+            }
+        }
+    }
+
+    fn delete_unlocked_if(
+        &self,
+        should_delete: &dyn Fn(&AuthDotJson) -> bool,
+    ) -> std::io::Result<bool> {
+        match self.keyring_storage.load_unlocked() {
+            Ok(Some(keyring_auth)) => {
+                if !should_delete(&keyring_auth) {
+                    return Ok(false);
+                }
+                let keyring_removed = self.keyring_storage.delete_unlocked_preserving_file()?;
+                let file_removed = self
+                    .file_storage
+                    .delete_unlocked_if(&|current| current == &keyring_auth)?;
+                Ok(keyring_removed || file_removed)
+            }
+            Ok(None) => self.file_storage.delete_unlocked_if(should_delete),
+            Err(err) => {
+                warn!("failed to load CLI auth from keyring, falling back to file storage: {err}");
+                self.file_storage.delete_unlocked_if(should_delete)
             }
         }
     }
