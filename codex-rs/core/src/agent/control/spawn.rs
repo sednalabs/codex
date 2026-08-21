@@ -816,6 +816,20 @@ impl AgentControl {
             return Err(error);
         }
 
+        if multi_agent_version == MultiAgentVersion::V2
+            && crate::diagnostic_flags::goal_multi_agent_stress_enabled()
+        {
+            new_thread.thread.session_telemetry().counter(
+                "codex.diagnostic.goal_multi_agent_stress",
+                1,
+                &[("stage", "child_initial_work_submitted")],
+            );
+            tracing::info!(
+                child_thread_id = %new_thread.thread_id,
+                "multi-agent stress diagnostic submitted V2 child initial work"
+            );
+        }
+
         #[cfg(test)]
         self.await_after_initial_delivery_test_hook(new_thread.thread_id)
             .await;
