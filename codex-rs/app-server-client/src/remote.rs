@@ -1470,6 +1470,12 @@ impl Drop for RemoteResponseReservation {
     }
 }
 
+impl RemoteResponseReservation {
+    fn is_large_tombstone(&self) -> bool {
+        matches!(self.kind, RemoteResponseReservationKind::LargeTombstone)
+    }
+}
+
 struct RecentRemoteRequestIds {
     ids: HashSet<RequestId>,
     large_ids: HashSet<RequestId>,
@@ -2124,9 +2130,19 @@ where
                 }
                 _ => false,
             };
+            let is_matching_large_tombstone = match &parsed_message {
+                Ok(JSONRPCMessage::Response(response)) => {
+                    canceled_request_ids.allows_large_response(&response.id)
+                }
+                Ok(JSONRPCMessage::Error(error)) => {
+                    canceled_request_ids.allows_large_response(&error.id)
+                }
+                _ => false,
+            };
             if parsed_message.is_ok()
                 && text.len() > REMOTE_RESPONSE_MAX_WIRE_BYTES
-                && !allow_large_response
+                && (!allow_large_response
+                    || (reservation.is_large_tombstone() && !is_matching_large_tombstone))
             {
                 return Some(RemoteTerminal::oversized_response_message(
                     endpoint,
@@ -4741,6 +4757,75 @@ mod tests {
         );
         assert_eq!(budget.large_used(), 0);
         assert_eq!(budget.used(), 0);
+    }
+
+    #[tokio::test]
+    async fn unrelated_large_tombstone_cannot_admit_active_history_response_when_slot_is_occupied()
+    {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let budget = RemoteResponseByteBudget::shared();
+        let occupied = budget
+            .try_reserve_large(REMOTE_RESPONSE_MAX_WIRE_BYTES + 1)
+            .expect("test should occupy the retained large-response slot");
+        let occupied_bytes =
+            REMOTE_RESPONSE_MAX_WIRE_BYTES + 1 + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES;
+        let request_slots = Arc::new(Semaphore::new(1));
+        let mut pending_requests = HashMap::new();
+        let mut canceled_request_ids = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+
+        canceled_request_ids
+            .remember_with_policy(RequestId::Integer(1), true)
+            .expect("unrelated large tombstone should fit");
+        let (active_tx, _active_rx) = oneshot::channel();
+        pending_requests.insert(
+            RequestId::Integer(2),
+            PendingRemoteRequest {
+                response_tx: active_tx,
+                lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
+                allow_large_response: true,
+                _slot: request_slots
+                    .acquire_owned()
+                    .await
+                    .expect("active history request slot should be available"),
+            },
+        );
+        let active_message = JSONRPCMessage::Response(JSONRPCResponse {
+            id: RequestId::Integer(2),
+            result: serde_json::json!({
+                "padding": "x".repeat(9 * 1024 * 1024)
+            }),
+        });
+        let active_wire_bytes = serde_json::to_string(&active_message)
+            .expect("active large response should serialize")
+            .len();
+        assert!(active_wire_bytes > REMOTE_RESPONSE_MAX_WIRE_BYTES);
+
+        let terminal = handle_remote_message(
+            Some(Ok(text_message(active_message))),
+            &mut stream,
+            "test://unrelated-tombstone",
+            &mut pending_requests,
+            &mut canceled_request_ids,
+            &mut backlog,
+            &mut deferred_events,
+            &budget,
+        )
+        .await
+        .expect("active oversized history response must fail closed");
+        assert_eq!(terminal.error_kind, ErrorKind::InvalidData);
+        assert!(pending_requests.contains_key(&RequestId::Integer(2)));
+        assert!(canceled_request_ids.contains(&RequestId::Integer(1)));
+        assert_eq!(budget.large_used(), occupied_bytes);
+        drop(occupied);
+        assert_eq!(budget.large_used(), 0);
     }
 
     #[tokio::test]
