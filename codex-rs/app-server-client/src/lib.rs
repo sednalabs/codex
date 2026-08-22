@@ -159,8 +159,6 @@ enum ForwardEventResult {
     Continue,
     /// The consumer channel is closed; the caller should stop producing events.
     DisableStream,
-    /// A server request could not be delivered and remains owned by the caller.
-    RejectServerRequest(ServerRequest),
 }
 
 /// Forwards a single in-process event to the consumer, respecting the
@@ -171,15 +169,15 @@ enum ForwardEventResult {
 /// `skipped_events` on failure. When a lag marker needs to be flushed before a
 /// lossless event, the flush itself blocks so the marker is never lost.
 ///
-/// If a dropped event is a `ServerRequest`, the caller retains it and must
-/// explicitly reject or terminate it so the server cannot wait forever.
 async fn forward_in_process_event(
     event_tx: &mpsc::Sender<InProcessServerEvent>,
     skipped_events: &mut usize,
     event: InProcessServerEvent,
 ) -> ForwardEventResult {
     if *skipped_events > 0 {
-        if event_requires_delivery(&event) {
+        if event_requires_delivery(&event)
+            || matches!(&event, InProcessServerEvent::ServerRequest(_))
+        {
             // Surface lag before the lossless event, but do not let the lag marker itself cause
             // us to drop the transcript/completion notification the caller is blocked on.
             if event_tx
@@ -202,9 +200,6 @@ async fn forward_in_process_event(
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     *skipped_events = skipped_events.saturating_add(1);
                     warn!("dropping in-process app-server event because consumer queue is full");
-                    if let InProcessServerEvent::ServerRequest(request) = event {
-                        return ForwardEventResult::RejectServerRequest(request);
-                    }
                     return ForwardEventResult::Continue;
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -214,7 +209,7 @@ async fn forward_in_process_event(
         }
     }
 
-    if event_requires_delivery(&event) {
+    if event_requires_delivery(&event) || matches!(&event, InProcessServerEvent::ServerRequest(_)) {
         // Block until the consumer catches up for transcript/completion notifications; this
         // preserves the visible assistant output even when the queue is otherwise saturated.
         if event_tx.send(event).await.is_err() {
@@ -228,28 +223,15 @@ async fn forward_in_process_event(
         Err(mpsc::error::TrySendError::Full(event)) => {
             *skipped_events = skipped_events.saturating_add(1);
             warn!("dropping in-process app-server event because consumer queue is full");
-            if let InProcessServerEvent::ServerRequest(request) = event {
-                return ForwardEventResult::RejectServerRequest(request);
-            }
             ForwardEventResult::Continue
         }
         Err(mpsc::error::TrySendError::Closed(_)) => ForwardEventResult::DisableStream,
     }
 }
 
-fn reject_server_request_or_terminate(
-    request_sender: &codex_app_server::in_process::InProcessClientSender,
-    request: ServerRequest,
-    error: JSONRPCErrorError,
-) -> bool {
-    let request_id = request.id().clone();
-    match request_sender.fail_server_request(request_id.clone(), error) {
-        Ok(()) => true,
-        Err(error) => {
-            warn!(request_id = ?request_id, "terminating in-process client after server-request rejection could not be queued: {error}");
-            false
-        }
-    }
+#[derive(Debug, Clone, Copy)]
+enum FacadeTerminalReason {
+    ConsumerClosed,
 }
 
 /// Layered error for [`InProcessAppServerClient::request_typed`].
@@ -484,45 +466,33 @@ impl InProcessAppServerClient {
         // commands, and the single sender preserves source FIFO.
         let (event_forward_tx, mut event_forward_rx) =
             mpsc::channel::<InProcessServerEvent>(channel_capacity);
-        let (event_failure_tx, mut event_failure_rx) = mpsc::channel::<()>(1);
+        let (event_terminal_tx, mut event_terminal_rx) = mpsc::channel::<FacadeTerminalReason>(1);
         let event_tx_forward = event_tx;
-        let request_sender_forward = request_sender.clone();
-        let event_failure_tx_forward = event_failure_tx.clone();
+        let event_terminal_tx_forward = event_terminal_tx.clone();
         let mut event_forward_handle = tokio::spawn(async move {
             let mut skipped_events = 0usize;
             while let Some(event) = event_forward_rx.recv().await {
                 match forward_in_process_event(&event_tx_forward, &mut skipped_events, event).await
                 {
                     ForwardEventResult::Continue => {}
-                    ForwardEventResult::DisableStream => break,
-                    ForwardEventResult::RejectServerRequest(request) => {
-                        if !reject_server_request_or_terminate(
-                            &request_sender_forward,
-                            request,
-                            JSONRPCErrorError {
-                                code: -32001,
-                                message: "in-process app-server event queue is full".to_string(),
-                                data: None,
-                            },
-                        ) {
-                            let _ = event_failure_tx_forward.try_send(());
-                            break;
-                        }
+                    ForwardEventResult::DisableStream => {
+                        let _ = event_terminal_tx_forward
+                            .try_send(FacadeTerminalReason::ConsumerClosed);
+                        break;
                     }
                 }
             }
         });
 
         let worker_handle = tokio::spawn(async move {
-            // Keep the failure sender alive so a normal forwarder exit does
-            // not look like a terminal rejection failure.
-            let _event_failure_tx = event_failure_tx;
-            let mut event_stream_enabled = true;
+            // Keep the terminal sender alive so a normal forwarder exit does
+            // not look like a terminal reason.
+            let _event_terminal_tx = event_terminal_tx;
             let mut pending_event = None;
             loop {
                 tokio::select! {
-                    failure = event_failure_rx.recv() => {
-                        if failure.is_some() {
+                    terminal_reason = event_terminal_rx.recv() => {
+                        if terminal_reason.is_some() {
                             let _ = handle.shutdown().await;
                             break;
                         }
@@ -530,15 +500,14 @@ impl InProcessAppServerClient {
                     permit = event_forward_tx.reserve(), if pending_event.is_some() => {
                         match permit {
                             Ok(permit) => {
-                                permit.send(
-                                    pending_event
-                                        .take()
-                                        .expect("pending event must exist while reserving a forward slot"),
-                                );
+                                let Some(event) = pending_event.take() else {
+                                    break;
+                                };
+                                permit.send(event);
                             }
                             Err(_) => {
-                                pending_event = None;
-                                event_stream_enabled = false;
+                                let _ = handle.shutdown().await;
+                                break;
                             }
                         }
                     }
@@ -589,7 +558,7 @@ impl InProcessAppServerClient {
                             }
                         }
                     }
-                    event = handle.next_event(), if event_stream_enabled && pending_event.is_none() => {
+                    event = handle.next_event(), if pending_event.is_none() => {
                         let Some(event) = event else {
                             break;
                         };
@@ -602,15 +571,17 @@ impl InProcessAppServerClient {
                             let InProcessServerEvent::ServerRequest(request) = event else {
                                 unreachable!("matched in-process server request above");
                             };
-                            if !reject_server_request_or_terminate(
-                                &request_sender,
-                                request,
+                            if request_sender
+                                .fail_server_request(
+                                    request.id().clone(),
                                 JSONRPCErrorError {
                                     code: -32000,
                                     message: "chatgpt auth token refresh is not supported for in-process app-server clients".to_string(),
                                     data: None,
                                 },
-                            ) {
+                                )
+                                .is_err()
+                            {
                                 let _ = handle.shutdown().await;
                                 break;
                             }
@@ -620,33 +591,14 @@ impl InProcessAppServerClient {
                         match event_forward_tx.try_send(event) {
                             Ok(()) => {}
                             Err(mpsc::error::TrySendError::Full(event)) => {
-                                match event {
-                                    InProcessServerEvent::ServerRequest(request) => {
-                                        if !reject_server_request_or_terminate(
-                                            &request_sender,
-                                            request,
-                                            JSONRPCErrorError {
-                                                code: -32001,
-                                                message: "in-process app-server event queue is full"
-                                                    .to_string(),
-                                                data: None,
-                                            },
-                                        ) {
-                                            let _ = handle.shutdown().await;
-                                            break;
-                                        }
-                                    }
-                                    event => {
-                                        // Retain only an event that can safely wait
-                                        // behind its FIFO predecessor. Server requests
-                                        // are rejected above so they never become
-                                        // unowned pending payloads.
-                                        pending_event = Some(event);
-                                    }
-                                }
+                                // One ordered head may wait behind the bounded
+                                // queue. This includes ordinary server requests,
+                                // which must never be rejected for saturation.
+                                pending_event = Some(event);
                             }
                             Err(mpsc::error::TrySendError::Closed(_)) => {
-                                event_stream_enabled = false;
+                                let _ = handle.shutdown().await;
+                                break;
                             }
                         }
                     }
@@ -1508,34 +1460,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forward_in_process_event_retains_server_request_when_consumer_is_full() {
-        let (event_tx, _event_rx) = mpsc::channel(1);
+    async fn forward_in_process_event_waits_to_deliver_server_request_when_consumer_is_full() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
         event_tx
             .send(InProcessServerEvent::Lagged { skipped: 1 })
             .await
             .expect("initial marker should fill the consumer queue");
         let request_id = RequestId::String("must-reject".to_string());
-        let mut skipped_events = 0usize;
-        let result = forward_in_process_event(
-            &event_tx,
-            &mut skipped_events,
-            InProcessServerEvent::ServerRequest(ServerRequest::ToolRequestUserInput {
-                request_id: request_id.clone(),
-                params: ToolRequestUserInputParams {
-                    thread_id: "thread".to_string(),
-                    turn_id: "turn".to_string(),
-                    item_id: "item".to_string(),
-                    questions: Vec::new(),
-                    is_blocking: true,
-                    auto_resolution_ms: None,
-                },
-            }),
-        )
-        .await;
+        let request_id_for_forward = request_id.clone();
+        let mut forward = tokio::spawn(async move {
+            let mut skipped_events = 0usize;
+            forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                InProcessServerEvent::ServerRequest(ServerRequest::ToolRequestUserInput {
+                    request_id: request_id_for_forward,
+                    params: ToolRequestUserInputParams {
+                        thread_id: "thread".to_string(),
+                        turn_id: "turn".to_string(),
+                        item_id: "item".to_string(),
+                        questions: Vec::new(),
+                        is_blocking: true,
+                        auto_resolution_ms: None,
+                    },
+                }),
+            )
+            .await
+        });
+        assert!(
+            timeout(Duration::from_millis(50), &mut forward)
+                .await
+                .is_err()
+        );
+        let _ = event_rx.recv().await.expect("buffered event should drain");
+        let delivered = event_rx
+            .recv()
+            .await
+            .expect("request should deliver after drain");
         assert!(matches!(
-            result,
-            ForwardEventResult::RejectServerRequest(request) if request.id() == &request_id
+            delivered,
+            InProcessServerEvent::ServerRequest(request) if request.id() == &request_id
         ));
+        assert_eq!(
+            forward.await.expect("forward task should join"),
+            ForwardEventResult::Continue
+        );
     }
 
     #[tokio::test]
