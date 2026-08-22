@@ -153,12 +153,14 @@ pub(crate) fn server_notification_requires_delivery(notification: &ServerNotific
 }
 
 /// Outcome of attempting to forward a single event to the consumer channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum ForwardEventResult {
     /// The event was delivered (or intentionally dropped); the stream is healthy.
     Continue,
     /// The consumer channel is closed; the caller should stop producing events.
     DisableStream,
+    /// A server request could not be delivered and remains owned by the caller.
+    RejectServerRequest(ServerRequest),
 }
 
 /// Forwards a single in-process event to the consumer, respecting the
@@ -169,17 +171,13 @@ enum ForwardEventResult {
 /// `skipped_events` on failure. When a lag marker needs to be flushed before a
 /// lossless event, the flush itself blocks so the marker is never lost.
 ///
-/// If a dropped event is a `ServerRequest`, `reject_server_request` is called
-/// so the server does not wait for a response that will never come.
-async fn forward_in_process_event<F>(
+/// If a dropped event is a `ServerRequest`, the caller retains it and must
+/// explicitly reject or terminate it so the server cannot wait forever.
+async fn forward_in_process_event(
     event_tx: &mpsc::Sender<InProcessServerEvent>,
     skipped_events: &mut usize,
     event: InProcessServerEvent,
-    mut reject_server_request: F,
-) -> ForwardEventResult
-where
-    F: FnMut(ServerRequest),
-{
+) -> ForwardEventResult {
     if *skipped_events > 0 {
         if event_requires_delivery(&event) {
             // Surface lag before the lossless event, but do not let the lag marker itself cause
@@ -205,7 +203,7 @@ where
                     *skipped_events = skipped_events.saturating_add(1);
                     warn!("dropping in-process app-server event because consumer queue is full");
                     if let InProcessServerEvent::ServerRequest(request) = event {
-                        reject_server_request(request);
+                        return ForwardEventResult::RejectServerRequest(request);
                     }
                     return ForwardEventResult::Continue;
                 }
@@ -231,11 +229,29 @@ where
             *skipped_events = skipped_events.saturating_add(1);
             warn!("dropping in-process app-server event because consumer queue is full");
             if let InProcessServerEvent::ServerRequest(request) = event {
-                reject_server_request(request);
+                return ForwardEventResult::RejectServerRequest(request);
             }
             ForwardEventResult::Continue
         }
         Err(mpsc::error::TrySendError::Closed(_)) => ForwardEventResult::DisableStream,
+    }
+}
+
+async fn reject_server_request_with_retry(
+    request_sender: &codex_app_server::in_process::InProcessClientSender,
+    request: ServerRequest,
+    error: JSONRPCErrorError,
+) -> bool {
+    let request_id = request.id().clone();
+    loop {
+        match request_sender.fail_server_request(request_id.clone(), error.clone()) {
+            Ok(()) => return true,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => tokio::task::yield_now().await,
+            Err(error) => {
+                warn!(request_id = ?request_id, "failed to reject undeliverable server request: {error}");
+                return false;
+            }
+        }
     }
 }
 
@@ -480,21 +496,26 @@ impl InProcessAppServerClient {
                     &event_tx_forward,
                     &mut skipped_events,
                     event,
-                    |request| {
-                        let _ = request_sender_forward.fail_server_request(
-                            request.id().clone(),
-                            JSONRPCErrorError {
-                                code: -32001,
-                                message: "in-process app-server event queue is full".to_string(),
-                                data: None,
-                            },
-                        );
-                    },
                 )
                 .await
                 {
                     ForwardEventResult::Continue => {}
                     ForwardEventResult::DisableStream => break,
+                    ForwardEventResult::RejectServerRequest(request) => {
+                        if !reject_server_request_with_retry(
+                            &request_sender_forward,
+                            request,
+                            JSONRPCErrorError {
+                                code: -32001,
+                                message: "in-process app-server event queue is full".to_string(),
+                                data: None,
+                            },
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -570,22 +591,27 @@ impl InProcessAppServerClient {
                         let Some(event) = event else {
                             break;
                         };
-                        if let InProcessServerEvent::ServerRequest(
-                            ServerRequest::ChatgptAuthTokensRefresh { request_id, .. }
-                        ) = &event
-                        {
-                            let send_result = request_sender.fail_server_request(
-                                request_id.clone(),
+                        if matches!(
+                            &event,
+                            InProcessServerEvent::ServerRequest(
+                                ServerRequest::ChatgptAuthTokensRefresh { .. }
+                            )
+                        ) {
+                            let InProcessServerEvent::ServerRequest(request) = event else {
+                                unreachable!("matched in-process server request above");
+                            };
+                            if !reject_server_request_with_retry(
+                                &request_sender,
+                                request,
                                 JSONRPCErrorError {
                                     code: -32000,
                                     message: "chatgpt auth token refresh is not supported for in-process app-server clients".to_string(),
                                     data: None,
                                 },
-                            );
-                            if let Err(err) = send_result {
-                                warn!(
-                                    "failed to reject unsupported chatgpt auth token refresh request: {err}"
-                                );
+                            )
+                            .await
+                            {
+                                break;
                             }
                             continue;
                         }
@@ -966,6 +992,7 @@ mod tests {
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
+    use codex_app_server_protocol::TurnInterruptParams;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::ToolRequestUserInputQuestion;
     use codex_core::config::ConfigBuilder;
@@ -1390,7 +1417,6 @@ mod tests {
             InProcessServerEvent::ServerNotification(command_execution_output_delta_notification(
                 "stdout-2",
             )),
-            |_| {},
         )
         .await;
         assert_eq!(result, ForwardEventResult::Continue);
@@ -1418,7 +1444,6 @@ mod tests {
                 &event_tx,
                 &mut skipped_events,
                 InProcessServerEvent::ServerNotification(notification),
-                |_| {},
             )
             .await;
             assert_eq!(result, ForwardEventResult::Continue);
@@ -1462,6 +1487,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forward_in_process_event_retains_server_request_when_consumer_is_full() {
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        event_tx
+            .send(InProcessServerEvent::Lagged { skipped: 1 })
+            .await
+            .expect("initial marker should fill the consumer queue");
+        let request_id = RequestId::String("must-reject".to_string());
+        let mut skipped_events = 0usize;
+        let result = forward_in_process_event(
+            &event_tx,
+            &mut skipped_events,
+            InProcessServerEvent::ServerRequest(ServerRequest::ToolRequestUserInput {
+                request_id: request_id.clone(),
+                params: ToolRequestUserInputParams {
+                    thread_id: "thread".to_string(),
+                    turn_id: "turn".to_string(),
+                    item_id: "item".to_string(),
+                    questions: Vec::new(),
+                    is_blocking: true,
+                    auto_resolution_ms: None,
+                },
+            }),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            ForwardEventResult::RejectServerRequest(request) if request.id() == &request_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn capacity_one_facade_keeps_requests_and_shutdown_live_without_event_drain() {
+        let client =
+            start_test_client_with_capacity(SessionSource::Exec, /*channel_capacity*/ 1).await;
+        let _first_response = timeout(
+            Duration::from_secs(2),
+            client.request_typed::<ConfigRequirementsReadResponse>(
+                ClientRequest::ConfigRequirementsRead {
+                    request_id: RequestId::Integer(201),
+                    params: None,
+                },
+            ),
+        )
+        .await
+        .expect("first request should not wait for event consumption")
+        .expect("first request should succeed");
+
+        let _second_response = timeout(
+            Duration::from_secs(2),
+            client.request_typed::<ConfigRequirementsReadResponse>(
+                ClientRequest::ConfigRequirementsRead {
+                    request_id: RequestId::Integer(202),
+                    params: None,
+                },
+            ),
+        )
+        .await
+        .expect("second request should not wait for event consumption")
+        .expect("second request should succeed");
+
+        let interrupt_result = timeout(
+            Duration::from_secs(2),
+            client.request(ClientRequest::TurnInterrupt {
+                request_id: RequestId::Integer(203),
+                params: TurnInterruptParams {
+                    thread_id: "missing-thread".to_string(),
+                    turn_id: "missing-turn".to_string(),
+                },
+            }),
+        )
+        .await
+        .expect("interrupt should not wait for event consumption")
+        .expect("interrupt transport should remain live");
+        assert!(interrupt_result.is_err());
+
+        timeout(Duration::from_secs(2), client.shutdown())
+            .await
+            .expect("bounded facade shutdown should complete")
+            .expect("bounded facade shutdown should succeed");
+    }
+
+    #[tokio::test]
     async fn bounded_event_sequencer_keeps_fifo_when_a_required_predecessor_is_stalled() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         event_tx
@@ -1484,7 +1591,6 @@ mod tests {
                     &event_tx,
                     &mut skipped_events,
                     event,
-                    |_| panic!("the request should not be rejected after its predecessor drains"),
                 )
                 .await;
                 assert_eq!(result, ForwardEventResult::Continue);
