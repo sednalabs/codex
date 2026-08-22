@@ -465,12 +465,60 @@ impl InProcessAppServerClient {
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+        // Keep delivery to the public event receiver in a dedicated bounded
+        // sequencer. A stalled lossless event must not prevent the facade
+        // worker from accepting cancellation, resolution, or shutdown
+        // commands, and the single sender preserves source FIFO.
+        let (event_forward_tx, mut event_forward_rx) =
+            mpsc::channel::<InProcessServerEvent>(channel_capacity);
+        let event_tx_forward = event_tx;
+        let request_sender_forward = request_sender.clone();
+        let mut event_forward_handle = tokio::spawn(async move {
+            let mut skipped_events = 0usize;
+            while let Some(event) = event_forward_rx.recv().await {
+                match forward_in_process_event(
+                    &event_tx_forward,
+                    &mut skipped_events,
+                    event,
+                    |request| {
+                        let _ = request_sender_forward.fail_server_request(
+                            request.id().clone(),
+                            JSONRPCErrorError {
+                                code: -32001,
+                                message: "in-process app-server event queue is full".to_string(),
+                                data: None,
+                            },
+                        );
+                    },
+                )
+                .await
+                {
+                    ForwardEventResult::Continue => {}
+                    ForwardEventResult::DisableStream => break,
+                }
+            }
+        });
 
         let worker_handle = tokio::spawn(async move {
             let mut event_stream_enabled = true;
-            let mut skipped_events = 0usize;
+            let mut pending_event = None;
             loop {
                 tokio::select! {
+                    permit = event_forward_tx.reserve(), if pending_event.is_some() => {
+                        match permit {
+                            Ok(permit) => {
+                                permit.send(
+                                    pending_event
+                                        .take()
+                                        .expect("pending event must exist while reserving a forward slot"),
+                                );
+                            }
+                            Err(_) => {
+                                pending_event = None;
+                                event_stream_enabled = false;
+                            }
+                        }
+                    }
                     command = command_rx.recv() => {
                         match command {
                             Some(ClientCommand::Request { request, response_tx }) => {
@@ -518,7 +566,7 @@ impl InProcessAppServerClient {
                             }
                         }
                     }
-                    event = handle.next_event(), if event_stream_enabled => {
+                    event = handle.next_event(), if event_stream_enabled && pending_event.is_none() => {
                         let Some(event) = event else {
                             break;
                         };
@@ -542,31 +590,26 @@ impl InProcessAppServerClient {
                             continue;
                         }
 
-                        match forward_in_process_event(
-                            &event_tx,
-                            &mut skipped_events,
-                            event,
-                            |request| {
-                                let _ = request_sender.fail_server_request(
-                                    request.id().clone(),
-                                    JSONRPCErrorError {
-                                        code: -32001,
-                                        message: "in-process app-server event queue is full"
-                                            .to_string(),
-                                        data: None,
-                                    },
-                                );
-                            },
-                        )
-                        .await
-                        {
-                            ForwardEventResult::Continue => {}
-                            ForwardEventResult::DisableStream => {
+                        match event_forward_tx.try_send(event) {
+                            Ok(()) => {}
+                            Err(mpsc::error::TrySendError::Full(event)) => {
+                                // Retain only the blocked predecessor. Stopping
+                                // here applies bounded backpressure to the
+                                // runtime while command handling stays live.
+                                pending_event = Some(event);
+                            }
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
                                 event_stream_enabled = false;
                             }
                         }
                     }
                 }
+            }
+
+            drop(event_forward_tx);
+            if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut event_forward_handle).await {
+                event_forward_handle.abort();
+                let _ = event_forward_handle.await;
             }
         });
 
@@ -1416,6 +1459,104 @@ mod tests {
                 notification
             )) if notification.turn.status == codex_app_server_protocol::TurnStatus::Completed
         ));
+    }
+
+    #[tokio::test]
+    async fn bounded_event_sequencer_keeps_fifo_when_a_required_predecessor_is_stalled() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .send(InProcessServerEvent::ServerNotification(
+                command_execution_output_delta_notification("already-buffered"),
+            ))
+            .await
+            .expect("initial event should fill the consumer queue");
+
+        let (sequencer_tx, mut sequencer_rx) = mpsc::channel(1);
+        let (required_event_started_tx, required_event_started_rx) = oneshot::channel();
+        let forwarder = tokio::spawn(async move {
+            let mut skipped_events = 0usize;
+            let mut required_event_started_tx = Some(required_event_started_tx);
+            while let Some(event) = sequencer_rx.recv().await {
+                if let Some(required_event_started_tx) = required_event_started_tx.take() {
+                    let _ = required_event_started_tx.send(());
+                }
+                let result = forward_in_process_event(
+                    &event_tx,
+                    &mut skipped_events,
+                    event,
+                    |_| panic!("the request should not be rejected after its predecessor drains"),
+                )
+                .await;
+                assert_eq!(result, ForwardEventResult::Continue);
+            }
+        });
+
+        sequencer_tx
+            .send(InProcessServerEvent::ServerNotification(
+                agent_message_delta_notification("must-arrive-first"),
+            ))
+            .await
+            .expect("required notification should enter the bounded sequencer");
+        required_event_started_rx
+            .await
+            .expect("forwarder should begin waiting for the required event");
+
+        let request_id = RequestId::String("after-required-event".to_string());
+        sequencer_tx
+            .try_send(InProcessServerEvent::ServerRequest(
+                ServerRequest::ToolRequestUserInput {
+                    request_id: request_id.clone(),
+                    params: ToolRequestUserInputParams {
+                        thread_id: "thread".to_string(),
+                        turn_id: "turn".to_string(),
+                        item_id: "item".to_string(),
+                        questions: Vec::new(),
+                        is_blocking: true,
+                        auto_resolution_ms: None,
+                    },
+                },
+            ))
+            .expect("one later request should fit behind the blocked predecessor");
+        assert!(matches!(
+            sequencer_tx.try_send(InProcessServerEvent::ServerNotification(
+                turn_completed_notification(),
+            )),
+            Err(mpsc::error::TrySendError::Full(_))
+        ));
+
+        let buffered_event = event_rx
+            .recv()
+            .await
+            .expect("initial buffered event should arrive");
+        assert!(matches!(
+            buffered_event,
+            InProcessServerEvent::ServerNotification(ServerNotification::CommandExecutionOutputDelta(
+                notification
+            )) if notification.delta == "already-buffered"
+        ));
+
+        let required_event = event_rx
+            .recv()
+            .await
+            .expect("required event should arrive after the buffered event");
+        assert!(matches!(
+            required_event,
+            InProcessServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
+                notification
+            )) if notification.delta == "must-arrive-first"
+        ));
+
+        let request_event = event_rx
+            .recv()
+            .await
+            .expect("request should arrive after its required predecessor");
+        assert!(matches!(
+            request_event,
+            InProcessServerEvent::ServerRequest(request) if request.id() == &request_id
+        ));
+
+        drop(sequencer_tx);
+        forwarder.await.expect("forwarder should stop cleanly");
     }
 
     #[tokio::test]

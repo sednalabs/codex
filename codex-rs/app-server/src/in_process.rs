@@ -406,27 +406,6 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
 
     let runtime_handle = tokio::spawn(async move {
-        // Keep lossless event backpressure out of the command router. A slow
-        // event consumer must not prevent the router from receiving and
-        // forwarding cancellation or shutdown commands.
-        let (forward_tx, mut forward_rx) = mpsc::unbounded_channel::<InProcessServerEvent>();
-        let event_tx_forward = event_tx.clone();
-        let mut event_forward_handle = tokio::spawn(async move {
-            while let Some(event) = forward_rx.recv().await {
-                if event_requires_delivery(&event) {
-                    if event_tx_forward.send(event).await.is_err() {
-                        break;
-                    }
-                } else if let Err(send_error) = event_tx_forward.try_send(event) {
-                    match send_error {
-                        mpsc::error::TrySendError::Full(_) => {
-                            warn!("dropping in-process server event (queue full)");
-                        }
-                        mpsc::error::TrySendError::Closed(_) => break,
-                    }
-                }
-            }
-        });
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
         let auth_manager =
             AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env)
@@ -438,6 +417,46 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             outgoing_tx,
             analytics_events_client.clone(),
         ));
+        // A single bounded FIFO keeps notification and server-request order
+        // intact without allowing a stalled event consumer to block command
+        // routing or accumulate unbounded peer-owned payloads.
+        let (forward_tx, mut forward_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+        let event_tx_forward = event_tx;
+        let forward_outgoing_message_sender = Arc::clone(&outgoing_message_sender);
+        let mut event_forward_handle = tokio::spawn(async move {
+            while let Some(event) = forward_rx.recv().await {
+                if event_requires_delivery(&event) {
+                    if event_tx_forward.send(event).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+
+                if let Err(send_error) = event_tx_forward.try_send(event) {
+                    match send_error {
+                        mpsc::error::TrySendError::Full(InProcessServerEvent::ServerRequest(
+                            request,
+                        )) => {
+                            forward_outgoing_message_sender
+                                .notify_client_error(
+                                    request.id().clone(),
+                                    JSONRPCErrorError {
+                                        code: OVERLOADED_ERROR_CODE,
+                                        message: "in-process server request queue is full"
+                                            .to_string(),
+                                        data: None,
+                                    },
+                                )
+                                .await;
+                        }
+                        mpsc::error::TrySendError::Full(_) => {
+                            warn!("dropping in-process server event (queue full)");
+                        }
+                        mpsc::error::TrySendError::Closed(_) => break,
+                    }
+                }
+            }
+        });
 
         let (writer_tx, mut writer_rx) = mpsc::channel::<QueuedOutgoingMessage>(channel_capacity);
         let outbound_initialized = Arc::new(AtomicBool::new(false));
@@ -574,9 +593,29 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         let mut pending_request_responses =
             HashMap::<RequestId, oneshot::Sender<PendingClientRequestResponse>>::new();
         let mut shutdown_ack = None;
+        // A required notification that cannot fit in the bounded sequencer is
+        // the only payload retained outside a channel. While it waits for a
+        // slot, the router continues accepting commands but does not read a
+        // later outbound event, preserving FIFO across notification/request
+        // boundaries.
+        let mut pending_event = None;
 
         loop {
             tokio::select! {
+                permit = forward_tx.reserve(), if pending_event.is_some() => {
+                    match permit {
+                        Ok(permit) => {
+                            let (event, write_complete_tx) = pending_event
+                                .take()
+                                .expect("pending event must exist while reserving a forward slot");
+                            permit.send(event);
+                            if let Some(write_complete_tx) = write_complete_tx {
+                                let _ = write_complete_tx.send(());
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
                 message = client_rx.recv() => {
                     match message {
                         Some(InProcessClientMessage::Request { request, response_tx }) => {
@@ -650,11 +689,12 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                     }
                 }
-                queued_message = writer_rx.recv() => {
+                queued_message = writer_rx.recv(), if pending_event.is_none() => {
                     let Some(queued_message) = queued_message else {
                         break;
                     };
                     let outgoing_message = queued_message.message;
+                    let mut write_complete_tx = queued_message.write_complete_tx;
                     match outgoing_message {
                         OutgoingMessage::Response(response) => {
                             if let Some(response_tx) = pending_request_responses.remove(&response.id) {
@@ -677,9 +717,10 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                         OutgoingMessage::Request(request) => {
-                            // Send directly to avoid cloning; on failure the
-                            // original value is returned inside the error.
-                            if let Err(send_error) = event_tx
+                            // The ordered forwarding queue is bounded. Requests
+                            // that cannot enter it are rejected explicitly, so
+                            // approval flows do not wait behind a stalled peer.
+                            if let Err(send_error) = forward_tx
                                 .try_send(InProcessServerEvent::ServerRequest(request))
                             {
                                 let (error, inner) = match send_error {
@@ -710,15 +751,23 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                         OutgoingMessage::AppServerNotification(envelope) => {
                             let notification = envelope.notification;
-                            if forward_tx
-                                .send(InProcessServerEvent::ServerNotification(notification))
-                                .is_err()
-                            {
-                                break;
+                            let event = InProcessServerEvent::ServerNotification(notification);
+                            match forward_tx.try_send(event) {
+                                Ok(()) => {}
+                                Err(mpsc::error::TrySendError::Full(event))
+                                    if event_requires_delivery(&event) =>
+                                {
+                                    pending_event = Some((event, write_complete_tx));
+                                    write_complete_tx = None;
+                                }
+                                Err(mpsc::error::TrySendError::Full(_)) => {
+                                    warn!("dropping in-process server notification (queue full)");
+                                }
+                                Err(mpsc::error::TrySendError::Closed(_)) => break,
                             }
                         }
                     }
-                    if let Some(write_complete_tx) = queued_message.write_complete_tx {
+                    if let Some(write_complete_tx) = write_complete_tx {
                         let _ = write_complete_tx.send(());
                     }
                 }
