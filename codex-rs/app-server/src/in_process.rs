@@ -598,7 +598,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         // sequencer wait here in FIFO order. Responses and errors remain live
         // while this queue drains; once it is full, a further required event
         // explicitly terminates the runtime instead of accumulating payloads.
-        let mut deferred_events = VecDeque::with_capacity(channel_capacity);
+        let mut deferred_events: VecDeque<(InProcessServerEvent, Option<oneshot::Sender<()>>)> =
+            VecDeque::with_capacity(channel_capacity);
 
         loop {
             tokio::select! {

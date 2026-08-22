@@ -237,20 +237,17 @@ async fn forward_in_process_event(
     }
 }
 
-async fn reject_server_request_with_retry(
+fn reject_server_request_or_terminate(
     request_sender: &codex_app_server::in_process::InProcessClientSender,
     request: ServerRequest,
     error: JSONRPCErrorError,
 ) -> bool {
     let request_id = request.id().clone();
-    loop {
-        match request_sender.fail_server_request(request_id.clone(), error.clone()) {
-            Ok(()) => return true,
-            Err(error) if error.kind() == ErrorKind::WouldBlock => tokio::task::yield_now().await,
-            Err(error) => {
-                warn!(request_id = ?request_id, "failed to reject undeliverable server request: {error}");
-                return false;
-            }
+    match request_sender.fail_server_request(request_id.clone(), error) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(request_id = ?request_id, "terminating in-process client after server-request rejection could not be queued: {error}");
+            false
         }
     }
 }
@@ -487,22 +484,19 @@ impl InProcessAppServerClient {
         // commands, and the single sender preserves source FIFO.
         let (event_forward_tx, mut event_forward_rx) =
             mpsc::channel::<InProcessServerEvent>(channel_capacity);
+        let (event_failure_tx, mut event_failure_rx) = mpsc::channel::<()>(1);
         let event_tx_forward = event_tx;
         let request_sender_forward = request_sender.clone();
+        let event_failure_tx_forward = event_failure_tx.clone();
         let mut event_forward_handle = tokio::spawn(async move {
             let mut skipped_events = 0usize;
             while let Some(event) = event_forward_rx.recv().await {
-                match forward_in_process_event(
-                    &event_tx_forward,
-                    &mut skipped_events,
-                    event,
-                )
-                .await
+                match forward_in_process_event(&event_tx_forward, &mut skipped_events, event).await
                 {
                     ForwardEventResult::Continue => {}
                     ForwardEventResult::DisableStream => break,
                     ForwardEventResult::RejectServerRequest(request) => {
-                        if !reject_server_request_with_retry(
+                        if !reject_server_request_or_terminate(
                             &request_sender_forward,
                             request,
                             JSONRPCErrorError {
@@ -510,9 +504,8 @@ impl InProcessAppServerClient {
                                 message: "in-process app-server event queue is full".to_string(),
                                 data: None,
                             },
-                        )
-                        .await
-                        {
+                        ) {
+                            let _ = event_failure_tx_forward.try_send(());
                             break;
                         }
                     }
@@ -521,10 +514,19 @@ impl InProcessAppServerClient {
         });
 
         let worker_handle = tokio::spawn(async move {
+            // Keep the failure sender alive so a normal forwarder exit does
+            // not look like a terminal rejection failure.
+            let _event_failure_tx = event_failure_tx;
             let mut event_stream_enabled = true;
             let mut pending_event = None;
             loop {
                 tokio::select! {
+                    failure = event_failure_rx.recv() => {
+                        if failure.is_some() {
+                            let _ = handle.shutdown().await;
+                            break;
+                        }
+                    }
                     permit = event_forward_tx.reserve(), if pending_event.is_some() => {
                         match permit {
                             Ok(permit) => {
@@ -600,7 +602,7 @@ impl InProcessAppServerClient {
                             let InProcessServerEvent::ServerRequest(request) = event else {
                                 unreachable!("matched in-process server request above");
                             };
-                            if !reject_server_request_with_retry(
+                            if !reject_server_request_or_terminate(
                                 &request_sender,
                                 request,
                                 JSONRPCErrorError {
@@ -608,9 +610,8 @@ impl InProcessAppServerClient {
                                     message: "chatgpt auth token refresh is not supported for in-process app-server clients".to_string(),
                                     data: None,
                                 },
-                            )
-                            .await
-                            {
+                            ) {
+                                let _ = handle.shutdown().await;
                                 break;
                             }
                             continue;
@@ -619,10 +620,30 @@ impl InProcessAppServerClient {
                         match event_forward_tx.try_send(event) {
                             Ok(()) => {}
                             Err(mpsc::error::TrySendError::Full(event)) => {
-                                // Retain only the blocked predecessor. Stopping
-                                // here applies bounded backpressure to the
-                                // runtime while command handling stays live.
-                                pending_event = Some(event);
+                                match event {
+                                    InProcessServerEvent::ServerRequest(request) => {
+                                        if !reject_server_request_or_terminate(
+                                            &request_sender,
+                                            request,
+                                            JSONRPCErrorError {
+                                                code: -32001,
+                                                message: "in-process app-server event queue is full"
+                                                    .to_string(),
+                                                data: None,
+                                            },
+                                        ) {
+                                            let _ = handle.shutdown().await;
+                                            break;
+                                        }
+                                    }
+                                    event => {
+                                        // Retain only an event that can safely wait
+                                        // behind its FIFO predecessor. Server requests
+                                        // are rejected above so they never become
+                                        // unowned pending payloads.
+                                        pending_event = Some(event);
+                                    }
+                                }
                             }
                             Err(mpsc::error::TrySendError::Closed(_)) => {
                                 event_stream_enabled = false;
@@ -992,9 +1013,9 @@ mod tests {
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
-    use codex_app_server_protocol::TurnInterruptParams;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::ToolRequestUserInputQuestion;
+    use codex_app_server_protocol::TurnInterruptParams;
     use codex_core::config::ConfigBuilder;
     use codex_core::init_state_db;
     use codex_uds::UnixListener;
@@ -1587,12 +1608,7 @@ mod tests {
                 if let Some(required_event_started_tx) = required_event_started_tx.take() {
                     let _ = required_event_started_tx.send(());
                 }
-                let result = forward_in_process_event(
-                    &event_tx,
-                    &mut skipped_events,
-                    event,
-                )
-                .await;
+                let result = forward_in_process_event(&event_tx, &mut skipped_events, event).await;
                 assert_eq!(result, ForwardEventResult::Continue);
             }
         });
