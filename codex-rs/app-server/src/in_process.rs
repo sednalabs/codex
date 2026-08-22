@@ -40,7 +40,6 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
@@ -128,6 +127,11 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
         InProcessServerEvent::ServerNotification(notification)
             if server_notification_requires_delivery(notification)
     )
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RuntimeEventTerminal {
+    ConsumerClosed,
 }
 
 /// Input needed to start an in-process app-server runtime.
@@ -422,12 +426,17 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         // intact without allowing a stalled event consumer to block command
         // routing or accumulate unbounded peer-owned payloads.
         let (forward_tx, mut forward_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+        let (event_terminal_tx, mut event_terminal_rx) = mpsc::channel::<RuntimeEventTerminal>(1);
         let event_tx_forward = event_tx;
-        let forward_outgoing_message_sender = Arc::clone(&outgoing_message_sender);
+        let event_terminal_tx_forward = event_terminal_tx.clone();
         let mut event_forward_handle = tokio::spawn(async move {
             while let Some(event) = forward_rx.recv().await {
-                if event_requires_delivery(&event) {
+                if event_requires_delivery(&event)
+                    || matches!(&event, InProcessServerEvent::ServerRequest(_))
+                {
                     if event_tx_forward.send(event).await.is_err() {
+                        let _ = event_terminal_tx_forward
+                            .try_send(RuntimeEventTerminal::ConsumerClosed);
                         break;
                     }
                     continue;
@@ -435,25 +444,14 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
 
                 if let Err(send_error) = event_tx_forward.try_send(event) {
                     match send_error {
-                        mpsc::error::TrySendError::Full(InProcessServerEvent::ServerRequest(
-                            request,
-                        )) => {
-                            forward_outgoing_message_sender
-                                .notify_client_error(
-                                    request.id().clone(),
-                                    JSONRPCErrorError {
-                                        code: OVERLOADED_ERROR_CODE,
-                                        message: "in-process server request queue is full"
-                                            .to_string(),
-                                        data: None,
-                                    },
-                                )
-                                .await;
-                        }
                         mpsc::error::TrySendError::Full(_) => {
                             warn!("dropping in-process server event (queue full)");
                         }
-                        mpsc::error::TrySendError::Closed(_) => break,
+                        mpsc::error::TrySendError::Closed(_) => {
+                            let _ = event_terminal_tx_forward
+                                .try_send(RuntimeEventTerminal::ConsumerClosed);
+                            break;
+                        }
                     }
                 }
             }
@@ -594,21 +592,27 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         let mut pending_request_responses =
             HashMap::<RequestId, oneshot::Sender<PendingClientRequestResponse>>::new();
         let mut shutdown_ack = None;
-        // Required notifications that cannot immediately enter the bounded
-        // sequencer wait here in FIFO order. Responses and errors remain live
-        // while this queue drains; once it is full, a further required event
-        // explicitly terminates the runtime instead of accumulating payloads.
-        let mut deferred_events: VecDeque<(InProcessServerEvent, Option<oneshot::Sender<()>>)> =
-            VecDeque::with_capacity(channel_capacity);
+        // Keep this sender alive so a normal forwarder exit is not interpreted
+        // as a downstream-consumer terminal reason.
+        let _event_terminal_tx = event_terminal_tx;
+        // At most one admitted event may wait behind the bounded FIFO. While
+        // it waits, commands remain selectable but later events stay upstream
+        // so none can overtake this head.
+        let mut pending_event: Option<(InProcessServerEvent, Option<oneshot::Sender<()>>)> = None;
 
         loop {
             tokio::select! {
-                permit = forward_tx.reserve(), if !deferred_events.is_empty() => {
+                terminal_reason = event_terminal_rx.recv() => {
+                    if terminal_reason.is_some() {
+                        break;
+                    }
+                }
+                permit = forward_tx.reserve(), if pending_event.is_some() => {
                     match permit {
                         Ok(permit) => {
-                            let (event, write_complete_tx) = deferred_events
-                                .pop_front()
-                                .expect("deferred event must exist while reserving a forward slot");
+                            let Some((event, write_complete_tx)) = pending_event.take() else {
+                                break;
+                            };
                             permit.send(event);
                             if let Some(write_complete_tx) = write_complete_tx {
                                 let _ = write_complete_tx.send(());
@@ -690,7 +694,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                     }
                 }
-                queued_message = writer_rx.recv() => {
+                queued_message = writer_rx.recv(), if pending_event.is_none() => {
                     let Some(queued_message) = queued_message else {
                         break;
                     };
@@ -718,61 +722,24 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                         OutgoingMessage::Request(request) => {
-                            // The ordered forwarding queue is bounded. Requests
-                            // that cannot enter it are rejected explicitly, so
-                            // approval flows do not wait behind a stalled peer.
-                            let send_error = if deferred_events.is_empty() {
-                                forward_tx.try_send(InProcessServerEvent::ServerRequest(request))
-                            } else {
-                                Err(mpsc::error::TrySendError::Full(
-                                    InProcessServerEvent::ServerRequest(request),
-                                ))
-                            };
-                            if let Err(send_error) = send_error {
-                                let (error, inner) = match send_error {
-                                    mpsc::error::TrySendError::Full(inner) => (
-                                        JSONRPCErrorError {
-                                            code: OVERLOADED_ERROR_CODE,
-                                            message:
-                                                "in-process server request queue is full".to_string(),
-                                            data: None,
-                                        },
-                                        inner,
-                                    ),
-                                    mpsc::error::TrySendError::Closed(inner) => (
-                                        internal_error(
-                                            "in-process server request consumer is closed",
-                                        ),
-                                        inner,
-                                    ),
-                                };
-                                let request_id = match inner {
-                                    InProcessServerEvent::ServerRequest(req) => req.id().clone(),
-                                    _ => unreachable!("we just sent a ServerRequest variant"),
-                                };
-                                outgoing_message_sender
-                                    .notify_client_error(request_id, error)
-                                    .await;
+                            match forward_tx.try_send(InProcessServerEvent::ServerRequest(request)) {
+                                Ok(()) => {}
+                                Err(mpsc::error::TrySendError::Full(event)) => {
+                                    pending_event = Some((event, write_complete_tx));
+                                    write_complete_tx = None;
+                                }
+                                Err(mpsc::error::TrySendError::Closed(_)) => break,
                             }
                         }
                         OutgoingMessage::AppServerNotification(envelope) => {
                             let notification = envelope.notification;
                             let event = InProcessServerEvent::ServerNotification(notification);
-                            let send_result = if deferred_events.is_empty() {
-                                forward_tx.try_send(event)
-                            } else {
-                                Err(mpsc::error::TrySendError::Full(event))
-                            };
-                            match send_result {
+                            match forward_tx.try_send(event) {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(event))
                                     if event_requires_delivery(&event) =>
                                 {
-                                    if deferred_events.len() == channel_capacity {
-                                        warn!("terminating in-process runtime because required event custody is exhausted");
-                                        break;
-                                    }
-                                    deferred_events.push_back((event, write_complete_tx));
+                                    pending_event = Some((event, write_complete_tx));
                                     write_complete_tx = None;
                                 }
                                 Err(mpsc::error::TrySendError::Full(_)) => {
