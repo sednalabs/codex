@@ -40,6 +40,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
@@ -593,21 +594,20 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         let mut pending_request_responses =
             HashMap::<RequestId, oneshot::Sender<PendingClientRequestResponse>>::new();
         let mut shutdown_ack = None;
-        // A required notification that cannot fit in the bounded sequencer is
-        // the only payload retained outside a channel. While it waits for a
-        // slot, the router continues accepting commands but does not read a
-        // later outbound event, preserving FIFO across notification/request
-        // boundaries.
-        let mut pending_event = None;
+        // Required notifications that cannot immediately enter the bounded
+        // sequencer wait here in FIFO order. Responses and errors remain live
+        // while this queue drains; once it is full, a further required event
+        // explicitly terminates the runtime instead of accumulating payloads.
+        let mut deferred_events = VecDeque::with_capacity(channel_capacity);
 
         loop {
             tokio::select! {
-                permit = forward_tx.reserve(), if pending_event.is_some() => {
+                permit = forward_tx.reserve(), if !deferred_events.is_empty() => {
                     match permit {
                         Ok(permit) => {
-                            let (event, write_complete_tx) = pending_event
-                                .take()
-                                .expect("pending event must exist while reserving a forward slot");
+                            let (event, write_complete_tx) = deferred_events
+                                .pop_front()
+                                .expect("deferred event must exist while reserving a forward slot");
                             permit.send(event);
                             if let Some(write_complete_tx) = write_complete_tx {
                                 let _ = write_complete_tx.send(());
@@ -689,7 +689,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                     }
                 }
-                queued_message = writer_rx.recv(), if pending_event.is_none() => {
+                queued_message = writer_rx.recv() => {
                     let Some(queued_message) = queued_message else {
                         break;
                     };
@@ -720,9 +720,14 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             // The ordered forwarding queue is bounded. Requests
                             // that cannot enter it are rejected explicitly, so
                             // approval flows do not wait behind a stalled peer.
-                            if let Err(send_error) = forward_tx
-                                .try_send(InProcessServerEvent::ServerRequest(request))
-                            {
+                            let send_error = if deferred_events.is_empty() {
+                                forward_tx.try_send(InProcessServerEvent::ServerRequest(request))
+                            } else {
+                                Err(mpsc::error::TrySendError::Full(
+                                    InProcessServerEvent::ServerRequest(request),
+                                ))
+                            };
+                            if let Err(send_error) = send_error {
                                 let (error, inner) = match send_error {
                                     mpsc::error::TrySendError::Full(inner) => (
                                         JSONRPCErrorError {
@@ -752,12 +757,21 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         OutgoingMessage::AppServerNotification(envelope) => {
                             let notification = envelope.notification;
                             let event = InProcessServerEvent::ServerNotification(notification);
-                            match forward_tx.try_send(event) {
+                            let send_result = if deferred_events.is_empty() {
+                                forward_tx.try_send(event)
+                            } else {
+                                Err(mpsc::error::TrySendError::Full(event))
+                            };
+                            match send_result {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(event))
                                     if event_requires_delivery(&event) =>
                                 {
-                                    pending_event = Some((event, write_complete_tx));
+                                    if deferred_events.len() == channel_capacity {
+                                        warn!("terminating in-process runtime because required event custody is exhausted");
+                                        break;
+                                    }
+                                    deferred_events.push_back((event, write_complete_tx));
                                     write_complete_tx = None;
                                 }
                                 Err(mpsc::error::TrySendError::Full(_)) => {
