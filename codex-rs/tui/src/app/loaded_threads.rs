@@ -391,7 +391,7 @@ mod tests {
             active_flags: Vec::new(),
         };
 
-        let grandchild = test_thread(
+        let mut grandchild = test_thread(
             grandchild_thread_id,
             thread_spawn_source(child_thread_id, /*depth*/ 2, "Atlas", "worker"),
         );
