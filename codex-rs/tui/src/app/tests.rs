@@ -1874,6 +1874,8 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                 "type": "session_meta",
                 "payload": serde_json::to_value(session_meta)?,
             });
+            // A session-meta-only child has an empty persisted preview. Lineage discovery must
+            // still find it so the server capability can distinguish pathless V1 from V2.
             std::fs::write(rollout_path, format!("{session_meta_line}\n"))?;
 
             assert!(
@@ -2094,10 +2096,13 @@ async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_thread
         /*updated_at*/ None,
     );
 
-    let is_available =
+    let outcome =
         Box::pin(app.refresh_agent_picker_thread_liveness(&mut app_server, thread_id)).await;
 
-    assert!(!is_available);
+    assert_eq!(
+        outcome,
+        crate::app::session_lifecycle::ThreadLivenessRefreshOutcome::TerminalPruned
+    );
     assert_eq!(app.agent_navigation.get(&thread_id), None);
     assert!(!app.thread_event_channels.contains_key(&thread_id));
     Ok(())

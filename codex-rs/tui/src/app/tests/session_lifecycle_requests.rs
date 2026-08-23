@@ -37,6 +37,12 @@ enum ScriptedLineageResponse {
     Error(String),
 }
 
+#[derive(Clone)]
+enum ScriptedThreadReadResponse {
+    Thread(serde_json::Value),
+    Error(String),
+}
+
 fn take_recorded_requests(requests: &RecordedRequests) -> Vec<RecordedRequest> {
     std::mem::take(&mut *requests.lock().expect("request recorder lock"))
 }
@@ -69,6 +75,7 @@ async fn start_recording_app_server(
         config,
         blocked_thread_read_id,
         /*lineage_responses*/ None,
+        /*thread_read_responses*/ None,
     )
     .await
 }
@@ -77,6 +84,7 @@ async fn start_recording_app_server_with_lineage(
     config: &Config,
     blocked_thread_read_id: Option<ThreadId>,
     lineage_responses: Option<Arc<Mutex<VecDeque<ScriptedLineageResponse>>>>,
+    thread_read_responses: Option<Arc<Mutex<VecDeque<ScriptedThreadReadResponse>>>>,
 ) -> Result<(AppServerSession, RecordedRequests, JoinHandle<Result<()>>)> {
     let state_db =
         crate::init_state_db_for_app_server_target(config, &crate::AppServerTarget::Embedded)
@@ -147,6 +155,37 @@ async fn start_recording_app_server_with_lineage(
                                 })
                             }
                             ScriptedLineageResponse::Error(message) => {
+                                JSONRPCMessage::Error(JSONRPCError {
+                                    id: request.id.clone(),
+                                    error: JSONRPCErrorError {
+                                        code: -32603,
+                                        message,
+                                        data: None,
+                                    },
+                                })
+                            }
+                        };
+                        websocket
+                            .send(Message::Text(serde_json::to_string(&message)?.into()))
+                            .await?;
+                        continue;
+                    }
+                    if request.method == "thread/read"
+                        && let Some(thread_read_responses) = &thread_read_responses
+                    {
+                        let response = thread_read_responses
+                            .lock()
+                            .expect("thread/read response lock")
+                            .pop_front()
+                            .expect("scripted thread/read response");
+                        let message = match response {
+                            ScriptedThreadReadResponse::Thread(thread) => {
+                                JSONRPCMessage::Response(JSONRPCResponse {
+                                    id: request.id.clone(),
+                                    result: serde_json::json!({ "thread": thread }),
+                                })
+                            }
+                            ScriptedThreadReadResponse::Error(message) => {
                                 JSONRPCMessage::Error(JSONRPCError {
                                     id: request.id.clone(),
                                     error: JSONRPCErrorError {
@@ -319,6 +358,7 @@ fn lineage_backfill_resumes_failed_cursor_without_refetching_prefix() -> Result<
             &app.config,
             None,
             Some(Arc::clone(&responses)),
+            None,
         )
         .await?;
 
@@ -357,7 +397,58 @@ fn lineage_backfill_resumes_failed_cursor_without_refetching_prefix() -> Result<
 }
 
 #[test]
-fn lineage_backfill_cursor_cycle_is_terminal_until_reset() -> Result<()> {
+fn lineage_backfill_retries_authoritative_thread_read_without_relisting() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let primary_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        configure_backfill_primary(&mut app, primary_thread_id);
+        let mut listed_child =
+            scripted_lineage_thread(&app.config, child_thread_id, primary_thread_id, 1);
+        listed_child.can_accept_direct_input = None;
+        let mut authoritative_child = listed_child.clone();
+        authoritative_child.can_accept_direct_input = Some(false);
+        let lineage_responses =
+            Arc::new(Mutex::new(VecDeque::from([ScriptedLineageResponse::Page(
+                scripted_lineage_page(vec![listed_child], None),
+            )])));
+        let thread_read_responses = Arc::new(Mutex::new(VecDeque::from([
+            ScriptedThreadReadResponse::Error("transient read failure".to_string()),
+            ScriptedThreadReadResponse::Thread(serde_json::to_value(authoritative_child)?),
+        ])));
+        let (mut app_server, requests, proxy) = start_recording_app_server_with_lineage(
+            &app.config,
+            None,
+            Some(Arc::clone(&lineage_responses)),
+            Some(Arc::clone(&thread_read_responses)),
+        )
+        .await?;
+
+        let first = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert!(!first.completed);
+        assert_eq!(
+            first.status,
+            crate::app::session_lifecycle::LoadedSubagentBackfillStatus::RetryableError
+        );
+        assert_eq!(take_backfill_counts(&requests), (1, 0, 1));
+        assert!(app.agent_navigation.get(&child_thread_id).is_none());
+        let second = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert!(second.completed);
+        assert_eq!(take_backfill_counts(&requests), (0, 0, 1));
+        assert_eq!(
+            second.refreshed_thread_ids,
+            HashSet::from([child_thread_id])
+        );
+        assert!(app.agent_navigation.is_parent_owned(child_thread_id));
+
+        app_server.shutdown().await?;
+        proxy.await??;
+        Ok(())
+    })
+}
+
+#[test]
+fn lineage_backfill_cursor_cycle_is_bounded_per_open() -> Result<()> {
     run_large_stack_app_test(|| async {
         let mut app = make_test_app().await;
         let primary_thread_id = ThreadId::new();
@@ -371,11 +462,20 @@ fn lineage_backfill_cursor_cycle_is_terminal_until_reset() -> Result<()> {
                 Vec::new(),
                 Some("cycle".to_string()),
             )),
+            ScriptedLineageResponse::Page(scripted_lineage_page(
+                Vec::new(),
+                Some("cycle".to_string()),
+            )),
+            ScriptedLineageResponse::Page(scripted_lineage_page(
+                Vec::new(),
+                Some("cycle".to_string()),
+            )),
         ])));
         let (mut app_server, requests, proxy) = start_recording_app_server_with_lineage(
             &app.config,
             None,
             Some(Arc::clone(&responses)),
+            None,
         )
         .await?;
 
@@ -386,9 +486,58 @@ fn lineage_backfill_cursor_cycle_is_terminal_until_reset() -> Result<()> {
             crate::app::session_lifecycle::LoadedSubagentBackfillStatus::CursorCycle
         );
         assert_eq!(second.status, first.status);
-        assert_eq!(take_backfill_counts(&requests).0, 2);
-        app.reset_thread_event_state();
+        assert_eq!(take_backfill_counts(&requests).0, 4);
         assert!(app.subagent_backfill_progress.is_none());
+
+        app_server.shutdown().await?;
+        proxy.await??;
+        Ok(())
+    })
+}
+
+#[test]
+fn lineage_backfill_recovers_after_cursor_cycle_and_finds_new_child() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let primary_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        configure_backfill_primary(&mut app, primary_thread_id);
+        let responses = Arc::new(Mutex::new(VecDeque::from([
+            ScriptedLineageResponse::Page(scripted_lineage_page(
+                Vec::new(),
+                Some("cycle".to_string()),
+            )),
+            ScriptedLineageResponse::Page(scripted_lineage_page(
+                Vec::new(),
+                Some("cycle".to_string()),
+            )),
+            ScriptedLineageResponse::Page(scripted_lineage_page(
+                vec![scripted_lineage_thread(
+                    &app.config,
+                    child_thread_id,
+                    primary_thread_id,
+                    1,
+                )],
+                None,
+            )),
+        ])));
+        let (mut app_server, requests, proxy) = start_recording_app_server_with_lineage(
+            &app.config,
+            None,
+            Some(Arc::clone(&responses)),
+            None,
+        )
+        .await?;
+
+        let first = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert_eq!(
+            first.status,
+            crate::app::session_lifecycle::LoadedSubagentBackfillStatus::CursorCycle
+        );
+        let second = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert!(second.completed);
+        assert!(app.agent_navigation.get(&child_thread_id).is_some());
+        assert_eq!(take_backfill_counts(&requests).0, 3);
 
         app_server.shutdown().await?;
         proxy.await??;
@@ -422,6 +571,7 @@ fn lineage_backfill_advances_beyond_page_budget_across_opens() -> Result<()> {
             &app.config,
             None,
             Some(Arc::clone(&responses)),
+            None,
         )
         .await?;
 
@@ -473,6 +623,7 @@ fn reset_clears_paused_lineage_continuation() -> Result<()> {
             &app.config,
             None,
             Some(Arc::clone(&responses)),
+            None,
         )
         .await?;
 

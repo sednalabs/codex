@@ -13,15 +13,18 @@ use crate::multi_agents::format_agent_picker_item_selected_description;
 use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 
 pub(super) const SUBAGENT_BACKFILL_PAGE_SIZE: u32 = 100;
+const SUBAGENT_BACKFILL_REFRESHES_PER_ATTEMPT: usize = 100;
 
 pub(super) struct LoadedSubagentBackfillProgress {
     primary_thread_id: ThreadId,
     next_cursor: Option<String>,
     accumulator: LoadedSubagentAccumulator,
     seen_cursors: HashSet<String>,
-    terminal_cursor_cycle: Option<String>,
+    pending_refresh_thread_ids: VecDeque<ThreadId>,
+    listing_complete: bool,
 }
 
 impl LoadedSubagentBackfillProgress {
@@ -31,7 +34,8 @@ impl LoadedSubagentBackfillProgress {
             next_cursor: None,
             accumulator: LoadedSubagentAccumulator::new(primary_thread_id),
             seen_cursors: HashSet::new(),
-            terminal_cursor_cycle: None,
+            pending_refresh_thread_ids: VecDeque::new(),
+            listing_complete: false,
         }
     }
 }
@@ -59,6 +63,13 @@ pub(super) struct LoadedSubagentBackfill {
     pub(super) completed: bool,
     pub(super) status: LoadedSubagentBackfillStatus,
     pub(super) refreshed_thread_ids: HashSet<ThreadId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ThreadLivenessRefreshOutcome {
+    Refreshed,
+    TerminalPruned,
+    RetryableError,
 }
 
 impl App {
@@ -164,12 +175,8 @@ impl App {
             {
                 continue;
             }
-            if !self
-                .refresh_agent_picker_thread_liveness(app_server, thread_id)
-                .await
-            {
-                continue;
-            }
+            self.refresh_agent_picker_thread_liveness(app_server, thread_id)
+                .await;
         }
 
         let has_non_primary_agent_thread = self
@@ -244,6 +251,11 @@ impl App {
             subtitle: Some(if picker_has_more {
                 format!(
                     "{} Showing a bounded slice; reopen to continue through retained agents.",
+                    AgentNavigationState::picker_subtitle()
+                )
+            } else if backfill.status != LoadedSubagentBackfillStatus::Complete {
+                format!(
+                    "{} Lineage refresh is incomplete; reopen to retry.",
                     AgentNavigationState::picker_subtitle()
                 )
             } else {
@@ -387,7 +399,7 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
-    ) -> bool {
+    ) -> ThreadLivenessRefreshOutcome {
         let existing_entry = self.agent_navigation.get(&thread_id).cloned();
         let has_replay_channel = self.thread_event_channels.contains_key(&thread_id);
         match app_server
@@ -442,12 +454,12 @@ impl App {
                     self.agent_navigation
                         .set_running(thread_id, /*is_running*/ false);
                 }
-                true
+                ThreadLivenessRefreshOutcome::Refreshed
             }
             Err(err) => {
                 if Self::is_terminal_thread_read_error(&err) && !has_replay_channel {
                     self.agent_navigation.remove(thread_id);
-                    return false;
+                    return ThreadLivenessRefreshOutcome::TerminalPruned;
                 }
                 let is_closed = Self::closed_state_for_thread_read_error(
                     &err,
@@ -468,7 +480,7 @@ impl App {
                 }
                 self.agent_navigation
                     .set_running(thread_id, /*is_running*/ false);
-                true
+                ThreadLivenessRefreshOutcome::RetryableError
             }
         }
     }
@@ -587,12 +599,13 @@ impl App {
 
         // A tracked side thread stays loaded until it is explicitly discarded and already has a
         // replay channel, so another liveness read cannot add anything before selection.
-        if !(self.side_threads.contains_key(&thread_id)
+        let thread_available = self.side_threads.contains_key(&thread_id)
             && self.thread_event_channels.contains_key(&thread_id)
             || self
                 .refresh_agent_picker_thread_liveness(app_server, thread_id)
-                .await)
-        {
+                .await
+                != ThreadLivenessRefreshOutcome::TerminalPruned;
+        if !thread_available {
             self.chat_widget
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
             return Ok(());
@@ -917,44 +930,123 @@ impl App {
             .take()
             .filter(|progress| progress.primary_thread_id == primary_thread_id)
             .unwrap_or_else(|| LoadedSubagentBackfillProgress::new(primary_thread_id));
-        if let Some(next_cursor) = progress.terminal_cursor_cycle.clone() {
-            tracing::warn!(
-                %next_cursor,
-                primary_thread_id = %primary_thread_id,
-                "subagent lineage backfill remains incomplete after a cursor cycle"
-            );
-            self.subagent_backfill_progress = Some(progress);
-            return LoadedSubagentBackfill {
-                status: LoadedSubagentBackfillStatus::CursorCycle,
-                ..Default::default()
-            };
-        }
-        let mut page_budget = LineagePageBudget::new(std::mem::take(&mut progress.seen_cursors));
         let mut refreshed_thread_ids = HashSet::new();
-        loop {
-            let response = match app_server
-                .thread_list(ThreadListParams {
-                    cursor: progress.next_cursor.clone(),
-                    limit: Some(SUBAGENT_BACKFILL_PAGE_SIZE),
-                    sort_key: None,
-                    sort_direction: None,
-                    model_providers: None,
-                    source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
-                    thread_sources: None,
-                    archived: Some(false),
-                    is_pinned: None,
-                    cwd: None,
-                    use_state_db_only: true,
-                    search_term: None,
-                    parent_thread_id: None,
-                    ancestor_thread_id: Some(primary_thread_id.to_string()),
-                })
+        if !progress.listing_complete {
+            let mut page_budget =
+                LineagePageBudget::new(std::mem::take(&mut progress.seen_cursors));
+            loop {
+                let response = match app_server
+                    .thread_list(ThreadListParams {
+                        cursor: progress.next_cursor.clone(),
+                        limit: Some(SUBAGENT_BACKFILL_PAGE_SIZE),
+                        sort_key: None,
+                        sort_direction: None,
+                        model_providers: None,
+                        source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                        thread_sources: None,
+                        archived: Some(false),
+                        is_pinned: None,
+                        cwd: None,
+                        use_state_db_only: true,
+                        search_term: None,
+                        parent_thread_id: None,
+                        ancestor_thread_id: Some(primary_thread_id.to_string()),
+                    })
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(err) => {
+                        tracing::warn!(%err, "failed to list subagent lineage for backfill");
+                        progress.seen_cursors = page_budget.into_seen_cursors();
+                        self.subagent_backfill_progress = Some(progress);
+                        return LoadedSubagentBackfill {
+                            status: LoadedSubagentBackfillStatus::RetryableError,
+                            refreshed_thread_ids,
+                            ..Default::default()
+                        };
+                    }
+                };
+                for thread in progress.accumulator.ingest(response.data) {
+                    let thread_id = thread.thread_id;
+                    let has_live_channel = self
+                        .thread_event_channels
+                        .get(&thread_id)
+                        .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
+                    let requires_authoritative_refresh = !has_live_channel
+                        && !thread.has_authoritative_input_capability
+                        && thread
+                            .agent_path
+                            .as_deref()
+                            .is_none_or(|agent_path| agent_path.trim().is_empty());
+                    if requires_authoritative_refresh {
+                        progress.pending_refresh_thread_ids.push_back(thread_id);
+                    } else {
+                        self.apply_loaded_subagent_thread(thread);
+                        if !has_live_channel {
+                            refreshed_thread_ids.insert(thread_id);
+                        }
+                    }
+                }
+                match page_budget.observe_page(response.next_cursor) {
+                    LineagePageAdvance::Complete => {
+                        progress.listing_complete = true;
+                        break;
+                    }
+                    LineagePageAdvance::Continue(next_cursor) => {
+                        progress.next_cursor = Some(next_cursor);
+                    }
+                    LineagePageAdvance::Pause(next_cursor) => {
+                        progress.next_cursor = Some(next_cursor);
+                        progress.seen_cursors = page_budget.into_seen_cursors();
+                        self.subagent_backfill_progress = Some(progress);
+                        tracing::warn!(
+                            primary_thread_id = %primary_thread_id,
+                            "paused subagent lineage backfill at the per-attempt page budget"
+                        );
+                        self.sync_active_agent_label();
+                        return LoadedSubagentBackfill {
+                            status: LoadedSubagentBackfillStatus::Paused,
+                            refreshed_thread_ids,
+                            ..Default::default()
+                        };
+                    }
+                    LineagePageAdvance::CursorCycle(next_cursor) => {
+                        tracing::warn!(
+                            %next_cursor,
+                            primary_thread_id = %primary_thread_id,
+                            "subagent lineage backfill detected a cursor cycle"
+                        );
+                        self.sync_active_agent_label();
+                        return LoadedSubagentBackfill {
+                            status: LoadedSubagentBackfillStatus::CursorCycle,
+                            refreshed_thread_ids,
+                            ..Default::default()
+                        };
+                    }
+                }
+            }
+        }
+
+        let mut refreshes_attempted = 0;
+        while refreshes_attempted < SUBAGENT_BACKFILL_REFRESHES_PER_ATTEMPT {
+            let Some(thread_id) = progress.pending_refresh_thread_ids.pop_front() else {
+                break;
+            };
+            refreshes_attempted += 1;
+            let had_existing_entry = self.agent_navigation.get(&thread_id).is_some();
+            match self
+                .refresh_agent_picker_thread_liveness(app_server, thread_id)
                 .await
             {
-                Ok(response) => response,
-                Err(err) => {
-                    tracing::warn!(%err, "failed to list subagent lineage for backfill");
-                    progress.seen_cursors = page_budget.into_seen_cursors();
+                ThreadLivenessRefreshOutcome::Refreshed => {
+                    refreshed_thread_ids.insert(thread_id);
+                }
+                ThreadLivenessRefreshOutcome::TerminalPruned => {}
+                ThreadLivenessRefreshOutcome::RetryableError => {
+                    if !had_existing_entry {
+                        self.agent_navigation.remove(thread_id);
+                    }
+                    progress.pending_refresh_thread_ids.push_front(thread_id);
                     self.subagent_backfill_progress = Some(progress);
                     return LoadedSubagentBackfill {
                         status: LoadedSubagentBackfillStatus::RetryableError,
@@ -962,49 +1054,15 @@ impl App {
                         ..Default::default()
                     };
                 }
+            }
+        }
+        if !progress.pending_refresh_thread_ids.is_empty() {
+            self.subagent_backfill_progress = Some(progress);
+            return LoadedSubagentBackfill {
+                status: LoadedSubagentBackfillStatus::Paused,
+                refreshed_thread_ids,
+                ..Default::default()
             };
-            for thread in progress.accumulator.ingest(response.data) {
-                refreshed_thread_ids.insert(thread.thread_id);
-                self.apply_loaded_subagent_thread(thread);
-            }
-            match page_budget.observe_page(response.next_cursor) {
-                LineagePageAdvance::Complete => break,
-                LineagePageAdvance::Continue(next_cursor) => {
-                    progress.next_cursor = Some(next_cursor);
-                }
-                LineagePageAdvance::Pause(next_cursor) => {
-                    progress.next_cursor = Some(next_cursor);
-                    progress.seen_cursors = page_budget.into_seen_cursors();
-                    self.subagent_backfill_progress = Some(progress);
-                    tracing::warn!(
-                        primary_thread_id = %primary_thread_id,
-                        "paused subagent lineage backfill at the per-attempt page budget"
-                    );
-                    self.sync_active_agent_label();
-                    return LoadedSubagentBackfill {
-                        status: LoadedSubagentBackfillStatus::Paused,
-                        refreshed_thread_ids,
-                        ..Default::default()
-                    };
-                }
-                LineagePageAdvance::CursorCycle(next_cursor) => {
-                    tracing::warn!(
-                        %next_cursor,
-                        primary_thread_id = %primary_thread_id,
-                        "subagent lineage backfill detected a cursor cycle"
-                    );
-                    progress.next_cursor = Some(next_cursor.clone());
-                    progress.seen_cursors = page_budget.into_seen_cursors();
-                    progress.terminal_cursor_cycle = Some(next_cursor);
-                    self.subagent_backfill_progress = Some(progress);
-                    self.sync_active_agent_label();
-                    return LoadedSubagentBackfill {
-                        status: LoadedSubagentBackfillStatus::CursorCycle,
-                        refreshed_thread_ids,
-                        ..Default::default()
-                    };
-                }
-            }
         }
 
         let tracked_thread_ids = self
@@ -1021,11 +1079,22 @@ impl App {
             {
                 continue;
             }
-            if self
+            match self
                 .refresh_agent_picker_thread_liveness(app_server, thread_id)
                 .await
             {
-                refreshed_thread_ids.insert(thread_id);
+                ThreadLivenessRefreshOutcome::Refreshed => {
+                    refreshed_thread_ids.insert(thread_id);
+                }
+                ThreadLivenessRefreshOutcome::TerminalPruned => {}
+                ThreadLivenessRefreshOutcome::RetryableError => {
+                    self.subagent_backfill_progress = Some(progress);
+                    return LoadedSubagentBackfill {
+                        status: LoadedSubagentBackfillStatus::RetryableError,
+                        refreshed_thread_ids,
+                        ..Default::default()
+                    };
+                }
             }
         }
 
