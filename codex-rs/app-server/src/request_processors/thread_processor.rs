@@ -2072,6 +2072,7 @@ impl ThreadRequestProcessor {
             parent_thread_id,
             ancestor_thread_id,
         } = params;
+        let ancestor_filter_applied = ancestor_thread_id.is_some();
         let cwd_filters = normalize_thread_list_cwd_filters(cwd)?;
         let relation_filter = match (parent_thread_id, ancestor_thread_id) {
             (Some(_), Some(_)) => {
@@ -2156,6 +2157,7 @@ impl ThreadRequestProcessor {
         }
         Ok(ThreadListResponse {
             data,
+            ancestor_filter_applied,
             next_cursor,
             backwards_cursor,
         })

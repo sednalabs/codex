@@ -343,6 +343,17 @@ fn scripted_lineage_thread(
 fn scripted_lineage_page(threads: Vec<Thread>, next_cursor: Option<String>) -> serde_json::Value {
     serde_json::json!({
         "data": threads,
+        "ancestorFilterApplied": true,
+        "nextCursor": next_cursor,
+    })
+}
+
+fn scripted_unacknowledged_lineage_page(
+    threads: Vec<Thread>,
+    next_cursor: Option<String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "data": threads,
         "nextCursor": next_cursor,
     })
 }
@@ -463,6 +474,79 @@ fn completed_lineage_backfill_admits_descendant_behind_filtered_connector() -> R
         assert_eq!(take_backfill_counts(&requests), (1, 0, 0));
         assert!(app.agent_navigation.get(&filtered_connector_id).is_none());
         assert!(app.agent_navigation.get(&grandchild_thread_id).is_some());
+
+        app_server.shutdown().await?;
+        proxy.await??;
+        Ok(())
+    })
+}
+
+#[test]
+fn unacknowledged_lineage_completion_keeps_strict_local_validation() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let primary_thread_id = ThreadId::new();
+        let direct_child_thread_id = ThreadId::new();
+        let filtered_connector_id = ThreadId::new();
+        let hidden_grandchild_thread_id = ThreadId::new();
+        let unrelated_parent_id = ThreadId::new();
+        let unrelated_child_thread_id = ThreadId::new();
+        configure_backfill_primary(&mut app, primary_thread_id);
+        let mut untrusted_hidden_grandchild = scripted_lineage_thread(
+            &app.config,
+            hidden_grandchild_thread_id,
+            filtered_connector_id,
+            2,
+        );
+        untrusted_hidden_grandchild.can_accept_direct_input = None;
+        let mut untrusted_unrelated_child = scripted_lineage_thread(
+            &app.config,
+            unrelated_child_thread_id,
+            unrelated_parent_id,
+            1,
+        );
+        untrusted_unrelated_child.can_accept_direct_input = None;
+        let responses = Arc::new(Mutex::new(VecDeque::from([
+            ScriptedLineageResponse::Page(scripted_unacknowledged_lineage_page(
+                vec![untrusted_hidden_grandchild],
+                Some("page-2".to_string()),
+            )),
+            ScriptedLineageResponse::Page(scripted_lineage_page(
+                vec![
+                    scripted_lineage_thread(
+                        &app.config,
+                        direct_child_thread_id,
+                        primary_thread_id,
+                        1,
+                    ),
+                    untrusted_unrelated_child,
+                ],
+                None,
+            )),
+        ])));
+        let (mut app_server, requests, proxy) = start_recording_app_server_with_lineage(
+            &app.config,
+            None,
+            Some(Arc::clone(&responses)),
+            None,
+        )
+        .await?;
+
+        let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+
+        assert!(backfill.completed);
+        assert_eq!(take_backfill_counts(&requests), (2, 0, 0));
+        assert!(app.agent_navigation.get(&direct_child_thread_id).is_some());
+        assert!(
+            app.agent_navigation
+                .get(&hidden_grandchild_thread_id)
+                .is_none()
+        );
+        assert!(
+            app.agent_navigation
+                .get(&unrelated_child_thread_id)
+                .is_none()
+        );
 
         app_server.shutdown().await?;
         proxy.await??;

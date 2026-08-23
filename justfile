@@ -197,7 +197,7 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui app::agent_navigation::tests::bounded_picker_windows_rotate_and_reset --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_resumes_failed_cursor_without_refetching_prefix --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_retries_authoritative_thread_read_without_relisting --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_cursor_cycle_is_bounded_per_open --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_cursor_cycle_does_not_finalize_pending_descendants --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_persistent_cycle_refreshes_pathless_v2_child_per_open --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_recovers_after_cursor_cycle_and_finds_new_child --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_advances_beyond_page_budget_across_opens --lib -- --exact --test-threads=1

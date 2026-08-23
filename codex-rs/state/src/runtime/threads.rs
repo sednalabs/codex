@@ -2423,7 +2423,7 @@ mod tests {
         runtime
             .upsert_thread_spawn_edge(
                 grandchild_id,
-                first_child_id,
+                parent_id,
                 DirectionalThreadSpawnEdgeStatus::Open,
             )
             .await

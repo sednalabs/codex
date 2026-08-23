@@ -2079,77 +2079,51 @@ async fn should_attach_live_thread_for_selection_includes_closed_metadata_only_t
 }
 
 #[test]
-fn select_persisted_closed_agent_replays_saved_turns_without_live_attach() -> Result<()> {
+fn select_persisted_paginated_closed_thread_resumes_before_replay_fallback() -> Result<()> {
     run_large_stack_app_test(|| async {
         let mut app = make_test_app().await;
         let codex_home = tempdir()?;
         app.config.codex_home = codex_home.path().to_path_buf().abs();
         app.config.sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
-        let root_thread_id = ThreadId::from_string(&app_test_support::create_fake_rollout(
-            codex_home.path(),
-            "2026-01-01T00-00-00",
-            "2026-01-01T00:00:00Z",
-            "Saved root message",
-            Some(app.config.model_provider_id.as_str()),
-            /*git_info*/ None,
-        )?)?;
-        let child_thread_id =
-            ThreadId::from_string(&app_test_support::create_fake_parented_rollout_with_source(
+        let thread_id = ThreadId::from_string(
+            &app_test_support::create_fake_paginated_rollout(
                 codex_home.path(),
-                "2026-01-01T00-00-01",
-                "2026-01-01T00:00:01Z",
-                "Saved child message",
+                "2026-01-01T00-00-00",
+                "2026-01-01T00:00:00Z",
+                "Saved paginated message",
                 Some(app.config.model_provider_id.as_str()),
                 /*git_info*/ None,
-                RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                    parent_thread_id: root_thread_id,
-                    depth: 1,
-                    agent_path: Some(
-                        codex_protocol::AgentPath::try_from("/root/worker")
-                            .expect("valid agent path"),
-                    ),
-                    agent_nickname: Some("worker".to_string()),
-                    agent_role: Some("worker".to_string()),
-                }),
-                root_thread_id.into(),
-                root_thread_id,
-            )?)?;
-        let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
-        let root = app_server
-            .resume_thread(
-                app.config.clone(),
-                root_thread_id,
-                app.resume_model_settings(),
             )
-            .await?;
-        app.enqueue_primary_thread_session(root.session, root.turns)
-            .await?;
-        let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
-        assert!(backfill.completed);
-        assert!(
-            app.agent_navigation
-                .get(&child_thread_id)
-                .is_some_and(|entry| entry.is_closed)
+            .expect("create paginated rollout"),
+        )?;
+        let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+        app.agent_navigation.upsert(
+            thread_id,
+            Some("saved".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ true,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
 
         let mut tui = crate::tui::test_support::make_test_tui()?;
-        app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
+        app.select_agent_thread(&mut tui, &mut app_server, thread_id)
             .await?;
 
-        assert_eq!(app.active_thread_id, Some(child_thread_id));
+        assert_eq!(app.active_thread_id, Some(thread_id));
         let channel = app
             .thread_event_channels
-            .get(&child_thread_id)
-            .expect("saved child should have a replay channel");
-        assert_eq!(channel.attachment(), ThreadEventAttachment::ReplayOnly);
+            .get(&thread_id)
+            .expect("paginated thread should have a live resumed channel");
+        assert_eq!(channel.attachment(), ThreadEventAttachment::Live);
         let store = channel.store.lock().await;
         assert!(store.turns.iter().flat_map(|turn| &turn.items).any(|item| {
             matches!(
                 item,
                 ThreadItem::UserMessage { content, .. }
                     if content.iter().any(|input| matches!(
-                        input,
-                        AppServerUserInput::Text { text, .. } if text == "Saved child message"
+                        input, AppServerUserInput::Text { text, .. }
+                            if text == "Saved paginated message"
                     ))
             )
         }));
