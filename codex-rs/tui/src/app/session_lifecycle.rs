@@ -27,10 +27,51 @@ pub(super) struct LoadedSubagentBackfillProgress {
     seen_cursors: HashSet<String>,
     pending_refresh_thread_ids: VecDeque<ThreadId>,
     retained_thread_ids: HashSet<ThreadId>,
+    compatibility: Option<LoadedSubagentCompatibilityProgress>,
     ancestor_filter_applied_to_all_pages: bool,
     loaded_fallback: Option<LoadedSubagentFallbackProgress>,
     listing_complete: bool,
     truncated: bool,
+}
+
+struct LoadedSubagentCompatibilityProgress {
+    accumulator: LoadedSubagentAccumulator,
+    retained_thread_ids: HashSet<ThreadId>,
+}
+
+impl LoadedSubagentCompatibilityProgress {
+    fn new(
+        primary_thread_id: ThreadId,
+        authoritative_thread_ids: impl IntoIterator<Item = ThreadId>,
+    ) -> Self {
+        let mut accumulator = LoadedSubagentAccumulator::new(primary_thread_id);
+        accumulator.seed_accepted(authoritative_thread_ids);
+        Self {
+            accumulator,
+            retained_thread_ids: HashSet::new(),
+        }
+    }
+
+    fn ingest(&mut self, threads: Vec<Thread>) -> (Vec<LoadedSubagentThread>, bool) {
+        let mut truncated = false;
+        let retained = threads
+            .into_iter()
+            .filter(|thread| {
+                let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
+                    return false;
+                };
+                if self.retained_thread_ids.contains(&thread_id) {
+                    return false;
+                }
+                if self.retained_thread_ids.len() >= codex_state::MAX_THREAD_RELATION_DESCENDANTS {
+                    truncated = true;
+                    return false;
+                }
+                self.retained_thread_ids.insert(thread_id)
+            })
+            .collect();
+        (self.accumulator.ingest(retained), truncated)
+    }
 }
 
 struct LoadedSubagentFallbackProgress {
@@ -64,6 +105,7 @@ impl LoadedSubagentBackfillProgress {
             seen_cursors: HashSet::new(),
             pending_refresh_thread_ids: VecDeque::new(),
             retained_thread_ids: HashSet::new(),
+            compatibility: None,
             ancestor_filter_applied_to_all_pages: true,
             loaded_fallback: None,
             listing_complete: false,
@@ -94,6 +136,16 @@ impl LoadedSubagentBackfillProgress {
         self.retained_thread_ids.insert(thread_id)
     }
 
+    fn retain_loaded_threads(
+        &mut self,
+        threads: Vec<LoadedSubagentThread>,
+    ) -> Vec<LoadedSubagentThread> {
+        threads
+            .into_iter()
+            .filter(|thread| self.retain_thread_id(thread.thread_id))
+            .collect()
+    }
+
     fn retained_descendant_capacity_reached(&self) -> bool {
         self.retained_thread_ids.len() >= MAX_RETAINED_SUBAGENT_LINEAGE
     }
@@ -101,6 +153,18 @@ impl LoadedSubagentBackfillProgress {
     #[cfg(test)]
     pub(crate) fn retained_thread_count(&self) -> usize {
         self.retained_thread_ids.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compatibility_retained_thread_count(&self) -> usize {
+        self.compatibility
+            .as_ref()
+            .map_or(0, |compatibility| compatibility.retained_thread_ids.len())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_truncated(&self) -> bool {
+        self.truncated
     }
 
     #[cfg(test)]
@@ -1183,12 +1247,29 @@ impl App {
                         break;
                     }
                 };
-                progress.ancestor_filter_applied_to_all_pages &=
-                    response.ancestor_filter_applied.unwrap_or(false);
+                let ancestor_filter_applied = response.ancestor_filter_applied.unwrap_or(false);
+                if !ancestor_filter_applied && progress.compatibility.is_none() {
+                    progress.compatibility = Some(LoadedSubagentCompatibilityProgress::new(
+                        primary_thread_id,
+                        progress.retained_thread_ids.iter().copied(),
+                    ));
+                }
+                progress.ancestor_filter_applied_to_all_pages &= ancestor_filter_applied;
                 progress.truncated |= response.relation_limit_reached.unwrap_or(false);
-                let retained_threads = progress.retain_threads(response.data);
+                let loaded_threads = if progress.ancestor_filter_applied_to_all_pages {
+                    let retained_threads = progress.retain_threads(response.data);
+                    progress.accumulator.ingest(retained_threads)
+                } else {
+                    let (loaded_threads, compatibility_truncated) = progress
+                        .compatibility
+                        .as_mut()
+                        .expect("compatibility state should exist after an unacknowledged page")
+                        .ingest(response.data);
+                    progress.truncated |= compatibility_truncated;
+                    progress.retain_loaded_threads(loaded_threads)
+                };
                 let admission_truncated = self.stage_loaded_subagent_threads(
-                    progress.accumulator.ingest(retained_threads),
+                    loaded_threads,
                     &mut progress.pending_refresh_thread_ids,
                     &mut refreshed_thread_ids,
                 );
@@ -1202,6 +1283,11 @@ impl App {
                                 &mut refreshed_thread_ids,
                             );
                             progress.truncated |= admission_truncated;
+                        } else {
+                            // Completion of an unacknowledged listing cannot promote unresolved
+                            // rows. Drop its compatibility graph instead of treating it as an
+                            // authoritative complete descendant set.
+                            progress.compatibility = None;
                         }
                         progress.listing_complete = true;
                         break;

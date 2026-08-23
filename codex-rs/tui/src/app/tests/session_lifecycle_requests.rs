@@ -542,6 +542,7 @@ fn unacknowledged_lineage_completion_keeps_strict_local_validation() -> Result<(
         let mut app = make_test_app().await;
         let primary_thread_id = ThreadId::new();
         let direct_child_thread_id = ThreadId::new();
+        let locally_valid_grandchild_thread_id = ThreadId::new();
         let filtered_connector_id = ThreadId::new();
         let hidden_grandchild_thread_id = ThreadId::new();
         let unrelated_parent_id = ThreadId::new();
@@ -563,16 +564,24 @@ fn unacknowledged_lineage_completion_keeps_strict_local_validation() -> Result<(
         untrusted_unrelated_child.can_accept_direct_input = None;
         let responses = Arc::new(Mutex::new(VecDeque::from([
             ScriptedLineageResponse::Page(scripted_unacknowledged_lineage_page(
-                vec![untrusted_hidden_grandchild],
-                Some("page-2".to_string()),
-            )),
-            ScriptedLineageResponse::Page(scripted_lineage_page(
                 vec![
                     scripted_lineage_thread(
                         &app.config,
                         direct_child_thread_id,
                         primary_thread_id,
                         1,
+                    ),
+                    untrusted_hidden_grandchild,
+                ],
+                Some("page-2".to_string()),
+            )),
+            ScriptedLineageResponse::Page(scripted_unacknowledged_lineage_page(
+                vec![
+                    scripted_lineage_thread(
+                        &app.config,
+                        locally_valid_grandchild_thread_id,
+                        direct_child_thread_id,
+                        2,
                     ),
                     untrusted_unrelated_child,
                 ],
@@ -594,6 +603,11 @@ fn unacknowledged_lineage_completion_keeps_strict_local_validation() -> Result<(
         assert!(app.agent_navigation.get(&direct_child_thread_id).is_some());
         assert!(
             app.agent_navigation
+                .get(&locally_valid_grandchild_thread_id)
+                .is_some()
+        );
+        assert!(
+            app.agent_navigation
                 .get(&hidden_grandchild_thread_id)
                 .is_none()
         );
@@ -602,6 +616,95 @@ fn unacknowledged_lineage_completion_keeps_strict_local_validation() -> Result<(
                 .get(&unrelated_child_thread_id)
                 .is_none()
         );
+
+        app_server.shutdown().await?;
+        proxy.await??;
+        Ok(())
+    })
+}
+
+#[test]
+fn unacknowledged_lineage_does_not_poison_authoritative_retention_budget() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let primary_thread_id = ThreadId::new();
+        let valid_child_thread_id = ThreadId::new();
+        configure_backfill_primary(&mut app, primary_thread_id);
+
+        let unrelated_thread_ids = (0..crate::app::loaded_threads::MAX_RETAINED_SUBAGENT_LINEAGE)
+            .map(|_| ThreadId::new())
+            .collect::<Vec<_>>();
+        let mut rows = unrelated_thread_ids
+            .iter()
+            .map(|thread_id| scripted_lineage_thread(&app.config, *thread_id, ThreadId::new(), 1))
+            .collect::<Vec<_>>();
+        rows.push(scripted_lineage_thread(
+            &app.config,
+            valid_child_thread_id,
+            primary_thread_id,
+            1,
+        ));
+        let mut pages = VecDeque::new();
+        let page_count = rows
+            .len()
+            .div_ceil(crate::app::session_lifecycle::SUBAGENT_BACKFILL_PAGE_SIZE as usize);
+        for (page_index, page) in rows
+            .chunks(crate::app::session_lifecycle::SUBAGENT_BACKFILL_PAGE_SIZE as usize)
+            .enumerate()
+        {
+            pages.push_back(ScriptedLineageResponse::Page(
+                scripted_unacknowledged_lineage_page(
+                    page.to_vec(),
+                    Some(format!("page-{}", page_index + 1)),
+                ),
+            ));
+        }
+        assert_eq!(
+            page_count,
+            crate::app::loaded_threads::SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT
+        );
+        pages.push_back(ScriptedLineageResponse::Page(
+            scripted_unacknowledged_lineage_page(Vec::new(), None),
+        ));
+        let responses = Arc::new(Mutex::new(pages));
+        let (mut app_server, requests, proxy) = start_recording_app_server_with_lineage(
+            &app.config,
+            None,
+            Some(Arc::clone(&responses)),
+            None,
+        )
+        .await?;
+
+        let first = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert_eq!(
+            first.status,
+            crate::app::session_lifecycle::LoadedSubagentBackfillStatus::Paused
+        );
+        assert_eq!(take_backfill_counts(&requests), (page_count, 0, 0));
+        assert!(app.agent_navigation.get(&valid_child_thread_id).is_some());
+        assert!(
+            unrelated_thread_ids
+                .iter()
+                .all(|thread_id| app.agent_navigation.get(thread_id).is_none())
+        );
+        let progress = app
+            .subagent_backfill_progress
+            .as_ref()
+            .expect("paused compatibility listing should retain bounded progress");
+        assert_eq!(progress.retained_thread_count(), 1);
+        assert_eq!(
+            progress.compatibility_retained_thread_count(),
+            codex_state::MAX_THREAD_RELATION_DESCENDANTS
+        );
+
+        let second = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert!(second.completed);
+        assert_eq!(
+            second.status,
+            crate::app::session_lifecycle::LoadedSubagentBackfillStatus::Complete
+        );
+        assert_eq!(take_backfill_counts(&requests), (1, 0, 0));
+        assert!(app.subagent_backfill_progress.is_none());
 
         app_server.shutdown().await?;
         proxy.await??;
@@ -825,7 +928,7 @@ fn loaded_fallback_stops_paging_when_descendant_capacity_is_reached() -> Result<
         assert!(
             app.subagent_backfill_progress
                 .as_ref()
-                .is_some_and(|progress| progress.truncated)
+                .is_some_and(|progress| progress.is_truncated())
         );
 
         let second = app.backfill_loaded_subagent_threads(&mut app_server).await;
@@ -1265,7 +1368,7 @@ fn empty_relation_limited_page_marks_backfill_and_picker_truncated() -> Result<(
         assert!(
             app.subagent_backfill_progress
                 .as_ref()
-                .is_some_and(|progress| progress.truncated)
+                .is_some_and(|progress| progress.is_truncated())
         );
         assert!(
             render_bottom_popup(&app.chat_widget, /*width*/ 100)
