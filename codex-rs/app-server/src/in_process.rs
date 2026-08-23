@@ -43,6 +43,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry;
+#[cfg(test)]
+use std::future::Future;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
@@ -198,6 +200,25 @@ async fn forward_in_process_event(
     }
 
     if event_requires_delivery(&event) {
+        #[cfg(test)]
+        if let Some(probe) = REQUIRED_EVENT_DELIVERY_PROBE.get()
+            && matches!(
+                &event,
+                InProcessServerEvent::ServerNotification(
+                    ServerNotification::ExternalAgentConfigImportCompleted(_)
+                )
+            )
+        {
+            let mut send = Box::pin(event_tx.send(event));
+            return std::future::poll_fn(|cx| {
+                let polled = send.as_mut().poll(cx);
+                if polled.is_pending() {
+                    probe.notify_one();
+                }
+                polled.map(|result| result.map_err(|error| error.0))
+            })
+            .await;
+        }
         return event_tx.send(event).await.map_err(|error| error.0);
     }
 
@@ -251,19 +272,6 @@ async fn deliver_in_process_events(
                 continue;
             }
         };
-        #[cfg(test)]
-        if event_tx.capacity() == 0
-            && matches!(
-                event,
-                InProcessServerEvent::ServerNotification(
-                    ServerNotification::ExternalAgentConfigImportCompleted(_)
-                )
-            )
-        {
-            if let Some(probe) = REQUIRED_EVENT_DELIVERY_PROBE.get() {
-                probe.notify_one();
-            }
-        }
         if let Err(undelivered_event) =
             forward_in_process_event(&event_tx, &mut skipped_events, event).await
         {
@@ -1562,12 +1570,7 @@ mod tests {
     #[tokio::test]
     async fn real_handle_shutdown_unblocks_saturated_required_delivery() {
         let required_event_delivery_probe = Arc::new(Notify::new());
-        assert!(
-            REQUIRED_EVENT_DELIVERY_PROBE
-                .set(Arc::clone(&required_event_delivery_probe))
-                .is_ok(),
-            "required delivery probe should be installed once"
-        );
+        let _ = REQUIRED_EVENT_DELIVERY_PROBE.set(Arc::clone(&required_event_delivery_probe));
         let client =
             start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
 
