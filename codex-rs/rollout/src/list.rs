@@ -44,6 +44,10 @@ pub struct ThreadsPage {
     pub num_scanned_files: usize,
     /// True if a hard scan cap was hit; consider resuming with `next_cursor`.
     pub reached_scan_cap: bool,
+    /// True when a raw descendant query filled its deterministic safety subset.
+    ///
+    /// The subset is bounded before outer filters and may omit later, newer, or matching rows.
+    pub relation_limit_reached: bool,
 }
 
 /// Summary information for a thread rollout file.
@@ -384,6 +388,7 @@ pub async fn get_threads_in_root(
             next_cursor: None,
             num_scanned_files: 0,
             reached_scan_cap: false,
+            relation_limit_reached: false,
         });
     }
 
@@ -540,6 +545,7 @@ async fn traverse_directories_for_paths_created(
         next_cursor: next,
         num_scanned_files: scanned_files,
         reached_scan_cap,
+        relation_limit_reached: false,
     })
 }
 
@@ -609,6 +615,7 @@ async fn traverse_directories_for_paths_updated(
         next_cursor: next,
         num_scanned_files: scanned_files,
         reached_scan_cap,
+        relation_limit_reached: false,
     })
 }
 
@@ -666,6 +673,7 @@ async fn traverse_flat_paths_created(
         next_cursor: next,
         num_scanned_files: scanned_files,
         reached_scan_cap,
+        relation_limit_reached: false,
     })
 }
 
@@ -727,6 +735,7 @@ async fn traverse_flat_paths_updated(
         next_cursor: next,
         num_scanned_files: scanned_files,
         reached_scan_cap,
+        relation_limit_reached: false,
     })
 }
 

@@ -1331,6 +1331,7 @@ async fn list_threads_from_files_desc(
             next_cursor,
             num_scanned_files: scanned_files,
             reached_scan_cap,
+            relation_limit_reached: false,
         });
     }
 
@@ -1476,6 +1477,7 @@ async fn list_threads_from_files_asc(
         next_cursor,
         num_scanned_files: scanned_files,
         reached_scan_cap,
+        relation_limit_reached: false,
     })
 }
 
@@ -1939,6 +1941,7 @@ impl From<codex_state::ThreadsPage> for ThreadsPage {
             parent_thread_ids,
             next_anchor,
             num_scanned_rows,
+            relation_limit_reached,
         } = db_page;
         let items = items
             .into_iter()
@@ -1952,6 +1955,7 @@ impl From<codex_state::ThreadsPage> for ThreadsPage {
             next_cursor: next_anchor.map(Into::into),
             num_scanned_files: num_scanned_rows,
             reached_scan_cap: false,
+            relation_limit_reached,
         }
     }
 }

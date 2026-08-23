@@ -995,6 +995,10 @@ impl ChatWidget {
         self.collab_agent_metadata.insert(thread_id, metadata);
     }
 
+    pub(crate) fn remove_collab_agent_metadata(&mut self, thread_id: ThreadId) {
+        self.collab_agent_metadata.remove(&thread_id);
+    }
+
     /// Returns the cached metadata for a thread, defaulting to empty if none has been registered.
     fn collab_agent_metadata(&self, thread_id: ThreadId) -> AgentMetadata {
         self.collab_agent_metadata

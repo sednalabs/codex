@@ -1466,8 +1466,10 @@ async fn receiver_and_activity_ingress_share_navigation_and_metadata_cap() {
 
     app.cache_collab_receiver_threads_for_notification(&receiver_notification);
 
-    let rejected_thread_id = *receiver_thread_ids.last().expect("overflow receiver id");
-    let retained_thread_id = receiver_thread_ids[0];
+    let newest_receiver_thread_id = *receiver_thread_ids.last().expect("newest receiver id");
+    let oldest_thread_id = receiver_thread_ids[0];
+    let second_oldest_thread_id = receiver_thread_ids[1];
+    let retained_thread_id = receiver_thread_ids[2];
     assert_eq!(
         app.agent_navigation.tracked_thread_ids().len(),
         codex_state::MAX_THREAD_RELATION_DESCENDANTS
@@ -1476,11 +1478,9 @@ async fn receiver_and_activity_ingress_share_navigation_and_metadata_cap() {
         app.chat_widget.collab_agent_metadata_count(),
         codex_state::MAX_THREAD_RELATION_DESCENDANTS
     );
-    assert_eq!(app.agent_navigation.get(&rejected_thread_id), None);
-    assert!(
-        !app.chat_widget
-            .has_collab_agent_metadata(rejected_thread_id)
-    );
+    assert!(app.agent_navigation.get(&newest_receiver_thread_id).is_some());
+    assert_eq!(app.agent_navigation.get(&oldest_thread_id), None);
+    assert!(!app.chat_widget.has_collab_agent_metadata(oldest_thread_id));
     assert!(app.upsert_agent_picker_thread(
         primary_thread_id,
         Some("Main updated".to_string()),
@@ -1488,15 +1488,16 @@ async fn receiver_and_activity_ingress_share_navigation_and_metadata_cap() {
         /*is_closed*/ false,
     ));
 
-    let rejected_activity = ServerNotification::ItemStarted(ItemStartedNotification {
+    let live_arrival_thread_id = ThreadId::new();
+    let live_arrival_activity = ServerNotification::ItemStarted(ItemStartedNotification {
         thread_id: primary_thread_id.to_string(),
-        turn_id: "turn-rejected-activity".to_string(),
+        turn_id: "turn-live-arrival-activity".to_string(),
         started_at_ms: 0,
         item: ThreadItem::SubAgentActivity {
-            id: "activity-rejected".to_string(),
+            id: "activity-live-arrival".to_string(),
             kind: codex_app_server_protocol::SubAgentActivityKind::Started,
-            agent_thread_id: rejected_thread_id.to_string(),
-            agent_path: "/root/rejected".to_string(),
+            agent_thread_id: live_arrival_thread_id.to_string(),
+            agent_path: "/root/live-arrival".to_string(),
             model: None,
             reasoning_effort: None,
         },
@@ -1515,8 +1516,25 @@ async fn receiver_and_activity_ingress_share_navigation_and_metadata_cap() {
         },
     });
 
-    app.cache_collab_receiver_threads_for_notification(&rejected_activity);
+    app.cache_collab_receiver_threads_for_notification(&live_arrival_activity);
     app.cache_collab_receiver_threads_for_notification(&retained_activity);
+
+    let nonactive_overcap_thread_id = ThreadId::new();
+    app.cache_collab_receiver_threads_for_notification(&ServerNotification::ItemCompleted(
+        ItemCompletedNotification {
+            thread_id: primary_thread_id.to_string(),
+            turn_id: "turn-nonactive-overcap".to_string(),
+            completed_at_ms: 0,
+            item: ThreadItem::SubAgentActivity {
+                id: "activity-nonactive-overcap".to_string(),
+                kind: codex_app_server_protocol::SubAgentActivityKind::Interrupted,
+                agent_thread_id: nonactive_overcap_thread_id.to_string(),
+                agent_path: "/root/nonactive-overcap".to_string(),
+                model: None,
+                reasoning_effort: None,
+            },
+        },
+    ));
 
     assert_eq!(
         app.agent_navigation.tracked_thread_ids().len(),
@@ -1526,10 +1544,20 @@ async fn receiver_and_activity_ingress_share_navigation_and_metadata_cap() {
         app.chat_widget.collab_agent_metadata_count(),
         codex_state::MAX_THREAD_RELATION_DESCENDANTS
     );
-    assert_eq!(app.agent_navigation.get(&rejected_thread_id), None);
+    assert!(app.agent_navigation.get(&live_arrival_thread_id).is_some());
+    assert!(
+        app.chat_widget
+            .has_collab_agent_metadata(live_arrival_thread_id)
+    );
+    assert_eq!(app.agent_navigation.get(&second_oldest_thread_id), None);
     assert!(
         !app.chat_widget
-            .has_collab_agent_metadata(rejected_thread_id)
+            .has_collab_agent_metadata(second_oldest_thread_id)
+    );
+    assert_eq!(app.agent_navigation.get(&nonactive_overcap_thread_id), None);
+    assert!(
+        !app.chat_widget
+            .has_collab_agent_metadata(nonactive_overcap_thread_id)
     );
     assert!(
         app.chat_widget
@@ -2100,6 +2128,28 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
+        assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
+        assert!(
+            !std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+        );
+
+        assert!(
+            app.attach_live_thread_for_selection(&mut app_server, child_thread_ids[0])
+                .await?
+        );
+        app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[0])
+            .await?;
+        app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[1])
+            .await?;
+        while app_event_rx.try_recv().is_ok() {}
+        assert_eq!(app.primary_thread_id, Some(child_thread_ids[1]));
+        assert!(app.agent_navigation.is_parent_owned(child_thread_ids[1]));
+        app.chat_widget
+            .restore_user_message_to_composer("switched-back primary stays view-only".into());
+        let draft = app.chat_widget.composer_text_with_pending();
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
         assert!(
             !std::iter::from_fn(|| app_event_rx.try_recv().ok())
