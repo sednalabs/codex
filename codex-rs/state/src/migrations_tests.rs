@@ -195,7 +195,7 @@ fn state_migration_versions_are_unique() {
 }
 
 #[tokio::test]
-async fn thread_spawn_edge_backfill_repairs_complete_historical_databases_idempotently() {
+async fn thread_spawn_edge_backfill_repairs_historical_databases_at_every_backfill_status() {
     let sqlite_home = crate::runtime::test_support::unique_temp_dir();
     tokio::fs::create_dir_all(&sqlite_home)
         .await
@@ -219,6 +219,8 @@ async fn thread_spawn_edge_backfill_repairs_complete_historical_databases_idempo
     const OTHER_PARENT: &str = "00000000-0000-0000-0000-000000000504";
     const AUTHORITATIVE_CHILD: &str = "00000000-0000-0000-0000-000000000505";
     const MALFORMED_CHILD: &str = "00000000-0000-0000-0000-000000000506";
+    const RUNNING_CHILD: &str = "00000000-0000-0000-0000-000000000507";
+    const COMPLETE_CHILD: &str = "00000000-0000-0000-0000-000000000508";
     for (thread_id, rollout_path) in [
         (PARENT, "/tmp/parent.jsonl"),
         (CHILD, "/tmp/child.jsonl"),
@@ -226,6 +228,8 @@ async fn thread_spawn_edge_backfill_repairs_complete_historical_databases_idempo
         (OTHER_PARENT, "/tmp/other-parent.jsonl"),
         (AUTHORITATIVE_CHILD, "/tmp/authoritative-child.jsonl"),
         (MALFORMED_CHILD, "/tmp/malformed-child.jsonl"),
+        (RUNNING_CHILD, "/tmp/running-child.jsonl"),
+        (COMPLETE_CHILD, "/tmp/complete-child.jsonl"),
     ] {
         insert_old_binary_thread(&pool, thread_id, rollout_path).await;
     }
@@ -257,10 +261,10 @@ async fn thread_spawn_edge_backfill_repairs_complete_historical_databases_idempo
             .await
             .expect("historical source should update");
     }
-    sqlx::query("UPDATE backfill_state SET status = 'complete' WHERE id = 1")
+    sqlx::query("UPDATE backfill_state SET status = 'pending' WHERE id = 1")
         .execute(&pool)
         .await
-        .expect("historical rollout backfill should be complete");
+        .expect("historical rollout backfill should be pending");
     sqlx::query(
         "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES (?, ?, ?)",
     )
@@ -280,10 +284,33 @@ async fn thread_spawn_edge_backfill_repairs_complete_historical_databases_idempo
         .iter()
         .find(|migration| migration.version == THREAD_SPAWN_EDGE_BACKFILL_MIGRATION_VERSION)
         .expect("thread-spawn edge backfill migration should exist");
-    sqlx::query(migration.sql.as_ref())
-        .execute(&pool)
-        .await
-        .expect("thread-spawn edge backfill should be idempotent");
+    for _ in 0..2 {
+        sqlx::query(migration.sql.as_ref())
+            .execute(&pool)
+            .await
+            .expect("thread-spawn edge repair should be idempotent while pending");
+    }
+    for (status, child_id) in [("running", RUNNING_CHILD), ("complete", COMPLETE_CHILD)] {
+        sqlx::query("UPDATE backfill_state SET status = ? WHERE id = 1")
+            .bind(status)
+            .execute(&pool)
+            .await
+            .expect("historical rollout backfill status should update");
+        sqlx::query("UPDATE threads SET source = ? WHERE id = ?")
+            .bind(format!(
+                r#"{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{PARENT}","depth":1}}}}}}"#,
+            ))
+            .bind(child_id)
+            .execute(&pool)
+            .await
+            .expect("historical source should update after the original migration run");
+        for _ in 0..2 {
+            sqlx::query(migration.sql.as_ref())
+                .execute(&pool)
+                .await
+                .expect("thread-spawn edge repair should be idempotent at every status");
+        }
+    }
     let edges = sqlx::query_as::<_, (String, String, String)>(
         "SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges ORDER BY child_thread_id",
     )
@@ -303,6 +330,16 @@ async fn thread_spawn_edge_backfill_repairs_complete_historical_databases_idempo
                 OTHER_PARENT.to_string(),
                 AUTHORITATIVE_CHILD.to_string(),
                 "closed".to_string(),
+            ),
+            (
+                PARENT.to_string(),
+                RUNNING_CHILD.to_string(),
+                "open".to_string(),
+            ),
+            (
+                PARENT.to_string(),
+                COMPLETE_CHILD.to_string(),
+                "open".to_string(),
             ),
         ]
     );

@@ -9,8 +9,6 @@ WITH source_candidates AS (
             )
         END AS parent_thread_id
     FROM threads AS child
-    JOIN backfill_state AS backfill
-        ON backfill.id = 1 AND backfill.status = 'complete'
 )
 INSERT OR IGNORE INTO thread_spawn_edges (
     parent_thread_id,

@@ -108,6 +108,11 @@ impl LoadedSubagentAccumulator {
         loaded
     }
 
+    /// Seeds descendants already established by an authoritative ancestor-filtered page.
+    pub(crate) fn seed_accepted(&mut self, thread_ids: impl IntoIterator<Item = ThreadId>) {
+        self.accepted_thread_ids.extend(thread_ids);
+    }
+
     /// Admits rows whose immediate parents were filtered from a complete authoritative listing.
     ///
     /// `thread/list` has already constrained every returned row to the primary's descendant set.
@@ -386,7 +391,7 @@ mod tests {
             active_flags: Vec::new(),
         };
 
-        let mut grandchild = test_thread(
+        let grandchild = test_thread(
             grandchild_thread_id,
             thread_spawn_source(child_thread_id, /*depth*/ 2, "Atlas", "worker"),
         );
