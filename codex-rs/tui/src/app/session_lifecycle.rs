@@ -1995,8 +1995,12 @@ mod tests {
             &LoadedSubagentBackfillStatus::RetryableError,
         );
 
-        assert!(subtitle.contains("additional rows were omitted"));
-        assert!(subtitle.contains("retained rows still need refresh"));
-        assert!(subtitle.contains("Reopen to continue or retry"));
+        assert_eq!(
+            subtitle,
+            format!(
+                "Additional rows were omitted at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent lineage safety limit. {} Retained rows still need refresh; reopen to continue or retry.",
+                AgentNavigationState::picker_subtitle()
+            )
+        );
     }
 }

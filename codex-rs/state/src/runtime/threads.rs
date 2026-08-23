@@ -288,43 +288,68 @@ LIMIT 2
         root_thread_id: ThreadId,
         status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
     ) -> anyhow::Result<Vec<ThreadId>> {
+        let root_thread_id = root_thread_id.to_string();
+        // Historical source backfill can produce A -> B -> A even though each child has only one
+        // incoming edge. Carry the visited ids through each branch so recursion is bounded by the
+        // finite reachable edge set, and seed it with the root so a cycle cannot return the root as
+        // its own descendant. Keep this full-list API uncapped; callers rely on receiving every
+        // reachable descendant. The outer grouping is a defensive duplicate guard for malformed
+        // graphs while retaining the shortest breadth-first depth for deterministic ordering.
         let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
-WITH RECURSIVE subtree(child_thread_id, depth) AS (
-    SELECT child_thread_id, 1
+WITH RECURSIVE subtree(child_thread_id, depth, visited) AS (
+    SELECT child_thread_id, 1, ',' ||
+            "#,
+        );
+        builder.push_bind(root_thread_id.clone());
+        builder.push(
+            r#" || ',' || child_thread_id || ','
     FROM thread_spawn_edges
     WHERE parent_thread_id =
             "#,
         );
-        builder.push_bind(root_thread_id.to_string());
+        builder.push_bind(root_thread_id.clone());
+        builder.push(" AND child_thread_id != ");
+        builder.push_bind(root_thread_id);
         if let Some(status) = status {
             let status = status.to_string();
             builder.push(" AND status = ").push_bind(status.clone());
             builder.push(
                 r#"
     UNION ALL
-    SELECT edge.child_thread_id, subtree.depth + 1
+    SELECT edge.child_thread_id,
+           subtree.depth + 1,
+           subtree.visited || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-    WHERE status =
+    WHERE edge.status =
                 "#,
             );
             builder.push_bind(status);
+            builder.push(
+                r#"
+      AND instr(subtree.visited, ',' || edge.child_thread_id || ',') = 0
+                "#,
+            );
         } else {
             builder.push(
                 r#"
     UNION ALL
-    SELECT edge.child_thread_id, subtree.depth + 1
+    SELECT edge.child_thread_id,
+           subtree.depth + 1,
+           subtree.visited || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    WHERE instr(subtree.visited, ',' || edge.child_thread_id || ',') = 0
                 "#,
             );
         }
         builder.push(
             r#"
 )
-SELECT child_thread_id
+SELECT child_thread_id, MIN(depth) AS depth
 FROM subtree
+GROUP BY child_thread_id
 ORDER BY depth ASC, child_thread_id ASC
             "#,
         );
@@ -3712,6 +3737,78 @@ INSERT INTO thread_spawn_edges (
                 closed_child_thread_id,
                 future_child_thread_id,
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_spawn_descendants_are_cycle_safe_and_status_filtered() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let root_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000920").expect("valid thread id");
+        let cycle_child_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000921").expect("valid thread id");
+        let open_grandchild_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000922").expect("valid thread id");
+        let closed_grandchild_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000923").expect("valid thread id");
+
+        for (parent_thread_id, child_thread_id, status) in [
+            (
+                root_thread_id,
+                cycle_child_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            ),
+            (
+                cycle_child_thread_id,
+                root_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            ),
+            (
+                cycle_child_thread_id,
+                open_grandchild_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            ),
+            (
+                cycle_child_thread_id,
+                closed_grandchild_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Closed,
+            ),
+        ] {
+            runtime
+                .upsert_thread_spawn_edge(parent_thread_id, child_thread_id, status)
+                .await
+                .expect("cyclic edge insert should succeed");
+        }
+
+        let descendants = runtime
+            .list_thread_spawn_descendants(root_thread_id)
+            .await
+            .expect("cyclic descendant list should terminate");
+        assert_eq!(
+            descendants,
+            vec![
+                cycle_child_thread_id,
+                open_grandchild_thread_id,
+                closed_grandchild_thread_id,
+            ]
+        );
+
+        let open_descendants = runtime
+            .list_thread_spawn_descendants_with_status(
+                root_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("status-filtered cyclic descendant list should terminate");
+        assert_eq!(
+            open_descendants,
+            vec![cycle_child_thread_id, open_grandchild_thread_id]
         );
     }
 }
