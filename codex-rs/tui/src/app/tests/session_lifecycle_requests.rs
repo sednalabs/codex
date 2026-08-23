@@ -431,6 +431,46 @@ fn lineage_backfill_resumes_failed_cursor_without_refetching_prefix() -> Result<
 }
 
 #[test]
+fn completed_lineage_backfill_admits_descendant_behind_filtered_connector() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let primary_thread_id = ThreadId::new();
+        let filtered_connector_id = ThreadId::new();
+        let grandchild_thread_id = ThreadId::new();
+        configure_backfill_primary(&mut app, primary_thread_id);
+        let responses = Arc::new(Mutex::new(VecDeque::from([ScriptedLineageResponse::Page(
+            scripted_lineage_page(
+                vec![scripted_lineage_thread(
+                    &app.config,
+                    grandchild_thread_id,
+                    filtered_connector_id,
+                    2,
+                )],
+                None,
+            ),
+        )])));
+        let (mut app_server, requests, proxy) = start_recording_app_server_with_lineage(
+            &app.config,
+            None,
+            Some(Arc::clone(&responses)),
+            None,
+        )
+        .await?;
+
+        let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+
+        assert!(backfill.completed);
+        assert_eq!(take_backfill_counts(&requests), (1, 0, 0));
+        assert!(app.agent_navigation.get(&filtered_connector_id).is_none());
+        assert!(app.agent_navigation.get(&grandchild_thread_id).is_some());
+
+        app_server.shutdown().await?;
+        proxy.await??;
+        Ok(())
+    })
+}
+
+#[test]
 fn lineage_backfill_retries_authoritative_thread_read_without_relisting() -> Result<()> {
     run_large_stack_app_test(|| async {
         let mut app = make_test_app().await;
@@ -482,14 +522,20 @@ fn lineage_backfill_retries_authoritative_thread_read_without_relisting() -> Res
 }
 
 #[test]
-fn lineage_backfill_cursor_cycle_is_bounded_per_open() -> Result<()> {
+fn lineage_backfill_cursor_cycle_does_not_finalize_pending_descendants() -> Result<()> {
     run_large_stack_app_test(|| async {
         let mut app = make_test_app().await;
         let primary_thread_id = ThreadId::new();
+        let first_thread_id = ThreadId::new();
+        let second_thread_id = ThreadId::new();
         configure_backfill_primary(&mut app, primary_thread_id);
+        let pending_cycle = vec![
+            scripted_lineage_thread(&app.config, first_thread_id, second_thread_id, 2),
+            scripted_lineage_thread(&app.config, second_thread_id, first_thread_id, 3),
+        ];
         let responses = Arc::new(Mutex::new(VecDeque::from([
             ScriptedLineageResponse::Page(scripted_lineage_page(
-                Vec::new(),
+                pending_cycle.clone(),
                 Some("cycle".to_string()),
             )),
             ScriptedLineageResponse::Page(scripted_lineage_page(
@@ -497,7 +543,7 @@ fn lineage_backfill_cursor_cycle_is_bounded_per_open() -> Result<()> {
                 Some("cycle".to_string()),
             )),
             ScriptedLineageResponse::Page(scripted_lineage_page(
-                Vec::new(),
+                pending_cycle,
                 Some("cycle".to_string()),
             )),
             ScriptedLineageResponse::Page(scripted_lineage_page(
@@ -521,6 +567,8 @@ fn lineage_backfill_cursor_cycle_is_bounded_per_open() -> Result<()> {
         );
         assert_eq!(second.status, first.status);
         assert_eq!(take_backfill_counts(&requests).0, 4);
+        assert!(app.agent_navigation.get(&first_thread_id).is_none());
+        assert!(app.agent_navigation.get(&second_thread_id).is_none());
         assert!(app.subagent_backfill_progress.is_none());
 
         app_server.shutdown().await?;
@@ -658,6 +706,7 @@ fn lineage_backfill_advances_beyond_page_budget_across_opens() -> Result<()> {
             crate::app::loaded_threads::SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT + 2;
         let mut app = make_test_app().await;
         let primary_thread_id = ThreadId::new();
+        let filtered_connector_id = ThreadId::new();
         configure_backfill_primary(&mut app, primary_thread_id);
         let mut pages = VecDeque::new();
         let descendant_thread_ids = (0..PAGE_COUNT).map(|_| ThreadId::new()).collect::<Vec<_>>();
@@ -666,7 +715,11 @@ fn lineage_backfill_advances_beyond_page_budget_across_opens() -> Result<()> {
                 vec![scripted_lineage_thread(
                     &app.config,
                     descendant_thread_ids[index],
-                    primary_thread_id,
+                    if index == 0 {
+                        filtered_connector_id
+                    } else {
+                        primary_thread_id
+                    },
                     1,
                 )],
                 (index + 1 < PAGE_COUNT).then(|| format!("page-{}", index + 1)),
@@ -687,12 +740,18 @@ fn lineage_backfill_advances_beyond_page_budget_across_opens() -> Result<()> {
             crate::app::session_lifecycle::LoadedSubagentBackfillStatus::Paused
         );
         assert_eq!(take_backfill_counts(&requests).0, PAGE_COUNT - 2);
+        assert!(
+            app.agent_navigation
+                .get(&descendant_thread_ids[0])
+                .is_none(),
+            "a paused partial listing must not finalize a descendant behind a filtered connector"
+        );
         assert_eq!(
             descendant_thread_ids
                 .iter()
                 .filter(|thread_id| app.agent_navigation.get(thread_id).is_some())
                 .count(),
-            PAGE_COUNT - 2
+            PAGE_COUNT - 3
         );
         let second = app.backfill_loaded_subagent_threads(&mut app_server).await;
         assert!(second.completed);

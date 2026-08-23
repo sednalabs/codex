@@ -3,16 +3,15 @@
 //! When the TUI resumes or switches to an existing thread, it needs to populate
 //! `AgentNavigationState` and `ChatWidget` metadata for every subagent that was spawned during
 //! that thread's lifetime. The app server returns ancestor-filtered lineage pages, and the TUI
-//! validates their effective parent edges before adding them to the selected primary thread's
-//! navigation.
+//! validates their spawn edges before adding them to the selected primary thread's navigation.
 //!
 //! This module provides the pure, synchronous tree-walk that turns that flat list into the filtered
 //! set of descendants. It intentionally has no async, no I/O, and no side effects so it can be
 //! unit-tested in isolation.
 //!
-//! The walk starts from `primary_thread_id` and repeatedly follows the relation-aware
-//! `Thread::parent_thread_id`, falling back to the persisted spawn source for ordinary listings.
-//! The primary thread itself is never included in the output.
+//! The walk starts from `primary_thread_id` and repeatedly follows
+//! `SessionSource::SubAgent(ThreadSpawn { parent_thread_id, .. })` edges until no new children are
+//! found. The primary thread itself is never included in the output.
 
 use crate::app_server_session::thread_blocks_direct_input;
 use codex_app_server_protocol::SessionSource;
@@ -72,7 +71,7 @@ impl LoadedSubagentAccumulator {
             if thread_id == self.primary_thread_id || !self.seen_thread_ids.insert(thread_id) {
                 continue;
             }
-            let Some(parent_thread_id) = thread_lineage_parent_thread_id(&thread) else {
+            let Some(parent_thread_id) = thread_spawn_parent_thread_id(&thread.source) else {
                 continue;
             };
             if self.accepted_thread_ids.contains(&parent_thread_id) {
@@ -101,6 +100,29 @@ impl LoadedSubagentAccumulator {
                 loaded.push(loaded_subagent_thread(thread_id, thread));
             }
         }
+        loaded.sort_by_key(|thread| thread.thread_id.to_string());
+        loaded
+    }
+
+    /// Admits rows whose immediate parents were filtered from a complete authoritative listing.
+    ///
+    /// `thread/list` has already constrained every returned row to the primary's descendant set.
+    /// Once the final page arrives, any remaining parent gaps therefore represent filtered
+    /// connectors rather than unrelated rows. Draining the parent buckets visits each pending row
+    /// once and leaves retries idempotent.
+    pub(crate) fn finish(&mut self) -> Vec<LoadedSubagentThread> {
+        let accepted_thread_ids = &mut self.accepted_thread_ids;
+        let mut loaded = self
+            .pending_by_parent
+            .drain()
+            .flat_map(|(_, threads)| threads)
+            .filter_map(|thread| {
+                let thread_id = ThreadId::from_string(&thread.id).ok()?;
+                accepted_thread_ids
+                    .insert(thread_id)
+                    .then(|| loaded_subagent_thread(thread_id, thread))
+            })
+            .collect::<Vec<_>>();
         loaded.sort_by_key(|thread| thread.thread_id.to_string());
         loaded
     }
@@ -190,7 +212,7 @@ fn find_loaded_subagent_threads_for_primary_with_counts(
         let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
             continue;
         };
-        if let Some(parent_thread_id) = thread_lineage_parent_thread_id(&thread) {
+        if let Some(parent_thread_id) = thread_spawn_parent_thread_id(&thread.source) {
             indexed_edges += 1;
             children_by_parent
                 .entry(parent_thread_id)
@@ -256,14 +278,6 @@ fn thread_spawn_parent_thread_id(source: &SessionSource) -> Option<ThreadId> {
         }) => Some(*parent_thread_id),
         _ => None,
     }
-}
-
-fn thread_lineage_parent_thread_id(thread: &Thread) -> Option<ThreadId> {
-    thread
-        .parent_thread_id
-        .as_deref()
-        .and_then(|parent_thread_id| ThreadId::from_string(parent_thread_id).ok())
-        .or_else(|| thread_spawn_parent_thread_id(&thread.source))
 }
 
 #[cfg(test)]
@@ -476,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn incremental_lineage_accepts_descendant_reparented_around_hidden_connector() {
+    fn completed_lineage_accepts_descendant_behind_hidden_connector_once() {
         let primary_thread_id = ThreadId::new();
         let hidden_connector_id = ThreadId::new();
         let grandchild_thread_id = ThreadId::new();
@@ -490,9 +504,10 @@ mod tests {
                 "worker",
             ),
         );
-        grandchild.parent_thread_id = Some(primary_thread_id.to_string());
+        assert!(accumulator.ingest(vec![grandchild]).is_empty());
+        assert_eq!(accumulator.pending_thread_count(), 1);
 
-        let loaded = accumulator.ingest(vec![grandchild]);
+        let loaded = accumulator.finish();
 
         assert_eq!(
             loaded
@@ -502,6 +517,41 @@ mod tests {
             vec![grandchild_thread_id]
         );
         assert_eq!(accumulator.pending_thread_count(), 0);
+        assert!(accumulator.finish().is_empty());
+    }
+
+    #[test]
+    fn completed_lineage_accepts_pending_cycle_once() {
+        let primary_thread_id = ThreadId::new();
+        let first_thread_id = ThreadId::new();
+        let second_thread_id = ThreadId::new();
+        let mut accumulator = LoadedSubagentAccumulator::new(primary_thread_id);
+
+        assert!(
+            accumulator
+                .ingest(vec![
+                    test_thread(
+                        first_thread_id,
+                        thread_spawn_source(second_thread_id, /*depth*/ 2, "first", "worker"),
+                    ),
+                    test_thread(
+                        second_thread_id,
+                        thread_spawn_source(first_thread_id, /*depth*/ 3, "second", "worker"),
+                    ),
+                ])
+                .is_empty()
+        );
+
+        assert_eq!(
+            accumulator
+                .finish()
+                .into_iter()
+                .map(|thread| thread.thread_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([first_thread_id, second_thread_id])
+        );
+        assert_eq!(accumulator.pending_thread_count(), 0);
+        assert!(accumulator.finish().is_empty());
     }
 
     #[test]
