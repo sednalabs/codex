@@ -120,9 +120,29 @@ async fn start_recording_app_server_with_lineage(
     lineage_responses: Option<Arc<Mutex<VecDeque<ScriptedLineageResponse>>>>,
     thread_read_responses: Option<Arc<Mutex<VecDeque<ScriptedThreadReadResponse>>>>,
 ) -> Result<(AppServerSession, RecordedRequests, JoinHandle<Result<()>>)> {
-    let state_db =
+    start_recording_app_server_with_lineage_and_state(
+        config,
+        blocked_thread_read_id,
+        lineage_responses,
+        thread_read_responses,
+        /*with_state_db*/ true,
+    )
+    .await
+}
+
+async fn start_recording_app_server_with_lineage_and_state(
+    config: &Config,
+    blocked_thread_read_id: Option<ThreadId>,
+    lineage_responses: Option<Arc<Mutex<VecDeque<ScriptedLineageResponse>>>>,
+    thread_read_responses: Option<Arc<Mutex<VecDeque<ScriptedThreadReadResponse>>>>,
+    with_state_db: bool,
+) -> Result<(AppServerSession, RecordedRequests, JoinHandle<Result<()>>)> {
+    let state_db = if with_state_db {
         crate::init_state_db_for_app_server_target(config, &crate::AppServerTarget::Embedded)
-            .await?;
+            .await?
+    } else {
+        None
+    };
     let embedded = crate::start_embedded_app_server(
         codex_arg0::Arg0DispatchPaths::default(),
         config.clone(),
@@ -546,6 +566,127 @@ fn unacknowledged_lineage_completion_keeps_strict_local_validation() -> Result<(
             app.agent_navigation
                 .get(&unrelated_child_thread_id)
                 .is_none()
+        );
+
+        app_server.shutdown().await?;
+        proxy.await??;
+        Ok(())
+    })
+}
+
+#[test]
+fn no_state_lineage_fallback_recovers_only_loaded_direct_children() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let codex_home = tempdir()?;
+        app.config.codex_home = codex_home.path().to_path_buf().abs();
+        app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+        let primary_thread_id = ThreadId::from_string(
+            &create_fake_rollout(
+                codex_home.path(),
+                "2026-01-01T00-00-00",
+                "2026-01-01T00:00:00Z",
+                "Primary thread",
+                Some(app.config.model_provider_id.as_str()),
+                /*git_info*/ None,
+            )
+            .expect("create primary rollout"),
+        )?;
+        let direct_child_thread_id = ThreadId::from_string(
+            &create_fake_parented_rollout_with_source(
+                codex_home.path(),
+                "2026-01-01T00-00-01",
+                "2026-01-01T00:00:01Z",
+                "Direct child",
+                Some(app.config.model_provider_id.as_str()),
+                /*git_info*/ None,
+                RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: primary_thread_id,
+                    depth: 1,
+                    agent_path: Some(
+                        AgentPath::try_from("/root/worker").expect("valid agent path"),
+                    ),
+                    agent_nickname: Some("worker".to_string()),
+                    agent_role: Some("worker".to_string()),
+                }),
+                primary_thread_id.into(),
+                primary_thread_id,
+            )
+            .expect("create direct child rollout"),
+        )?;
+        let unrelated_thread_id = ThreadId::from_string(
+            &create_fake_rollout(
+                codex_home.path(),
+                "2026-01-01T00-00-02",
+                "2026-01-01T00:00:02Z",
+                "Unrelated thread",
+                Some(app.config.model_provider_id.as_str()),
+                /*git_info*/ None,
+            )
+            .expect("create unrelated rollout"),
+        )?;
+        let (mut app_server, requests, proxy) = start_recording_app_server_with_lineage_and_state(
+            &app.config,
+            /*blocked_thread_read_id*/ None,
+            /*lineage_responses*/ None,
+            /*thread_read_responses*/ None,
+            /*with_state_db*/ false,
+        )
+        .await?;
+        let primary = app_server
+            .resume_thread(
+                app.config.clone(),
+                primary_thread_id,
+                app.resume_model_settings(),
+            )
+            .await?;
+        app.enqueue_primary_thread_session(primary.session, primary.turns)
+            .await?;
+        for thread_id in [direct_child_thread_id, unrelated_thread_id] {
+            app_server
+                .resume_thread(app.config.clone(), thread_id, app.resume_model_settings())
+                .await?;
+        }
+        take_recorded_requests(&requests);
+
+        let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+
+        assert!(!backfill.completed);
+        assert_eq!(
+            backfill.status,
+            crate::app::session_lifecycle::LoadedSubagentBackfillStatus::RetryableError
+        );
+        assert!(app.agent_navigation.get(&direct_child_thread_id).is_some());
+        assert!(app.agent_navigation.get(&unrelated_thread_id).is_none());
+        let recorded = take_recorded_requests(&requests);
+        assert_eq!(
+            recorded
+                .iter()
+                .filter(|request| request.method == "thread/list")
+                .count(),
+            1
+        );
+        let loaded_requests = recorded
+            .iter()
+            .filter(|request| request.method == "thread/loaded/list")
+            .collect::<Vec<_>>();
+        assert_eq!(loaded_requests.len(), 1);
+        assert_eq!(
+            loaded_requests[0]
+                .params
+                .as_ref()
+                .and_then(|params| params.get("limit"))
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::from(
+                crate::app::session_lifecycle::SUBAGENT_BACKFILL_PAGE_SIZE,
+            ))
+        );
+        assert_eq!(
+            recorded
+                .iter()
+                .filter(|request| request.method == "thread/read")
+                .count(),
+            2
         );
 
         app_server.shutdown().await?;

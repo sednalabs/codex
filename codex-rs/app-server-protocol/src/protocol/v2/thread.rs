@@ -1247,9 +1247,9 @@ pub struct ThreadListResponse {
     /// True only when the server applied the requested `ancestorThreadId` filter.
     ///
     /// Older servers omit this field. Clients must treat an omitted acknowledgement as false.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub ancestor_filter_applied: bool,
+    pub ancestor_filter_applied: Option<bool>,
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// if None, there are no more items to return.
     pub next_cursor: Option<String>,

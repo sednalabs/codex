@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
+use codex_protocol::ThreadId;
 use codex_utils_absolute_path::test_support::PathExt;
 use sqlx::Connection;
 use sqlx::Row;
@@ -24,6 +25,7 @@ const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 47;
 const CURRENT_PINNED_THREADS_MIGRATION_VERSION: i64 = 48;
 const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 44;
 const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 49;
+const THREAD_SPAWN_EDGE_BACKFILL_MIGRATION_VERSION: i64 = 50;
 const DEPLOYED_ORIGIN_MAIN_MIGRATION_VERSION: i64 = 45;
 
 fn migrator_through(version: i64) -> Migrator {
@@ -190,6 +192,137 @@ fn state_migration_versions_are_unique() {
         duplicates.is_empty(),
         "duplicate state migration versions: {duplicates:?}"
     );
+}
+
+#[tokio::test]
+async fn thread_spawn_edge_backfill_repairs_complete_historical_databases_idempotently() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("sqlite database should open");
+    migrator_through(CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION)
+        .run(&pool)
+        .await
+        .expect("pre-edge-backfill migrations should apply");
+
+    const PARENT: &str = "00000000-0000-0000-0000-000000000501";
+    const CHILD: &str = "00000000-0000-0000-0000-000000000502";
+    const GRANDCHILD: &str = "00000000-0000-0000-0000-000000000503";
+    const OTHER_PARENT: &str = "00000000-0000-0000-0000-000000000504";
+    const AUTHORITATIVE_CHILD: &str = "00000000-0000-0000-0000-000000000505";
+    const MALFORMED_CHILD: &str = "00000000-0000-0000-0000-000000000506";
+    for (thread_id, rollout_path) in [
+        (PARENT, "/tmp/parent.jsonl"),
+        (CHILD, "/tmp/child.jsonl"),
+        (GRANDCHILD, "/tmp/grandchild.jsonl"),
+        (OTHER_PARENT, "/tmp/other-parent.jsonl"),
+        (AUTHORITATIVE_CHILD, "/tmp/authoritative-child.jsonl"),
+        (MALFORMED_CHILD, "/tmp/malformed-child.jsonl"),
+    ] {
+        insert_old_binary_thread(&pool, thread_id, rollout_path).await;
+    }
+    for (thread_id, source) in [
+        (
+            CHILD,
+            format!(
+                r#"{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{PARENT}","depth":1}}}}}}"#,
+            ),
+        ),
+        (
+            GRANDCHILD,
+            format!(
+                r#"{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{CHILD}","depth":2}}}}}}"#,
+            ),
+        ),
+        (
+            AUTHORITATIVE_CHILD,
+            format!(
+                r#"{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{PARENT}","depth":1}}}}}}"#,
+            ),
+        ),
+        (MALFORMED_CHILD, r#"{"subagent": {"#.to_string()),
+    ] {
+        sqlx::query("UPDATE threads SET source = ? WHERE id = ?")
+            .bind(source)
+            .bind(thread_id)
+            .execute(&pool)
+            .await
+            .expect("historical source should update");
+    }
+    sqlx::query("UPDATE backfill_state SET status = 'complete' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .expect("historical rollout backfill should be complete");
+    sqlx::query(
+        "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES (?, ?, ?)",
+    )
+    .bind(OTHER_PARENT)
+    .bind(AUTHORITATIVE_CHILD)
+    .bind("closed")
+    .execute(&pool)
+    .await
+    .expect("authoritative edge should insert");
+
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("thread-spawn edge backfill should apply");
+    let migration = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| migration.version == THREAD_SPAWN_EDGE_BACKFILL_MIGRATION_VERSION)
+        .expect("thread-spawn edge backfill migration should exist");
+    sqlx::query(migration.sql.as_ref())
+        .execute(&pool)
+        .await
+        .expect("thread-spawn edge backfill should be idempotent");
+    let edges = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges ORDER BY child_thread_id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("migrated edges should load");
+    assert_eq!(
+        edges,
+        vec![
+            (PARENT.to_string(), CHILD.to_string(), "open".to_string()),
+            (
+                CHILD.to_string(),
+                GRANDCHILD.to_string(),
+                "open".to_string(),
+            ),
+            (
+                OTHER_PARENT.to_string(),
+                AUTHORITATIVE_CHILD.to_string(),
+                "closed".to_string(),
+            ),
+        ]
+    );
+
+    pool.close().await;
+    let runtime = crate::StateRuntime::init(sqlite, "test-provider".to_string())
+        .await
+        .expect("migrated state runtime should initialize");
+    let descendants = runtime
+        .list_thread_spawn_descendants(ThreadId::from_string(PARENT).expect("valid parent id"))
+        .await
+        .expect("migrated descendants should load through runtime");
+    assert_eq!(
+        descendants,
+        vec![
+            ThreadId::from_string(CHILD).expect("valid child id"),
+            ThreadId::from_string(GRANDCHILD).expect("valid grandchild id"),
+        ]
+    );
+    runtime.close().await;
 }
 
 #[tokio::test]
