@@ -27,9 +27,9 @@
 //!
 //! Command submission uses `try_send` and can return `WouldBlock`, while event
 //! fanout may drop notifications under saturation. Server requests are never
-//! silently abandoned: if they cannot be queued they are failed back into
-//! `MessageProcessor` with overload or internal errors so approval flows do
-//! not hang indefinitely.
+//! silently abandoned: required requests wait for event-queue capacity and are
+//! failed back into `MessageProcessor` only when the consumer closes, so
+//! approval flows do not hang indefinitely behind a dropped request.
 //!
 //! # Relationship to `codex-app-server-client`
 //!
@@ -109,10 +109,11 @@ type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorErro
 
 /// Returns whether an in-process notification requires lossless delivery.
 ///
-/// This is the authoritative classifier for both the runtime and client
-/// facades. Transcript boundaries and terminal notifications block for
-/// bounded consumer capacity; other notifications are best-effort and any
-/// loss is reported through [`InProcessServerEvent::Lagged`].
+/// This is the authoritative classifier for the low-level runtime. Transcript
+/// boundaries and terminal notifications block for bounded consumer capacity;
+/// other notifications are best-effort and any loss is reported through
+/// [`InProcessServerEvent::Lagged`]. The app-server-client facade has a
+/// separate Stage 2 contract.
 pub fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     matches!(
         notification,
@@ -140,7 +141,10 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
 
 fn event_loss_count(event: &InProcessServerEvent) -> usize {
     match event {
-        InProcessServerEvent::Lagged { skipped } => *skipped,
+        // Stage 1 produces Lagged markers; it never receives them as input
+        // from the lower-layer outgoing queue. Facade-side marker relaying is
+        // a separate Stage 2 concern.
+        InProcessServerEvent::Lagged { .. } => 0,
         InProcessServerEvent::ServerNotification(_) | InProcessServerEvent::ServerRequest(_) => 1,
     }
 }
@@ -346,9 +350,6 @@ enum InProcessClientMessage {
             oneshot::Receiver<crate::outgoing_message::ClientRequestResult>,
         )>,
     },
-    Shutdown {
-        done_tx: oneshot::Sender<()>,
-    },
 }
 
 enum ProcessorCommand {
@@ -454,6 +455,8 @@ pub struct InProcessClientHandle {
     client: InProcessClientSender,
     event_rx: mpsc::Receiver<InProcessServerEvent>,
     runtime_handle: tokio::task::JoinHandle<()>,
+    shutdown_tx: oneshot::Sender<()>,
+    shutdown_ack_rx: oneshot::Receiver<()>,
     #[cfg(test)]
     _test_codex_home: Option<tempfile::TempDir>,
 }
@@ -513,25 +516,23 @@ impl InProcessClientHandle {
     /// if graceful drain does not complete in time.
     pub async fn shutdown(self) -> IoResult<()> {
         let Self {
-            client,
             event_rx,
             mut runtime_handle,
+            shutdown_tx,
+            shutdown_ack_rx,
             #[cfg(test)]
             _test_codex_home,
         } = self;
         // Required event delivery may be waiting for capacity. Close the
         // consumer side before asking the runtime to drain so a blocked send
         // observes closure instead of holding shutdown behind the event queue.
+        // Shutdown control has its own unbounded-by-the-client-queue signal.
+        // Send it before dropping the event receiver so a full client command
+        // queue cannot starve cleanup or its completion acknowledgment.
+        let shutdown_signaled = shutdown_tx.send(()).is_ok();
         drop(event_rx);
-        let (done_tx, done_rx) = oneshot::channel();
-
-        if client
-            .client_tx
-            .send(InProcessClientMessage::Shutdown { done_tx })
-            .await
-            .is_ok()
-        {
-            let _ = timeout(SHUTDOWN_ACK_TIMEOUT, done_rx).await;
+        if shutdown_signaled {
+            let _ = timeout(SHUTDOWN_ACK_TIMEOUT, shutdown_ack_rx).await;
         }
 
         if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut runtime_handle).await {
@@ -587,6 +588,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+    let (shutdown_ack_tx, shutdown_ack_rx) = oneshot::channel::<()>();
 
     let runtime_handle = tokio::spawn(async move {
         let (event_outgoing_tx, event_outgoing_rx) =
@@ -759,10 +762,11 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         });
         let mut pending_request_responses =
             HashMap::<RequestId, oneshot::Sender<PendingClientRequestResponse>>::new();
-        let mut shutdown_ack = None;
-
         loop {
             tokio::select! {
+                _ = &mut shutdown_rx => {
+                    break;
+                }
                 message = client_rx.recv() => {
                     match message {
                         Some(InProcessClientMessage::Request { request, response_tx }) => {
@@ -842,10 +846,6 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 .await;
                             let pending = outgoing_message_sender.send_request(request).await;
                             let _ = response_tx.send(pending);
-                        }
-                        Some(InProcessClientMessage::Shutdown { done_tx }) => {
-                            shutdown_ack = Some(done_tx);
-                            break;
                         }
                         None => {
                             break;
@@ -937,15 +937,15 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
 
         analytics_events_flush_client.flush().await;
 
-        if let Some(done_tx) = shutdown_ack {
-            let _ = done_tx.send(());
-        }
+        let _ = shutdown_ack_tx.send(());
     });
 
     Ok(InProcessClientHandle {
         client: InProcessClientSender { client_tx },
         event_rx,
         runtime_handle,
+        shutdown_tx,
+        shutdown_ack_rx,
         #[cfg(test)]
         _test_codex_home: None,
     })
@@ -1098,6 +1098,24 @@ mod tests {
 
     async fn start_test_client(session_source: SessionSource) -> InProcessClientHandle {
         start_test_client_with_capacity(session_source, DEFAULT_IN_PROCESS_CHANNEL_CAPACITY).await
+    }
+
+    async fn request_retrying_would_block(
+        client: &InProcessClientHandle,
+        request: ClientRequest,
+    ) -> IoResult<PendingClientRequestResponse> {
+        timeout(Duration::from_secs(1), async {
+            loop {
+                match client.request(request.clone()).await {
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        tokio::task::yield_now().await;
+                    }
+                    result => break result,
+                }
+            }
+        })
+        .await
+        .map_err(|_| IoError::new(ErrorKind::TimedOut, "request remained blocked"))?
     }
 
     #[tokio::test]
@@ -1320,16 +1338,21 @@ mod tests {
     #[test]
     fn event_loss_tracking_marks_only_the_first_drop_in_each_burst() {
         let mut skipped_events = 0;
-        let event = InProcessServerEvent::Lagged { skipped: 3 };
+        let event = InProcessServerEvent::ServerNotification(ServerNotification::AccountUpdated(
+            AccountUpdatedNotification {
+                auth_mode: None,
+                plan_type: None,
+            },
+        ));
 
         assert!(record_event_loss(&mut skipped_events, &event));
-        assert_eq!(skipped_events, 3);
+        assert_eq!(skipped_events, 1);
         assert!(!record_event_loss(&mut skipped_events, &event));
-        assert_eq!(skipped_events, 6);
+        assert_eq!(skipped_events, 2);
 
         skipped_events = 0;
         assert!(record_event_loss(&mut skipped_events, &event));
-        assert_eq!(skipped_events, 3);
+        assert_eq!(skipped_events, 1);
     }
 
     #[tokio::test]
@@ -1454,13 +1477,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_closes_saturated_required_event_receiver_before_waiting() {
-        let (client_tx, mut client_rx) = mpsc::channel(/*buffer*/ 1);
+    async fn shutdown_signal_unblocks_saturated_required_event_with_full_client_queue() {
+        let (client_tx, client_rx) = mpsc::channel(/*buffer*/ 1);
         let (event_tx, event_rx) = mpsc::channel(/*buffer*/ 1);
         let (saturated_tx, saturated_rx) = oneshot::channel();
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+        let (shutdown_ack_tx, shutdown_ack_rx) = oneshot::channel();
         let completed = Arc::new(AtomicBool::new(false));
         let runtime_completed = Arc::clone(&completed);
+        client_tx
+            .try_send(InProcessClientMessage::Notification {
+                notification: ClientNotification::Initialized,
+            })
+            .expect("client command queue should be full before shutdown");
         let runtime_handle = tokio::spawn(async move {
+            let _client_rx = client_rx;
             event_tx
                 .send(InProcessServerEvent::ServerNotification(
                     turn_completed_notification("queued"),
@@ -1468,27 +1499,29 @@ mod tests {
                 .await
                 .expect("first required event should saturate the queue");
             let _ = saturated_tx.send(());
-            let blocked_send = event_tx
-                .send(InProcessServerEvent::ServerNotification(
+            let blocked_send = tokio::select! {
+                result = event_tx.send(InProcessServerEvent::ServerNotification(
                     turn_completed_notification("blocked"),
-                ))
-                .await;
+                )) => result,
+                _ = &mut shutdown_rx => event_tx
+                    .send(InProcessServerEvent::ServerNotification(
+                        turn_completed_notification("blocked"),
+                    ))
+                    .await,
+            };
             assert!(
                 blocked_send.is_err(),
                 "dropping the shutdown receiver should unblock required delivery"
             );
-
-            let done_tx = match client_rx.recv().await {
-                Some(InProcessClientMessage::Shutdown { done_tx }) => done_tx,
-                _ => panic!("expected in-process shutdown request"),
-            };
             runtime_completed.store(true, Ordering::Release);
-            let _ = done_tx.send(());
+            let _ = shutdown_ack_tx.send(());
         });
         let client = InProcessClientHandle {
             client: InProcessClientSender { client_tx },
             event_rx,
             runtime_handle,
+            shutdown_tx,
+            shutdown_ack_rx,
             _test_codex_home: None,
         };
 
@@ -1507,26 +1540,31 @@ mod tests {
         let client =
             start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
 
-        // `start` queues the initialized notification before returning. Wait
-        // for the runtime to consume that startup command before exercising the
-        // capacity-one delivery path; otherwise the first request can race the
-        // startup handshake and fail with `WouldBlock` before the event queue
-        // is saturated.
-        wait_for_channel_capacity(&client.client.client_tx, /*expected*/ 1).await;
-
-        client
-            .request(ClientRequest::ThreadStart {
+        request_retrying_would_block(
+            &client,
+            ClientRequest::ThreadStart {
                 request_id: RequestId::Integer(20),
                 params: ThreadStartParams {
                     ephemeral: Some(true),
                     ..ThreadStartParams::default()
                 },
-            })
-            .await
-            .expect("thread/start transport should remain live")
-            .expect("thread/start should succeed while events are retained");
-        client
-            .request(ClientRequest::ExternalAgentConfigImport {
+            },
+        )
+        .await
+        .expect("thread/start transport should remain live")
+        .expect("thread/start should succeed while events are retained");
+
+        timeout(Duration::from_secs(1), async {
+            while client.event_rx.capacity() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("thread/start should saturate the retained event queue");
+
+        request_retrying_would_block(
+            &client,
+            ClientRequest::ExternalAgentConfigImport {
                 request_id: RequestId::Integer(21),
                 params: ExternalAgentConfigImportParams {
                     migration_items: vec![ExternalAgentConfigMigrationItem {
@@ -1539,10 +1577,17 @@ mod tests {
                     provider_id: None,
                     migration_source: None,
                 },
-            })
-            .await
-            .expect("external import transport should remain live")
-            .expect("external import should admit its required completion event");
+            },
+        )
+        .await
+        .expect("external import transport should remain live")
+        .expect("external import should admit its required completion event");
+
+        assert_eq!(
+            client.event_rx.capacity(),
+            0,
+            "required completion remains blocked behind the retained event"
+        );
 
         timeout(Duration::from_secs(2), client.shutdown())
             .await
@@ -1551,7 +1596,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn real_handle_server_request_preserves_fifo_response_and_shutdown_progress() {
+    async fn test_seam_server_request_preserves_fifo_response_and_shutdown_progress() {
         let mut client =
             start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
         let sender = client.sender();
@@ -1657,23 +1702,26 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn in_process_shutdown_waits_for_analytics_flush_budget() {
-        let (client_tx, mut client_rx) = mpsc::channel(/*buffer*/ 1);
+        let (client_tx, _client_rx) = mpsc::channel(/*buffer*/ 1);
         let (_event_tx, event_rx) = mpsc::channel(/*buffer*/ 1);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (shutdown_ack_tx, shutdown_ack_rx) = oneshot::channel();
         let completed = Arc::new(AtomicBool::new(false));
         let runtime_completed = Arc::clone(&completed);
         let runtime_handle = tokio::spawn(async move {
-            let done_tx = match client_rx.recv().await {
-                Some(InProcessClientMessage::Shutdown { done_tx }) => done_tx,
-                _ => panic!("expected in-process shutdown request"),
-            };
+            shutdown_rx
+                .await
+                .expect("expected in-process shutdown signal");
             tokio::time::sleep(SHUTDOWN_TIMEOUT + SHUTDOWN_TIMEOUT + Duration::from_secs(24)).await;
             runtime_completed.store(true, Ordering::Release);
-            let _ = done_tx.send(());
+            let _ = shutdown_ack_tx.send(());
         });
         let client = InProcessClientHandle {
             client: InProcessClientSender { client_tx },
             event_rx,
             runtime_handle,
+            shutdown_tx,
+            shutdown_ack_rx,
             _test_codex_home: None,
         };
 

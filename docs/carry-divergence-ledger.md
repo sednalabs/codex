@@ -1777,9 +1777,9 @@ decisions.
   completed items, and terminal notifications.
 - The runtime queue retains required notifications and ordinary server requests
   in their source FIFO. Best-effort losses are counted exactly and a single
-  aggregated `Lagged` marker is delivered before the next required event; a
-  relayed `Lagged` marker contributes its represented loss count rather than
-  counting as one dropped envelope.
+  aggregated `Lagged` marker is delivered before the next required event.
+  Stage 1 only produces these markers from dropped lower-layer events; marker
+  relaying and represented-count composition belong to Stage 2.
 - Response ingress remains on the independent bounded lane, so a stalled event
   consumer cannot prevent ordinary success or error responses from completing.
   Closing the runtime event consumer terminates its retained runtime task
