@@ -25,9 +25,11 @@ pub(super) struct LoadedSubagentBackfillProgress {
     accumulator: LoadedSubagentAccumulator,
     seen_cursors: HashSet<String>,
     pending_refresh_thread_ids: VecDeque<ThreadId>,
+    retained_thread_ids: HashSet<ThreadId>,
     ancestor_filter_applied_to_all_pages: bool,
     loaded_fallback: Option<LoadedSubagentFallbackProgress>,
     listing_complete: bool,
+    truncated: bool,
 }
 
 struct LoadedSubagentFallbackProgress {
@@ -60,10 +62,40 @@ impl LoadedSubagentBackfillProgress {
             accumulator: LoadedSubagentAccumulator::new(primary_thread_id),
             seen_cursors: HashSet::new(),
             pending_refresh_thread_ids: VecDeque::new(),
+            retained_thread_ids: HashSet::new(),
             ancestor_filter_applied_to_all_pages: true,
             loaded_fallback: None,
             listing_complete: false,
+            truncated: false,
         }
+    }
+
+    fn retain_threads(&mut self, threads: Vec<Thread>) -> Vec<Thread> {
+        threads
+            .into_iter()
+            .filter(|thread| {
+                let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
+                    return false;
+                };
+                self.retain_thread_id(thread_id)
+            })
+            .collect()
+    }
+
+    fn retain_thread_id(&mut self, thread_id: ThreadId) -> bool {
+        if thread_id == self.primary_thread_id || self.retained_thread_ids.contains(&thread_id) {
+            return false;
+        }
+        if self.retained_thread_ids.len() >= MAX_RETAINED_SUBAGENT_LINEAGE {
+            self.truncated = true;
+            return false;
+        }
+        self.retained_thread_ids.insert(thread_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_thread_count(&self) -> usize {
+        self.retained_thread_ids.len()
     }
 }
 
@@ -83,6 +115,7 @@ pub(super) enum LoadedSubagentBackfillStatus {
     Paused,
     RetryableError,
     CursorCycle,
+    Truncated,
 }
 
 #[derive(Default)]
@@ -102,6 +135,11 @@ pub(super) enum ThreadLivenessRefreshOutcome {
 impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         let backfill = self.backfill_loaded_subagent_threads(app_server).await;
+        let lineage_truncated = backfill.status == LoadedSubagentBackfillStatus::Truncated
+            || self
+                .subagent_backfill_progress
+                .as_ref()
+                .is_some_and(|progress| progress.truncated);
         let untracked_channel_ids = self
             .thread_event_channels
             .keys()
@@ -275,7 +313,12 @@ impl App {
 
         self.chat_widget.show_selection_view(SelectionViewParams {
             title: Some("Subagents".to_string()),
-            subtitle: Some(if picker_has_more {
+            subtitle: Some(if lineage_truncated {
+                format!(
+                    "{} Lineage retained at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent safety limit; additional rows were omitted.",
+                    AgentNavigationState::picker_subtitle()
+                )
+            } else if picker_has_more {
                 format!(
                     "{} Showing a bounded slice; reopen to continue through retained agents.",
                     AgentNavigationState::picker_subtitle()
@@ -1004,8 +1047,9 @@ impl App {
                 };
                 progress.ancestor_filter_applied_to_all_pages &=
                     response.ancestor_filter_applied.unwrap_or(false);
+                let retained_threads = progress.retain_threads(response.data);
                 self.stage_loaded_subagent_threads(
-                    progress.accumulator.ingest(response.data),
+                    progress.accumulator.ingest(retained_threads),
                     &mut progress.pending_refresh_thread_ids,
                     &mut refreshed_thread_ids,
                 );
@@ -1085,7 +1129,7 @@ impl App {
                         let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
                             continue;
                         };
-                        if thread_id != primary_thread_id
+                        if progress.retain_thread_id(thread_id)
                             && fallback.seen_thread_ids.insert(thread_id)
                         {
                             fallback.pending_thread_ids.push_back(thread_id);
@@ -1136,6 +1180,29 @@ impl App {
                         }
                     }
                     Err(err) => {
+                        if Self::is_terminal_thread_read_error(&err) {
+                            let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+                            if self.thread_event_channels.contains_key(&thread_id) {
+                                if let Some(entry) = existing_entry {
+                                    self.upsert_agent_picker_thread(
+                                        thread_id,
+                                        entry.agent_nickname,
+                                        entry.agent_role,
+                                        /*is_closed*/ true,
+                                    );
+                                } else {
+                                    self.upsert_agent_picker_thread(
+                                        thread_id, /*agent_nickname*/ None,
+                                        /*agent_role*/ None, /*is_closed*/ true,
+                                    );
+                                }
+                                self.agent_navigation
+                                    .set_running(thread_id, /*is_running*/ false);
+                            } else {
+                                self.agent_navigation.remove(thread_id);
+                            }
+                            continue;
+                        }
                         tracing::warn!(
                             %err,
                             %thread_id,
@@ -1168,12 +1235,6 @@ impl App {
             }
             if relation_list_failed {
                 progress.loaded_fallback = Some(fallback);
-                self.subagent_backfill_progress = Some(progress);
-                return LoadedSubagentBackfill {
-                    status: LoadedSubagentBackfillStatus::RetryableError,
-                    refreshed_thread_ids,
-                    ..Default::default()
-                };
             }
         }
 
@@ -1213,8 +1274,19 @@ impl App {
                 ..Default::default()
             };
         }
+        if relation_list_failed {
+            self.subagent_backfill_progress = Some(progress);
+            return LoadedSubagentBackfill {
+                status: LoadedSubagentBackfillStatus::RetryableError,
+                refreshed_thread_ids,
+                ..Default::default()
+            };
+        }
         if had_cursor_cycle {
             self.sync_active_agent_label();
+            if progress.truncated {
+                self.subagent_backfill_progress = Some(progress);
+            }
             return LoadedSubagentBackfill {
                 status: LoadedSubagentBackfillStatus::CursorCycle,
                 refreshed_thread_ids,
@@ -1262,9 +1334,17 @@ impl App {
 
         self.sync_active_agent_label();
 
+        let truncated = progress.truncated;
+        if truncated {
+            self.subagent_backfill_progress = Some(progress);
+        }
         LoadedSubagentBackfill {
             completed: true,
-            status: LoadedSubagentBackfillStatus::Complete,
+            status: if truncated {
+                LoadedSubagentBackfillStatus::Truncated
+            } else {
+                LoadedSubagentBackfillStatus::Complete
+            },
             refreshed_thread_ids,
         }
     }
