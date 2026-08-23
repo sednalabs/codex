@@ -703,7 +703,8 @@ fn unacknowledged_lineage_does_not_poison_authoritative_retention_budget() -> Re
             second.status,
             crate::app::session_lifecycle::LoadedSubagentBackfillStatus::Complete
         );
-        assert_eq!(take_backfill_counts(&requests), (1, 0, 0));
+        // Compatibility admission is followed by one bounded authoritative liveness refresh.
+        assert_eq!(take_backfill_counts(&requests), (1, 0, 1));
         assert!(app.subagent_backfill_progress.is_none());
 
         app_server.shutdown().await?;
@@ -980,6 +981,74 @@ fn loaded_fallback_skips_terminal_race_before_valid_child() -> Result<()> {
 }
 
 #[test]
+fn authoritative_retry_promotes_fallback_child_behind_hidden_connector() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let primary_thread_id = ThreadId::new();
+        let hidden_connector_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        configure_backfill_primary(&mut app, primary_thread_id);
+        let child = scripted_lineage_thread(
+            &app.config,
+            child_thread_id,
+            hidden_connector_id,
+            2,
+        );
+        let lineage_responses = Arc::new(Mutex::new(VecDeque::from([
+            ScriptedLineageResponse::Error("state DB unavailable".to_string()),
+            ScriptedLineageResponse::Page(scripted_lineage_page(
+                vec![child.clone()],
+                None,
+            )),
+        ])));
+        let loaded_list_responses = Arc::new(Mutex::new(VecDeque::from([serde_json::json!({
+            "data": [child_thread_id.to_string()],
+            "nextCursor": null,
+        })])));
+        let thread_read_responses = Arc::new(Mutex::new(VecDeque::from([
+            ScriptedThreadReadResponse::Thread(serde_json::to_value(child)?),
+        ])));
+        let (mut app_server, requests, proxy) = start_recording_app_server_with_lineage_and_state(
+            &app.config,
+            /*blocked_thread_read_id*/ None,
+            Some(lineage_responses),
+            Some(thread_read_responses),
+            Some(loaded_list_responses),
+            /*with_state_db*/ true,
+        )
+        .await?;
+
+        let first = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert_eq!(
+            first.status,
+            crate::app::session_lifecycle::LoadedSubagentBackfillStatus::RetryableError
+        );
+        assert!(app.agent_navigation.get(&child_thread_id).is_none());
+        assert_eq!(
+            app.subagent_backfill_progress
+                .as_ref()
+                .map(|progress| progress.retained_thread_count()),
+            Some(0)
+        );
+        assert_eq!(take_backfill_counts(&requests), (1, 1, 1));
+
+        let second = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert!(second.completed);
+        assert_eq!(
+            second.status,
+            crate::app::session_lifecycle::LoadedSubagentBackfillStatus::Complete
+        );
+        assert!(app.agent_navigation.get(&hidden_connector_id).is_none());
+        assert!(app.agent_navigation.get(&child_thread_id).is_some());
+        assert_eq!(take_backfill_counts(&requests), (1, 0, 0));
+
+        app_server.shutdown().await?;
+        proxy.await??;
+        Ok(())
+    })
+}
+
+#[test]
 fn loaded_fallback_stops_paging_when_descendant_capacity_is_reached() -> Result<()> {
     run_large_stack_app_test(|| async {
         let mut app = make_test_app().await;
@@ -1018,6 +1087,12 @@ fn loaded_fallback_stops_paging_when_descendant_capacity_is_reached() -> Result<
             app.subagent_backfill_progress
                 .as_ref()
                 .map(|progress| progress.retained_thread_count()),
+            Some(0)
+        );
+        assert_eq!(
+            app.subagent_backfill_progress
+                .as_ref()
+                .map(|progress| progress.fallback_retained_thread_count()),
             Some(crate::app::loaded_threads::MAX_RETAINED_SUBAGENT_LINEAGE)
         );
         assert!(
@@ -1459,7 +1534,8 @@ fn empty_relation_limited_page_marks_backfill_and_picker_truncated() -> Result<(
 
         app.open_agent_picker(&mut app_server).await;
 
-        assert_eq!(take_backfill_counts(&requests), (1, 0, 0));
+        // Opening the picker performs one bounded refresh for the retained primary row.
+        assert_eq!(take_backfill_counts(&requests), (1, 0, 1));
         assert!(
             app.subagent_backfill_progress
                 .as_ref()

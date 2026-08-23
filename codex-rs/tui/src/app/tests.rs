@@ -1673,6 +1673,78 @@ async fn active_authoritative_lineage_row_replaces_closed_row_at_capacity() {
 }
 
 #[tokio::test]
+async fn side_thread_admission_at_capacity_evicts_safely_or_rejects_without_cache_drift() {
+    let mut evicting_app = make_test_app().await;
+    let retained_ids = (0..codex_state::MAX_THREAD_RELATION_DESCENDANTS)
+        .map(|_| ThreadId::new())
+        .collect::<Vec<_>>();
+    for thread_id in &retained_ids {
+        assert!(evicting_app.upsert_agent_picker_thread(
+            *thread_id,
+            None,
+            None,
+            /*is_closed*/ false,
+        ));
+    }
+    let admitted_side_thread_id = ThreadId::new();
+    assert!(evicting_app.admit_side_thread_to_picker(admitted_side_thread_id));
+    assert!(evicting_app.agent_navigation.get(&retained_ids[0]).is_none());
+    assert!(
+        !evicting_app
+            .chat_widget
+            .has_collab_agent_metadata(retained_ids[0])
+    );
+    assert!(
+        evicting_app
+            .agent_navigation
+            .get(&admitted_side_thread_id)
+            .is_some()
+    );
+    assert!(
+        evicting_app
+            .chat_widget
+            .has_collab_agent_metadata(admitted_side_thread_id)
+    );
+    assert_eq!(
+        evicting_app.agent_navigation.tracked_thread_ids().len(),
+        evicting_app.chat_widget.collab_agent_metadata_count()
+    );
+
+    let mut rejecting_app = make_test_app().await;
+    for _ in 0..codex_state::MAX_THREAD_RELATION_DESCENDANTS {
+        let thread_id = ThreadId::new();
+        assert!(rejecting_app.upsert_agent_picker_thread(
+            thread_id,
+            None,
+            None,
+            /*is_closed*/ false,
+        ));
+        rejecting_app.agent_navigation.mark_running(thread_id);
+    }
+    let rejected_side_thread_id = ThreadId::new();
+    assert!(!rejecting_app.admit_side_thread_to_picker(rejected_side_thread_id));
+    assert!(
+        rejecting_app
+            .agent_navigation
+            .get(&rejected_side_thread_id)
+            .is_none()
+    );
+    assert!(
+        !rejecting_app
+            .chat_widget
+            .has_collab_agent_metadata(rejected_side_thread_id)
+    );
+    assert_eq!(
+        rejecting_app.agent_navigation.tracked_thread_ids().len(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+    assert_eq!(
+        rejecting_app.agent_navigation.tracked_thread_ids().len(),
+        rejecting_app.chat_widget.collab_agent_metadata_count()
+    );
+}
+
+#[tokio::test]
 async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
@@ -2410,14 +2482,13 @@ async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_thread
     .await
     .expect("embedded app server");
     let thread_id = ThreadId::new();
-    app.agent_navigation.upsert(
+    assert!(app.upsert_agent_picker_thread(
         thread_id,
         Some("Ghost".to_string()),
         Some("worker".to_string()),
         /*is_closed*/ false,
-        /*created_at*/ None,
-        /*updated_at*/ None,
-    );
+    ));
+    assert!(app.chat_widget.has_collab_agent_metadata(thread_id));
 
     let outcome =
         Box::pin(app.refresh_agent_picker_thread_liveness(&mut app_server, thread_id)).await;
@@ -2427,6 +2498,7 @@ async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_thread
         crate::app::session_lifecycle::ThreadLivenessRefreshOutcome::TerminalPruned
     );
     assert_eq!(app.agent_navigation.get(&thread_id), None);
+    assert!(!app.chat_widget.has_collab_agent_metadata(thread_id));
     assert!(!app.thread_event_channels.contains_key(&thread_id));
     Ok(())
 }
@@ -4706,14 +4778,12 @@ async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
         let side_thread_id = started.session.thread_id;
         app.side_threads
             .insert(side_thread_id, SideThreadState::new(ThreadId::new()));
-        app.agent_navigation.upsert(
+        assert!(app.upsert_agent_picker_thread(
             side_thread_id,
             Some("Side".to_string()),
             Some("side".to_string()),
             /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
-        );
+        ));
 
         assert!(
             app.discard_side_thread(&mut app_server, side_thread_id)
@@ -4721,6 +4791,7 @@ async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
         );
 
         assert_eq!(app.agent_navigation.get(&side_thread_id), None);
+        assert!(!app.chat_widget.has_collab_agent_metadata(side_thread_id));
         assert!(!app.side_threads.contains_key(&side_thread_id));
         Ok(())
     })
@@ -7216,6 +7287,7 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
     .await;
 
     assert!(app.agent_navigation.is_parent_owned(thread_id));
+    assert!(app.chat_widget.has_collab_agent_metadata(thread_id));
     assert_eq!(snapshot.session, Some(resumed_session.clone()));
     assert_eq!(snapshot.turns, resumed_turns);
 
