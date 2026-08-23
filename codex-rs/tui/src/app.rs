@@ -232,6 +232,8 @@ mod thread_settings;
 use self::agent_navigation::AgentNavigationDirection;
 use self::agent_navigation::AgentNavigationState;
 use self::app_server_requests::PendingAppServerRequests;
+use self::loaded_threads::LineagePageAdvance;
+use self::loaded_threads::LineagePageBudget;
 use self::loaded_threads::find_loaded_subagent_threads_for_primary;
 use self::pending_interactive_replay::PendingInteractiveReplayState;
 use self::platform_actions::*;
@@ -581,6 +583,7 @@ pub(crate) struct App {
     active_thread_rx: Option<mpsc::Receiver<ThreadBufferedEvent>>,
     primary_thread_id: Option<ThreadId>,
     last_subagent_backfill_attempt: Option<ThreadId>,
+    subagent_backfill_progress: Option<session_lifecycle::LoadedSubagentBackfillProgress>,
     primary_session_configured: Option<ThreadSessionState>,
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
     pending_app_server_requests: PendingAppServerRequests,
@@ -1079,6 +1082,7 @@ See the Codex keymap documentation for supported actions and examples."
             active_thread_rx: None,
             primary_thread_id: None,
             last_subagent_backfill_attempt: None,
+            subagent_backfill_progress: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
             pending_app_server_requests: PendingAppServerRequests::default(),

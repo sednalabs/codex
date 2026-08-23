@@ -22,6 +22,49 @@ use codex_protocol::protocol::SubAgentSource;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+pub(crate) const SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT: usize = 32;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LineagePageAdvance {
+    Complete,
+    Continue(String),
+    Pause(String),
+    CursorCycle(String),
+}
+
+pub(crate) struct LineagePageBudget {
+    pages_fetched: usize,
+    seen_cursors: HashSet<String>,
+}
+
+impl LineagePageBudget {
+    pub(crate) fn new(seen_cursors: HashSet<String>) -> Self {
+        Self {
+            pages_fetched: 0,
+            seen_cursors,
+        }
+    }
+
+    pub(crate) fn observe_page(&mut self, next_cursor: Option<String>) -> LineagePageAdvance {
+        self.pages_fetched += 1;
+        let Some(next_cursor) = next_cursor else {
+            return LineagePageAdvance::Complete;
+        };
+        if !self.seen_cursors.insert(next_cursor.clone()) {
+            return LineagePageAdvance::CursorCycle(next_cursor);
+        }
+        if self.pages_fetched >= SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT {
+            LineagePageAdvance::Pause(next_cursor)
+        } else {
+            LineagePageAdvance::Continue(next_cursor)
+        }
+    }
+
+    pub(crate) fn into_seen_cursors(self) -> HashSet<String> {
+        self.seen_cursors
+    }
+}
+
 /// A subagent thread discovered by the spawn-tree walk, carrying just enough metadata for the
 /// TUI to register it in the navigation cache and rendering metadata map.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,7 +165,10 @@ fn thread_spawn_parent_thread_id(source: &SessionSource) -> Option<ThreadId> {
 
 #[cfg(test)]
 mod tests {
+    use super::LineagePageAdvance;
+    use super::LineagePageBudget;
     use super::LoadedSubagentThread;
+    use super::SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT;
     use super::find_loaded_subagent_threads_for_primary;
     use codex_app_server_protocol::SessionSource;
     use codex_app_server_protocol::Thread;
@@ -131,6 +177,7 @@ mod tests {
     use codex_utils_absolute_path::test_support::PathBufExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
+    use std::collections::HashSet;
 
     fn test_thread(thread_id: ThreadId, source: SessionSource) -> Thread {
         Thread {
@@ -252,6 +299,40 @@ mod tests {
                     is_closed: true,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn lineage_page_budget_rejects_cursor_cycles() {
+        let mut budget = LineagePageBudget::new(HashSet::new());
+
+        assert_eq!(
+            budget.observe_page(Some("cursor-a".to_string())),
+            LineagePageAdvance::Continue("cursor-a".to_string())
+        );
+        assert_eq!(
+            budget.observe_page(Some("cursor-b".to_string())),
+            LineagePageAdvance::Continue("cursor-b".to_string())
+        );
+        assert_eq!(
+            budget.observe_page(Some("cursor-a".to_string())),
+            LineagePageAdvance::CursorCycle("cursor-a".to_string())
+        );
+    }
+
+    #[test]
+    fn lineage_page_budget_pauses_with_continuation_after_limit() {
+        let mut budget = LineagePageBudget::new(HashSet::new());
+
+        for page in 1..SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT {
+            assert_eq!(
+                budget.observe_page(Some(format!("cursor-{page}"))),
+                LineagePageAdvance::Continue(format!("cursor-{page}"))
+            );
+        }
+        assert_eq!(
+            budget.observe_page(Some("continuation-cursor".to_string())),
+            LineagePageAdvance::Pause("continuation-cursor".to_string())
         );
     }
 }

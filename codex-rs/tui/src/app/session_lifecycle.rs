@@ -10,11 +10,30 @@ use crate::app_server_session::thread_blocks_direct_input;
 use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_selected_description;
+use codex_app_server_protocol::Thread;
 use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
 
 pub(super) const SUBAGENT_BACKFILL_PAGE_SIZE: u32 = 100;
+
+pub(super) struct LoadedSubagentBackfillProgress {
+    primary_thread_id: ThreadId,
+    next_cursor: Option<String>,
+    threads: Vec<Thread>,
+    seen_cursors: HashSet<String>,
+}
+
+impl LoadedSubagentBackfillProgress {
+    fn new(primary_thread_id: ThreadId) -> Self {
+        Self {
+            primary_thread_id,
+            next_cursor: None,
+            threads: Vec::new(),
+            seen_cursors: HashSet::new(),
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum ThreadAttachPresentation {
@@ -659,6 +678,7 @@ impl App {
         self.active_thread_rx = None;
         self.primary_thread_id = None;
         self.last_subagent_backfill_attempt = None;
+        self.subagent_backfill_progress = None;
         self.primary_session_configured = None;
         self.pending_primary_events.clear();
         self.pending_app_server_requests.clear();
@@ -852,13 +872,17 @@ impl App {
             return LoadedSubagentBackfill::default();
         };
 
-        let mut threads = Vec::new();
-        let mut cursor = None;
+        let mut progress = self
+            .subagent_backfill_progress
+            .take()
+            .filter(|progress| progress.primary_thread_id == primary_thread_id)
+            .unwrap_or_else(|| LoadedSubagentBackfillProgress::new(primary_thread_id));
+        let mut page_budget = LineagePageBudget::new(std::mem::take(&mut progress.seen_cursors));
         let mut had_page_error = false;
         loop {
             let response = match app_server
                 .thread_list(ThreadListParams {
-                    cursor: cursor.clone(),
+                    cursor: progress.next_cursor.clone(),
                     limit: Some(SUBAGENT_BACKFILL_PAGE_SIZE),
                     sort_key: None,
                     sort_direction: None,
@@ -882,16 +906,65 @@ impl App {
                     break;
                 }
             };
-            threads.extend(response.data);
-            let Some(next_cursor) = response.next_cursor else {
-                break;
-            };
-            if cursor.as_ref() == Some(&next_cursor) {
-                had_page_error = true;
-                tracing::warn!(%next_cursor, "subagent lineage backfill cursor did not advance");
-                break;
+            progress.threads.extend(response.data);
+            match page_budget.observe_page(response.next_cursor) {
+                LineagePageAdvance::Complete => break,
+                LineagePageAdvance::Continue(next_cursor) => {
+                    progress.next_cursor = Some(next_cursor);
+                }
+                LineagePageAdvance::Pause(next_cursor) => {
+                    progress.next_cursor = Some(next_cursor);
+                    progress.seen_cursors = page_budget.into_seen_cursors();
+                    self.subagent_backfill_progress = Some(progress);
+                    tracing::warn!(
+                        primary_thread_id = %primary_thread_id,
+                        "paused subagent lineage backfill at the per-attempt page budget"
+                    );
+                    return LoadedSubagentBackfill::default();
+                }
+                LineagePageAdvance::CursorCycle(next_cursor) => {
+                    had_page_error = true;
+                    tracing::warn!(
+                        %next_cursor,
+                        primary_thread_id = %primary_thread_id,
+                        "subagent lineage backfill detected a cursor cycle"
+                    );
+                    break;
+                }
             }
-            cursor = Some(next_cursor);
+        }
+
+        let mut threads = progress.threads;
+        let returned_thread_ids: HashSet<_> = threads
+            .iter()
+            .filter_map(|thread| ThreadId::from_string(&thread.id).ok())
+            .collect();
+        let tracked_thread_ids = self.agent_navigation.tracked_thread_ids();
+        for thread_id in tracked_thread_ids {
+            if thread_id == primary_thread_id
+                || returned_thread_ids.contains(&thread_id)
+                || self.side_threads.contains_key(&thread_id)
+                || self
+                    .thread_event_channels
+                    .get(&thread_id)
+                    .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live)
+            {
+                continue;
+            }
+            match app_server
+                .thread_read(thread_id, /*include_turns*/ false)
+                .await
+            {
+                Ok(thread) => threads.push(thread),
+                Err(err) => {
+                    had_page_error = true;
+                    tracing::warn!(
+                        thread_id = %thread_id,
+                        %err,
+                        "failed to refresh tracked subagent metadata"
+                    );
+                }
+            }
         }
 
         let mut refreshed_thread_ids = HashSet::new();
