@@ -166,6 +166,13 @@ impl LoadedSubagentBackfillProgress {
     }
 
     #[cfg(test)]
+    pub(crate) fn fallback_retained_thread_count(&self) -> usize {
+        self.loaded_fallback
+            .as_ref()
+            .map_or(0, |fallback| fallback.seen_thread_ids.len())
+    }
+
+    #[cfg(test)]
     pub(crate) fn is_truncated(&self) -> bool {
         self.truncated
     }
@@ -573,6 +580,13 @@ impl App {
         update
     }
 
+    /// Removes a picker thread and its mirrored ChatWidget identity as one cache operation.
+    pub(super) fn remove_agent_picker_thread(&mut self, thread_id: ThreadId) {
+        self.agent_navigation.remove(thread_id);
+        self.chat_widget.remove_collab_agent_metadata(thread_id);
+        self.sync_active_agent_label();
+    }
+
     pub(super) fn sync_agent_picker_identity(&mut self, thread_id: ThreadId) {
         let Some(entry) = self.agent_navigation.get(&thread_id).cloned() else {
             return;
@@ -691,7 +705,7 @@ impl App {
             }
             Err(err) => {
                 if Self::is_terminal_thread_read_error(&err) && !has_replay_channel {
-                    self.agent_navigation.remove(thread_id);
+                    self.remove_agent_picker_thread(thread_id);
                     return ThreadLivenessRefreshOutcome::TerminalPruned;
                 }
                 let is_closed = Self::closed_state_for_thread_read_error(
@@ -1338,7 +1352,9 @@ impl App {
         let mut refreshes_attempted = 0;
         if let Some(mut fallback) = progress.loaded_fallback.take() {
             let mut had_fallback_cursor_cycle = false;
-            if progress.retained_descendant_capacity_reached() && !fallback.listing_complete {
+            if fallback.seen_thread_ids.len() >= MAX_RETAINED_SUBAGENT_LINEAGE
+                && !fallback.listing_complete
+            {
                 fallback.next_cursor = None;
                 fallback.seen_cursors.clear();
                 fallback.listing_complete = true;
@@ -1374,21 +1390,21 @@ impl App {
                             continue;
                         };
                         if thread_id != primary_thread_id
-                            && !progress.retained_thread_ids.contains(&thread_id)
-                            && progress.retained_descendant_capacity_reached()
+                            && !fallback.seen_thread_ids.contains(&thread_id)
+                            && fallback.seen_thread_ids.len() >= MAX_RETAINED_SUBAGENT_LINEAGE
                         {
                             progress.truncated = true;
                             retention_exhausted = true;
                             break;
                         }
-                        if progress.retain_thread_id(thread_id)
+                        if thread_id != primary_thread_id
                             && fallback.seen_thread_ids.insert(thread_id)
                         {
                             fallback.pending_thread_ids.push_back(thread_id);
                         }
                     }
                     if retention_exhausted
-                        || progress.retained_descendant_capacity_reached()
+                        || fallback.seen_thread_ids.len() >= MAX_RETAINED_SUBAGENT_LINEAGE
                             && response.next_cursor.is_some()
                     {
                         fallback.next_cursor = None;
@@ -1444,7 +1460,9 @@ impl App {
                     Ok(thread) => {
                         for loaded in fallback.accumulator.ingest(vec![thread]) {
                             let thread_id = loaded.thread_id;
-                            if self.apply_loaded_subagent_thread(loaded) {
+                            let retained = progress.retained_thread_ids.contains(&thread_id)
+                                || progress.retain_thread_id(thread_id);
+                            if retained && self.apply_loaded_subagent_thread(loaded) {
                                 refreshed_thread_ids.insert(thread_id);
                             } else {
                                 progress.truncated = true;
@@ -1471,7 +1489,7 @@ impl App {
                                 self.agent_navigation
                                     .set_running(thread_id, /*is_running*/ false);
                             } else {
-                                self.agent_navigation.remove(thread_id);
+                                self.remove_agent_picker_thread(thread_id);
                             }
                             continue;
                         }
@@ -1529,7 +1547,7 @@ impl App {
                 }
                 ThreadLivenessRefreshOutcome::RetryableError => {
                     if !had_existing_entry {
-                        self.agent_navigation.remove(thread_id);
+                        self.remove_agent_picker_thread(thread_id);
                     }
                     progress.pending_refresh_thread_ids.push_front(thread_id);
                     self.subagent_backfill_progress = Some(progress);

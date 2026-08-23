@@ -450,7 +450,7 @@ impl App {
         self.abort_thread_event_listener(thread_id);
         self.thread_event_channels.remove(&thread_id);
         self.side_threads.remove(&thread_id);
-        self.agent_navigation.remove(thread_id);
+        self.remove_agent_picker_thread(thread_id);
         if self.active_thread_id == Some(thread_id) {
             self.clear_active_thread().await;
         } else {
@@ -610,6 +610,16 @@ impl App {
         Ok(())
     }
 
+    pub(super) fn admit_side_thread_to_picker(&mut self, thread_id: ThreadId) -> bool {
+        self.upsert_agent_picker_thread_retaining(
+            thread_id,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+            /*is_closed*/ false,
+        )
+        .accepted()
+    }
+
     pub(super) async fn handle_start_side(
         &mut self,
         tui: &mut tui::Tui,
@@ -648,6 +658,26 @@ impl App {
         {
             Ok(forked) => {
                 let child_thread_id = forked.session.thread_id;
+                if !self.admit_side_thread_to_picker(child_thread_id) {
+                    let interrupt_error = self
+                        .interrupt_side_thread(app_server, child_thread_id)
+                        .await
+                        .err();
+                    let unsubscribe_error = app_server.thread_unsubscribe(child_thread_id).await.err();
+                    self.restore_side_user_message(user_message.take());
+                    self.chat_widget.add_error_message(format!(
+                        "Could not open side conversation {child_thread_id}: the bounded agent picker has no safe eviction candidate.{}{}",
+                        interrupt_error
+                            .as_deref()
+                            .map(|error| format!(" Cleanup interrupt failed: {error}"))
+                            .unwrap_or_default(),
+                        unsubscribe_error
+                            .as_ref()
+                            .map(|error| format!(" Cleanup unsubscribe failed: {error}"))
+                            .unwrap_or_default(),
+                    ));
+                    return Ok(AppRunControl::Continue);
+                }
                 let channel = self.ensure_thread_channel(child_thread_id);
                 {
                     let mut store = channel.store.lock().await;
@@ -655,14 +685,6 @@ impl App {
                 }
                 self.side_threads
                     .insert(child_thread_id, SideThreadState::new(parent_thread_id));
-                // `thread/started` is delivered after the fork response; seed navigation before
-                // the first selection without blocking on another app-server read.
-                self.upsert_agent_picker_thread(
-                    child_thread_id,
-                    /*agent_nickname*/ None,
-                    /*agent_role*/ None,
-                    /*is_closed*/ false,
-                );
                 if let Err(err) = app_server
                     .thread_inject_items(child_thread_id, vec![Self::side_boundary_prompt_item()])
                     .await

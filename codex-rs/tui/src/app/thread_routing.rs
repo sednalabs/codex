@@ -1427,6 +1427,24 @@ impl App {
         started: AppServerStartedThread,
         snapshot: &mut ThreadEventSnapshot,
     ) {
+        let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+        if !self
+            .upsert_agent_picker_thread_retaining(
+                thread_id,
+                existing_entry
+                    .as_ref()
+                    .and_then(|entry| entry.agent_nickname.clone()),
+                existing_entry.and_then(|entry| entry.agent_role),
+                /*is_closed*/ false,
+            )
+            .accepted()
+        {
+            tracing::warn!(
+                %thread_id,
+                "snapshot refresh could not retain thread in bounded picker cache"
+            );
+            return;
+        }
         if started.blocks_direct_input {
             self.agent_navigation.mark_parent_owned(thread_id);
         }

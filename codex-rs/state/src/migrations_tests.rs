@@ -356,6 +356,8 @@ async fn thread_spawn_edge_backfill_repairs_historical_databases_at_every_backfi
         descendants,
         vec![
             ThreadId::from_string(CHILD).expect("valid child id"),
+            ThreadId::from_string(RUNNING_CHILD).expect("valid running child id"),
+            ThreadId::from_string(COMPLETE_CHILD).expect("valid complete child id"),
             ThreadId::from_string(GRANDCHILD).expect("valid grandchild id"),
         ]
     );
