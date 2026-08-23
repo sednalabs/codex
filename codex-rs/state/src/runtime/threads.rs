@@ -1266,10 +1266,7 @@ fn push_list_threads_query(
         builder,
         filters,
         include_thread_id_tiebreaker,
-        matches!(
-            relation_filter,
-            Some(crate::ThreadRelationFilter::DescendantsOf(_))
-        ),
+        relation_filter.is_some(),
     );
     match relation_filter {
         Some(crate::ThreadRelationFilter::DirectChildrenOf(parent_thread_id)) => {
