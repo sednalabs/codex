@@ -16,6 +16,7 @@ use codex_state::SqliteConfig;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use tokio::net::TcpListener;
