@@ -423,6 +423,7 @@ ON CONFLICT(child_thread_id) DO NOTHING
                 search_term: None,
             },
             /*include_thread_id_tiebreaker*/ false,
+            /*include_empty_preview*/ false,
         );
         builder.push(" AND threads.title = ");
         builder.push_bind(title);
@@ -548,6 +549,7 @@ ON CONFLICT(child_thread_id) DO NOTHING
                 search_term: None,
             },
             sort_key == crate::SortKey::RecencyAt,
+            /*include_empty_preview*/ false,
         );
         push_thread_order_and_limit(
             &mut builder,
@@ -1251,7 +1253,15 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
     };
     let include_thread_id_tiebreaker =
         relation_filter.is_some() || filters.sort_key == SortKey::RecencyAt;
-    push_thread_filters(builder, filters, include_thread_id_tiebreaker);
+    push_thread_filters(
+        builder,
+        filters,
+        include_thread_id_tiebreaker,
+        matches!(
+            relation_filter,
+            Some(crate::ThreadRelationFilter::DescendantsOf(_))
+        ),
+    );
     match relation_filter {
         Some(crate::ThreadRelationFilter::DirectChildrenOf(parent_thread_id)) => {
             builder.push(" AND listed_edge.parent_thread_id = ");
@@ -1355,6 +1365,7 @@ pub(super) fn push_thread_filters<'a>(
     builder: &mut QueryBuilder<Sqlite>,
     options: ThreadFilterOptions<'a>,
     include_thread_id_tiebreaker: bool,
+    include_empty_preview: bool,
 ) {
     let ThreadFilterOptions {
         archived_only,
@@ -1373,7 +1384,9 @@ pub(super) fn push_thread_filters<'a>(
     } else {
         builder.push(" AND threads.archived = 0");
     }
-    builder.push(" AND threads.preview <> ''");
+    if !include_empty_preview {
+        builder.push(" AND threads.preview <> ''");
+    }
     if let Some(is_pinned) = is_pinned {
         builder.push(" AND threads.is_pinned = ");
         builder.push_bind(is_pinned);
@@ -1733,7 +1746,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![newest_unpinned, oldest_unpinned]
         );
-
         let mut builder = QueryBuilder::<Sqlite>::new("EXPLAIN QUERY PLAN ");
         push_list_threads_query(
             &mut builder,
@@ -2218,6 +2230,9 @@ mod tests {
             (grandchild_id, 1_700_000_300),
         ] {
             let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+            if thread_id == grandchild_id {
+                metadata.preview.clear();
+            }
             metadata.created_at =
                 DateTime::<Utc>::from_timestamp(created_at, 0).expect("valid timestamp");
             metadata.updated_at = metadata.created_at;
@@ -2366,6 +2381,17 @@ mod tests {
                 [(first_child_id, parent_id)].into(),
                 None,
             )
+        );
+        let global_page = runtime
+            .list_threads(/*page_size*/ 10, filters(None))
+            .await
+            .expect("global thread listing should succeed");
+        assert!(
+            global_page
+                .items
+                .iter()
+                .all(|item| item.id != grandchild_id),
+            "empty-preview descendants stay hidden from the global history list"
         );
 
         runtime

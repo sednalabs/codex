@@ -151,6 +151,7 @@ pub(crate) struct LoadedSubagentThread {
     pub(crate) agent_role: Option<String>,
     pub(crate) agent_path: Option<String>,
     pub(crate) blocks_direct_input: bool,
+    pub(crate) has_authoritative_input_capability: bool,
     pub(crate) is_running: bool,
     pub(crate) is_closed: bool,
 }
@@ -228,6 +229,7 @@ fn find_loaded_subagent_threads_for_primary_with_counts(
 pub(crate) fn loaded_subagent_thread(thread_id: ThreadId, thread: Thread) -> LoadedSubagentThread {
     LoadedSubagentThread {
         blocks_direct_input: thread_blocks_direct_input(&thread),
+        has_authoritative_input_capability: thread.can_accept_direct_input.is_some(),
         is_running: matches!(&thread.status, ThreadStatus::Active { .. }),
         is_closed: matches!(&thread.status, ThreadStatus::NotLoaded),
         thread_id,
@@ -376,6 +378,7 @@ mod tests {
             vec![
                 LoadedSubagentThread {
                     blocks_direct_input: false,
+                    has_authoritative_input_capability: true,
                     thread_id: child_thread_id,
                     agent_nickname: Some("Scout".to_string()),
                     agent_role: Some("explorer".to_string()),
@@ -385,6 +388,7 @@ mod tests {
                 },
                 LoadedSubagentThread {
                     blocks_direct_input: true,
+                    has_authoritative_input_capability: true,
                     thread_id: grandchild_thread_id,
                     agent_nickname: Some("Atlas".to_string()),
                     agent_role: Some("worker".to_string()),
