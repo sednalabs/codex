@@ -169,12 +169,35 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         uuid::Uuid::nil(),
         Arc::new(std::sync::atomic::AtomicU8::new(COMPLETION_CAUSE_EXIT)),
     );
+    assert!(
+        context
+            .session
+            .input_queue
+            .has_pending_terminal_finalizers()
+    );
 
     let exited_at = Instant::now();
     exit_tx.send(0).expect("send exit");
     drop(stdout_tx);
 
     let event = rx_event.recv().await.expect("command end event");
+    for _ in 0..16 {
+        if !context
+            .session
+            .input_queue
+            .has_pending_terminal_finalizers()
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !context
+            .session
+            .input_queue
+            .has_pending_terminal_finalizers(),
+        "exit watcher should finish terminal accounting after emitting completion"
+    );
     let elapsed = Instant::now().saturating_duration_since(exited_at);
     tokio::time::resume();
     let EventMsg::ItemCompleted(completed) = event.msg else {

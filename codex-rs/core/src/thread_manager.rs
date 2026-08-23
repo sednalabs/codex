@@ -133,6 +133,21 @@ pub struct NewThread {
     pub session_configured: SessionConfiguredEvent,
 }
 
+/// Outcome of attempting a guarded external teardown for a V2 resident thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum V2ThreadUnloadResult {
+    /// The thread is not a V2 subagent managed by residency lifecycle control.
+    NotApplicable,
+    /// The expected V2 resident thread was shut down and removed.
+    Unloaded,
+    /// The lifecycle guard observed work that must remain resident for now.
+    Deferred,
+    /// The expected thread was already absent from the manager.
+    Missing,
+    /// A different thread or lifecycle generation now owns this thread ID.
+    Superseded,
+}
+
 // TODO(ccunningham): Add an explicit non-interrupting live-turn snapshot once
 // core can represent sampling boundaries directly instead of relying on
 // whichever items happened to be persisted mid-turn.
@@ -662,6 +677,46 @@ impl ThreadManager {
         self.state.get_thread(thread_id).await
     }
 
+    /// Verify that response-item injection can address this thread without waking a cold agent.
+    pub async fn ensure_response_item_injection_target(
+        &self,
+        thread_id: ThreadId,
+    ) -> CodexResult<()> {
+        for control in self.state.resident_agent_controls().await {
+            if control.uses_v2_lifecycle(&self.state, thread_id).await {
+                return Ok(());
+            }
+        }
+        self.get_thread(thread_id).await.map(|_| ())
+    }
+
+    /// Inject response items through the manager so cold V2 agents are reloaded before mutation.
+    pub async fn inject_response_items(
+        &self,
+        config: Config,
+        thread_id: ThreadId,
+        items: Vec<ResponseItem>,
+    ) -> CodexResult<()> {
+        for control in self.state.resident_agent_controls().await {
+            // V2 roots are live threads but are not necessarily registered agents. Only
+            // registered V2 agents need lifecycle-gated reload before injection.
+            if control.get_agent_metadata(thread_id).is_some()
+                && control.uses_v2_lifecycle(&self.state, thread_id).await
+            {
+                crate::codex_thread::validate_injected_response_items(&items)?;
+                return control
+                    .prepare_v2_agent_delivery_with_reload(config, thread_id)
+                    .await?
+                    .inject_response_items(items)
+                    .await;
+            }
+        }
+        self.get_thread(thread_id)
+            .await?
+            .inject_response_items(items)
+            .await
+    }
+
     /// Updates metadata for loaded and cold threads through one entrypoint.
     ///
     /// Loaded threads route through `CodexThread`/`LiveThread`, so metadata changes stay ordered
@@ -994,6 +1049,62 @@ impl ThreadManager {
         self.state.threads.write().await.remove(thread_id)
     }
 
+    /// Route external listener teardown for a V2 subagent through the same residency lifecycle
+    /// transaction that owns capacity eviction and terminal-idle unloading.
+    ///
+    /// Roots and V1 threads return [`V2ThreadUnloadResult::NotApplicable`] so their established
+    /// app-server teardown path remains unchanged.
+    pub async fn unload_v2_thread_for_external_teardown<Finalize, FinalizeFuture>(
+        &self,
+        expected_thread: &Arc<CodexThread>,
+        finalize: Finalize,
+    ) -> V2ThreadUnloadResult
+    where
+        Finalize: FnOnce(V2ThreadUnloadResult) -> FinalizeFuture,
+        FinalizeFuture: std::future::Future<Output = ()>,
+    {
+        expected_thread
+            .session
+            .services
+            .agent_control
+            .unload_v2_thread_for_external_teardown(&self.state, expected_thread, finalize)
+            .await
+    }
+
+    /// Reconciles a V2 runtime whose event channel has closed, retaining the reload gate through
+    /// app-server finalization so a replacement cannot publish into stale listener state.
+    pub async fn reconcile_dead_v2_thread_for_external_teardown<Finalize, FinalizeFuture>(
+        &self,
+        expected_thread: &Arc<CodexThread>,
+        finalize: Finalize,
+    ) -> V2ThreadUnloadResult
+    where
+        Finalize: FnOnce(V2ThreadUnloadResult) -> FinalizeFuture,
+        FinalizeFuture: std::future::Future<Output = ()>,
+    {
+        expected_thread
+            .session
+            .services
+            .agent_control
+            .reconcile_dead_v2_thread_for_external_teardown(&self.state, expected_thread, finalize)
+            .await
+    }
+
+    /// Submits only while the exact expected runtime remains current, serialized against V2
+    /// residency teardown. This preserves app-server trace context without allowing an operation
+    /// resolved before teardown to enqueue after shutdown begins.
+    pub async fn send_op_to_current_thread_with_trace(
+        &self,
+        expected_thread: &CodexThread,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<String> {
+        let thread_id = expected_thread.session.thread_id();
+        self.state
+            .send_op_to_expected_thread_with_trace(thread_id, expected_thread, op, trace)
+            .await
+    }
+
     /// Tries to shut down all tracked threads concurrently within the provided timeout.
     /// Threads that complete shutdown are removed from the manager; incomplete shutdowns
     /// remain tracked so callers can retry or inspect them later.
@@ -1270,6 +1381,15 @@ impl ThreadManager {
 }
 
 impl ThreadManagerState {
+    async fn resident_agent_controls(&self) -> Vec<AgentControl> {
+        self.threads
+            .read()
+            .await
+            .values()
+            .map(|thread| thread.session.services.agent_control.clone())
+            .collect()
+    }
+
     pub(crate) fn agent_graph_store(&self) -> Option<Arc<dyn AgentGraphStore>> {
         self.agent_graph_store.clone()
     }
@@ -1372,9 +1492,41 @@ impl ThreadManagerState {
             Ok(thread) => thread,
             Err(err) => return (None, Err(err)),
         };
-        self.record_submitted_op(thread_id, &op);
-        let result = thread.submit(op).await;
+        let result = self.send_op_to_current_thread(thread_id, &thread, op).await;
         (Some(thread), result)
+    }
+
+    pub(crate) async fn send_op_to_current_thread(
+        &self,
+        thread_id: ThreadId,
+        thread: &Arc<CodexThread>,
+        op: Op,
+    ) -> CodexResult<String> {
+        self.send_op_to_expected_thread_with_trace(
+            thread_id,
+            thread.as_ref(),
+            op,
+            /*trace*/ None,
+        )
+        .await
+    }
+
+    pub(crate) async fn send_op_to_expected_thread_with_trace(
+        &self,
+        thread_id: ThreadId,
+        thread: &CodexThread,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<String> {
+        let _residency_transition = thread.session.input_queue.begin_residency_activity().await;
+        let current = self.get_thread(thread_id).await?;
+        if !std::ptr::eq(current.as_ref(), thread) {
+            return Err(CodexErr::ThreadNotFound(thread_id));
+        }
+        self.record_submitted_op(thread_id, &op);
+        thread
+            .submit_with_residency_transition_held_and_trace(op, trace)
+            .await
     }
 
     pub(crate) fn record_submitted_op(&self, thread_id: ThreadId, op: &Op) {

@@ -1183,8 +1183,12 @@ impl ThreadRequestProcessor {
         thread: &CodexThread,
         op: Op,
     ) -> CodexResult<String> {
-        thread
-            .submit_with_trace(op, self.request_trace_context(request_id).await)
+        self.thread_manager
+            .send_op_to_current_thread_with_trace(
+                thread,
+                op,
+                self.request_trace_context(request_id).await,
+            )
             .await
     }
 

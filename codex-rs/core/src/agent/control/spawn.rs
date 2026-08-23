@@ -149,6 +149,27 @@ fn restore_persisted_agent_model_selection(
     Ok(())
 }
 
+async fn terminal_idle_unload_timeout_for_resumed_role(
+    config: &Config,
+    role_name: Option<&str>,
+    thread_id: ThreadId,
+) -> u64 {
+    let fallback_timeout_ms = config.multi_agent_v2.terminal_idle_unload_timeout_ms;
+    let Some(role_name) = role_name else {
+        return fallback_timeout_ms;
+    };
+
+    let mut role_config = config.clone();
+    if let Err(err) = apply_role_to_config(&mut role_config, Some(role_name)).await {
+        warn!(
+            "failed to restore terminal idle unload timeout for resumed agent {thread_id} with role `{role_name}`: {err}; using caller timeout"
+        );
+        return fallback_timeout_ms;
+    }
+
+    role_config.multi_agent_v2.terminal_idle_unload_timeout_ms
+}
+
 fn default_agent_nickname_list() -> Vec<&'static str> {
     AGENT_NAMES
         .lines()
@@ -477,6 +498,7 @@ impl AgentControl {
         if let Some(approvals_reviewer) = persisted_approvals_reviewer {
             config.approvals_reviewer = approvals_reviewer;
         }
+        let terminal_idle_unload_timeout_ms = config.multi_agent_v2.terminal_idle_unload_timeout_ms;
         let parent_thread_id = initial_history
             .get_resumed_parent_thread_id()
             .or(stored_parent_thread_id);
@@ -500,14 +522,28 @@ impl AgentControl {
             .await
         {
             Ok(reloaded_thread) => {
+                let current_thread = state.get_thread(thread_id).await?;
+                if !self.state.metadata_is_current(thread_id, metadata)
+                    || !Arc::ptr_eq(&current_thread, &reloaded_thread.thread)
+                {
+                    return Err(CodexErr::ThreadNotFound(thread_id));
+                }
                 metadata.clear_cold_status();
                 residency_slot.commit(reloaded_thread.thread_id);
+                self.start_terminal_idle_unload_watcher_under_lifecycle(
+                    Arc::clone(&reloaded_thread.thread),
+                    metadata.clone(),
+                    terminal_idle_unload_timeout_ms,
+                    lifecycle,
+                );
                 state.notify_thread_created(reloaded_thread.thread_id);
                 self.restore_cold_mail_to_loaded_thread(state, thread_id, lifecycle)
                     .await
             }
             Err(err) => {
-                if state.get_thread(thread_id).await.is_ok() {
+                if self.state.metadata_is_current(thread_id, metadata)
+                    && state.get_thread(thread_id).await.is_ok()
+                {
                     metadata.clear_cold_status();
                     drop(residency_slot);
                     self.touch_loaded_v2_residency(state, thread_id).await;
@@ -552,6 +588,7 @@ impl AgentControl {
             && session_source
                 .as_ref()
                 .is_some_and(is_v2_resident_session_source);
+        let terminal_idle_unload_timeout_ms = config.multi_agent_v2.terminal_idle_unload_timeout_ms;
         let mut residency_slot = if spawn_uses_v2_residency {
             Some(
                 self.reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
@@ -847,6 +884,14 @@ impl AgentControl {
         reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot.take() {
             residency_slot.commit(new_thread.thread_id);
+        }
+        if spawn_uses_v2_residency {
+            self.start_terminal_idle_unload_watcher(
+                Arc::clone(&new_thread.thread),
+                agent_metadata.clone(),
+                terminal_idle_unload_timeout_ms,
+            )
+            .await;
         }
 
         if let Some(SessionSource::SubAgent(
@@ -1483,6 +1528,10 @@ impl AgentControl {
             .map_err(|err| CodexErr::InvalidRequest(format!("invalid stored agent path: {err}")))?;
         let resumed_agent_nickname = stored_thread.agent_nickname.clone();
         let resumed_agent_role = stored_thread.agent_role.clone();
+        let terminal_idle_unload_role = resumed_agent_role
+            .clone()
+            .or_else(|| stored_thread.source.get_agent_role())
+            .or_else(|| session_source.get_agent_role());
         let history = load_agent_model_context(&state, thread_id, stored_thread.history_mode)
             .await?
             .ok_or(CodexErr::ThreadNotFound(thread_id))?;
@@ -1522,6 +1571,26 @@ impl AgentControl {
             other => (other, AgentMetadata::default()),
         };
         let notification_source = session_source.clone();
+        let uses_v2_residency = multi_agent_version == MultiAgentVersion::V2
+            && is_v2_resident_session_source(&session_source);
+        let terminal_idle_unload_timeout_ms = if uses_v2_residency {
+            terminal_idle_unload_timeout_for_resumed_role(
+                &config,
+                terminal_idle_unload_role.as_deref(),
+                thread_id,
+            )
+            .await
+        } else {
+            config.multi_agent_v2.terminal_idle_unload_timeout_ms
+        };
+        let residency_slot = if uses_v2_residency {
+            Some(
+                self.reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+                    .await?,
+            )
+        } else {
+            None
+        };
         let inherited_environments = self
             .inherited_environments_for_source(&state, Some(&session_source))
             .await;
@@ -1543,6 +1612,15 @@ impl AgentControl {
         let mut agent_metadata = agent_metadata;
         agent_metadata.agent_id = Some(resumed_thread.thread_id);
         reservation.commit(agent_metadata.clone());
+        if let Some(residency_slot) = residency_slot {
+            residency_slot.commit(resumed_thread.thread_id);
+            self.start_terminal_idle_unload_watcher(
+                Arc::clone(&resumed_thread.thread),
+                agent_metadata.clone(),
+                terminal_idle_unload_timeout_ms,
+            )
+            .await;
+        }
         // Resumed threads are re-registered in-memory and need the same listener
         // attachment path as freshly spawned threads.
         state.notify_thread_created(resumed_thread.thread_id);

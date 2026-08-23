@@ -1112,6 +1112,90 @@ async fn send_input_submits_user_message() {
         .into_iter()
         .find(|entry| *entry == expected);
     assert_eq!(captured, Some(expected));
+    let input_queue = &_thread.session.input_queue;
+    timeout(
+        Duration::from_secs(5),
+        input_queue.wait_for_residency_submission_absent(&submission_id),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "residency submission {submission_id} remained pending after send_input; pending={}",
+            input_queue.has_pending_residency_submissions()
+        )
+    });
+}
+
+#[tokio::test]
+async fn failed_submit_clears_pending_residency_registration() {
+    let harness = AgentControlHarness::new().await;
+    let (_thread_id, thread) = harness.start_thread().await;
+    thread
+        .shutdown_and_wait()
+        .await
+        .expect("thread shutdown should succeed");
+
+    thread
+        .submit(Op::UserInput {
+            items: text_input("rejected after shutdown"),
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect_err("submitting after shutdown should fail");
+    assert!(
+        !thread
+            .session
+            .input_queue
+            .has_pending_residency_submissions(),
+        "failed submission should drop its pending registration"
+    );
+}
+
+#[tokio::test]
+async fn stale_thread_submission_is_rejected_before_acceptance() {
+    let harness = AgentControlHarness::new().await;
+    let (thread_id, thread) = harness.start_thread().await;
+    let state = harness.control.upgrade().expect("manager should be live");
+    let removed = state.remove_thread(&thread_id).await;
+    assert!(removed.is_some());
+
+    let op = Op::UserInput {
+        items: text_input("must not reach stale runtime"),
+        final_output_json_schema: None,
+        responsesapi_client_metadata: None,
+        additional_context: Default::default(),
+        thread_settings: Default::default(),
+    };
+    let err = state
+        .send_op_to_current_thread(thread_id, &thread, op.clone())
+        .await
+        .expect_err("removed thread must reject the operation");
+    assert_matches!(
+        err.details(),
+        CodexErrorDetails::ThreadNotFound(id) if *id == thread_id
+    );
+    assert!(!harness.manager.captured_ops().contains(&(thread_id, op)));
+    let interrupt_err = state
+        .send_op_to_current_thread(thread_id, &thread, Op::Interrupt)
+        .await
+        .expect_err("removed thread must reject an interrupt");
+    assert_matches!(
+        interrupt_err.details(),
+        CodexErrorDetails::ThreadNotFound(id) if *id == thread_id
+    );
+    assert!(
+        !harness
+            .manager
+            .captured_ops()
+            .contains(&(thread_id, Op::Interrupt))
+    );
+    thread
+        .shutdown_and_wait()
+        .await
+        .expect("stale fixture should shut down");
 }
 
 #[tokio::test]
@@ -1539,6 +1623,86 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     );
     assert_thread_not_loaded(&resumed_manager, worker_thread_id).await;
     assert_thread_not_loaded(&resumed_manager, reviewer_thread_id).await;
+
+    let mut direct_resume_config = harness.config.clone();
+    direct_resume_config
+        .multi_agent_v2
+        .max_concurrent_threads_per_session = 2;
+    direct_resume_config
+        .multi_agent_v2
+        .terminal_idle_unload_timeout_ms = 1;
+    let direct_manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        direct_resume_config.model_provider.clone(),
+        direct_resume_config.codex_home.to_path_buf(),
+        std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        harness.state_db.clone(),
+    );
+    let direct_control = direct_manager.agent_control();
+    let resumed_worker_id = direct_control
+        .resume_agent_from_rollout(
+            direct_resume_config.clone(),
+            worker_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(worker_path),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            }),
+        )
+        .await
+        .expect("direct v2 worker resume should succeed");
+    assert_eq!(resumed_worker_id, worker_thread_id);
+    let direct_state = direct_control.upgrade().expect("manager should be live");
+    let capacity_error = match direct_control
+        .reserve_v2_residency_slot(
+            &direct_state,
+            &direct_resume_config,
+            /*protected_thread_id*/ None,
+        )
+        .await
+    {
+        Ok(_) => panic!("resumed worker should occupy the only residency slot"),
+        Err(err) => err,
+    };
+    assert_matches!(
+        capacity_error.details(),
+        CodexErrorDetails::AgentLimitReached { max_threads: 1 }
+    );
+
+    let direct_worker = direct_manager
+        .get_thread(worker_thread_id)
+        .await
+        .expect("resumed worker should be loaded");
+    let turn = direct_worker.session.new_default_turn().await;
+    direct_worker
+        .session
+        .send_event(
+            turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("resumed worker done".to_string()),
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                provider_usage: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+    *direct_worker.session.active_turn.lock().await = None;
+    for _ in 0..64 {
+        if direct_manager.get_thread(worker_thread_id).await.is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_thread_not_loaded(&direct_manager, worker_thread_id).await;
 }
 
 #[tokio::test]
