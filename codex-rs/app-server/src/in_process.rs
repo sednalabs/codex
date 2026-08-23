@@ -139,6 +139,8 @@ async fn deliver_in_process_events(
                 if let Err(send_error) =
                     event_tx.try_send(InProcessServerEvent::ServerRequest(request))
                 {
+                    let consumer_closed =
+                        matches!(&send_error, mpsc::error::TrySendError::Closed(_));
                     let (error, inner) = match send_error {
                         mpsc::error::TrySendError::Full(inner) => (
                             JSONRPCErrorError {
@@ -161,6 +163,9 @@ async fn deliver_in_process_events(
                         outgoing_message_sender
                             .notify_client_error(request_id, error)
                             .await;
+                    }
+                    if consumer_closed {
+                        break;
                     }
                 }
             }
@@ -188,8 +193,7 @@ async fn deliver_in_process_events(
                 }
             }
             OutgoingMessage::Response(_) | OutgoingMessage::Error(_) => {
-                warn!("terminating in-process event delivery after response-lane message");
-                break;
+                warn!("received unexpected response-lane message in event delivery");
             }
         }
         if let Some(write_complete_tx) = queued_message.write_complete_tx {
@@ -528,11 +532,10 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         let mut response_outbound_handle =
             spawn_outbound_router(response_outgoing_rx, response_outbound_connections);
         let event_outgoing = Arc::downgrade(&outgoing_message_sender);
-        let (event_delivery_done_tx, mut event_delivery_done_rx) = oneshot::channel();
         let mut event_delivery_handle = tokio::spawn(async move {
             deliver_in_process_events(event_writer_rx, event_tx, event_outgoing).await;
-            let _ = event_delivery_done_tx.send(());
         });
+        let mut event_delivery_finished = false;
 
         let processor_outgoing = Arc::clone(&outgoing_message_sender);
         let config_manager = ConfigManager::new(
@@ -750,15 +753,15 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                         OutgoingMessage::Request(_) | OutgoingMessage::AppServerNotification(_) => {
-                            warn!("terminating in-process response delivery after event-lane message");
-                            break;
+                            warn!("received unexpected event-lane message in response delivery");
                         }
                     }
                     if let Some(write_complete_tx) = queued_message.write_complete_tx {
                         let _ = write_complete_tx.send(());
                     }
                 }
-                _ = &mut event_delivery_done_rx => {
+                _ = &mut event_delivery_handle => {
+                    event_delivery_finished = true;
                     break;
                 }
             }
@@ -785,16 +788,23 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             let _ = processor_handle.await;
         }
         if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, async {
-            let _ = (&mut event_delivery_handle).await;
+            if !event_delivery_finished {
+                let _ = (&mut event_delivery_handle).await;
+                event_delivery_finished = true;
+            }
             let _ = (&mut event_outbound_handle).await;
             let _ = (&mut response_outbound_handle).await;
         })
         .await
         {
-            event_delivery_handle.abort();
+            if !event_delivery_finished {
+                event_delivery_handle.abort();
+            }
             event_outbound_handle.abort();
             response_outbound_handle.abort();
-            let _ = event_delivery_handle.await;
+            if !event_delivery_finished {
+                let _ = event_delivery_handle.await;
+            }
             let _ = event_outbound_handle.await;
             let _ = response_outbound_handle.await;
         }
