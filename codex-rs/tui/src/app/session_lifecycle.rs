@@ -149,10 +149,6 @@ impl LoadedSubagentBackfillProgress {
             .collect()
     }
 
-    fn retained_descendant_capacity_reached(&self) -> bool {
-        self.retained_thread_ids.len() >= MAX_RETAINED_SUBAGENT_LINEAGE
-    }
-
     #[cfg(test)]
     pub(crate) fn retained_thread_count(&self) -> usize {
         self.retained_thread_ids.len()
@@ -236,12 +232,12 @@ fn agent_picker_subtitle(
     );
     if lineage_truncated && backfill_incomplete {
         return format!(
-            "{base} Lineage retained at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent safety limit; additional rows were omitted, and retained rows still need refresh. Reopen to continue or retry."
+            "{base} additional rows were omitted at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent lineage safety limit; retained rows still need refresh. Reopen to continue or retry."
         );
     }
     if lineage_truncated {
         return format!(
-            "{base} Lineage retained at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent safety limit; additional rows were omitted."
+            "{base} additional rows were omitted at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent lineage safety limit."
         );
     }
     if picker_has_more {
@@ -1276,14 +1272,18 @@ impl App {
                 let loaded_threads = if progress.ancestor_filter_applied_to_all_pages {
                     let retained_threads = progress.retain_threads(response.data);
                     progress.accumulator.ingest(retained_threads)
-                } else {
-                    let (loaded_threads, compatibility_truncated) = progress
-                        .compatibility
-                        .as_mut()
-                        .expect("compatibility state should exist after an unacknowledged page")
-                        .ingest(response.data);
+                } else if let Some(compatibility) = progress.compatibility.as_mut() {
+                    let (loaded_threads, compatibility_truncated) =
+                        compatibility.ingest(response.data);
                     progress.truncated |= compatibility_truncated;
                     progress.retain_loaded_threads(loaded_threads)
+                } else {
+                    tracing::warn!(
+                        primary_thread_id = %primary_thread_id,
+                        "discarding an unacknowledged lineage page without compatibility state"
+                    );
+                    progress.truncated = true;
+                    Vec::new()
                 };
                 let admission_truncated = self.stage_loaded_subagent_threads(
                     loaded_threads,

@@ -612,9 +612,7 @@ impl App {
 
     pub(super) fn admit_side_thread_to_picker(&mut self, thread_id: ThreadId) -> bool {
         self.upsert_agent_picker_thread_retaining(
-            thread_id,
-            /*agent_nickname*/ None,
-            /*agent_role*/ None,
+            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
             /*is_closed*/ false,
         )
         .accepted()
@@ -663,7 +661,8 @@ impl App {
                         .interrupt_side_thread(app_server, child_thread_id)
                         .await
                         .err();
-                    let unsubscribe_error = app_server.thread_unsubscribe(child_thread_id).await.err();
+                    let unsubscribe_error =
+                        app_server.thread_unsubscribe(child_thread_id).await.err();
                     self.restore_side_user_message(user_message.take());
                     self.chat_widget.add_error_message(format!(
                         "Could not open side conversation {child_thread_id}: the bounded agent picker has no safe eviction candidate.{}{}",
