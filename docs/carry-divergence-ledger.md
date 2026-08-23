@@ -1673,9 +1673,11 @@ decisions.
   de-duplication. Resume and picker backfill page only through the selected
   primary's persisted descendant lineage, so unrelated loaded threads consume
   neither metadata reads nor the page budget. Every lineage page is followed,
-  discovered server status is reused, locally live descendant channels remain
-  authoritative, and downstream V1 writable versus V2 parent-owned input
-  behavior remains unchanged.
+  with cursor-cycle rejection and resumable per-attempt page limits for unusually
+  large lineages. Already tracked descendants without live channels retain a
+  bounded metadata fallback, discovered server status is reused, locally live
+  descendant channels remain authoritative, and downstream V1 writable versus
+  V2 parent-owned input behavior remains unchanged.
 - Forks created from an existing side conversation inherit the side
   `thread_source` unless the caller explicitly supplies a different source,
   keeping nested side-chat forks hidden from default history surfaces and
