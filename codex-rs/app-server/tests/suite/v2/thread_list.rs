@@ -1026,8 +1026,8 @@ async fn thread_list_relation_filters_read_spawn_graph_from_state_db() -> Result
     )
     .await?;
 
-    assert!(!first_page.ancestor_filter_applied);
-    assert!(!second_page.ancestor_filter_applied);
+    assert_eq!(first_page.ancestor_filter_applied, None);
+    assert_eq!(second_page.ancestor_filter_applied, None);
 
     assert_eq!(
         first_page
@@ -1081,7 +1081,7 @@ async fn thread_list_relation_filters_read_spawn_graph_from_state_db() -> Result
         /*source_kinds*/ None,
     )
     .await?;
-    assert!(descendants.ancestor_filter_applied);
+    assert_eq!(descendants.ancestor_filter_applied, Some(true));
     assert_eq!(
         descendants
             .data

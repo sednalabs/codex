@@ -10,6 +10,7 @@ use crate::app_server_session::thread_blocks_direct_input;
 use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_selected_description;
+use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
@@ -25,7 +26,30 @@ pub(super) struct LoadedSubagentBackfillProgress {
     seen_cursors: HashSet<String>,
     pending_refresh_thread_ids: VecDeque<ThreadId>,
     ancestor_filter_applied_to_all_pages: bool,
+    loaded_fallback: Option<LoadedSubagentFallbackProgress>,
     listing_complete: bool,
+}
+
+struct LoadedSubagentFallbackProgress {
+    next_cursor: Option<String>,
+    seen_cursors: HashSet<String>,
+    seen_thread_ids: HashSet<ThreadId>,
+    pending_thread_ids: VecDeque<ThreadId>,
+    accumulator: LoadedSubagentAccumulator,
+    listing_complete: bool,
+}
+
+impl LoadedSubagentFallbackProgress {
+    fn new(primary_thread_id: ThreadId) -> Self {
+        Self {
+            next_cursor: None,
+            seen_cursors: HashSet::new(),
+            seen_thread_ids: HashSet::new(),
+            pending_thread_ids: VecDeque::new(),
+            accumulator: LoadedSubagentAccumulator::new(primary_thread_id),
+            listing_complete: false,
+        }
+    }
 }
 
 impl LoadedSubagentBackfillProgress {
@@ -37,6 +61,7 @@ impl LoadedSubagentBackfillProgress {
             seen_cursors: HashSet::new(),
             pending_refresh_thread_ids: VecDeque::new(),
             ancestor_filter_applied_to_all_pages: true,
+            loaded_fallback: None,
             listing_complete: false,
         }
     }
@@ -942,6 +967,7 @@ impl App {
             .unwrap_or_else(|| LoadedSubagentBackfillProgress::new(primary_thread_id));
         let mut refreshed_thread_ids = HashSet::new();
         let mut had_cursor_cycle = false;
+        let mut relation_list_failed = false;
         if !progress.listing_complete {
             let mut page_budget =
                 LineagePageBudget::new(std::mem::take(&mut progress.seen_cursors));
@@ -969,15 +995,15 @@ impl App {
                     Err(err) => {
                         tracing::warn!(%err, "failed to list subagent lineage for backfill");
                         progress.seen_cursors = page_budget.into_seen_cursors();
-                        self.subagent_backfill_progress = Some(progress);
-                        return LoadedSubagentBackfill {
-                            status: LoadedSubagentBackfillStatus::RetryableError,
-                            refreshed_thread_ids,
-                            ..Default::default()
-                        };
+                        progress.loaded_fallback.get_or_insert_with(|| {
+                            LoadedSubagentFallbackProgress::new(primary_thread_id)
+                        });
+                        relation_list_failed = true;
+                        break;
                     }
                 };
-                progress.ancestor_filter_applied_to_all_pages &= response.ancestor_filter_applied;
+                progress.ancestor_filter_applied_to_all_pages &=
+                    response.ancestor_filter_applied.unwrap_or(false);
                 self.stage_loaded_subagent_threads(
                     progress.accumulator.ingest(response.data),
                     &mut progress.pending_refresh_thread_ids,
@@ -1029,6 +1055,128 @@ impl App {
         }
 
         let mut refreshes_attempted = 0;
+        if let Some(mut fallback) = progress.loaded_fallback.take() {
+            let mut had_fallback_cursor_cycle = false;
+            if !fallback.listing_complete && fallback.pending_thread_ids.is_empty() {
+                let mut page_budget =
+                    LineagePageBudget::new(std::mem::take(&mut fallback.seen_cursors));
+                loop {
+                    let response = match app_server
+                        .thread_loaded_list(ThreadLoadedListParams {
+                            cursor: fallback.next_cursor.clone(),
+                            limit: Some(SUBAGENT_BACKFILL_PAGE_SIZE),
+                        })
+                        .await
+                    {
+                        Ok(response) => response,
+                        Err(err) => {
+                            tracing::warn!(%err, "loaded-thread fallback failed during lineage backfill");
+                            fallback.seen_cursors = page_budget.into_seen_cursors();
+                            progress.loaded_fallback = Some(fallback);
+                            self.subagent_backfill_progress = Some(progress);
+                            return LoadedSubagentBackfill {
+                                status: LoadedSubagentBackfillStatus::RetryableError,
+                                refreshed_thread_ids,
+                                ..Default::default()
+                            };
+                        }
+                    };
+                    for thread_id in response.data {
+                        let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
+                            continue;
+                        };
+                        if thread_id != primary_thread_id
+                            && fallback.seen_thread_ids.insert(thread_id)
+                        {
+                            fallback.pending_thread_ids.push_back(thread_id);
+                        }
+                    }
+                    match page_budget.observe_page(response.next_cursor) {
+                        LineagePageAdvance::Complete => {
+                            fallback.listing_complete = true;
+                            break;
+                        }
+                        LineagePageAdvance::Continue(next_cursor) => {
+                            fallback.next_cursor = Some(next_cursor);
+                        }
+                        LineagePageAdvance::Pause(next_cursor) => {
+                            fallback.next_cursor = Some(next_cursor);
+                            fallback.seen_cursors = page_budget.into_seen_cursors();
+                            break;
+                        }
+                        LineagePageAdvance::CursorCycle(next_cursor) => {
+                            tracing::warn!(
+                                %next_cursor,
+                                primary_thread_id = %primary_thread_id,
+                                "loaded-thread fallback detected a cursor cycle"
+                            );
+                            fallback.next_cursor = None;
+                            fallback.seen_cursors.clear();
+                            had_fallback_cursor_cycle = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            while refreshes_attempted < SUBAGENT_BACKFILL_REFRESHES_PER_ATTEMPT {
+                let Some(thread_id) = fallback.pending_thread_ids.pop_front() else {
+                    break;
+                };
+                refreshes_attempted += 1;
+                match app_server
+                    .thread_read(thread_id, /*include_turns*/ false)
+                    .await
+                {
+                    Ok(thread) => {
+                        for loaded in fallback.accumulator.ingest(vec![thread]) {
+                            let thread_id = loaded.thread_id;
+                            self.apply_loaded_subagent_thread(loaded);
+                            refreshed_thread_ids.insert(thread_id);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            %err,
+                            %thread_id,
+                            "loaded-thread fallback metadata read failed"
+                        );
+                        fallback.pending_thread_ids.push_front(thread_id);
+                        progress.loaded_fallback = Some(fallback);
+                        self.subagent_backfill_progress = Some(progress);
+                        return LoadedSubagentBackfill {
+                            status: LoadedSubagentBackfillStatus::RetryableError,
+                            refreshed_thread_ids,
+                            ..Default::default()
+                        };
+                    }
+                }
+            }
+
+            if !fallback.listing_complete || !fallback.pending_thread_ids.is_empty() {
+                progress.loaded_fallback = Some(fallback);
+                self.subagent_backfill_progress = Some(progress);
+                return LoadedSubagentBackfill {
+                    status: if had_fallback_cursor_cycle {
+                        LoadedSubagentBackfillStatus::CursorCycle
+                    } else {
+                        LoadedSubagentBackfillStatus::Paused
+                    },
+                    refreshed_thread_ids,
+                    ..Default::default()
+                };
+            }
+            if relation_list_failed {
+                progress.loaded_fallback = Some(fallback);
+                self.subagent_backfill_progress = Some(progress);
+                return LoadedSubagentBackfill {
+                    status: LoadedSubagentBackfillStatus::RetryableError,
+                    refreshed_thread_ids,
+                    ..Default::default()
+                };
+            }
+        }
+
         while refreshes_attempted < SUBAGENT_BACKFILL_REFRESHES_PER_ATTEMPT {
             let Some(thread_id) = progress.pending_refresh_thread_ids.pop_front() else {
                 break;
@@ -1078,8 +1226,12 @@ impl App {
             .agent_navigation
             .tracked_thread_ids_bounded(SUBAGENT_BACKFILL_PAGE_SIZE as usize);
         for thread_id in tracked_thread_ids {
+            if refreshes_attempted >= SUBAGENT_BACKFILL_REFRESHES_PER_ATTEMPT {
+                break;
+            }
             if thread_id == primary_thread_id
                 || progress.accumulator.contains_accepted(thread_id)
+                || refreshed_thread_ids.contains(&thread_id)
                 || self.side_threads.contains_key(&thread_id)
                 || self
                     .thread_event_channels
@@ -1088,6 +1240,7 @@ impl App {
             {
                 continue;
             }
+            refreshes_attempted += 1;
             match self
                 .refresh_agent_picker_thread_liveness(app_server, thread_id)
                 .await
