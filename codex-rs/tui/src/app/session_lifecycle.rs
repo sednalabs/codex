@@ -931,6 +931,7 @@ impl App {
             .filter(|progress| progress.primary_thread_id == primary_thread_id)
             .unwrap_or_else(|| LoadedSubagentBackfillProgress::new(primary_thread_id));
         let mut refreshed_thread_ids = HashSet::new();
+        let mut had_cursor_cycle = false;
         if !progress.listing_complete {
             let mut page_budget =
                 LineagePageBudget::new(std::mem::take(&mut progress.seen_cursors));
@@ -1016,12 +1017,10 @@ impl App {
                             primary_thread_id = %primary_thread_id,
                             "subagent lineage backfill detected a cursor cycle"
                         );
-                        self.sync_active_agent_label();
-                        return LoadedSubagentBackfill {
-                            status: LoadedSubagentBackfillStatus::CursorCycle,
-                            refreshed_thread_ids,
-                            ..Default::default()
-                        };
+                        progress.next_cursor = None;
+                        progress.seen_cursors.clear();
+                        had_cursor_cycle = true;
+                        break;
                     }
                 }
             }
@@ -1060,6 +1059,14 @@ impl App {
             self.subagent_backfill_progress = Some(progress);
             return LoadedSubagentBackfill {
                 status: LoadedSubagentBackfillStatus::Paused,
+                refreshed_thread_ids,
+                ..Default::default()
+            };
+        }
+        if had_cursor_cycle {
+            self.sync_active_agent_label();
+            return LoadedSubagentBackfill {
+                status: LoadedSubagentBackfillStatus::CursorCycle,
                 refreshed_thread_ids,
                 ..Default::default()
             };

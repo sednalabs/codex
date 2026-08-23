@@ -198,11 +198,13 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_resumes_failed_cursor_without_refetching_prefix --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_retries_authoritative_thread_read_without_relisting --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_cursor_cycle_is_bounded_per_open --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_persistent_cycle_refreshes_pathless_v2_child_per_open --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_recovers_after_cursor_cycle_and_finds_new_child --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_advances_beyond_page_budget_across_opens --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::reset_clears_paused_lineage_continuation --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children --lib -- --exact --test-threads=1
     cargo test -p codex-state runtime::threads::tests::list_threads_by_relation_filters_spawn_graph_with_keyset_pagination --lib -- --exact --test-threads=1
+    cargo test -p codex-state runtime::memories::tests::claim_stage1_jobs_bounds_state_scan_before_memory_probes --lib -- --exact --test-threads=1
     cargo test -p codex-app-server --test all suite::v2::thread_list::thread_list_relation_filters_read_spawn_graph_from_state_db -- --exact --test-threads=1
     cargo test -p codex-tui app::thread_events::tests::thread_event_store_skips_large_replay_irrelevant_notifications --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::thread_events::tests::thread_event_store_tracks_active_turn_lifecycle --lib -- --exact --test-threads=1

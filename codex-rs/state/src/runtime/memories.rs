@@ -216,6 +216,7 @@ FROM threads
                 search_term: None,
             },
             /*include_thread_id_tiebreaker*/ false,
+            /*include_empty_preview*/ false,
         );
         builder.push(" AND threads.memory_mode = 'enabled'");
         builder
