@@ -3,15 +3,16 @@
 //! When the TUI resumes or switches to an existing thread, it needs to populate
 //! `AgentNavigationState` and `ChatWidget` metadata for every subagent that was spawned during
 //! that thread's lifetime. The app server returns ancestor-filtered lineage pages, and the TUI
-//! validates their spawn edges before adding them to the selected primary thread's navigation.
+//! validates their effective parent edges before adding them to the selected primary thread's
+//! navigation.
 //!
 //! This module provides the pure, synchronous tree-walk that turns that flat list into the filtered
 //! set of descendants. It intentionally has no async, no I/O, and no side effects so it can be
 //! unit-tested in isolation.
 //!
-//! The walk starts from `primary_thread_id` and repeatedly follows
-//! `SessionSource::SubAgent(ThreadSpawn { parent_thread_id, .. })` edges until no new children are
-//! found. The primary thread itself is never included in the output.
+//! The walk starts from `primary_thread_id` and repeatedly follows the relation-aware
+//! `Thread::parent_thread_id`, falling back to the persisted spawn source for ordinary listings.
+//! The primary thread itself is never included in the output.
 
 use crate::app_server_session::thread_blocks_direct_input;
 use codex_app_server_protocol::SessionSource;
@@ -71,7 +72,7 @@ impl LoadedSubagentAccumulator {
             if thread_id == self.primary_thread_id || !self.seen_thread_ids.insert(thread_id) {
                 continue;
             }
-            let Some(parent_thread_id) = thread_spawn_parent_thread_id(&thread.source) else {
+            let Some(parent_thread_id) = thread_lineage_parent_thread_id(&thread) else {
                 continue;
             };
             if self.accepted_thread_ids.contains(&parent_thread_id) {
@@ -189,7 +190,7 @@ fn find_loaded_subagent_threads_for_primary_with_counts(
         let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
             continue;
         };
-        if let Some(parent_thread_id) = thread_spawn_parent_thread_id(&thread.source) {
+        if let Some(parent_thread_id) = thread_lineage_parent_thread_id(&thread) {
             indexed_edges += 1;
             children_by_parent
                 .entry(parent_thread_id)
@@ -255,6 +256,14 @@ fn thread_spawn_parent_thread_id(source: &SessionSource) -> Option<ThreadId> {
         }) => Some(*parent_thread_id),
         _ => None,
     }
+}
+
+fn thread_lineage_parent_thread_id(thread: &Thread) -> Option<ThreadId> {
+    thread
+        .parent_thread_id
+        .as_deref()
+        .and_then(|parent_thread_id| ThreadId::from_string(parent_thread_id).ok())
+        .or_else(|| thread_spawn_parent_thread_id(&thread.source))
 }
 
 #[cfg(test)]
@@ -462,6 +471,35 @@ mod tests {
                 .map(|thread| thread.thread_id)
                 .collect::<HashSet<_>>(),
             HashSet::from([child_thread_id, grandchild_thread_id])
+        );
+        assert_eq!(accumulator.pending_thread_count(), 0);
+    }
+
+    #[test]
+    fn incremental_lineage_accepts_descendant_reparented_around_hidden_connector() {
+        let primary_thread_id = ThreadId::new();
+        let hidden_connector_id = ThreadId::new();
+        let grandchild_thread_id = ThreadId::new();
+        let mut accumulator = LoadedSubagentAccumulator::new(primary_thread_id);
+        let mut grandchild = test_thread(
+            grandchild_thread_id,
+            thread_spawn_source(
+                hidden_connector_id,
+                /*depth*/ 2,
+                "grandchild",
+                "worker",
+            ),
+        );
+        grandchild.parent_thread_id = Some(primary_thread_id.to_string());
+
+        let loaded = accumulator.ingest(vec![grandchild]);
+
+        assert_eq!(
+            loaded
+                .into_iter()
+                .map(|thread| thread.thread_id)
+                .collect::<Vec<_>>(),
+            vec![grandchild_thread_id]
         );
         assert_eq!(accumulator.pending_thread_count(), 0);
     }

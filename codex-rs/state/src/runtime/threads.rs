@@ -1222,8 +1222,8 @@ fn push_list_threads_query(
     if let Some(crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)) = relation_filter {
         builder.push(
             r#"
-WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
-    SELECT child_thread_id, parent_thread_id
+WITH RECURSIVE subtree(child_thread_id, parent_thread_id, visible_parent_thread_id) AS (
+    SELECT child_thread_id, parent_thread_id, parent_thread_id
     FROM thread_spawn_edges
     WHERE parent_thread_id =
 "#,
@@ -1232,9 +1232,22 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
         builder.push(
             r#"
     UNION
-    SELECT edge.child_thread_id, edge.parent_thread_id
+    SELECT
+        edge.child_thread_id,
+        edge.parent_thread_id,
+        CASE
+            WHEN parent.archived =
+"#,
+        );
+        builder.push_bind(filters.archived_only);
+        builder.push(
+            r#"
+                THEN edge.parent_thread_id
+            ELSE subtree.visible_parent_thread_id
+        END
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    LEFT JOIN threads AS parent ON parent.id = edge.parent_thread_id
 )
 "#,
         );
@@ -1247,7 +1260,7 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
             ", listed_edge.parent_thread_id AS parent_thread_id\nFROM thread_spawn_edges AS listed_edge\nCROSS JOIN threads ON threads.id = listed_edge.child_thread_id",
         ),
         Some(crate::ThreadRelationFilter::DescendantsOf(_)) => builder.push(
-            ", subtree.parent_thread_id AS parent_thread_id\nFROM subtree\nCROSS JOIN threads ON threads.id = subtree.child_thread_id",
+            ", subtree.visible_parent_thread_id AS parent_thread_id\nFROM subtree\nCROSS JOIN threads ON threads.id = subtree.child_thread_id",
         ),
         None => builder.push(" FROM threads"),
     };
@@ -2231,7 +2244,7 @@ mod tests {
         ] {
             let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
             if thread_id == grandchild_id {
-                metadata.preview.clear();
+                metadata.preview = None;
             }
             metadata.created_at =
                 DateTime::<Utc>::from_timestamp(created_at, 0).expect("valid timestamp");
@@ -2382,6 +2395,45 @@ mod tests {
                 None,
             )
         );
+
+        let mut archived_connector = runtime
+            .get_thread(first_child_id)
+            .await
+            .expect("connector lookup should succeed")
+            .expect("connector should exist");
+        archived_connector.archived_at = Some(Utc::now());
+        runtime
+            .upsert_thread(&archived_connector)
+            .await
+            .expect("connector archive should succeed");
+        let descendants_through_archived_connector = runtime
+            .list_threads_by_relation(
+                /*page_size*/ 10,
+                crate::ThreadRelationFilter::DescendantsOf(parent_id),
+                filters(None),
+            )
+            .await
+            .expect("descendants through archived connector should load");
+        assert_eq!(
+            (
+                descendants_through_archived_connector
+                    .items
+                    .iter()
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>(),
+                descendants_through_archived_connector.parent_thread_ids,
+            ),
+            (
+                vec![grandchild_id, second_child_id],
+                [(grandchild_id, parent_id), (second_child_id, parent_id),].into(),
+            )
+        );
+        archived_connector.archived_at = None;
+        runtime
+            .upsert_thread(&archived_connector)
+            .await
+            .expect("connector restore should succeed");
+
         let global_page = runtime
             .list_threads(/*page_size*/ 10, filters(None))
             .await
