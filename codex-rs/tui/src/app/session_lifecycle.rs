@@ -24,6 +24,7 @@ pub(super) struct LoadedSubagentBackfillProgress {
     accumulator: LoadedSubagentAccumulator,
     seen_cursors: HashSet<String>,
     pending_refresh_thread_ids: VecDeque<ThreadId>,
+    ancestor_filter_applied_to_all_pages: bool,
     listing_complete: bool,
 }
 
@@ -35,6 +36,7 @@ impl LoadedSubagentBackfillProgress {
             accumulator: LoadedSubagentAccumulator::new(primary_thread_id),
             seen_cursors: HashSet::new(),
             pending_refresh_thread_ids: VecDeque::new(),
+            ancestor_filter_applied_to_all_pages: true,
             listing_complete: false,
         }
     }
@@ -500,37 +502,26 @@ impl App {
             return Ok(true);
         }
 
-        let known_closed = self
-            .agent_navigation
-            .get(&thread_id)
-            .is_some_and(|entry| entry.is_closed);
-        let (session, turns, live_attached) = if known_closed {
-            let (session, turns) = self
-                .read_thread_for_selection_replay(app_server, thread_id)
-                .await?;
-            (session, turns, false)
-        } else {
-            match app_server
-                .resume_thread(self.config.clone(), thread_id, self.resume_model_settings())
-                .await
-            {
-                Ok(started) => {
-                    if started.blocks_direct_input {
-                        self.agent_navigation.mark_parent_owned(thread_id);
-                    }
-                    (started.session, started.turns, true)
+        let (session, turns, live_attached) = match app_server
+            .resume_thread(self.config.clone(), thread_id, self.resume_model_settings())
+            .await
+        {
+            Ok(started) => {
+                if started.blocks_direct_input {
+                    self.agent_navigation.mark_parent_owned(thread_id);
                 }
-                Err(resume_err) => {
-                    tracing::warn!(
-                        thread_id = %thread_id,
-                        error = %resume_err,
-                        "failed to resume live thread for selection; falling back to thread/read"
-                    );
-                    let (session, turns) = self
-                        .read_thread_for_selection_replay(app_server, thread_id)
-                        .await?;
-                    (session, turns, false)
-                }
+                (started.session, started.turns, true)
+            }
+            Err(resume_err) => {
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    error = %resume_err,
+                    "failed to resume live thread for selection; falling back to thread/read"
+                );
+                let (session, turns) = self
+                    .read_thread_for_selection_replay(app_server, thread_id)
+                    .await?;
+                (session, turns, false)
             }
         };
         let channel = self.ensure_thread_channel(thread_id);
@@ -986,6 +977,7 @@ impl App {
                         };
                     }
                 };
+                progress.ancestor_filter_applied_to_all_pages &= response.ancestor_filter_applied;
                 self.stage_loaded_subagent_threads(
                     progress.accumulator.ingest(response.data),
                     &mut progress.pending_refresh_thread_ids,
@@ -993,11 +985,13 @@ impl App {
                 );
                 match page_budget.observe_page(response.next_cursor) {
                     LineagePageAdvance::Complete => {
-                        self.stage_loaded_subagent_threads(
-                            progress.accumulator.finish(),
-                            &mut progress.pending_refresh_thread_ids,
-                            &mut refreshed_thread_ids,
-                        );
+                        if progress.ancestor_filter_applied_to_all_pages {
+                            self.stage_loaded_subagent_threads(
+                                progress.accumulator.finish(),
+                                &mut progress.pending_refresh_thread_ids,
+                                &mut refreshed_thread_ids,
+                            );
+                        }
                         progress.listing_complete = true;
                         break;
                     }
