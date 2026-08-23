@@ -423,6 +423,7 @@ impl SessionTelemetry {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_with_release_version(
         conversation_id: ThreadId,
         model: &str,
