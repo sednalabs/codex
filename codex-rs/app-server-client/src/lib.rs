@@ -485,6 +485,33 @@ impl InProcessAppServerClient {
             let mut delivery = InProcessEventDelivery::default();
             let mut prefer_commands = true;
             loop {
+                if prefer_commands {
+                    let preferred_command = tokio::select! {
+                        biased;
+
+                        shutdown = &mut shutdown_rx => {
+                            let shutdown_result = handle.shutdown().await;
+                            if let Ok(response_tx) = shutdown {
+                                let _ = response_tx.send(shutdown_result);
+                            }
+                            break;
+                        }
+                        command = async { command_rx.try_recv() } => command,
+                    };
+                    match preferred_command {
+                        Ok(command) => {
+                            dispatch_client_command(&request_sender, command);
+                            prefer_commands = false;
+                            continue;
+                        }
+                        Err(mpsc::error::TryRecvError::Empty) => {}
+                        Err(mpsc::error::TryRecvError::Disconnected) => {
+                            let _ = handle.shutdown().await;
+                            break;
+                        }
+                    }
+                }
+
                 tokio::select! {
                     biased;
 
@@ -494,14 +521,6 @@ impl InProcessAppServerClient {
                             let _ = response_tx.send(shutdown_result);
                         }
                         break;
-                    }
-                    command = command_rx.recv(), if prefer_commands => {
-                        let Some(command) = command else {
-                            let _ = handle.shutdown().await;
-                            break;
-                        };
-                        dispatch_client_command(&request_sender, command);
-                        prefer_commands = false;
                     }
                     _ = event_tx.closed() => {
                         let _ = handle.shutdown().await;
@@ -554,7 +573,7 @@ impl InProcessAppServerClient {
                             break;
                         }
                     }
-                    command = command_rx.recv(), if !prefer_commands => {
+                    command = command_rx.recv() => {
                         let Some(command) = command else {
                             let _ = handle.shutdown().await;
                             break;
@@ -2850,7 +2869,7 @@ mod tests {
         use std::sync::atomic::Ordering;
 
         let (command_tx, _command_rx) = mpsc::channel(1);
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<oneshot::Sender<IoResult<()>>>();
         let (_event_tx, event_rx) = mpsc::channel(1);
         let completed = Arc::new(AtomicBool::new(false));
         let worker_completed = Arc::clone(&completed);
