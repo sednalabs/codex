@@ -713,6 +713,101 @@ fn unacknowledged_lineage_does_not_poison_authoritative_retention_budget() -> Re
 }
 
 #[test]
+fn unacknowledged_lineage_fails_closed_beyond_raw_compatibility_cap() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let primary_thread_id = ThreadId::new();
+        let valid_child_thread_id = ThreadId::new();
+        configure_backfill_primary(&mut app, primary_thread_id);
+
+        let unrelated_thread_ids = (0..codex_state::MAX_THREAD_RELATION_DESCENDANTS)
+            .map(|_| ThreadId::new())
+            .collect::<Vec<_>>();
+        let mut rows = unrelated_thread_ids
+            .iter()
+            .map(|thread_id| scripted_lineage_thread(&app.config, *thread_id, ThreadId::new(), 1))
+            .collect::<Vec<_>>();
+        rows.push(scripted_lineage_thread(
+            &app.config,
+            valid_child_thread_id,
+            primary_thread_id,
+            1,
+        ));
+        let page_size = crate::app::session_lifecycle::SUBAGENT_BACKFILL_PAGE_SIZE as usize;
+        let page_count = rows.len().div_ceil(page_size);
+        let pages = rows
+            .chunks(page_size)
+            .enumerate()
+            .map(|(page_index, page)| {
+                ScriptedLineageResponse::Page(scripted_unacknowledged_lineage_page(
+                    page.to_vec(),
+                    (page_index + 1 < page_count).then(|| format!("page-{}", page_index + 1)),
+                ))
+            })
+            .collect::<VecDeque<_>>();
+        assert_eq!(
+            page_count,
+            crate::app::loaded_threads::SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT + 1
+        );
+        let responses = Arc::new(Mutex::new(pages));
+        let (mut app_server, requests, proxy) = start_recording_app_server_with_lineage(
+            &app.config,
+            None,
+            Some(Arc::clone(&responses)),
+            None,
+        )
+        .await?;
+
+        let first = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert_eq!(
+            first.status,
+            crate::app::session_lifecycle::LoadedSubagentBackfillStatus::Paused
+        );
+        assert_eq!(
+            take_backfill_counts(&requests),
+            (
+                crate::app::loaded_threads::SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT,
+                0,
+                0,
+            )
+        );
+        let progress = app
+            .subagent_backfill_progress
+            .as_ref()
+            .expect("paused compatibility listing should retain bounded progress");
+        assert_eq!(progress.retained_thread_count(), 0);
+        assert_eq!(
+            progress.compatibility_retained_thread_count(),
+            codex_state::MAX_THREAD_RELATION_DESCENDANTS
+        );
+
+        let second = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert!(second.completed);
+        assert_eq!(
+            second.status,
+            crate::app::session_lifecycle::LoadedSubagentBackfillStatus::Truncated
+        );
+        assert_eq!(take_backfill_counts(&requests), (1, 0, 0));
+        assert!(app.agent_navigation.get(&valid_child_thread_id).is_none());
+        assert!(
+            unrelated_thread_ids
+                .iter()
+                .all(|thread_id| app.agent_navigation.get(thread_id).is_none())
+        );
+        assert_eq!(
+            app.subagent_backfill_progress
+                .as_ref()
+                .map(|progress| progress.retained_thread_count()),
+            Some(0)
+        );
+
+        app_server.shutdown().await?;
+        proxy.await??;
+        Ok(())
+    })
+}
+
+#[test]
 fn no_state_lineage_fallback_recovers_only_loaded_direct_children() -> Result<()> {
     run_large_stack_app_test(|| async {
         let mut app = make_test_app().await;

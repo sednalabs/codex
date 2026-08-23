@@ -64,6 +64,9 @@ impl LoadedSubagentCompatibilityProgress {
                     return false;
                 }
                 if self.retained_thread_ids.len() >= codex_state::MAX_THREAD_RELATION_DESCENDANTS {
+                    // Unacknowledged rows are untrusted compatibility metadata, so this raw cap is
+                    // intentionally fail-closed: later valid descendants may be omitted, and the
+                    // caller must surface truncation rather than widen memory or CPU consumption.
                     truncated = true;
                     return false;
                 }
