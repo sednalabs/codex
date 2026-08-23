@@ -1764,6 +1764,27 @@ decisions.
   the focused hosted proof; the app-server V2 slice also runs upstream's direct
   transport wire-shape regression.
 
+### In-Process Runtime Delivery Under Backpressure
+
+- The in-process runtime is the authority for the lossless notification tier,
+  including reasoning summary-part boundaries alongside transcript deltas,
+  completed items, and terminal notifications.
+- The runtime queue retains required notifications and ordinary server requests
+  in their source FIFO. Best-effort losses are counted exactly and a single
+  aggregated `Lagged` marker is delivered before the next required event; a
+  relayed `Lagged` marker contributes its represented loss count rather than
+  counting as one dropped envelope.
+- Response ingress remains on the independent bounded lane, so a stalled event
+  consumer cannot prevent ordinary success or error responses from completing.
+  Closing the runtime event consumer terminates its retained owner instead of
+  leaving request handles attached to an idle worker.
+- Preserve `responses_bypass_saturated_in_process_event_router`,
+  `event_delivery_aggregates_loss_before_required_event_and_server_request_fifo`,
+  `in_process_delivery_aggregates_loss_before_required_fifo`, and
+  `idle_event_consumer_closure_terminates_runtime_with_retained_sender` until
+  upstream owns an equivalent classifier, FIFO, exact-loss, response-liveness,
+  and closure contract.
+
 ### Thread-store History And Metadata Ordering
 
 - A clone-shared asynchronous operation permit serializes each `LiveThread`
