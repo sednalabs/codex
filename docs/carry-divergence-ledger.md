@@ -1670,9 +1670,12 @@ decisions.
   the fork persisted and seeds navigation before delayed `thread/started`
   delivery so selection does not race a second liveness read.
 - Fork and fresh-session lifecycle paths adopt upstream's metadata-read
-  de-duplication. Resume and picker backfill reuse discovered server status,
-  while locally live descendant channels remain authoritative and downstream
-  V1 writable versus V2 parent-owned input behavior remains unchanged.
+  de-duplication. Resume and picker backfill page only through the selected
+  primary's persisted descendant lineage, so unrelated loaded threads consume
+  neither metadata reads nor the page budget. Every lineage page is followed,
+  discovered server status is reused, locally live descendant channels remain
+  authoritative, and downstream V1 writable versus V2 parent-owned input
+  behavior remains unchanged.
 - Forks created from an existing side conversation inherit the side
   `thread_source` unless the caller explicitly supplies a different source,
   keeping nested side-chat forks hidden from default history surfaces and

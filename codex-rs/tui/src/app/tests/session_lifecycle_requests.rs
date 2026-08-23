@@ -18,17 +18,33 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
-/// Returns and resets `(thread/loaded/list, thread/read)` request counts.
-fn take_backfill_counts(requests: &Arc<Mutex<Vec<String>>>) -> (usize, usize) {
-    let requests = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+#[derive(Clone, Debug)]
+struct RecordedRequest {
+    method: String,
+    params: Option<serde_json::Value>,
+}
+
+type RecordedRequests = Arc<Mutex<Vec<RecordedRequest>>>;
+
+fn take_recorded_requests(requests: &RecordedRequests) -> Vec<RecordedRequest> {
+    std::mem::take(&mut *requests.lock().expect("request recorder lock"))
+}
+
+/// Returns and resets `(thread/list, thread/loaded/list, thread/read)` request counts.
+fn take_backfill_counts(requests: &RecordedRequests) -> (usize, usize, usize) {
+    let requests = take_recorded_requests(requests);
     (
         requests
             .iter()
-            .filter(|method| *method == "thread/loaded/list")
+            .filter(|request| request.method == "thread/list")
             .count(),
         requests
             .iter()
-            .filter(|method| *method == "thread/read")
+            .filter(|request| request.method == "thread/loaded/list")
+            .count(),
+        requests
+            .iter()
+            .filter(|request| request.method == "thread/read")
             .count(),
     )
 }
@@ -36,11 +52,8 @@ fn take_backfill_counts(requests: &Arc<Mutex<Vec<String>>>) -> (usize, usize) {
 /// Starts an embedded app server behind a loopback WebSocket proxy that records JSON-RPC methods.
 async fn start_recording_app_server(
     config: &Config,
-) -> Result<(
-    AppServerSession,
-    Arc<Mutex<Vec<String>>>,
-    JoinHandle<Result<()>>,
-)> {
+    blocked_thread_read_id: Option<ThreadId>,
+) -> Result<(AppServerSession, RecordedRequests, JoinHandle<Result<()>>)> {
     let state_db =
         crate::init_state_db_for_app_server_target(config, &crate::AppServerTarget::Embedded)
             .await?;
@@ -62,6 +75,7 @@ async fn start_recording_app_server(
     let request_sink = Arc::clone(&requests);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let websocket_url = format!("ws://{}", listener.local_addr()?);
+    let blocked_thread_read_id = blocked_thread_read_id.map(|thread_id| thread_id.to_string());
     let proxy = tokio::spawn(async move {
         let (stream, _) = listener.accept().await?;
         let mut websocket = accept_async(stream).await?;
@@ -89,7 +103,24 @@ async fn start_recording_app_server(
                     request_sink
                         .lock()
                         .expect("request recorder lock")
-                        .push(request.method.clone());
+                        .push(RecordedRequest {
+                            method: request.method.clone(),
+                            params: request.params.clone(),
+                        });
+                    if request.method == "thread/read"
+                        && blocked_thread_read_id
+                            .as_deref()
+                            .is_some_and(|blocked_thread_read_id| {
+                                request
+                                    .params
+                                    .as_ref()
+                                    .and_then(|params| params.get("threadId"))
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some(blocked_thread_read_id)
+                            })
+                    {
+                        std::future::pending::<()>().await;
+                    }
                     let request_id = request.id.clone();
                     let request =
                         serde_json::from_value::<ClientRequest>(serde_json::to_value(request)?)?;
@@ -155,7 +186,8 @@ fn fresh_session_applies_requested_name() -> Result<()> {
                 app.config.codex_home = codex_home.path().to_path_buf().abs();
                 app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
                 let (mut app_server, requests, proxy) =
-                    start_recording_app_server(&app.config).await?;
+                    start_recording_app_server(&app.config, /*blocked_thread_read_id*/ None)
+                        .await?;
                 let mut tui = crate::tui::test_support::make_test_tui()?;
 
                 app.start_fresh_session_with_summary_hint(
@@ -177,7 +209,7 @@ fn fresh_session_applies_requested_name() -> Result<()> {
                         .lock()
                         .expect("request recorder lock")
                         .iter()
-                        .any(|method| method == "thread/name/set"),
+                        .any(|request| request.method == "thread/name/set"),
                     "fresh session should be named through the app server"
                 );
                 let thread = app_server
@@ -251,7 +283,8 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                     &root_thread_id.to_string(),
                 );
                 let (mut app_server, requests, proxy) =
-                    start_recording_app_server(&app.config).await?;
+                    start_recording_app_server(&app.config, /*blocked_thread_read_id*/ None)
+                        .await?;
                 let root = app_server
                     .resume_thread(
                         app.config.clone(),
@@ -282,7 +315,10 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                 assert_ne!(app.chat_widget.thread_id(), Some(root_thread_id));
                 // Forking may read the source metadata once when the response includes its parent
                 // id. It must not scan or backfill loaded threads for the newly created fork.
-                assert!(matches!(take_backfill_counts(&requests), (0, 0) | (0, 1)));
+                assert!(matches!(
+                    take_backfill_counts(&requests),
+                    (0, 0, 0) | (0, 0, 1)
+                ));
 
                 app.start_fresh_session_with_summary_hint(
                     &mut tui,
@@ -294,20 +330,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                 .await;
 
                 assert_ne!(app.chat_widget.thread_id(), Some(root_thread_id));
-                assert_eq!(take_backfill_counts(&requests), (0, 0));
-
-                let loaded_threads = app_server
-                    .thread_loaded_list(ThreadLoadedListParams {
-                        cursor: None,
-                        limit: None,
-                    })
-                    .await?
-                    .data;
-                let expected_reads = loaded_threads
-                    .iter()
-                    .filter(|thread_id| *thread_id != &root_thread_id.to_string())
-                    .count();
-                assert!(loaded_threads.contains(&child_thread_id.to_string()));
+                assert_eq!(take_backfill_counts(&requests), (0, 0, 0));
                 take_backfill_counts(&requests);
                 app.harness_overrides.cwd = Some(app.config.cwd.to_path_buf());
 
@@ -324,7 +347,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
 
                 assert!(matches!(control, AppRunControl::Continue));
                 assert_eq!(app.chat_widget.thread_id(), Some(root_thread_id));
-                assert_eq!(take_backfill_counts(&requests), (1, expected_reads));
+                assert_eq!(take_backfill_counts(&requests), (1, 0, 0));
                 assert_eq!(
                     app.agent_navigation.get(&child_thread_id),
                     Some(&AgentPickerThreadEntry {
@@ -343,7 +366,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
 
                 // The picker refreshes the primary thread once. Discovered children were already
                 // refreshed by the picker's initial backfill and must not be read a second time.
-                assert_eq!(take_backfill_counts(&requests), (1, expected_reads + 1));
+                assert_eq!(take_backfill_counts(&requests), (1, 0, 1));
                 app_server.shutdown().await?;
                 proxy.await??;
                 Ok(())
@@ -351,4 +374,186 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
         })?
         .join()
         .expect("session lifecycle request test thread")
+}
+
+#[test]
+fn open_agent_picker_bounds_metadata_to_primary_lineage() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+    const UNRELATED_THREAD_COUNT: usize = 128;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-lineage-bound".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-01T00-00-00",
+                        "2026-01-01T00:00:00Z",
+                        "Primary thread",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-01T00-00-01",
+                        "2026-01-01T00:00:01Z",
+                        "Descendant thread",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/worker").expect("valid agent path"),
+                            ),
+                            agent_nickname: Some("worker".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create child rollout"),
+                )?;
+                let mut unrelated_thread_ids = Vec::with_capacity(UNRELATED_THREAD_COUNT);
+                for index in 0..UNRELATED_THREAD_COUNT {
+                    let minute = index / 60;
+                    let second = index % 60;
+                    let rollout_timestamp = format!("2026-01-02T00-{minute:02}-{second:02}");
+                    let created_at = format!("2026-01-02T00:{minute:02}:{second:02}Z");
+                    unrelated_thread_ids.push(ThreadId::from_string(
+                        &create_fake_rollout(
+                            codex_home.path(),
+                            &rollout_timestamp,
+                            &created_at,
+                            "Unrelated thread",
+                            Some(app.config.model_provider_id.as_str()),
+                            /*git_info*/ None,
+                        )
+                        .expect("create unrelated rollout"),
+                    )?);
+                }
+
+                let blocked_thread_read_id = unrelated_thread_ids[0];
+                let (mut app_server, requests, proxy) =
+                    start_recording_app_server(&app.config, Some(blocked_thread_read_id)).await?;
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+                app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        child_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                for thread_id in unrelated_thread_ids {
+                    app_server
+                        .resume_thread(app.config.clone(), thread_id, app.resume_model_settings())
+                        .await?;
+                }
+                let mut tui = crate::tui::test_support::make_test_tui()?;
+                take_recorded_requests(&requests);
+
+                let picker_result = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    Box::pin(app.handle_event(
+                        &mut tui,
+                        &mut app_server,
+                        AppEvent::OpenAgentPicker,
+                    )),
+                )
+                .await;
+                let control = match picker_result {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        proxy.abort();
+                        return Err(color_eyre::eyre::eyre!(
+                            "agent picker waited for an unrelated thread/read"
+                        ));
+                    }
+                };
+
+                assert!(matches!(control, AppRunControl::Continue));
+                assert_eq!(
+                    app.agent_navigation.get(&child_thread_id),
+                    Some(&AgentPickerThreadEntry {
+                        agent_nickname: Some("worker".to_string()),
+                        agent_role: Some("worker".to_string()),
+                        agent_path: Some("/root/worker".to_string()),
+                        is_running: false,
+                        is_closed: false,
+                        created_at: None,
+                        updated_at: None,
+                        ..AgentPickerThreadEntry::default()
+                    })
+                );
+
+                let recorded = take_recorded_requests(&requests);
+                let lineage_requests: Vec<_> = recorded
+                    .iter()
+                    .filter(|request| request.method == "thread/list")
+                    .collect();
+                assert_eq!(lineage_requests.len(), 1);
+                assert_eq!(
+                    lineage_requests[0]
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("ancestorThreadId"))
+                        .and_then(serde_json::Value::as_str),
+                    Some(root_thread_id.to_string().as_str())
+                );
+                assert_eq!(
+                    lineage_requests[0]
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("limit"))
+                        .and_then(serde_json::Value::as_u64),
+                    Some(u64::from(
+                        crate::app::session_lifecycle::SUBAGENT_BACKFILL_PAGE_SIZE,
+                    ))
+                );
+                assert_eq!(
+                    lineage_requests[0]
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("useStateDbOnly"))
+                        .and_then(serde_json::Value::as_bool),
+                    Some(true)
+                );
+                let read_thread_ids: Vec<_> = recorded
+                    .iter()
+                    .filter(|request| request.method == "thread/read")
+                    .filter_map(|request| request.params.as_ref())
+                    .filter_map(|params| params.get("threadId"))
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+                assert_eq!(read_thread_ids, vec![root_thread_id.to_string()]);
+                assert!(!read_thread_ids.contains(&blocked_thread_read_id.to_string()));
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("agent picker lineage bound test thread")
 }

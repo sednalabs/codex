@@ -14,6 +14,8 @@ use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
 
+pub(super) const SUBAGENT_BACKFILL_PAGE_SIZE: u32 = 100;
+
 #[derive(Clone, Copy)]
 pub(super) enum ThreadAttachPresentation {
     SessionLineage,
@@ -829,17 +831,19 @@ impl App {
         Ok(())
     }
 
-    /// Fetches all loaded threads from the app server and registers descendants of the primary
-    /// thread in the navigation cache and chat widget metadata.
+    /// Fetches persisted descendants of the primary thread from the app server and registers them
+    /// in the navigation cache and chat widget metadata.
     ///
     /// Called when opening the `/agent` picker and after resuming a thread so that the picker and
     /// keyboard navigation are pre-populated even if the TUI did not witness the original spawn
     /// events. Fresh and forked threads cannot have pre-existing descendants.
     ///
-    /// The loaded-thread list is fetched in full (no pagination) and the spawn tree is walked
-    /// by `find_loaded_subagent_threads_for_primary`. Each discovered subagent is registered via
-    /// `upsert_agent_picker_thread`, which writes to both `AgentNavigationState` and the
-    /// `ChatWidget` metadata map.
+    /// The app server applies the ancestor filter before pagination, so unrelated loaded threads
+    /// neither require metadata reads nor consume the page budget. All lineage pages are followed
+    /// to avoid permanently hiding descendants beyond the first page, then the returned spawn tree
+    /// is validated by `find_loaded_subagent_threads_for_primary`. Each discovered subagent is
+    /// registered via `upsert_agent_picker_thread`, which writes to both `AgentNavigationState` and
+    /// the `ChatWidget` metadata map.
     pub(super) async fn backfill_loaded_subagent_threads(
         &mut self,
         app_server: &mut AppServerSession,
@@ -848,42 +852,46 @@ impl App {
             return LoadedSubagentBackfill::default();
         };
 
-        let loaded_thread_ids = match app_server
-            .thread_loaded_list(ThreadLoadedListParams {
-                cursor: None,
-                limit: None,
-            })
-            .await
-        {
-            Ok(response) => response.data,
-            Err(err) => {
-                tracing::warn!(%err, "failed to list loaded threads for subagent backfill");
-                return LoadedSubagentBackfill::default();
-            }
-        };
-
         let mut threads = Vec::new();
-        let mut had_read_error = false;
-        for thread_id in loaded_thread_ids {
-            let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
-                tracing::warn!("ignoring loaded thread with invalid id during subagent backfill");
-                continue;
-            };
-
-            if thread_id == primary_thread_id {
-                continue;
-            }
-
-            match app_server
-                .thread_read(thread_id, /*include_turns*/ false)
+        let mut cursor = None;
+        let mut had_page_error = false;
+        loop {
+            let response = match app_server
+                .thread_list(ThreadListParams {
+                    cursor: cursor.clone(),
+                    limit: Some(SUBAGENT_BACKFILL_PAGE_SIZE),
+                    sort_key: None,
+                    sort_direction: None,
+                    model_providers: None,
+                    source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                    thread_sources: None,
+                    archived: Some(false),
+                    is_pinned: None,
+                    cwd: None,
+                    use_state_db_only: true,
+                    search_term: None,
+                    parent_thread_id: None,
+                    ancestor_thread_id: Some(primary_thread_id.to_string()),
+                })
                 .await
             {
-                Ok(thread) => threads.push(thread),
+                Ok(response) => response,
                 Err(err) => {
-                    had_read_error = true;
-                    tracing::warn!(thread_id = %thread_id, %err, "failed to read loaded thread");
+                    had_page_error = true;
+                    tracing::warn!(%err, "failed to list subagent lineage for backfill");
+                    break;
                 }
+            };
+            threads.extend(response.data);
+            let Some(next_cursor) = response.next_cursor else {
+                break;
+            };
+            if cursor.as_ref() == Some(&next_cursor) {
+                had_page_error = true;
+                tracing::warn!(%next_cursor, "subagent lineage backfill cursor did not advance");
+                break;
             }
+            cursor = Some(next_cursor);
         }
 
         let mut refreshed_thread_ids = HashSet::new();
@@ -920,7 +928,7 @@ impl App {
         self.sync_active_agent_label();
 
         LoadedSubagentBackfill {
-            completed: !had_read_error,
+            completed: !had_page_error,
             refreshed_thread_ids,
         }
     }
