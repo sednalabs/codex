@@ -47,6 +47,8 @@ use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
@@ -92,6 +94,8 @@ use codex_login::AuthManager;
 use codex_protocol::protocol::SessionSource;
 pub use codex_rollout::StateDbHandle;
 pub use codex_state::log_db::LogDbLayer;
+#[cfg(test)]
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -102,6 +106,8 @@ const IN_PROCESS_CONNECTION_ID: ConnectionId = ConnectionId(0);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 // Covers both bounded runtime drains plus the analytics client's 25-second best-effort flush.
 const SHUTDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(35);
+#[cfg(test)]
+static REQUIRED_EVENT_DELIVERY_PROBE: OnceLock<Arc<Notify>> = OnceLock::new();
 /// Default bounded channel capacity for in-process runtime queues.
 pub const DEFAULT_IN_PROCESS_CHANNEL_CAPACITY: usize = CHANNEL_CAPACITY;
 
@@ -245,6 +251,19 @@ async fn deliver_in_process_events(
                 continue;
             }
         };
+        #[cfg(test)]
+        if event_tx.capacity() == 0
+            && matches!(
+                event,
+                InProcessServerEvent::ServerNotification(
+                    ServerNotification::ExternalAgentConfigImportCompleted(_)
+                )
+            )
+        {
+            if let Some(probe) = REQUIRED_EVENT_DELIVERY_PROBE.get() {
+                probe.notify_one();
+            }
+        }
         if let Err(undelivered_event) =
             forward_in_process_event(&event_tx, &mut skipped_events, event).await
         {
@@ -516,6 +535,7 @@ impl InProcessClientHandle {
     /// if graceful drain does not complete in time.
     pub async fn shutdown(self) -> IoResult<()> {
         let Self {
+            client,
             event_rx,
             mut runtime_handle,
             shutdown_tx,
@@ -531,6 +551,7 @@ impl InProcessClientHandle {
         // queue cannot starve cleanup or its completion acknowledgment.
         let shutdown_signaled = shutdown_tx.send(()).is_ok();
         drop(event_rx);
+        drop(client);
         if shutdown_signaled {
             let _ = timeout(SHUTDOWN_ACK_TIMEOUT, shutdown_ack_rx).await;
         }
@@ -1100,7 +1121,7 @@ mod tests {
         start_test_client_with_capacity(session_source, DEFAULT_IN_PROCESS_CHANNEL_CAPACITY).await
     }
 
-    async fn request_retrying_would_block(
+    async fn request_retrying_transient_overload(
         client: &InProcessClientHandle,
         request: ClientRequest,
     ) -> IoResult<PendingClientRequestResponse> {
@@ -1108,6 +1129,9 @@ mod tests {
             loop {
                 match client.request(request.clone()).await {
                     Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok(Err(error)) if error.code == OVERLOADED_ERROR_CODE => {
                         tokio::task::yield_now().await;
                     }
                     result => break result,
@@ -1537,10 +1561,17 @@ mod tests {
 
     #[tokio::test]
     async fn real_handle_shutdown_unblocks_saturated_required_delivery() {
+        let required_event_delivery_probe = Arc::new(Notify::new());
+        assert!(
+            REQUIRED_EVENT_DELIVERY_PROBE
+                .set(Arc::clone(&required_event_delivery_probe))
+                .is_ok(),
+            "required delivery probe should be installed once"
+        );
         let client =
             start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
 
-        request_retrying_would_block(
+        request_retrying_transient_overload(
             &client,
             ClientRequest::ThreadStart {
                 request_id: RequestId::Integer(20),
@@ -1562,7 +1593,7 @@ mod tests {
         .await
         .expect("thread/start should saturate the retained event queue");
 
-        request_retrying_would_block(
+        request_retrying_transient_overload(
             &client,
             ClientRequest::ExternalAgentConfigImport {
                 request_id: RequestId::Integer(21),
@@ -1583,6 +1614,12 @@ mod tests {
         .expect("external import transport should remain live")
         .expect("external import should admit its required completion event");
 
+        timeout(
+            Duration::from_secs(1),
+            required_event_delivery_probe.notified(),
+        )
+        .await
+        .expect("required completion should reach the blocked event route");
         assert_eq!(
             client.event_rx.capacity(),
             0,
