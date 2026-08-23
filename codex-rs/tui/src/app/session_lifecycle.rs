@@ -94,6 +94,10 @@ impl LoadedSubagentBackfillProgress {
         self.retained_thread_ids.insert(thread_id)
     }
 
+    fn retained_descendant_capacity_reached(&self) -> bool {
+        self.retained_thread_ids.len() >= MAX_RETAINED_SUBAGENT_LINEAGE
+    }
+
     #[cfg(test)]
     pub(crate) fn retained_thread_count(&self) -> usize {
         self.retained_thread_ids.len()
@@ -931,6 +935,22 @@ impl App {
         self.sync_active_agent_label();
     }
 
+    /// Attaches the session supplied during `App::new`, inserting its navigation row before
+    /// persisting the app-server's parent-owned capability.
+    pub(super) async fn attach_initial_started_thread(
+        &mut self,
+        started: AppServerStartedThread,
+    ) -> Result<ThreadId> {
+        let thread_id = started.session.thread_id;
+        let blocks_direct_input = started.blocks_direct_input;
+        self.enqueue_primary_thread_session(started.session, started.turns)
+            .await?;
+        if blocks_direct_input {
+            self.mark_primary_thread_parent_owned(thread_id);
+        }
+        Ok(thread_id)
+    }
+
     pub(super) async fn handle_startup_thread_started(
         &mut self,
         app_server: &mut AppServerSession,
@@ -1167,19 +1187,21 @@ impl App {
                     response.ancestor_filter_applied.unwrap_or(false);
                 progress.truncated |= response.relation_limit_reached.unwrap_or(false);
                 let retained_threads = progress.retain_threads(response.data);
-                self.stage_loaded_subagent_threads(
+                let admission_truncated = self.stage_loaded_subagent_threads(
                     progress.accumulator.ingest(retained_threads),
                     &mut progress.pending_refresh_thread_ids,
                     &mut refreshed_thread_ids,
                 );
+                progress.truncated |= admission_truncated;
                 match page_budget.observe_page(response.next_cursor) {
                     LineagePageAdvance::Complete => {
                         if progress.ancestor_filter_applied_to_all_pages {
-                            self.stage_loaded_subagent_threads(
+                            let admission_truncated = self.stage_loaded_subagent_threads(
                                 progress.accumulator.finish(),
                                 &mut progress.pending_refresh_thread_ids,
                                 &mut refreshed_thread_ids,
                             );
+                            progress.truncated |= admission_truncated;
                         }
                         progress.listing_complete = true;
                         break;
@@ -1227,6 +1249,12 @@ impl App {
         let mut refreshes_attempted = 0;
         if let Some(mut fallback) = progress.loaded_fallback.take() {
             let mut had_fallback_cursor_cycle = false;
+            if progress.retained_descendant_capacity_reached() && !fallback.listing_complete {
+                fallback.next_cursor = None;
+                fallback.seen_cursors.clear();
+                fallback.listing_complete = true;
+                progress.truncated = true;
+            }
             if !fallback.listing_complete && fallback.pending_thread_ids.is_empty() {
                 let mut page_budget =
                     LineagePageBudget::new(std::mem::take(&mut fallback.seen_cursors));
@@ -1251,15 +1279,34 @@ impl App {
                             };
                         }
                     };
+                    let mut retention_exhausted = false;
                     for thread_id in response.data {
                         let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
                             continue;
                         };
+                        if thread_id != primary_thread_id
+                            && !progress.retained_thread_ids.contains(&thread_id)
+                            && progress.retained_descendant_capacity_reached()
+                        {
+                            progress.truncated = true;
+                            retention_exhausted = true;
+                            break;
+                        }
                         if progress.retain_thread_id(thread_id)
                             && fallback.seen_thread_ids.insert(thread_id)
                         {
                             fallback.pending_thread_ids.push_back(thread_id);
                         }
+                    }
+                    if retention_exhausted
+                        || progress.retained_descendant_capacity_reached()
+                            && response.next_cursor.is_some()
+                    {
+                        fallback.next_cursor = None;
+                        fallback.seen_cursors.clear();
+                        fallback.listing_complete = true;
+                        progress.truncated = true;
+                        break;
                     }
                     match page_budget.observe_page(response.next_cursor) {
                         LineagePageAdvance::Complete => {
@@ -1308,8 +1355,11 @@ impl App {
                     Ok(thread) => {
                         for loaded in fallback.accumulator.ingest(vec![thread]) {
                             let thread_id = loaded.thread_id;
-                            self.apply_loaded_subagent_thread(loaded);
-                            refreshed_thread_ids.insert(thread_id);
+                            if self.apply_loaded_subagent_thread(loaded) {
+                                refreshed_thread_ids.insert(thread_id);
+                            } else {
+                                progress.truncated = true;
+                            }
                         }
                     }
                     Err(err) => {
@@ -1488,21 +1538,31 @@ impl App {
         }
     }
 
-    fn apply_loaded_subagent_thread(&mut self, thread: LoadedSubagentThread) {
+    pub(super) fn apply_loaded_subagent_thread(&mut self, thread: LoadedSubagentThread) -> bool {
         let agent_path = thread.agent_path;
         let has_live_channel = self
             .thread_event_channels
             .get(&thread.thread_id)
             .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
         let is_closed = !has_live_channel && thread.is_closed;
-        let accepted = self.upsert_agent_picker_thread(
-            thread.thread_id,
-            thread.agent_nickname,
-            thread.agent_role,
-            is_closed,
-        );
+        let accepted = if thread.is_running || has_live_channel {
+            self.upsert_agent_picker_thread_retaining(
+                thread.thread_id,
+                thread.agent_nickname,
+                thread.agent_role,
+                is_closed,
+            )
+            .accepted()
+        } else {
+            self.upsert_agent_picker_thread(
+                thread.thread_id,
+                thread.agent_nickname,
+                thread.agent_role,
+                is_closed,
+            )
+        };
         if !accepted {
-            return;
+            return false;
         }
         if thread.blocks_direct_input {
             self.agent_navigation.mark_parent_owned(thread.thread_id);
@@ -1517,6 +1577,7 @@ impl App {
                     .set_running(thread.thread_id, /*is_running*/ false);
             }
         }
+        true
     }
 
     fn stage_loaded_subagent_threads(
@@ -1524,7 +1585,8 @@ impl App {
         threads: impl IntoIterator<Item = LoadedSubagentThread>,
         pending_refresh_thread_ids: &mut VecDeque<ThreadId>,
         refreshed_thread_ids: &mut HashSet<ThreadId>,
-    ) {
+    ) -> bool {
+        let mut truncated = false;
         for thread in threads {
             let thread_id = thread.thread_id;
             let has_live_channel = self
@@ -1540,12 +1602,14 @@ impl App {
             if requires_authoritative_refresh {
                 pending_refresh_thread_ids.push_back(thread_id);
             } else {
-                self.apply_loaded_subagent_thread(thread);
-                if !has_live_channel {
+                let accepted = self.apply_loaded_subagent_thread(thread);
+                truncated |= !accepted;
+                if accepted && !has_live_channel {
                     refreshed_thread_ids.insert(thread_id);
                 }
             }
         }
+        truncated
     }
 
     /// Returns the adjacent thread id for keyboard navigation, backfilling from the server if the

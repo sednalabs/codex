@@ -629,6 +629,7 @@ impl InMemoryThreadStore {
         Ok(ThreadPage {
             items,
             next_cursor: None,
+            relation_limit_reached: false,
         })
     }
 

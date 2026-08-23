@@ -19,7 +19,9 @@ use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadStatus;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SubAgentSource;
-pub(crate) use codex_state::MAX_THREAD_RELATION_DESCENDANTS as MAX_RETAINED_SUBAGENT_LINEAGE;
+/// Descendant capacity after reserving one slot for the retained primary thread.
+pub(crate) const MAX_RETAINED_SUBAGENT_LINEAGE: usize =
+    codex_state::MAX_THREAD_RELATION_DESCENDANTS.saturating_sub(1);
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
