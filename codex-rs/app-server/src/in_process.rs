@@ -25,11 +25,10 @@
 //!
 //! # Backpressure
 //!
-//! Command submission uses `try_send` and can return `WouldBlock`, while event
-//! fanout may drop notifications under saturation. Server requests are never
-//! silently abandoned: if they cannot be queued they are failed back into
-//! `MessageProcessor` with overload or internal errors so approval flows do
-//! not hang indefinitely.
+//! Command submission uses `try_send` and can return `WouldBlock`, while
+//! best-effort event fanout may report loss through [`InProcessServerEvent::Lagged`].
+//! Required notifications and server requests retain FIFO custody after
+//! admission; saturation delays them rather than rejecting them.
 //!
 //! # Relationship to `codex-app-server-client`
 //!
@@ -134,6 +133,11 @@ enum RuntimeEventTerminal {
     ConsumerClosed,
 }
 
+struct PendingWriterEvent {
+    event: InProcessServerEvent,
+    write_complete_tx: Option<oneshot::Sender<()>>,
+}
+
 /// Input needed to start an in-process app-server runtime.
 ///
 /// These fields mirror the pieces of ambient process state that stdio and
@@ -211,6 +215,19 @@ enum InProcessClientMessage {
     },
     Shutdown {
         done_tx: oneshot::Sender<()>,
+    },
+    #[cfg(test)]
+    InjectServerNotification {
+        notification: ServerNotification,
+        done_tx: oneshot::Sender<()>,
+    },
+    #[cfg(test)]
+    InjectServerRequest {
+        payload: codex_app_server_protocol::ServerRequestPayload,
+        response_tx: oneshot::Sender<(
+            RequestId,
+            oneshot::Receiver<crate::outgoing_message::ClientRequestResult>,
+        )>,
     },
 }
 
@@ -366,6 +383,44 @@ impl InProcessClientHandle {
     pub fn sender(&self) -> InProcessClientSender {
         self.client.clone()
     }
+
+    #[cfg(test)]
+    async fn inject_server_notification(&self, notification: ServerNotification) {
+        let (done_tx, done_rx) = oneshot::channel();
+        self.client
+            .client_tx
+            .send(InProcessClientMessage::InjectServerNotification {
+                notification,
+                done_tx,
+            })
+            .await
+            .expect("runtime should accept injected notification");
+        done_rx
+            .await
+            .expect("runtime should acknowledge injected notification");
+    }
+
+    #[cfg(test)]
+    async fn inject_server_request(
+        &self,
+        payload: codex_app_server_protocol::ServerRequestPayload,
+    ) -> (
+        RequestId,
+        oneshot::Receiver<crate::outgoing_message::ClientRequestResult>,
+    ) {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.client
+            .client_tx
+            .send(InProcessClientMessage::InjectServerRequest {
+                payload,
+                response_tx,
+            })
+            .await
+            .expect("runtime should accept injected server request");
+        response_rx
+            .await
+            .expect("runtime should return injected request callback")
+    }
 }
 
 /// Starts an in-process app-server runtime and performs initialize handshake.
@@ -446,6 +501,15 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                     match send_error {
                         mpsc::error::TrySendError::Full(_) => {
                             warn!("dropping in-process server event (queue full)");
+                            if event_tx_forward
+                                .send(InProcessServerEvent::Lagged { skipped: 1 })
+                                .await
+                                .is_err()
+                            {
+                                let _ = event_terminal_tx_forward
+                                    .try_send(RuntimeEventTerminal::ConsumerClosed);
+                                break;
+                            }
                         }
                         mpsc::error::TrySendError::Closed(_) => {
                             let _ = event_terminal_tx_forward
@@ -595,15 +659,18 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         // Keep this sender alive so a normal forwarder exit is not interpreted
         // as a downstream-consumer terminal reason.
         let _event_terminal_tx = event_terminal_tx;
-        // At most one admitted event may wait behind the bounded FIFO. While
-        // it waits, commands remain selectable but later events stay upstream
-        // so none can overtake this head.
+        // At most one admitted event may wait behind the bounded FIFO. A
+        // second event may remain as the head of the preceding writer
+        // boundary, but is never moved into another payload queue. Responses,
+        // errors, and client commands remain selectable while the event head
+        // waits.
         let mut pending_event: Option<(InProcessServerEvent, Option<oneshot::Sender<()>>)> = None;
+        let mut pending_writer_event: Option<PendingWriterEvent> = None;
 
         loop {
             tokio::select! {
                 terminal_reason = event_terminal_rx.recv() => {
-                    if terminal_reason.is_some() {
+                    if matches!(terminal_reason, Some(RuntimeEventTerminal::ConsumerClosed)) {
                         break;
                     }
                 }
@@ -689,15 +756,31 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             shutdown_ack = Some(done_tx);
                             break;
                         }
+                        #[cfg(test)]
+                        Some(InProcessClientMessage::InjectServerNotification {
+                            notification,
+                            done_tx,
+                        }) => {
+                            outgoing_message_sender
+                                .send_server_notification(notification)
+                                .await;
+                            let _ = done_tx.send(());
+                        }
+                        #[cfg(test)]
+                        Some(InProcessClientMessage::InjectServerRequest {
+                            payload,
+                            response_tx,
+                        }) => {
+                            let request = outgoing_message_sender.send_request(payload).await;
+                            let _ = response_tx.send(request);
+                        }
                         None => {
                             break;
                         }
                     }
                 }
-                queued_message = writer_rx.recv(), if pending_event.is_none() => {
-                    let Some(queued_message) = queued_message else {
-                        break;
-                    };
+                queued_message = writer_rx.recv(), if pending_writer_event.is_none() => {
+                    let Some(queued_message) = queued_message else { break; };
                     let outgoing_message = queued_message.message;
                     let mut write_complete_tx = queued_message.write_complete_tx;
                     match outgoing_message {
@@ -722,6 +805,13 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                         OutgoingMessage::Request(request) => {
+                            if pending_event.is_some() {
+                                pending_writer_event = Some(PendingWriterEvent {
+                                    event: InProcessServerEvent::ServerRequest(request),
+                                    write_complete_tx,
+                                });
+                                continue;
+                            }
                             match forward_tx.try_send(InProcessServerEvent::ServerRequest(request)) {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(event)) => {
@@ -732,6 +822,15 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                         OutgoingMessage::AppServerNotification(envelope) => {
+                            if pending_event.is_some() {
+                                pending_writer_event = Some(PendingWriterEvent {
+                                    event: InProcessServerEvent::ServerNotification(
+                                        envelope.notification,
+                                    ),
+                                    write_complete_tx,
+                                });
+                                continue;
+                            }
                             let notification = envelope.notification;
                             let event = InProcessServerEvent::ServerNotification(notification);
                             match forward_tx.try_send(event) {
@@ -744,6 +843,10 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 }
                                 Err(mpsc::error::TrySendError::Full(_)) => {
                                     warn!("dropping in-process server notification (queue full)");
+                                    pending_event = Some((
+                                        InProcessServerEvent::Lagged { skipped: 1 },
+                                        None,
+                                    ));
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => break,
                             }
@@ -751,6 +854,20 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                     }
                     if let Some(write_complete_tx) = write_complete_tx {
                         let _ = write_complete_tx.send(());
+                    }
+                }
+                permit = forward_tx.reserve(), if pending_event.is_none() && pending_writer_event.is_some() => {
+                    match permit {
+                        Ok(permit) => {
+                            let Some(pending_writer_event) = pending_writer_event.take() else {
+                                break;
+                            };
+                            permit.send(pending_writer_event.event);
+                            if let Some(write_complete_tx) = pending_writer_event.write_complete_tx {
+                                let _ = write_complete_tx.send(());
+                            }
+                        }
+                        Err(_) => break,
                     }
                 }
             }
@@ -805,12 +922,15 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_app_server_protocol::AccountUpdatedNotification;
+    use codex_app_server_protocol::AgentMessageDeltaNotification;
     use codex_app_server_protocol::ClientInfo;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
+    use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::Turn;
     use codex_app_server_protocol::TurnCompletedNotification;
     use codex_app_server_protocol::TurnItemsView;
@@ -949,6 +1069,120 @@ mod tests {
         };
         let _parsed: ConfigRequirementsReadResponse =
             serde_json::from_value(response).expect("response should match v2 schema");
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[tokio::test]
+    async fn capacity_one_keeps_event_fifo_callback_and_response_liveness() {
+        let mut client =
+            start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
+        client
+            .inject_server_notification(ServerNotification::AccountUpdated(
+                AccountUpdatedNotification {
+                    auth_mode: None,
+                    plan_type: None,
+                },
+            ))
+            .await;
+        tokio::task::yield_now().await;
+        client
+            .inject_server_notification(ServerNotification::AccountUpdated(
+                AccountUpdatedNotification {
+                    auth_mode: None,
+                    plan_type: None,
+                },
+            ))
+            .await;
+        tokio::task::yield_now().await;
+        client
+            .inject_server_notification(ServerNotification::AgentMessageDelta(
+                AgentMessageDeltaNotification {
+                    thread_id: "thread".to_string(),
+                    turn_id: "turn".to_string(),
+                    item_id: "item".to_string(),
+                    delta: "required".to_string(),
+                },
+            ))
+            .await;
+        let (request_id, callback_rx) = client
+            .inject_server_request(
+                codex_app_server_protocol::ServerRequestPayload::ToolRequestUserInput(
+                    ToolRequestUserInputParams {
+                        thread_id: "thread".to_string(),
+                        turn_id: "turn".to_string(),
+                        item_id: "item".to_string(),
+                        questions: Vec::new(),
+                        is_blocking: true,
+                        auto_resolution_ms: None,
+                    },
+                ),
+            )
+            .await;
+
+        let response = timeout(
+            Duration::from_secs(2),
+            client.request(ClientRequest::ConfigRequirementsRead {
+                request_id: RequestId::Integer(5),
+                params: None,
+            }),
+        )
+        .await
+        .expect("ordinary response should remain live behind the pending event head")
+        .expect("request transport should remain live")
+        .expect("ordinary request should succeed");
+        let _parsed: ConfigRequirementsReadResponse =
+            serde_json::from_value(response).expect("response should match v2 schema");
+
+        let first = timeout(Duration::from_secs(2), client.next_event())
+            .await
+            .expect("first event should arrive")
+            .expect("event stream should stay open");
+        assert!(matches!(
+            first,
+            InProcessServerEvent::ServerNotification(ServerNotification::AccountUpdated(_))
+        ));
+        let lagged = timeout(Duration::from_secs(2), client.next_event())
+            .await
+            .expect("lag marker should arrive")
+            .expect("event stream should stay open");
+        assert!(matches!(
+            lagged,
+            InProcessServerEvent::Lagged { skipped } if skipped > 0
+        ));
+        let required = timeout(Duration::from_secs(2), client.next_event())
+            .await
+            .expect("required event should arrive")
+            .expect("event stream should stay open");
+        assert!(matches!(
+            required,
+            InProcessServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
+                notification
+            )) if notification.delta == "required"
+        ));
+        let request = timeout(Duration::from_secs(2), client.next_event())
+            .await
+            .expect("server request should arrive")
+            .expect("event stream should stay open");
+        assert!(matches!(
+            request,
+            InProcessServerEvent::ServerRequest(ref request) if request.id() == &request_id
+        ));
+
+        client
+            .respond_to_server_request(request_id, serde_json::json!({}))
+            .expect("server request response should enqueue");
+        assert_eq!(
+            timeout(Duration::from_secs(2), callback_rx)
+                .await
+                .expect("server request callback should complete")
+                .expect("server request callback should stay owned")
+                .expect("server request should resolve"),
+            serde_json::json!({})
+        );
+
         client
             .shutdown()
             .await
