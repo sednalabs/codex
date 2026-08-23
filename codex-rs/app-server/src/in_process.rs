@@ -469,11 +469,20 @@ impl InProcessClientHandle {
     /// Shutdown is bounded by internal timeouts and may abort background tasks
     /// if graceful drain does not complete in time.
     pub async fn shutdown(self) -> IoResult<()> {
-        let mut runtime_handle = self.runtime_handle;
+        let Self {
+            client,
+            event_rx,
+            mut runtime_handle,
+            #[cfg(test)]
+            _test_codex_home,
+        } = self;
+        // Required event delivery may be waiting for capacity. Close the
+        // consumer side before asking the runtime to drain so a blocked send
+        // observes closure instead of holding shutdown behind the event queue.
+        drop(event_rx);
         let (done_tx, done_rx) = oneshot::channel();
 
-        if self
-            .client
+        if client
             .client_tx
             .send(InProcessClientMessage::Shutdown { done_tx })
             .await
@@ -890,6 +899,9 @@ mod tests {
     use codex_app_server_protocol::ClientInfo;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
+    use codex_app_server_protocol::ExternalAgentConfigImportParams;
+    use codex_app_server_protocol::ExternalAgentConfigMigrationItem;
+    use codex_app_server_protocol::ExternalAgentConfigMigrationItemType;
     use codex_app_server_protocol::ReasoningSummaryPartAddedNotification;
     use codex_app_server_protocol::ServerNotificationEnvelope;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
@@ -1379,6 +1391,96 @@ mod tests {
             .await
             .expect_err("retained sender must fail after consumer closure");
         assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_saturated_required_event_receiver_before_waiting() {
+        let (client_tx, mut client_rx) = mpsc::channel(/*buffer*/ 1);
+        let (event_tx, event_rx) = mpsc::channel(/*buffer*/ 1);
+        let (saturated_tx, saturated_rx) = oneshot::channel();
+        let completed = Arc::new(AtomicBool::new(false));
+        let runtime_completed = Arc::clone(&completed);
+        let runtime_handle = tokio::spawn(async move {
+            event_tx
+                .send(InProcessServerEvent::ServerNotification(
+                    turn_completed_notification("queued"),
+                ))
+                .await
+                .expect("first required event should saturate the queue");
+            let _ = saturated_tx.send(());
+            let blocked_send = event_tx
+                .send(InProcessServerEvent::ServerNotification(
+                    turn_completed_notification("blocked"),
+                ))
+                .await;
+            assert!(
+                blocked_send.is_err(),
+                "dropping the shutdown receiver should unblock required delivery"
+            );
+
+            let done_tx = match client_rx.recv().await {
+                Some(InProcessClientMessage::Shutdown { done_tx }) => done_tx,
+                _ => panic!("expected in-process shutdown request"),
+            };
+            runtime_completed.store(true, Ordering::Release);
+            let _ = done_tx.send(());
+        });
+        let client = InProcessClientHandle {
+            client: InProcessClientSender { client_tx },
+            event_rx,
+            runtime_handle,
+            _test_codex_home: None,
+        };
+
+        saturated_rx
+            .await
+            .expect("required event queue should become saturated");
+        timeout(Duration::from_secs(1), client.shutdown())
+            .await
+            .expect("saturated required delivery should not consume shutdown timeout")
+            .expect("in-process runtime should shutdown cleanly");
+        assert!(completed.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn real_handle_shutdown_unblocks_saturated_required_delivery() {
+        let client =
+            start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
+
+        client
+            .request(ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(20),
+                params: ThreadStartParams {
+                    ephemeral: Some(true),
+                    ..ThreadStartParams::default()
+                },
+            })
+            .await
+            .expect("thread/start transport should remain live")
+            .expect("thread/start should succeed while events are retained");
+        client
+            .request(ClientRequest::ExternalAgentConfigImport {
+                request_id: RequestId::Integer(21),
+                params: ExternalAgentConfigImportParams {
+                    migration_items: vec![ExternalAgentConfigMigrationItem {
+                        item_type: ExternalAgentConfigMigrationItemType::Config,
+                        description: "saturate required lower-layer delivery".to_string(),
+                        cwd: None,
+                        details: None,
+                    }],
+                    source: Some("in-process-test".to_string()),
+                    provider_id: None,
+                    migration_source: None,
+                },
+            })
+            .await
+            .expect("external import transport should remain live")
+            .expect("external import should admit its required completion event");
+
+        timeout(Duration::from_secs(2), client.shutdown())
+            .await
+            .expect("real lower-layer shutdown should close saturated event delivery promptly")
+            .expect("in-process runtime should shutdown cleanly");
     }
 
     #[tokio::test(start_paused = true)]

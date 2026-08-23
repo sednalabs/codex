@@ -157,14 +157,12 @@ impl InProcessEventDelivery {
         self.pending_event.is_none()
     }
 
-    fn take_pending_delivery(&mut self) -> InProcessServerEvent {
+    fn take_pending_delivery(&mut self) -> Option<InProcessServerEvent> {
         if self.skipped_events > 0 {
             let skipped = std::mem::take(&mut self.skipped_events);
-            InProcessServerEvent::Lagged { skipped }
+            Some(InProcessServerEvent::Lagged { skipped })
         } else {
-            self.pending_event
-                .take()
-                .expect("pending delivery state must contain an event")
+            self.pending_event.take()
         }
     }
 
@@ -381,9 +379,56 @@ enum ClientCommand {
         error: JSONRPCErrorError,
         response_tx: oneshot::Sender<IoResult<()>>,
     },
-    Shutdown {
-        response_tx: oneshot::Sender<IoResult<()>>,
-    },
+    #[cfg(test)]
+    TestNoop { response_tx: oneshot::Sender<()> },
+}
+
+fn dispatch_client_command(
+    request_sender: &codex_app_server::in_process::InProcessClientSender,
+    command: ClientCommand,
+) {
+    match command {
+        ClientCommand::Request {
+            request,
+            response_tx,
+        } => {
+            let request_sender = request_sender.clone();
+            // Request waits happen on a detached task so the worker can keep
+            // draining runtime events while the request is blocked on client
+            // input.
+            tokio::spawn(async move {
+                let result = request_sender.request(*request).await;
+                let _ = response_tx.send(result);
+            });
+        }
+        ClientCommand::Notify {
+            notification,
+            response_tx,
+        } => {
+            let result = request_sender.notify(notification);
+            let _ = response_tx.send(result);
+        }
+        ClientCommand::ResolveServerRequest {
+            request_id,
+            result,
+            response_tx,
+        } => {
+            let send_result = request_sender.respond_to_server_request(request_id, result);
+            let _ = response_tx.send(send_result);
+        }
+        ClientCommand::RejectServerRequest {
+            request_id,
+            error,
+            response_tx,
+        } => {
+            let send_result = request_sender.fail_server_request(request_id, error);
+            let _ = response_tx.send(send_result);
+        }
+        #[cfg(test)]
+        ClientCommand::TestNoop { response_tx } => {
+            let _ = response_tx.send(());
+        }
+    }
 }
 
 /// Async facade over the in-process app-server runtime.
@@ -399,6 +444,7 @@ enum ClientCommand {
 /// boundary.
 pub struct InProcessAppServerClient {
     command_tx: mpsc::Sender<ClientCommand>,
+    shutdown_tx: oneshot::Sender<oneshot::Sender<IoResult<()>>>,
     event_rx: mpsc::Receiver<InProcessServerEvent>,
     worker_handle: tokio::task::JoinHandle<()>,
 }
@@ -432,60 +478,30 @@ impl InProcessAppServerClient {
             codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<oneshot::Sender<IoResult<()>>>();
         let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
 
         let worker_handle = tokio::spawn(async move {
             let mut delivery = InProcessEventDelivery::default();
+            let mut prefer_commands = true;
             loop {
                 tokio::select! {
                     biased;
 
-                    command = command_rx.recv() => {
-                        match command {
-                            Some(ClientCommand::Request { request, response_tx }) => {
-                                let request_sender = request_sender.clone();
-                                // Request waits happen on a detached task so
-                                // this loop can keep draining runtime events
-                                // while the request is blocked on client input.
-                                tokio::spawn(async move {
-                                    let result = request_sender.request(*request).await;
-                                    let _ = response_tx.send(result);
-                                });
-                            }
-                            Some(ClientCommand::Notify {
-                                notification,
-                                response_tx,
-                            }) => {
-                                let result = request_sender.notify(notification);
-                                let _ = response_tx.send(result);
-                            }
-                            Some(ClientCommand::ResolveServerRequest {
-                                request_id,
-                                result,
-                                response_tx,
-                            }) => {
-                                let send_result =
-                                    request_sender.respond_to_server_request(request_id, result);
-                                let _ = response_tx.send(send_result);
-                            }
-                            Some(ClientCommand::RejectServerRequest {
-                                request_id,
-                                error,
-                                response_tx,
-                            }) => {
-                                let send_result = request_sender.fail_server_request(request_id, error);
-                                let _ = response_tx.send(send_result);
-                            }
-                            Some(ClientCommand::Shutdown { response_tx }) => {
-                                let shutdown_result = handle.shutdown().await;
-                                let _ = response_tx.send(shutdown_result);
-                                break;
-                            }
-                            None => {
-                                let _ = handle.shutdown().await;
-                                break;
-                            }
+                    shutdown = &mut shutdown_rx => {
+                        let shutdown_result = handle.shutdown().await;
+                        if let Ok(response_tx) = shutdown {
+                            let _ = response_tx.send(shutdown_result);
                         }
+                        break;
+                    }
+                    command = command_rx.recv(), if prefer_commands => {
+                        let Some(command) = command else {
+                            let _ = handle.shutdown().await;
+                            break;
+                        };
+                        dispatch_client_command(&request_sender, command);
+                        prefer_commands = false;
                     }
                     _ = event_tx.closed() => {
                         let _ = handle.shutdown().await;
@@ -493,7 +509,15 @@ impl InProcessAppServerClient {
                     }
                     permit = event_tx.reserve(), if delivery.has_pending_delivery() => {
                         match permit {
-                            Ok(permit) => permit.send(delivery.take_pending_delivery()),
+                            Ok(permit) => {
+                                let Some(event) = delivery.take_pending_delivery() else {
+                                    warn!("in-process pending delivery state was empty");
+                                    let _ = handle.shutdown().await;
+                                    break;
+                                };
+                                permit.send(event);
+                                prefer_commands = true;
+                            }
                             Err(_) => {
                                 let _ = handle.shutdown().await;
                                 break;
@@ -504,6 +528,7 @@ impl InProcessAppServerClient {
                         let Some(event) = event else {
                             break;
                         };
+                        prefer_commands = true;
                         if let InProcessServerEvent::ServerRequest(
                             ServerRequest::ChatgptAuthTokensRefresh { request_id, .. }
                         ) = &event
@@ -529,12 +554,20 @@ impl InProcessAppServerClient {
                             break;
                         }
                     }
+                    command = command_rx.recv(), if !prefer_commands => {
+                        let Some(command) = command else {
+                            let _ = handle.shutdown().await;
+                            break;
+                        };
+                        dispatch_client_command(&request_sender, command);
+                    }
                 }
             }
         });
 
         Ok(Self {
             command_tx,
+            shutdown_tx,
             event_rx,
             worker_handle,
         })
@@ -698,6 +731,7 @@ impl InProcessAppServerClient {
     pub async fn shutdown(self) -> IoResult<()> {
         let Self {
             command_tx,
+            shutdown_tx,
             event_rx,
             worker_handle,
         } = self;
@@ -708,10 +742,7 @@ impl InProcessAppServerClient {
         // and getting aborted with the runtime still attached.
         drop(event_rx);
         let (response_tx, response_rx) = oneshot::channel();
-        if command_tx
-            .send(ClientCommand::Shutdown { response_tx })
-            .await
-            .is_ok()
+        if shutdown_tx.send(response_tx).is_ok()
             && let Ok(command_result) = timeout(IN_PROCESS_SHUTDOWN_TIMEOUT, response_rx).await
         {
             command_result.map_err(|_| {
@@ -721,6 +752,8 @@ impl InProcessAppServerClient {
                 )
             })??;
         }
+
+        drop(command_tx);
 
         if let Err(_elapsed) = timeout(IN_PROCESS_SHUTDOWN_TIMEOUT, &mut worker_handle).await {
             worker_handle.abort();
@@ -1438,6 +1471,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn continuously_ready_commands_do_not_starve_required_event_or_shutdown() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        let mut client =
+            start_test_client_with_capacity(SessionSource::Exec, /*channel_capacity*/ 1).await;
+
+        let _thread: ThreadStartResponse = client
+            .request_typed(ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(311),
+                params: ThreadStartParams {
+                    ephemeral: Some(true),
+                    ..ThreadStartParams::default()
+                },
+            })
+            .await
+            .expect("thread/start should fill the public event queue");
+        let _import: ExternalAgentConfigImportResponse = client
+            .request_typed(ClientRequest::ExternalAgentConfigImport {
+                request_id: RequestId::Integer(312),
+                params: ExternalAgentConfigImportParams {
+                    migration_items: vec![ExternalAgentConfigMigrationItem {
+                        item_type: ExternalAgentConfigMigrationItemType::Config,
+                        description: "exercise required delivery fairness".to_string(),
+                        cwd: None,
+                        details: None,
+                    }],
+                    source: Some("in-process-test".to_string()),
+                    provider_id: None,
+                    migration_source: None,
+                },
+            })
+            .await
+            .expect("external import should admit its required completion event");
+
+        let keep_flooding = Arc::new(AtomicBool::new(true));
+        let flood_progress = Arc::new(AtomicUsize::new(0));
+        let flood_command_tx = client.command_tx.clone();
+        let flood_running = Arc::clone(&keep_flooding);
+        let flood_count = Arc::clone(&flood_progress);
+        let flood = std::thread::spawn(move || {
+            while flood_running.load(Ordering::Acquire) {
+                let (response_tx, _response_rx) = oneshot::channel();
+                if flood_command_tx
+                    .blocking_send(ClientCommand::TestNoop { response_tx })
+                    .is_err()
+                {
+                    break;
+                }
+                flood_count.fetch_add(1, Ordering::Release);
+            }
+        });
+
+        timeout(Duration::from_secs(2), async {
+            while flood_progress.load(Ordering::Acquire) < 32 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("command stream should remain continuously active");
+
+        let mut saw_import_completed = false;
+        for _ in 0..8 {
+            let event = timeout(Duration::from_secs(2), client.client.next_event())
+                .await
+                .expect("required event should make progress through command traffic")
+                .expect("event stream should remain open");
+            if matches!(
+                event,
+                InProcessServerEvent::ServerNotification(
+                    ServerNotification::ExternalAgentConfigImportCompleted(_)
+                )
+            ) {
+                saw_import_completed = true;
+                break;
+            }
+        }
+        assert!(saw_import_completed);
+
+        timeout(Duration::from_secs(2), client.shutdown())
+            .await
+            .expect("dedicated shutdown should make progress through command traffic")
+            .expect("shutdown should complete");
+        keep_flooding.store(false, Ordering::Release);
+        flood.join().expect("command flood thread should stop");
+    }
+
+    #[tokio::test]
     async fn idle_event_consumer_closure_terminates_facade_with_retained_request_handle() {
         let client =
             start_test_client_with_capacity(SessionSource::Exec, /*channel_capacity*/ 1).await;
@@ -1506,8 +1628,11 @@ mod tests {
             ) if notification.delta == "stdout-1"
         ));
 
+        let lag_marker = delivery
+            .take_pending_delivery()
+            .expect("pending delivery state should contain the lag marker");
         event_tx
-            .send(delivery.take_pending_delivery())
+            .send(lag_marker)
             .await
             .expect("aggregated lag marker should enqueue");
         let lagged = event_rx.recv().await.expect("lag marker should arrive");
@@ -1517,7 +1642,11 @@ mod tests {
         ));
 
         event_tx
-            .send(delivery.take_pending_delivery())
+            .send(
+                delivery
+                    .take_pending_delivery()
+                    .expect("pending delivery state should contain the required event"),
+            )
             .await
             .expect("required event should enqueue after lag marker");
         let required = event_rx.recv().await.expect("required event should arrive");
@@ -2473,6 +2602,8 @@ mod tests {
     #[tokio::test]
     async fn next_event_surfaces_lagged_markers() {
         let (command_tx, _command_rx) = mpsc::channel(1);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        drop(shutdown_rx);
         let (event_tx, event_rx) = mpsc::channel(1);
         let worker_handle = tokio::spawn(async {});
         event_tx
@@ -2483,6 +2614,7 @@ mod tests {
 
         let mut client = InProcessAppServerClient {
             command_tx,
+            shutdown_tx,
             event_rx,
             worker_handle,
         };
@@ -2717,21 +2849,20 @@ mod tests {
         use std::sync::atomic::AtomicBool;
         use std::sync::atomic::Ordering;
 
-        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let (command_tx, _command_rx) = mpsc::channel(1);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let (_event_tx, event_rx) = mpsc::channel(1);
         let completed = Arc::new(AtomicBool::new(false));
         let worker_completed = Arc::clone(&completed);
         let worker_handle = tokio::spawn(async move {
-            let response_tx = match command_rx.recv().await {
-                Some(ClientCommand::Shutdown { response_tx }) => response_tx,
-                _ => panic!("expected shutdown command"),
-            };
+            let response_tx = shutdown_rx.await.expect("expected shutdown command");
             tokio::time::sleep(Duration::from_secs(30)).await;
             worker_completed.store(true, Ordering::Release);
             let _ = response_tx.send(Ok(()));
         });
         let client = InProcessAppServerClient {
             command_tx,
+            shutdown_tx,
             event_rx,
             worker_handle,
         };
