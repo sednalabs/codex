@@ -21,8 +21,10 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::SubAgentSource;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 
 pub(crate) const SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT: usize = 32;
+pub(crate) const AGENT_PICKER_ROWS_PER_OPEN: usize = 200;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum LineagePageAdvance {
@@ -35,6 +37,81 @@ pub(crate) enum LineagePageAdvance {
 pub(crate) struct LineagePageBudget {
     pages_fetched: usize,
     seen_cursors: HashSet<String>,
+}
+
+/// Incrementally validates ancestor-filtered pages without retaining or re-walking accepted rows.
+pub(crate) struct LoadedSubagentAccumulator {
+    primary_thread_id: ThreadId,
+    accepted_thread_ids: HashSet<ThreadId>,
+    seen_thread_ids: HashSet<ThreadId>,
+    pending_by_parent: HashMap<ThreadId, Vec<Thread>>,
+}
+
+impl LoadedSubagentAccumulator {
+    pub(crate) fn new(primary_thread_id: ThreadId) -> Self {
+        Self {
+            primary_thread_id,
+            accepted_thread_ids: HashSet::from([primary_thread_id]),
+            seen_thread_ids: HashSet::new(),
+            pending_by_parent: HashMap::new(),
+        }
+    }
+
+    /// Adds one page and returns only newly validated descendants.
+    ///
+    /// Rows whose parents have not arrived yet remain indexed by parent. Once an ancestor is
+    /// accepted, every now-reachable pending child is drained exactly once, so total work is
+    /// linear in the number of rows observed across the attempt.
+    pub(crate) fn ingest(&mut self, threads: Vec<Thread>) -> Vec<LoadedSubagentThread> {
+        let mut ready_parents = HashSet::new();
+        for thread in threads {
+            let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
+                continue;
+            };
+            if thread_id == self.primary_thread_id || !self.seen_thread_ids.insert(thread_id) {
+                continue;
+            }
+            let Some(parent_thread_id) = thread_spawn_parent_thread_id(&thread.source) else {
+                continue;
+            };
+            if self.accepted_thread_ids.contains(&parent_thread_id) {
+                ready_parents.insert(parent_thread_id);
+            }
+            self.pending_by_parent
+                .entry(parent_thread_id)
+                .or_default()
+                .push(thread);
+        }
+
+        let mut pending_parents = VecDeque::from_iter(ready_parents);
+        let mut loaded = Vec::new();
+        while let Some(parent_thread_id) = pending_parents.pop_front() {
+            let Some(children) = self.pending_by_parent.remove(&parent_thread_id) else {
+                continue;
+            };
+            for thread in children {
+                let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
+                    continue;
+                };
+                if !self.accepted_thread_ids.insert(thread_id) {
+                    continue;
+                }
+                pending_parents.push_back(thread_id);
+                loaded.push(loaded_subagent_thread(thread_id, thread));
+            }
+        }
+        loaded.sort_by_key(|thread| thread.thread_id.to_string());
+        loaded
+    }
+
+    pub(crate) fn contains_accepted(&self, thread_id: ThreadId) -> bool {
+        self.accepted_thread_ids.contains(&thread_id)
+    }
+
+    #[cfg(test)]
+    fn pending_thread_count(&self) -> usize {
+        self.pending_by_parent.values().map(Vec::len).sum()
+    }
 }
 
 impl LineagePageBudget {
@@ -91,37 +168,48 @@ pub(crate) struct LoadedSubagentThread {
 /// If two threads claim the same parent, both are included. Cycles in the parent chain are not
 /// possible because `ThreadId`s are server-assigned UUIDs and the server enforces acyclicity, but
 /// the `included` set guards against re-visiting regardless.
+#[cfg(test)]
 pub(crate) fn find_loaded_subagent_threads_for_primary(
     threads: Vec<Thread>,
     primary_thread_id: ThreadId,
 ) -> Vec<LoadedSubagentThread> {
+    find_loaded_subagent_threads_for_primary_with_counts(threads, primary_thread_id).0
+}
+
+#[cfg(test)]
+fn find_loaded_subagent_threads_for_primary_with_counts(
+    threads: Vec<Thread>,
+    primary_thread_id: ThreadId,
+) -> (Vec<LoadedSubagentThread>, usize, usize) {
     let mut threads_by_id = HashMap::new();
+    let mut children_by_parent = HashMap::<ThreadId, Vec<ThreadId>>::new();
+    let mut indexed_edges = 0;
     for thread in threads {
         let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
             continue;
         };
+        if let Some(parent_thread_id) = thread_spawn_parent_thread_id(&thread.source) {
+            indexed_edges += 1;
+            children_by_parent
+                .entry(parent_thread_id)
+                .or_default()
+                .push(thread_id);
+        }
         threads_by_id.insert(thread_id, thread);
     }
 
     let mut included = HashSet::new();
     let mut pending = vec![primary_thread_id];
+    let mut followed_edges = 0;
     while let Some(parent_thread_id) = pending.pop() {
-        for (thread_id, thread) in &threads_by_id {
-            if included.contains(thread_id) {
-                continue;
+        let Some(children) = children_by_parent.get(&parent_thread_id) else {
+            continue;
+        };
+        for thread_id in children {
+            followed_edges += 1;
+            if included.insert(*thread_id) {
+                pending.push(*thread_id);
             }
-
-            let Some(source_parent_thread_id) = thread_spawn_parent_thread_id(&thread.source)
-            else {
-                continue;
-            };
-
-            if source_parent_thread_id != parent_thread_id {
-                continue;
-            }
-
-            included.insert(*thread_id);
-            pending.push(*thread_id);
         }
     }
 
@@ -130,19 +218,23 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
         .filter_map(|thread_id| {
             threads_by_id
                 .remove(&thread_id)
-                .map(|thread| LoadedSubagentThread {
-                    blocks_direct_input: thread_blocks_direct_input(&thread),
-                    is_running: matches!(&thread.status, ThreadStatus::Active { .. }),
-                    is_closed: matches!(&thread.status, ThreadStatus::NotLoaded),
-                    thread_id,
-                    agent_nickname: thread.agent_nickname,
-                    agent_role: thread.agent_role,
-                    agent_path: thread_spawn_agent_path(&thread.source),
-                })
+                .map(|thread| loaded_subagent_thread(thread_id, thread))
         })
         .collect();
     loaded_threads.sort_by_key(|thread| thread.thread_id.to_string());
-    loaded_threads
+    (loaded_threads, indexed_edges, followed_edges)
+}
+
+pub(crate) fn loaded_subagent_thread(thread_id: ThreadId, thread: Thread) -> LoadedSubagentThread {
+    LoadedSubagentThread {
+        blocks_direct_input: thread_blocks_direct_input(&thread),
+        is_running: matches!(&thread.status, ThreadStatus::Active { .. }),
+        is_closed: matches!(&thread.status, ThreadStatus::NotLoaded),
+        thread_id,
+        agent_nickname: thread.agent_nickname,
+        agent_role: thread.agent_role,
+        agent_path: thread_spawn_agent_path(&thread.source),
+    }
 }
 
 fn thread_spawn_agent_path(source: &SessionSource) -> Option<String> {
@@ -167,9 +259,11 @@ fn thread_spawn_parent_thread_id(source: &SessionSource) -> Option<ThreadId> {
 mod tests {
     use super::LineagePageAdvance;
     use super::LineagePageBudget;
+    use super::LoadedSubagentAccumulator;
     use super::LoadedSubagentThread;
     use super::SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT;
     use super::find_loaded_subagent_threads_for_primary;
+    use super::find_loaded_subagent_threads_for_primary_with_counts;
     use codex_app_server_protocol::SessionSource;
     use codex_app_server_protocol::Thread;
     use codex_app_server_protocol::ThreadStatus;
@@ -334,5 +428,71 @@ mod tests {
             budget.observe_page(Some("continuation-cursor".to_string())),
             LineagePageAdvance::Pause("continuation-cursor".to_string())
         );
+    }
+
+    #[test]
+    fn incremental_lineage_accepts_descendants_across_pages() {
+        let primary_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let grandchild_thread_id = ThreadId::new();
+        let mut accumulator = LoadedSubagentAccumulator::new(primary_thread_id);
+
+        assert_eq!(
+            accumulator
+                .ingest(vec![test_thread(
+                    grandchild_thread_id,
+                    thread_spawn_source(child_thread_id, /*depth*/ 2, "grandchild", "worker"),
+                )])
+                .len(),
+            0
+        );
+        assert_eq!(accumulator.pending_thread_count(), 1);
+
+        let loaded = accumulator.ingest(vec![test_thread(
+            child_thread_id,
+            thread_spawn_source(primary_thread_id, /*depth*/ 1, "child", "worker"),
+        )]);
+        assert_eq!(
+            loaded
+                .into_iter()
+                .map(|thread| thread.thread_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([child_thread_id, grandchild_thread_id])
+        );
+        assert_eq!(accumulator.pending_thread_count(), 0);
+    }
+
+    #[test]
+    fn wide_and_deep_lineage_walk_follows_each_indexed_edge_once() {
+        const WIDTH: usize = 256;
+        const DEPTH: usize = 256;
+        let primary_thread_id = ThreadId::new();
+        let mut threads = Vec::with_capacity(WIDTH + DEPTH);
+        for index in 0..WIDTH {
+            threads.push(test_thread(
+                ThreadId::new(),
+                thread_spawn_source(
+                    primary_thread_id,
+                    /*depth*/ 1,
+                    &format!("wide-{index}"),
+                    "worker",
+                ),
+            ));
+        }
+        let mut parent_thread_id = primary_thread_id;
+        for depth in 1..=DEPTH {
+            let thread_id = ThreadId::new();
+            threads.push(test_thread(
+                thread_id,
+                thread_spawn_source(parent_thread_id, depth as i32, "deep", "worker"),
+            ));
+            parent_thread_id = thread_id;
+        }
+
+        let (loaded, indexed_edges, followed_edges) =
+            find_loaded_subagent_threads_for_primary_with_counts(threads, primary_thread_id);
+        assert_eq!(loaded.len(), WIDTH + DEPTH);
+        assert_eq!(indexed_edges, WIDTH + DEPTH);
+        assert_eq!(followed_edges, WIDTH + DEPTH);
     }
 }

@@ -48,6 +48,8 @@ pub(crate) struct AgentNavigationState {
     stopped_threads: HashSet<ThreadId>,
     /// Spawned child threads whose instructions are owned by their parent agent.
     parent_owned_threads: HashSet<ThreadId>,
+    /// Start offset for the next bounded picker slice.
+    picker_window_start: usize,
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -294,6 +296,7 @@ impl AgentNavigationState {
         self.order.clear();
         self.stopped_threads.clear();
         self.parent_owned_threads.clear();
+        self.picker_window_start = 0;
     }
 
     /// Removes a tracked thread entirely from picker metadata and traversal order.
@@ -314,9 +317,12 @@ impl AgentNavigationState {
     /// feature flag is currently disabled, because already-existing sub-agent threads should remain
     /// inspectable.
     pub(crate) fn has_non_primary_thread(&self, primary_thread_id: Option<ThreadId>) -> bool {
-        self.threads
-            .keys()
-            .any(|thread_id| Some(*thread_id) != primary_thread_id)
+        match primary_thread_id {
+            Some(primary_thread_id) => {
+                self.threads.len() > usize::from(self.threads.contains_key(&primary_thread_id))
+            }
+            None => !self.threads.is_empty(),
+        }
     }
 
     /// Returns live picker rows in the same order users cycle through them.
@@ -331,28 +337,65 @@ impl AgentNavigationState {
             .collect()
     }
 
-    pub(crate) fn ordered_path_backed_subagent_threads(
-        &self,
-        primary_thread_id: Option<ThreadId>,
-    ) -> Vec<(ThreadId, &AgentPickerThreadEntry)> {
-        self.ordered_threads()
-            .into_iter()
-            .filter(|(thread_id, entry)| {
-                Some(*thread_id) != primary_thread_id
-                    && entry
-                        .agent_path
-                        .as_deref()
-                        .is_some_and(|agent_path| !agent_path.trim().is_empty())
-            })
-            .collect()
-    }
-
     /// Returns tracked thread ids in the same stable order used by the picker.
     pub(crate) fn tracked_thread_ids(&self) -> Vec<ThreadId> {
         self.ordered_threads()
             .into_iter()
             .map(|(thread_id, _)| thread_id)
             .collect()
+    }
+
+    pub(crate) fn tracked_thread_ids_bounded(&self, limit: usize) -> Vec<ThreadId> {
+        self.order
+            .iter()
+            .filter(|thread_id| self.threads.contains_key(thread_id))
+            .take(limit)
+            .copied()
+            .collect()
+    }
+
+    /// Returns a bounded rotating slice for one picker open.
+    ///
+    /// The primary and currently displayed threads are kept visible when present. Remaining slots
+    /// rotate through spawn order, so synchronous row construction is bounded while repeated opens
+    /// eventually expose every retained descendant.
+    pub(crate) fn next_picker_thread_ids(
+        &mut self,
+        primary_thread_id: Option<ThreadId>,
+        active_thread_id: Option<ThreadId>,
+        limit: usize,
+    ) -> (Vec<ThreadId>, bool) {
+        if limit == 0 {
+            return (Vec::new(), !self.threads.is_empty());
+        }
+        if self.threads.len() <= limit {
+            self.picker_window_start = 0;
+            return (self.tracked_thread_ids(), false);
+        }
+
+        let mut visible = Vec::with_capacity(limit);
+        for thread_id in [primary_thread_id, active_thread_id].into_iter().flatten() {
+            if self.threads.contains_key(&thread_id) && !visible.contains(&thread_id) {
+                visible.push(thread_id);
+            }
+        }
+        visible.truncate(limit);
+
+        if self.order.is_empty() || visible.len() == limit {
+            return (visible, true);
+        }
+        let mut index = self.picker_window_start % self.order.len();
+        let mut inspected = 0;
+        while visible.len() < limit && inspected < self.order.len() {
+            let thread_id = self.order[index];
+            index = (index + 1) % self.order.len();
+            inspected += 1;
+            if self.threads.contains_key(&thread_id) && !visible.contains(&thread_id) {
+                visible.push(thread_id);
+            }
+        }
+        self.picker_window_start = index;
+        (visible, true)
     }
 
     /// Returns the adjacent thread id for keyboard navigation in stable spawn order.
@@ -930,5 +973,52 @@ mod tests {
         assert_eq!(parent_agent_path("/root/researcher/"), Some("/root"));
         assert_eq!(parent_agent_path("root/child"), None);
         assert_eq!(parent_agent_path(""), None);
+    }
+
+    #[test]
+    fn bounded_picker_windows_rotate_and_reset() {
+        let mut state = AgentNavigationState::default();
+        let primary_thread_id = ThreadId::new();
+        let descendant_thread_ids = (0..6).map(|_| ThreadId::new()).collect::<Vec<_>>();
+        for thread_id in
+            std::iter::once(primary_thread_id).chain(descendant_thread_ids.iter().copied())
+        {
+            state.upsert(thread_id, None, None, /*is_closed*/ false, None, None);
+        }
+
+        let (first, first_has_more) =
+            state.next_picker_thread_ids(Some(primary_thread_id), None, 3);
+        let (second, second_has_more) =
+            state.next_picker_thread_ids(Some(primary_thread_id), None, 3);
+        let (third, third_has_more) =
+            state.next_picker_thread_ids(Some(primary_thread_id), None, 3);
+        let visible_descendants = first
+            .iter()
+            .chain(&second)
+            .chain(&third)
+            .copied()
+            .filter(|thread_id| *thread_id != primary_thread_id)
+            .collect::<HashSet<_>>();
+        assert!(first_has_more);
+        assert!(second_has_more);
+        assert!(third_has_more);
+        assert_eq!(first.len(), 3);
+        assert_eq!(second.len(), 3);
+        assert_eq!(third.len(), 3);
+        assert_eq!(visible_descendants.len(), descendant_thread_ids.len());
+
+        state.clear();
+        state.upsert(
+            primary_thread_id,
+            None,
+            None,
+            /*is_closed*/ false,
+            None,
+            None,
+        );
+        assert_eq!(
+            state.next_picker_thread_ids(Some(primary_thread_id), None, 3),
+            (vec![primary_thread_id], false)
+        );
     }
 }

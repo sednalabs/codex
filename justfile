@@ -192,6 +192,13 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui app::tests::session_lifecycle_requests::open_agent_picker_bounds_metadata_to_primary_lineage --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::loaded_threads::tests::lineage_page_budget_rejects_cursor_cycles --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::loaded_threads::tests::lineage_page_budget_pauses_with_continuation_after_limit --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::loaded_threads::tests::incremental_lineage_accepts_descendants_across_pages --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::loaded_threads::tests::wide_and_deep_lineage_walk_follows_each_indexed_edge_once --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::agent_navigation::tests::bounded_picker_windows_rotate_and_reset --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_resumes_failed_cursor_without_refetching_prefix --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_cursor_cycle_is_terminal_until_reset --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::lineage_backfill_advances_beyond_page_budget_across_opens --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::reset_clears_paused_lineage_continuation --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::thread_events::tests::thread_event_store_skips_large_replay_irrelevant_notifications --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::thread_events::tests::thread_event_store_tracks_active_turn_lifecycle --lib -- --exact --test-threads=1
