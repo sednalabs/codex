@@ -1569,7 +1569,7 @@ fn empty_relation_limited_page_marks_backfill_and_picker_truncated() -> Result<(
         ));
         assert!(
             render_bottom_popup(&app.chat_widget, /*width*/ 100)
-                .contains("additional rows were omitted")
+                .contains("Additional rows were omitted")
         );
 
         app_server.shutdown().await?;
@@ -1678,7 +1678,7 @@ fn lineage_retention_cap_is_exact_and_idempotent_across_reopen() -> Result<()> {
         app.open_agent_picker(&mut app_server).await;
         assert!(
             render_bottom_popup(&app.chat_widget, /*width*/ 100)
-                .contains("additional rows were omitted")
+                .contains("Additional rows were omitted")
         );
         assert_eq!(take_backfill_counts(&requests), (0, 0, 0));
         assert!(responses.lock().expect("lineage response lock").is_empty());

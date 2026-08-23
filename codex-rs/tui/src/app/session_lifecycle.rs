@@ -232,12 +232,12 @@ fn agent_picker_subtitle(
     );
     if lineage_truncated && backfill_incomplete {
         return format!(
-            "{base} additional rows were omitted at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent lineage safety limit; retained rows still need refresh. Reopen to continue or retry."
+            "Additional rows were omitted at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent lineage safety limit. {base} Retained rows still need refresh; reopen to continue or retry."
         );
     }
     if lineage_truncated {
         return format!(
-            "{base} additional rows were omitted at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent lineage safety limit."
+            "Additional rows were omitted at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent lineage safety limit. {base}"
         );
     }
     if picker_has_more {
