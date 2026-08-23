@@ -335,6 +335,15 @@ enum InProcessClientMessage {
         request_id: RequestId,
         error: JSONRPCErrorError,
     },
+    #[cfg(test)]
+    ServerRequestAfterRequiredEvent {
+        notification: ServerNotification,
+        request: codex_app_server_protocol::ServerRequestPayload,
+        response_tx: oneshot::Sender<(
+            RequestId,
+            oneshot::Receiver<crate::outgoing_message::ClientRequestResult>,
+        )>,
+    },
     Shutdown {
         done_tx: oneshot::Sender<()>,
     },
@@ -384,6 +393,37 @@ impl InProcessClientSender {
         self.try_send_client_message(InProcessClientMessage::ServerRequestError {
             request_id,
             error,
+        })
+    }
+
+    #[cfg(test)]
+    async fn server_request_after_required_event(
+        &self,
+        notification: ServerNotification,
+        request: codex_app_server_protocol::ServerRequestPayload,
+    ) -> IoResult<(
+        RequestId,
+        oneshot::Receiver<crate::outgoing_message::ClientRequestResult>,
+    )> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.client_tx
+            .send(InProcessClientMessage::ServerRequestAfterRequiredEvent {
+                notification,
+                request,
+                response_tx,
+            })
+            .await
+            .map_err(|_| {
+                IoError::new(
+                    ErrorKind::BrokenPipe,
+                    "in-process app-server runtime is closed",
+                )
+            })?;
+        response_rx.await.map_err(|_| {
+            IoError::new(
+                ErrorKind::BrokenPipe,
+                "in-process test server-request channel is closed",
+            )
         })
     }
 
@@ -784,6 +824,22 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 .notify_client_error(request_id, error)
                                 .await;
                         }
+                        #[cfg(test)]
+                        Some(InProcessClientMessage::ServerRequestAfterRequiredEvent {
+                            notification,
+                            request,
+                            response_tx,
+                        }) => {
+                            debug_assert!(server_notification_requires_delivery(&notification));
+                            outgoing_message_sender
+                                .send_server_notification_to_connection(
+                                    IN_PROCESS_CONNECTION_ID,
+                                    notification,
+                                )
+                                .await;
+                            let pending = outgoing_message_sender.send_request(request).await;
+                            let _ = response_tx.send(pending);
+                        }
                         Some(InProcessClientMessage::Shutdown { done_tx }) => {
                             shutdown_ack = Some(done_tx);
                             break;
@@ -908,6 +964,7 @@ mod tests {
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
     use codex_app_server_protocol::ToolRequestUserInputParams;
+    use codex_app_server_protocol::ToolRequestUserInputResponse;
     use codex_app_server_protocol::Turn;
     use codex_app_server_protocol::TurnCompletedNotification;
     use codex_app_server_protocol::TurnItemsView;
@@ -1480,6 +1537,111 @@ mod tests {
         timeout(Duration::from_secs(2), client.shutdown())
             .await
             .expect("real lower-layer shutdown should close saturated event delivery promptly")
+            .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[tokio::test]
+    async fn real_handle_server_request_preserves_fifo_response_and_shutdown_progress() {
+        let mut client =
+            start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
+        let sender = client.sender();
+        let request_sequence = tokio::spawn(async move {
+            sender
+                .server_request_after_required_event(
+                    turn_completed_notification("before-server-request"),
+                    codex_app_server_protocol::ServerRequestPayload::ToolRequestUserInput(
+                        ToolRequestUserInputParams {
+                            thread_id: "thread-1".to_string(),
+                            turn_id: "turn-1".to_string(),
+                            item_id: "request-user-input-1".to_string(),
+                            questions: Vec::new(),
+                            is_blocking: true,
+                            auto_resolution_ms: None,
+                        },
+                    ),
+                )
+                .await
+        });
+
+        assert_eq!(client.event_rx.max_capacity(), 1);
+        timeout(Duration::from_secs(2), async {
+            while client.event_rx.capacity() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("preceding event should saturate capacity-one delivery");
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let event = client
+                    .next_event()
+                    .await
+                    .expect("event stream should remain open");
+                match event {
+                    InProcessServerEvent::ServerNotification(
+                        ServerNotification::TurnCompleted(notification),
+                    ) if notification.turn.id == "before-server-request" => break,
+                    InProcessServerEvent::ServerRequest(request) => {
+                        panic!("server request bypassed preceding required event: {request:?}");
+                    }
+                    InProcessServerEvent::Lagged { .. }
+                    | InProcessServerEvent::ServerNotification(_) => {}
+                }
+            }
+        })
+        .await
+        .expect("preceding required event should saturate capacity-one delivery");
+
+        let (expected_request_id, response_rx) = timeout(Duration::from_secs(2), request_sequence)
+            .await
+            .expect("server request should enter the real outbound route")
+            .expect("server-request task should not panic")
+            .expect("server request should be admitted");
+        let request = timeout(Duration::from_secs(2), client.next_event())
+            .await
+            .expect("server request should make progress after the required event drains")
+            .expect("event stream should remain open");
+        let InProcessServerEvent::ServerRequest(ServerRequest::ToolRequestUserInput {
+            request_id,
+            ..
+        }) = request
+        else {
+            panic!("expected request_user_input server request after required event");
+        };
+        assert_eq!(request_id, expected_request_id);
+
+        let response = serde_json::to_value(ToolRequestUserInputResponse {
+            answers: HashMap::new(),
+        })
+        .expect("request_user_input response should serialize");
+        client
+            .respond_to_server_request(request_id, response.clone())
+            .expect("server request response should enter the real client route");
+        let resolved = timeout(Duration::from_secs(2), response_rx)
+            .await
+            .expect("server request response should make runtime progress")
+            .expect("server request callback should remain open")
+            .expect("server request should resolve successfully");
+        assert_eq!(resolved, response);
+
+        let config = timeout(
+            Duration::from_secs(2),
+            client.request(ClientRequest::ConfigRequirementsRead {
+                request_id: RequestId::Integer(22),
+                params: None,
+            }),
+        )
+        .await
+        .expect("ordinary response should remain live after server request resolution")
+        .expect("config request transport should remain live")
+        .expect("config request should succeed");
+        let _parsed: ConfigRequirementsReadResponse =
+            serde_json::from_value(config).expect("config response should match v2 schema");
+
+        timeout(Duration::from_secs(2), client.shutdown())
+            .await
+            .expect("shutdown should remain live after server request resolution")
             .expect("in-process runtime should shutdown cleanly");
     }
 
