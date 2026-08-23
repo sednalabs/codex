@@ -500,50 +500,37 @@ impl App {
             return Ok(true);
         }
 
-        let (session, turns, live_attached) = match app_server
-            .resume_thread(self.config.clone(), thread_id, self.resume_model_settings())
-            .await
-        {
-            Ok(started) => {
-                if started.blocks_direct_input {
-                    self.agent_navigation.mark_parent_owned(thread_id);
-                }
-                (started.session, started.turns, true)
-            }
-            Err(resume_err) => {
-                tracing::warn!(
-                    thread_id = %thread_id,
-                    error = %resume_err,
-                    "failed to resume live thread for selection; falling back to thread/read"
-                );
-                let (thread, turns) = match app_server
-                    .thread_read(thread_id, /*include_turns*/ true)
-                    .await
-                {
-                    Ok(thread) => {
-                        let turns = thread.turns.clone();
-                        (thread, turns)
+        let known_closed = self
+            .agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed);
+        let (session, turns, live_attached) = if known_closed {
+            let (session, turns) = self
+                .read_thread_for_selection_replay(app_server, thread_id)
+                .await?;
+            (session, turns, false)
+        } else {
+            match app_server
+                .resume_thread(self.config.clone(), thread_id, self.resume_model_settings())
+                .await
+            {
+                Ok(started) => {
+                    if started.blocks_direct_input {
+                        self.agent_navigation.mark_parent_owned(thread_id);
                     }
-                    Err(err) if Self::can_fallback_from_include_turns_error(&err) => {
-                        let thread = app_server
-                            .thread_read(thread_id, /*include_turns*/ false)
-                            .await?;
-                        (thread, Vec::new())
-                    }
-                    Err(err) => return Err(err),
-                };
-                if turns.is_empty() {
-                    // A `thread/read` fallback without turns would create a blank local replay
-                    // channel with no live listener attached, which blocks later real re-attach.
-                    return Err(color_eyre::eyre::eyre!(
-                        "Agent thread {thread_id} is not yet available for replay or live attach."
-                    ));
+                    (started.session, started.turns, true)
                 }
-                let mut session = self.session_state_for_thread_read(thread_id, &thread).await;
-                // `thread/read` can seed replay state, but it does not attach the app-server
-                // listener that `thread/resume` establishes, so treat this path as replay-only.
-                session.model.clear();
-                (session, turns, false)
+                Err(resume_err) => {
+                    tracing::warn!(
+                        thread_id = %thread_id,
+                        error = %resume_err,
+                        "failed to resume live thread for selection; falling back to thread/read"
+                    );
+                    let (session, turns) = self
+                        .read_thread_for_selection_replay(app_server, thread_id)
+                        .await?;
+                    (session, turns, false)
+                }
             }
         };
         let channel = self.ensure_thread_channel(thread_id);
@@ -553,6 +540,41 @@ impl App {
         let mut store = channel.store.lock().await;
         store.set_session(session, turns);
         Ok(live_attached)
+    }
+
+    async fn read_thread_for_selection_replay(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> Result<(ThreadSessionState, Vec<Turn>)> {
+        let (thread, turns) = match app_server
+            .thread_read(thread_id, /*include_turns*/ true)
+            .await
+        {
+            Ok(thread) => {
+                let turns = thread.turns.clone();
+                (thread, turns)
+            }
+            Err(err) if Self::can_fallback_from_include_turns_error(&err) => {
+                let thread = app_server
+                    .thread_read(thread_id, /*include_turns*/ false)
+                    .await?;
+                (thread, Vec::new())
+            }
+            Err(err) => return Err(err),
+        };
+        if turns.is_empty() {
+            // A `thread/read` fallback without turns would create a blank local replay channel
+            // with no live listener attached, which blocks later real re-attach.
+            return Err(color_eyre::eyre::eyre!(
+                "Agent thread {thread_id} is not yet available for replay or live attach."
+            ));
+        }
+        let mut session = self.session_state_for_thread_read(thread_id, &thread).await;
+        // `thread/read` can seed replay state, but it does not attach the app-server listener that
+        // `thread/resume` establishes, so treat this path as replay-only.
+        session.model.clear();
+        Ok((session, turns))
     }
 
     /// Replaces the chat widget and re-seeds the new widget's collab metadata from the navigation
@@ -621,8 +643,9 @@ impl App {
                 .await
             {
                 Ok(live_attached) => {
-                    attached_replay_only = !live_attached;
-                    if attached_replay_only {
+                    let newly_replay_only = !live_attached;
+                    attached_replay_only = newly_replay_only && !is_replay_only;
+                    if newly_replay_only {
                         is_replay_only = true;
                     }
                 }
@@ -693,10 +716,6 @@ impl App {
 
     pub(super) fn should_attach_live_thread_for_selection(&self, thread_id: ThreadId) -> bool {
         !self.thread_event_channels.contains_key(&thread_id)
-            && self
-                .agent_navigation
-                .get(&thread_id)
-                .is_none_or(|entry| !entry.is_closed)
     }
 
     pub(super) fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {
@@ -967,29 +986,18 @@ impl App {
                         };
                     }
                 };
-                for thread in progress.accumulator.ingest(response.data) {
-                    let thread_id = thread.thread_id;
-                    let has_live_channel = self
-                        .thread_event_channels
-                        .get(&thread_id)
-                        .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
-                    let requires_authoritative_refresh = !has_live_channel
-                        && !thread.has_authoritative_input_capability
-                        && thread
-                            .agent_path
-                            .as_deref()
-                            .is_none_or(|agent_path| agent_path.trim().is_empty());
-                    if requires_authoritative_refresh {
-                        progress.pending_refresh_thread_ids.push_back(thread_id);
-                    } else {
-                        self.apply_loaded_subagent_thread(thread);
-                        if !has_live_channel {
-                            refreshed_thread_ids.insert(thread_id);
-                        }
-                    }
-                }
+                self.stage_loaded_subagent_threads(
+                    progress.accumulator.ingest(response.data),
+                    &mut progress.pending_refresh_thread_ids,
+                    &mut refreshed_thread_ids,
+                );
                 match page_budget.observe_page(response.next_cursor) {
                     LineagePageAdvance::Complete => {
+                        self.stage_loaded_subagent_threads(
+                            progress.accumulator.finish(),
+                            &mut progress.pending_refresh_thread_ids,
+                            &mut refreshed_thread_ids,
+                        );
                         progress.listing_complete = true;
                         break;
                     }
@@ -1138,6 +1146,35 @@ impl App {
             } else {
                 self.agent_navigation
                     .set_running(thread.thread_id, /*is_running*/ false);
+            }
+        }
+    }
+
+    fn stage_loaded_subagent_threads(
+        &mut self,
+        threads: impl IntoIterator<Item = LoadedSubagentThread>,
+        pending_refresh_thread_ids: &mut VecDeque<ThreadId>,
+        refreshed_thread_ids: &mut HashSet<ThreadId>,
+    ) {
+        for thread in threads {
+            let thread_id = thread.thread_id;
+            let has_live_channel = self
+                .thread_event_channels
+                .get(&thread_id)
+                .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
+            let requires_authoritative_refresh = !has_live_channel
+                && !thread.has_authoritative_input_capability
+                && thread
+                    .agent_path
+                    .as_deref()
+                    .is_none_or(|agent_path| agent_path.trim().is_empty());
+            if requires_authoritative_refresh {
+                pending_refresh_thread_ids.push_back(thread_id);
+            } else {
+                self.apply_loaded_subagent_thread(thread);
+                if !has_live_channel {
+                    refreshed_thread_ids.insert(thread_id);
+                }
             }
         }
     }

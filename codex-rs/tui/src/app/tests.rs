@@ -2049,7 +2049,7 @@ fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() ->
 }
 
 #[tokio::test]
-async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_threads() {
+async fn should_attach_live_thread_for_selection_includes_closed_metadata_only_threads() {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     app.agent_navigation.upsert(
@@ -2061,7 +2061,7 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
         /*updated_at*/ None,
     );
 
-    assert!(!app.should_attach_live_thread_for_selection(thread_id));
+    assert!(app.should_attach_live_thread_for_selection(thread_id));
 
     app.agent_navigation.upsert(
         thread_id,
@@ -2076,6 +2076,87 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
     assert!(!app.should_attach_live_thread_for_selection(thread_id));
+}
+
+#[test]
+fn select_persisted_closed_agent_replays_saved_turns_without_live_attach() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let codex_home = tempdir()?;
+        app.config.codex_home = codex_home.path().to_path_buf().abs();
+        app.config.sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
+        let root_thread_id = ThreadId::from_string(&app_test_support::create_fake_rollout(
+            codex_home.path(),
+            "2026-01-01T00-00-00",
+            "2026-01-01T00:00:00Z",
+            "Saved root message",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )?)?;
+        let child_thread_id =
+            ThreadId::from_string(&app_test_support::create_fake_parented_rollout_with_source(
+                codex_home.path(),
+                "2026-01-01T00-00-01",
+                "2026-01-01T00:00:01Z",
+                "Saved child message",
+                Some(app.config.model_provider_id.as_str()),
+                /*git_info*/ None,
+                RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    agent_path: Some(
+                        codex_protocol::AgentPath::try_from("/root/worker")
+                            .expect("valid agent path"),
+                    ),
+                    agent_nickname: Some("worker".to_string()),
+                    agent_role: Some("worker".to_string()),
+                }),
+                root_thread_id.into(),
+                root_thread_id,
+            )?)?;
+        let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+        let root = app_server
+            .resume_thread(
+                app.config.clone(),
+                root_thread_id,
+                app.resume_model_settings(),
+            )
+            .await?;
+        app.enqueue_primary_thread_session(root.session, root.turns)
+            .await?;
+        let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert!(backfill.completed);
+        assert!(
+            app.agent_navigation
+                .get(&child_thread_id)
+                .is_some_and(|entry| entry.is_closed)
+        );
+
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
+            .await?;
+
+        assert_eq!(app.active_thread_id, Some(child_thread_id));
+        let channel = app
+            .thread_event_channels
+            .get(&child_thread_id)
+            .expect("saved child should have a replay channel");
+        assert_eq!(channel.attachment(), ThreadEventAttachment::ReplayOnly);
+        let store = channel.store.lock().await;
+        assert!(store.turns.iter().flat_map(|turn| &turn.items).any(|item| {
+            matches!(
+                item,
+                ThreadItem::UserMessage { content, .. }
+                    if content.iter().any(|input| matches!(
+                        input,
+                        AppServerUserInput::Text { text, .. } if text == "Saved child message"
+                    ))
+            )
+        }));
+        drop(store);
+        app_server.shutdown().await?;
+        Ok(())
+    })
 }
 
 #[tokio::test]
@@ -2186,7 +2267,7 @@ fn handle_start_side_seeds_navigation_before_thread_started() -> Result<()> {
 
 #[tokio::test]
 async fn select_uncached_agent_thread_still_refreshes_liveness() -> Result<()> {
-    let mut app = Box::pin(make_test_app()).await;
+    let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
         app.chat_widget.config_ref(),
     ))
@@ -2201,11 +2282,22 @@ async fn select_uncached_agent_thread_still_refreshes_liveness() -> Result<()> {
         /*updated_at*/ None,
     );
     let mut tui = crate::tui::test_support::make_test_tui()?;
+    while app_event_rx.try_recv().is_ok() {}
 
     Box::pin(app.select_agent_thread(&mut tui, &mut app_server, thread_id)).await?;
 
     assert_eq!(app.active_thread_id, None);
     assert_eq!(app.agent_navigation.get(&thread_id), None);
+    assert!(
+        std::iter::from_fn(|| app_event_rx.try_recv().ok()).any(|event| {
+            matches!(
+                event,
+                AppEvent::InsertHistoryCell(cell)
+                    if lines_to_single_string(&cell.transcript_lines(/*width*/ 80))
+                        .contains(&format!("Agent thread {thread_id} is no longer available."))
+            )
+        })
+    );
     app_server.shutdown().await?;
     Ok(())
 }
