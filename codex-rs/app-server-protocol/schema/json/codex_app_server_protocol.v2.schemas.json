@@ -16981,6 +16981,13 @@
             "string",
             "null"
           ]
+        },
+        "relationLimitReached": {
+          "description": "True when the raw descendant relation filled its bounded safety subset.\n\nThe subset is selected before outer filters, so later, newer, or otherwise matching descendants may be omitted even when `data` is empty. Missing means false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "required": [

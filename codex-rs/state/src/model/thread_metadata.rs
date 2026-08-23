@@ -60,6 +60,8 @@ pub struct ThreadsPage {
     pub next_anchor: Option<Anchor>,
     /// The number of rows scanned to produce this page.
     pub num_scanned_rows: usize,
+    /// Whether the raw descendant relation reached its bounded safety subset.
+    pub relation_limit_reached: bool,
 }
 
 /// The outcome of extracting metadata from a rollout.

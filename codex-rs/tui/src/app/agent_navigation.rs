@@ -62,6 +62,25 @@ pub(crate) enum AgentNavigationDirection {
     Next,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AgentNavigationUpdate {
+    Accepted { evicted: Option<ThreadId> },
+    Rejected,
+}
+
+impl AgentNavigationUpdate {
+    pub(crate) fn accepted(self) -> bool {
+        matches!(self, Self::Accepted { .. })
+    }
+
+    pub(crate) fn evicted(self) -> Option<ThreadId> {
+        match self {
+            Self::Accepted { evicted } => evicted,
+            Self::Rejected => None,
+        }
+    }
+}
+
 impl AgentNavigationState {
     /// Returns the cached picker entry for a specific thread id.
     ///
@@ -178,6 +197,62 @@ impl AgentNavigationState {
         true
     }
 
+    pub(crate) fn upsert_retaining(
+        &mut self,
+        thread_id: ThreadId,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+        is_closed: bool,
+        created_at: Option<i64>,
+        updated_at: Option<i64>,
+        protected_thread_ids: &[ThreadId],
+    ) -> AgentNavigationUpdate {
+        let previous_is_running = self
+            .threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_running);
+        self.upsert_retaining_with_path(
+            thread_id,
+            AgentPickerThreadEntry {
+                agent_nickname,
+                agent_role,
+                agent_path: None,
+                model: None,
+                reasoning_effort: None,
+                model_provider: None,
+                task_name: None,
+                is_running: previous_is_running && !is_closed,
+                is_closed,
+                created_at,
+                updated_at,
+            },
+            protected_thread_ids,
+        )
+    }
+
+    pub(crate) fn upsert_retaining_with_path(
+        &mut self,
+        thread_id: ThreadId,
+        entry: AgentPickerThreadEntry,
+        protected_thread_ids: &[ThreadId],
+    ) -> AgentNavigationUpdate {
+        let evicted = if !self.threads.contains_key(&thread_id)
+            && self.threads.len() >= MAX_THREAD_RELATION_DESCENDANTS
+        {
+            let Some(evicted) = self.order.iter().copied().find(|candidate| {
+                *candidate != thread_id && !protected_thread_ids.contains(candidate)
+            }) else {
+                return AgentNavigationUpdate::Rejected;
+            };
+            self.remove(evicted);
+            Some(evicted)
+        } else {
+            None
+        };
+        debug_assert!(self.upsert_with_path(thread_id, entry));
+        AgentNavigationUpdate::Accepted { evicted }
+    }
+
     pub(crate) fn record_sub_agent_activity(&mut self, activity: SubAgentActivityDisplay) -> bool {
         if !self.threads.contains_key(&activity.thread_id)
             && self.threads.len() >= MAX_THREAD_RELATION_DESCENDANTS
@@ -220,6 +295,28 @@ impl AgentNavigationState {
             self.stopped_threads.insert(activity.thread_id);
         }
         true
+    }
+
+    pub(crate) fn record_sub_agent_activity_retaining(
+        &mut self,
+        activity: SubAgentActivityDisplay,
+        protected_thread_ids: &[ThreadId],
+    ) -> AgentNavigationUpdate {
+        let evicted = if !self.threads.contains_key(&activity.thread_id)
+            && self.threads.len() >= MAX_THREAD_RELATION_DESCENDANTS
+        {
+            let Some(evicted) = self.order.iter().copied().find(|candidate| {
+                *candidate != activity.thread_id && !protected_thread_ids.contains(candidate)
+            }) else {
+                return AgentNavigationUpdate::Rejected;
+            };
+            self.remove(evicted);
+            Some(evicted)
+        } else {
+            None
+        };
+        debug_assert!(self.record_sub_agent_activity(activity));
+        AgentNavigationUpdate::Accepted { evicted }
     }
 
     pub(crate) fn update_identity(

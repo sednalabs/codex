@@ -487,6 +487,13 @@ ON CONFLICT(child_thread_id) DO NOTHING
         filters: ThreadFilterOptions<'_>,
         relation_filter: Option<crate::ThreadRelationFilter>,
     ) -> anyhow::Result<crate::ThreadsPage> {
+        let relation_limit_reached = match relation_filter {
+            Some(crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)) => {
+                self.descendant_relation_limit_reached(ancestor_thread_id)
+                    .await?
+            }
+            _ => false,
+        };
         let limit = page_size.saturating_add(1);
 
         let mut builder = QueryBuilder::<Sqlite>::new("");
@@ -521,7 +528,26 @@ ON CONFLICT(child_thread_id) DO NOTHING
             parent_thread_ids,
             next_anchor,
             num_scanned_rows,
+            relation_limit_reached,
         })
+    }
+
+    /// Reports whether the deterministic raw descendant safety subset filled completely.
+    ///
+    /// This is deliberately evaluated before archived/source/cwd/search filters. The bounded raw
+    /// subset may omit later, newer, or otherwise matching descendants once it reaches the cap,
+    /// even when the filtered page itself is empty.
+    async fn descendant_relation_limit_reached(
+        &self,
+        ancestor_thread_id: ThreadId,
+    ) -> anyhow::Result<bool> {
+        let mut builder = QueryBuilder::<Sqlite>::new("");
+        push_descendant_subtree_cte(&mut builder, ancestor_thread_id);
+        builder.push("SELECT COUNT(*) AS relation_count FROM subtree");
+        let row = builder.build().fetch_one(self.pool.as_ref()).await?;
+        let relation_count: i64 = row.try_get("relation_count")?;
+        Ok(relation_count
+            >= i64::try_from(crate::MAX_THREAD_RELATION_DESCENDANTS.saturating_add(1))?)
     }
 
     /// List thread ids using the underlying database (no rollout scanning).
@@ -1220,33 +1246,7 @@ fn push_list_threads_query(
     limit: usize,
 ) {
     if let Some(crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)) = relation_filter {
-        builder.push(
-            r#"
-WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
-    SELECT child_thread_id, parent_thread_id
-    FROM thread_spawn_edges
-    WHERE parent_thread_id =
-"#,
-        );
-        builder.push_bind(ancestor_thread_id.to_string());
-        // Keep the recursive work table itself bounded before the outer sort and pagination. The
-        // extra tuple is the sentinel that lets a 3,200-row consumer detect truncation.
-        builder.push(
-            r#"
-    UNION
-    SELECT edge.child_thread_id, edge.parent_thread_id
-    FROM thread_spawn_edges AS edge
-    JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-    ORDER BY 1, 2
-    LIMIT
-"#,
-        );
-        builder.push(crate::MAX_THREAD_RELATION_DESCENDANTS.saturating_add(1));
-        builder.push(
-            r#"
-)
-"#,
-        );
+        push_descendant_subtree_cte(builder, ancestor_thread_id);
     }
     push_thread_select_columns(builder);
     // SQLite may otherwise reorder these joins and scan the global timestamp index before
@@ -1299,6 +1299,36 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
         order_by_index,
         include_thread_id_tiebreaker,
         limit,
+    );
+}
+
+fn push_descendant_subtree_cte(builder: &mut QueryBuilder<Sqlite>, ancestor_thread_id: ThreadId) {
+    builder.push(
+        r#"
+WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
+    SELECT child_thread_id, parent_thread_id
+    FROM thread_spawn_edges
+    WHERE parent_thread_id =
+"#,
+    );
+    builder.push_bind(ancestor_thread_id.to_string());
+    // Keep the recursive work table itself bounded before the outer sort and pagination. The
+    // extra tuple is the sentinel that lets a 3,200-row consumer detect truncation.
+    builder.push(
+        r#"
+    UNION
+    SELECT edge.child_thread_id, edge.parent_thread_id
+    FROM thread_spawn_edges AS edge
+    JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    ORDER BY 1, 2
+    LIMIT
+"#,
+    );
+    builder.push(crate::MAX_THREAD_RELATION_DESCENDANTS.saturating_add(1));
+    builder.push(
+        r#"
+)
+"#,
     );
 }
 
@@ -2617,6 +2647,7 @@ FROM sequence
                 .all(|item| item.id != descendant_id(reachable_count)),
             "the deterministic truncation sentinel must exclude rows beyond the recursive bound"
         );
+        assert!(bounded.relation_limit_reached);
 
         let first_small_page = runtime
             .list_threads_by_relation(
@@ -2657,6 +2688,31 @@ FROM sequence
                     descendant_id(crate::MAX_THREAD_RELATION_DESCENDANTS - 2),
                 ],
             )
+        );
+
+        sqlx::query("UPDATE threads SET archived = 1, archived_at = 1700000000 WHERE id <= ?")
+            .bind(descendant_id(crate::MAX_THREAD_RELATION_DESCENDANTS + 1).to_string())
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("raw safety subset rows should archive");
+        let filtered_after_raw_subset = runtime
+            .list_threads_by_relation(
+                /*page_size*/ 10,
+                crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id),
+                filters(None),
+            )
+            .await
+            .expect("filtered descendant relation should load");
+        assert!(filtered_after_raw_subset.items.is_empty());
+        assert_eq!(filtered_after_raw_subset.next_anchor, None);
+        assert!(filtered_after_raw_subset.relation_limit_reached);
+        assert!(
+            runtime
+                .get_thread(descendant_id(reachable_count))
+                .await
+                .expect("later matching row lookup should succeed")
+                .is_some_and(|item| item.archived_at.is_none()),
+            "a later matching descendant exists outside the deterministic raw subset"
         );
     }
 

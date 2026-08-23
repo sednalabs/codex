@@ -391,6 +391,18 @@ fn scripted_lineage_page(threads: Vec<Thread>, next_cursor: Option<String>) -> s
     })
 }
 
+fn scripted_relation_limited_lineage_page(
+    threads: Vec<Thread>,
+    next_cursor: Option<String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "data": threads,
+        "ancestorFilterApplied": true,
+        "relationLimitReached": true,
+        "nextCursor": next_cursor,
+    })
+}
+
 fn scripted_unacknowledged_lineage_page(
     threads: Vec<Thread>,
     next_cursor: Option<String>,
@@ -1154,6 +1166,43 @@ fn lineage_backfill_advances_beyond_page_budget_across_opens() -> Result<()> {
                 .all(|thread_id| app.agent_navigation.get(thread_id).is_some())
         );
         assert!(responses.lock().expect("lineage response lock").is_empty());
+
+        app_server.shutdown().await?;
+        proxy.await??;
+        Ok(())
+    })
+}
+
+#[test]
+fn empty_relation_limited_page_marks_backfill_and_picker_truncated() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let primary_thread_id = ThreadId::new();
+        configure_backfill_primary(&mut app, primary_thread_id);
+        app.active_thread_id = Some(primary_thread_id);
+        let responses = Arc::new(Mutex::new(VecDeque::from([ScriptedLineageResponse::Page(
+            scripted_relation_limited_lineage_page(Vec::new(), None),
+        )])));
+        let (mut app_server, requests, proxy) = start_recording_app_server_with_lineage(
+            &app.config,
+            None,
+            Some(Arc::clone(&responses)),
+            None,
+        )
+        .await?;
+
+        app.open_agent_picker(&mut app_server).await;
+
+        assert_eq!(take_backfill_counts(&requests), (1, 0, 0));
+        assert!(
+            app.subagent_backfill_progress
+                .as_ref()
+                .is_some_and(|progress| progress.truncated)
+        );
+        assert!(
+            render_bottom_popup(&app.chat_widget, /*width*/ 100)
+                .contains("additional rows were omitted")
+        );
 
         app_server.shutdown().await?;
         proxy.await??;

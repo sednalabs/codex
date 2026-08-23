@@ -143,6 +143,7 @@ pub(super) enum ThreadLivenessRefreshOutcome {
     Refreshed,
     TerminalPruned,
     RetryableError,
+    CapacityRejected,
 }
 
 fn agent_picker_subtitle(
@@ -466,6 +467,41 @@ impl App {
         true
     }
 
+    fn protected_agent_picker_threads(&self) -> Vec<ThreadId> {
+        [self.primary_thread_id, self.active_thread_id]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    pub(super) fn upsert_agent_picker_thread_retaining(
+        &mut self,
+        thread_id: ThreadId,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+        is_closed: bool,
+    ) -> AgentNavigationUpdate {
+        let update = self.agent_navigation.upsert_retaining(
+            thread_id,
+            agent_nickname.clone(),
+            agent_role.clone(),
+            is_closed,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+            &self.protected_agent_picker_threads(),
+        );
+        if let Some(evicted) = update.evicted() {
+            self.chat_widget.remove_collab_agent_metadata(evicted);
+        }
+        if update.accepted() {
+            self.chat_widget
+                .set_collab_agent_metadata(thread_id, agent_nickname, agent_role);
+            self.sync_agent_picker_identity(thread_id);
+            self.sync_active_agent_label();
+        }
+        update
+    }
+
     pub(super) fn sync_agent_picker_identity(&mut self, thread_id: ThreadId) {
         let Some(entry) = self.agent_navigation.get(&thread_id).cloned() else {
             return;
@@ -519,20 +555,44 @@ impl App {
                     thread.status,
                     codex_app_server_protocol::ThreadStatus::NotLoaded
                 );
-                self.upsert_agent_picker_thread(
-                    thread_id,
-                    thread.agent_nickname.or_else(|| {
-                        existing_entry
-                            .as_ref()
-                            .and_then(|entry| entry.agent_nickname.clone())
-                    }),
-                    thread.agent_role.or_else(|| {
-                        existing_entry
-                            .as_ref()
-                            .and_then(|entry| entry.agent_role.clone())
-                    }),
-                    is_closed,
-                );
+                let retain_at_capacity = is_running
+                    || self.primary_thread_id == Some(thread_id)
+                    || self.active_thread_id == Some(thread_id);
+                let accepted = if retain_at_capacity {
+                    self.upsert_agent_picker_thread_retaining(
+                        thread_id,
+                        thread.agent_nickname.or_else(|| {
+                            existing_entry
+                                .as_ref()
+                                .and_then(|entry| entry.agent_nickname.clone())
+                        }),
+                        thread.agent_role.or_else(|| {
+                            existing_entry
+                                .as_ref()
+                                .and_then(|entry| entry.agent_role.clone())
+                        }),
+                        is_closed,
+                    )
+                    .accepted()
+                } else {
+                    self.upsert_agent_picker_thread(
+                        thread_id,
+                        thread.agent_nickname.or_else(|| {
+                            existing_entry
+                                .as_ref()
+                                .and_then(|entry| entry.agent_nickname.clone())
+                        }),
+                        thread.agent_role.or_else(|| {
+                            existing_entry
+                                .as_ref()
+                                .and_then(|entry| entry.agent_role.clone())
+                        }),
+                        is_closed,
+                    )
+                };
+                if !accepted {
+                    return ThreadLivenessRefreshOutcome::CapacityRejected;
+                }
                 if is_parent_owned {
                     self.agent_navigation.mark_parent_owned(thread_id);
                 }
@@ -568,17 +628,23 @@ impl App {
                     existing_entry.as_ref().map(|entry| entry.is_closed),
                 );
                 if let Some(entry) = existing_entry {
-                    self.upsert_agent_picker_thread(
+                    let accepted = self.upsert_agent_picker_thread(
                         thread_id,
                         entry.agent_nickname,
                         entry.agent_role,
                         is_closed,
                     );
+                    if !accepted {
+                        return ThreadLivenessRefreshOutcome::CapacityRejected;
+                    }
                 } else {
-                    self.upsert_agent_picker_thread(
+                    let accepted = self.upsert_agent_picker_thread(
                         thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
                         is_closed,
                     );
+                    if !accepted {
+                        return ThreadLivenessRefreshOutcome::CapacityRejected;
+                    }
                 }
                 self.agent_navigation
                     .set_running(thread_id, /*is_running*/ false);
@@ -602,16 +668,16 @@ impl App {
             return Ok(true);
         }
 
-        let (session, turns, live_attached) = match app_server
+        let (session, turns, live_attached, blocks_direct_input) = match app_server
             .resume_thread(self.config.clone(), thread_id, self.resume_model_settings())
             .await
         {
-            Ok(started) => {
-                if started.blocks_direct_input {
-                    self.agent_navigation.mark_parent_owned(thread_id);
-                }
-                (started.session, started.turns, true)
-            }
+            Ok(started) => (
+                started.session,
+                started.turns,
+                true,
+                started.blocks_direct_input,
+            ),
             Err(resume_err) => {
                 tracing::warn!(
                     thread_id = %thread_id,
@@ -621,9 +687,23 @@ impl App {
                 let (session, turns) = self
                     .read_thread_for_selection_replay(app_server, thread_id)
                     .await?;
-                (session, turns, false)
+                (session, turns, false, false)
             }
         };
+        if !self
+            .upsert_agent_picker_thread_retaining(
+                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                /*is_closed*/ false,
+            )
+            .accepted()
+        {
+            return Err(color_eyre::eyre::eyre!(
+                "Agent thread {thread_id} could not be retained in the bounded picker cache."
+            ));
+        }
+        if blocks_direct_input {
+            self.agent_navigation.mark_parent_owned(thread_id);
+        }
         let channel = self.ensure_thread_channel(thread_id);
         if !live_attached {
             channel.mark_replay_only();
@@ -714,10 +794,12 @@ impl App {
         // replay channel, so another liveness read cannot add anything before selection.
         let thread_available = self.side_threads.contains_key(&thread_id)
             && self.thread_event_channels.contains_key(&thread_id)
-            || self
-                .refresh_agent_picker_thread_liveness(app_server, thread_id)
-                .await
-                != ThreadLivenessRefreshOutcome::TerminalPruned;
+            || matches!(
+                self.refresh_agent_picker_thread_liveness(app_server, thread_id)
+                    .await,
+                ThreadLivenessRefreshOutcome::Refreshed
+                    | ThreadLivenessRefreshOutcome::RetryableError
+            );
         if !thread_available {
             self.chat_widget
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
@@ -873,11 +955,13 @@ impl App {
             .set_queue_submissions_until_session_configured(/*queue*/ false);
         match result {
             Ok(started) => {
-                if started.blocks_direct_input {
-                    self.mark_primary_thread_parent_owned(started.session.thread_id);
-                }
+                let blocks_direct_input = started.blocks_direct_input;
+                let thread_id = started.session.thread_id;
                 self.enqueue_primary_thread_session(started.session, started.turns)
                     .await?;
+                if blocks_direct_input {
+                    self.mark_primary_thread_parent_owned(thread_id);
+                }
                 self.chat_widget.maybe_send_next_queued_input();
             }
             Err(err) => {
@@ -1001,15 +1085,17 @@ impl App {
             initial_user_message,
         );
         self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-        if started.blocks_direct_input {
-            self.mark_primary_thread_parent_owned(started.session.thread_id);
-        }
+        let blocks_direct_input = started.blocks_direct_input;
+        let thread_id = started.session.thread_id;
         self.enqueue_primary_thread_session_with_presentation(
             started.session,
             started.turns,
             presentation,
         )
         .await?;
+        if blocks_direct_input {
+            self.mark_primary_thread_parent_owned(thread_id);
+        }
         Ok(())
     }
 
@@ -1079,6 +1165,7 @@ impl App {
                 };
                 progress.ancestor_filter_applied_to_all_pages &=
                     response.ancestor_filter_applied.unwrap_or(false);
+                progress.truncated |= response.relation_limit_reached.unwrap_or(false);
                 let retained_threads = progress.retain_threads(response.data);
                 self.stage_loaded_subagent_threads(
                     progress.accumulator.ingest(retained_threads),
@@ -1298,6 +1385,9 @@ impl App {
                     refreshed_thread_ids.insert(thread_id);
                 }
                 ThreadLivenessRefreshOutcome::TerminalPruned => {}
+                ThreadLivenessRefreshOutcome::CapacityRejected => {
+                    progress.truncated = true;
+                }
                 ThreadLivenessRefreshOutcome::RetryableError => {
                     if !had_existing_entry {
                         self.agent_navigation.remove(thread_id);
@@ -1367,6 +1457,9 @@ impl App {
                     refreshed_thread_ids.insert(thread_id);
                 }
                 ThreadLivenessRefreshOutcome::TerminalPruned => {}
+                ThreadLivenessRefreshOutcome::CapacityRejected => {
+                    progress.truncated = true;
+                }
                 ThreadLivenessRefreshOutcome::RetryableError => {
                     self.subagent_backfill_progress = Some(progress);
                     return LoadedSubagentBackfill {

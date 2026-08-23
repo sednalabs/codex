@@ -1250,6 +1250,13 @@ pub struct ThreadListResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub ancestor_filter_applied: Option<bool>,
+    /// True when the raw descendant relation filled its bounded safety subset.
+    ///
+    /// The subset is selected before outer filters, so later, newer, or otherwise matching
+    /// descendants may be omitted even when `data` is empty. Missing means false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub relation_limit_reached: Option<bool>,
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// if None, there are no more items to return.
     pub next_cursor: Option<String>,
