@@ -913,7 +913,10 @@ mod tests {
             .map(|_| ThreadId::new())
             .collect::<Vec<_>>();
         for thread_id in &thread_ids {
-            assert!(state.upsert(*thread_id, None, None, /*is_closed*/ false, None, None,));
+            assert!(state.upsert(
+                *thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
+            ));
             state.mark_running(*thread_id);
         }
         let parent_owned_thread_id = thread_ids[0];
@@ -924,11 +927,11 @@ mod tests {
         assert_eq!(
             state.upsert_retaining(
                 rejected_thread_id,
-                None,
-                None,
+                /*agent_nickname*/ None,
+                /*agent_role*/ None,
                 /*is_closed*/ false,
-                None,
-                None,
+                /*created_at*/ None,
+                /*updated_at*/ None,
                 &[],
             ),
             AgentNavigationUpdate::Rejected
@@ -943,11 +946,11 @@ mod tests {
         assert_eq!(
             state.upsert_retaining(
                 admitted_thread_id,
-                None,
-                None,
+                /*agent_nickname*/ None,
+                /*agent_role*/ None,
                 /*is_closed*/ false,
-                None,
-                None,
+                /*created_at*/ None,
+                /*updated_at*/ None,
                 &[],
             ),
             AgentNavigationUpdate::Accepted {
@@ -972,16 +975,16 @@ mod tests {
             .collect::<Vec<_>>();
         for thread_id in retained_ids.iter().copied() {
             assert!(state.upsert(
-                thread_id, None, None, /*is_closed*/ false, /*created_at*/ None,
-                /*updated_at*/ None,
+                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
             ));
         }
         let rejected_thread_id = ThreadId::new();
 
         assert!(!state.upsert(
             rejected_thread_id,
-            None,
-            None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
             /*is_closed*/ false,
             /*created_at*/ None,
             /*updated_at*/ None,
@@ -1229,15 +1232,27 @@ mod tests {
         for thread_id in
             std::iter::once(primary_thread_id).chain(descendant_thread_ids.iter().copied())
         {
-            state.upsert(thread_id, None, None, /*is_closed*/ false, None, None);
+            state.upsert(
+                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
+            );
         }
 
-        let (first, first_has_more) =
-            state.next_picker_thread_ids(Some(primary_thread_id), None, 3);
-        let (second, second_has_more) =
-            state.next_picker_thread_ids(Some(primary_thread_id), None, 3);
-        let (third, third_has_more) =
-            state.next_picker_thread_ids(Some(primary_thread_id), None, 3);
+        let (first, first_has_more) = state.next_picker_thread_ids(
+            Some(primary_thread_id),
+            /*active_thread_id*/ None,
+            /*limit*/ 3,
+        );
+        let (second, second_has_more) = state.next_picker_thread_ids(
+            Some(primary_thread_id),
+            /*active_thread_id*/ None,
+            /*limit*/ 3,
+        );
+        let (third, third_has_more) = state.next_picker_thread_ids(
+            Some(primary_thread_id),
+            /*active_thread_id*/ None,
+            /*limit*/ 3,
+        );
         let visible_descendants = first
             .iter()
             .chain(&second)
@@ -1256,14 +1271,18 @@ mod tests {
         state.clear();
         state.upsert(
             primary_thread_id,
-            None,
-            None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
             /*is_closed*/ false,
-            None,
-            None,
+            /*created_at*/ None,
+            /*updated_at*/ None,
         );
         assert_eq!(
-            state.next_picker_thread_ids(Some(primary_thread_id), None, 3),
+            state.next_picker_thread_ids(
+                Some(primary_thread_id),
+                /*active_thread_id*/ None,
+                /*limit*/ 3,
+            ),
             (vec![primary_thread_id], false)
         );
     }

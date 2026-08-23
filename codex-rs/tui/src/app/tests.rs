@@ -1596,8 +1596,8 @@ async fn active_authoritative_lineage_row_replaces_closed_row_at_capacity() {
     app.active_thread_id = Some(primary_thread_id);
     assert!(app.upsert_agent_picker_thread(
         primary_thread_id,
-        None,
-        None,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
         /*is_closed*/ false,
     ));
     let closed_thread_id = ThreadId::new();
@@ -1610,8 +1610,8 @@ async fn active_authoritative_lineage_row_replaces_closed_row_at_capacity() {
     for _ in 2..codex_state::MAX_THREAD_RELATION_DESCENDANTS {
         assert!(app.upsert_agent_picker_thread(
             ThreadId::new(),
-            None,
-            None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
             /*is_closed*/ false,
         ));
     }
@@ -1680,15 +1680,18 @@ async fn side_thread_admission_at_capacity_evicts_safely_or_rejects_without_cach
         .collect::<Vec<_>>();
     for thread_id in &retained_ids {
         assert!(evicting_app.upsert_agent_picker_thread(
-            *thread_id,
-            None,
-            None,
+            *thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
             /*is_closed*/ false,
         ));
     }
     let admitted_side_thread_id = ThreadId::new();
     assert!(evicting_app.admit_side_thread_to_picker(admitted_side_thread_id));
-    assert!(evicting_app.agent_navigation.get(&retained_ids[0]).is_none());
+    assert!(
+        evicting_app
+            .agent_navigation
+            .get(&retained_ids[0])
+            .is_none()
+    );
     assert!(
         !evicting_app
             .chat_widget
@@ -1714,9 +1717,7 @@ async fn side_thread_admission_at_capacity_evicts_safely_or_rejects_without_cach
     for _ in 0..codex_state::MAX_THREAD_RELATION_DESCENDANTS {
         let thread_id = ThreadId::new();
         assert!(rejecting_app.upsert_agent_picker_thread(
-            thread_id,
-            None,
-            None,
+            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
             /*is_closed*/ false,
         ));
         rejecting_app.agent_navigation.mark_running(thread_id);
@@ -2456,18 +2457,14 @@ fn select_persisted_paginated_closed_thread_resumes_before_replay_fallback() -> 
             .get(&thread_id)
             .expect("paginated thread should have a live resumed channel");
         assert_eq!(channel.attachment(), ThreadEventAttachment::Live);
-        let store = channel.store.lock().await;
-        assert!(store.turns.iter().flat_map(|turn| &turn.items).any(|item| {
-            matches!(
-                item,
-                ThreadItem::UserMessage { content, .. }
-                    if content.iter().any(|input| matches!(
-                        input, AppServerUserInput::Text { text, .. }
-                            if text == "Saved paginated message"
-                    ))
-            )
-        }));
-        drop(store);
+        {
+            let store = channel.store.lock().await;
+            assert_eq!(
+                store.session.as_ref().map(|session| session.thread_id),
+                Some(thread_id),
+                "the successful resume should seed the selected thread session"
+            );
+        }
         app_server.shutdown().await?;
         Ok(())
     })
