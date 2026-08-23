@@ -235,20 +235,30 @@ enum FacadeTerminalReason {
     ConsumerClosed,
 }
 
-fn reject_unsupported_in_process_server_request(
+async fn reject_unsupported_in_process_server_request(
     request_sender: &codex_app_server::in_process::InProcessClientSender,
     request: &ServerRequest,
 ) -> IoResult<()> {
-    request_sender.fail_server_request(
-        request.id().clone(),
-        JSONRPCErrorError {
-            code: -32000,
-            message:
-                "chatgpt auth token refresh is not supported for in-process app-server clients"
-                    .to_string(),
-            data: None,
-        },
+    timeout(
+        SHUTDOWN_TIMEOUT,
+        request_sender.fail_server_request_when_ready(
+            request.id().clone(),
+            JSONRPCErrorError {
+                code: -32000,
+                message:
+                    "chatgpt auth token refresh is not supported for in-process app-server clients"
+                        .to_string(),
+                data: None,
+            },
+        ),
     )
+    .await
+    .map_err(|_| {
+        IoError::new(
+            ErrorKind::TimedOut,
+            "timed out waiting to reject unsupported in-process server request",
+        )
+    })?
 }
 
 /// Layered error for [`InProcessAppServerClient::request_typed`].
@@ -488,7 +498,18 @@ impl InProcessAppServerClient {
         let event_terminal_tx_forward = event_terminal_tx.clone();
         let mut event_forward_handle = tokio::spawn(async move {
             let mut skipped_events = 0usize;
-            while let Some(event) = event_forward_rx.recv().await {
+            loop {
+                let event = tokio::select! {
+                    _ = event_tx_forward.closed() => {
+                        let _ = event_terminal_tx_forward
+                            .try_send(FacadeTerminalReason::ConsumerClosed);
+                        break;
+                    }
+                    event = event_forward_rx.recv() => {
+                        let Some(event) = event else { break; };
+                        event
+                    }
+                };
                 match forward_in_process_event(&event_tx_forward, &mut skipped_events, event).await
                 {
                     ForwardEventResult::Continue => {}
@@ -500,18 +521,40 @@ impl InProcessAppServerClient {
                 }
             }
         });
+        let (auth_rejection_tx, mut auth_rejection_rx) = mpsc::channel::<IoResult<()>>(1);
 
         let worker_handle = tokio::spawn(async move {
             // Keep the terminal sender alive so a normal forwarder exit does
             // not look like a terminal reason.
             let _event_terminal_tx = event_terminal_tx;
             let mut pending_event = None;
+            let mut auth_rejection_pending = false;
+            let mut auth_rejection_handle = None;
             loop {
                 tokio::select! {
                     terminal_reason = event_terminal_rx.recv() => {
                         if matches!(terminal_reason, Some(FacadeTerminalReason::ConsumerClosed)) {
                             let _ = handle.shutdown().await;
                             break;
+                        }
+                    }
+                    rejection = auth_rejection_rx.recv(), if auth_rejection_pending => {
+                        auth_rejection_pending = false;
+                        if let Some(auth_rejection_handle) = auth_rejection_handle.take() {
+                            let _ = auth_rejection_handle.await;
+                        }
+                        match rejection {
+                            Some(Ok(())) => {}
+                            Some(Err(error)) => {
+                                warn!("terminating in-process facade after auth rejection failed: {error}");
+                                let _ = handle.shutdown().await;
+                                break;
+                            }
+                            None => {
+                                warn!("terminating in-process facade after auth rejection task closed");
+                                let _ = handle.shutdown().await;
+                                break;
+                            }
                         }
                     }
                     permit = event_forward_tx.reserve(), if pending_event.is_some() => {
@@ -575,7 +618,7 @@ impl InProcessAppServerClient {
                             }
                         }
                     }
-                    event = handle.next_event(), if pending_event.is_none() => {
+                    event = handle.next_event(), if pending_event.is_none() && !auth_rejection_pending => {
                         let Some(event) = event else {
                             break;
                         };
@@ -588,15 +631,17 @@ impl InProcessAppServerClient {
                             let InProcessServerEvent::ServerRequest(request) = event else {
                                 unreachable!("matched in-process server request above");
                             };
-                            if reject_unsupported_in_process_server_request(
-                                &request_sender,
-                                &request,
-                            )
-                            .is_err()
-                            {
-                                let _ = handle.shutdown().await;
-                                break;
-                            }
+                            let rejection_sender = request_sender.clone();
+                            let rejection_tx = auth_rejection_tx.clone();
+                            auth_rejection_handle = Some(tokio::spawn(async move {
+                                let result = reject_unsupported_in_process_server_request(
+                                    &rejection_sender,
+                                    &request,
+                                )
+                                .await;
+                                let _ = rejection_tx.send(result).await;
+                            }));
+                            auth_rejection_pending = true;
                             continue;
                         }
 
@@ -618,6 +663,14 @@ impl InProcessAppServerClient {
             }
 
             drop(event_forward_tx);
+            if let Some(mut auth_rejection_handle) = auth_rejection_handle
+                && timeout(SHUTDOWN_TIMEOUT, &mut auth_rejection_handle)
+                    .await
+                    .is_err()
+            {
+                auth_rejection_handle.abort();
+                let _ = auth_rejection_handle.await;
+            }
             if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut event_forward_handle).await {
                 event_forward_handle.abort();
                 let _ = event_forward_handle.await;
@@ -631,6 +684,10 @@ impl InProcessAppServerClient {
         })
     }
 
+    /// Returns a cloneable handle for concurrent requests while this client is alive.
+    ///
+    /// The handle does not own the runtime. Dropping this client closes the
+    /// event owner and terminates the worker even if request handles remain.
     pub fn request_handle(&self) -> InProcessAppServerRequestHandle {
         InProcessAppServerRequestHandle {
             command_tx: self.command_tx.clone(),
@@ -790,15 +847,13 @@ impl InProcessAppServerClient {
     pub async fn shutdown(self) -> IoResult<()> {
         let Self {
             command_tx,
-            event_rx,
+            event_rx: _event_rx,
             worker_handle,
         } = self;
         let mut worker_handle = worker_handle;
-        // Drop the caller-facing receiver before asking the worker to shut
-        // down. That unblocks any pending must-deliver `event_tx.send(..)`
-        // so the worker can reach `handle.shutdown()` instead of timing out
-        // and getting aborted with the runtime still attached.
-        drop(event_rx);
+        // Keep the event owner alive until the worker has received the explicit
+        // shutdown command. Event delivery runs on its own task, so a pending
+        // must-deliver event cannot block this command path.
         let (response_tx, response_rx) = oneshot::channel();
         if command_tx
             .send(ClientCommand::Shutdown { response_tx })
@@ -1471,45 +1526,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closed_event_consumer_with_retained_request_handle_fails_closed() {
+    async fn idle_closed_event_consumer_with_retained_request_handle_fails_closed() {
         let client =
             start_test_client_with_capacity(SessionSource::Exec, /*channel_capacity*/ 1).await;
         let request_handle = client.request_handle();
 
-        let _thread: ThreadStartResponse = client
-            .request_typed(ClientRequest::ThreadStart {
-                request_id: RequestId::Integer(321),
-                params: ThreadStartParams {
-                    ephemeral: Some(true),
-                    ..ThreadStartParams::default()
-                },
-            })
-            .await
-            .expect("thread/start should fill the public event queue");
-        let _import: ExternalAgentConfigImportResponse = client
-            .request_typed(ClientRequest::ExternalAgentConfigImport {
-                request_id: RequestId::Integer(322),
-                params: ExternalAgentConfigImportParams {
-                    migration_items: vec![ExternalAgentConfigMigrationItem {
-                        item_type: ExternalAgentConfigMigrationItemType::Config,
-                        description: "exercise terminal consumer cleanup".to_string(),
-                        cwd: None,
-                        details: None,
-                    }],
-                    source: Some("in-process-test".to_string()),
-                    provider_id: None,
-                    migration_source: None,
-                },
-            })
-            .await
-            .expect("external import should admit its completion notification");
-
         drop(client);
 
+        timeout(Duration::from_secs(2), request_handle.command_tx.closed())
+            .await
+            .expect("idle event-consumer closure should terminate the facade worker");
         let error = timeout(
             Duration::from_secs(2),
             request_handle.request(ClientRequest::ConfigRequirementsRead {
-                request_id: RequestId::Integer(323),
+                request_id: RequestId::Integer(321),
                 params: None,
             }),
         )
@@ -1520,7 +1550,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_auth_rejection_reports_enqueue_failure_after_runtime_shutdown() {
+    async fn unsupported_auth_rejection_reports_closed_runtime_terminal() {
         let codex_home = TempDir::new().expect("temp dir");
         let config = Arc::new(build_test_config_for_codex_home(codex_home.path()).await);
         let state_db = init_state_db(config.as_ref())
@@ -1562,9 +1592,11 @@ mod tests {
         };
 
         reject_unsupported_in_process_server_request(&sender, &auth_request)
+            .await
             .expect("unsupported request rejection should enqueue");
         handle.shutdown().await.expect("runtime should shutdown");
         let error = reject_unsupported_in_process_server_request(&sender, &auth_request)
+            .await
             .expect_err("rejection enqueue failure must remain terminal");
         assert_eq!(error.kind(), ErrorKind::BrokenPipe);
     }
