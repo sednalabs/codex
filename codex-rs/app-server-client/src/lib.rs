@@ -12,8 +12,9 @@
 //!
 //! The facade interposes a worker task between the caller and the underlying
 //! [`InProcessClientHandle`](codex_app_server::in_process::InProcessClientHandle),
-//! bridging async `mpsc` channels on both sides. Queues are bounded so overload
-//! surfaces as channel-full errors rather than unbounded memory growth.
+//! bridging async `mpsc` channels on both sides. Queues are bounded; admitted
+//! required events retain FIFO custody while best-effort loss is surfaced with
+//! [`InProcessServerEvent::Lagged`].
 
 mod path;
 mod remote;
@@ -234,6 +235,22 @@ enum FacadeTerminalReason {
     ConsumerClosed,
 }
 
+fn reject_unsupported_in_process_server_request(
+    request_sender: &codex_app_server::in_process::InProcessClientSender,
+    request: &ServerRequest,
+) -> IoResult<()> {
+    request_sender.fail_server_request(
+        request.id().clone(),
+        JSONRPCErrorError {
+            code: -32000,
+            message:
+                "chatgpt auth token refresh is not supported for in-process app-server clients"
+                    .to_string(),
+            data: None,
+        },
+    )
+}
+
 /// Layered error for [`InProcessAppServerClient::request_typed`].
 ///
 /// This keeps transport failures, server-side JSON-RPC failures, and response
@@ -450,9 +467,9 @@ pub enum AppServerClient {
 impl InProcessAppServerClient {
     /// Starts the in-process runtime and facade worker task.
     ///
-    /// The returned client is ready for requests and event consumption. If the
-    /// internal event queue is saturated later, server requests are rejected
-    /// with overload error instead of being silently dropped.
+    /// The returned client is ready for requests and event consumption.
+    /// Required notifications and ordinary server requests retain FIFO custody
+    /// after admission, even while the consumer queue is saturated.
     pub async fn start(args: InProcessClientStartArgs) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
         let mut handle =
@@ -492,7 +509,7 @@ impl InProcessAppServerClient {
             loop {
                 tokio::select! {
                     terminal_reason = event_terminal_rx.recv() => {
-                        if terminal_reason.is_some() {
+                        if matches!(terminal_reason, Some(FacadeTerminalReason::ConsumerClosed)) {
                             let _ = handle.shutdown().await;
                             break;
                         }
@@ -571,16 +588,11 @@ impl InProcessAppServerClient {
                             let InProcessServerEvent::ServerRequest(request) = event else {
                                 unreachable!("matched in-process server request above");
                             };
-                            if request_sender
-                                .fail_server_request(
-                                    request.id().clone(),
-                                JSONRPCErrorError {
-                                    code: -32000,
-                                    message: "chatgpt auth token refresh is not supported for in-process app-server clients".to_string(),
-                                    data: None,
-                                },
-                                )
-                                .is_err()
+                            if reject_unsupported_in_process_server_request(
+                                &request_sender,
+                                &request,
+                            )
+                            .is_err()
                             {
                                 let _ = handle.shutdown().await;
                                 break;
@@ -764,8 +776,9 @@ impl InProcessAppServerClient {
     /// Returns the next in-process event, or `None` when worker exits.
     ///
     /// Callers are expected to drain this stream promptly. If they fall behind,
-    /// the worker emits [`InProcessServerEvent::Lagged`] markers and may reject
-    /// pending server requests rather than letting approval flows hang.
+    /// the worker emits [`InProcessServerEvent::Lagged`] markers for
+    /// best-effort loss. Admitted server requests remain ordered and owned until
+    /// the caller responds or terminal shutdown cancels them.
     pub async fn next_event(&mut self) -> Option<InProcessServerEvent> {
         self.event_rx.recv().await
     }
@@ -956,7 +969,13 @@ impl AppServerClient {
 mod tests {
     use super::*;
     use codex_app_server_protocol::AccountUpdatedNotification;
+    use codex_app_server_protocol::ChatgptAuthTokensRefreshParams;
+    use codex_app_server_protocol::ChatgptAuthTokensRefreshReason;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
+    use codex_app_server_protocol::ExternalAgentConfigImportParams;
+    use codex_app_server_protocol::ExternalAgentConfigImportResponse;
+    use codex_app_server_protocol::ExternalAgentConfigMigrationItem;
+    use codex_app_server_protocol::ExternalAgentConfigMigrationItemType;
     use codex_app_server_protocol::GetAccountResponse;
     use codex_app_server_protocol::JSONRPCMessage;
     use codex_app_server_protocol::JSONRPCRequest;
@@ -1374,6 +1393,183 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn capacity_one_required_event_keeps_fifo_and_ordinary_responses_live() {
+        let mut client =
+            start_test_client_with_capacity(SessionSource::Exec, /*channel_capacity*/ 1).await;
+
+        let _thread: ThreadStartResponse = client
+            .request_typed(ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(301),
+                params: ThreadStartParams {
+                    ephemeral: Some(true),
+                    ..ThreadStartParams::default()
+                },
+            })
+            .await
+            .expect("thread/start should fill the public event queue");
+
+        let _import: ExternalAgentConfigImportResponse = client
+            .request_typed(ClientRequest::ExternalAgentConfigImport {
+                request_id: RequestId::Integer(302),
+                params: ExternalAgentConfigImportParams {
+                    migration_items: vec![ExternalAgentConfigMigrationItem {
+                        item_type: ExternalAgentConfigMigrationItemType::Config,
+                        description: "exercise required completion delivery".to_string(),
+                        cwd: None,
+                        details: None,
+                    }],
+                    source: Some("in-process-test".to_string()),
+                    provider_id: None,
+                    migration_source: None,
+                },
+            })
+            .await
+            .expect("external import should admit its completion notification");
+
+        let _response = timeout(
+            Duration::from_secs(2),
+            client.request_typed::<ConfigRequirementsReadResponse>(
+                ClientRequest::ConfigRequirementsRead {
+                    request_id: RequestId::Integer(303),
+                    params: None,
+                },
+            ),
+        )
+        .await
+        .expect("ordinary response should remain live behind a required event head")
+        .expect("ordinary request should succeed");
+
+        let mut saw_thread_started = false;
+        let mut saw_import_completed = false;
+        for _ in 0..6 {
+            let event = timeout(Duration::from_secs(2), client.next_event())
+                .await
+                .expect("ordered runtime event should arrive")
+                .expect("event stream should remain open");
+            match event {
+                InProcessServerEvent::ServerNotification(ServerNotification::ThreadStarted(_)) => {
+                    assert!(!saw_import_completed);
+                    saw_thread_started = true;
+                }
+                InProcessServerEvent::ServerNotification(
+                    ServerNotification::ExternalAgentConfigImportCompleted(_),
+                ) => {
+                    assert!(saw_thread_started);
+                    saw_import_completed = true;
+                    break;
+                }
+                InProcessServerEvent::Lagged { .. }
+                | InProcessServerEvent::ServerNotification(_) => {}
+                InProcessServerEvent::ServerRequest(request) => {
+                    panic!("unexpected server request: {request:?}");
+                }
+            }
+        }
+        assert!(saw_import_completed);
+
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn closed_event_consumer_with_retained_request_handle_fails_closed() {
+        let client =
+            start_test_client_with_capacity(SessionSource::Exec, /*channel_capacity*/ 1).await;
+        let request_handle = client.request_handle();
+
+        let _thread: ThreadStartResponse = client
+            .request_typed(ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(321),
+                params: ThreadStartParams {
+                    ephemeral: Some(true),
+                    ..ThreadStartParams::default()
+                },
+            })
+            .await
+            .expect("thread/start should fill the public event queue");
+        let _import: ExternalAgentConfigImportResponse = client
+            .request_typed(ClientRequest::ExternalAgentConfigImport {
+                request_id: RequestId::Integer(322),
+                params: ExternalAgentConfigImportParams {
+                    migration_items: vec![ExternalAgentConfigMigrationItem {
+                        item_type: ExternalAgentConfigMigrationItemType::Config,
+                        description: "exercise terminal consumer cleanup".to_string(),
+                        cwd: None,
+                        details: None,
+                    }],
+                    source: Some("in-process-test".to_string()),
+                    provider_id: None,
+                    migration_source: None,
+                },
+            })
+            .await
+            .expect("external import should admit its completion notification");
+
+        drop(client);
+
+        let error = timeout(
+            Duration::from_secs(2),
+            request_handle.request(ClientRequest::ConfigRequirementsRead {
+                request_id: RequestId::Integer(323),
+                params: None,
+            }),
+        )
+        .await
+        .expect("retained handle should reach terminal cleanup")
+        .expect_err("retained handle must fail after consumer closure");
+        assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+    }
+
+    #[tokio::test]
+    async fn unsupported_auth_rejection_reports_enqueue_failure_after_runtime_shutdown() {
+        let codex_home = TempDir::new().expect("temp dir");
+        let config = Arc::new(build_test_config_for_codex_home(codex_home.path()).await);
+        let state_db = init_state_db(config.as_ref())
+            .await
+            .expect("state db should initialize for in-process test");
+        let handle = codex_app_server::in_process::start(
+            InProcessClientStartArgs {
+                arg0_paths: Arg0DispatchPaths::default(),
+                config,
+                cli_overrides: Vec::new(),
+                loader_overrides: LoaderOverrides::default(),
+                strict_config: false,
+                cloud_config_bundle: CloudConfigBundleLoader::default(),
+                feedback: CodexFeedback::new(),
+                log_db: None,
+                state_db: Some(state_db),
+                environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
+                config_warnings: Vec::new(),
+                session_source: SessionSource::Exec,
+                enable_codex_api_key_env: false,
+                client_name: "codex-app-server-client-test".to_string(),
+                client_version: "0.0.0-test".to_string(),
+                experimental_api: true,
+                mcp_server_openai_form_elicitation: false,
+                opt_out_notification_methods: Vec::new(),
+                channel_capacity: 1,
+            }
+            .into_runtime_start_args(),
+        )
+        .await
+        .expect("runtime should start");
+        let sender = handle.sender();
+        let auth_request = ServerRequest::ChatgptAuthTokensRefresh {
+            request_id: RequestId::String("unsupported-auth".to_string()),
+            params: ChatgptAuthTokensRefreshParams {
+                reason: ChatgptAuthTokensRefreshReason::Unauthorized,
+                previous_account_id: None,
+            },
+        };
+
+        reject_unsupported_in_process_server_request(&sender, &auth_request)
+            .expect("unsupported request rejection should enqueue");
+        handle.shutdown().await.expect("runtime should shutdown");
+        let error = reject_unsupported_in_process_server_request(&sender, &auth_request)
+            .expect_err("rejection enqueue failure must remain terminal");
+        assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+    }
+
+    #[tokio::test]
     async fn forward_in_process_event_preserves_transcript_notifications_under_backpressure() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         event_tx
@@ -1466,7 +1662,7 @@ mod tests {
             .send(InProcessServerEvent::Lagged { skipped: 1 })
             .await
             .expect("initial marker should fill the consumer queue");
-        let request_id = RequestId::String("must-reject".to_string());
+        let request_id = RequestId::String("must-deliver".to_string());
         let request_id_for_forward = request_id.clone();
         let mut forward = tokio::spawn(async move {
             let mut skipped_events = 0usize;
