@@ -96,7 +96,8 @@ pub(crate) enum OutgoingEnvelope {
 /// Sends messages to the client and manages request callbacks.
 pub(crate) struct OutgoingMessageSender {
     next_server_request_id: AtomicI64,
-    sender: mpsc::Sender<OutgoingEnvelope>,
+    event_sender: mpsc::Sender<OutgoingEnvelope>,
+    response_sender: mpsc::Sender<OutgoingEnvelope>,
     request_id_to_callback: Mutex<HashMap<RequestId, PendingCallbackEntry>>,
     /// Incoming requests that are still waiting on a final response or error.
     /// We keep them here because this is where responses, errors, and
@@ -212,12 +213,30 @@ impl OutgoingMessageSender {
         sender: mpsc::Sender<OutgoingEnvelope>,
         analytics_events_client: AnalyticsEventsClient,
     ) -> Self {
+        Self::new_with_senders(sender.clone(), sender, analytics_events_client)
+    }
+
+    pub(crate) fn new_with_senders(
+        event_sender: mpsc::Sender<OutgoingEnvelope>,
+        response_sender: mpsc::Sender<OutgoingEnvelope>,
+        analytics_events_client: AnalyticsEventsClient,
+    ) -> Self {
         Self {
             next_server_request_id: AtomicI64::new(0),
-            sender,
+            event_sender,
+            response_sender,
             request_id_to_callback: Mutex::new(HashMap::new()),
             request_contexts: Mutex::new(HashMap::new()),
             analytics_events_client,
+        }
+    }
+
+    fn sender_for_message(&self, message: &OutgoingMessage) -> &mpsc::Sender<OutgoingEnvelope> {
+        match message {
+            OutgoingMessage::Response(_) | OutgoingMessage::Error(_) => &self.response_sender,
+            OutgoingMessage::Request(_) | OutgoingMessage::AppServerNotification(_) => {
+                &self.event_sender
+            }
         }
     }
 
@@ -308,9 +327,10 @@ impl OutgoingMessageSender {
         }
 
         let outgoing_message = OutgoingMessage::Request(request.clone());
+        let sender = self.sender_for_message(&outgoing_message);
         let send_result = match connection_ids {
             None => {
-                self.sender
+                sender
                     .send(OutgoingEnvelope::Broadcast {
                         message: outgoing_message,
                     })
@@ -320,7 +340,7 @@ impl OutgoingMessageSender {
                 let mut send_error = None;
                 for connection_id in connection_ids {
                     if let Err(err) = self
-                        .sender
+                        .sender_for_message(&outgoing_message)
                         .send(OutgoingEnvelope::ToConnection {
                             connection_id: *connection_id,
                             message: outgoing_message.clone(),
@@ -357,11 +377,12 @@ impl OutgoingMessageSender {
     ) {
         let requests = self.pending_requests_for_thread(thread_id).await;
         for request in requests {
+            let outgoing_message = OutgoingMessage::Request(request);
             if let Err(err) = self
-                .sender
+                .sender_for_message(&outgoing_message)
                 .send(OutgoingEnvelope::ToConnection {
                     connection_id,
-                    message: OutgoingMessage::Request(request),
+                    message: outgoing_message,
                     write_complete_tx: None,
                 })
                 .await
@@ -602,9 +623,9 @@ impl OutgoingMessageSender {
             "app-server event: {notification}"
         );
         let outgoing_message = timestamped_server_notification(notification);
+        let sender = self.sender_for_message(&outgoing_message);
         if connection_ids.is_empty() {
-            if let Err(err) = self
-                .sender
+            if let Err(err) = sender
                 .send(OutgoingEnvelope::Broadcast {
                     message: outgoing_message,
                 })
@@ -615,8 +636,7 @@ impl OutgoingMessageSender {
             return;
         }
         for connection_id in connection_ids {
-            if let Err(err) = self
-                .sender
+            if let Err(err) = sender
                 .send(OutgoingEnvelope::ToConnection {
                     connection_id: *connection_id,
                     message: outgoing_message.clone(),
@@ -637,7 +657,7 @@ impl OutgoingMessageSender {
         tracing::trace!("app-server event: {notification}");
         let outgoing_message = timestamped_server_notification(notification);
         if let Err(err) = self
-            .sender
+            .sender_for_message(&outgoing_message)
             .send(OutgoingEnvelope::ToConnection {
                 connection_id,
                 message: outgoing_message,
@@ -658,7 +678,7 @@ impl OutgoingMessageSender {
         let outgoing_message = timestamped_server_notification(notification);
         let (write_complete_tx, write_complete_rx) = oneshot::channel();
         if let Err(err) = self
-            .sender
+            .sender_for_message(&outgoing_message)
             .send(OutgoingEnvelope::ToConnection {
                 connection_id,
                 message: outgoing_message,
@@ -723,7 +743,8 @@ impl OutgoingMessageSender {
         message: OutgoingMessage,
         message_kind: &'static str,
     ) {
-        let send_fut = self.sender.send(OutgoingEnvelope::ToConnection {
+        let sender = self.sender_for_message(&message);
+        let send_fut = sender.send(OutgoingEnvelope::ToConnection {
             connection_id,
             message,
             write_complete_tx: None,
