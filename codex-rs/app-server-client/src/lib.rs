@@ -136,6 +136,12 @@ fn event_loss_count(event: &InProcessServerEvent) -> usize {
     }
 }
 
+fn record_event_loss(skipped_events: &mut usize, event: &InProcessServerEvent) -> bool {
+    let first_loss = *skipped_events == 0;
+    *skipped_events = skipped_events.saturating_add(event_loss_count(event));
+    first_loss
+}
+
 #[derive(Default)]
 struct InProcessEventDelivery {
     skipped_events: usize,
@@ -191,11 +197,12 @@ impl InProcessEventDelivery {
     }
 
     fn record_loss(&mut self, event: &InProcessServerEvent) {
-        self.skipped_events = self.skipped_events.saturating_add(event_loss_count(event));
-        warn!(
-            skipped = self.skipped_events,
-            "dropping in-process app-server event because consumer queue is full"
-        );
+        if record_event_loss(&mut self.skipped_events, event) {
+            warn!(
+                skipped = self.skipped_events,
+                "dropping in-process app-server event because consumer queue is full"
+            );
+        }
     }
 }
 
@@ -1402,7 +1409,7 @@ mod tests {
         let mut saw_thread_started = false;
         let mut saw_import_completed = false;
         for _ in 0..6 {
-            let event = timeout(Duration::from_secs(2), client.next_event())
+            let event = timeout(Duration::from_secs(2), client.client.next_event())
                 .await
                 .expect("ordered runtime event should arrive")
                 .expect("event stream should remain open");
@@ -1449,6 +1456,21 @@ mod tests {
             .await
             .expect_err("retained handle must fail after consumer closure");
         assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn event_loss_tracking_marks_only_the_first_drop_in_each_burst() {
+        let mut skipped_events = 0;
+        let event = InProcessServerEvent::Lagged { skipped: 3 };
+
+        assert!(record_event_loss(&mut skipped_events, &event));
+        assert_eq!(skipped_events, 3);
+        assert!(!record_event_loss(&mut skipped_events, &event));
+        assert_eq!(skipped_events, 6);
+
+        skipped_events = 0;
+        assert!(record_event_loss(&mut skipped_events, &event));
+        assert_eq!(skipped_events, 3);
     }
 
     #[tokio::test]

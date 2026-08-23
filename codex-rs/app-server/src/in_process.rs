@@ -143,6 +143,12 @@ fn event_loss_count(event: &InProcessServerEvent) -> usize {
     }
 }
 
+fn record_event_loss(skipped_events: &mut usize, event: &InProcessServerEvent) -> bool {
+    let first_loss = *skipped_events == 0;
+    *skipped_events = skipped_events.saturating_add(event_loss_count(event));
+    first_loss
+}
+
 async fn forward_in_process_event(
     event_tx: &mpsc::Sender<InProcessServerEvent>,
     skipped_events: &mut usize,
@@ -166,11 +172,12 @@ async fn forward_in_process_event(
             }) {
                 Ok(()) => *skipped_events = 0,
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    *skipped_events = skipped_events.saturating_add(event_loss_count(&event));
-                    warn!(
-                        skipped = *skipped_events,
-                        "dropping in-process server event (queue full)"
-                    );
+                    if record_event_loss(skipped_events, &event) {
+                        warn!(
+                            skipped = *skipped_events,
+                            "dropping in-process server event (queue full)"
+                        );
+                    }
                     return Ok(());
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => return Err(event),
@@ -185,11 +192,12 @@ async fn forward_in_process_event(
     match event_tx.try_send(event) {
         Ok(()) => Ok(()),
         Err(mpsc::error::TrySendError::Full(event)) => {
-            *skipped_events = skipped_events.saturating_add(event_loss_count(&event));
-            warn!(
-                skipped = *skipped_events,
-                "dropping in-process server event (queue full)"
-            );
+            if record_event_loss(skipped_events, &event) {
+                warn!(
+                    skipped = *skipped_events,
+                    "dropping in-process server event (queue full)"
+                );
+            }
             Ok(())
         }
         Err(mpsc::error::TrySendError::Closed(event)) => Err(event),
@@ -234,15 +242,15 @@ async fn deliver_in_process_events(
         if let Err(undelivered_event) =
             forward_in_process_event(&event_tx, &mut skipped_events, event).await
         {
-            if let InProcessServerEvent::ServerRequest(request) = undelivered_event
-                && let Some(outgoing_message_sender) = outgoing_message_sender.upgrade()
-            {
-                outgoing_message_sender
-                    .notify_client_error(
-                        request.id().clone(),
-                        internal_error("in-process server request consumer is closed"),
-                    )
-                    .await;
+            if let InProcessServerEvent::ServerRequest(request) = undelivered_event {
+                if let Some(outgoing_message_sender) = outgoing_message_sender.upgrade() {
+                    outgoing_message_sender
+                        .notify_client_error(
+                            request.id().clone(),
+                            internal_error("in-process server request consumer is closed"),
+                        )
+                        .await;
+                }
             }
             break;
         }
@@ -1235,6 +1243,21 @@ mod tests {
         response_router
             .await
             .expect("response router should stop cleanly");
+    }
+
+    #[test]
+    fn event_loss_tracking_marks_only_the_first_drop_in_each_burst() {
+        let mut skipped_events = 0;
+        let event = InProcessServerEvent::Lagged { skipped: 3 };
+
+        assert!(record_event_loss(&mut skipped_events, &event));
+        assert_eq!(skipped_events, 3);
+        assert!(!record_event_loss(&mut skipped_events, &event));
+        assert_eq!(skipped_events, 6);
+
+        skipped_events = 0;
+        assert!(record_event_loss(&mut skipped_events, &event));
+        assert_eq!(skipped_events, 3);
     }
 
     #[tokio::test]
