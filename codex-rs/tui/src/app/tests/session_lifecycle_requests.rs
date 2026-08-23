@@ -66,6 +66,39 @@ fn take_backfill_counts(requests: &RecordedRequests) -> (usize, usize, usize) {
     )
 }
 
+fn take_backfill_counts_and_lineage_cursors(
+    requests: &RecordedRequests,
+) -> ((usize, usize, usize), Vec<Option<String>>) {
+    let requests = take_recorded_requests(requests);
+    let counts = (
+        requests
+            .iter()
+            .filter(|request| request.method == "thread/list")
+            .count(),
+        requests
+            .iter()
+            .filter(|request| request.method == "thread/loaded/list")
+            .count(),
+        requests
+            .iter()
+            .filter(|request| request.method == "thread/read")
+            .count(),
+    );
+    let cursors = requests
+        .iter()
+        .filter(|request| request.method == "thread/list")
+        .map(|request| {
+            request
+                .params
+                .as_ref()
+                .and_then(|params| params.get("cursor"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    (counts, cursors)
+}
+
 /// Starts an embedded app server behind a loopback WebSocket proxy that records JSON-RPC methods.
 async fn start_recording_app_server(
     config: &Config,
@@ -487,6 +520,78 @@ fn lineage_backfill_cursor_cycle_is_bounded_per_open() -> Result<()> {
         );
         assert_eq!(second.status, first.status);
         assert_eq!(take_backfill_counts(&requests).0, 4);
+        assert!(app.subagent_backfill_progress.is_none());
+
+        app_server.shutdown().await?;
+        proxy.await??;
+        Ok(())
+    })
+}
+
+#[test]
+fn lineage_backfill_persistent_cycle_refreshes_pathless_v2_child_per_open() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let primary_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        configure_backfill_primary(&mut app, primary_thread_id);
+        let mut listed_child =
+            scripted_lineage_thread(&app.config, child_thread_id, primary_thread_id, 1);
+        listed_child.can_accept_direct_input = None;
+        let mut authoritative_child = listed_child.clone();
+        authoritative_child.can_accept_direct_input = Some(false);
+        let responses = Arc::new(Mutex::new(VecDeque::from([
+            ScriptedLineageResponse::Page(scripted_lineage_page(
+                vec![listed_child.clone()],
+                Some("cycle".to_string()),
+            )),
+            ScriptedLineageResponse::Page(scripted_lineage_page(
+                Vec::new(),
+                Some("cycle".to_string()),
+            )),
+            ScriptedLineageResponse::Page(scripted_lineage_page(
+                vec![listed_child],
+                Some("cycle".to_string()),
+            )),
+            ScriptedLineageResponse::Page(scripted_lineage_page(
+                Vec::new(),
+                Some("cycle".to_string()),
+            )),
+        ])));
+        let thread_read_responses = Arc::new(Mutex::new(VecDeque::from([
+            ScriptedThreadReadResponse::Thread(serde_json::to_value(authoritative_child.clone())?),
+            ScriptedThreadReadResponse::Thread(serde_json::to_value(authoritative_child)?),
+        ])));
+        let (mut app_server, requests, proxy) = start_recording_app_server_with_lineage(
+            &app.config,
+            None,
+            Some(Arc::clone(&responses)),
+            Some(Arc::clone(&thread_read_responses)),
+        )
+        .await?;
+
+        let first = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert_eq!(
+            first.status,
+            crate::app::session_lifecycle::LoadedSubagentBackfillStatus::CursorCycle
+        );
+        assert_eq!(
+            take_backfill_counts_and_lineage_cursors(&requests),
+            ((2, 0, 1), vec![None, Some("cycle".to_string())])
+        );
+        assert!(first.refreshed_thread_ids.contains(&child_thread_id));
+        assert!(app.agent_navigation.get(&child_thread_id).is_some());
+        assert!(app.agent_navigation.is_parent_owned(child_thread_id));
+        assert!(app.subagent_backfill_progress.is_none());
+
+        let second = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert_eq!(second.status, first.status);
+        assert_eq!(
+            take_backfill_counts_and_lineage_cursors(&requests),
+            ((2, 0, 1), vec![None, Some("cycle".to_string())])
+        );
+        assert!(second.refreshed_thread_ids.contains(&child_thread_id));
+        assert!(app.agent_navigation.is_parent_owned(child_thread_id));
         assert!(app.subagent_backfill_progress.is_none());
 
         app_server.shutdown().await?;
