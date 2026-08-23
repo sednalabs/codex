@@ -240,7 +240,13 @@ impl AgentNavigationState {
             && self.threads.len() >= MAX_THREAD_RELATION_DESCENDANTS
         {
             let Some(evicted) = self.order.iter().copied().find(|candidate| {
-                *candidate != thread_id && !protected_thread_ids.contains(candidate)
+                *candidate != thread_id
+                    && !protected_thread_ids.contains(candidate)
+                    && !self.parent_owned_threads.contains(candidate)
+                    && self
+                        .threads
+                        .get(candidate)
+                        .is_some_and(|entry| !entry.is_running)
             }) else {
                 return AgentNavigationUpdate::Rejected;
             };
@@ -306,7 +312,13 @@ impl AgentNavigationState {
             && self.threads.len() >= MAX_THREAD_RELATION_DESCENDANTS
         {
             let Some(evicted) = self.order.iter().copied().find(|candidate| {
-                *candidate != activity.thread_id && !protected_thread_ids.contains(candidate)
+                *candidate != activity.thread_id
+                    && !protected_thread_ids.contains(candidate)
+                    && !self.parent_owned_threads.contains(candidate)
+                    && self
+                        .threads
+                        .get(candidate)
+                        .is_some_and(|entry| !entry.is_running)
             }) else {
                 return AgentNavigationUpdate::Rejected;
             };
@@ -891,6 +903,64 @@ mod tests {
                 created_at: Some(1),
                 updated_at: Some(4),
             })
+        );
+    }
+
+    #[test]
+    fn retaining_upsert_never_evicts_running_or_parent_owned_threads() {
+        let mut state = AgentNavigationState::default();
+        let thread_ids = (0..MAX_THREAD_RELATION_DESCENDANTS)
+            .map(|_| ThreadId::new())
+            .collect::<Vec<_>>();
+        for thread_id in &thread_ids {
+            assert!(state.upsert(*thread_id, None, None, /*is_closed*/ false, None, None,));
+            state.mark_running(*thread_id);
+        }
+        let parent_owned_thread_id = thread_ids[0];
+        state.mark_parent_owned(parent_owned_thread_id);
+        state.set_running(parent_owned_thread_id, /*is_running*/ false);
+
+        let rejected_thread_id = ThreadId::new();
+        assert_eq!(
+            state.upsert_retaining(
+                rejected_thread_id,
+                None,
+                None,
+                /*is_closed*/ false,
+                None,
+                None,
+                &[],
+            ),
+            AgentNavigationUpdate::Rejected
+        );
+        assert!(state.get(&rejected_thread_id).is_none());
+        assert!(state.get(&parent_owned_thread_id).is_some());
+        assert!(state.is_parent_owned(parent_owned_thread_id));
+
+        let closed_candidate = thread_ids[1];
+        state.mark_closed(closed_candidate);
+        let admitted_thread_id = ThreadId::new();
+        assert_eq!(
+            state.upsert_retaining(
+                admitted_thread_id,
+                None,
+                None,
+                /*is_closed*/ false,
+                None,
+                None,
+                &[],
+            ),
+            AgentNavigationUpdate::Accepted {
+                evicted: Some(closed_candidate),
+            }
+        );
+        assert!(state.get(&closed_candidate).is_none());
+        assert!(state.get(&admitted_thread_id).is_some());
+        assert!(state.get(&parent_owned_thread_id).is_some());
+        assert!(state.is_parent_owned(parent_owned_thread_id));
+        assert_eq!(
+            state.tracked_thread_ids().len(),
+            MAX_THREAD_RELATION_DESCENDANTS
         );
     }
 
