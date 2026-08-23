@@ -2,9 +2,8 @@
 //!
 //! When the TUI resumes or switches to an existing thread, it needs to populate
 //! `AgentNavigationState` and `ChatWidget` metadata for every subagent that was spawned during
-//! that thread's lifetime. The app server exposes a flat list of currently loaded threads via
-//! `thread/loaded/list`, but the TUI must figure out which of those are descendants of the
-//! primary thread.
+//! that thread's lifetime. The app server returns ancestor-filtered lineage pages, and the TUI
+//! validates their spawn edges before adding them to the selected primary thread's navigation.
 //!
 //! This module provides the pure, synchronous tree-walk that turns that flat list into the filtered
 //! set of descendants. It intentionally has no async, no I/O, and no side effects so it can be

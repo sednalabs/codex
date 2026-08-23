@@ -1072,7 +1072,7 @@
         "codex-rs/tui/src/status/rate_limits.rs",
         "codex-rs/tui/src/status/tests.rs"
       ],
-      "behavior": "Per-thread session state, queued interaction semantics, active-turn status labels, and selected-turn clipboard success or failure feedback stay stable across the TUI surfaces. Fork and fresh-session lifecycle paths avoid redundant loaded-subagent metadata reads, while resume and picker refresh reuse discovered status without overriding downstream live-channel liveness or V1/V2 input ownership. Replay routing updates active-turn and side-parent state before omitting replay-irrelevant large notifications, while native computer-use completion items remain replayable and downstream realtime audio continues through the dedicated transport. Finalized rich Markdown and plan rendering may cache width/theme/palette-derived lines, but mutable status and visualization cells remain dynamically measured; raw transcript and selected-turn copy still read canonical source and visualization directives remain uncached. Selected-turn copy reads finalized raw markdown from source-backed transcript cells inside the selected prompt boundary instead of maintaining a parallel rollback cache, and active status shows \"Compacting context\" while a context compaction item is running. The isolated codex-realtime-webrtc crate retains the macOS offer/answer, audio-track, and local-level transport used by downstream realtime voice while unsupported targets fail explicitly.",
+      "behavior": "Per-thread session state, queued interaction semantics, active-turn status labels, and selected-turn clipboard success or failure feedback stay stable across the TUI surfaces. Fork and fresh-session lifecycle paths avoid redundant loaded-subagent metadata reads, while resume and picker refresh page through only the selected primary's persisted descendant lineage and reuse discovered status without overriding downstream live-channel liveness or V1/V2 input ownership. Replay routing updates active-turn and side-parent state before omitting replay-irrelevant large notifications, while native computer-use completion items remain replayable and downstream realtime audio continues through the dedicated transport. Finalized rich Markdown and plan rendering may cache width/theme/palette-derived lines, but mutable status and visualization cells remain dynamically measured; raw transcript and selected-turn copy still read canonical source and visualization directives remain uncached. Selected-turn copy reads finalized raw markdown from source-backed transcript cells inside the selected prompt boundary instead of maintaining a parallel rollback cache, and active status shows \"Compacting context\" while a context compaction item is running. The isolated codex-realtime-webrtc crate retains the macOS offer/answer, audio-track, and local-level transport used by downstream realtime voice while unsupported targets fail explicitly.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1097,6 +1097,7 @@
         "transcript_overlay_remeasures_dynamic_cells_on_same_width_redraw",
         "transcript_overlay_remeasures_status_after_rate_limit_refresh",
         "session_lifecycle_avoids_redundant_subagent_metadata_reads",
+        "open_agent_picker_bounds_metadata_to_primary_lineage",
         "selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children",
         "upsert_preserves_running_state_until_closed",
         "thread_event_store_skips_large_replay_irrelevant_notifications",
@@ -2707,6 +2708,7 @@
         "side_fork_excludes_turns_without_clearing_regular_ephemeral_fork",
         "handle_start_side_seeds_navigation_before_thread_started",
         "session_lifecycle_avoids_redundant_subagent_metadata_reads",
+        "open_agent_picker_bounds_metadata_to_primary_lineage",
         "selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children",
         "slash_quit_in_side_conversation_requests_side_exit",
         "slash_exit_in_side_conversation_requests_side_exit",
