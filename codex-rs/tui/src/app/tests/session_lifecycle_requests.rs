@@ -1218,6 +1218,10 @@ fn lineage_retention_cap_is_exact_and_idempotent_across_reopen() -> Result<()> {
                 .iter()
                 .filter(|thread_id| app.agent_navigation.get(thread_id).is_some())
                 .count(),
+            RETAINED_LIMIT - 1
+        );
+        assert_eq!(
+            app.agent_navigation.tracked_thread_ids().len(),
             RETAINED_LIMIT
         );
         assert!(
@@ -1244,7 +1248,67 @@ fn lineage_retention_cap_is_exact_and_idempotent_across_reopen() -> Result<()> {
                 .iter()
                 .filter(|thread_id| app.agent_navigation.get(thread_id).is_some())
                 .count(),
+            RETAINED_LIMIT - 1
+        );
+        assert_eq!(
+            app.agent_navigation.tracked_thread_ids().len(),
             RETAINED_LIMIT
+        );
+        assert!(responses.lock().expect("lineage response lock").is_empty());
+
+        app_server.shutdown().await?;
+        proxy.await??;
+        Ok(())
+    })
+}
+
+#[test]
+fn unique_relation_cursor_over_cap_stops_pagination_across_reopen() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let primary_thread_id = ThreadId::new();
+        configure_backfill_primary(&mut app, primary_thread_id);
+        let mut progress =
+            crate::app::session_lifecycle::LoadedSubagentBackfillProgress::new(primary_thread_id);
+        progress.seed_relation_cursors_to_limit();
+        app.subagent_backfill_progress = Some(progress);
+        let responses = Arc::new(Mutex::new(VecDeque::from([ScriptedLineageResponse::Page(
+            scripted_lineage_page(Vec::new(), Some("over-limit".to_string())),
+        )])));
+        let (mut app_server, requests, proxy) = start_recording_app_server_with_lineage(
+            &app.config,
+            None,
+            Some(Arc::clone(&responses)),
+            None,
+        )
+        .await?;
+
+        let first = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert!(first.completed);
+        assert_eq!(
+            first.status,
+            crate::app::session_lifecycle::LoadedSubagentBackfillStatus::Truncated
+        );
+        assert_eq!(take_backfill_counts(&requests), (1, 0, 0));
+        assert_eq!(
+            app.subagent_backfill_progress
+                .as_ref()
+                .map(|progress| progress.retained_relation_cursor_count()),
+            Some(crate::app::loaded_threads::MAX_RETAINED_SUBAGENT_LINEAGE)
+        );
+
+        let second = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert!(second.completed);
+        assert_eq!(
+            second.status,
+            crate::app::session_lifecycle::LoadedSubagentBackfillStatus::Truncated
+        );
+        assert_eq!(take_backfill_counts(&requests), (0, 0, 0));
+        assert_eq!(
+            app.subagent_backfill_progress
+                .as_ref()
+                .map(|progress| progress.retained_relation_cursor_count()),
+            Some(crate::app::loaded_threads::MAX_RETAINED_SUBAGENT_LINEAGE)
         );
         assert!(responses.lock().expect("lineage response lock").is_empty());
 

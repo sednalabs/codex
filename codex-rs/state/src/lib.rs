@@ -97,3 +97,9 @@ pub const DB_INIT_METRIC: &str = "codex.sqlite.init.count";
 pub const DB_INIT_DURATION_METRIC: &str = "codex.sqlite.init.duration_ms";
 /// Rollout fallback attempts. Tags: [caller, reason]
 pub const DB_FALLBACK_METRIC: &str = "codex.sqlite.fallback.count";
+
+/// Maximum descendant rows retained by thread-relation consumers.
+///
+/// Recursive relation queries admit one additional row as a truncation sentinel so callers can
+/// expose every retained descendant while still detecting that more lineage exists.
+pub const MAX_THREAD_RELATION_DESCENDANTS: usize = 3_200;

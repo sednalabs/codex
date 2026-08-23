@@ -987,6 +987,11 @@ impl ChatWidget {
         thread_id: ThreadId,
         metadata: AgentMetadata,
     ) {
+        if !self.collab_agent_metadata.contains_key(&thread_id)
+            && self.collab_agent_metadata.len() >= codex_state::MAX_THREAD_RELATION_DESCENDANTS
+        {
+            return;
+        }
         self.collab_agent_metadata.insert(thread_id, metadata);
     }
 
@@ -996,6 +1001,16 @@ impl ChatWidget {
             .get(&thread_id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn collab_agent_metadata_count(&self) -> usize {
+        self.collab_agent_metadata.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_collab_agent_metadata(&self, thread_id: ThreadId) -> bool {
+        self.collab_agent_metadata.contains_key(&thread_id)
     }
 
     fn restore_retry_status_header_if_present(&mut self) {

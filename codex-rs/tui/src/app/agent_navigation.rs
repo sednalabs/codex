@@ -25,6 +25,7 @@ use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut;
 use crate::multi_agents::previous_agent_shortcut;
 use codex_protocol::ThreadId;
+use codex_state::MAX_THREAD_RELATION_DESCENDANTS;
 use ratatui::text::Span;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -78,7 +79,9 @@ impl AgentNavigationState {
 
     /// Marks a spawned child thread as view-only for direct user instructions.
     pub(crate) fn mark_parent_owned(&mut self, thread_id: ThreadId) {
-        self.parent_owned_threads.insert(thread_id);
+        if self.threads.contains_key(&thread_id) {
+            self.parent_owned_threads.insert(thread_id);
+        }
     }
 
     /// Returns whether the picker cache currently knows about any threads.
@@ -94,6 +97,8 @@ impl AgentNavigationState {
     /// The key invariant of this module is enforced here: a thread id is appended to `order` only
     /// the first time it is seen. Later updates may change nickname, role, or closed state, but
     /// they must not move the thread in the cycle or keyboard navigation would feel unstable.
+    /// Returns `false` only when a new unique id would exceed the shared retained-lineage cap;
+    /// existing entries always remain updateable.
     pub(crate) fn upsert(
         &mut self,
         thread_id: ThreadId,
@@ -102,7 +107,7 @@ impl AgentNavigationState {
         is_closed: bool,
         created_at: Option<i64>,
         updated_at: Option<i64>,
-    ) {
+    ) -> bool {
         let previous_is_running = self
             .threads
             .get(&thread_id)
@@ -122,10 +127,19 @@ impl AgentNavigationState {
                 created_at,
                 updated_at,
             },
-        );
+        )
     }
 
-    pub(crate) fn upsert_with_path(&mut self, thread_id: ThreadId, entry: AgentPickerThreadEntry) {
+    pub(crate) fn upsert_with_path(
+        &mut self,
+        thread_id: ThreadId,
+        entry: AgentPickerThreadEntry,
+    ) -> bool {
+        if !self.threads.contains_key(&thread_id)
+            && self.threads.len() >= MAX_THREAD_RELATION_DESCENDANTS
+        {
+            return false;
+        }
         let existing = self.threads.get(&thread_id).cloned();
         if !self.threads.contains_key(&thread_id) {
             self.order.push(thread_id);
@@ -161,9 +175,15 @@ impl AgentNavigationState {
                 ..entry
             },
         );
+        true
     }
 
-    pub(crate) fn record_sub_agent_activity(&mut self, activity: SubAgentActivityDisplay) {
+    pub(crate) fn record_sub_agent_activity(&mut self, activity: SubAgentActivityDisplay) -> bool {
+        if !self.threads.contains_key(&activity.thread_id)
+            && self.threads.len() >= MAX_THREAD_RELATION_DESCENDANTS
+        {
+            return false;
+        }
         if !self.threads.contains_key(&activity.thread_id) {
             self.order.push(activity.thread_id);
         }
@@ -199,6 +219,7 @@ impl AgentNavigationState {
             entry.is_running = false;
             self.stopped_threads.insert(activity.thread_id);
         }
+        true
     }
 
     pub(crate) fn update_identity(
@@ -239,6 +260,9 @@ impl AgentNavigationState {
     }
 
     pub(crate) fn mark_stopped(&mut self, thread_id: ThreadId) {
+        if !self.threads.contains_key(&thread_id) {
+            return;
+        }
         self.stopped_threads.insert(thread_id);
         self.set_running(thread_id, /*is_running*/ false);
     }
@@ -770,6 +794,61 @@ mod tests {
                 created_at: Some(1),
                 updated_at: Some(4),
             })
+        );
+    }
+
+    #[test]
+    fn navigation_cap_rejects_new_ids_but_allows_existing_activity_updates() {
+        let mut state = AgentNavigationState::default();
+        let retained_ids = (0..MAX_THREAD_RELATION_DESCENDANTS)
+            .map(|_| ThreadId::new())
+            .collect::<Vec<_>>();
+        for thread_id in retained_ids.iter().copied() {
+            assert!(state.upsert(
+                thread_id, None, None, /*is_closed*/ false, /*created_at*/ None,
+                /*updated_at*/ None,
+            ));
+        }
+        let rejected_thread_id = ThreadId::new();
+
+        assert!(!state.upsert(
+            rejected_thread_id,
+            None,
+            None,
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        ));
+        assert!(!state.record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: rejected_thread_id,
+            agent_path: "/root/rejected".to_string(),
+            model: None,
+            reasoning_effort: None,
+            is_running_hint: true,
+        }));
+        assert!(state.record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: retained_ids[0],
+            agent_path: "/root/updated".to_string(),
+            model: Some("gpt-test".to_string()),
+            reasoning_effort: None,
+            is_running_hint: true,
+        }));
+
+        assert_eq!(
+            state.tracked_thread_ids().len(),
+            MAX_THREAD_RELATION_DESCENDANTS
+        );
+        assert_eq!(state.get(&rejected_thread_id), None);
+        assert_eq!(
+            state
+                .get(&retained_ids[0])
+                .and_then(|entry| entry.agent_path.as_deref()),
+            Some("/root/updated")
+        );
+        assert!(
+            state
+                .get(&retained_ids[0])
+                .is_some_and(|entry| entry.is_running)
         );
     }
 

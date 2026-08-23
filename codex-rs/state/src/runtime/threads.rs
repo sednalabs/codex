@@ -1229,12 +1229,21 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
 "#,
         );
         builder.push_bind(ancestor_thread_id.to_string());
+        // Keep the recursive work table itself bounded before the outer sort and pagination. The
+        // extra tuple is the sentinel that lets a 3,200-row consumer detect truncation.
         builder.push(
             r#"
     UNION
     SELECT edge.child_thread_id, edge.parent_thread_id
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    ORDER BY 1, 2
+    LIMIT
+"#,
+        );
+        builder.push(crate::MAX_THREAD_RELATION_DESCENDANTS.saturating_add(1));
+        builder.push(
+            r#"
 )
 "#,
         );
@@ -2465,6 +2474,189 @@ mod tests {
                 .iter()
                 .all(|item| item.id != grandchild_id),
             "empty-preview descendants stay hidden from the global history list"
+        );
+    }
+
+    #[tokio::test]
+    async fn descendant_relation_cte_retains_capacity_plus_one_deterministic_sentinel() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await
+        .expect("state db should initialize");
+        let ancestor_thread_id = ThreadId::from_string("ffffffff-ffff-ffff-ffff-ffffffffffff")
+            .expect("valid ancestor thread id");
+        let reachable_count = crate::MAX_THREAD_RELATION_DESCENDANTS + 2;
+        let template = test_thread_metadata(&codex_home, ThreadId::new(), codex_home.clone());
+        sqlx::query(
+            r#"
+WITH RECURSIVE sequence(value) AS (
+    SELECT 1
+    UNION ALL
+    SELECT value + 1 FROM sequence WHERE value < ?
+)
+INSERT INTO threads (
+    id,
+    rollout_path,
+    created_at,
+    updated_at,
+    recency_at,
+    created_at_ms,
+    updated_at_ms,
+    recency_at_ms,
+    source,
+    history_mode,
+    model_provider,
+    cwd,
+    cli_version,
+    title,
+    preview,
+    sandbox_policy,
+    approval_mode,
+    first_user_message
+)
+SELECT
+    printf('00000000-0000-0000-0001-%012d', value),
+    printf('/tmp/relation-%d.jsonl', value),
+    1700000000,
+    1700000000,
+    1700000000,
+    1700000000000,
+    1700000000000,
+    1700000000000,
+    'cli',
+    'legacy',
+    'test-provider',
+    '/tmp',
+    '0.0.0',
+    '',
+    'bounded relation row',
+    ?,
+    ?,
+    'bounded relation row'
+FROM sequence
+            "#,
+        )
+        .bind(i64::try_from(reachable_count).expect("reachable count fits i64"))
+        .bind(template.sandbox_policy)
+        .bind(template.approval_mode)
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("bounded relation thread rows should insert");
+        sqlx::query(
+            r#"
+WITH RECURSIVE sequence(value) AS (
+    SELECT 1
+    UNION ALL
+    SELECT value + 1 FROM sequence WHERE value < ?
+)
+INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status)
+SELECT
+    CASE
+        WHEN value = 1 THEN ?
+        ELSE printf('00000000-0000-0000-0001-%012d', value - 1)
+    END,
+    printf('00000000-0000-0000-0001-%012d', value),
+    'open'
+FROM sequence
+            "#,
+        )
+        .bind(i64::try_from(reachable_count).expect("reachable count fits i64"))
+        .bind(ancestor_thread_id.to_string())
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("bounded relation edges should insert");
+        let descendant_id = |value: usize| {
+            ThreadId::from_string(&format!("00000000-0000-0000-0001-{value:012}"))
+                .expect("generated descendant id should be valid")
+        };
+        let filters = |anchor| ThreadFilterOptions {
+            archived_only: false,
+            allowed_sources: &[],
+            model_providers: None,
+            cwd_filters: None,
+            is_pinned: None,
+            anchor,
+            sort_key: SortKey::CreatedAt,
+            sort_direction: SortDirection::Desc,
+            search_term: None,
+        };
+
+        let bounded = runtime
+            .list_threads_by_relation(
+                crate::MAX_THREAD_RELATION_DESCENDANTS + 1,
+                crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id),
+                filters(None),
+            )
+            .await
+            .expect("bounded descendant relation should load");
+        assert_eq!(
+            (
+                bounded.items.len(),
+                bounded.num_scanned_rows,
+                bounded.parent_thread_ids.len(),
+                bounded.items.first().map(|item| item.id),
+                bounded.items.last().map(|item| item.id),
+                bounded.next_anchor,
+            ),
+            (
+                crate::MAX_THREAD_RELATION_DESCENDANTS + 1,
+                crate::MAX_THREAD_RELATION_DESCENDANTS + 1,
+                crate::MAX_THREAD_RELATION_DESCENDANTS + 1,
+                Some(descendant_id(crate::MAX_THREAD_RELATION_DESCENDANTS + 1)),
+                Some(descendant_id(1)),
+                None,
+            )
+        );
+        assert!(
+            bounded
+                .items
+                .iter()
+                .all(|item| item.id != descendant_id(reachable_count)),
+            "the deterministic truncation sentinel must exclude rows beyond the recursive bound"
+        );
+
+        let first_small_page = runtime
+            .list_threads_by_relation(
+                /*page_size*/ 2,
+                crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id),
+                filters(None),
+            )
+            .await
+            .expect("first small descendant page should load");
+        let second_small_page = runtime
+            .list_threads_by_relation(
+                /*page_size*/ 2,
+                crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id),
+                filters(first_small_page.next_anchor.as_ref()),
+            )
+            .await
+            .expect("second small descendant page should load");
+        assert_eq!(
+            (
+                first_small_page
+                    .items
+                    .iter()
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>(),
+                second_small_page
+                    .items
+                    .iter()
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                vec![
+                    descendant_id(crate::MAX_THREAD_RELATION_DESCENDANTS + 1),
+                    descendant_id(crate::MAX_THREAD_RELATION_DESCENDANTS),
+                ],
+                vec![
+                    descendant_id(crate::MAX_THREAD_RELATION_DESCENDANTS - 1),
+                    descendant_id(crate::MAX_THREAD_RELATION_DESCENDANTS - 2),
+                ],
+            )
         );
     }
 

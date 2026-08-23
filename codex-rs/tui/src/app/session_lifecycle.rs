@@ -10,6 +10,7 @@ use crate::app_server_session::thread_blocks_direct_input;
 use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_selected_description;
+use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
@@ -55,7 +56,7 @@ impl LoadedSubagentFallbackProgress {
 }
 
 impl LoadedSubagentBackfillProgress {
-    fn new(primary_thread_id: ThreadId) -> Self {
+    pub(crate) fn new(primary_thread_id: ThreadId) -> Self {
         Self {
             primary_thread_id,
             next_cursor: None,
@@ -97,6 +98,18 @@ impl LoadedSubagentBackfillProgress {
     pub(crate) fn retained_thread_count(&self) -> usize {
         self.retained_thread_ids.len()
     }
+
+    #[cfg(test)]
+    pub(crate) fn seed_relation_cursors_to_limit(&mut self) {
+        self.seen_cursors = (0..MAX_RETAINED_SUBAGENT_LINEAGE)
+            .map(|index| format!("cursor-{index}"))
+            .collect();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_relation_cursor_count(&self) -> usize {
+        self.seen_cursors.len()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -130,6 +143,37 @@ pub(super) enum ThreadLivenessRefreshOutcome {
     Refreshed,
     TerminalPruned,
     RetryableError,
+}
+
+fn agent_picker_subtitle(
+    lineage_truncated: bool,
+    picker_has_more: bool,
+    backfill_status: &LoadedSubagentBackfillStatus,
+) -> String {
+    let base = AgentNavigationState::picker_subtitle();
+    let backfill_incomplete = !matches!(
+        backfill_status,
+        LoadedSubagentBackfillStatus::Complete | LoadedSubagentBackfillStatus::Truncated
+    );
+    if lineage_truncated && backfill_incomplete {
+        return format!(
+            "{base} Lineage retained at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent safety limit; additional rows were omitted, and retained rows still need refresh. Reopen to continue or retry."
+        );
+    }
+    if lineage_truncated {
+        return format!(
+            "{base} Lineage retained at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent safety limit; additional rows were omitted."
+        );
+    }
+    if picker_has_more {
+        return format!(
+            "{base} Showing a bounded slice; reopen to continue through retained agents."
+        );
+    }
+    if backfill_incomplete {
+        return format!("{base} Lineage refresh is incomplete; reopen to retry.");
+    }
+    base
 }
 
 impl App {
@@ -313,24 +357,11 @@ impl App {
 
         self.chat_widget.show_selection_view(SelectionViewParams {
             title: Some("Subagents".to_string()),
-            subtitle: Some(if lineage_truncated {
-                format!(
-                    "{} Lineage retained at the {MAX_RETAINED_SUBAGENT_LINEAGE}-agent safety limit; additional rows were omitted.",
-                    AgentNavigationState::picker_subtitle()
-                )
-            } else if picker_has_more {
-                format!(
-                    "{} Showing a bounded slice; reopen to continue through retained agents.",
-                    AgentNavigationState::picker_subtitle()
-                )
-            } else if backfill.status != LoadedSubagentBackfillStatus::Complete {
-                format!(
-                    "{} Lineage refresh is incomplete; reopen to retry.",
-                    AgentNavigationState::picker_subtitle()
-                )
-            } else {
-                AgentNavigationState::picker_subtitle()
-            }),
+            subtitle: Some(agent_picker_subtitle(
+                lineage_truncated,
+                picker_has_more,
+                &backfill.status,
+            )),
             footer_hint: Some(standard_popup_hint_line()),
             is_searchable: true,
             search_placeholder: Some("Search agents or type 'closed'".to_string()),
@@ -409,29 +440,30 @@ impl App {
     /// Updates cached picker metadata and then mirrors any visible-label change into the footer.
     ///
     /// These two writes stay paired so the picker rows and contextual footer continue to describe
-    /// the same displayed thread after nickname or role updates.
+    /// the same displayed thread after nickname or role updates. Returns `false` when a new thread
+    /// would exceed the navigation cap, in which case no ChatWidget metadata is added.
     pub(super) fn upsert_agent_picker_thread(
         &mut self,
         thread_id: ThreadId,
         agent_nickname: Option<String>,
         agent_role: Option<String>,
         is_closed: bool,
-    ) {
-        self.chat_widget.set_collab_agent_metadata(
+    ) -> bool {
+        if !self.agent_navigation.upsert(
             thread_id,
             agent_nickname.clone(),
             agent_role.clone(),
-        );
-        self.agent_navigation.upsert(
-            thread_id,
-            agent_nickname,
-            agent_role,
             is_closed,
             /*created_at*/ None,
             /*updated_at*/ None,
-        );
+        ) {
+            return false;
+        }
+        self.chat_widget
+            .set_collab_agent_metadata(thread_id, agent_nickname, agent_role);
         self.sync_agent_picker_identity(thread_id);
         self.sync_active_agent_label();
+        true
     }
 
     pub(super) fn sync_agent_picker_identity(&mut self, thread_id: ThreadId) {
@@ -1094,6 +1126,13 @@ impl App {
                         had_cursor_cycle = true;
                         break;
                     }
+                    LineagePageAdvance::Truncated => {
+                        progress.seen_cursors = page_budget.into_seen_cursors();
+                        progress.next_cursor = None;
+                        progress.listing_complete = true;
+                        progress.truncated = true;
+                        break;
+                    }
                 }
             }
         }
@@ -1157,6 +1196,13 @@ impl App {
                             fallback.next_cursor = None;
                             fallback.seen_cursors.clear();
                             had_fallback_cursor_cycle = true;
+                            break;
+                        }
+                        LineagePageAdvance::Truncated => {
+                            fallback.seen_cursors = page_budget.into_seen_cursors();
+                            fallback.next_cursor = None;
+                            fallback.listing_complete = true;
+                            progress.truncated = true;
                             break;
                         }
                     }
@@ -1356,15 +1402,18 @@ impl App {
             .get(&thread.thread_id)
             .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
         let is_closed = !has_live_channel && thread.is_closed;
-        if thread.blocks_direct_input {
-            self.agent_navigation.mark_parent_owned(thread.thread_id);
-        }
-        self.upsert_agent_picker_thread(
+        let accepted = self.upsert_agent_picker_thread(
             thread.thread_id,
             thread.agent_nickname,
             thread.agent_role,
             is_closed,
         );
+        if !accepted {
+            return;
+        }
+        if thread.blocks_direct_input {
+            self.agent_navigation.mark_parent_owned(thread.thread_id);
+        }
         self.agent_navigation
             .set_agent_path(thread.thread_id, agent_path);
         if !has_live_channel {
@@ -1672,5 +1721,18 @@ mod tests {
 
         assert!(App::can_fallback_from_include_turns_error(&unmaterialized));
         assert!(App::can_fallback_from_include_turns_error(&ephemeral));
+    }
+
+    #[test]
+    fn truncated_incomplete_picker_subtitle_reports_omission_and_retry() {
+        let subtitle = agent_picker_subtitle(
+            /*lineage_truncated*/ true,
+            /*picker_has_more*/ false,
+            &LoadedSubagentBackfillStatus::RetryableError,
+        );
+
+        assert!(subtitle.contains("additional rows were omitted"));
+        assert!(subtitle.contains("retained rows still need refresh"));
+        assert!(subtitle.contains("Reopen to continue or retry"));
     }
 }
