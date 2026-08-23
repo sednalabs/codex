@@ -205,8 +205,8 @@ async fn forward_in_process_event(
             && matches!(
                 &event,
                 InProcessServerEvent::ServerNotification(
-                    ServerNotification::ExternalAgentConfigImportCompleted(_)
-                )
+                    ServerNotification::TurnCompleted(notification)
+                ) if notification.turn.id == "blocked-required-delivery"
             )
         {
             let mut send = Box::pin(event_tx.send(event));
@@ -987,9 +987,6 @@ mod tests {
     use codex_app_server_protocol::ClientInfo;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
-    use codex_app_server_protocol::ExternalAgentConfigImportParams;
-    use codex_app_server_protocol::ExternalAgentConfigMigrationItem;
-    use codex_app_server_protocol::ExternalAgentConfigMigrationItemType;
     use codex_app_server_protocol::ReasoningSummaryPartAddedNotification;
     use codex_app_server_protocol::ServerNotificationEnvelope;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
@@ -1596,43 +1593,43 @@ mod tests {
         .await
         .expect("thread/start should saturate the retained event queue");
 
-        request_retrying_transient_overload(
-            &client,
-            ClientRequest::ExternalAgentConfigImport {
-                request_id: RequestId::Integer(21),
-                params: ExternalAgentConfigImportParams {
-                    migration_items: vec![ExternalAgentConfigMigrationItem {
-                        item_type: ExternalAgentConfigMigrationItemType::Config,
-                        description: "saturate required lower-layer delivery".to_string(),
-                        cwd: None,
-                        details: None,
-                    }],
-                    source: Some("in-process-test".to_string()),
-                    provider_id: None,
-                    migration_source: None,
-                },
-            },
-        )
-        .await
-        .expect("external import transport should remain live")
-        .expect("external import should admit its required completion event");
+        let sender = client.sender();
+        let request_sequence = tokio::spawn(async move {
+            sender
+                .server_request_after_required_event(
+                    turn_completed_notification("blocked-required-delivery"),
+                    codex_app_server_protocol::ServerRequestPayload::ToolRequestUserInput(
+                        ToolRequestUserInputParams {
+                            thread_id: "thread-1".to_string(),
+                            turn_id: "turn-1".to_string(),
+                            item_id: "request-user-input-1".to_string(),
+                            questions: Vec::new(),
+                            is_blocking: true,
+                            auto_resolution_ms: None,
+                        },
+                    ),
+                )
+                .await
+        });
 
         timeout(
             Duration::from_secs(1),
             required_event_delivery_probe.notified(),
         )
         .await
-        .expect("required completion should reach the blocked event route");
+        .expect("required event should reach the blocked event route");
         assert_eq!(
             client.event_rx.capacity(),
             0,
-            "required completion remains blocked behind the retained event"
+            "required event remains blocked behind the retained event"
         );
 
         timeout(Duration::from_secs(2), client.shutdown())
             .await
             .expect("real lower-layer shutdown should close saturated event delivery promptly")
             .expect("in-process runtime should shutdown cleanly");
+        request_sequence.abort();
+        let _ = request_sequence.await;
     }
 
     #[tokio::test]
