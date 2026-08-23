@@ -35,8 +35,10 @@
 //!
 //! This module provides the low-level runtime handle ([`InProcessClientHandle`]).
 //! Higher-level callers (TUI, exec) should go through `codex-app-server-client`,
-//! which wraps this module behind a worker task with async request/response
-//! helpers, surface-specific startup policy, and bounded shutdown.
+//! which provides a separate worker-task facade with its own request/event
+//! scheduling and shutdown contract. This runtime slice does not assert those
+//! facade guarantees; the facade parity and regression coverage are a later
+//! delivery stage.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -445,8 +447,9 @@ impl InProcessClientSender {
 /// Handle used by an in-process client to call app-server and consume events.
 ///
 /// This is the low-level runtime handle. Higher-level callers should usually go
-/// through `codex-app-server-client`, which adds worker-task buffering,
-/// request/response helpers, and surface-specific startup policy.
+/// through `codex-app-server-client`. Its worker-task buffering,
+/// request/response helpers, and surface-specific startup policy are a
+/// separate facade contract and are not established by this runtime slice.
 pub struct InProcessClientHandle {
     client: InProcessClientSender,
     event_rx: mpsc::Receiver<InProcessServerEvent>,
@@ -1504,6 +1507,13 @@ mod tests {
         let client =
             start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
 
+        // `start` queues the initialized notification before returning. Wait
+        // for the runtime to consume that startup command before exercising the
+        // capacity-one delivery path; otherwise the first request can race the
+        // startup handshake and fail with `WouldBlock` before the event queue
+        // is saturated.
+        wait_for_channel_capacity(&client.client.client_tx, /*expected*/ 1).await;
+
         client
             .request(ClientRequest::ThreadStart {
                 request_id: RequestId::Integer(20),
@@ -1582,8 +1592,8 @@ mod tests {
                     InProcessServerEvent::ServerNotification(
                         ServerNotification::TurnCompleted(notification),
                     ) if notification.turn.id == "before-server-request" => break,
-                    InProcessServerEvent::ServerRequest(request) => {
-                        panic!("server request bypassed preceding required event: {request:?}");
+                    InProcessServerEvent::ServerRequest(_) => {
+                        panic!("server request bypassed preceding required event");
                     }
                     InProcessServerEvent::Lagged { .. }
                     | InProcessServerEvent::ServerNotification(_) => {}

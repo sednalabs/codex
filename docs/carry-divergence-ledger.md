@@ -1766,7 +1766,13 @@ decisions.
 
 ### In-Process Runtime Delivery Under Backpressure
 
-- The in-process runtime is the authority for the lossless notification tier,
+- Stage 1 covers only the low-level `codex-app-server` runtime. The
+  `codex-app-server-client` worker facade has a separate scheduling and
+  shutdown contract; do not infer its guarantees from this entry. Stage 2
+  must add the facade implementation and regressions before this carry is
+  described as end-to-end client behavior.
+- The low-level in-process runtime is the authority for its lossless
+  notification tier,
   including reasoning summary-part boundaries alongside transcript deltas,
   completed items, and terminal notifications.
 - The runtime queue retains required notifications and ordinary server requests
@@ -1776,14 +1782,13 @@ decisions.
   counting as one dropped envelope.
 - Response ingress remains on the independent bounded lane, so a stalled event
   consumer cannot prevent ordinary success or error responses from completing.
-  Closing the runtime event consumer terminates its retained owner instead of
-  leaving request handles attached to an idle worker.
+  Closing the runtime event consumer terminates its retained runtime task
+  instead of leaving request handles attached to an idle runtime.
 - Preserve `responses_bypass_saturated_in_process_event_router`,
   `event_delivery_aggregates_loss_before_required_event_and_server_request_fifo`,
-  `in_process_delivery_aggregates_loss_before_required_fifo`, and
-  `idle_event_consumer_closure_terminates_runtime_with_retained_sender` until
-  upstream owns an equivalent classifier, FIFO, exact-loss, response-liveness,
-  and closure contract.
+  and `idle_event_consumer_closure_terminates_runtime_with_retained_sender`
+  until upstream owns an equivalent low-level classifier, FIFO, exact-loss,
+  response-liveness, and closure contract.
 
 ### Thread-store History And Metadata Ordering
 
