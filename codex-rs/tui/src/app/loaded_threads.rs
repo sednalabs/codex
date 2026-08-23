@@ -25,6 +25,7 @@ use std::collections::VecDeque;
 
 pub(crate) const SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT: usize = 32;
 pub(crate) const AGENT_PICKER_ROWS_PER_OPEN: usize = 200;
+pub(crate) const MAX_RETAINED_SUBAGENT_LINEAGE: usize = 3_200;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum LineagePageAdvance {
@@ -373,7 +374,7 @@ mod tests {
             active_flags: Vec::new(),
         };
 
-        let grandchild = test_thread(
+        let mut grandchild = test_thread(
             grandchild_thread_id,
             thread_spawn_source(child_thread_id, /*depth*/ 2, "Atlas", "worker"),
         );

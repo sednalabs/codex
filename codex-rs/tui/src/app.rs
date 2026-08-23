@@ -237,6 +237,7 @@ use self::loaded_threads::LineagePageAdvance;
 use self::loaded_threads::LineagePageBudget;
 use self::loaded_threads::LoadedSubagentAccumulator;
 use self::loaded_threads::LoadedSubagentThread;
+use self::loaded_threads::MAX_RETAINED_SUBAGENT_LINEAGE;
 use self::pending_interactive_replay::PendingInteractiveReplayState;
 use self::platform_actions::*;
 use self::side::SideParentStatus;
