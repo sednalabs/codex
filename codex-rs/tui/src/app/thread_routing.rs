@@ -1048,7 +1048,9 @@ impl App {
             sub_agent_activity_item(notification).and_then(sub_agent_activity_display)
         {
             let thread_id = activity.thread_id;
-            self.agent_navigation.record_sub_agent_activity(activity);
+            if !self.agent_navigation.record_sub_agent_activity(activity) {
+                return;
+            }
             self.sync_agent_picker_identity(thread_id);
             self.sync_active_agent_label();
             return;

@@ -19,13 +19,13 @@ use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadStatus;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SubAgentSource;
+pub(crate) use codex_state::MAX_THREAD_RELATION_DESCENDANTS as MAX_RETAINED_SUBAGENT_LINEAGE;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
 pub(crate) const SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT: usize = 32;
 pub(crate) const AGENT_PICKER_ROWS_PER_OPEN: usize = 200;
-pub(crate) const MAX_RETAINED_SUBAGENT_LINEAGE: usize = 3_200;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum LineagePageAdvance {
@@ -33,6 +33,7 @@ pub(crate) enum LineagePageAdvance {
     Continue(String),
     Pause(String),
     CursorCycle(String),
+    Truncated,
 }
 
 pub(crate) struct LineagePageBudget {
@@ -151,9 +152,13 @@ impl LineagePageBudget {
         let Some(next_cursor) = next_cursor else {
             return LineagePageAdvance::Complete;
         };
-        if !self.seen_cursors.insert(next_cursor.clone()) {
+        if self.seen_cursors.contains(&next_cursor) {
             return LineagePageAdvance::CursorCycle(next_cursor);
         }
+        if self.seen_cursors.len() >= MAX_RETAINED_SUBAGENT_LINEAGE {
+            return LineagePageAdvance::Truncated;
+        }
+        self.seen_cursors.insert(next_cursor.clone());
         if self.pages_fetched >= SUBAGENT_BACKFILL_PAGES_PER_ATTEMPT {
             LineagePageAdvance::Pause(next_cursor)
         } else {
@@ -163,6 +168,11 @@ impl LineagePageBudget {
 
     pub(crate) fn into_seen_cursors(self) -> HashSet<String> {
         self.seen_cursors
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seen_cursor_count(&self) -> usize {
+        self.seen_cursors.len()
     }
 }
 
@@ -455,6 +465,31 @@ mod tests {
         assert_eq!(
             budget.observe_page(Some("continuation-cursor".to_string())),
             LineagePageAdvance::Pause("continuation-cursor".to_string())
+        );
+    }
+
+    #[test]
+    fn lineage_page_budget_rejects_unique_cursor_beyond_retained_limit() {
+        let seen_cursors = (0..super::MAX_RETAINED_SUBAGENT_LINEAGE)
+            .map(|index| format!("cursor-{index}"))
+            .collect();
+        let mut budget = LineagePageBudget::new(seen_cursors);
+
+        assert_eq!(
+            budget.observe_page(Some("over-limit".to_string())),
+            LineagePageAdvance::Truncated
+        );
+        assert_eq!(
+            budget.seen_cursor_count(),
+            super::MAX_RETAINED_SUBAGENT_LINEAGE
+        );
+        assert_eq!(
+            budget.observe_page(Some("cursor-0".to_string())),
+            LineagePageAdvance::CursorCycle("cursor-0".to_string())
+        );
+        assert_eq!(
+            budget.seen_cursor_count(),
+            super::MAX_RETAINED_SUBAGENT_LINEAGE
         );
     }
 

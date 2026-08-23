@@ -1426,6 +1426,136 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
 }
 
 #[tokio::test]
+async fn receiver_and_activity_ingress_share_navigation_and_metadata_cap() {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+    assert!(app.upsert_agent_picker_thread(
+        primary_thread_id,
+        Some("Main".to_string()),
+        Some("default".to_string()),
+        /*is_closed*/ false,
+    ));
+    let receiver_thread_ids = (0..codex_state::MAX_THREAD_RELATION_DESCENDANTS)
+        .map(|_| ThreadId::new())
+        .collect::<Vec<_>>();
+    let receiver_notification = ServerNotification::ItemStarted(ItemStartedNotification {
+        thread_id: primary_thread_id.to_string(),
+        turn_id: "turn-cap".to_string(),
+        started_at_ms: 0,
+        item: ThreadItem::CollabAgentToolCall {
+            id: "wait-cap".to_string(),
+            tool: codex_app_server_protocol::CollabAgentTool::Wait,
+            status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: primary_thread_id.to_string(),
+            receiver_thread_ids: receiver_thread_ids
+                .iter()
+                .map(ThreadId::to_string)
+                .collect(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
+            agents_states: HashMap::new(),
+        },
+    });
+
+    app.cache_collab_receiver_threads_for_notification(&receiver_notification);
+
+    let rejected_thread_id = *receiver_thread_ids.last().expect("overflow receiver id");
+    let retained_thread_id = receiver_thread_ids[0];
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids().len(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+    assert_eq!(
+        app.chat_widget.collab_agent_metadata_count(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+    assert_eq!(app.agent_navigation.get(&rejected_thread_id), None);
+    assert!(
+        !app.chat_widget
+            .has_collab_agent_metadata(rejected_thread_id)
+    );
+    assert!(app.upsert_agent_picker_thread(
+        primary_thread_id,
+        Some("Main updated".to_string()),
+        Some("default".to_string()),
+        /*is_closed*/ false,
+    ));
+
+    let rejected_activity = ServerNotification::ItemStarted(ItemStartedNotification {
+        thread_id: primary_thread_id.to_string(),
+        turn_id: "turn-rejected-activity".to_string(),
+        started_at_ms: 0,
+        item: ThreadItem::SubAgentActivity {
+            id: "activity-rejected".to_string(),
+            kind: codex_app_server_protocol::SubAgentActivityKind::Started,
+            agent_thread_id: rejected_thread_id.to_string(),
+            agent_path: "/root/rejected".to_string(),
+            model: None,
+            reasoning_effort: None,
+        },
+    });
+    let retained_activity = ServerNotification::ItemStarted(ItemStartedNotification {
+        thread_id: primary_thread_id.to_string(),
+        turn_id: "turn-retained-activity".to_string(),
+        started_at_ms: 0,
+        item: ThreadItem::SubAgentActivity {
+            id: "activity-retained".to_string(),
+            kind: codex_app_server_protocol::SubAgentActivityKind::Started,
+            agent_thread_id: retained_thread_id.to_string(),
+            agent_path: "/root/retained".to_string(),
+            model: Some("gpt-test".to_string()),
+            reasoning_effort: None,
+        },
+    });
+
+    app.cache_collab_receiver_threads_for_notification(&rejected_activity);
+    app.cache_collab_receiver_threads_for_notification(&retained_activity);
+
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids().len(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+    assert_eq!(
+        app.chat_widget.collab_agent_metadata_count(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+    assert_eq!(app.agent_navigation.get(&rejected_thread_id), None);
+    assert!(
+        !app.chat_widget
+            .has_collab_agent_metadata(rejected_thread_id)
+    );
+    assert!(
+        app.chat_widget
+            .has_collab_agent_metadata(retained_thread_id)
+    );
+    assert_eq!(
+        app.agent_navigation
+            .get(&retained_thread_id)
+            .and_then(|entry| entry.agent_path.as_deref()),
+        Some("/root/retained")
+    );
+    assert!(
+        app.agent_navigation
+            .get(&retained_thread_id)
+            .is_some_and(|entry| entry.is_running)
+    );
+    assert_eq!(
+        app.agent_navigation
+            .get(&primary_thread_id)
+            .and_then(|entry| entry.agent_nickname.as_deref()),
+        Some("Main updated")
+    );
+    assert_eq!(app.active_thread_id, Some(primary_thread_id));
+}
+
+#[tokio::test]
 async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
