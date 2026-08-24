@@ -62,6 +62,7 @@ pub use runtime::GoalAccountingMode;
 pub use runtime::GoalAccountingOutcome;
 pub use runtime::GoalOwnerAdmissionAccountContextFingerprint;
 pub use runtime::GoalOwnerAdmissionAuthority;
+pub use runtime::GoalOwnerAdmissionContinuationAuthority;
 pub use runtime::GoalOwnerAdmissionDenialClass;
 pub use runtime::GoalOwnerAdmissionLease;
 pub use runtime::GoalOwnerAdmissionObservation;
