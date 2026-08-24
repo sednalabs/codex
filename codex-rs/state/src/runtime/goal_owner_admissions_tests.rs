@@ -318,17 +318,19 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         .await
         .expect("acquire in-flight admission")
         .expect("in-flight admission should acquire");
-    assert!(runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation(
-            in_flight_thread,
-            "goal-replacement",
-            "request-replacement",
-            Utc::now(),
-            GoalOwnerAdmissionPhase::Pending,
-        ))
-        .await
-        .is_err());
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .observe_denial(&observation(
+                in_flight_thread,
+                "goal-replacement",
+                "request-replacement",
+                Utc::now(),
+                GoalOwnerAdmissionPhase::Pending,
+            ))
+            .await
+            .is_err()
+    );
 
     let dormant_thread = ThreadId::new();
     let dormant = runtime
@@ -374,17 +376,19 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         recovered.deferred_terminal_disposition,
         GoalOwnerAdmissionTerminalDisposition::ManualReview
     );
-    assert!(reopened
-        .goal_owner_admissions()
-        .observe_denial(&observation(
-            in_flight_thread,
-            "goal-replacement",
-            "request-replacement",
-            Utc::now(),
-            GoalOwnerAdmissionPhase::Pending,
-        ))
-        .await
-        .is_err());
+    assert!(
+        reopened
+            .goal_owner_admissions()
+            .observe_denial(&observation(
+                in_flight_thread,
+                "goal-replacement",
+                "request-replacement",
+                Utc::now(),
+                GoalOwnerAdmissionPhase::Pending,
+            ))
+            .await
+            .is_err()
+    );
     assert_eq!(
         reopened
             .goal_owner_admissions()
@@ -474,17 +478,38 @@ fn admission_timestamps_preserve_milliseconds_without_legacy_seconds_inference()
 
 #[tokio::test]
 async fn phase_and_fingerprint_replays_fail_closed() {
-    assert!(GoalOwnerAdmissionAccountContextFingerprint::try_from("user@example.com".to_string()).is_err());
+    assert!(
+        GoalOwnerAdmissionAccountContextFingerprint::try_from("user@example.com".to_string())
+            .is_err()
+    );
     assert!(GoalOwnerAdmissionAccountContextFingerprint::try_from("a".repeat(63)).is_err());
     let runtime = runtime().await;
     for (thread_id, initial, conflicting) in [
-        (ThreadId::new(), GoalOwnerAdmissionPhase::Pending, GoalOwnerAdmissionPhase::Dormant),
-        (ThreadId::new(), GoalOwnerAdmissionPhase::Dormant, GoalOwnerAdmissionPhase::Pending),
+        (
+            ThreadId::new(),
+            GoalOwnerAdmissionPhase::Pending,
+            GoalOwnerAdmissionPhase::Dormant,
+        ),
+        (
+            ThreadId::new(),
+            GoalOwnerAdmissionPhase::Dormant,
+            GoalOwnerAdmissionPhase::Pending,
+        ),
     ] {
         let request = observation(thread_id, "goal", "request", Utc::now(), initial);
-        runtime.goal_owner_admissions().observe_denial(&request).await.expect("record admission");
+        runtime
+            .goal_owner_admissions()
+            .observe_denial(&request)
+            .await
+            .expect("record admission");
         let mut conflict = request;
         conflict.phase = conflicting;
-        assert!(runtime.goal_owner_admissions().observe_denial(&conflict).await.is_err());
+        assert!(
+            runtime
+                .goal_owner_admissions()
+                .observe_denial(&conflict)
+                .await
+                .is_err()
+        );
     }
 }
