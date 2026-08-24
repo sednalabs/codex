@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::ModelRequestKind;
 use crate::Prompt;
 use crate::capacity_retry::notify_and_wait_for_capacity_retry;
 use crate::client::ModelClientSession;
@@ -11,6 +10,7 @@ use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
+use crate::model_request_admission::InferenceRequestKind;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
@@ -717,7 +717,7 @@ async fn drain_to_completed(
     prompt: &Prompt,
 ) -> CodexResult<()> {
     let mut stream = client_session
-        .stream(
+        .stream_inference(
             prompt,
             &turn_context.model_info,
             &turn_context.session_telemetry,
@@ -728,7 +728,7 @@ async fn drain_to_completed(
             // Rollout tracing currently models remote compaction only; local compaction streams
             // are left untraced until the reducer has a first-class local compaction lifecycle.
             &InferenceTraceContext::disabled(),
-            ModelRequestKind::LocalCompaction,
+            InferenceRequestKind::LocalCompaction,
         )
         .await?;
     loop {

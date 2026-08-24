@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::ModelRequestKind;
 use crate::Prompt;
 use crate::ResponseStream;
 use crate::capacity_retry::notify_and_wait_for_capacity_retry;
@@ -20,6 +19,7 @@ use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
+use crate::model_request_admission::InferenceRequestKind;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::responses_retry::ResponsesStreamRequest;
@@ -366,7 +366,7 @@ async fn run_remote_compaction_request_v2(
     let mut capacity_retries = 0;
     loop {
         let result = match client_session
-            .stream(
+            .stream_inference(
                 prompt,
                 &turn_context.model_info,
                 &turn_context.session_telemetry,
@@ -375,7 +375,7 @@ async fn run_remote_compaction_request_v2(
                 turn_context.config.service_tier.clone(),
                 responses_metadata,
                 &InferenceTraceContext::disabled(),
-                ModelRequestKind::RemoteCompactionV2,
+                InferenceRequestKind::RemoteCompactionV2,
             )
             .await
         {

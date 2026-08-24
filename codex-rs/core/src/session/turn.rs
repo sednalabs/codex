@@ -3,7 +3,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::ModelRequestKind;
 use crate::SkillInjections;
 use crate::build_skill_injections;
 use crate::capacity_retry::notify_and_wait_for_capacity_retry;
@@ -2305,7 +2304,6 @@ async fn try_run_sampling_request(
             turn_context.config.service_tier.clone(),
             responses_metadata,
             &inference_trace,
-            ModelRequestKind::Turn,
         )
         .instrument(trace_span!("stream_request"))
         .or_cancel(&cancellation_token)

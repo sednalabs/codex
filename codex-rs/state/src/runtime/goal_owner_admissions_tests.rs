@@ -22,9 +22,14 @@ fn observation(
         origin_turn_id: "turn-1".to_string(),
         origin_request_id: origin_request_id.to_string(),
         denial_class: GoalOwnerAdmissionDenialClass::Capacity,
-        provider_id: Some("openai".to_string()),
+        configured_provider_key: Some("openai".to_string()),
         requested_model: Some("gpt-5".to_string()),
+        effective_provider_id: Some("openai".to_string()),
         effective_model: None,
+        intended_request_kind: "turn".to_string(),
+        successor_turn_id: "turn-successor".to_string(),
+        logical_successor_request_id: format!("successor-{origin_request_id}"),
+        decision_id: Uuid::now_v7(),
         account_context_fingerprint: Some(fingerprint()),
         deadline_at,
         max_attempts: 2,
@@ -95,7 +100,7 @@ async fn observe_denial_is_idempotent_for_an_exact_replay_and_fences_conflicts()
     assert_eq!(
         runtime
             .goal_owner_admissions()
-            .try_acquire(&first.authority, Utc::now())
+            .try_acquire(&first.continuation_authority(), Utc::now())
             .await
             .expect("reject replaced goal authority"),
         None
@@ -121,7 +126,7 @@ async fn acquire_requires_current_pending_authority_deadline_and_attempt_budget(
     assert_eq!(
         runtime
             .goal_owner_admissions()
-            .try_acquire(&future_record.authority, Utc::now())
+            .try_acquire(&future_record.continuation_authority(), Utc::now())
             .await
             .expect("evaluate future admission"),
         None
@@ -143,10 +148,14 @@ async fn acquire_requires_current_pending_authority_deadline_and_attempt_budget(
         generation: ready_record.authority.generation - 1,
         ..ready_record.authority.clone()
     };
+    let stale_continuation_authority = GoalOwnerAdmissionContinuationAuthority {
+        authority: stale_authority,
+        ..ready_record.continuation_authority()
+    };
     assert_eq!(
         runtime
             .goal_owner_admissions()
-            .try_acquire(&stale_authority, Utc::now())
+            .try_acquire(&stale_continuation_authority, Utc::now())
             .await
             .expect("reject stale generation"),
         None
@@ -154,17 +163,39 @@ async fn acquire_requires_current_pending_authority_deadline_and_attempt_budget(
 
     let lease = runtime
         .goal_owner_admissions()
-        .try_acquire(&ready_record.authority, Utc::now())
+        .try_acquire(&ready_record.continuation_authority(), Utc::now())
         .await
         .expect("acquire ready admission")
         .expect("admission should acquire");
     assert_eq!(lease.authority, ready_record.authority);
-    let in_flight = runtime
+    let acquired = runtime
         .goal_owner_admissions()
         .get(thread_id)
         .await
         .expect("read acquired admission")
         .expect("acquired admission should persist");
+    assert_eq!(acquired.phase, GoalOwnerAdmissionPhase::Acquired);
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("open exact acquired lease")
+    );
+    assert!(
+        !runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("a lease opens only once")
+    );
+    let in_flight = runtime
+        .goal_owner_admissions()
+        .get(thread_id)
+        .await
+        .expect("read opened admission")
+        .expect("opened admission should persist");
+    assert_eq!(in_flight.phase, GoalOwnerAdmissionPhase::InFlight);
     assert_eq!(
         runtime
             .goal_owner_admissions()
@@ -176,7 +207,7 @@ async fn acquire_requires_current_pending_authority_deadline_and_attempt_budget(
     assert_eq!(
         runtime
             .goal_owner_admissions()
-            .try_acquire(&ready_record.authority, Utc::now())
+            .try_acquire(&ready_record.continuation_authority(), Utc::now())
             .await
             .expect("reject duplicate acquire"),
         None
@@ -200,10 +231,17 @@ async fn outcomes_and_cancellation_are_lease_and_epoch_fenced() {
         .expect("record first admission");
     let lease = runtime
         .goal_owner_admissions()
-        .try_acquire(&first.authority, Utc::now())
+        .try_acquire(&first.continuation_authority(), Utc::now())
         .await
         .expect("acquire first admission")
         .expect("first admission should acquire");
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("open first admission")
+    );
     let completed = runtime
         .goal_owner_admissions()
         .finish(
@@ -250,7 +288,7 @@ async fn outcomes_and_cancellation_are_lease_and_epoch_fenced() {
         .expect("record second admission");
     let second_lease = runtime
         .goal_owner_admissions()
-        .try_acquire(&second.authority, Utc::now())
+        .try_acquire(&second.continuation_authority(), Utc::now())
         .await
         .expect("acquire second admission")
         .expect("second admission should acquire");
@@ -267,6 +305,14 @@ async fn outcomes_and_cancellation_are_lease_and_epoch_fenced() {
     assert_eq!(
         cancelled.terminal_outcome,
         GoalOwnerAdmissionTerminalOutcome::Cancelled
+    );
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&second_lease)
+            .await
+            .expect("cancelled reservation cannot open"),
+        false
     );
     assert_eq!(
         runtime
@@ -313,12 +359,19 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         ))
         .await
         .expect("record in-flight admission");
-    runtime
+    let in_flight_lease = runtime
         .goal_owner_admissions()
-        .try_acquire(&in_flight.authority, Utc::now())
+        .try_acquire(&in_flight.continuation_authority(), Utc::now())
         .await
         .expect("acquire in-flight admission")
         .expect("in-flight admission should acquire");
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&in_flight_lease)
+            .await
+            .expect("open in-flight admission")
+    );
     assert!(
         runtime
             .goal_owner_admissions()
@@ -357,6 +410,24 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         ))
         .await
         .expect("record pending admission");
+    let acquired_thread = ThreadId::new();
+    let acquired = runtime
+        .goal_owner_admissions()
+        .observe_denial(&observation(
+            acquired_thread,
+            "goal-acquired",
+            "request-acquired",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record acquired admission");
+    let _acquired_lease = runtime
+        .goal_owner_admissions()
+        .try_acquire(&acquired.continuation_authority(), Utc::now())
+        .await
+        .expect("acquire pre-network reservation")
+        .expect("reservation should acquire");
     runtime.close().await;
 
     let reopened = StateRuntime::init(sqlite, "test-provider".to_string())
@@ -406,6 +477,15 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
             .expect("read pending admission"),
         Some(pending)
     );
+    let recovered_acquired = reopened
+        .goal_owner_admissions()
+        .get(acquired_thread)
+        .await
+        .expect("read recovered acquired reservation")
+        .expect("acquired reservation should persist");
+    assert_eq!(recovered_acquired.phase, GoalOwnerAdmissionPhase::Pending);
+    assert_eq!(recovered_acquired.attempts_started, 0);
+    assert_eq!(recovered_acquired.lease_id, None);
 }
 
 #[tokio::test]
@@ -556,10 +636,17 @@ async fn origin_history_replays_return_the_current_admission_across_replacements
 
     let lease = runtime
         .goal_owner_admissions()
-        .try_acquire(&pending.authority, Utc::now())
+        .try_acquire(&pending.continuation_authority(), Utc::now())
         .await
         .expect("acquire second admission")
         .expect("second admission should acquire");
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("open second admission")
+    );
     let terminal = runtime
         .goal_owner_admissions()
         .finish(
@@ -728,7 +815,7 @@ async fn direct_thread_goal_deletion_clears_admission_and_origin_history() {
     assert_eq!(
         runtime
             .goal_owner_admissions()
-            .try_acquire(&record.authority, Utc::now())
+            .try_acquire(&record.continuation_authority(), Utc::now())
             .await
             .expect("deleted admission cannot acquire"),
         None
