@@ -495,6 +495,11 @@ WHERE thread_id = ?
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("DELETE FROM goal_owner_admissions WHERE thread_id = ?")
+            .bind(thread_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
         let row = sqlx::query(
             r#"
 DELETE FROM thread_goals
@@ -512,10 +517,11 @@ RETURNING
             "#,
         )
         .bind(thread_id.to_string())
-        .fetch_optional(self.pool.as_ref())
+        .fetch_optional(&mut *transaction)
         .await?;
-
-        row.map(|row| thread_goal_from_row(&row)).transpose()
+        let goal = row.map(|row| thread_goal_from_row(&row)).transpose()?;
+        transaction.commit().await?;
+        Ok(goal)
     }
 
     pub async fn account_thread_goal_usage(

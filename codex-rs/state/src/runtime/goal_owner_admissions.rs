@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 const MAX_ORIGIN_ID_LENGTH: usize = 512;
 const MAX_EVIDENCE_LENGTH: usize = 512;
-const MAX_ACCOUNT_DOMAIN_LENGTH: usize = 255;
+const ACCOUNT_CONTEXT_FINGERPRINT_LENGTH: usize = 64;
 
 macro_rules! admission_enum {
     ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
@@ -66,6 +66,31 @@ admission_enum!(GoalOwnerAdmissionTerminalDisposition {
     ManualReview => "manual_review",
 });
 
+/// Canonical SHA-256 digest for non-secret account-context correlation evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalOwnerAdmissionAccountContextFingerprint(String);
+
+impl GoalOwnerAdmissionAccountContextFingerprint {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for GoalOwnerAdmissionAccountContextFingerprint {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.len() != ACCOUNT_CONTEXT_FINGERPRINT_LENGTH
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!("invalid goal-owner account-context fingerprint")
+        }
+        Ok(Self(value))
+    }
+}
+
 /// Fencing tuple for an exact durable admission generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalOwnerAdmissionAuthority {
@@ -86,10 +111,12 @@ pub struct GoalOwnerAdmissionObservation {
     pub provider_id: Option<String>,
     pub requested_model: Option<String>,
     pub effective_model: Option<String>,
-    /// A provider account domain, never a raw account identifier.
-    pub account_domain: Option<String>,
+    /// Optional non-secret SHA-256 account-context correlation evidence.
+    pub account_context_fingerprint: Option<GoalOwnerAdmissionAccountContextFingerprint>,
     pub deadline_at: DateTime<Utc>,
     pub max_attempts: i64,
+    /// Immutable requested state used to distinguish replays from lifecycle transitions.
+    pub requested_phase: GoalOwnerAdmissionPhase,
     pub phase: GoalOwnerAdmissionPhase,
 }
 
@@ -111,10 +138,11 @@ pub struct GoalOwnerAdmissionRecord {
     pub provider_id: Option<String>,
     pub requested_model: Option<String>,
     pub effective_model: Option<String>,
-    pub account_domain: Option<String>,
+    pub account_context_fingerprint: Option<GoalOwnerAdmissionAccountContextFingerprint>,
     pub deadline_at: DateTime<Utc>,
     pub attempts_started: i64,
     pub max_attempts: i64,
+    pub requested_phase: GoalOwnerAdmissionPhase,
     pub phase: GoalOwnerAdmissionPhase,
     pub terminal_outcome: GoalOwnerAdmissionTerminalOutcome,
     pub lease_id: Option<Uuid>,
@@ -136,7 +164,7 @@ impl GoalOwnerAdmissionStore {
 
     /// Converts orphaned in-flight work to a conservative terminal state on reopen.
     pub(crate) async fn recover_in_flight_on_open(pool: &SqlitePool) -> anyhow::Result<()> {
-        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         sqlx::query(
             r#"
 UPDATE goal_owner_admissions
@@ -179,12 +207,20 @@ WHERE phase = 'in_flight'
             if existing.origin_request_id == observation.origin_request_id {
                 bail!("conflicting replay for goal-owner admission origin request")
             }
+            if existing.phase == GoalOwnerAdmissionPhase::InFlight
+                || (existing.phase == GoalOwnerAdmissionPhase::Terminal
+                    && existing.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Uncertain
+                    && existing.deferred_terminal_disposition
+                        == GoalOwnerAdmissionTerminalDisposition::ManualReview)
+            {
+                bail!("goal-owner admission replacement is not authorized for the current state")
+            }
             let generation = existing
                 .authority
                 .generation
                 .checked_add(1)
                 .ok_or_else(|| anyhow::anyhow!("goal-owner admission generation overflow"))?;
-            let now_ms = datetime_to_epoch_millis(Utc::now());
+            let now_ms = admission_datetime_to_epoch_millis(Utc::now());
             let record = sqlx::query(REPLACE_ADMISSION_SQL)
                 .bind(&observation.goal_id)
                 .bind(generation)
@@ -194,10 +230,16 @@ WHERE phase = 'in_flight'
                 .bind(&observation.provider_id)
                 .bind(&observation.requested_model)
                 .bind(&observation.effective_model)
-                .bind(&observation.account_domain)
-                .bind(datetime_to_epoch_millis(observation.deadline_at))
+                .bind(
+                    observation
+                        .account_context_fingerprint
+                        .as_ref()
+                        .map(|value| value.as_str()),
+                )
+                .bind(admission_datetime_to_epoch_millis(observation.deadline_at))
                 .bind(observation.max_attempts)
                 .bind(existing.authority.cancellation_epoch)
+                .bind(observation.phase.as_str())
                 .bind(observation.phase.as_str())
                 .bind(now_ms)
                 .bind(observation.thread_id.to_string())
@@ -207,7 +249,7 @@ WHERE phase = 'in_flight'
             return record_from_row(&record);
         }
 
-        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let record = sqlx::query(INSERT_ADMISSION_SQL)
             .bind(observation.thread_id.to_string())
             .bind(&observation.goal_id)
@@ -217,10 +259,17 @@ WHERE phase = 'in_flight'
             .bind(&observation.provider_id)
             .bind(&observation.requested_model)
             .bind(&observation.effective_model)
-            .bind(&observation.account_domain)
-            .bind(datetime_to_epoch_millis(observation.deadline_at))
+            .bind(
+                observation
+                    .account_context_fingerprint
+                    .as_ref()
+                    .map(|value| value.as_str()),
+            )
+            .bind(admission_datetime_to_epoch_millis(observation.deadline_at))
             .bind(observation.max_attempts)
             .bind(observation.phase.as_str())
+            .bind(observation.phase.as_str())
+            .bind(now_ms)
             .bind(now_ms)
             .fetch_one(&mut *transaction)
             .await?;
@@ -236,7 +285,8 @@ WHERE phase = 'in_flight'
     ) -> anyhow::Result<Option<GoalOwnerAdmissionLease>> {
         validate_authority(authority)?;
         let lease_id = Uuid::now_v7();
-        let now_ms = datetime_to_epoch_millis(now);
+        let now_ms = admission_datetime_to_epoch_millis(now);
+        let mut transaction = self.pool.begin().await?;
         let record = sqlx::query(
             r#"
 UPDATE goal_owner_admissions
@@ -263,11 +313,13 @@ RETURNING *
         .bind(authority.generation)
         .bind(authority.cancellation_epoch)
         .bind(now_ms)
-        .fetch_optional(self.pool.as_ref())
+        .fetch_optional(&mut *transaction)
         .await?;
-        record
+        let lease = record
             .map(|row| lease_from_record(record_from_row(&row)?))
-            .transpose()
+            .transpose()?;
+        transaction.commit().await?;
+        Ok(lease)
     }
 
     /// Finish only the exact in-flight lease. An exact terminal replay is idempotent.
@@ -283,7 +335,9 @@ RETURNING *
         ) {
             bail!("finish requires a non-cancelled terminal outcome")
         }
-        let now_ms = datetime_to_epoch_millis(Utc::now());
+        validate_terminal_transition(outcome, disposition)?;
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let mut transaction = self.pool.begin().await?;
         let row = sqlx::query(
             r#"
 UPDATE goal_owner_admissions
@@ -308,11 +362,14 @@ RETURNING *
         .bind(lease.authority.generation)
         .bind(lease.authority.cancellation_epoch)
         .bind(lease.lease_id.to_string())
-        .fetch_optional(self.pool.as_ref())
+        .fetch_optional(&mut *transaction)
         .await?;
         if let Some(row) = row {
-            return record_from_row(&row).map(Some);
+            let record = record_from_row(&row)?;
+            transaction.commit().await?;
+            return Ok(Some(record));
         }
+        transaction.rollback().await?;
 
         let current = self.get(lease.authority.thread_id).await?;
         match current {
@@ -337,7 +394,9 @@ RETURNING *
             .cancellation_epoch
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("goal-owner admission cancellation epoch overflow"))?;
-        let now_ms = datetime_to_epoch_millis(Utc::now());
+        validate_cancellation_disposition(disposition)?;
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let mut transaction = self.pool.begin().await?;
         let row = sqlx::query(
             r#"
 UPDATE goal_owner_admissions
@@ -361,11 +420,14 @@ RETURNING *
         .bind(&authority.goal_id)
         .bind(authority.generation)
         .bind(authority.cancellation_epoch)
-        .fetch_optional(self.pool.as_ref())
+        .fetch_optional(&mut *transaction)
         .await?;
         if let Some(row) = row {
-            return record_from_row(&row).map(Some);
+            let record = record_from_row(&row)?;
+            transaction.commit().await?;
+            return Ok(Some(record));
         }
+        transaction.rollback().await?;
 
         let current = self.get(authority.thread_id).await?;
         match current {
@@ -380,19 +442,19 @@ RETURNING *
 const INSERT_ADMISSION_SQL: &str = r#"
 INSERT INTO goal_owner_admissions (
     thread_id, goal_id, generation, origin_turn_id, origin_request_id, denial_class,
-    provider_id, requested_model, effective_model, account_domain, deadline_at_ms,
-    max_attempts, phase, terminal_outcome, deferred_terminal_disposition, created_at_ms,
+    provider_id, requested_model, effective_model, account_context_fingerprint, deadline_at_ms,
+    max_attempts, requested_phase, phase, terminal_outcome, deferred_terminal_disposition, created_at_ms,
     updated_at_ms
-) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', 'none', ?, ?)
+) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', 'none', ?, ?)
 RETURNING *
 "#;
 
 const REPLACE_ADMISSION_SQL: &str = r#"
 UPDATE goal_owner_admissions
 SET goal_id = ?, generation = ?, origin_turn_id = ?, origin_request_id = ?, denial_class = ?,
-    provider_id = ?, requested_model = ?, effective_model = ?, account_domain = ?,
+    provider_id = ?, requested_model = ?, effective_model = ?, account_context_fingerprint = ?,
     deadline_at_ms = ?, attempts_started = 0, max_attempts = ?, cancellation_epoch = ?,
-    phase = ?, terminal_outcome = 'none', lease_id = NULL, lease_acquired_at_ms = NULL,
+    requested_phase = ?, phase = ?, terminal_outcome = 'none', lease_id = NULL, lease_acquired_at_ms = NULL,
     deferred_terminal_disposition = 'none', updated_at_ms = ?
 WHERE thread_id = ?
 RETURNING *
@@ -430,10 +492,16 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
         provider_id: row.try_get("provider_id")?,
         requested_model: row.try_get("requested_model")?,
         effective_model: row.try_get("effective_model")?,
-        account_domain: row.try_get("account_domain")?,
-        deadline_at: epoch_millis_to_datetime(row.try_get("deadline_at_ms")?)?,
+        account_context_fingerprint: row
+            .try_get::<Option<String>, _>("account_context_fingerprint")?
+            .map(GoalOwnerAdmissionAccountContextFingerprint::try_from)
+            .transpose()?,
+        deadline_at: admission_epoch_millis_to_datetime(row.try_get("deadline_at_ms")?)?,
         attempts_started: row.try_get("attempts_started")?,
         max_attempts: row.try_get("max_attempts")?,
+        requested_phase: GoalOwnerAdmissionPhase::try_from(
+            row.try_get::<String, _>("requested_phase")?.as_str(),
+        )?,
         phase: GoalOwnerAdmissionPhase::try_from(row.try_get::<String, _>("phase")?.as_str())?,
         terminal_outcome: GoalOwnerAdmissionTerminalOutcome::try_from(
             row.try_get::<String, _>("terminal_outcome")?.as_str(),
@@ -442,14 +510,14 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
             .map(|lease_id| Uuid::parse_str(&lease_id))
             .transpose()?,
         lease_acquired_at: lease_acquired_at_ms
-            .map(epoch_millis_to_datetime)
+            .map(admission_epoch_millis_to_datetime)
             .transpose()?,
         deferred_terminal_disposition: GoalOwnerAdmissionTerminalDisposition::try_from(
             row.try_get::<String, _>("deferred_terminal_disposition")?
                 .as_str(),
         )?,
-        created_at: epoch_millis_to_datetime(row.try_get("created_at_ms")?)?,
-        updated_at: epoch_millis_to_datetime(row.try_get("updated_at_ms")?)?,
+        created_at: admission_epoch_millis_to_datetime(row.try_get("created_at_ms")?)?,
+        updated_at: admission_epoch_millis_to_datetime(row.try_get("updated_at_ms")?)?,
     };
     validate_record(&record)?;
     Ok(record)
@@ -497,11 +565,6 @@ fn validate_observation(observation: &GoalOwnerAdmissionObservation) -> anyhow::
         observation.effective_model.as_deref(),
         MAX_EVIDENCE_LENGTH,
     )?;
-    validate_evidence(
-        "account domain",
-        observation.account_domain.as_deref(),
-        MAX_ACCOUNT_DOMAIN_LENGTH,
-    )?;
     if observation.max_attempts < 1 {
         bail!("goal-owner admission max attempts must be positive")
     }
@@ -518,6 +581,45 @@ fn validate_authority(authority: &GoalOwnerAdmissionAuthority) -> anyhow::Result
     validate_nonempty("goal id", &authority.goal_id, MAX_ORIGIN_ID_LENGTH)?;
     if authority.generation < 1 || authority.cancellation_epoch < 0 {
         bail!("invalid goal-owner admission authority")
+    }
+    Ok(())
+}
+
+fn admission_datetime_to_epoch_millis(value: DateTime<Utc>) -> i64 {
+    value.timestamp_millis()
+}
+
+fn admission_epoch_millis_to_datetime(value: i64) -> anyhow::Result<DateTime<Utc>> {
+    DateTime::<Utc>::from_timestamp_millis(value)
+        .ok_or_else(|| anyhow::anyhow!("invalid goal-owner admission timestamp millis: {value}"))
+}
+
+fn validate_terminal_transition(
+    outcome: GoalOwnerAdmissionTerminalOutcome,
+    disposition: GoalOwnerAdmissionTerminalDisposition,
+) -> anyhow::Result<()> {
+    match outcome {
+        GoalOwnerAdmissionTerminalOutcome::Succeeded
+        | GoalOwnerAdmissionTerminalOutcome::Rejected
+        | GoalOwnerAdmissionTerminalOutcome::Exhausted
+            if disposition == GoalOwnerAdmissionTerminalDisposition::None =>
+        {
+            Ok(())
+        }
+        GoalOwnerAdmissionTerminalOutcome::Uncertain
+            if disposition == GoalOwnerAdmissionTerminalDisposition::ManualReview =>
+        {
+            Ok(())
+        }
+        _ => bail!("invalid goal-owner admission terminal transition"),
+    }
+}
+
+fn validate_cancellation_disposition(
+    disposition: GoalOwnerAdmissionTerminalDisposition,
+) -> anyhow::Result<()> {
+    if disposition == GoalOwnerAdmissionTerminalDisposition::None {
+        bail!("cancelled goal-owner admission requires a terminal disposition")
     }
     Ok(())
 }
@@ -563,11 +665,6 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
         record.effective_model.as_deref(),
         MAX_EVIDENCE_LENGTH,
     )?;
-    validate_evidence(
-        "account domain",
-        record.account_domain.as_deref(),
-        MAX_ACCOUNT_DOMAIN_LENGTH,
-    )?;
     if record.attempts_started < 0
         || record.max_attempts < 1
         || record.attempts_started > record.max_attempts
@@ -580,6 +677,9 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
     }
     match record.phase {
         GoalOwnerAdmissionPhase::Dormant | GoalOwnerAdmissionPhase::Pending => {
+            if record.requested_phase != record.phase {
+                bail!("contradictory requested goal-owner admission phase")
+            }
             if record.terminal_outcome != GoalOwnerAdmissionTerminalOutcome::None
                 || has_lease
                 || record.deferred_terminal_disposition
@@ -589,8 +689,10 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
             }
         }
         GoalOwnerAdmissionPhase::InFlight => {
-            if record.terminal_outcome != GoalOwnerAdmissionTerminalOutcome::None
+            if record.requested_phase == GoalOwnerAdmissionPhase::InFlight
+                || record.terminal_outcome != GoalOwnerAdmissionTerminalOutcome::None
                 || !has_lease
+                || record.attempts_started == 0
                 || record.deferred_terminal_disposition
                     != GoalOwnerAdmissionTerminalDisposition::None
             {
@@ -598,12 +700,39 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
             }
         }
         GoalOwnerAdmissionPhase::Terminal => {
-            if record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::None {
+            if record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::None
+                || matches!(
+                    record.requested_phase,
+                    GoalOwnerAdmissionPhase::InFlight | GoalOwnerAdmissionPhase::Terminal
+                )
+                || !terminal_state_is_coherent(record, has_lease)
+            {
                 bail!("terminal goal-owner admission is missing its outcome")
             }
         }
     }
     Ok(())
+}
+
+fn terminal_state_is_coherent(record: &GoalOwnerAdmissionRecord, has_lease: bool) -> bool {
+    match record.terminal_outcome {
+        GoalOwnerAdmissionTerminalOutcome::Succeeded
+        | GoalOwnerAdmissionTerminalOutcome::Rejected
+        | GoalOwnerAdmissionTerminalOutcome::Exhausted => {
+            has_lease
+                && record.deferred_terminal_disposition
+                    == GoalOwnerAdmissionTerminalDisposition::None
+        }
+        GoalOwnerAdmissionTerminalOutcome::Uncertain => {
+            has_lease
+                && record.deferred_terminal_disposition
+                    == GoalOwnerAdmissionTerminalDisposition::ManualReview
+        }
+        GoalOwnerAdmissionTerminalOutcome::Cancelled => {
+            record.deferred_terminal_disposition != GoalOwnerAdmissionTerminalDisposition::None
+        }
+        GoalOwnerAdmissionTerminalOutcome::None => false,
+    }
 }
 
 fn observation_matches_record(
@@ -617,9 +746,11 @@ fn observation_matches_record(
         && observation.provider_id == record.provider_id
         && observation.requested_model == record.requested_model
         && observation.effective_model == record.effective_model
-        && observation.account_domain == record.account_domain
-        && observation.deadline_at == record.deadline_at
+        && observation.account_context_fingerprint == record.account_context_fingerprint
+        && admission_datetime_to_epoch_millis(observation.deadline_at)
+            == admission_datetime_to_epoch_millis(record.deadline_at)
         && observation.max_attempts == record.max_attempts
+        && observation.phase == record.requested_phase
 }
 
 fn same_lease(record: &GoalOwnerAdmissionRecord, lease: &GoalOwnerAdmissionLease) -> bool {

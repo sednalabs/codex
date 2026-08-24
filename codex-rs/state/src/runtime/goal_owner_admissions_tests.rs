@@ -4,6 +4,11 @@ use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
+fn fingerprint() -> GoalOwnerAdmissionAccountContextFingerprint {
+    GoalOwnerAdmissionAccountContextFingerprint::try_from("a".repeat(64))
+        .expect("canonical fingerprint")
+}
+
 fn observation(
     thread_id: ThreadId,
     goal_id: &str,
@@ -20,7 +25,7 @@ fn observation(
         provider_id: Some("openai".to_string()),
         requested_model: Some("gpt-5".to_string()),
         effective_model: None,
-        account_domain: Some("example.com".to_string()),
+        account_context_fingerprint: Some(fingerprint()),
         deadline_at,
         max_attempts: 2,
         phase,
@@ -313,6 +318,17 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         .await
         .expect("acquire in-flight admission")
         .expect("in-flight admission should acquire");
+    assert!(runtime
+        .goal_owner_admissions()
+        .observe_denial(&observation(
+            in_flight_thread,
+            "goal-replacement",
+            "request-replacement",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .is_err());
 
     let dormant_thread = ThreadId::new();
     let dormant = runtime
@@ -358,6 +374,17 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         recovered.deferred_terminal_disposition,
         GoalOwnerAdmissionTerminalDisposition::ManualReview
     );
+    assert!(reopened
+        .goal_owner_admissions()
+        .observe_denial(&observation(
+            in_flight_thread,
+            "goal-replacement",
+            "request-replacement",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .is_err());
     assert_eq!(
         reopened
             .goal_owner_admissions()
@@ -432,4 +459,32 @@ async fn malformed_input_and_contradictory_database_updates_fail_closed() {
             .expect("read valid admission after rejected update"),
         Some(record)
     );
+}
+
+#[test]
+fn admission_timestamps_preserve_milliseconds_without_legacy_seconds_inference() {
+    let pre_2020 = DateTime::<Utc>::from_timestamp(946_684_800, 987_654_321).expect("timestamp");
+    let stored = admission_datetime_to_epoch_millis(pre_2020);
+    assert_eq!(stored, 946_684_800_987);
+    assert_eq!(
+        admission_epoch_millis_to_datetime(stored).expect("decode timestamp"),
+        DateTime::<Utc>::from_timestamp_millis(stored).expect("millisecond timestamp")
+    );
+}
+
+#[tokio::test]
+async fn phase_and_fingerprint_replays_fail_closed() {
+    assert!(GoalOwnerAdmissionAccountContextFingerprint::try_from("user@example.com".to_string()).is_err());
+    assert!(GoalOwnerAdmissionAccountContextFingerprint::try_from("a".repeat(63)).is_err());
+    let runtime = runtime().await;
+    for (thread_id, initial, conflicting) in [
+        (ThreadId::new(), GoalOwnerAdmissionPhase::Pending, GoalOwnerAdmissionPhase::Dormant),
+        (ThreadId::new(), GoalOwnerAdmissionPhase::Dormant, GoalOwnerAdmissionPhase::Pending),
+    ] {
+        let request = observation(thread_id, "goal", "request", Utc::now(), initial);
+        runtime.goal_owner_admissions().observe_denial(&request).await.expect("record admission");
+        let mut conflict = request;
+        conflict.phase = conflicting;
+        assert!(runtime.goal_owner_admissions().observe_denial(&conflict).await.is_err());
+    }
 }
