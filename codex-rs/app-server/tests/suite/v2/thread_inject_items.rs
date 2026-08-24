@@ -2,6 +2,8 @@ use anyhow::Context;
 use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
+use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadInjectItemsParams;
 use codex_app_server_protocol::ThreadInjectItemsResponse;
 use codex_app_server_protocol::ThreadStartParams;
@@ -75,12 +77,14 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history() -> Resu
     let InitialHistory::Resumed(resumed_history) = history else {
         panic!("expected resumed rollout history");
     };
-    assert!(
+    assert_eq!(
         resumed_history
             .history
             .iter()
-            .any(|item| matches!(item, RolloutItem::ResponseItem(response_item) if strip_response_item_id(responses::strip_metadata(response_item.clone())) == injected_item)),
-        "injected item should be persisted in rollout history"
+            .filter(|item| matches!(item, RolloutItem::ResponseItem(response_item) if strip_response_item_id(responses::strip_metadata(response_item.clone())) == injected_item))
+            .count(),
+        1,
+        "injected item should be persisted in rollout history exactly once"
     );
 
     let turn_req = mcp
@@ -238,6 +242,103 @@ async fn thread_inject_items_adds_raw_response_items_after_a_turn() -> Result<()
         "injected item should be sent after being injected into existing history"
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_inject_items_reports_unknown_valid_thread_as_invalid_request() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    let thread_id = "00000000-0000-4000-8000-000000000001";
+    let request_id = mcp
+        .send_thread_inject_items_request(ThreadInjectItemsParams {
+            thread_id: thread_id.to_string(),
+            items: vec![serde_json::json!({"type": "not-a-response-item"})],
+        })
+        .await?;
+
+    let error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_eq!(error.error.code, -32600);
+    assert_eq!(
+        error.error.message,
+        format!("thread not found: {thread_id}")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_inject_items_rejects_per_item_and_aggregate_size_limits() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    let thread_req = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
+        .await?;
+    let ThreadStartResponse { thread, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(thread_req)).await??;
+
+    let oversized_request = mcp
+        .send_thread_inject_items_request(ThreadInjectItemsParams {
+            thread_id: thread.id.clone(),
+            items: vec![serde_json::to_value(ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "x".repeat(40_001),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            })?],
+        })
+        .await?;
+    let oversized_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(oversized_request)),
+    )
+    .await??;
+    assert_eq!(oversized_error.error.code, -32600);
+    assert_eq!(
+        oversized_error.error.message,
+        "items[0] must not exceed 10000 estimated model-visible tokens"
+    );
+
+    let aggregate_item = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: "x".repeat(24_000),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let aggregate_request = mcp
+        .send_thread_inject_items_request(ThreadInjectItemsParams {
+            thread_id: thread.id,
+            items: vec![
+                serde_json::to_value(&aggregate_item)?,
+                serde_json::to_value(&aggregate_item)?,
+            ],
+        })
+        .await?;
+    let aggregate_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(aggregate_request)),
+    )
+    .await??;
+    assert_eq!(aggregate_error.error.code, -32600);
+    assert_eq!(
+        aggregate_error.error.message,
+        "items must not exceed 10000 estimated model-visible tokens in total"
+    );
     Ok(())
 }
 

@@ -154,6 +154,34 @@ pub(crate) fn start_streaming_output(process: &UnifiedExecProcess, context: &Uni
 
 /// Spawn a background watcher that waits for the PTY to exit and then emits a
 /// single ExecCommandEnd event with the aggregated transcript.
+struct TerminalFinalizerGuard {
+    session: Arc<Session>,
+    armed: bool,
+}
+
+impl TerminalFinalizerGuard {
+    fn new(session: Arc<Session>) -> Self {
+        session.input_queue.register_terminal_finalizer();
+        Self {
+            session,
+            armed: true,
+        }
+    }
+
+    fn finish(mut self) {
+        self.session.input_queue.finish_terminal_finalizer();
+        self.armed = false;
+    }
+}
+
+impl Drop for TerminalFinalizerGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.session.input_queue.finish_terminal_finalizer();
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_exit_watcher(
     process: Arc<UnifiedExecProcess>,
@@ -173,9 +201,11 @@ pub(crate) fn spawn_exit_watcher(
 ) {
     let exit_token = process.cancellation_token();
     let interaction_lock = process.interaction_lock();
+    let terminal_finalizer = TerminalFinalizerGuard::new(Arc::clone(&session_ref));
 
     tokio::spawn(async move {
         exit_token.cancelled().await;
+        let _residency_transition = session_ref.input_queue.begin_residency_activity().await;
         process.wait_for_output_completion().await;
         // Deferred network denial deliberately remains observable for a short
         // window after process exit. Do not classify the terminal event until
@@ -250,6 +280,7 @@ pub(crate) fn spawn_exit_watcher(
                     .await;
             }
         }
+        terminal_finalizer.finish();
     });
 }
 

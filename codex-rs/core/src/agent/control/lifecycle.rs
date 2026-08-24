@@ -10,6 +10,7 @@ use crate::thread_manager::ThreadManagerState;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
@@ -95,7 +96,8 @@ impl AgentControl {
             .state
             .agent_metadata_for_thread(agent_id)
             .ok_or(CodexErr::ThreadNotFound(agent_id))?;
-        // Eviction never acquires this gate, so residency work cannot invert lifecycle locks.
+        // Capacity eviction never acquires this gate. Timed idle eviction follows this same
+        // reload-then-lifecycle order, so residency work cannot invert lifecycle locks.
         let _reload = metadata.lifecycle.lock_reload().await;
         let mut lifecycle = metadata.lifecycle.lock().await;
         if !self.state.metadata_is_current(agent_id, &metadata) {
@@ -135,7 +137,7 @@ impl AgentControl {
         })
     }
 
-    pub(super) async fn uses_v2_lifecycle(
+    pub(crate) async fn uses_v2_lifecycle(
         &self,
         state: &Arc<ThreadManagerState>,
         agent_id: ThreadId,
@@ -177,6 +179,37 @@ impl AgentControl {
 }
 
 impl PreparedV2AgentDelivery {
+    pub(crate) async fn inject_response_items(self, items: Vec<ResponseItem>) -> CodexResult<()> {
+        if !self
+            .control
+            .state
+            .metadata_is_current(self.agent_id, &self.metadata)
+        {
+            return Err(CodexErr::ThreadNotFound(self.agent_id));
+        }
+        let thread = self.state.get_thread(self.agent_id).await?;
+        let _residency_transition = thread.session.input_queue.begin_residency_activity().await;
+        let thread_is_current = self
+            .state
+            .get_thread(self.agent_id)
+            .await
+            .is_ok_and(|current| Arc::ptr_eq(&current, &thread));
+        if !thread_is_current
+            || !self
+                .control
+                .state
+                .metadata_is_current(self.agent_id, &self.metadata)
+        {
+            return Err(CodexErr::ThreadNotFound(self.agent_id));
+        }
+        if !thread.is_running() {
+            return Err(CodexErr::InternalAgentDied);
+        }
+        thread
+            .inject_response_items_with_residency_transition_held(items)
+            .await
+    }
+
     fn record_submission(
         &self,
         communication: &InterAgentCommunication,
@@ -231,16 +264,31 @@ impl PreparedV2AgentDelivery {
             {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));
             }
+            if interrupt || communication.trigger_turn {
+                self.lifecycle.invalidate_terminal_idle_unload();
+            }
             if let Ok(thread) = self.state.get_thread(self.agent_id).await {
-                if interrupt {
-                    self.state
-                        .record_submitted_op(self.agent_id, &Op::Interrupt);
-                    thread.session.interrupt_task().await;
+                let _residency_transition =
+                    thread.session.input_queue.begin_residency_activity().await;
+                let thread_is_current = self
+                    .state
+                    .get_thread(self.agent_id)
+                    .await
+                    .is_ok_and(|current| Arc::ptr_eq(&current, &thread));
+                if thread_is_current {
+                    if !thread.is_running() {
+                        return Err(CodexErr::InternalAgentDied);
+                    }
+                    if interrupt {
+                        self.state
+                            .record_submitted_op(self.agent_id, &Op::Interrupt);
+                        thread.session.interrupt_task().await;
+                    }
+                    let submission_id = self.record_submission(&communication, &context);
+                    let send = crate::session::inter_agent_communication;
+                    send(&thread.session, submission_id.clone(), communication).await;
+                    return Ok(submission_id);
                 }
-                let submission_id = self.record_submission(&communication, &context);
-                let send = crate::session::inter_agent_communication;
-                send(&thread.session, submission_id.clone(), communication).await;
-                return Ok(submission_id);
             }
             if communication.trigger_turn {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));

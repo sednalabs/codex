@@ -2212,6 +2212,15 @@
             "null"
           ]
         },
+        "terminal_idle_unload_timeout_ms": {
+          "description": "Milliseconds before unloading an idle terminal agent. Set to `0` to disable unloading.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "tool_namespace": {
           "maxLength": 64,
           "minLength": 1,

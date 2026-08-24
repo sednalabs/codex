@@ -1,6 +1,8 @@
 use super::*;
 use crate::extensions::send_thread_warning;
+use codex_core::V2ThreadUnloadResult;
 use codex_protocol::config_types::MultiAgentMode;
+use futures::future::BoxFuture;
 
 pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
 
@@ -142,25 +144,25 @@ pub(super) async fn ensure_conversation_listener(
     connection_id: ConnectionId,
     raw_events_enabled: bool,
 ) -> Result<EnsureConversationListenerResult, JSONRPCErrorError> {
-    let conversation = match listener_task_context
-        .thread_manager
-        .get_thread(conversation_id)
-        .await
-    {
-        Ok(conv) => conv,
-        Err(_) => {
-            return Err(invalid_request(format!(
-                "thread not found: {conversation_id}"
-            )));
-        }
-    };
-    let thread_state = {
+    let (conversation, thread_state) = {
         let pending_thread_unloads = listener_task_context.pending_thread_unloads.lock().await;
         if pending_thread_unloads.contains(&conversation_id) {
             return Err(invalid_request(format!(
                 "thread {conversation_id} is closing; retry after the thread is closed"
             )));
         }
+        let conversation = match listener_task_context
+            .thread_manager
+            .get_thread(conversation_id)
+            .await
+        {
+            Ok(conv) => conv,
+            Err(_) => {
+                return Err(invalid_request(format!(
+                    "thread not found: {conversation_id}"
+                )));
+            }
+        };
         let Some(thread_state) = listener_task_context
             .thread_state_manager
             .try_ensure_connection_subscribed(conversation_id, connection_id, raw_events_enabled)
@@ -168,7 +170,7 @@ pub(super) async fn ensure_conversation_listener(
         else {
             return Ok(EnsureConversationListenerResult::ConnectionClosed);
         };
-        thread_state
+        (conversation, thread_state)
     };
     if let Err(error) = ensure_listener_task_running(
         listener_task_context.clone(),
@@ -211,7 +213,21 @@ pub(super) fn log_listener_attach_result(
     }
 }
 
-pub(super) async fn ensure_listener_task_running(
+pub(super) fn ensure_listener_task_running(
+    listener_task_context: ListenerTaskContext,
+    conversation_id: ThreadId,
+    conversation: Arc<CodexThread>,
+    thread_state: Arc<Mutex<ThreadState>>,
+) -> BoxFuture<'static, Result<(), JSONRPCErrorError>> {
+    Box::pin(ensure_listener_task_running_inner(
+        listener_task_context,
+        conversation_id,
+        conversation,
+        thread_state,
+    ))
+}
+
+async fn ensure_listener_task_running_inner(
     listener_task_context: ListenerTaskContext,
     conversation_id: ThreadId,
     conversation: Arc<CodexThread>,
@@ -263,6 +279,7 @@ pub(super) async fn ensure_listener_task_running(
             .register_listener_command_tx(conversation_id, listener_command_tx);
         (listener_command_rx, listener_generation)
     };
+    let restart_listener_task_context = listener_task_context.clone();
     let ListenerTaskContext {
         outgoing,
         thread_manager,
@@ -305,6 +322,59 @@ pub(super) async fn ensure_listener_task_running(
                         Ok(event) => event,
                         Err(err) => {
                             tracing::warn!("thread.next_event() failed with: {err}");
+                            pending_thread_unloads.lock().await.insert(conversation_id);
+                            let result = thread_manager
+                                .reconcile_dead_v2_thread_for_external_teardown(
+                                    &conversation,
+                                    |result| {
+                                    let outgoing = outgoing_for_task.clone();
+                                    let pending_thread_unloads = pending_thread_unloads.clone();
+                                    let thread_state_manager = thread_state_manager.clone();
+                                    let thread_watch_manager = thread_watch_manager.clone();
+                                    async move {
+                                        finalize_v2_external_unload(
+                                            outgoing,
+                                            pending_thread_unloads,
+                                            thread_state_manager,
+                                            thread_watch_manager,
+                                            conversation_id,
+                                            matches!(result, V2ThreadUnloadResult::Unloaded),
+                                        )
+                                        .await;
+                                    }
+                                },
+                                )
+                                .await;
+                            match result {
+                                V2ThreadUnloadResult::Superseded => {
+                                    pending_thread_unloads.lock().await.remove(&conversation_id);
+                                    if let Ok(current) =
+                                        thread_manager.get_thread(conversation_id).await
+                                    {
+                                        let current_state =
+                                            thread_state_manager.thread_state(conversation_id).await;
+                                        if let Err(err) = ensure_listener_task_running(
+                                            restart_listener_task_context.clone(),
+                                            conversation_id,
+                                            current,
+                                            current_state,
+                                        )
+                                        .await
+                                        {
+                                            warn!(
+                                                "failed to restart listener for superseding thread {conversation_id}: {}",
+                                                err.message
+                                            );
+                                        }
+                                    }
+                                }
+                                V2ThreadUnloadResult::NotApplicable
+                                | V2ThreadUnloadResult::Deferred => {
+                                    pending_thread_unloads.lock().await.remove(&conversation_id);
+                                }
+                                V2ThreadUnloadResult::Unloaded
+                                | V2ThreadUnloadResult::Missing => {}
+                            }
                             break;
                         }
                     };
@@ -367,17 +437,74 @@ pub(super) async fn ensure_listener_task_running(
                         }
                         pending_thread_unloads.insert(conversation_id);
                     }
-                    unload_thread_without_subscribers(
-                        thread_manager.clone(),
-                        outgoing_for_task.clone(),
-                        pending_thread_unloads.clone(),
-                        thread_state_manager.clone(),
-                        thread_watch_manager.clone(),
-                        conversation_id,
-                        conversation.clone(),
-                    )
-                    .await;
-                    break;
+                    let result = thread_manager
+                        .unload_v2_thread_for_external_teardown(&conversation, |result| {
+                            let outgoing = outgoing_for_task.clone();
+                            let pending_thread_unloads = pending_thread_unloads.clone();
+                            let thread_state_manager = thread_state_manager.clone();
+                            let thread_watch_manager = thread_watch_manager.clone();
+                            async move {
+                                finalize_v2_external_unload(
+                                    outgoing,
+                                    pending_thread_unloads,
+                                    thread_state_manager,
+                                    thread_watch_manager,
+                                    conversation_id,
+                                    matches!(result, V2ThreadUnloadResult::Unloaded),
+                                )
+                                .await;
+                            }
+                        })
+                        .await;
+                    match result {
+                        V2ThreadUnloadResult::NotApplicable => {
+                            unload_thread_without_subscribers(
+                                thread_manager.clone(),
+                                outgoing_for_task.clone(),
+                                pending_thread_unloads.clone(),
+                                thread_state_manager.clone(),
+                                thread_watch_manager.clone(),
+                                conversation_id,
+                                conversation.clone(),
+                            )
+                            .await;
+                            break;
+                        }
+                        V2ThreadUnloadResult::Unloaded => {
+                            break;
+                        }
+                        V2ThreadUnloadResult::Missing => {
+                            break;
+                        }
+                        V2ThreadUnloadResult::Superseded => {
+                            pending_thread_unloads.lock().await.remove(&conversation_id);
+                            if let Ok(current) = thread_manager.get_thread(conversation_id).await {
+                                let current_state =
+                                    thread_state_manager.thread_state(conversation_id).await;
+                                if let Err(err) = ensure_listener_task_running(
+                                    restart_listener_task_context.clone(),
+                                    conversation_id,
+                                    current,
+                                    current_state,
+                                )
+                                .await
+                                {
+                                    warn!(
+                                        "failed to restart listener for superseding thread {conversation_id}: {}",
+                                        err.message
+                                    );
+                                }
+                            }
+                            break;
+                        }
+                        V2ThreadUnloadResult::Deferred => {
+                            // The residency lifecycle still owns a terminal completion or a
+                            // queued submission. Keep this listener alive and begin a new idle
+                            // interval instead of bypassing that guard with raw shutdown.
+                            unloading_state.note_thread_activity_observed();
+                            pending_thread_unloads.lock().await.remove(&conversation_id);
+                        }
+                    }
                 }
             }
         }
@@ -449,6 +576,33 @@ pub(super) async fn unload_thread_without_subscribers(
             }
         }
     });
+}
+
+async fn finalize_v2_external_unload(
+    outgoing: Arc<OutgoingMessageSender>,
+    pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
+    thread_state_manager: ThreadStateManager,
+    thread_watch_manager: ThreadWatchManager,
+    thread_id: ThreadId,
+    emit_closed_notification: bool,
+) {
+    // A V2 residency unload has already shut down and removed the exact thread. Retire only the
+    // app-server side of the listener after that guarded lifecycle transaction succeeds.
+    outgoing
+        .cancel_requests_for_thread(thread_id, /*error*/ None)
+        .await;
+    thread_state_manager.remove_thread_state(thread_id).await;
+    thread_watch_manager
+        .remove_thread(&thread_id.to_string())
+        .await;
+    if emit_closed_notification {
+        outgoing
+            .send_server_notification(ServerNotification::ThreadClosed(ThreadClosedNotification {
+                thread_id: thread_id.to_string(),
+            }))
+            .await;
+    }
+    pending_thread_unloads.lock().await.remove(&thread_id);
 }
 
 #[allow(clippy::too_many_arguments)]

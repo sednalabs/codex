@@ -46,7 +46,7 @@ pub(crate) async fn on_call_response(
         success,
     };
     if let Err(err) = conversation
-        .submit(Op::DynamicToolResponse {
+        .submit_if_current(Op::DynamicToolResponse {
             id: call_id.clone(),
             response: core_response,
         })

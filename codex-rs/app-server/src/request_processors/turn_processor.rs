@@ -446,8 +446,12 @@ impl TurnRequestProcessor {
         thread: &CodexThread,
         op: Op,
     ) -> CodexResult<String> {
-        thread
-            .submit_with_trace(op, self.request_trace_context(request_id).await)
+        self.thread_manager
+            .send_op_to_current_thread_with_trace(
+                thread,
+                op,
+                self.request_trace_context(request_id).await,
+            )
             .await
     }
 
@@ -874,7 +878,18 @@ impl TurnRequestProcessor {
         &self,
         params: ThreadInjectItemsParams,
     ) -> Result<ThreadInjectItemsResponse, JSONRPCErrorError> {
-        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        let thread_id = ThreadId::from_string(&params.thread_id)
+            .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+
+        self.thread_manager
+            .ensure_response_item_injection_target(thread_id)
+            .await
+            .map_err(|err| match err.details() {
+                CodexErrorDetails::ThreadNotFound(thread_id) => {
+                    invalid_request(format!("thread not found: {thread_id}"))
+                }
+                _ => internal_error(format!("failed to resolve injection target: {err}")),
+            })?;
 
         let items = params
             .items
@@ -888,13 +903,20 @@ impl TurnRequestProcessor {
             .map_err(invalid_request)?;
         validate_response_item_image_urls(&items)?;
 
-        thread
-            .inject_response_items(items)
-            .await
-            .map_err(|err| match err.details() {
-                CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
-                _ => internal_error(format!("failed to inject response items: {err}")),
-            })?;
+        // Keep the cold-reload future out of the monolithic request dispatch stack.
+        Box::pin(self.thread_manager.inject_response_items(
+            (*self.config).clone(),
+            thread_id,
+            items,
+        ))
+        .await
+        .map_err(|err| match err.details() {
+            CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
+            CodexErrorDetails::ThreadNotFound(thread_id) => {
+                invalid_request(format!("thread not found: {thread_id}"))
+            }
+            _ => internal_error(format!("failed to inject response items: {err}")),
+        })?;
         Ok(ThreadInjectItemsResponse {})
     }
 

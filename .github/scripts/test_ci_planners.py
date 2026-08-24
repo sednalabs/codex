@@ -992,6 +992,32 @@ class RouteSelectionTests(unittest.TestCase):
             ["codex.skill-loader-fixture-hermeticity-targeted"],
         )
 
+    def test_app_server_client_route_selects_focused_client_lane(self) -> None:
+        changed_files = [
+            ".github/scripts/test_ci_planners.py",
+            ".github/validation-lanes.json",
+            ".github/workflows/sedna-heavy-tests.yml",
+            "codex-rs/app-server-client/src/lib.rs",
+            "codex-rs/app-server-client/src/remote.rs",
+            "docs/carry-divergence-ledger.md",
+            "docs/divergences/index.yaml",
+            "docs/downstream-regression-matrix.md",
+            "justfile",
+        ]
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            changed_files,
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.app-server-client-targeted",
+                "codex.workflow-ci-sanity",
+                "codex.downstream-docs-check",
+                "codex.downstream-divergence-audit",
+            ],
+        )
+
     def test_skill_loader_fixture_lane_pins_both_hermeticity_tests(self) -> None:
         lane = next(
             lane
@@ -3115,14 +3141,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["run_selected_lanes"], "true")
         self.assertEqual(payload["run_smoke_gate"], "false")
-        self.assertEqual(len(payload["selected_matrix"]["include"]), 26)
-        self.assertEqual(payload["planned_job_count"], 16)
+        self.assertEqual(len(payload["selected_matrix"]["include"]), 27)
+        self.assertEqual(payload["planned_job_count"], 17)
         self.assertEqual(payload["rust_batching_mode"], "auto")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 9)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 7)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         for batch in (
@@ -3186,12 +3212,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
             str(REPO_ROOT / ".github/validation-lanes.json"),
         )
 
-        self.assertEqual(payload["planned_job_count"], 26)
+        self.assertEqual(payload["planned_job_count"], 27)
         self.assertEqual(payload["rust_batching_mode"], "off")
         self.assertEqual(payload["rust_batching_reason"], "disabled by workflow input")
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 17)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 0)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 9)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 10)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 0)
 
     def test_lab_product_surface_lane_set_returns_first_wave_lanes(self) -> None:
@@ -3443,7 +3469,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 13)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 2)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
@@ -6084,18 +6110,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
         self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 40)
+        self.assertEqual(payload["planned_job_count"], 41)
         self.assertEqual(payload["selected_workflow_lane_count"], 6)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 13)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 6)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "6")
         self.assertEqual(payload["node_max_parallel"], "2")
         self.assertEqual(payload["rust_minimal_max_parallel"], "24")
-        self.assertEqual(payload["rust_integration_max_parallel"], "24")
+        self.assertEqual(payload["rust_integration_max_parallel"], "25")
         self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
@@ -6119,16 +6145,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 44)
+        self.assertEqual(payload["planned_job_count"], 45)
         self.assertEqual(payload["selected_workflow_lane_count"], 7)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 14)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 6)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 7)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 13)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["rust_minimal_max_parallel"], "28")
-        self.assertEqual(payload["rust_integration_max_parallel"], "26")
+        self.assertEqual(payload["rust_integration_max_parallel"], "27")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {
@@ -9987,6 +10013,140 @@ jobs:
 
 
 class ValidationLaneRunnerTests(unittest.TestCase):
+    def _run_downstream_divergence_audit_fixture(
+        self,
+        producer_source: str,
+        *,
+        stale_report: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            script_dir = repo_root / ".github/scripts/validation-lanes"
+            scripts_dir = repo_root / "scripts"
+            script_dir.mkdir(parents=True)
+            scripts_dir.mkdir()
+
+            (script_dir / "downstream-docs-check.sh").write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\n",
+                encoding="utf-8",
+            )
+            (script_dir / "downstream-docs-check.sh").chmod(0o755)
+            (repo_root / ".github/scripts/sync_upstream_mirror.py").parent.mkdir(
+                parents=True, exist_ok=True
+            )
+            (repo_root / ".github/scripts/sync_upstream_mirror.py").write_text(
+                "import json\n"
+                "print(json.dumps({'expected_mirror_sha': 'mirror', "
+                "'mirror_audit_args': []}))\n",
+                encoding="utf-8",
+            )
+            audit_script = scripts_dir / "downstream-divergence-audit.py"
+            audit_script.write_text(producer_source, encoding="utf-8")
+
+            subprocess.run(
+                ["git", "init", "--initial-branch=main"],
+                cwd=repo_root,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "CI Planner Tests"],
+                cwd=repo_root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "ci-planner-tests@example.invalid"],
+                cwd=repo_root,
+                check=True,
+            )
+            subprocess.run(["git", "add", "."], cwd=repo_root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "fixture"],
+                cwd=repo_root,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+
+            if stale_report is not None:
+                report = (
+                    repo_root
+                    / "target/downstream-divergence-audit/downstream-divergence-audit.json"
+                )
+                report.parent.mkdir(parents=True, exist_ok=True)
+                report.write_text(stale_report, encoding="utf-8")
+
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(
+                        REPO_ROOT
+                        / ".github/scripts/validation-lanes/downstream-divergence-audit.sh"
+                    ),
+                ],
+                cwd=repo_root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            return proc
+
+    def test_downstream_divergence_audit_preserves_failure_without_report(self) -> None:
+        proc = self._run_downstream_divergence_audit_fixture(
+            "import sys\n"
+            "print('producer failure: upstream audit aborted', file=sys.stderr)\n"
+            "raise SystemExit(17)\n"
+        )
+
+        self.assertEqual(proc.returncode, 17)
+        self.assertIn("producer failure: upstream audit aborted", proc.stderr)
+        self.assertNotIn("FileNotFoundError", proc.stderr)
+
+    def test_downstream_divergence_audit_discards_stale_report_on_failure(self) -> None:
+        proc = self._run_downstream_divergence_audit_fixture(
+            "import sys\n"
+            "from pathlib import Path\n"
+            "report = Path('target/downstream-divergence-audit/downstream-divergence-audit.json')\n"
+            "if report.exists():\n"
+            "    print('stale report was not removed', file=sys.stderr)\n"
+            "    raise SystemExit(19)\n"
+            "print('producer failure: upstream audit aborted', file=sys.stderr)\n"
+            "raise SystemExit(17)\n",
+            stale_report=json.dumps(
+                {
+                    "registry_reconciliation": {
+                        "uncovered_code_paths": [],
+                        "stale_entry_ids": ["stale-entry-from-previous-run"],
+                    }
+                }
+            ),
+        )
+
+        self.assertEqual(proc.returncode, 17)
+        self.assertIn("producer failure: upstream audit aborted", proc.stderr)
+        self.assertNotIn("stale report was not removed", proc.stderr)
+        self.assertNotIn("stale-entry-from-previous-run", proc.stderr)
+
+    def test_downstream_divergence_audit_rejects_malformed_success_report(self) -> None:
+        proc = self._run_downstream_divergence_audit_fixture(
+            "from pathlib import Path\n"
+            "output_dir = Path('target/downstream-divergence-audit')\n"
+            "output_dir.mkdir(parents=True, exist_ok=True)\n"
+            "(output_dir / 'downstream-divergence-audit.json').write_text('{not-json', encoding='utf-8')\n"
+        )
+
+        self.assertEqual(proc.returncode, 70)
+        self.assertIn("artifact-contract failure", proc.stderr)
+        self.assertIn("malformed downstream divergence audit report", proc.stderr)
+        self.assertIn("report validation failed", proc.stderr)
+
+    def test_downstream_divergence_audit_rejects_missing_success_report(self) -> None:
+        proc = self._run_downstream_divergence_audit_fixture("# successful producer\n")
+
+        self.assertEqual(proc.returncode, 70)
+        self.assertIn("artifact-contract failure", proc.stderr)
+        self.assertIn("did not produce", proc.stderr)
+
     def test_runner_executes_valid_paths_and_rejects_escape_attempts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir) / "repo"

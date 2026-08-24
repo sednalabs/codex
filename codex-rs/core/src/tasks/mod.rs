@@ -839,6 +839,7 @@ impl Session {
             .await
             .clear_turn(&turn_context.sub_id);
 
+        let residency_transition = self.input_queue.begin_residency_activity().await;
         let cleared_active_turn = {
             let mut active = self.active_turn.lock().await;
             if let Some(active_turn) = active.as_ref()
@@ -851,6 +852,7 @@ impl Session {
                 false
             }
         };
+        drop(residency_transition);
         if cleared_active_turn {
             self.emit_thread_idle_lifecycle_if_idle().await;
         }

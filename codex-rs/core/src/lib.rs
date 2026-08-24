@@ -134,6 +134,7 @@ pub use thread_manager::NewThread;
 pub use thread_manager::StartThreadOptions;
 pub use thread_manager::ThreadManager;
 pub use thread_manager::ThreadShutdownReport;
+pub use thread_manager::V2ThreadUnloadResult;
 pub use thread_manager::build_models_manager;
 pub use thread_manager::local_agent_graph_store_from_state_db;
 pub use thread_manager::thread_store_from_config;

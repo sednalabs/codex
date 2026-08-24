@@ -6,9 +6,17 @@ use crate::state::TurnState;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
+#[cfg(test)]
+use tokio::sync::Notify;
+use tokio::sync::OwnedMutexGuard;
 use tokio::sync::watch;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -39,6 +47,12 @@ pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     mailbox_pending_mails: Mutex<VecDeque<InterAgentCommunication>>,
     terminal_completions: Mutex<VecDeque<TerminalCompletionNotification>>,
+    residency_transition: Arc<Mutex<()>>,
+    residency_activity_generation: AtomicU64,
+    pending_terminal_finalizers: AtomicUsize,
+    pending_residency_submissions: StdMutex<HashSet<String>>,
+    #[cfg(test)]
+    residency_submission_changed: Notify,
 }
 
 impl InputQueue {
@@ -50,6 +64,96 @@ impl InputQueue {
             activity_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
             terminal_completions: Mutex::new(VecDeque::new()),
+            residency_transition: Arc::new(Mutex::new(())),
+            residency_activity_generation: AtomicU64::new(0),
+            pending_terminal_finalizers: AtomicUsize::new(0),
+            pending_residency_submissions: StdMutex::new(HashSet::new()),
+            #[cfg(test)]
+            residency_submission_changed: Notify::new(),
+        }
+    }
+
+    pub(crate) async fn begin_residency_activity(&self) -> OwnedMutexGuard<()> {
+        let guard = Arc::clone(&self.residency_transition).lock_owned().await;
+        self.residency_activity_generation
+            .fetch_add(1, Ordering::AcqRel);
+        guard
+    }
+
+    pub(crate) async fn lock_residency_transition(&self) -> OwnedMutexGuard<()> {
+        Arc::clone(&self.residency_transition).lock_owned().await
+    }
+
+    pub(crate) fn residency_activity_generation(&self) -> u64 {
+        self.residency_activity_generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn register_terminal_finalizer(&self) {
+        self.pending_terminal_finalizers
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn finish_terminal_finalizer(&self) {
+        self.pending_terminal_finalizers
+            .fetch_sub(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn has_pending_terminal_finalizers(&self) -> bool {
+        self.pending_terminal_finalizers.load(Ordering::Acquire) != 0
+    }
+
+    pub(crate) fn register_residency_submission(&self, submission_id: String) {
+        self.pending_residency_submissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(submission_id);
+        #[cfg(test)]
+        self.residency_submission_changed.notify_waiters();
+    }
+
+    pub(crate) fn finish_residency_submission(&self, submission_id: &str) {
+        self.pending_residency_submissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(submission_id);
+        #[cfg(test)]
+        self.residency_submission_changed.notify_waiters();
+    }
+
+    pub(crate) async fn acknowledge_residency_submission(&self, submission_id: &str) {
+        if !self
+            .pending_residency_submissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(submission_id)
+        {
+            return;
+        }
+        let _transition = self.lock_residency_transition().await;
+        self.finish_residency_submission(submission_id);
+    }
+
+    pub(crate) fn has_pending_residency_submissions(&self) -> bool {
+        !self
+            .pending_residency_submissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_residency_submission_absent(&self, submission_id: &str) {
+        loop {
+            let changed = self.residency_submission_changed.notified();
+            let pending = self
+                .pending_residency_submissions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(submission_id);
+            if !pending {
+                return;
+            }
+            changed.await;
         }
     }
 
