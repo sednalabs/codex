@@ -64,6 +64,7 @@ pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportHistoryRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportSuccessRecord;
 pub use goal_owner_admissions::GoalOwnerAdmissionAccountContextFingerprint;
+pub use goal_owner_admissions::GoalOwnerAdmissionAcquireResult;
 pub use goal_owner_admissions::GoalOwnerAdmissionAuthority;
 pub use goal_owner_admissions::GoalOwnerAdmissionContinuationAuthority;
 pub use goal_owner_admissions::GoalOwnerAdmissionDenialClass;

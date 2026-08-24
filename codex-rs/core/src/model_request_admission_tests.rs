@@ -1,6 +1,7 @@
 use super::*;
 
 use chrono::Duration;
+use codex_state::GoalOwnerAdmissionAcquireResult;
 use codex_state::GoalOwnerAdmissionDenialClass;
 use codex_state::GoalOwnerAdmissionObservation;
 use codex_state::GoalOwnerAdmissionPhase;
@@ -282,11 +283,14 @@ async fn terminal_success_is_unrestricted_before_identity_matching() {
         ))
         .await
         .expect("record eligible admission");
-    let lease = store
+    let lease = match store
         .try_acquire(&record.continuation_authority(), Utc::now())
         .await
         .expect("acquire admission")
-        .expect("eligible lease");
+    {
+        GoalOwnerAdmissionAcquireResult::Acquired(lease) => lease,
+        result => panic!("expected eligible lease, got {result:?}"),
+    };
     assert!(store.open_lease(&lease).await.expect("open admission"));
     store
         .finish(
