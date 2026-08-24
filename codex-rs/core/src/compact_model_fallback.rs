@@ -77,19 +77,21 @@ mod tests {
 
     #[test]
     fn provider_denials_do_not_trigger_model_fallback() {
-        let usage_limit = CodexErr::new(codex_protocol::error::CodexErrorDetails::UsageLimitReached(
-            UsageLimitReachedError {
+        let usage_limit = CodexErr::new(
+            codex_protocol::error::CodexErrorDetails::UsageLimitReached(UsageLimitReachedError {
                 plan_type: None,
                 resets_at: None,
                 rate_limits: None,
                 promo_message: None,
                 rate_limit_reached_type: None,
-            },
-        ));
+            }),
+        );
 
         assert_eq!(usage_limit.kind(), CodexErrKind::UsageLimitReached);
         assert!(!should_retry_with_current_model(&usage_limit));
         assert!(!should_retry_with_current_model(&CodexErr::QuotaExceeded));
-        assert!(!should_retry_with_current_model(&CodexErr::UsageNotIncluded));
+        assert!(!should_retry_with_current_model(
+            &CodexErr::UsageNotIncluded
+        ));
     }
 }

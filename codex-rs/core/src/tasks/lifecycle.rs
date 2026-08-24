@@ -92,7 +92,7 @@ impl Session {
             None,
             None,
         )
-            .await;
+        .await;
     }
 
     pub(crate) async fn emit_turn_error_lifecycle_with_rate_limit_delay(
@@ -126,19 +126,19 @@ impl Session {
             None
         }
         .unwrap_or_else(|| RateLimitDomain {
-                thread_id: self.thread_id(),
-                provider_id: Some(turn_context.config.model_provider_id.clone()),
-                requested_model: turn_context.config.model.clone(),
-                effective_model: Some(turn_context.model_info.slug.clone()),
-                // The host has no authoritative account/quota binding for this callback unless
-                // the provider supplies one. Preserve unknown as None rather than inferring it
-                // from parentage, process state, or a model name.
-                account_context_key: None,
-                shared_quota_key: None,
-                snapshot: None,
-                reset_at: None,
-                retry_after: rate_limit_retry_after,
-            });
+            thread_id: self.thread_id(),
+            provider_id: Some(turn_context.config.model_provider_id.clone()),
+            requested_model: turn_context.config.model.clone(),
+            effective_model: Some(turn_context.model_info.slug.clone()),
+            // The host has no authoritative account/quota binding for this callback unless
+            // the provider supplies one. Preserve unknown as None rather than inferring it
+            // from parentage, process state, or a model name.
+            account_context_key: None,
+            shared_quota_key: None,
+            snapshot: None,
+            reset_at: None,
+            retry_after: rate_limit_retry_after,
+        });
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_error(codex_extension_api::TurnErrorInput {
