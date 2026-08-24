@@ -47,16 +47,16 @@ async fn handle_spawn_agent(
         call_id,
         ..
     } = invocation;
-    if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
+    if crate::diagnostic_flags::goal_continuation_health_check_enabled() {
         turn.session_telemetry.counter(
-            "codex.diagnostic.goal_multi_agent_stress",
+            "codex.diagnostic.goal_continuation_health_check",
             1,
-            &[("stage", "spawn_handler_attempt")],
+            &[("stage", "continuation_child_probe_handler_attempt")],
         );
         tracing::info!(
             turn_id = %turn.sub_id,
             call_id = %call_id,
-            "multi-agent stress diagnostic entered V2 spawn handler"
+            "continuation health check entered V2 spawn handler"
         );
     }
 
@@ -129,17 +129,17 @@ async fn handle_spawn_agent(
         .unwrap_or_else(AgentPath::root);
     let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
-    if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
+    if crate::diagnostic_flags::goal_continuation_health_check_enabled() {
         turn.session_telemetry.counter(
-            "codex.diagnostic.goal_multi_agent_stress",
+            "codex.diagnostic.goal_continuation_health_check",
             1,
-            &[("stage", "spawn_control_attempt")],
+            &[("stage", "continuation_child_probe_control_attempt")],
         );
         tracing::info!(
             turn_id = %turn.sub_id,
             call_id = %call_id,
             task_name = %args.task_name,
-            "multi-agent stress diagnostic calling V2 spawn control"
+            "continuation health check calling V2 spawn control"
         );
     }
     let spawned_agent = Box::pin(
@@ -201,11 +201,11 @@ async fn handle_spawn_agent(
         /*inc*/ 1,
         &[("role", role_tag), ("version", "v2")],
     );
-    if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
+    if crate::diagnostic_flags::goal_continuation_health_check_enabled() {
         turn.session_telemetry.counter(
-            "codex.diagnostic.goal_multi_agent_stress",
+            "codex.diagnostic.goal_continuation_health_check",
             1,
-            &[("stage", "spawn_published")],
+            &[("stage", "continuation_child_probe_published")],
         );
     }
     let task_name = String::from(new_agent_path);
