@@ -262,6 +262,7 @@ SET attempts_started = attempts_started - (
     WHERE admission.thread_id = chain.thread_id
       AND admission.goal_id = chain.goal_id
       AND admission.phase = 'acquired'
+      AND admission.retired_at_ms IS NULL
 )
 WHERE EXISTS (
     SELECT 1
@@ -269,6 +270,7 @@ WHERE EXISTS (
     WHERE admission.thread_id = chain.thread_id
       AND admission.goal_id = chain.goal_id
       AND admission.phase = 'acquired'
+      AND admission.retired_at_ms IS NULL
 )
             "#,
         )
@@ -283,7 +285,7 @@ SET phase = 'pending',
     lease_acquired_at_ms = NULL,
     lease_cancellation_epoch = NULL,
     updated_at_ms = ?
-WHERE phase = 'acquired'
+WHERE phase = 'acquired' AND retired_at_ms IS NULL
             "#,
         )
         .bind(now_ms)
@@ -382,11 +384,12 @@ WHERE phase = 'in_flight'
         Ok(record)
     }
 
-    /// Retire exactly one durable generation without changing its physical outcome.
+    /// Retire exactly one settled durable generation without changing its outcome.
     ///
-    /// Retirement is a scheduler/user lifecycle decision, not a provider result:
-    /// an in-flight lease remains capable of recording its exact late definitive
-    /// provider outcome. A retired generation cannot be opened or acquired again.
+    /// Retirement is a scheduler/user lifecycle decision, not a provider result.
+    /// A reservation or uncertain provider effect must first be released,
+    /// cancelled, or resolved; superseding it would make recovery ordering and
+    /// physical evidence ambiguous.
     pub async fn retire(
         &self,
         authority: &GoalOwnerAdmissionAuthority,
@@ -395,6 +398,23 @@ WHERE phase = 'in_flight'
         validate_authority(authority)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let record = fetch_record_for_authority(&mut *transaction, authority).await?;
+        let Some(record) = record else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        if record.authority != authority.clone() {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        if retirement_is_unsettled(&record) {
+            bail!("goal-owner admission with unsettled work cannot be retired")
+        }
+        if record.retired_at.is_some() {
+            let replay = (record.retirement_reason == Some(reason)).then_some(record);
+            transaction.commit().await?;
+            return Ok(replay);
+        }
         let result = sqlx::query(
             r#"
 UPDATE goal_owner_admissions
@@ -417,17 +437,14 @@ WHERE thread_id = ?
         .bind(authority.cancellation_epoch)
         .execute(&mut *transaction)
         .await?;
-        let record = fetch_record_for_authority(&mut *transaction, authority).await?;
-        if result.rows_affected() == 1 {
-            let record = record.ok_or_else(|| anyhow::anyhow!("retired admission is missing"))?;
-            transaction.commit().await?;
-            return Ok(Some(record));
+        if result.rows_affected() != 1 {
+            bail!("goal-owner retirement lost its exact settled generation")
         }
-        let replay = record.filter(|record| {
-            record.retirement_reason == Some(reason) && record.retired_at.is_some()
-        });
+        let record = fetch_record_for_authority(&mut *transaction, authority)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("retired admission is missing"))?;
         transaction.commit().await?;
-        Ok(replay)
+        Ok(Some(record))
     }
 
     /// Atomically reserve a deadline-eligible pending admission for one exact successor.
@@ -635,6 +652,7 @@ WHERE thread_id = ?
   AND phase = 'acquired'
   AND lease_id = ?
   AND lease_cancellation_epoch = ?
+  AND retired_at_ms IS NULL
             "#,
         )
         .bind(now_ms)
@@ -800,12 +818,18 @@ WHERE thread_id = ?
             .ok_or_else(|| anyhow::anyhow!("goal-owner admission cancellation epoch overflow"))?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(record) = fetch_record_for_authority(&mut *transaction, authority).await?
+            && exact_cancellation_replay(&record, authority)
+        {
+            transaction.commit().await?;
+            return Ok(Some(record));
+        }
         let current = fetch_active_record(&mut *transaction, authority.thread_id).await?;
         let Some(current) = current else {
             transaction.commit().await?;
             return Ok(None);
         };
-        if current.authority != *authority {
+        if current.authority != authority.clone() {
             transaction.commit().await?;
             return Ok(None);
         }
@@ -869,7 +893,7 @@ WHERE thread_id = ?
             }
             GoalOwnerAdmissionPhase::Terminal => {
                 transaction.commit().await?;
-                return Ok(exact_cancellation_replay(&current, authority).then_some(current));
+                return Ok(None);
             }
         };
         if cancelled.rows_affected() != 1 {
@@ -1422,6 +1446,14 @@ fn validate_evidence(name: &str, value: Option<&str>, max_length: usize) -> anyh
     Ok(())
 }
 
+fn retirement_is_unsettled(record: &GoalOwnerAdmissionRecord) -> bool {
+    matches!(
+        record.phase,
+        GoalOwnerAdmissionPhase::Acquired | GoalOwnerAdmissionPhase::InFlight
+    ) || (record.phase == GoalOwnerAdmissionPhase::Terminal
+        && record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Uncertain)
+}
+
 fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
     validate_authority(&record.authority)?;
     validate_continuation_authority(&record.continuation_authority())?;
@@ -1471,6 +1503,9 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
         || record.retired_at.is_some() != record.retirement_reason.is_some()
     {
         bail!("contradictory goal-owner admission durable state")
+    }
+    if record.retired_at.is_some() && retirement_is_unsettled(record) {
+        bail!("retired goal-owner admission has unsettled work")
     }
     match record.phase {
         GoalOwnerAdmissionPhase::Dormant | GoalOwnerAdmissionPhase::Pending => {
