@@ -192,8 +192,14 @@ pub(crate) async fn run_turn(
             run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
             return Err(err);
         }
+        let error_kind = Some(err.kind());
         let error = err.to_codex_protocol_error();
-        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+        sess.emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
+            turn_context.as_ref(),
+            error.clone(),
+            error_kind,
+            None,
+        )
             .await;
         error!("Failed to run pre-sampling compact");
         return Ok(None);
@@ -430,8 +436,14 @@ pub(crate) async fn run_turn(
                         if matches!(err.details(), CodexErrorDetails::TurnAborted) {
                             return Err(err);
                         }
+                        let error_kind = Some(err.kind());
                         let error = err.to_codex_protocol_error();
-                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                        sess.emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
+                            turn_context.as_ref(),
+                            error.clone(),
+                            error_kind,
+                            None,
+                        )
                             .await;
                         return Ok(None);
                     }
@@ -547,10 +559,12 @@ pub(crate) async fn run_turn(
                         rate_limit_retry_after,
                     );
                 }
+                let error_kind = Some(e.kind());
                 let error = e.to_codex_protocol_error();
-                sess.emit_turn_error_lifecycle_with_rate_limit_delay(
+                sess.emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
                     turn_context.as_ref(),
                     error.clone(),
+                    error_kind,
                     rate_limit_retry_after,
                 )
                 .await;

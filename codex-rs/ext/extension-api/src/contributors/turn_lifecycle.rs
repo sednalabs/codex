@@ -1,5 +1,6 @@
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::error::CodexErrKind;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::TokenUsage;
@@ -91,6 +92,10 @@ pub struct TurnErrorInput<'a> {
     pub turn_id: &'a str,
     /// Error surfaced by the host for this turn.
     pub error: CodexErrorInfo,
+    /// Exact semantic error kind when the host still has the original provider error.
+    /// `None` means the protocol-facing error was synthesized without enough source context;
+    /// extensions must fail closed rather than infer a retryable provider denial from it.
+    pub error_kind: Option<CodexErrKind>,
     /// Provider-specified delay before a rate-limited request may be retried.
     /// `None` means the provider did not establish an eligible retry time.
     pub rate_limit_retry_after: Option<Duration>,

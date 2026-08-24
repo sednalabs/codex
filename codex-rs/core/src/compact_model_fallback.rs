@@ -18,7 +18,6 @@ pub(crate) fn should_retry_with_current_model(error: &CodexErr) -> bool {
         CodexErrorDetails::InvalidRequest(_)
             | CodexErrorDetails::UnexpectedStatus(_)
             | CodexErrorDetails::ContextWindowExceeded
-            | CodexErrorDetails::UsageLimitReached(_)
             | CodexErrorDetails::ServerOverloaded
             | CodexErrorDetails::InternalServerError
             | CodexErrorDetails::RetryLimit(_)
@@ -67,4 +66,30 @@ pub(crate) fn record_model_fallback(
         ?fallback_error,
         "previous-model compaction failed; retried with current model"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CodexErr;
+    use super::should_retry_with_current_model;
+    use codex_protocol::error::CodexErrKind;
+    use codex_protocol::error::UsageLimitReachedError;
+
+    #[test]
+    fn provider_denials_do_not_trigger_model_fallback() {
+        let usage_limit = CodexErr::new(codex_protocol::error::CodexErrorDetails::UsageLimitReached(
+            UsageLimitReachedError {
+                plan_type: None,
+                resets_at: None,
+                rate_limits: None,
+                promo_message: None,
+                rate_limit_reached_type: None,
+            },
+        ));
+
+        assert_eq!(usage_limit.kind(), CodexErrKind::UsageLimitReached);
+        assert!(!should_retry_with_current_model(&usage_limit));
+        assert!(!should_retry_with_current_model(&CodexErr::QuotaExceeded));
+        assert!(!should_retry_with_current_model(&CodexErr::UsageNotIncluded));
+    }
 }

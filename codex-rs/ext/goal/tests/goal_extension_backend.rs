@@ -39,6 +39,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::error::CodexErrKind;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -575,6 +576,46 @@ async fn turn_error_usage_limit_accounts_progress_and_clears_accounting() -> any
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(23, goal.tokens_used);
     assert_eq!(codex_state::ThreadGoalStatus::UsageLimited, goal.status);
+    Ok(())
+}
+
+#[tokio::test]
+async fn permanent_provider_denials_block_goal_without_continuation() -> anyhow::Result<()> {
+    for error_kind in [CodexErrKind::QuotaExceeded, CodexErrKind::UsageNotIncluded] {
+        let runtime = test_runtime().await?;
+        let thread_id = test_thread_id()?;
+        seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+        let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+        harness.start_turn("turn-1", &TokenUsage::default()).await;
+        tool_by_name(&harness.tools(), "create_goal")
+            .handle(tool_call(
+                "create_goal",
+                "call-create-goal",
+                json!({ "objective": "stop after a permanent provider denial" }),
+            ))
+            .await?;
+
+        harness
+            .notify_turn_error_with_kind(
+                "turn-1",
+                CodexErrorInfo::UsageLimitExceeded,
+                Some(error_kind),
+            )
+            .await;
+
+        let goal = runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+        assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
+        assert!(
+            !runtime
+                .thread_goals()
+                .has_thread_goal_continuation_deferral(thread_id)
+                .await?
+        );
+    }
     Ok(())
 }
 
@@ -1487,12 +1528,25 @@ impl GoalExtensionHarness {
     }
 
     async fn notify_turn_error(&self, turn_id: &str, error: CodexErrorInfo) {
+        let error_kind = matches!(&error, CodexErrorInfo::UsageLimitExceeded)
+            .then_some(CodexErrKind::UsageLimitReached);
+        self.notify_turn_error_with_kind(turn_id, error, error_kind)
+            .await;
+    }
+
+    async fn notify_turn_error_with_kind(
+        &self,
+        turn_id: &str,
+        error: CodexErrorInfo,
+        error_kind: Option<CodexErrKind>,
+    ) {
         let turn_store = ExtensionData::new(turn_id);
         for contributor in self.registry.turn_lifecycle_contributors() {
             contributor
                 .on_turn_error(TurnErrorInput {
                     turn_id,
                     error: error.clone(),
+                    error_kind,
                     rate_limit_retry_after: None,
                     rate_limit_domain: codex_extension_api::RateLimitDomain {
                         thread_id: self.thread_id,
