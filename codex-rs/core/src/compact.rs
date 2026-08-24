@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::ModelRequestKind;
 use crate::Prompt;
 use crate::capacity_retry::notify_and_wait_for_capacity_retry;
 use crate::client::ModelClientSession;
@@ -727,6 +728,7 @@ async fn drain_to_completed(
             // Rollout tracing currently models remote compaction only; local compaction streams
             // are left untraced until the reducer has a first-class local compaction lifecycle.
             &InferenceTraceContext::disabled(),
+            ModelRequestKind::LocalCompaction,
         )
         .await?;
     loop {

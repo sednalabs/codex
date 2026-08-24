@@ -111,6 +111,7 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::warn;
 
+use crate::StateDbHandle;
 use crate::attestation::AttestationContext;
 use crate::attestation::AttestationProvider;
 use crate::attestation::X_OAI_ATTESTATION_HEADER;
@@ -118,6 +119,11 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::feedback_tags;
+use crate::model_request_admission::ModelRequestAdmissionBroker;
+use crate::model_request_admission::ModelRequestAdmissionDecision;
+use crate::model_request_admission::ModelRequestIdentity;
+use crate::model_request_admission::ModelRequestKind;
+use crate::model_request_admission::ModelRequestLeaseGuard;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_feedback::FeedbackRequestTags;
@@ -134,6 +140,7 @@ use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result;
 use codex_response_debug_context::extract_response_debug_context;
 use codex_response_debug_context::extract_response_debug_context_from_api_error;
@@ -214,6 +221,7 @@ struct ModelClientState {
     concurrent_reasoning_summaries_enabled: bool,
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
+    request_admission_broker: ModelRequestAdmissionBroker,
     disable_websockets: AtomicBool,
     agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
@@ -436,6 +444,7 @@ impl ModelClient {
         installation_id: String,
         provider_info: ModelProviderInfo,
         session_source: SessionSource,
+        state_db: Option<StateDbHandle>,
         originator: String,
         model_verbosity: Option<VerbosityConfig>,
         enable_request_compression: bool,
@@ -469,6 +478,7 @@ impl ModelClient {
                 concurrent_reasoning_summaries_enabled,
                 include_attestation,
                 attestation_provider,
+                request_admission_broker: ModelRequestAdmissionBroker::new(state_db),
                 disable_websockets: AtomicBool::new(false),
                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
@@ -491,6 +501,29 @@ impl ModelClient {
         self.prompt_cache_key_override
             .clone()
             .unwrap_or_else(|| responses_metadata.session_id.clone())
+    }
+
+    async fn admit_request(
+        &self,
+        kind: ModelRequestKind,
+        model_info: &ModelInfo,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> Result<ModelRequestAdmissionDecision> {
+        self.state
+            .request_admission_broker
+            .admit(&ModelRequestIdentity::new(
+                self.state.thread_id,
+                responses_metadata.turn_id.clone(),
+                kind,
+                self.state.provider.info().name.clone(),
+                model_info.slug.clone(),
+                model_info.slug.clone(),
+                service_tier,
+                self.state.session_source.clone(),
+                /*parent_continuity_decision_id*/ None,
+            ))
+            .await
     }
 
     /// Creates a fresh turn-scoped streaming session.
@@ -568,6 +601,15 @@ impl ModelClient {
         if prompt.input.is_empty() {
             return Ok(Vec::new());
         }
+        let admission = self
+            .admit_request(
+                ModelRequestKind::RemoteCompact,
+                model_info,
+                settings.service_tier.clone(),
+                responses_metadata,
+            )
+            .await?;
+        let result = async {
         let client_setup = self.current_client_setup().await?;
         let transport =
             self.build_api_transport(&client_setup.api_provider, RESPONSES_COMPACT_ENDPOINT)?;
@@ -634,14 +676,15 @@ impl ModelClient {
             extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
         }
         add_responses_lite_header(&mut extra_headers, model_info.use_responses_lite);
-        let compact_request_timeout = client_setup
-            .api_provider
+        let api_provider = provider_for_admission(client_setup.api_provider, &admission);
+        let compact_request_timeout = api_provider
             .stream_idle_timeout
             .saturating_mul(COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER);
         let client =
-            ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
+            ApiCompactClient::new(transport, api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry));
         let trace_attempt = compaction_trace.start_attempt(&payload);
+        let mut request_lease = admission.begin_network_request().await?;
         let result = client
             .compact_input(
                 &payload,
@@ -649,9 +692,37 @@ impl ModelClient {
                 compact_request_timeout,
                 turn_state.as_deref(),
             )
-            .await
-            .map_err(|error| self.state.provider.map_api_error(error));
+            .await;
+        let provider_denial = matches!(
+            &result,
+            Err(error) if api_error_is_definitive_provider_denial(error)
+        );
+        let result = result.map_err(|error| self.state.provider.map_api_error(error));
         trace_attempt.record_result(result.as_deref());
+        match result {
+            Ok(result) => {
+                request_lease.provider_acknowledged().await?;
+                request_lease.completed().await?;
+                Ok(result)
+            }
+            Err(error) if request_lease.is_admitted() => {
+                let finalization = if provider_denial {
+                    request_lease.provider_denied().await
+                } else {
+                    request_lease.transport_lost().await
+                };
+                if let Err(finalization_error) = finalization {
+                    warn!(error = %finalization_error, "failed to record admitted compact request outcome");
+                }
+                Err(admitted_failure_error(error, "unary compact did not complete"))
+            }
+            Err(error) => Err(error),
+        }
+        }
+        .await;
+        if result.is_err() {
+            admission.terminalize_if_unfinished().await;
+        }
         result
     }
 
@@ -1411,6 +1482,7 @@ impl ModelClientSession {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
+        admission: &ModelRequestAdmissionDecision,
     ) -> Result<ResponseStream> {
         let auth_manager = self.client.state.provider.auth_manager();
         let mut auth_recovery = auth_manager
@@ -1422,6 +1494,7 @@ impl ModelClientSession {
             let transport = self
                 .client
                 .build_api_transport(&client_setup.api_provider, RESPONSES_ENDPOINT)?;
+            let api_provider = provider_for_admission(client_setup.api_provider, admission);
             let request_auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),
@@ -1444,7 +1517,7 @@ impl ModelClientSession {
                 .await;
 
             let mut request = self.client.build_responses_request(
-                &client_setup.api_provider,
+                &api_provider,
                 prompt,
                 model_info,
                 effort.clone(),
@@ -1459,12 +1532,9 @@ impl ModelClientSession {
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
             inference_trace_attempt.record_started(&request);
-            let client = ApiResponsesClient::new(
-                transport,
-                client_setup.api_provider,
-                client_setup.api_auth,
-            )
-            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+            let client = ApiResponsesClient::new(transport, api_provider, client_setup.api_auth)
+                .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+            let mut request_lease = admission.begin_network_request().await?;
             let stream_result = client.stream_request(request, options).await;
 
             match stream_result {
@@ -1474,6 +1544,7 @@ impl ModelClientSession {
                         request_session_telemetry,
                         inference_trace_attempt,
                         Arc::clone(&self.client.state.provider),
+                        request_lease,
                     );
                     return Ok(stream);
                 }
@@ -1487,6 +1558,14 @@ impl ModelClientSession {
                         response_debug_context.request_id.as_deref(),
                         /*output_items*/ &[],
                     );
+                    if request_lease.is_admitted() {
+                        if let Err(finalization_error) = request_lease.provider_denied().await {
+                            warn!(error = %finalization_error, "failed to record admitted Responses provider denial");
+                        }
+                        return Err(
+                            admission.terminal_error("provider denied the admitted request")
+                        );
+                    }
                     pending_retry = PendingUnauthorizedRetry::from_recovery(
                         handle_unauthorized(
                             unauthorized_transport,
@@ -1501,12 +1580,27 @@ impl ModelClientSession {
                 Err(err) => {
                     let response_debug_context =
                         extract_response_debug_context_from_api_error(&err);
+                    let provider_denial = api_error_is_definitive_provider_denial(&err);
                     let err = self.client.state.provider.map_api_error(err);
                     inference_trace_attempt.record_failed(
                         &err,
                         response_debug_context.request_id.as_deref(),
                         /*output_items*/ &[],
                     );
+                    if request_lease.is_admitted() {
+                        let finalization = if provider_denial {
+                            request_lease.provider_denied().await
+                        } else {
+                            request_lease.transport_lost().await
+                        };
+                        if let Err(finalization_error) = finalization {
+                            warn!(error = %finalization_error, "failed to record admitted Responses request failure");
+                        }
+                        return Err(admitted_failure_error(
+                            err,
+                            "admitted Responses request did not complete",
+                        ));
+                    }
                     return Err(err);
                 }
             }
@@ -1540,6 +1634,7 @@ impl ModelClientSession {
         warmup: bool,
         request_trace: Option<W3cTraceContext>,
         inference_trace: &InferenceTraceContext,
+        admission: &ModelRequestAdmissionDecision,
     ) -> Result<WebsocketStreamOutcome> {
         let auth_manager = self.client.state.provider.auth_manager();
 
@@ -1668,6 +1763,7 @@ impl ModelClientSession {
                         "websocket connection is unavailable".to_string(),
                     ))
                 })?;
+            let mut request_lease = admission.begin_network_request().await?;
             let stream_result = websocket_connection
                 .stream_request(
                     ws_request,
@@ -1684,19 +1780,39 @@ impl ModelClientSession {
             self.websocket_session.last_response_from_untraced_warmup = warmup;
             let stream_result = stream_result.map_err(|err| {
                 let response_debug_context = extract_response_debug_context_from_api_error(&err);
+                let provider_denial = api_error_is_definitive_provider_denial(&err);
                 let err = self.client.state.provider.map_api_error(err);
                 inference_trace_attempt.record_failed(
                     &err,
                     response_debug_context.request_id.as_deref(),
                     /*output_items*/ &[],
                 );
-                err
-            })?;
+                (err, provider_denial)
+            });
+            let stream_result = match stream_result {
+                Ok(stream_result) => stream_result,
+                Err((error, provider_denial)) if request_lease.is_admitted() => {
+                    let finalization = if provider_denial {
+                        request_lease.provider_denied().await
+                    } else {
+                        request_lease.transport_lost().await
+                    };
+                    if let Err(finalization_error) = finalization {
+                        warn!(error = %finalization_error, "failed to record admitted websocket request failure");
+                    }
+                    return Err(admitted_failure_error(
+                        error,
+                        "admitted websocket request did not complete",
+                    ));
+                }
+                Err((error, _)) => return Err(error),
+            };
             let (stream, last_request_rx) = map_response_stream(
                 stream_result,
                 request_session_telemetry,
                 inference_trace_attempt,
                 Arc::clone(&self.client.state.provider),
+                request_lease,
             );
             self.websocket_session.last_response_rx = Some(last_request_rx);
             return Ok(WebsocketStreamOutcome::Stream(stream));
@@ -1757,6 +1873,15 @@ impl ModelClientSession {
         }
 
         let disabled_trace = InferenceTraceContext::disabled();
+        let admission = self
+            .client
+            .admit_request(
+                ModelRequestKind::Prewarm,
+                model_info,
+                service_tier.clone(),
+                responses_metadata,
+            )
+            .await?;
         match self
             .stream_responses_websocket(
                 prompt,
@@ -1769,6 +1894,7 @@ impl ModelClientSession {
                 /*warmup*/ true,
                 current_span_w3c_trace_context(),
                 &disabled_trace,
+                &admission,
             )
             .await
         {
@@ -1810,13 +1936,23 @@ impl ModelClientSession {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
+        request_kind: ModelRequestKind,
     ) -> Result<ResponseStream> {
+        let admission = self
+            .client
+            .admit_request(
+                request_kind,
+                model_info,
+                service_tier.clone(),
+                responses_metadata,
+            )
+            .await?;
         let wire_api = self.client.state.provider.info().wire_api;
-        match wire_api {
+        let result = match wire_api {
             WireApi::Responses => {
                 if self.client.responses_websocket_enabled() {
                     let request_trace = current_span_w3c_trace_context();
-                    match self
+                    let websocket_result = self
                         .stream_responses_websocket(
                             prompt,
                             model_info,
@@ -1828,11 +1964,16 @@ impl ModelClientSession {
                             /*warmup*/ false,
                             request_trace,
                             inference_trace,
+                            &admission,
                         )
-                        .await?
-                    {
-                        WebsocketStreamOutcome::Stream(stream) => return Ok(stream),
-                        WebsocketStreamOutcome::FallbackToHttp => {
+                        .await;
+                    match websocket_result {
+                        Err(error) => {
+                            admission.terminalize_if_unfinished().await;
+                            return Err(error);
+                        }
+                        Ok(WebsocketStreamOutcome::Stream(stream)) => return Ok(stream),
+                        Ok(WebsocketStreamOutcome::FallbackToHttp) => {
                             self.try_switch_fallback_transport(session_telemetry, model_info);
                         }
                     }
@@ -1847,10 +1988,15 @@ impl ModelClientSession {
                     service_tier,
                     responses_metadata,
                     inference_trace,
+                    &admission,
                 )
                 .await
             }
+        };
+        if result.is_err() {
+            admission.terminalize_if_unfinished().await;
         }
+        result
     }
 
     /// Permanently disables WebSockets for this Codex session and resets WebSocket state.
@@ -1946,11 +2092,45 @@ fn subagent_header_value(session_source: &SessionSource) -> Option<String> {
 const RESPONSE_STREAM_CHANNEL_CAPACITY: usize = 1600;
 const STREAM_DROPPED_REASON: &str = "response stream dropped before provider terminal event";
 
+fn api_error_is_definitive_provider_denial(error: &ApiError) -> bool {
+    matches!(error, ApiError::Transport(TransportError::Http { status, .. }) if status.is_client_error())
+        || matches!(error, ApiError::Stream(message) if message.contains("response.failed"))
+}
+
+/// A terminalized admission still permits the normal compaction rate-limit path
+/// to see `UsageLimitReached`; that outcome has no physical-request retry.
+/// Every other admitted failure becomes terminal so the existing automatic
+/// retry/fallback loops cannot open another request under the same lease.
+fn admitted_failure_error(error: CodexErr, reason: &'static str) -> CodexErr {
+    if matches!(error.details(), CodexErrorDetails::UsageLimitReached(_)) {
+        error
+    } else {
+        CodexErr::Fatal(format!("goal-owner admitted request is terminal: {reason}"))
+    }
+}
+
+/// An admitted continuation has one physical-request lease. Disable the
+/// endpoint client's transport retries for that request so the retry policy
+/// cannot create an ambiguous second POST below Core's admission boundary.
+fn provider_for_admission(
+    mut provider: ApiProvider,
+    admission: &ModelRequestAdmissionDecision,
+) -> ApiProvider {
+    if admission.is_admitted() {
+        provider.retry.max_attempts = 1;
+        provider.retry.retry_429 = false;
+        provider.retry.retry_5xx = false;
+        provider.retry.retry_transport = false;
+    }
+    provider
+}
+
 fn map_response_stream(
     api_stream: codex_api::ResponseStream,
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
+    request_lease: ModelRequestLeaseGuard,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>) {
     let codex_api::ResponseStream {
         rx_event,
@@ -1966,6 +2146,7 @@ fn map_response_stream(
         session_telemetry,
         inference_trace_attempt,
         provider,
+        request_lease,
     )
 }
 
@@ -1975,6 +2156,7 @@ fn map_response_events<S>(
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
     provider: SharedModelProvider,
+    mut request_lease: ModelRequestLeaseGuard,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>)
 where
     S: futures::Stream<Item = std::result::Result<ResponseEvent, ApiError>>
@@ -2006,6 +2188,9 @@ where
                         upstream_request_id,
                         &items_added,
                     );
+                    if let Err(error) = request_lease.cancelled_or_dropped().await {
+                        warn!(error = %error, "failed to record dropped admitted Responses stream");
+                    }
                     return;
                 }
                 event = api_stream.next() => event,
@@ -2026,6 +2211,9 @@ where
                             upstream_request_id,
                             &items_added,
                         );
+                        if let Err(error) = request_lease.cancelled_or_dropped().await {
+                            warn!(error = %error, "failed to record dropped admitted Responses stream");
+                        }
                         return;
                     }
                 }
@@ -2044,6 +2232,10 @@ where
                         &token_usage,
                         &items_added,
                     );
+                    if let Err(error) = request_lease.completed().await {
+                        let _ = tx_event.send(Err(error)).await;
+                        return;
+                    }
                     if let Some(sender) = tx_last_response.take() {
                         let _ = sender.send(LastResponse {
                             response_id: response_id.clone(),
@@ -2063,6 +2255,12 @@ where
                     }
                 }
                 Ok(event) => {
+                    if matches!(&event, ResponseEvent::Created)
+                        && let Err(error) = request_lease.provider_acknowledged().await
+                    {
+                        let _ = tx_event.send(Err(error)).await;
+                        return;
+                    }
                     if matches!(&event, ResponseEvent::OutputItemAdded(_)) && ttft_ms.is_none() {
                         ttft_ms = Some(
                             i64::try_from(request_start.elapsed().as_millis()).unwrap_or(i64::MAX),
@@ -2074,6 +2272,9 @@ where
                             upstream_request_id,
                             &items_added,
                         );
+                        if let Err(error) = request_lease.cancelled_or_dropped().await {
+                            warn!(error = %error, "failed to record dropped admitted Responses stream");
+                        }
                         return;
                     }
                 }
@@ -2085,6 +2286,7 @@ where
                     if let Some(upstream_request_id) = upstream_request_id {
                         feedback_tags!(last_model_request_id = upstream_request_id);
                     }
+                    let provider_denial = api_error_is_definitive_provider_denial(&err);
                     let mapped = provider.map_api_error(err);
                     inference_trace_attempt.record_failed(
                         &mapped,
@@ -2095,7 +2297,20 @@ where
                         session_telemetry.see_event_completed_failed(&mapped);
                         logged_error = true;
                     }
-                    if tx_event.send(Err(mapped)).await.is_err() {
+                    let delivered_error = if request_lease.is_admitted() {
+                        let finalization = if provider_denial {
+                            request_lease.provider_denied().await
+                        } else {
+                            request_lease.transport_lost().await
+                        };
+                        if let Err(error) = finalization {
+                            warn!(error = %error, "failed to record admitted Responses stream failure");
+                        }
+                        admitted_failure_error(mapped, "admitted Responses stream did not complete")
+                    } else {
+                        mapped
+                    };
+                    if tx_event.send(Err(delivered_error)).await.is_err() {
                         return;
                     }
                 }
@@ -2106,6 +2321,16 @@ where
             upstream_request_id,
             &items_added,
         );
+        if request_lease.is_admitted() {
+            if let Err(error) = request_lease.transport_lost().await {
+                warn!(error = %error, "failed to record admitted Responses stream closure");
+            }
+            let _ = tx_event
+                .send(Err(CodexErr::Fatal(
+                    "goal-owner admitted Responses stream closed before completion".to_string(),
+                )))
+                .await;
+        }
     });
 
     (

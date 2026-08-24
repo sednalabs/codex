@@ -1,5 +1,6 @@
 use codex_core::CodexThread;
 use codex_core::ModelClient;
+use codex_core::ModelRequestKind;
 use codex_core::NewThread;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
@@ -256,6 +257,7 @@ impl MemoryStartupContext {
             installation_id.clone(),
             config.model_provider.clone(),
             session_source.clone(),
+            self.state_db(),
             config_snapshot.originator,
             config.model_verbosity,
             config.features.enabled(Feature::EnableRequestCompression),
@@ -288,6 +290,7 @@ impl MemoryStartupContext {
                 context.service_tier.clone(),
                 &responses_metadata,
                 &InferenceTraceContext::disabled(),
+                ModelRequestKind::Turn,
             )
             .await?;
 
