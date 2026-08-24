@@ -29,6 +29,7 @@ pub use prompt::PromptSlot;
 pub use skill_invocation::SkillInvocationInput;
 pub use skill_invocation::SkillInvocationKind;
 pub use thread_lifecycle::ThreadIdleInput;
+pub use thread_lifecycle::ThreadInterruptInput;
 pub use thread_lifecycle::ThreadOriginator;
 pub use thread_lifecycle::ThreadResumeInput;
 pub use thread_lifecycle::ThreadStartInput;
@@ -40,7 +41,10 @@ pub use tool_lifecycle::ToolLifecycleFuture;
 pub use tool_lifecycle::ToolStartInput;
 pub use turn_input::TurnInputContext;
 pub use turn_input::TurnInputEnvironment;
+pub use turn_lifecycle::GoalContinuationHealthCheck;
+pub use turn_lifecycle::OwnerContinuationDeferred;
 pub use turn_lifecycle::OwnerContinuationPending;
+pub use turn_lifecycle::RateLimitDomain;
 pub use turn_lifecycle::TurnAbortInput;
 pub use turn_lifecycle::TurnErrorInput;
 pub use turn_lifecycle::TurnStartInput;
@@ -144,6 +148,17 @@ pub trait ThreadLifecycleContributor<C: Sync>: Send + Sync {
     /// submit follow-up input. The host remains responsible for deciding
     /// whether that input starts a turn, is queued, or is ignored.
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let _self = self;
+            let _input = input;
+        })
+    }
+
+    /// Called for an explicit interrupt, including when the thread is otherwise idle.
+    fn on_thread_interrupt<'a>(
+        &'a self,
+        input: ThreadInterruptInput<'a>,
+    ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             let _self = self;
             let _input = input;

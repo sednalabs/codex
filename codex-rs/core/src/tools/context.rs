@@ -45,6 +45,8 @@ pub type SharedTurnDiffTracker = Arc<Mutex<TurnDiffTracker>>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolCallSource {
     Direct,
+    /// The host issued a bounded continuity check; this is not a provider call.
+    HostContinuityCheck,
     CodeMode {
         /// Runtime cell that issued the nested tool request.
         cell_id: String,

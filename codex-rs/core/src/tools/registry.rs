@@ -740,6 +740,9 @@ fn tool_execution_status_for_source(
         crate::tools::context::ToolCallSource::Direct => {
             ToolExecutionStatus::from_success(result.success_for_logging())
         }
+        crate::tools::context::ToolCallSource::HostContinuityCheck => {
+            ToolExecutionStatus::from_success(result.success_for_logging())
+        }
         crate::tools::context::ToolCallSource::CodeMode { .. } => {
             result.code_mode_execution_status()
         }

@@ -15,6 +15,7 @@ use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
 use codex_extension_api::FunctionCallError;
 use codex_extension_api::NoopTurnItemEmitter;
+use codex_extension_api::ThreadInterruptInput;
 use codex_extension_api::ThreadResumeInput;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ThreadStopInput;
@@ -24,6 +25,7 @@ use codex_extension_api::ToolCallSource;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolPayload;
+use codex_extension_api::TurnAbortInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
@@ -46,6 +48,7 @@ use codex_protocol::protocol::ThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TruncationPolicy;
+use codex_protocol::protocol::TurnAbortReason;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
@@ -602,10 +605,20 @@ async fn provider_limit_owner_preservation_keeps_active_goal_dormant_without_eli
         )
         .await;
 
-    harness
+    let admitted = harness
         .runtime_handle()
         .preserve_active_goal_after_provider_limit("turn-1", None)
         .await?;
+    assert!(
+        !admitted,
+        "unknown provider eligibility must remain dormant"
+    );
+    assert!(
+        runtime
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(thread_id)
+            .await?
+    );
 
     let goal = runtime
         .thread_goals()
@@ -624,6 +637,92 @@ async fn provider_limit_owner_preservation_keeps_active_goal_dormant_without_eli
             }],
         ),
         (goal.status, goal.tokens_used, harness.sink.goal_events())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn provider_limit_continuation_admits_one_bounded_attempt_and_blocks_retries()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "bound provider-scoped owner continuity" }),
+        ))
+        .await?;
+
+    assert!(
+        harness
+            .runtime_handle()
+            .preserve_active_goal_after_provider_limit("turn-1", Some(Duration::from_secs(1)))
+            .await?
+    );
+    harness
+        .abort_turn("turn-1", TurnAbortReason::Replaced)
+        .await;
+    assert!(
+        !harness
+            .runtime_handle()
+            .preserve_active_goal_after_provider_limit("turn-1", Some(Duration::from_secs(1)))
+            .await?
+    );
+    assert!(
+        runtime
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(thread_id)
+            .await?
+    );
+
+    // Recreating the contributor/runtime after a resume cannot erase the durable gate.
+    harness.resume_thread().await;
+    assert!(
+        runtime
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(thread_id)
+            .await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn explicit_abort_cancels_provider_continuation_without_clearing_work_gate()
+-> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "cancel a deferred owner safely" }),
+        ))
+        .await?;
+    assert!(
+        harness
+            .runtime_handle()
+            .preserve_active_goal_after_provider_limit("turn-1", Some(Duration::from_secs(60)))
+            .await?
+    );
+
+    harness.interrupt_thread().await;
+    harness
+        .abort_turn("turn-1", TurnAbortReason::Interrupted)
+        .await;
+    assert!(
+        runtime
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(thread_id)
+            .await?
     );
     Ok(())
 }
@@ -1302,6 +1401,20 @@ impl GoalExtensionHarness {
         }
     }
 
+    async fn abort_turn(&self, turn_id: &str, reason: TurnAbortReason) {
+        let turn_store = ExtensionData::new(turn_id);
+        for contributor in self.registry.turn_lifecycle_contributors() {
+            contributor
+                .on_turn_abort(TurnAbortInput {
+                    reason: reason.clone(),
+                    session_store: &self.session_store,
+                    thread_store: &self.thread_store,
+                    turn_store: &turn_store,
+                })
+                .await;
+        }
+    }
+
     async fn record_token_usage(&self, turn_id: &str, usage: &TokenUsage) {
         let turn_store = ExtensionData::new(turn_id);
         let token_usage = TokenUsageInfo {
@@ -1343,6 +1456,17 @@ impl GoalExtensionHarness {
         }
     }
 
+    async fn interrupt_thread(&self) {
+        for contributor in self.registry.thread_lifecycle_contributors() {
+            contributor
+                .on_thread_interrupt(ThreadInterruptInput {
+                    session_store: &self.session_store,
+                    thread_store: &self.thread_store,
+                })
+                .await;
+        }
+    }
+
     async fn notify_tool_finish(&self, turn_id: &str, call_id: &str, tool_name: &str) {
         let turn_store = ExtensionData::new(turn_id);
         let tool_name = codex_extension_api::ToolName::plain(tool_name);
@@ -1370,6 +1494,17 @@ impl GoalExtensionHarness {
                     turn_id,
                     error: error.clone(),
                     rate_limit_retry_after: None,
+                    rate_limit_domain: codex_extension_api::RateLimitDomain {
+                        thread_id: self.thread_id,
+                        provider_id: None,
+                        requested_model: None,
+                        effective_model: None,
+                        account_context_key: None,
+                        shared_quota_key: None,
+                        snapshot: None,
+                        reset_at: None,
+                        retry_after: None,
+                    },
                     session_store: &self.session_store,
                     thread_store: &self.thread_store,
                     turn_store: &turn_store,

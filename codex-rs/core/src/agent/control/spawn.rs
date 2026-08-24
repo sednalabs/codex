@@ -822,7 +822,7 @@ impl AgentControl {
             new_thread.thread.session_telemetry().counter(
                 "codex.diagnostic.goal_continuation_health_check",
                 1,
-                &[("stage", "continuation_child_probe_initial_work_submitted")],
+                &[("stage", "continuity_child_initial_work_submitted")],
             );
             tracing::info!(
                 child_thread_id = %new_thread.thread_id,

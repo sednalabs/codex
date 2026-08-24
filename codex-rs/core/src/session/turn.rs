@@ -70,6 +70,7 @@ use crate::tools::spec_plan::tool_suggest_enabled;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::turn_timing::record_turn_ttft_metric;
 use crate::util::error_or_panic;
+use chrono::Utc;
 use codex_analytics::AppInvocation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
@@ -87,6 +88,7 @@ use codex_file_system::FindUpErrorPolicy;
 use codex_file_system::find_nearest_ancestor_with_markers;
 use codex_mcp::ToolInfo;
 use codex_protocol::ResponseItemId;
+use codex_protocol::ThreadId;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ServiceTier;
@@ -142,13 +144,12 @@ pub(crate) struct CachedEndpointRecommendedPluginCandidates {
 }
 
 const POST_SAMPLING_TOKEN_ESTIMATE_TARGET: &str = "codex_core::post_sampling_token_estimate";
-const GOAL_CONTINUATION_HEALTH_CHECK_MARKER: &str = "<goal_continuation_health_check>";
 
 #[derive(Clone, Copy, Debug)]
 struct GoalContinuationHealthCheckTurn;
 
 #[derive(Clone, Copy, Debug)]
-struct GoalContinuationChildProbeDispatched;
+struct GoalContinuationChildCheckDispatched;
 
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
@@ -528,10 +529,24 @@ pub(crate) async fn run_turn(
             }
             Err(e) => {
                 info!("Turn error: {e:#}");
-                let rate_limit_retry_after =
-                    matches!(e.details(), CodexErrorDetails::UsageLimitReached(_))
-                        .then(|| e.retry_delay())
-                        .flatten();
+                let rate_limit_retry_after = match e.details() {
+                    CodexErrorDetails::UsageLimitReached(details) => {
+                        e.retry_delay().or_else(|| {
+                            details
+                                .resets_at
+                                .and_then(|reset_at| (reset_at - Utc::now()).to_std().ok())
+                        })
+                    }
+                    _ => None,
+                };
+                if let CodexErrorDetails::UsageLimitReached(details) = e.details() {
+                    sess.record_rate_limit_domain(
+                        &turn_context,
+                        details.rate_limits.as_deref().cloned(),
+                        details.resets_at.map(|reset_at| reset_at.to_rfc3339()),
+                        rate_limit_retry_after,
+                    );
+                }
                 let error = e.to_codex_protocol_error();
                 sess.emit_turn_error_lifecycle_with_rate_limit_delay(
                     turn_context.as_ref(),
@@ -1234,28 +1249,13 @@ pub(crate) fn build_prompt(
     }
 }
 
-fn goal_continuation_health_check_input(input: &[ResponseItem]) -> bool {
-    input.iter().any(|item| {
-        let ResponseItem::Message { content, .. } = item else {
-            return false;
-        };
-        content.iter().any(|content_item| {
-            matches!(
-                content_item,
-                ContentItem::InputText { text }
-                    if text.starts_with("<codex_internal_context source=\"goal\">")
-                        && text.contains(GOAL_CONTINUATION_HEALTH_CHECK_MARKER)
-            )
-        })
-    })
-}
-
-async fn run_goal_continuation_child_probe(
+async fn run_goal_continuation_child_check(
     tool_runtime: ToolCallRuntime,
+    thread_id: ThreadId,
     turn_context: Arc<TurnContext>,
     cancellation_token: CancellationToken,
 ) {
-    let task_name = format!("continuation_child_probe_{}", uuid::Uuid::new_v4().simple());
+    let task_name = format!("continuation_child_check_{}", uuid::Uuid::new_v4().simple());
     let call_id = format!("diag_{task_name}");
     let tool_name = if turn_context.provider.capabilities().namespace_tools {
         turn_context
@@ -1269,7 +1269,7 @@ async fn run_goal_continuation_child_probe(
         ToolName::plain("spawn_agent")
     };
     let arguments = serde_json::json!({
-        "message": "Run one bounded continuation child probe: use an available tool to perform one concrete step, then report one concise evidence-backed fact to the parent.",
+        "message": "Run one bounded continuity child check: use an available tool to perform one concrete step, then report one concise evidence-backed fact to the parent.",
         "task_name": task_name,
         "fork_turns": "none"
     })
@@ -1283,19 +1283,22 @@ async fn run_goal_continuation_child_probe(
     turn_context.session_telemetry.counter(
         "codex.diagnostic.goal_continuation_health_check",
         1,
-        &[("stage", "continuation_child_probe_dispatch_attempt")],
+        &[("stage", "continuity_child_dispatch_attempt")],
     );
     tracing::info!(
         turn_id = %turn_context.sub_id,
+        thread_id = %thread_id,
         %call_id,
         tool = %tool_name,
-        "dispatching bounded post-limit multi-agent continuation child probe"
+        source = "host_continuity_check",
+        provider_outcome = "unknown",
+        "dispatching bounded multi-agent continuity child check"
     );
 
     match tool_runtime
         .handle_tool_call_with_source(
             call,
-            crate::tools::router::ToolCallSource::Direct,
+            crate::tools::router::ToolCallSource::HostContinuityCheck,
             cancellation_token,
         )
         .await
@@ -1304,20 +1307,33 @@ async fn run_goal_continuation_child_probe(
             turn_context.session_telemetry.counter(
                 "codex.diagnostic.goal_continuation_health_check",
                 1,
-                &[("stage", "continuation_child_probe_dispatch_completed")],
+                &[("stage", "continuity_child_dispatch_completed")],
+            );
+            tracing::info!(
+                turn_id = %turn_context.sub_id,
+                thread_id = %thread_id,
+                %call_id,
+                source = "host_continuity_check",
+                admission = "accepted",
+                provider_outcome = "unknown",
+                "continuity child check dispatch completed"
             );
         }
         Err(error) => {
             turn_context.session_telemetry.counter(
                 "codex.diagnostic.goal_continuation_health_check",
                 1,
-                &[("stage", "continuation_child_probe_dispatch_failed")],
+                &[("stage", "continuity_child_dispatch_failed")],
             );
             warn!(
                 turn_id = %turn_context.sub_id,
+                thread_id = %thread_id,
                 %call_id,
                 %error,
-                "post-limit multi-agent continuation child probe failed"
+                source = "host_continuity_check",
+                admission = "rejected",
+                provider_outcome = "unknown",
+                "continuity child check dispatch failed"
             );
         }
     }
@@ -1363,7 +1379,13 @@ async fn run_sampling_request(
     let max_retries = turn_context.provider.info().stream_max_retries();
     let continuation_health_check_enabled =
         crate::diagnostic_flags::goal_continuation_health_check_enabled();
-    if continuation_health_check_enabled && goal_continuation_health_check_input(&input) {
+    if continuation_health_check_enabled
+        && sess
+            .services
+            .thread_extension_data
+            .remove::<codex_extension_api::GoalContinuationHealthCheck>()
+            .is_some()
+    {
         turn_context
             .extension_data
             .insert(GoalContinuationHealthCheckTurn);
@@ -1425,14 +1447,15 @@ async fn run_sampling_request(
                     if continuation_health_check_turn
                         && turn_context
                             .extension_data
-                            .get::<GoalContinuationChildProbeDispatched>()
+                            .get::<GoalContinuationChildCheckDispatched>()
                             .is_none()
                     {
                         turn_context
                             .extension_data
-                            .insert(GoalContinuationChildProbeDispatched);
-                        run_goal_continuation_child_probe(
+                            .insert(GoalContinuationChildCheckDispatched);
+                        run_goal_continuation_child_check(
                             tool_runtime.clone(),
+                            sess.thread_id(),
                             Arc::clone(&turn_context),
                             cancellation_token.child_token(),
                         )

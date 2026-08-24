@@ -66,6 +66,9 @@ fn tool_dispatch_invocation(invocation: &ToolInvocation) -> Option<ToolDispatchI
         ToolCallSource::Direct => ToolDispatchRequester::Model {
             model_visible_call_id: invocation.call_id.clone(),
         },
+        // Host continuity checks are local admission/work-custody evidence. Do not
+        // publish them as model requests or provider outcomes in the rollout trace.
+        ToolCallSource::HostContinuityCheck => return None,
         ToolCallSource::CodeMode {
             cell_id,
             runtime_tool_call_id,
@@ -96,6 +99,7 @@ fn tool_dispatch_result(
         ToolCallSource::Direct => Some(ToolDispatchResult::DirectResponse {
             response_item: result.to_response_item(call_id, payload),
         }),
+        ToolCallSource::HostContinuityCheck => None,
         ToolCallSource::CodeMode { .. } => Some(ToolDispatchResult::CodeModeResponse {
             value: result.code_mode_result(payload),
         }),

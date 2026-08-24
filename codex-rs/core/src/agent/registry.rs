@@ -23,6 +23,8 @@ use std::sync::atomic::Ordering;
 const COLD_STATUS_MAX_BYTES: usize = 128;
 const COLD_STATUS_TRUNCATION_MARKER: &str = "...[truncated]";
 
+pub(crate) const MAX_V2_THREAD_SPAWN_DEPTH: i32 = 2;
+
 /// This structure is used to add some limits on the multi-agent capabilities for Codex. In
 /// the current implementation, it limits:
 /// * Total number of sub-agents (i.e. threads) per user session

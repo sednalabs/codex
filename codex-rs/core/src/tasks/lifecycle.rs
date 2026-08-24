@@ -1,4 +1,5 @@
 use codex_extension_api::ExtensionData;
+use codex_extension_api::RateLimitDomain;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
@@ -28,6 +29,9 @@ impl Session {
     }
 
     pub(super) async fn emit_turn_stop_lifecycle(&self, turn_store: &ExtensionData) {
+        self.services
+            .thread_extension_data
+            .remove::<codex_extension_api::GoalContinuationHealthCheck>();
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_stop(codex_extension_api::TurnStopInput {
@@ -61,6 +65,9 @@ impl Session {
         reason: TurnAbortReason,
         turn_store: &ExtensionData,
     ) {
+        self.services
+            .thread_extension_data
+            .remove::<codex_extension_api::GoalContinuationHealthCheck>();
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_abort(codex_extension_api::TurnAbortInput {
@@ -88,6 +95,28 @@ impl Session {
         error: CodexErrorInfo,
         rate_limit_retry_after: Option<std::time::Duration>,
     ) {
+        let rate_limit_domain = if matches!(&error, CodexErrorInfo::UsageLimitExceeded) {
+            self.services
+                .thread_extension_data
+                .get::<RateLimitDomain>()
+                .map(|domain| (*domain).clone())
+        } else {
+            None
+        }
+        .unwrap_or_else(|| RateLimitDomain {
+                thread_id: self.thread_id(),
+                provider_id: Some(turn_context.config.model_provider_id.clone()),
+                requested_model: turn_context.config.model.clone(),
+                effective_model: Some(turn_context.model_info.slug.clone()),
+                // The host has no authoritative account/quota binding for this callback unless
+                // the provider supplies one. Preserve unknown as None rather than inferring it
+                // from parentage, process state, or a model name.
+                account_context_key: None,
+                shared_quota_key: None,
+                snapshot: None,
+                reset_at: None,
+                retry_after: rate_limit_retry_after,
+            });
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_error(codex_extension_api::TurnErrorInput {
@@ -97,6 +126,7 @@ impl Session {
                     session_store: &self.services.session_extension_data,
                     thread_store: &self.services.thread_extension_data,
                     turn_store: turn_context.extension_data.as_ref(),
+                    rate_limit_domain: rate_limit_domain.clone(),
                 })
                 .await;
         }

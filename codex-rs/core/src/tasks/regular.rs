@@ -8,6 +8,7 @@ use crate::session::turn::run_turn;
 use crate::session::turn_context::TurnContext;
 use crate::session_startup_prewarm::SessionStartupPrewarmResolution;
 use crate::state::TaskKind;
+use codex_extension_api::OwnerContinuationDeferred;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
 use tracing::Instrument;
@@ -86,6 +87,15 @@ impl SessionTask for RegularTask {
             )
             .instrument(run_turn_span.clone())
             .await?;
+            if ctx
+                .extension_data
+                .get::<OwnerContinuationDeferred>()
+                .is_some()
+            {
+                // Keep queued steer/input work in custody, but never let the same task make a
+                // second provider request after a dormant or exhausted admission decision.
+                return Ok(last_agent_message);
+            }
             if !sess.input_queue.has_pending_input(&sess.active_turn).await {
                 return Ok(last_agent_message);
             }

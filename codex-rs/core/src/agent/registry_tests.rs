@@ -84,6 +84,18 @@ fn thread_spawn_depth_increments_and_enforces_limit() {
 }
 
 #[test]
+fn v2_thread_spawn_depth_rejects_over_depth_without_admission() {
+    assert!(!exceeds_thread_spawn_depth_limit(
+        /*depth*/ 2,
+        MAX_V2_THREAD_SPAWN_DEPTH
+    ));
+    assert!(exceeds_thread_spawn_depth_limit(
+        /*depth*/ 3,
+        MAX_V2_THREAD_SPAWN_DEPTH
+    ));
+}
+
+#[test]
 fn spawn_delivery_ownership_prevents_cancellation_from_claiming_abort() {
     let registry = Arc::new(AgentRegistry::default());
     let key = SpawnPublicationKey::new(ThreadId::new(), "spawn-call");

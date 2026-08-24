@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::MAX_V2_THREAD_SPAWN_DEPTH;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
 use crate::agent::next_thread_spawn_depth;
@@ -51,9 +52,10 @@ async fn handle_spawn_agent(
         turn.session_telemetry.counter(
             "codex.diagnostic.goal_continuation_health_check",
             1,
-            &[("stage", "continuation_child_probe_handler_attempt")],
+            &[("stage", "continuity_child_handler_attempt")],
         );
         tracing::info!(
+            parent_thread_id = %session.thread_id,
             turn_id = %turn.sub_id,
             call_id = %call_id,
             "continuation health check entered V2 spawn handler"
@@ -72,6 +74,11 @@ async fn handle_spawn_agent(
     let message = message_content(args.message)?;
     let session_source = turn.session_source.clone();
     let child_depth = next_thread_spawn_depth(&session_source);
+    if child_depth > MAX_V2_THREAD_SPAWN_DEPTH {
+        return Err(FunctionCallError::RespondToModel(
+            "Agent depth limit reached. Solve the task yourself.".to_string(),
+        ));
+    }
     let mut config =
         build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
     if let Some(service_tier) = args.service_tier.as_ref() {
@@ -133,9 +140,10 @@ async fn handle_spawn_agent(
         turn.session_telemetry.counter(
             "codex.diagnostic.goal_continuation_health_check",
             1,
-            &[("stage", "continuation_child_probe_control_attempt")],
+            &[("stage", "continuity_child_control_attempt")],
         );
         tracing::info!(
+            parent_thread_id = %session.thread_id,
             turn_id = %turn.sub_id,
             call_id = %call_id,
             task_name = %args.task_name,
@@ -186,7 +194,7 @@ async fn handle_spawn_agent(
         &session,
         &turn,
         SubAgentActivityItem {
-            id: call_id,
+            id: call_id.clone(),
             agent_thread_id: new_thread_id,
             agent_path: new_agent_path.clone(),
             model: effective_model.clone(),
@@ -205,7 +213,18 @@ async fn handle_spawn_agent(
         turn.session_telemetry.counter(
             "codex.diagnostic.goal_continuation_health_check",
             1,
-            &[("stage", "continuation_child_probe_published")],
+            &[("stage", "continuity_child_published")],
+        );
+        tracing::info!(
+            parent_thread_id = %session.thread_id,
+            turn_id = %turn.sub_id,
+            call_id = %call_id,
+            child_thread_id = %new_thread_id,
+            child_path = %new_agent_path,
+            source = "host_continuity_check",
+            admission = "published",
+            provider_outcome = "unknown",
+            "continuity child publication recorded"
         );
     }
     let task_name = String::from(new_agent_path);

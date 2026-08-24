@@ -47,6 +47,14 @@ pub struct ThreadIdleInput<'a> {
     pub thread_store: &'a ExtensionData,
 }
 
+/// Input supplied when an explicit interrupt wins over any queued thread work.
+pub struct ThreadInterruptInput<'a> {
+    /// Store scoped to the host session runtime.
+    pub session_store: &'a ExtensionData,
+    /// Store scoped to this thread runtime.
+    pub thread_store: &'a ExtensionData,
+}
+
 /// Input supplied when the host stops a thread runtime.
 pub struct ThreadStopInput<'a> {
     /// Store scoped to the host session runtime.
