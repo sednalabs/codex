@@ -325,7 +325,7 @@ WHERE phase = 'in_flight'
         fetch_record_for_authority(self.pool.as_ref(), authority).await
     }
 
-    /// Insert a denial, or return the current state for an exact origin replay.
+    /// Insert a denial, or return the recorded generation for an exact origin replay.
     ///
     /// A changed origin can start only after the active generation has been
     /// explicitly retired. The retirement preserves the old lifecycle row;
@@ -347,19 +347,17 @@ WHERE phase = 'in_flight'
             if !observation_matches_origin(observation, &origin) {
                 bail!("conflicting replay for goal-owner admission origin request")
             }
-            let record = fetch_active_record(&mut *transaction, observation.thread_id)
-                .await?
-                .or(fetch_record_by_generation(
-                    &mut *transaction,
-                    observation.thread_id,
-                    origin.generation,
+            let record = fetch_record_by_generation(
+                &mut *transaction,
+                observation.thread_id,
+                origin.generation,
+            )
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "goal-owner admission origin history exists without its durable generation"
                 )
-                .await?)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "goal-owner admission origin history exists without its durable generation"
-                    )
-                })?;
+            })?;
             transaction.commit().await?;
             return Ok(record);
         }
@@ -959,8 +957,16 @@ async fn next_generation(
     thread_id: ThreadId,
 ) -> anyhow::Result<i64> {
     let latest = sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(MAX(generation), 0) FROM goal_owner_admissions WHERE thread_id = ?",
+        r#"
+SELECT COALESCE(MAX(generation), 0)
+FROM (
+    SELECT generation FROM goal_owner_admissions WHERE thread_id = ?
+    UNION ALL
+    SELECT generation FROM goal_owner_admission_origins WHERE thread_id = ?
+)
+        "#,
     )
+    .bind(thread_id.to_string())
     .bind(thread_id.to_string())
     .fetch_one(&mut **transaction)
     .await?;
