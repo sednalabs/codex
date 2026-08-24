@@ -45,6 +45,7 @@ mod backfill;
 mod configured_identity_provenance;
 mod extension_storage;
 mod external_agent_config_imports;
+mod goal_owner_admissions;
 mod goals;
 mod logs;
 mod memories;
@@ -62,6 +63,15 @@ pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportHistoryRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportSuccessRecord;
+pub use goal_owner_admissions::GoalOwnerAdmissionAuthority;
+pub use goal_owner_admissions::GoalOwnerAdmissionDenialClass;
+pub use goal_owner_admissions::GoalOwnerAdmissionLease;
+pub use goal_owner_admissions::GoalOwnerAdmissionObservation;
+pub use goal_owner_admissions::GoalOwnerAdmissionPhase;
+pub use goal_owner_admissions::GoalOwnerAdmissionRecord;
+pub use goal_owner_admissions::GoalOwnerAdmissionStore;
+pub use goal_owner_admissions::GoalOwnerAdmissionTerminalDisposition;
+pub use goal_owner_admissions::GoalOwnerAdmissionTerminalOutcome;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
@@ -96,6 +106,7 @@ pub struct StateRuntime {
     logs_pool: Arc<sqlx::SqlitePool>,
     usage_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
+    goal_owner_admissions: GoalOwnerAdmissionStore,
     memories: MemoryStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
@@ -204,6 +215,12 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        if let Err(err) =
+            GoalOwnerAdmissionStore::recover_in_flight_on_open(goals_pool.as_ref()).await
+        {
+            close_sqlite_pools(&[pool.as_ref(), logs_pool.as_ref(), goals_pool.as_ref()]).await;
+            return Err(err);
+        }
         let memories_pool = match sqlite
             .open_memories_db(&memories_migrator, telemetry_override)
             .await
@@ -289,6 +306,7 @@ impl StateRuntime {
         let thread_recency_at_millis = thread_recency_at_millis.unwrap_or(0);
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
+            goal_owner_admissions: GoalOwnerAdmissionStore::new(Arc::clone(&goals_pool)),
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
             logs_pool,
@@ -338,6 +356,11 @@ impl StateRuntime {
 
     pub fn thread_goals(&self) -> &GoalStore {
         &self.thread_goals
+    }
+
+    /// Durable authority ledger for one exact goal-owner admission per thread.
+    pub fn goal_owner_admissions(&self) -> &GoalOwnerAdmissionStore {
+        &self.goal_owner_admissions
     }
 
     pub fn memories(&self) -> &MemoryStore {
