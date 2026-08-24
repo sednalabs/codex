@@ -46,6 +46,7 @@ use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -111,6 +112,94 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
     )
+}
+
+fn spawn_outbound_router(
+    mut outgoing_rx: mpsc::Receiver<OutgoingEnvelope>,
+    mut outbound_connections: HashMap<ConnectionId, OutboundConnectionState>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(envelope) = outgoing_rx.recv().await {
+            route_outgoing_envelope(&mut outbound_connections, envelope).await;
+        }
+    })
+}
+
+async fn deliver_in_process_events(
+    mut writer_rx: mpsc::Receiver<QueuedOutgoingMessage>,
+    event_tx: mpsc::Sender<InProcessServerEvent>,
+    outgoing_message_sender: Weak<OutgoingMessageSender>,
+) {
+    while let Some(queued_message) = writer_rx.recv().await {
+        let outgoing_message = queued_message.message;
+        match outgoing_message {
+            OutgoingMessage::Request(request) => {
+                // Send directly to avoid cloning; on failure the original value
+                // is returned inside the error.
+                if let Err(send_error) =
+                    event_tx.try_send(InProcessServerEvent::ServerRequest(request))
+                {
+                    let consumer_closed =
+                        matches!(&send_error, mpsc::error::TrySendError::Closed(_));
+                    let (error, inner) = match send_error {
+                        mpsc::error::TrySendError::Full(inner) => (
+                            JSONRPCErrorError {
+                                code: OVERLOADED_ERROR_CODE,
+                                message: "in-process server request queue is full".to_string(),
+                                data: None,
+                            },
+                            inner,
+                        ),
+                        mpsc::error::TrySendError::Closed(inner) => (
+                            internal_error("in-process server request consumer is closed"),
+                            inner,
+                        ),
+                    };
+                    let request_id = match inner {
+                        InProcessServerEvent::ServerRequest(req) => req.id().clone(),
+                        _ => unreachable!("we just sent a ServerRequest variant"),
+                    };
+                    if let Some(outgoing_message_sender) = outgoing_message_sender.upgrade() {
+                        outgoing_message_sender
+                            .notify_client_error(request_id, error)
+                            .await;
+                    }
+                    if consumer_closed {
+                        break;
+                    }
+                }
+            }
+            OutgoingMessage::AppServerNotification(envelope) => {
+                let notification = envelope.notification;
+                if server_notification_requires_delivery(&notification) {
+                    if event_tx
+                        .send(InProcessServerEvent::ServerNotification(notification))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                } else if let Err(send_error) =
+                    event_tx.try_send(InProcessServerEvent::ServerNotification(notification))
+                {
+                    match send_error {
+                        mpsc::error::TrySendError::Full(_) => {
+                            warn!("dropping in-process server notification (queue full)");
+                        }
+                        mpsc::error::TrySendError::Closed(_) => {
+                            break;
+                        }
+                    }
+                }
+            }
+            OutgoingMessage::Response(_) | OutgoingMessage::Error(_) => {
+                warn!("received unexpected response-lane message in event delivery");
+            }
+        }
+        if let Some(write_complete_tx) = queued_message.write_complete_tx {
+            let _ = write_complete_tx.send(());
+        }
+    }
 }
 
 /// Input needed to start an in-process app-server runtime.
@@ -390,39 +479,63 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
 
     let runtime_handle = tokio::spawn(async move {
-        let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
+        let (event_outgoing_tx, event_outgoing_rx) =
+            mpsc::channel::<OutgoingEnvelope>(channel_capacity);
+        let (response_outgoing_tx, response_outgoing_rx) =
+            mpsc::channel::<OutgoingEnvelope>(channel_capacity);
         let auth_manager =
             AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env)
                 .await;
         let analytics_events_client =
             analytics_events_client_from_config(Arc::clone(&auth_manager), args.config.as_ref());
         let analytics_events_flush_client = analytics_events_client.clone();
-        let outgoing_message_sender = Arc::new(OutgoingMessageSender::new(
-            outgoing_tx,
+        let outgoing_message_sender = Arc::new(OutgoingMessageSender::new_with_senders(
+            event_outgoing_tx,
+            response_outgoing_tx,
             analytics_events_client.clone(),
         ));
 
-        let (writer_tx, mut writer_rx) = mpsc::channel::<QueuedOutgoingMessage>(channel_capacity);
+        let (event_writer_tx, event_writer_rx) =
+            mpsc::channel::<QueuedOutgoingMessage>(channel_capacity);
+        let (response_writer_tx, mut response_writer_rx) =
+            mpsc::channel::<QueuedOutgoingMessage>(channel_capacity);
         let outbound_initialized = Arc::new(AtomicBool::new(false));
         let outbound_experimental_api_enabled = Arc::new(AtomicBool::new(false));
         let outbound_opted_out_notification_methods = Arc::new(RwLock::new(HashSet::new()));
 
-        let mut outbound_connections = HashMap::<ConnectionId, OutboundConnectionState>::new();
-        outbound_connections.insert(
+        let mut event_outbound_connections =
+            HashMap::<ConnectionId, OutboundConnectionState>::new();
+        event_outbound_connections.insert(
             IN_PROCESS_CONNECTION_ID,
             OutboundConnectionState::new(
-                writer_tx,
+                event_writer_tx,
                 Arc::clone(&outbound_initialized),
                 Arc::clone(&outbound_experimental_api_enabled),
                 Arc::clone(&outbound_opted_out_notification_methods),
                 /*disconnect_sender*/ None,
             ),
         );
-        let mut outbound_handle = tokio::spawn(async move {
-            while let Some(envelope) = outgoing_rx.recv().await {
-                route_outgoing_envelope(&mut outbound_connections, envelope).await;
-            }
+        let mut response_outbound_connections =
+            HashMap::<ConnectionId, OutboundConnectionState>::new();
+        response_outbound_connections.insert(
+            IN_PROCESS_CONNECTION_ID,
+            OutboundConnectionState::new(
+                response_writer_tx,
+                Arc::clone(&outbound_initialized),
+                Arc::clone(&outbound_experimental_api_enabled),
+                Arc::clone(&outbound_opted_out_notification_methods),
+                /*disconnect_sender*/ None,
+            ),
+        );
+        let mut event_outbound_handle =
+            spawn_outbound_router(event_outgoing_rx, event_outbound_connections);
+        let mut response_outbound_handle =
+            spawn_outbound_router(response_outgoing_rx, response_outbound_connections);
+        let event_outgoing = Arc::downgrade(&outgoing_message_sender);
+        let mut event_delivery_handle = tokio::spawn(async move {
+            deliver_in_process_events(event_writer_rx, event_tx, event_outgoing).await;
         });
+        let mut event_delivery_finished = false;
 
         let processor_outgoing = Arc::clone(&outgoing_message_sender);
         let config_manager = ConfigManager::new(
@@ -613,7 +726,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                     }
                 }
-                queued_message = writer_rx.recv() => {
+                queued_message = response_writer_rx.recv() => {
                     let Some(queued_message) = queued_message else {
                         break;
                     };
@@ -639,78 +752,30 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 );
                             }
                         }
-                        OutgoingMessage::Request(request) => {
-                            // Send directly to avoid cloning; on failure the
-                            // original value is returned inside the error.
-                            if let Err(send_error) = event_tx
-                                .try_send(InProcessServerEvent::ServerRequest(request))
-                            {
-                                let (error, inner) = match send_error {
-                                    mpsc::error::TrySendError::Full(inner) => (
-                                        JSONRPCErrorError {
-                                            code: OVERLOADED_ERROR_CODE,
-                                            message:
-                                                "in-process server request queue is full".to_string(),
-                                            data: None,
-                                        },
-                                        inner,
-                                    ),
-                                    mpsc::error::TrySendError::Closed(inner) => (
-                                        internal_error(
-                                            "in-process server request consumer is closed",
-                                        ),
-                                        inner,
-                                    ),
-                                };
-                                let request_id = match inner {
-                                    InProcessServerEvent::ServerRequest(req) => req.id().clone(),
-                                    _ => unreachable!("we just sent a ServerRequest variant"),
-                                };
-                                outgoing_message_sender
-                                    .notify_client_error(request_id, error)
-                                    .await;
-                            }
-                        }
-                        OutgoingMessage::AppServerNotification(envelope) => {
-                            let notification = envelope.notification;
-                            if server_notification_requires_delivery(&notification) {
-                                if event_tx
-                                    .send(InProcessServerEvent::ServerNotification(notification))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            } else if let Err(send_error) =
-                                event_tx.try_send(InProcessServerEvent::ServerNotification(notification))
-                            {
-                                match send_error {
-                                    mpsc::error::TrySendError::Full(_) => {
-                                        warn!("dropping in-process server notification (queue full)");
-                                    }
-                                    mpsc::error::TrySendError::Closed(_) => {
-                                        break;
-                                    }
-                                }
-                            }
+                        OutgoingMessage::Request(_) | OutgoingMessage::AppServerNotification(_) => {
+                            warn!("received unexpected event-lane message in response delivery");
                         }
                     }
                     if let Some(write_complete_tx) = queued_message.write_complete_tx {
                         let _ = write_complete_tx.send(());
                     }
                 }
+                _ = &mut event_delivery_handle => {
+                    event_delivery_finished = true;
+                    break;
+                }
             }
         }
 
-        drop(writer_rx);
+        drop(response_writer_rx);
         drop(processor_tx);
         outgoing_message_sender
             .cancel_all_requests(Some(internal_error(
                 "in-process app-server runtime is shutting down",
             )))
             .await;
-        // Drop the runtime's last sender before awaiting the router task so
-        // `outgoing_rx.recv()` can observe channel closure and exit cleanly.
+        // Drop the runtime's sender before awaiting the delivery and router
+        // tasks so both bounded ingress receivers can observe channel closure.
         drop(outgoing_message_sender);
         for (_, response_tx) in pending_request_responses {
             let _ = response_tx.send(Err(internal_error(
@@ -722,9 +787,26 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             processor_handle.abort();
             let _ = processor_handle.await;
         }
-        if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut outbound_handle).await {
-            outbound_handle.abort();
-            let _ = outbound_handle.await;
+        if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, async {
+            if !event_delivery_finished {
+                let _ = (&mut event_delivery_handle).await;
+                event_delivery_finished = true;
+            }
+            let _ = (&mut event_outbound_handle).await;
+            let _ = (&mut response_outbound_handle).await;
+        })
+        .await
+        {
+            if !event_delivery_finished {
+                event_delivery_handle.abort();
+            }
+            event_outbound_handle.abort();
+            response_outbound_handle.abort();
+            if !event_delivery_finished {
+                let _ = event_delivery_handle.await;
+            }
+            let _ = event_outbound_handle.await;
+            let _ = response_outbound_handle.await;
         }
 
         analytics_events_flush_client.flush().await;
@@ -760,6 +842,61 @@ mod tests {
     use pretty_assertions::assert_eq;
     use std::path::Path;
     use tempfile::TempDir;
+
+    fn test_outbound_connections(
+        writer: mpsc::Sender<QueuedOutgoingMessage>,
+    ) -> HashMap<ConnectionId, OutboundConnectionState> {
+        HashMap::from([(
+            IN_PROCESS_CONNECTION_ID,
+            OutboundConnectionState::new(
+                writer,
+                Arc::new(AtomicBool::new(true)),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(RwLock::new(HashSet::new())),
+                /*disconnect_sender*/ None,
+            ),
+        )])
+    }
+
+    fn turn_completed_notification(turn_id: &str) -> ServerNotification {
+        ServerNotification::TurnCompleted(TurnCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: Turn {
+                id: turn_id.to_string(),
+                items: Vec::new(),
+                items_view: TurnItemsView::NotLoaded,
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: Some(0),
+                duration_ms: None,
+            },
+            final_model: None,
+            model_snapshot: None,
+        })
+    }
+
+    async fn wait_for_channel_capacity<T>(sender: &mpsc::Sender<T>, expected: usize) {
+        timeout(Duration::from_secs(1), async {
+            while sender.capacity() != expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("channel should reach expected capacity");
+    }
+
+    fn turn_id_and_write_completion(
+        queued_message: QueuedOutgoingMessage,
+    ) -> (String, Option<oneshot::Sender<()>>) {
+        let OutgoingMessage::AppServerNotification(envelope) = queued_message.message else {
+            panic!("expected server notification");
+        };
+        let ServerNotification::TurnCompleted(notification) = envelope.notification else {
+            panic!("expected turn/completed notification");
+        };
+        (notification.turn.id, queued_message.write_complete_tx)
+    }
 
     async fn build_test_config(codex_home: &Path) -> Config {
         match ConfigBuilder::default()
@@ -894,6 +1031,147 @@ mod tests {
             .shutdown()
             .await
             .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[tokio::test]
+    async fn responses_bypass_saturated_in_process_event_router() {
+        let (event_outgoing_tx, event_outgoing_rx) = mpsc::channel(/*buffer*/ 1);
+        let event_outgoing_probe = event_outgoing_tx.clone();
+        let (response_outgoing_tx, response_outgoing_rx) = mpsc::channel(/*buffer*/ 1);
+        let response_outgoing_probe = response_outgoing_tx.clone();
+        let (event_writer_tx, mut event_writer_rx) = mpsc::channel(/*buffer*/ 1);
+        let event_writer_probe = event_writer_tx.clone();
+        let (response_writer_tx, mut response_writer_rx) = mpsc::channel(/*buffer*/ 1);
+        let response_writer_probe = response_writer_tx.clone();
+
+        let event_router = spawn_outbound_router(
+            event_outgoing_rx,
+            test_outbound_connections(event_writer_tx),
+        );
+        let response_router = spawn_outbound_router(
+            response_outgoing_rx,
+            test_outbound_connections(response_writer_tx),
+        );
+        let outgoing = Arc::new(OutgoingMessageSender::new_with_senders(
+            event_outgoing_tx,
+            response_outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        outgoing
+            .send_server_notification_to_connection(
+                IN_PROCESS_CONNECTION_ID,
+                turn_completed_notification("first"),
+            )
+            .await;
+        wait_for_channel_capacity(&event_writer_probe, /*expected*/ 0).await;
+
+        outgoing
+            .send_server_notification_to_connection(
+                IN_PROCESS_CONNECTION_ID,
+                turn_completed_notification("blocked"),
+            )
+            .await;
+        wait_for_channel_capacity(&event_outgoing_probe, /*expected*/ 1).await;
+        assert_eq!(event_writer_probe.capacity(), 0);
+
+        let queued_outgoing = Arc::clone(&outgoing);
+        let queued_event = tokio::spawn(async move {
+            queued_outgoing
+                .send_server_notification_to_connection_and_wait(
+                    IN_PROCESS_CONNECTION_ID,
+                    turn_completed_notification("queued"),
+                )
+                .await;
+        });
+        wait_for_channel_capacity(&event_outgoing_probe, /*expected*/ 0).await;
+        assert!(!event_router.is_finished());
+        assert!(!queued_event.is_finished());
+
+        let success_id = crate::outgoing_message::ConnectionRequestId {
+            connection_id: IN_PROCESS_CONNECTION_ID,
+            request_id: RequestId::Integer(10),
+        };
+        outgoing
+            .send_response(
+                success_id.clone(),
+                codex_app_server_protocol::ClientResponsePayload::ThreadArchive(
+                    codex_app_server_protocol::ThreadArchiveResponse {},
+                ),
+            )
+            .await;
+        wait_for_channel_capacity(&response_writer_probe, /*expected*/ 0).await;
+
+        let error_id = crate::outgoing_message::ConnectionRequestId {
+            connection_id: IN_PROCESS_CONNECTION_ID,
+            request_id: RequestId::Integer(11),
+        };
+        let expected_error = internal_error("expected error");
+        outgoing
+            .send_error(error_id.clone(), expected_error.clone())
+            .await;
+        wait_for_channel_capacity(&response_outgoing_probe, /*expected*/ 1).await;
+
+        let success = response_writer_rx
+            .recv()
+            .await
+            .expect("success should route before event release");
+        let OutgoingMessage::Response(success) = success.message else {
+            panic!("expected normal JSON-RPC success");
+        };
+        assert_eq!(success.id, success_id.request_id);
+        assert_eq!(success.result, serde_json::json!({}));
+
+        let error = response_writer_rx
+            .recv()
+            .await
+            .expect("error should route before event release");
+        let OutgoingMessage::Error(error) = error.message else {
+            panic!("expected normal JSON-RPC error");
+        };
+        assert_eq!(error.id, error_id.request_id);
+        assert_eq!(error.error, expected_error);
+        assert_eq!(event_writer_probe.capacity(), 0);
+
+        let first = event_writer_rx
+            .recv()
+            .await
+            .expect("first event should route");
+        let blocked = event_writer_rx
+            .recv()
+            .await
+            .expect("blocked event should route after first drains");
+        let queued = event_writer_rx
+            .recv()
+            .await
+            .expect("queued event should preserve event FIFO");
+        let (first_id, first_write_complete_tx) = turn_id_and_write_completion(first);
+        let (blocked_id, blocked_write_complete_tx) = turn_id_and_write_completion(blocked);
+        let (queued_id, queued_write_complete_tx) = turn_id_and_write_completion(queued);
+        assert_eq!(
+            [first_id.as_str(), blocked_id.as_str(), queued_id.as_str()],
+            ["first", "blocked", "queued"]
+        );
+        assert!(first_write_complete_tx.is_none());
+        assert!(blocked_write_complete_tx.is_none());
+        assert!(!queued_event.is_finished());
+        queued_write_complete_tx
+            .expect("queued event should retain write-completion ownership")
+            .send(())
+            .expect("event sender should still await write completion");
+        queued_event
+            .await
+            .expect("queued event sender task should finish");
+
+        drop(outgoing);
+        drop(event_outgoing_probe);
+        drop(response_outgoing_probe);
+        event_router
+            .await
+            .expect("event router should stop cleanly");
+        response_router
+            .await
+            .expect("response router should stop cleanly");
     }
 
     #[tokio::test(start_paused = true)]

@@ -1,9 +1,11 @@
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
+use crate::context_manager::estimate_item_token_count;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
+use crate::session::new_submission_id;
 use crate::session::session::Session;
 use codex_exec_server::SelectedCapabilityRootsStatus;
 use codex_features::Feature;
@@ -59,6 +61,9 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use codex_rollout::state_db::StateDbHandle;
+
+pub(crate) const INJECTED_RESPONSE_ITEM_MAX_TOKENS: i64 = 10_000;
+pub(crate) const INJECTED_RESPONSE_ITEMS_MAX_TOKENS: i64 = 10_000;
 
 #[derive(Clone, Debug)]
 pub struct ThreadConfigSnapshot {
@@ -194,6 +199,39 @@ struct OutOfBandElicitations {
     registration: Option<ElicitationRegistration>,
 }
 
+struct PendingResidencySubmission {
+    session: Arc<Session>,
+    submission_id: String,
+    handed_off: bool,
+}
+
+impl PendingResidencySubmission {
+    fn new(session: Arc<Session>, submission_id: String) -> Self {
+        session
+            .input_queue
+            .register_residency_submission(submission_id.clone());
+        Self {
+            session,
+            submission_id,
+            handed_off: false,
+        }
+    }
+
+    fn hand_off(&mut self) {
+        self.handed_off = true;
+    }
+}
+
+impl Drop for PendingResidencySubmission {
+    fn drop(&mut self) {
+        if !self.handed_off {
+            self.session
+                .input_queue
+                .finish_residency_submission(&self.submission_id);
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct BackgroundTerminalInfo {
     pub item_id: String,
@@ -223,7 +261,41 @@ impl CodexThread {
     }
 
     pub async fn submit(&self, op: Op) -> CodexResult<String> {
-        self.io.submit(op).await
+        self.submit_with_trace(op, /*trace*/ None).await
+    }
+
+    /// Submits only while this exact runtime remains current in its thread manager, serialized
+    /// against residency teardown.
+    pub async fn submit_if_current(&self, op: Op) -> CodexResult<String> {
+        self.session
+            .services
+            .agent_control
+            .submit_to_current_thread(self, op)
+            .await
+    }
+
+    pub(crate) async fn submit_with_residency_transition_held(
+        &self,
+        op: Op,
+    ) -> CodexResult<String> {
+        self.submit_with_residency_transition_held_and_trace(op, /*trace*/ None)
+            .await
+    }
+
+    pub(crate) async fn submit_with_residency_transition_held_and_trace(
+        &self,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<String> {
+        let id = new_submission_id();
+        self.submit_tracked_inner(Submission {
+            id: id.clone(),
+            op,
+            client_user_message_id: None,
+            trace,
+        })
+        .await?;
+        Ok(id)
     }
 
     pub async fn notify_computer_use_response(
@@ -285,7 +357,15 @@ impl CodexThread {
         op: Op,
         trace: Option<W3cTraceContext>,
     ) -> CodexResult<String> {
-        self.io.submit_with_trace(op, trace).await
+        let id = new_submission_id();
+        self.submit_tracked(Submission {
+            id: id.clone(),
+            op,
+            client_user_message_id: None,
+            trace,
+        })
+        .await?;
+        Ok(id)
     }
 
     pub async fn submit_user_input_with_client_user_message_id(
@@ -299,9 +379,15 @@ impl CodexThread {
             .agent_control
             .ensure_execution_capacity_for_op(self.session.thread_id(), &op)
             .await?;
-        self.io
-            .submit_user_input_with_client_user_message_id(op, trace, client_user_message_id)
-            .await
+        let id = new_submission_id();
+        self.submit_tracked(Submission {
+            id: id.clone(),
+            op,
+            client_user_message_id,
+            trace,
+        })
+        .await?;
+        Ok(id)
     }
 
     /// Persist whether this thread is eligible for future memory generation.
@@ -317,6 +403,7 @@ impl CodexThread {
         client_user_message_id: Option<String>,
         responsesapi_client_metadata: Option<HashMap<String, String>>,
     ) -> Result<String, SteerInputError> {
+        let _residency_transition = self.session.input_queue.begin_residency_activity().await;
         self.session
             .steer_input(
                 input,
@@ -337,6 +424,7 @@ impl CodexThread {
         &self,
         items: Vec<ResponseItem>,
     ) -> Result<(), Vec<ResponseItem>> {
+        let _residency_transition = self.session.input_queue.begin_residency_activity().await;
         self.session.inject_if_running(items).await
     }
 
@@ -357,6 +445,7 @@ impl CodexThread {
         &self,
         items: Vec<ResponseItem>,
     ) -> Result<(), TryStartTurnIfIdleError> {
+        let _residency_transition = self.session.input_queue.begin_residency_activity().await;
         self.session.try_start_turn_if_idle(items).await
     }
 
@@ -438,7 +527,22 @@ impl CodexThread {
 
     /// Use sparingly: this is intended to be removed soon.
     pub async fn submit_with_id(&self, sub: Submission) -> CodexResult<()> {
-        self.io.submit_with_id(sub).await
+        self.submit_tracked(sub).await
+    }
+
+    async fn submit_tracked(&self, sub: Submission) -> CodexResult<()> {
+        let _residency_transition = self.session.input_queue.begin_residency_activity().await;
+        self.submit_tracked_inner(sub).await
+    }
+
+    async fn submit_tracked_inner(&self, sub: Submission) -> CodexResult<()> {
+        let submission_id = sub.id.clone();
+        let mut pending = PendingResidencySubmission::new(Arc::clone(&self.session), submission_id);
+        let result = self.io.submit_with_id(sub).await;
+        if result.is_ok() {
+            pending.hand_off();
+        }
+        result
     }
 
     pub async fn next_event(&self) -> CodexResult<Event> {
@@ -488,11 +592,19 @@ impl CodexThread {
 
     /// Record raw Responses API items without starting a new turn.
     pub async fn inject_response_items(&self, items: Vec<ResponseItem>) -> CodexResult<()> {
-        if items.is_empty() {
-            return Err(CodexErr::InvalidRequest(
-                "items must not be empty".to_string(),
-            ));
+        let _residency_transition = self.session.input_queue.begin_residency_activity().await;
+        if !self.is_running() {
+            return Err(CodexErr::InternalAgentDied);
         }
+        self.inject_response_items_with_residency_transition_held(items)
+            .await
+    }
+
+    pub(crate) async fn inject_response_items_with_residency_transition_held(
+        &self,
+        items: Vec<ResponseItem>,
+    ) -> CodexResult<()> {
+        validate_injected_response_items(&items)?;
 
         let turn_context = self.session.new_default_turn().await;
         if self.session.reference_context_item().await.is_none() {
@@ -506,7 +618,7 @@ impl CodexThread {
                 .await;
         }
         self.session
-            .inject_no_new_turn(items, Some(turn_context.as_ref()))
+            .inject_no_new_turn_with_residency_transition_held(items, Some(turn_context.as_ref()))
             .await;
         self.session.flush_rollout().await?;
         Ok(())
@@ -718,4 +830,30 @@ impl CodexThread {
         }
         Ok(elicitations.count)
     }
+}
+
+pub(crate) fn validate_injected_response_items(items: &[ResponseItem]) -> CodexResult<()> {
+    if items.is_empty() {
+        return Err(CodexErr::InvalidRequest(
+            "items must not be empty".to_string(),
+        ));
+    }
+
+    let mut total_tokens = 0_i64;
+    for (index, item) in items.iter().enumerate() {
+        let item_tokens = estimate_item_token_count(item);
+        if item_tokens > INJECTED_RESPONSE_ITEM_MAX_TOKENS {
+            return Err(CodexErr::InvalidRequest(format!(
+                "items[{index}] must not exceed {INJECTED_RESPONSE_ITEM_MAX_TOKENS} estimated model-visible tokens"
+            )));
+        }
+        total_tokens = total_tokens.saturating_add(item_tokens);
+        if total_tokens > INJECTED_RESPONSE_ITEMS_MAX_TOKENS {
+            return Err(CodexErr::InvalidRequest(format!(
+                "items must not exceed {INJECTED_RESPONSE_ITEMS_MAX_TOKENS} estimated model-visible tokens in total"
+            )));
+        }
+    }
+
+    Ok(())
 }

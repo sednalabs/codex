@@ -22,7 +22,7 @@ impl Session {
     ) -> Result<(), Vec<ResponseItem>> {
         let mut active = self.active_turn.lock().await;
         match active.as_mut() {
-            Some(active_turn) => {
+            Some(active_turn) if active_turn.task.is_some() => {
                 self.input_queue
                     .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
                         active_turn.turn_state.as_ref(),
@@ -31,7 +31,7 @@ impl Session {
                     .await;
                 Ok(())
             }
-            None => Err(input),
+            _ => Err(input),
         }
     }
 
@@ -141,6 +141,16 @@ impl Session {
 
     /// Injects items into active work, or records them without starting a turn.
     pub(crate) async fn inject_no_new_turn(
+        &self,
+        items: Vec<ResponseItem>,
+        current_turn_context: Option<&TurnContext>,
+    ) {
+        let _residency_transition = self.input_queue.begin_residency_activity().await;
+        self.inject_no_new_turn_with_residency_transition_held(items, current_turn_context)
+            .await;
+    }
+
+    pub(crate) async fn inject_no_new_turn_with_residency_transition_held(
         &self,
         items: Vec<ResponseItem>,
         current_turn_context: Option<&TurnContext>,

@@ -10935,6 +10935,7 @@ max_concurrent_threads_per_session = 5
 min_wait_timeout_ms = 2500
 max_wait_timeout_ms = 120000
 default_wait_timeout_ms = 30000
+terminal_idle_unload_timeout_ms = 0
 usage_hint_text = "Custom delegation guidance."
 root_agent_usage_hint_text = "Root guidance."
 subagent_usage_hint_text = "Subagent guidance."
@@ -10961,6 +10962,7 @@ max_concurrent_threads_per_session = 9
     assert_eq!(config.multi_agent_v2.min_wait_timeout_ms, 2500);
     assert_eq!(config.multi_agent_v2.max_wait_timeout_ms, 120000);
     assert_eq!(config.multi_agent_v2.default_wait_timeout_ms, 30000);
+    assert_eq!(config.multi_agent_v2.terminal_idle_unload_timeout_ms, 0);
     assert_eq!(
         (
             config.agent_max_threads,
@@ -11007,6 +11009,7 @@ max_concurrent_threads_per_session = 4
 min_wait_timeout_ms = 3000
 max_wait_timeout_ms = 120000
 default_wait_timeout_ms = 30000
+terminal_idle_unload_timeout_ms = 120000
 usage_hint_text = "base hint"
 root_agent_usage_hint_text = "base root hint"
 subagent_usage_hint_text = "base subagent hint"
@@ -11022,6 +11025,7 @@ max_concurrent_threads_per_session = 6
 min_wait_timeout_ms = 1500
 max_wait_timeout_ms = 90000
 default_wait_timeout_ms = 15000
+terminal_idle_unload_timeout_ms = 45000
 usage_hint_text = "profile hint"
 root_agent_usage_hint_text = "profile root hint"
 subagent_usage_hint_text = "profile subagent hint"
@@ -11046,6 +11050,7 @@ non_code_mode_only = true
     assert_eq!(config.multi_agent_v2.min_wait_timeout_ms, 1500);
     assert_eq!(config.multi_agent_v2.max_wait_timeout_ms, 90000);
     assert_eq!(config.multi_agent_v2.default_wait_timeout_ms, 15000);
+    assert_eq!(config.multi_agent_v2.terminal_idle_unload_timeout_ms, 45000);
     assert_eq!(
         config.multi_agent_v2.usage_hint_text.as_deref(),
         Some("profile hint")
@@ -11087,6 +11092,10 @@ enabled = true
     assert_eq!(
         config.multi_agent_v2,
         resolve_multi_agent_v2_config(&ConfigToml::default())
+    );
+    assert_eq!(
+        config.multi_agent_v2.terminal_idle_unload_timeout_ms,
+        DEFAULT_MULTI_AGENT_V2_TERMINAL_IDLE_UNLOAD_TIMEOUT_MS
     );
     assert_eq!(
         (

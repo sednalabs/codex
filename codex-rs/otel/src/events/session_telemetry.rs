@@ -107,6 +107,7 @@ pub struct SessionTelemetryMetadata {
 #[derive(Debug, Clone)]
 pub struct SessionTelemetry {
     pub(crate) metadata: SessionTelemetryMetadata,
+    metric_app_version: String,
     pub(crate) metrics: Option<MetricsClient>,
     pub(crate) metrics_use_metadata_tags: bool,
 }
@@ -389,7 +390,7 @@ impl SessionTelemetry {
             originator: self.metadata.originator.as_str(),
             service_name: self.metadata.service_name.as_deref(),
             model: self.metadata.model.as_str(),
-            app_version: self.metadata.app_version,
+            app_version: self.metric_app_version.as_str(),
         }
         .into_tags()
     }
@@ -407,6 +408,35 @@ impl SessionTelemetry {
         terminal_type: String,
         session_source: SessionSource,
     ) -> SessionTelemetry {
+        Self::new_with_release_version(
+            conversation_id,
+            model,
+            slug,
+            account_id,
+            account_email,
+            auth_mode,
+            originator,
+            log_user_prompts,
+            terminal_type,
+            session_source,
+            RELEASE_VERSION,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_release_version(
+        conversation_id: ThreadId,
+        model: &str,
+        slug: &str,
+        account_id: Option<String>,
+        account_email: Option<String>,
+        auth_mode: Option<TelemetryAuthMode>,
+        originator: String,
+        log_user_prompts: bool,
+        terminal_type: String,
+        session_source: SessionSource,
+        app_version: &'static str,
+    ) -> SessionTelemetry {
         Self {
             metadata: SessionTelemetryMetadata {
                 conversation_id,
@@ -422,9 +452,10 @@ impl SessionTelemetry {
                 service_tier: None,
                 model_reasoning_effort: None,
                 log_user_prompts,
-                app_version: RELEASE_VERSION,
+                app_version,
                 terminal_type,
             },
+            metric_app_version: sanitize_metric_tag_value(app_version),
             metrics: crate::metrics::global(),
             metrics_use_metadata_tags: true,
         }
@@ -1268,3 +1299,7 @@ fn f64_ms_value(value: Option<&serde_json::Value>) -> Option<f64> {
     }
     Some(ms.min(u64::MAX as f64))
 }
+
+#[cfg(test)]
+#[path = "session_telemetry_tests.rs"]
+mod tests;
