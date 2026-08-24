@@ -2,6 +2,7 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
+use std::time::Duration;
 
 use crate::ExtensionData;
 
@@ -49,6 +50,9 @@ pub struct TurnErrorInput<'a> {
     pub turn_id: &'a str,
     /// Error surfaced by the host for this turn.
     pub error: CodexErrorInfo,
+    /// Provider-specified delay before a rate-limited request may be retried.
+    /// `None` means the provider did not establish an eligible retry time.
+    pub rate_limit_retry_after: Option<Duration>,
     /// Store scoped to the host session runtime.
     pub session_store: &'a ExtensionData,
     /// Store scoped to this thread runtime.

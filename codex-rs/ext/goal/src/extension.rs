@@ -169,6 +169,7 @@ where
     fn on_thread_stop<'a>(&'a self, input: ThreadStopInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(runtime) = goal_runtime_handle(input.thread_store) {
+                runtime.cancel_provider_continuation();
                 self.goal_service.unregister_runtime(&runtime);
             }
         })
@@ -312,15 +313,18 @@ where
             };
 
             if matches!(input.error, CodexErrorInfo::UsageLimitExceeded)
-                && codex_core::diagnostic_flags::goal_error_continuation_enabled()
+                && codex_core::diagnostic_flags::goal_owner_continuity_enabled()
             {
                 if let Err(err) = runtime
-                    .preserve_active_goal_after_turn_error(input.turn_id)
+                    .preserve_active_goal_after_provider_limit(
+                        input.turn_id,
+                        input.rate_limit_retry_after,
+                    )
                     .await
                 {
                     tracing::warn!(
                         error = ?input.error,
-                        "failed to preserve active goal after turn error in diagnostic mode: {err}"
+                        "failed to preserve active goal after provider limit: {err}"
                     );
                 }
                 return;

@@ -78,11 +78,22 @@ impl Session {
         turn_context: &TurnContext,
         error: CodexErrorInfo,
     ) {
+        self.emit_turn_error_lifecycle_with_rate_limit_delay(turn_context, error, None)
+            .await;
+    }
+
+    pub(crate) async fn emit_turn_error_lifecycle_with_rate_limit_delay(
+        &self,
+        turn_context: &TurnContext,
+        error: CodexErrorInfo,
+        rate_limit_retry_after: Option<std::time::Duration>,
+    ) {
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_error(codex_extension_api::TurnErrorInput {
                     turn_id: turn_context.sub_id.as_str(),
                     error: error.clone(),
+                    rate_limit_retry_after,
                     session_store: &self.services.session_extension_data,
                     thread_store: &self.services.thread_extension_data,
                     turn_store: turn_context.extension_data.as_ref(),
