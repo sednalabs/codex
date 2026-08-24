@@ -215,6 +215,7 @@ pub struct GoalOwnerAdmissionRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GoalOwnerAdmissionOrigin {
+    thread_id: ThreadId,
     generation: i64,
     goal_id: String,
     origin_turn_id: String,
@@ -232,6 +233,16 @@ struct GoalOwnerAdmissionOrigin {
     deadline_at_ms: i64,
     max_attempts: i64,
     requested_phase: GoalOwnerAdmissionPhase,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GoalOwnerAdmissionGoalChain {
+    thread_id: ThreadId,
+    goal_id: String,
+    attempts_started: i64,
+    max_attempts: i64,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
 }
 
 #[derive(Clone)]
@@ -253,6 +264,14 @@ impl GoalOwnerAdmissionStore {
     pub(crate) async fn recover_in_flight_on_open(pool: &SqlitePool) -> anyhow::Result<()> {
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let rows = sqlx::query(&format!(
+            "{ADMISSION_SELECT} WHERE (admission.phase = 'acquired' AND admission.retired_at_ms IS NULL) OR admission.phase = 'in_flight'"
+        ))
+        .fetch_all(&mut *transaction)
+        .await?;
+        for row in rows {
+            record_from_row(&row)?;
+        }
         sqlx::query(
             r#"
 UPDATE goal_owner_admission_goal_chains AS chain
@@ -373,7 +392,20 @@ WHERE phase = 'in_flight'
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         ensure_goal_chain(&mut transaction, observation, now_ms).await?;
         insert_origin(&mut transaction, observation, generation).await?;
-        insert_admission(&mut transaction, observation, generation, now_ms).await?;
+        let origin = fetch_origin(
+            &mut *transaction,
+            observation.thread_id,
+            &observation.origin_request_id,
+        )
+        .await?
+        .ok_or_else(admission_integrity_error)?;
+        if origin.thread_id != observation.thread_id
+            || origin.generation != generation
+            || !observation_matches_origin(observation, &origin)
+        {
+            return Err(admission_integrity_error());
+        }
+        insert_admission(&mut transaction, &origin, now_ms).await?;
         let record =
             fetch_record_by_generation(&mut *transaction, observation.thread_id, generation)
                 .await?
@@ -591,6 +623,20 @@ WHERE thread_id = ?
     pub async fn open_lease(&self, lease: &GoalOwnerAdmissionLease) -> anyhow::Result<bool> {
         validate_lease(lease)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current = fetch_record_for_authority(&mut *transaction, &lease.authority).await?;
+        let Some(current) = current else {
+            transaction.commit().await?;
+            return Ok(false);
+        };
+        if current.phase != GoalOwnerAdmissionPhase::Acquired
+            || current.retired_at.is_some()
+            || !same_lease(&current, lease)
+            || current.continuation_authority() != lease.continuation_authority
+        {
+            transaction.commit().await?;
+            return Ok(false);
+        }
         let result = sqlx::query(
             r#"
 UPDATE goal_owner_admissions
@@ -621,8 +667,9 @@ WHERE thread_id = ?
         .bind(lease.continuation_authority.decision_id.to_string())
         .bind(lease.lease_id.to_string())
         .bind(lease.authority.cancellation_epoch)
-        .execute(self.pool.as_ref())
+        .execute(&mut *transaction)
         .await?;
+        transaction.commit().await?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -634,6 +681,18 @@ WHERE thread_id = ?
         validate_lease(lease)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current = fetch_record_for_authority(&mut *transaction, &lease.authority).await?;
+        let Some(current) = current else {
+            transaction.commit().await?;
+            return Ok(false);
+        };
+        if current.phase != GoalOwnerAdmissionPhase::Acquired
+            || current.retired_at.is_some()
+            || !same_lease(&current, lease)
+        {
+            transaction.commit().await?;
+            return Ok(false);
+        }
         let released = sqlx::query(
             r#"
 UPDATE goal_owner_admissions
@@ -709,6 +768,11 @@ WHERE thread_id = ?
         validate_terminal_transition(outcome, disposition)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current = fetch_record_for_authority(&mut *transaction, &lease.authority).await?;
+        let Some(current) = current else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
         let completed = sqlx::query(
             r#"
 UPDATE goal_owner_admissions
@@ -744,11 +808,6 @@ WHERE thread_id = ?
             return Ok(Some(record));
         }
 
-        let current = fetch_record_for_authority(&mut *transaction, &lease.authority).await?;
-        let Some(current) = current else {
-            transaction.commit().await?;
-            return Ok(None);
-        };
         if can_refine_uncertainty(&current, lease, outcome, disposition) {
             let refined = sqlx::query(
                 r#"
@@ -910,10 +969,66 @@ WHERE thread_id = ?
 }
 
 const ADMISSION_SELECT: &str = r#"
-SELECT admission.*, chain.attempts_started AS chain_attempts_started,
-       chain.max_attempts AS chain_max_attempts
+SELECT
+    admission.thread_id AS admission_thread_id,
+    admission.goal_id AS admission_goal_id,
+    admission.generation AS admission_generation,
+    admission.origin_turn_id AS admission_origin_turn_id,
+    admission.origin_request_id AS admission_origin_request_id,
+    admission.denial_class AS admission_denial_class,
+    admission.configured_provider_key AS admission_configured_provider_key,
+    admission.requested_model AS admission_requested_model,
+    admission.effective_provider_id AS admission_effective_provider_id,
+    admission.effective_model AS admission_effective_model,
+    admission.intended_request_kind AS admission_intended_request_kind,
+    admission.successor_turn_id AS admission_successor_turn_id,
+    admission.logical_successor_request_id AS admission_logical_successor_request_id,
+    admission.decision_id AS admission_decision_id,
+    admission.account_context_fingerprint AS admission_account_context_fingerprint,
+    admission.deadline_at_ms AS admission_deadline_at_ms,
+    admission.attempts_started AS admission_attempts_started,
+    admission.max_attempts AS admission_max_attempts,
+    admission.cancellation_epoch AS admission_cancellation_epoch,
+    admission.requested_phase AS admission_requested_phase,
+    admission.phase AS admission_phase,
+    admission.terminal_outcome AS admission_terminal_outcome,
+    admission.lease_id AS admission_lease_id,
+    admission.lease_acquired_at_ms AS admission_lease_acquired_at_ms,
+    admission.lease_cancellation_epoch AS admission_lease_cancellation_epoch,
+    admission.deferred_terminal_disposition AS admission_deferred_terminal_disposition,
+    admission.retired_at_ms AS admission_retired_at_ms,
+    admission.retirement_reason AS admission_retirement_reason,
+    admission.created_at_ms AS admission_created_at_ms,
+    admission.updated_at_ms AS admission_updated_at_ms,
+    origin.thread_id AS origin_thread_id,
+    origin.origin_request_id AS origin_origin_request_id,
+    origin.generation AS origin_generation,
+    origin.goal_id AS origin_goal_id,
+    origin.origin_turn_id AS origin_origin_turn_id,
+    origin.denial_class AS origin_denial_class,
+    origin.configured_provider_key AS origin_configured_provider_key,
+    origin.requested_model AS origin_requested_model,
+    origin.effective_provider_id AS origin_effective_provider_id,
+    origin.effective_model AS origin_effective_model,
+    origin.intended_request_kind AS origin_intended_request_kind,
+    origin.successor_turn_id AS origin_successor_turn_id,
+    origin.logical_successor_request_id AS origin_logical_successor_request_id,
+    origin.decision_id AS origin_decision_id,
+    origin.account_context_fingerprint AS origin_account_context_fingerprint,
+    origin.deadline_at_ms AS origin_deadline_at_ms,
+    origin.max_attempts AS origin_max_attempts,
+    origin.requested_phase AS origin_requested_phase,
+    chain.thread_id AS chain_thread_id,
+    chain.goal_id AS chain_goal_id,
+    chain.attempts_started AS chain_attempts_started,
+    chain.max_attempts AS chain_max_attempts,
+    chain.created_at_ms AS chain_created_at_ms,
+    chain.updated_at_ms AS chain_updated_at_ms
 FROM goal_owner_admissions AS admission
-JOIN goal_owner_admission_goal_chains AS chain
+LEFT JOIN goal_owner_admission_origins AS origin
+  ON origin.thread_id = admission.thread_id
+ AND origin.generation = admission.generation
+LEFT JOIN goal_owner_admission_goal_chains AS chain
   ON chain.thread_id = admission.thread_id AND chain.goal_id = admission.goal_id
 "#;
 
@@ -977,49 +1092,67 @@ FROM (
 
 async fn insert_admission(
     transaction: &mut sqlx::Transaction<'_, Sqlite>,
-    observation: &GoalOwnerAdmissionObservation,
-    generation: i64,
+    origin: &GoalOwnerAdmissionOrigin,
     now_ms: i64,
 ) -> anyhow::Result<()> {
-    sqlx::query(
+    let inserted = sqlx::query(
         r#"
 INSERT INTO goal_owner_admissions (
     thread_id, goal_id, generation, origin_turn_id, origin_request_id, denial_class,
     configured_provider_key, requested_model, effective_provider_id, effective_model,
     intended_request_kind, successor_turn_id, logical_successor_request_id, decision_id,
-    account_context_fingerprint, deadline_at_ms, max_attempts, requested_phase, phase,
-    terminal_outcome, deferred_terminal_disposition, created_at_ms, updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', 'none', ?, ?)
+    account_context_fingerprint, deadline_at_ms, attempts_started, max_attempts,
+    cancellation_epoch, requested_phase, phase, terminal_outcome, lease_id,
+    lease_acquired_at_ms, lease_cancellation_epoch, deferred_terminal_disposition,
+    retired_at_ms, retirement_reason, created_at_ms, updated_at_ms
+)
+SELECT
+    origin.thread_id,
+    origin.goal_id,
+    origin.generation,
+    origin.origin_turn_id,
+    origin.origin_request_id,
+    origin.denial_class,
+    origin.configured_provider_key,
+    origin.requested_model,
+    origin.effective_provider_id,
+    origin.effective_model,
+    origin.intended_request_kind,
+    origin.successor_turn_id,
+    origin.logical_successor_request_id,
+    origin.decision_id,
+    origin.account_context_fingerprint,
+    origin.deadline_at_ms,
+    0,
+    origin.max_attempts,
+    0,
+    origin.requested_phase,
+    origin.requested_phase,
+    'none',
+    NULL,
+    NULL,
+    NULL,
+    'none',
+    NULL,
+    NULL,
+    ?,
+    ?
+FROM goal_owner_admission_origins AS origin
+WHERE origin.thread_id = ?
+  AND origin.generation = ?
+  AND origin.origin_request_id = ?
         "#,
     )
-    .bind(observation.thread_id.to_string())
-    .bind(&observation.goal_id)
-    .bind(generation)
-    .bind(&observation.origin_turn_id)
-    .bind(&observation.origin_request_id)
-    .bind(observation.denial_class.as_str())
-    .bind(&observation.configured_provider_key)
-    .bind(&observation.requested_model)
-    .bind(&observation.effective_provider_id)
-    .bind(&observation.effective_model)
-    .bind(&observation.intended_request_kind)
-    .bind(&observation.successor_turn_id)
-    .bind(&observation.logical_successor_request_id)
-    .bind(observation.decision_id.to_string())
-    .bind(
-        observation
-            .account_context_fingerprint
-            .as_ref()
-            .map(GoalOwnerAdmissionAccountContextFingerprint::as_str),
-    )
-    .bind(admission_datetime_to_epoch_millis(observation.deadline_at))
-    .bind(observation.max_attempts)
-    .bind(observation.requested_phase.as_str())
-    .bind(observation.phase.as_str())
     .bind(now_ms)
     .bind(now_ms)
+    .bind(origin.thread_id.to_string())
+    .bind(origin.generation)
+    .bind(&origin.origin_request_id)
     .execute(&mut **transaction)
     .await?;
+    if inserted.rows_affected() != 1 {
+        return Err(admission_integrity_error());
+    }
     Ok(())
 }
 
@@ -1109,14 +1242,14 @@ where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     let row = sqlx::query(&format!(
-        "{ADMISSION_SELECT} WHERE admission.thread_id = ? AND admission.goal_id = ? AND admission.generation = ?"
+        "{ADMISSION_SELECT} WHERE admission.thread_id = ? AND admission.generation = ?"
     ))
     .bind(authority.thread_id.to_string())
-    .bind(&authority.goal_id)
     .bind(authority.generation)
     .fetch_optional(executor)
     .await?;
-    row.map(|row| record_from_row(&row)).transpose()
+    let record = row.map(|row| record_from_row(&row)).transpose()?;
+    Ok(record.filter(|record| record.authority.goal_id == authority.goal_id))
 }
 
 async fn fetch_origin<'e, E>(
@@ -1129,7 +1262,7 @@ where
 {
     let row = sqlx::query(
         r#"
-SELECT generation, goal_id, origin_turn_id, origin_request_id, denial_class,
+SELECT thread_id, generation, goal_id, origin_turn_id, origin_request_id, denial_class,
        configured_provider_key, requested_model, effective_provider_id, effective_model,
        intended_request_kind, successor_turn_id, logical_successor_request_id, decision_id,
        account_context_fingerprint, deadline_at_ms, max_attempts, requested_phase
@@ -1141,75 +1274,133 @@ WHERE thread_id = ? AND origin_request_id = ?
     .bind(origin_request_id)
     .fetch_optional(executor)
     .await?;
-    row.map(|row| origin_from_row(&row)).transpose()
+    row.map(|row| origin_from_row(&row))
+        .transpose()
+        .map_err(|_| admission_integrity_error())
+}
+
+fn admission_integrity_error() -> anyhow::Error {
+    anyhow::anyhow!("goal-owner admission integrity error")
 }
 
 fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdmissionRecord> {
-    let lease_id: Option<String> = row.try_get("lease_id")?;
-    let lease_acquired_at_ms: Option<i64> = row.try_get("lease_acquired_at_ms")?;
-    let retired_at_ms: Option<i64> = row.try_get("retired_at_ms")?;
-    let retirement_reason: Option<String> = row.try_get("retirement_reason")?;
-    let record = GoalOwnerAdmissionRecord {
-        authority: GoalOwnerAdmissionAuthority {
-            thread_id: ThreadId::try_from(row.try_get::<String, _>("thread_id")?)?,
-            goal_id: row.try_get("goal_id")?,
-            generation: row.try_get("generation")?,
-            cancellation_epoch: row.try_get("cancellation_epoch")?,
-        },
-        origin_turn_id: row.try_get("origin_turn_id")?,
-        origin_request_id: row.try_get("origin_request_id")?,
-        denial_class: GoalOwnerAdmissionDenialClass::try_from(
-            row.try_get::<String, _>("denial_class")?.as_str(),
-        )?,
-        configured_provider_key: row.try_get("configured_provider_key")?,
-        requested_model: row.try_get("requested_model")?,
-        effective_provider_id: row.try_get("effective_provider_id")?,
-        effective_model: row.try_get("effective_model")?,
-        intended_request_kind: row.try_get("intended_request_kind")?,
-        successor_turn_id: row.try_get("successor_turn_id")?,
-        logical_successor_request_id: row.try_get("logical_successor_request_id")?,
-        decision_id: Uuid::parse_str(&row.try_get::<String, _>("decision_id")?)?,
-        account_context_fingerprint: row
-            .try_get::<Option<String>, _>("account_context_fingerprint")?
-            .map(GoalOwnerAdmissionAccountContextFingerprint::try_from)
-            .transpose()?,
-        deadline_at: admission_epoch_millis_to_datetime(row.try_get("deadline_at_ms")?)?,
-        attempts_started: row.try_get("attempts_started")?,
-        max_attempts: row.try_get("max_attempts")?,
-        chain_attempts_started: row.try_get("chain_attempts_started")?,
-        chain_max_attempts: row.try_get("chain_max_attempts")?,
-        requested_phase: GoalOwnerAdmissionPhase::try_from(
-            row.try_get::<String, _>("requested_phase")?.as_str(),
-        )?,
-        phase: GoalOwnerAdmissionPhase::try_from(row.try_get::<String, _>("phase")?.as_str())?,
-        terminal_outcome: GoalOwnerAdmissionTerminalOutcome::try_from(
-            row.try_get::<String, _>("terminal_outcome")?.as_str(),
-        )?,
-        lease_id: lease_id.map(|value| Uuid::parse_str(&value)).transpose()?,
-        lease_acquired_at: lease_acquired_at_ms
-            .map(admission_epoch_millis_to_datetime)
-            .transpose()?,
-        lease_cancellation_epoch: row.try_get("lease_cancellation_epoch")?,
-        deferred_terminal_disposition: GoalOwnerAdmissionTerminalDisposition::try_from(
-            row.try_get::<String, _>("deferred_terminal_disposition")?
-                .as_str(),
-        )?,
-        retired_at: retired_at_ms
-            .map(admission_epoch_millis_to_datetime)
-            .transpose()?,
-        retirement_reason: retirement_reason
-            .as_deref()
-            .map(GoalOwnerAdmissionRetirementReason::try_from)
-            .transpose()?,
-        created_at: admission_epoch_millis_to_datetime(row.try_get("created_at_ms")?)?,
-        updated_at: admission_epoch_millis_to_datetime(row.try_get("updated_at_ms")?)?,
-    };
-    validate_record(&record)?;
-    Ok(record)
+    (|| {
+        let origin = GoalOwnerAdmissionOrigin {
+            thread_id: ThreadId::try_from(row.try_get::<String, _>("origin_thread_id")?)?,
+            generation: row.try_get("origin_generation")?,
+            goal_id: row.try_get("origin_goal_id")?,
+            origin_turn_id: row.try_get("origin_origin_turn_id")?,
+            origin_request_id: row.try_get("origin_origin_request_id")?,
+            denial_class: GoalOwnerAdmissionDenialClass::try_from(
+                row.try_get::<String, _>("origin_denial_class")?.as_str(),
+            )?,
+            configured_provider_key: row.try_get("origin_configured_provider_key")?,
+            requested_model: row.try_get("origin_requested_model")?,
+            effective_provider_id: row.try_get("origin_effective_provider_id")?,
+            effective_model: row.try_get("origin_effective_model")?,
+            intended_request_kind: row.try_get("origin_intended_request_kind")?,
+            successor_turn_id: row.try_get("origin_successor_turn_id")?,
+            logical_successor_request_id: row.try_get("origin_logical_successor_request_id")?,
+            decision_id: Uuid::parse_str(&row.try_get::<String, _>("origin_decision_id")?)?,
+            account_context_fingerprint: row
+                .try_get::<Option<String>, _>("origin_account_context_fingerprint")?
+                .map(GoalOwnerAdmissionAccountContextFingerprint::try_from)
+                .transpose()?,
+            deadline_at_ms: row.try_get("origin_deadline_at_ms")?,
+            max_attempts: row.try_get("origin_max_attempts")?,
+            requested_phase: GoalOwnerAdmissionPhase::try_from(
+                row.try_get::<String, _>("origin_requested_phase")?.as_str(),
+            )?,
+        };
+        let chain = GoalOwnerAdmissionGoalChain {
+            thread_id: ThreadId::try_from(row.try_get::<String, _>("chain_thread_id")?)?,
+            goal_id: row.try_get("chain_goal_id")?,
+            attempts_started: row.try_get("chain_attempts_started")?,
+            max_attempts: row.try_get("chain_max_attempts")?,
+            created_at: admission_epoch_millis_to_datetime(row.try_get("chain_created_at_ms")?)?,
+            updated_at: admission_epoch_millis_to_datetime(row.try_get("chain_updated_at_ms")?)?,
+        };
+        let lease_id: Option<String> = row.try_get("admission_lease_id")?;
+        let lease_acquired_at_ms: Option<i64> = row.try_get("admission_lease_acquired_at_ms")?;
+        let retired_at_ms: Option<i64> = row.try_get("admission_retired_at_ms")?;
+        let retirement_reason: Option<String> = row.try_get("admission_retirement_reason")?;
+        let record = GoalOwnerAdmissionRecord {
+            authority: GoalOwnerAdmissionAuthority {
+                thread_id: ThreadId::try_from(row.try_get::<String, _>("admission_thread_id")?)?,
+                goal_id: row.try_get("admission_goal_id")?,
+                generation: row.try_get("admission_generation")?,
+                cancellation_epoch: row.try_get("admission_cancellation_epoch")?,
+            },
+            origin_turn_id: row.try_get("admission_origin_turn_id")?,
+            origin_request_id: row.try_get("admission_origin_request_id")?,
+            denial_class: GoalOwnerAdmissionDenialClass::try_from(
+                row.try_get::<String, _>("admission_denial_class")?.as_str(),
+            )?,
+            configured_provider_key: row.try_get("admission_configured_provider_key")?,
+            requested_model: row.try_get("admission_requested_model")?,
+            effective_provider_id: row.try_get("admission_effective_provider_id")?,
+            effective_model: row.try_get("admission_effective_model")?,
+            intended_request_kind: row.try_get("admission_intended_request_kind")?,
+            successor_turn_id: row.try_get("admission_successor_turn_id")?,
+            logical_successor_request_id: row.try_get("admission_logical_successor_request_id")?,
+            decision_id: Uuid::parse_str(&row.try_get::<String, _>("admission_decision_id")?)?,
+            account_context_fingerprint: row
+                .try_get::<Option<String>, _>("admission_account_context_fingerprint")?
+                .map(GoalOwnerAdmissionAccountContextFingerprint::try_from)
+                .transpose()?,
+            deadline_at: admission_epoch_millis_to_datetime(
+                row.try_get("admission_deadline_at_ms")?,
+            )?,
+            attempts_started: row.try_get("admission_attempts_started")?,
+            max_attempts: row.try_get("admission_max_attempts")?,
+            chain_attempts_started: chain.attempts_started,
+            chain_max_attempts: chain.max_attempts,
+            requested_phase: GoalOwnerAdmissionPhase::try_from(
+                row.try_get::<String, _>("admission_requested_phase")?
+                    .as_str(),
+            )?,
+            phase: GoalOwnerAdmissionPhase::try_from(
+                row.try_get::<String, _>("admission_phase")?.as_str(),
+            )?,
+            terminal_outcome: GoalOwnerAdmissionTerminalOutcome::try_from(
+                row.try_get::<String, _>("admission_terminal_outcome")?
+                    .as_str(),
+            )?,
+            lease_id: lease_id.map(|value| Uuid::parse_str(&value)).transpose()?,
+            lease_acquired_at: lease_acquired_at_ms
+                .map(admission_epoch_millis_to_datetime)
+                .transpose()?,
+            lease_cancellation_epoch: row.try_get("admission_lease_cancellation_epoch")?,
+            deferred_terminal_disposition: GoalOwnerAdmissionTerminalDisposition::try_from(
+                row.try_get::<String, _>("admission_deferred_terminal_disposition")?
+                    .as_str(),
+            )?,
+            retired_at: retired_at_ms
+                .map(admission_epoch_millis_to_datetime)
+                .transpose()?,
+            retirement_reason: retirement_reason
+                .as_deref()
+                .map(GoalOwnerAdmissionRetirementReason::try_from)
+                .transpose()?,
+            created_at: admission_epoch_millis_to_datetime(
+                row.try_get("admission_created_at_ms")?,
+            )?,
+            updated_at: admission_epoch_millis_to_datetime(
+                row.try_get("admission_updated_at_ms")?,
+            )?,
+        };
+        validate_origin(&origin)?;
+        validate_goal_chain(&chain)?;
+        validate_record(&record)?;
+        validate_joined_admission(&record, &origin, &chain)?;
+        Ok(record)
+    })()
+    .map_err(|_| admission_integrity_error())
 }
 
 fn origin_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdmissionOrigin> {
     let origin = GoalOwnerAdmissionOrigin {
+        thread_id: ThreadId::try_from(row.try_get::<String, _>("thread_id")?)?,
         generation: row.try_get("generation")?,
         goal_id: row.try_get("goal_id")?,
         origin_turn_id: row.try_get("origin_turn_id")?,
@@ -1287,6 +1478,7 @@ fn origin_from_observation(
     generation: i64,
 ) -> GoalOwnerAdmissionOrigin {
     GoalOwnerAdmissionOrigin {
+        thread_id: observation.thread_id,
         generation,
         goal_id: observation.goal_id.clone(),
         origin_turn_id: observation.origin_turn_id.clone(),
@@ -1370,6 +1562,53 @@ fn validate_origin(origin: &GoalOwnerAdmissionOrigin) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_goal_chain(chain: &GoalOwnerAdmissionGoalChain) -> anyhow::Result<()> {
+    validate_nonempty("goal id", &chain.goal_id, MAX_ORIGIN_ID_LENGTH)?;
+    if chain.attempts_started < 0
+        || chain.max_attempts < 1
+        || chain.attempts_started > chain.max_attempts
+        || chain.created_at > chain.updated_at
+    {
+        bail!("invalid goal-owner admission chain state")
+    }
+    Ok(())
+}
+
+fn validate_joined_admission(
+    record: &GoalOwnerAdmissionRecord,
+    origin: &GoalOwnerAdmissionOrigin,
+    chain: &GoalOwnerAdmissionGoalChain,
+) -> anyhow::Result<()> {
+    if record.authority.thread_id != origin.thread_id
+        || record.authority.generation != origin.generation
+        || record.authority.goal_id != origin.goal_id
+        || record.origin_turn_id != origin.origin_turn_id
+        || record.origin_request_id != origin.origin_request_id
+        || record.denial_class != origin.denial_class
+        || record.configured_provider_key != origin.configured_provider_key
+        || record.requested_model != origin.requested_model
+        || record.effective_provider_id != origin.effective_provider_id
+        || record.effective_model != origin.effective_model
+        || record.intended_request_kind != origin.intended_request_kind
+        || record.successor_turn_id != origin.successor_turn_id
+        || record.logical_successor_request_id != origin.logical_successor_request_id
+        || record.decision_id != origin.decision_id
+        || record.account_context_fingerprint != origin.account_context_fingerprint
+        || admission_datetime_to_epoch_millis(record.deadline_at) != origin.deadline_at_ms
+        || record.max_attempts != origin.max_attempts
+        || record.requested_phase != origin.requested_phase
+        || record.authority.thread_id != chain.thread_id
+        || record.authority.goal_id != chain.goal_id
+        || record.chain_attempts_started != chain.attempts_started
+        || record.chain_max_attempts != chain.max_attempts
+        || record.max_attempts != chain.max_attempts
+        || record.attempts_started > chain.attempts_started
+    {
+        bail!("goal-owner admission joined state is inconsistent")
+    }
+    Ok(())
+}
+
 fn validate_authority(authority: &GoalOwnerAdmissionAuthority) -> anyhow::Result<()> {
     validate_nonempty("goal id", &authority.goal_id, MAX_ORIGIN_ID_LENGTH)?;
     if authority.generation < 1 || authority.cancellation_epoch < 0 {
@@ -1415,7 +1654,7 @@ fn admission_datetime_to_epoch_millis(value: DateTime<Utc>) -> i64 {
 
 fn admission_epoch_millis_to_datetime(value: i64) -> anyhow::Result<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp_millis(value)
-        .ok_or_else(|| anyhow::anyhow!("invalid goal-owner admission timestamp millis: {value}"))
+        .ok_or_else(|| anyhow::anyhow!("invalid goal-owner admission timestamp"))
 }
 
 fn validate_terminal_transition(
@@ -1499,6 +1738,7 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
         || record.chain_attempts_started < 0
         || record.chain_max_attempts < 1
         || record.chain_attempts_started > record.chain_max_attempts
+        || record.attempts_started > record.chain_attempts_started
         || record.max_attempts != record.chain_max_attempts
     {
         bail!("invalid goal-owner admission attempt counters")

@@ -102,7 +102,28 @@ async fn insert_origin_history_only(
     thread_id: ThreadId,
     origin_request_id: &str,
     generation: i64,
-) {
+) -> GoalOwnerAdmissionObservation {
+    let observation = GoalOwnerAdmissionObservation {
+        thread_id,
+        goal_id: "goal-history".to_string(),
+        origin_turn_id: "turn-history".to_string(),
+        origin_request_id: origin_request_id.to_string(),
+        denial_class: GoalOwnerAdmissionDenialClass::Capacity,
+        configured_provider_key: Some("openai".to_string()),
+        requested_model: Some("gpt-5".to_string()),
+        effective_provider_id: Some("openai".to_string()),
+        effective_model: None,
+        intended_request_kind: "turn".to_string(),
+        successor_turn_id: "turn-successor".to_string(),
+        logical_successor_request_id: format!("successor-{origin_request_id}"),
+        decision_id: Uuid::now_v7(),
+        account_context_fingerprint: None,
+        deadline_at: DateTime::<Utc>::from_timestamp_millis(0).expect("epoch timestamp"),
+        max_attempts: 1,
+        requested_phase: GoalOwnerAdmissionPhase::Pending,
+        phase: GoalOwnerAdmissionPhase::Pending,
+    };
+    let origin = origin_from_observation(&observation, generation);
     sqlx::query(
         r#"
 INSERT INTO goal_owner_admission_origins (
@@ -113,27 +134,75 @@ INSERT INTO goal_owner_admission_origins (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
-    .bind(thread_id.to_string())
-    .bind(origin_request_id)
-    .bind(generation)
-    .bind("goal-history")
-    .bind("turn-history")
-    .bind("capacity")
-    .bind(Some("openai"))
-    .bind(Some("gpt-5"))
-    .bind(Some("openai"))
-    .bind(Option::<&str>::None)
-    .bind("turn")
-    .bind("turn-successor")
-    .bind(format!("successor-{origin_request_id}"))
-    .bind(Uuid::now_v7().to_string())
-    .bind(Option::<&str>::None)
-    .bind(0_i64)
-    .bind(1_i64)
-    .bind("pending")
+    .bind(origin.thread_id.to_string())
+    .bind(&origin.origin_request_id)
+    .bind(origin.generation)
+    .bind(&origin.goal_id)
+    .bind(&origin.origin_turn_id)
+    .bind(origin.denial_class.as_str())
+    .bind(&origin.configured_provider_key)
+    .bind(&origin.requested_model)
+    .bind(&origin.effective_provider_id)
+    .bind(&origin.effective_model)
+    .bind(&origin.intended_request_kind)
+    .bind(&origin.successor_turn_id)
+    .bind(&origin.logical_successor_request_id)
+    .bind(origin.decision_id.to_string())
+    .bind(
+        origin
+            .account_context_fingerprint
+            .as_ref()
+            .map(GoalOwnerAdmissionAccountContextFingerprint::as_str),
+    )
+    .bind(origin.deadline_at_ms)
+    .bind(origin.max_attempts)
+    .bind(origin.requested_phase.as_str())
     .execute(store.pool.as_ref())
     .await
     .expect("insert immutable origin history without an admission");
+    observation
+}
+
+async fn raw_admission_phase(
+    store: &GoalOwnerAdmissionStore,
+    authority: &GoalOwnerAdmissionAuthority,
+) -> String {
+    sqlx::query_scalar(
+        "SELECT phase FROM goal_owner_admissions WHERE thread_id = ? AND generation = ?",
+    )
+    .bind(authority.thread_id.to_string())
+    .bind(authority.generation)
+    .fetch_one(store.pool.as_ref())
+    .await
+    .expect("read raw admission phase")
+}
+
+async fn raw_admission_attempts(
+    store: &GoalOwnerAdmissionStore,
+    authority: &GoalOwnerAdmissionAuthority,
+) -> i64 {
+    sqlx::query_scalar(
+        "SELECT attempts_started FROM goal_owner_admissions WHERE thread_id = ? AND generation = ?",
+    )
+    .bind(authority.thread_id.to_string())
+    .bind(authority.generation)
+    .fetch_one(store.pool.as_ref())
+    .await
+    .expect("read raw admission attempts")
+}
+
+async fn raw_chain_attempts(
+    store: &GoalOwnerAdmissionStore,
+    authority: &GoalOwnerAdmissionAuthority,
+) -> i64 {
+    sqlx::query_scalar(
+        "SELECT attempts_started FROM goal_owner_admission_goal_chains WHERE thread_id = ? AND goal_id = ?",
+    )
+    .bind(authority.thread_id.to_string())
+    .bind(&authority.goal_id)
+    .fetch_one(store.pool.as_ref())
+    .await
+    .expect("read raw chain attempts")
 }
 
 #[tokio::test]
@@ -346,6 +415,328 @@ async fn malformed_origin_history_fails_closed_before_replay() {
     .await
     .expect("inject malformed immutable history");
     assert!(store.observe_denial(&origin).await.is_err());
+}
+
+#[tokio::test]
+async fn joined_reader_rejects_wrong_goal_with_a_valid_newer_goal_chain() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    let origin_a = observation(
+        thread_id,
+        "goal-a",
+        "request-a",
+        Utc::now(),
+        GoalOwnerAdmissionPhase::Pending,
+    );
+    let first = store
+        .observe_denial(&origin_a)
+        .await
+        .expect("record first generation");
+    store
+        .retire(
+            &first.authority,
+            GoalOwnerAdmissionRetirementReason::Superseded,
+        )
+        .await
+        .expect("retire first generation")
+        .expect("persist retired first generation");
+    let newer = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-b",
+            "request-b",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record newer goal and chain");
+    sqlx::query(
+        "UPDATE goal_owner_admissions SET goal_id = ? WHERE thread_id = ? AND generation = ?",
+    )
+    .bind(&newer.authority.goal_id)
+    .bind(thread_id.to_string())
+    .bind(first.authority.generation)
+    .execute(store.pool.as_ref())
+    .await
+    .expect("inject wrong goal with a valid newer chain");
+
+    assert!(store.get_generation(&first.authority).await.is_err());
+    assert!(store.observe_denial(&origin_a).await.is_err());
+    assert_eq!(
+        store
+            .get(thread_id)
+            .await
+            .expect("read unaffected newer goal"),
+        Some(newer)
+    );
+}
+
+#[tokio::test]
+async fn joined_reader_rejects_mismatched_origin_request_and_immutable_evidence() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let origin_request_mismatch = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-request",
+            "request-a",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record origin-request case");
+    sqlx::query(
+        "UPDATE goal_owner_admissions SET origin_request_id = ? WHERE thread_id = ? AND generation = ?",
+    )
+    .bind("request-mismatch")
+    .bind(origin_request_mismatch.authority.thread_id.to_string())
+    .bind(origin_request_mismatch.authority.generation)
+    .execute(store.pool.as_ref())
+    .await
+    .expect("inject mismatched origin request");
+    assert!(
+        store
+            .get(origin_request_mismatch.authority.thread_id)
+            .await
+            .is_err()
+    );
+
+    let evidence_mismatch = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-evidence",
+            "request-b",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record evidence case");
+    sqlx::query(
+        "UPDATE goal_owner_admissions SET requested_model = ? WHERE thread_id = ? AND generation = ?",
+    )
+    .bind("gpt-mismatched")
+    .bind(evidence_mismatch.authority.thread_id.to_string())
+    .bind(evidence_mismatch.authority.generation)
+    .execute(store.pool.as_ref())
+    .await
+    .expect("inject mismatched immutable evidence");
+    assert!(
+        store
+            .get(evidence_mismatch.authority.thread_id)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn foreign_key_off_runtime_fails_closed_for_missing_active_origin() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let foreign_keys = sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
+        .fetch_one(store.pool.as_ref())
+        .await
+        .expect("read foreign-key enforcement mode");
+    assert_eq!(foreign_keys, 0);
+
+    let pending = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-pending",
+            "request-pending",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record pending admission");
+    sqlx::query("DELETE FROM goal_owner_admission_origins WHERE thread_id = ? AND generation = ?")
+        .bind(pending.authority.thread_id.to_string())
+        .bind(pending.authority.generation)
+        .execute(store.pool.as_ref())
+        .await
+        .expect("delete origin with foreign keys disabled");
+    assert!(store.get(pending.authority.thread_id).await.is_err());
+    assert!(
+        store
+            .try_acquire(&pending.continuation_authority(), Utc::now())
+            .await
+            .is_err()
+    );
+
+    let acquired = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-acquired",
+            "request-acquired",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record acquired admission");
+    let lease = acquire(store, &acquired).await;
+    sqlx::query("DELETE FROM goal_owner_admission_origins WHERE thread_id = ? AND generation = ?")
+        .bind(acquired.authority.thread_id.to_string())
+        .bind(acquired.authority.generation)
+        .execute(store.pool.as_ref())
+        .await
+        .expect("delete acquired origin with foreign keys disabled");
+    assert!(store.open_lease(&lease).await.is_err());
+    assert_eq!(
+        raw_admission_phase(store, &acquired.authority).await,
+        GoalOwnerAdmissionPhase::Acquired.as_str()
+    );
+}
+
+#[tokio::test]
+async fn corrupted_acquired_admission_cannot_open_provider_work() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let record = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-a",
+            "request-a",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record admission");
+    let lease = acquire(store, &record).await;
+    sqlx::query(
+        "UPDATE goal_owner_admissions SET effective_model = ? WHERE thread_id = ? AND generation = ?",
+    )
+    .bind("gpt-corrupted")
+    .bind(record.authority.thread_id.to_string())
+    .bind(record.authority.generation)
+    .execute(store.pool.as_ref())
+    .await
+    .expect("inject acquired immutable corruption");
+
+    assert!(store.open_lease(&lease).await.is_err());
+    assert_eq!(
+        raw_admission_phase(store, &record.authority).await,
+        GoalOwnerAdmissionPhase::Acquired.as_str()
+    );
+    assert_eq!(raw_admission_attempts(store, &record.authority).await, 1);
+    assert_eq!(raw_chain_attempts(store, &record.authority).await, 1);
+}
+
+#[tokio::test]
+async fn recovery_rejects_corrupt_acquired_rows_before_mutating_any_affected_row() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let acquired = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-acquired",
+            "request-acquired",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record acquired admission");
+    let _acquired_lease = acquire(store, &acquired).await;
+    let in_flight = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-in-flight",
+            "request-in-flight",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record in-flight admission");
+    let in_flight_lease = acquire(store, &in_flight).await;
+    assert!(
+        store
+            .open_lease(&in_flight_lease)
+            .await
+            .expect("open lease")
+    );
+    sqlx::query(
+        "UPDATE goal_owner_admissions SET effective_model = ? WHERE thread_id = ? AND generation = ?",
+    )
+    .bind("gpt-corrupted")
+    .bind(acquired.authority.thread_id.to_string())
+    .bind(acquired.authority.generation)
+    .execute(store.pool.as_ref())
+    .await
+    .expect("inject acquired corruption");
+
+    assert!(
+        GoalOwnerAdmissionStore::recover_in_flight_on_open(store.pool.as_ref())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        raw_admission_phase(store, &acquired.authority).await,
+        GoalOwnerAdmissionPhase::Acquired.as_str()
+    );
+    assert_eq!(raw_admission_attempts(store, &acquired.authority).await, 1);
+    assert_eq!(raw_chain_attempts(store, &acquired.authority).await, 1);
+    assert_eq!(
+        raw_admission_phase(store, &in_flight.authority).await,
+        GoalOwnerAdmissionPhase::InFlight.as_str()
+    );
+}
+
+#[tokio::test]
+async fn recovery_rejects_corrupt_in_flight_rows_before_mutating_any_affected_row() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let acquired = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-acquired",
+            "request-acquired",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record acquired admission");
+    let _acquired_lease = acquire(store, &acquired).await;
+    let in_flight = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-in-flight",
+            "request-in-flight",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record in-flight admission");
+    let in_flight_lease = acquire(store, &in_flight).await;
+    assert!(
+        store
+            .open_lease(&in_flight_lease)
+            .await
+            .expect("open lease")
+    );
+    sqlx::query(
+        "UPDATE goal_owner_admission_origins SET effective_model = ? WHERE thread_id = ? AND generation = ?",
+    )
+    .bind("gpt-corrupted")
+    .bind(in_flight.authority.thread_id.to_string())
+    .bind(in_flight.authority.generation)
+    .execute(store.pool.as_ref())
+    .await
+    .expect("inject in-flight origin corruption");
+
+    assert!(
+        GoalOwnerAdmissionStore::recover_in_flight_on_open(store.pool.as_ref())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        raw_admission_phase(store, &acquired.authority).await,
+        GoalOwnerAdmissionPhase::Acquired.as_str()
+    );
+    assert_eq!(raw_admission_attempts(store, &acquired.authority).await, 1);
+    assert_eq!(raw_chain_attempts(store, &acquired.authority).await, 1);
+    assert_eq!(
+        raw_admission_phase(store, &in_flight.authority).await,
+        GoalOwnerAdmissionPhase::InFlight.as_str()
+    );
 }
 
 #[tokio::test]
@@ -1542,7 +1933,8 @@ async fn origin_only_history_sets_the_next_admission_generation() {
     let runtime = runtime().await;
     let store = runtime.goal_owner_admissions();
     let thread_id = ThreadId::new();
-    insert_origin_history_only(store, thread_id, "request-history", 7).await;
+    let historic = insert_origin_history_only(store, thread_id, "request-history", 7).await;
+    assert!(store.observe_denial(&historic).await.is_err());
 
     let record = store
         .observe_denial(&observation(
@@ -1562,7 +1954,8 @@ async fn origin_history_generation_overflow_fails_closed() {
     let runtime = runtime().await;
     let store = runtime.goal_owner_admissions();
     let thread_id = ThreadId::new();
-    insert_origin_history_only(store, thread_id, "request-overflow", i64::MAX).await;
+    let _historic =
+        insert_origin_history_only(store, thread_id, "request-overflow", i64::MAX).await;
 
     assert!(
         store
