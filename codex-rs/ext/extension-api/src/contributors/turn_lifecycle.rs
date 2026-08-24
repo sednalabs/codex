@@ -6,6 +6,15 @@ use std::time::Duration;
 
 use crate::ExtensionData;
 
+/// Marks one host turn whose terminal owner reduction is deferred while an
+/// extension preserves the same owner for provider-scoped continuation.
+///
+/// The host continues to persist and emit the original terminal protocol
+/// events. It only defers the derived agent-status update and parent result
+/// notification for this exact turn.
+#[derive(Debug)]
+pub struct OwnerContinuationPending;
+
 /// Input supplied when the host starts a turn.
 pub struct TurnStartInput<'a> {
     /// Stable host-owned turn identifier.

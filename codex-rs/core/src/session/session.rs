@@ -53,12 +53,20 @@ pub(crate) struct Session {
     pub(super) mcp_prewarm_task: std::sync::Mutex<Option<JoinHandle<()>>>,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
+    pub(super) pending_owner_continuation: Mutex<Option<PendingOwnerContinuation>>,
     pub(crate) input_queue: InputQueue,
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
     pub(super) git_enrichment_policy: GitEnrichmentPolicy,
     pub(super) fork_persistence: ForkPersistence,
     pub(super) next_internal_sub_id: AtomicU64,
+}
+
+pub(super) struct PendingOwnerContinuation {
+    pub(super) turn_id: String,
+    pub(super) session_source: SessionSource,
+    pub(super) multi_agent_version: MultiAgentVersion,
+    pub(super) terminal_status: Option<AgentStatus>,
 }
 
 #[derive(Clone)]
@@ -1217,6 +1225,7 @@ impl Session {
                 mcp_prewarm_task: std::sync::Mutex::new(None),
                 conversation: Arc::new(RealtimeConversationManager::new()),
                 active_turn: Mutex::new(None),
+                pending_owner_continuation: Mutex::new(None),
                 input_queue: InputQueue::new(),
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,

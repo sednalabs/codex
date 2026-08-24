@@ -58,6 +58,7 @@ struct GoalRuntimeInner {
 }
 
 struct DeferredProviderContinuation {
+    turn_id: String,
     goal_id: String,
     eligible_at: Option<Instant>,
     cancellation: CancellationToken,
@@ -238,7 +239,7 @@ impl GoalRuntimeHandle {
             | codex_state::ThreadGoalStatus::Blocked
             | codex_state::ThreadGoalStatus::UsageLimited
             | codex_state::ThreadGoalStatus::Complete => {
-                self.cancel_provider_continuation();
+                self.cancel_provider_continuation().await;
                 self.inner.accounting_state.clear_active_goal();
             }
         }
@@ -254,7 +255,7 @@ impl GoalRuntimeHandle {
         }
 
         self.inner.analytics.cleared(&goal);
-        self.cancel_provider_continuation();
+        self.cancel_provider_continuation().await;
         self.inner.accounting_state.clear_active_goal();
         Ok(())
     }
@@ -271,16 +272,16 @@ impl GoalRuntimeHandle {
         &self,
         turn_id: &str,
         retry_after: Option<Duration>,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         if !self.is_enabled() {
-            return Ok(());
+            return Ok(false);
         }
 
         let _goal_state_permit = self.goal_state_permit().await?;
         let accounting = self.accounting_state();
         if !accounting.turn_is_current_active_goal(turn_id) {
             accounting.finish_turn(turn_id);
-            return Ok(());
+            return Ok(false);
         }
 
         self.account_active_goal_progress(
@@ -303,14 +304,20 @@ impl GoalRuntimeHandle {
         match goal {
             Some(goal) if goal.status == codex_state::ThreadGoalStatus::Active => {
                 accounting.mark_idle_goal_active(goal.goal_id.clone());
-                self.defer_provider_continuation(goal.goal_id, retry_after);
+                self.defer_provider_continuation(turn_id.to_string(), goal.goal_id, retry_after);
+                return Ok(true);
             }
             Some(_) | None => accounting.clear_active_goal(),
         }
-        Ok(())
+        Ok(false)
     }
 
-    fn defer_provider_continuation(&self, goal_id: String, retry_after: Option<Duration>) {
+    fn defer_provider_continuation(
+        &self,
+        turn_id: String,
+        goal_id: String,
+        retry_after: Option<Duration>,
+    ) {
         let mut state = self
             .inner
             .provider_continuation
@@ -334,6 +341,7 @@ impl GoalRuntimeHandle {
             .and_then(|delay| Instant::now().checked_add(delay));
         let cancellation = CancellationToken::new();
         state.pending = Some(DeferredProviderContinuation {
+            turn_id,
             goal_id,
             eligible_at,
             cancellation: cancellation.clone(),
@@ -368,15 +376,27 @@ impl GoalRuntimeHandle {
         }));
     }
 
-    pub(crate) fn cancel_provider_continuation(&self) {
-        let mut state = self
+    pub(crate) async fn cancel_provider_continuation(&self) {
+        let pending = self
             .inner
             .provider_continuation
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(pending) = state.pending.take() {
-            pending.cancellation.cancel();
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending
+            .take();
+        let Some(pending) = pending else {
+            return;
+        };
+        pending.cancellation.cancel();
+        let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
+            return;
+        };
+        let Ok(thread) = thread_manager.get_thread(self.inner.thread_id).await else {
+            return;
+        };
+        thread
+            .resolve_pending_owner_continuation(pending.turn_id.as_str())
+            .await;
     }
 
     /// Accounts the ending turn and stops its active goal after a terminal error.
