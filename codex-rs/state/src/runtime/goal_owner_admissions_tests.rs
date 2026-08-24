@@ -16,6 +16,24 @@ fn observation(
     deadline_at: DateTime<Utc>,
     requested_phase: GoalOwnerAdmissionPhase,
 ) -> GoalOwnerAdmissionObservation {
+    observation_with_max(
+        thread_id,
+        goal_id,
+        origin_request_id,
+        deadline_at,
+        requested_phase,
+        /*max_attempts*/ 1,
+    )
+}
+
+fn observation_with_max(
+    thread_id: ThreadId,
+    goal_id: &str,
+    origin_request_id: &str,
+    deadline_at: DateTime<Utc>,
+    requested_phase: GoalOwnerAdmissionPhase,
+    max_attempts: i64,
+) -> GoalOwnerAdmissionObservation {
     GoalOwnerAdmissionObservation {
         thread_id,
         goal_id: goal_id.to_string(),
@@ -32,7 +50,7 @@ fn observation(
         decision_id: Uuid::now_v7(),
         account_context_fingerprint: Some(fingerprint()),
         deadline_at,
-        max_attempts: 2,
+        max_attempts,
         requested_phase,
         phase: requested_phase,
     }
@@ -48,178 +66,336 @@ async fn runtime() -> Arc<StateRuntime> {
     .expect("initialize state runtime")
 }
 
+async fn acquire(
+    store: &GoalOwnerAdmissionStore,
+    record: &GoalOwnerAdmissionRecord,
+) -> GoalOwnerAdmissionLease {
+    let authority = record.continuation_authority();
+    match store
+        .try_acquire(&authority, Utc::now())
+        .await
+        .expect("try to acquire admission")
+    {
+        GoalOwnerAdmissionAcquireResult::Acquired(lease) => lease,
+        result => panic!("expected acquired admission, got {result:?}"),
+    }
+}
+
+async fn finish_succeeded(
+    store: &GoalOwnerAdmissionStore,
+    lease: &GoalOwnerAdmissionLease,
+) -> GoalOwnerAdmissionRecord {
+    store.open_lease(lease).await.expect("open exact lease");
+    store
+        .finish(
+            lease,
+            GoalOwnerAdmissionTerminalOutcome::Succeeded,
+            GoalOwnerAdmissionTerminalDisposition::None,
+        )
+        .await
+        .expect("finish exact lease")
+        .expect("persisted terminal outcome")
+}
+
 #[tokio::test]
-async fn observe_denial_is_idempotent_for_an_exact_replay_and_fences_conflicts() {
+async fn exact_origin_replay_is_idempotent_and_conflicting_replay_fails_closed() {
     let runtime = runtime().await;
     let thread_id = ThreadId::new();
-    let observation = observation(
+    let first_observation = observation(
         thread_id,
         "goal-a",
         "request-a",
         Utc::now(),
         GoalOwnerAdmissionPhase::Pending,
     );
-
     let first = runtime
         .goal_owner_admissions()
-        .observe_denial(&observation)
+        .observe_denial(&first_observation)
         .await
-        .expect("record initial denial");
-    let replay = runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation)
-        .await
-        .expect("replay initial denial");
-    assert_eq!(replay, first);
+        .expect("record first denial");
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .observe_denial(&first_observation)
+            .await
+            .expect("replay first denial"),
+        first
+    );
 
-    let mut conflicting_replay = observation.clone();
-    conflicting_replay.denial_class = GoalOwnerAdmissionDenialClass::RateLimited;
+    let mut conflicting = first_observation;
+    conflicting.effective_model = Some("gpt-5.1".to_string());
     assert!(
         runtime
             .goal_owner_admissions()
-            .observe_denial(&conflicting_replay)
+            .observe_denial(&conflicting)
             .await
             .is_err()
     );
+}
 
-    let next_observation = observation(
-        thread_id,
-        "goal-b",
-        "request-b",
-        Utc::now(),
-        GoalOwnerAdmissionPhase::Pending,
-    );
-    let next = runtime
-        .goal_owner_admissions()
-        .observe_denial(&next_observation)
+#[tokio::test]
+async fn cancel_acquired_definite() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let record = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-a",
+            "request-a",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
         .await
-        .expect("record next denial");
-    assert_eq!(next.authority.generation, 2);
-    assert_eq!(next.authority.goal_id, "goal-b");
-    assert_eq!(next.authority.cancellation_epoch, 0);
+        .expect("record admission");
+    let lease = acquire(store, &record).await;
+    let cancelled = store
+        .cancel(
+            &record.authority,
+            GoalOwnerAdmissionTerminalDisposition::ManualReview,
+        )
+        .await
+        .expect("cancel acquired reservation")
+        .expect("persist definite cancellation");
+    assert_eq!(cancelled.phase, GoalOwnerAdmissionPhase::Terminal);
     assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .try_acquire(&first.continuation_authority(), Utc::now())
+        cancelled.terminal_outcome,
+        GoalOwnerAdmissionTerminalOutcome::Cancelled
+    );
+    assert_eq!(
+        cancelled.deferred_terminal_disposition,
+        GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn
+    );
+    assert_eq!(cancelled.lease_id, None);
+    assert_eq!(cancelled.chain_attempts_started, 1);
+    assert!(
+        !store
+            .open_lease(&lease)
             .await
-            .expect("reject replaced goal authority"),
+            .expect("fence opened request")
+    );
+    assert_eq!(
+        store
+            .finish(
+                &lease,
+                GoalOwnerAdmissionTerminalOutcome::Succeeded,
+                GoalOwnerAdmissionTerminalDisposition::None,
+            )
+            .await
+            .expect("late pre-open outcome is fenced"),
         None
     );
 }
 
 #[tokio::test]
-async fn acquire_requires_current_pending_authority_deadline_and_attempt_budget() {
+async fn release_acquired_lease_decrements_generation_and_chain_once() {
     let runtime = runtime().await;
-    let thread_id = ThreadId::new();
-    let future = observation(
-        thread_id,
-        "goal-a",
-        "request-a",
-        Utc::now() + chrono::Duration::minutes(1),
-        GoalOwnerAdmissionPhase::Pending,
-    );
-    let future_record = runtime
-        .goal_owner_admissions()
-        .observe_denial(&future)
+    let store = runtime.goal_owner_admissions();
+    let record = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-a",
+            "request-a",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
         .await
-        .expect("record future admission");
-    assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .try_acquire(&future_record.continuation_authority(), Utc::now())
-            .await
-            .expect("evaluate future admission"),
-        None
-    );
-
-    let ready = observation(
-        thread_id,
-        "goal-a",
-        "request-b",
-        Utc::now() - chrono::Duration::seconds(1),
-        GoalOwnerAdmissionPhase::Pending,
-    );
-    let ready_record = runtime
-        .goal_owner_admissions()
-        .observe_denial(&ready)
-        .await
-        .expect("record ready admission");
-    let stale_authority = GoalOwnerAdmissionAuthority {
-        generation: ready_record.authority.generation - 1,
-        ..ready_record.authority.clone()
-    };
-    let stale_continuation_authority = GoalOwnerAdmissionContinuationAuthority {
-        authority: stale_authority,
-        ..ready_record.continuation_authority()
-    };
-    assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .try_acquire(&stale_continuation_authority, Utc::now())
-            .await
-            .expect("reject stale generation"),
-        None
-    );
-
-    let lease = runtime
-        .goal_owner_admissions()
-        .try_acquire(&ready_record.continuation_authority(), Utc::now())
-        .await
-        .expect("acquire ready admission")
-        .expect("admission should acquire");
-    assert_eq!(lease.authority, ready_record.authority);
-    let acquired = runtime
-        .goal_owner_admissions()
-        .get(thread_id)
-        .await
-        .expect("read acquired admission")
-        .expect("acquired admission should persist");
-    assert_eq!(acquired.phase, GoalOwnerAdmissionPhase::Acquired);
+        .expect("record admission");
+    let lease = acquire(store, &record).await;
     assert!(
-        runtime
-            .goal_owner_admissions()
-            .open_lease(&lease)
+        store
+            .release_acquired_lease(&lease)
             .await
-            .expect("open exact acquired lease")
+            .expect("release pre-network reservation")
     );
     assert!(
-        !runtime
-            .goal_owner_admissions()
-            .open_lease(&lease)
+        !store
+            .release_acquired_lease(&lease)
             .await
-            .expect("a lease opens only once")
+            .expect("releasing the same reservation twice is fenced")
     );
-    let in_flight = runtime
-        .goal_owner_admissions()
-        .get(thread_id)
+    let released = store
+        .get_generation(&record.authority)
         .await
-        .expect("read opened admission")
-        .expect("opened admission should persist");
-    assert_eq!(in_flight.phase, GoalOwnerAdmissionPhase::InFlight);
+        .expect("read released generation")
+        .expect("released generation persists");
+    assert_eq!(released.phase, GoalOwnerAdmissionPhase::Pending);
+    assert_eq!(released.attempts_started, 0);
+    assert_eq!(released.chain_attempts_started, 0);
+    assert_eq!(released.lease_id, None);
+}
+
+#[tokio::test]
+async fn cancel_in_flight_uncertain() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let record = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-a",
+            "request-a",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record admission");
+    let lease = acquire(store, &record).await;
+    assert!(store.open_lease(&lease).await.expect("open exact lease"));
+
+    let cancelled = store
+        .cancel(
+            &record.authority,
+            GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+        )
+        .await
+        .expect("cancel in-flight lease")
+        .expect("persist uncertain outcome");
+    assert_eq!(cancelled.phase, GoalOwnerAdmissionPhase::Terminal);
     assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&ready)
-            .await
-            .expect("replay original denial after acquisition"),
-        in_flight
+        cancelled.terminal_outcome,
+        GoalOwnerAdmissionTerminalOutcome::Uncertain
     );
     assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .try_acquire(&ready_record.continuation_authority(), Utc::now())
-            .await
-            .expect("reject duplicate acquire"),
-        None
+        cancelled.deferred_terminal_disposition,
+        GoalOwnerAdmissionTerminalDisposition::ManualReview
+    );
+    assert_eq!(cancelled.lease_id, Some(lease.lease_id));
+    assert_eq!(
+        cancelled.lease_cancellation_epoch,
+        Some(record.authority.cancellation_epoch)
+    );
+    assert_eq!(
+        cancelled.authority.cancellation_epoch,
+        record.authority.cancellation_epoch + 1
     );
 }
 
 #[tokio::test]
-async fn outcomes_and_cancellation_are_lease_and_epoch_fenced() {
+async fn same_lease_definitive_outcome_refines_uncertainty() {
     let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let record = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-a",
+            "request-a",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record admission");
+    let lease = acquire(store, &record).await;
+    assert!(store.open_lease(&lease).await.expect("open exact lease"));
+    store
+        .cancel(
+            &record.authority,
+            GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+        )
+        .await
+        .expect("record uncertain cancellation");
+
+    let refined = store
+        .finish(
+            &lease,
+            GoalOwnerAdmissionTerminalOutcome::Succeeded,
+            GoalOwnerAdmissionTerminalDisposition::None,
+        )
+        .await
+        .expect("finish same late lease")
+        .expect("refine uncertainty");
+    assert_eq!(refined.phase, GoalOwnerAdmissionPhase::Terminal);
+    assert_eq!(
+        refined.terminal_outcome,
+        GoalOwnerAdmissionTerminalOutcome::Succeeded
+    );
+    assert_eq!(
+        refined.deferred_terminal_disposition,
+        GoalOwnerAdmissionTerminalDisposition::None
+    );
+    assert_eq!(refined.lease_id, Some(lease.lease_id));
+}
+
+#[tokio::test]
+async fn wrong_lease_generation_or_epoch_cannot_refine_uncertainty() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let record = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-a",
+            "request-a",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record admission");
+    let lease = acquire(store, &record).await;
+    assert!(store.open_lease(&lease).await.expect("open exact lease"));
+    store
+        .cancel(
+            &record.authority,
+            GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+        )
+        .await
+        .expect("record uncertain cancellation");
+
+    let mut wrong_lease = lease.clone();
+    wrong_lease.lease_id = Uuid::now_v7();
+    assert_eq!(
+        store
+            .finish(
+                &wrong_lease,
+                GoalOwnerAdmissionTerminalOutcome::Succeeded,
+                GoalOwnerAdmissionTerminalDisposition::None,
+            )
+            .await
+            .expect("wrong lease is fenced"),
+        None
+    );
+    let mut wrong_epoch = lease.clone();
+    wrong_epoch.authority.cancellation_epoch += 1;
+    wrong_epoch.continuation_authority.authority = wrong_epoch.authority.clone();
+    assert_eq!(
+        store
+            .finish(
+                &wrong_epoch,
+                GoalOwnerAdmissionTerminalOutcome::Succeeded,
+                GoalOwnerAdmissionTerminalDisposition::None,
+            )
+            .await
+            .expect("wrong epoch is fenced"),
+        None
+    );
+    let mut wrong_generation = lease.clone();
+    wrong_generation.authority.generation += 1;
+    wrong_generation.continuation_authority.authority = wrong_generation.authority.clone();
+    assert_eq!(
+        store
+            .finish(
+                &wrong_generation,
+                GoalOwnerAdmissionTerminalOutcome::Succeeded,
+                GoalOwnerAdmissionTerminalDisposition::None,
+            )
+            .await
+            .expect("wrong generation is fenced"),
+        None
+    );
+    let preserved = store
+        .get_generation(&record.authority)
+        .await
+        .expect("read exact history")
+        .expect("history persists");
+    assert_eq!(
+        preserved.terminal_outcome,
+        GoalOwnerAdmissionTerminalOutcome::Uncertain
+    );
+}
+
+#[tokio::test]
+async fn same_goal_generations_share_one_total_attempt_and_second_claim_exhausts_no_third() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
     let thread_id = ThreadId::new();
-    let first = runtime
-        .goal_owner_admissions()
+    let first = store
         .observe_denial(&observation(
             thread_id,
             "goal-a",
@@ -228,55 +404,20 @@ async fn outcomes_and_cancellation_are_lease_and_epoch_fenced() {
             GoalOwnerAdmissionPhase::Pending,
         ))
         .await
-        .expect("record first admission");
-    let lease = runtime
-        .goal_owner_admissions()
-        .try_acquire(&first.continuation_authority(), Utc::now())
-        .await
-        .expect("acquire first admission")
-        .expect("first admission should acquire");
-    assert!(
-        runtime
-            .goal_owner_admissions()
-            .open_lease(&lease)
-            .await
-            .expect("open first admission")
-    );
-    let completed = runtime
-        .goal_owner_admissions()
-        .finish(
-            &lease,
-            GoalOwnerAdmissionTerminalOutcome::Succeeded,
-            GoalOwnerAdmissionTerminalDisposition::None,
+        .expect("record first generation");
+    let first_lease = acquire(store, &first).await;
+    let terminal = finish_succeeded(store, &first_lease).await;
+    assert_eq!(terminal.chain_attempts_started, 1);
+    store
+        .retire(
+            &terminal.authority,
+            GoalOwnerAdmissionRetirementReason::Superseded,
         )
         .await
-        .expect("finish first admission")
-        .expect("finish should be accepted");
-    let replay = runtime
-        .goal_owner_admissions()
-        .finish(
-            &lease,
-            GoalOwnerAdmissionTerminalOutcome::Succeeded,
-            GoalOwnerAdmissionTerminalDisposition::None,
-        )
-        .await
-        .expect("replay completed outcome")
-        .expect("exact outcome replay should be accepted");
-    assert_eq!(replay, completed);
-    assert!(
-        runtime
-            .goal_owner_admissions()
-            .finish(
-                &lease,
-                GoalOwnerAdmissionTerminalOutcome::Rejected,
-                GoalOwnerAdmissionTerminalDisposition::None,
-            )
-            .await
-            .is_err()
-    );
+        .expect("retire consumed generation")
+        .expect("retirement persists");
 
-    let second = runtime
-        .goal_owner_admissions()
+    let second = store
         .observe_denial(&observation(
             thread_id,
             "goal-a",
@@ -285,149 +426,222 @@ async fn outcomes_and_cancellation_are_lease_and_epoch_fenced() {
             GoalOwnerAdmissionPhase::Pending,
         ))
         .await
-        .expect("record second admission");
-    let second_lease = runtime
-        .goal_owner_admissions()
-        .try_acquire(&second.continuation_authority(), Utc::now())
+        .expect("record same-goal generation");
+    assert_eq!(second.authority.generation, 2);
+    assert_eq!(second.chain_attempts_started, 1);
+    let authority = second.continuation_authority();
+    let exhausted = store
+        .try_acquire(&authority, Utc::now())
         .await
-        .expect("acquire second admission")
-        .expect("second admission should acquire");
-    let cancelled = runtime
-        .goal_owner_admissions()
-        .cancel(
-            &second.authority,
-            GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
-        )
+        .expect("atomically exhaust chain");
+    let GoalOwnerAdmissionAcquireResult::Exhausted(exhausted) = exhausted else {
+        panic!("second chain claim must exhaust")
+    };
+    assert_eq!(exhausted.phase, GoalOwnerAdmissionPhase::Terminal);
+    assert_eq!(
+        exhausted.terminal_outcome,
+        GoalOwnerAdmissionTerminalOutcome::Exhausted
+    );
+    assert_eq!(
+        exhausted.deferred_terminal_disposition,
+        GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn
+    );
+    assert_eq!(exhausted.lease_id, None);
+    let third = store
+        .try_acquire(&authority, Utc::now())
         .await
-        .expect("cancel second admission")
-        .expect("cancellation should be accepted");
-    assert_eq!(cancelled.authority.cancellation_epoch, 1);
-    assert_eq!(
-        cancelled.terminal_outcome,
-        GoalOwnerAdmissionTerminalOutcome::Cancelled
-    );
-    assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .open_lease(&second_lease)
-            .await
-            .expect("cancelled reservation cannot open"),
-        false
-    );
-    assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .finish(
-                &second_lease,
-                GoalOwnerAdmissionTerminalOutcome::Succeeded,
-                GoalOwnerAdmissionTerminalDisposition::None,
-            )
-            .await
-            .expect("reject cancelled lease outcome"),
-        None
-    );
-    assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .cancel(
-                &second.authority,
-                GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
-            )
-            .await
-            .expect("replay cancellation")
-            .expect("exact cancellation replay should be accepted"),
-        cancelled
-    );
+        .expect("third chain claim reads durable exhaustion");
+    assert_eq!(third, GoalOwnerAdmissionAcquireResult::Exhausted(exhausted));
 }
 
 #[tokio::test]
-async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
-    let codex_home = unique_temp_dir();
-    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
-        .await
-        .expect("initialize runtime");
-    let in_flight_thread = ThreadId::new();
-    let in_flight = runtime
-        .goal_owner_admissions()
+async fn new_goal_has_fresh_budget_only_after_explicit_retirement() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    let original = store
         .observe_denial(&observation(
-            in_flight_thread,
-            "goal-in-flight",
-            "request-in-flight",
+            thread_id,
+            "goal-a",
+            "request-a",
             Utc::now() - chrono::Duration::seconds(1),
             GoalOwnerAdmissionPhase::Pending,
         ))
         .await
-        .expect("record in-flight admission");
-    let in_flight_lease = runtime
-        .goal_owner_admissions()
-        .try_acquire(&in_flight.continuation_authority(), Utc::now())
-        .await
-        .expect("acquire in-flight admission")
-        .expect("in-flight admission should acquire");
+        .expect("record original goal");
     assert!(
-        runtime
-            .goal_owner_admissions()
-            .open_lease(&in_flight_lease)
-            .await
-            .expect("open in-flight admission")
-    );
-    assert!(
-        runtime
-            .goal_owner_admissions()
+        store
             .observe_denial(&observation(
-                in_flight_thread,
-                "goal-replacement",
-                "request-replacement",
-                Utc::now(),
+                thread_id,
+                "goal-b",
+                "request-b",
+                Utc::now() - chrono::Duration::seconds(1),
                 GoalOwnerAdmissionPhase::Pending,
             ))
             .await
             .is_err()
     );
-
-    let dormant_thread = ThreadId::new();
-    let dormant = runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation(
-            dormant_thread,
-            "goal-dormant",
-            "request-dormant",
-            Utc::now() + chrono::Duration::minutes(1),
-            GoalOwnerAdmissionPhase::Dormant,
-        ))
+    store
+        .retire(
+            &original.authority,
+            GoalOwnerAdmissionRetirementReason::Superseded,
+        )
         .await
-        .expect("record dormant admission");
-    let pending_thread = ThreadId::new();
-    let pending = runtime
-        .goal_owner_admissions()
+        .expect("retire old goal")
+        .expect("old goal retired");
+    let replacement = store
         .observe_denial(&observation(
-            pending_thread,
-            "goal-pending",
-            "request-pending",
-            Utc::now() + chrono::Duration::minutes(1),
-            GoalOwnerAdmissionPhase::Pending,
-        ))
-        .await
-        .expect("record pending admission");
-    let acquired_thread = ThreadId::new();
-    let acquired = runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation(
-            acquired_thread,
-            "goal-acquired",
-            "request-acquired",
+            thread_id,
+            "goal-b",
+            "request-b",
             Utc::now() - chrono::Duration::seconds(1),
             GoalOwnerAdmissionPhase::Pending,
         ))
         .await
-        .expect("record acquired admission");
-    let _acquired_lease = runtime
-        .goal_owner_admissions()
-        .try_acquire(&acquired.continuation_authority(), Utc::now())
+        .expect("record new goal after retirement");
+    assert_eq!(replacement.authority.generation, 2);
+    assert_eq!(replacement.chain_attempts_started, 0);
+    let replacement_lease = acquire(store, &replacement).await;
+    assert_eq!(replacement_lease.authority.goal_id, "goal-b");
+}
+
+#[tokio::test]
+async fn replacement_retirement_preserves_old_terminal_evidence() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    let original = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-a",
+            "request-a",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
         .await
-        .expect("acquire pre-network reservation")
-        .expect("reservation should acquire");
+        .expect("record old goal");
+    let lease = acquire(store, &original).await;
+    assert!(store.open_lease(&lease).await.expect("open old goal"));
+    let terminal = store
+        .finish(
+            &lease,
+            GoalOwnerAdmissionTerminalOutcome::Rejected,
+            GoalOwnerAdmissionTerminalDisposition::None,
+        )
+        .await
+        .expect("finish old goal")
+        .expect("old terminal evidence");
+    store
+        .retire(
+            &terminal.authority,
+            GoalOwnerAdmissionRetirementReason::UserRecovery,
+        )
+        .await
+        .expect("retire old terminal")
+        .expect("old terminal retired");
+    let replacement = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-b",
+            "request-b",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record replacement goal");
+    let old = store
+        .get_generation(&terminal.authority)
+        .await
+        .expect("read retired history")
+        .expect("old evidence remains");
+    assert_eq!(old.phase, GoalOwnerAdmissionPhase::Terminal);
+    assert_eq!(
+        old.terminal_outcome,
+        GoalOwnerAdmissionTerminalOutcome::Rejected
+    );
+    assert_eq!(
+        old.retirement_reason,
+        Some(GoalOwnerAdmissionRetirementReason::UserRecovery)
+    );
+    assert!(old.retired_at.is_some());
+    assert_eq!(replacement.authority.generation, 2);
+}
+
+#[tokio::test]
+async fn acquired_reopen_decrements_generation_and_chain_counts_once() {
+    let codex_home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("initialize runtime");
+    let record = runtime
+        .goal_owner_admissions()
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-a",
+            "request-a",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record pre-network admission");
+    let _lease = acquire(runtime.goal_owner_admissions(), &record).await;
+    runtime.close().await;
+
+    let reopened = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("reopen runtime");
+    let recovered = reopened
+        .goal_owner_admissions()
+        .get_generation(&record.authority)
+        .await
+        .expect("read recovered generation")
+        .expect("recovered generation exists");
+    assert_eq!(recovered.phase, GoalOwnerAdmissionPhase::Pending);
+    assert_eq!(recovered.attempts_started, 0);
+    assert_eq!(recovered.chain_attempts_started, 0);
+    assert_eq!(recovered.lease_id, None);
+    reopened.close().await;
+
+    let reopened_again = StateRuntime::init(sqlite, "test-provider".to_string())
+        .await
+        .expect("reopen recovered runtime");
+    let recovered_again = reopened_again
+        .goal_owner_admissions()
+        .get_generation(&record.authority)
+        .await
+        .expect("read recovered generation again")
+        .expect("recovered generation remains");
+    assert_eq!(recovered_again.attempts_started, 0);
+    assert_eq!(recovered_again.chain_attempts_started, 0);
+}
+
+#[tokio::test]
+async fn in_flight_reopen_is_uncertain_and_preserves_lease() {
+    let codex_home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("initialize runtime");
+    let record = runtime
+        .goal_owner_admissions()
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-a",
+            "request-a",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record in-flight admission");
+    let lease = acquire(runtime.goal_owner_admissions(), &record).await;
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("open in-flight lease")
+    );
     runtime.close().await;
 
     let reopened = StateRuntime::init(sqlite, "test-provider".to_string())
@@ -435,10 +649,10 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         .expect("reopen runtime");
     let recovered = reopened
         .goal_owner_admissions()
-        .get(in_flight_thread)
+        .get_generation(&record.authority)
         .await
-        .expect("read recovered admission")
-        .expect("in-flight admission should persist");
+        .expect("read recovered in-flight generation")
+        .expect("recovered in-flight generation exists");
     assert_eq!(recovered.phase, GoalOwnerAdmissionPhase::Terminal);
     assert_eq!(
         recovered.terminal_outcome,
@@ -448,49 +662,160 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         recovered.deferred_terminal_disposition,
         GoalOwnerAdmissionTerminalDisposition::ManualReview
     );
-    assert!(
-        reopened
-            .goal_owner_admissions()
-            .observe_denial(&observation(
-                in_flight_thread,
-                "goal-replacement",
-                "request-replacement",
-                Utc::now(),
-                GoalOwnerAdmissionPhase::Pending,
-            ))
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        reopened
-            .goal_owner_admissions()
-            .get(dormant_thread)
-            .await
-            .expect("read dormant admission"),
-        Some(dormant)
-    );
-    assert_eq!(
-        reopened
-            .goal_owner_admissions()
-            .get(pending_thread)
-            .await
-            .expect("read pending admission"),
-        Some(pending)
-    );
-    let recovered_acquired = reopened
-        .goal_owner_admissions()
-        .get(acquired_thread)
-        .await
-        .expect("read recovered acquired reservation")
-        .expect("acquired reservation should persist");
-    assert_eq!(recovered_acquired.phase, GoalOwnerAdmissionPhase::Pending);
-    assert_eq!(recovered_acquired.attempts_started, 0);
-    assert_eq!(recovered_acquired.lease_id, None);
+    assert_eq!(recovered.lease_id, Some(lease.lease_id));
+    assert_eq!(recovered.chain_attempts_started, 1);
 }
 
 #[tokio::test]
-async fn malformed_input_and_contradictory_database_updates_fail_closed() {
+async fn typed_acquisition_variants_are_unambiguous() {
     let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    let dormant = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-a",
+            "request-a",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Dormant,
+        ))
+        .await
+        .expect("record dormant admission");
+    assert_eq!(
+        store
+            .try_acquire(&dormant.continuation_authority(), Utc::now())
+            .await
+            .expect("read dormant result"),
+        GoalOwnerAdmissionAcquireResult::Dormant
+    );
+    store
+        .retire(
+            &dormant.authority,
+            GoalOwnerAdmissionRetirementReason::UserRecovery,
+        )
+        .await
+        .expect("retire dormant admission");
+    assert_eq!(
+        store
+            .try_acquire(&dormant.continuation_authority(), Utc::now())
+            .await
+            .expect("read non-current result"),
+        GoalOwnerAdmissionAcquireResult::NotCurrent
+    );
+
+    let deferred = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-b",
+            "request-b",
+            Utc::now() + chrono::Duration::minutes(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record deferred admission");
+    assert_eq!(
+        store
+            .try_acquire(&deferred.continuation_authority(), Utc::now())
+            .await
+            .expect("read not eligible result"),
+        GoalOwnerAdmissionAcquireResult::NotEligible
+    );
+    store
+        .retire(
+            &deferred.authority,
+            GoalOwnerAdmissionRetirementReason::Superseded,
+        )
+        .await
+        .expect("retire deferred admission");
+    let ready = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-c",
+            "request-c",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record ready admission");
+    assert!(matches!(
+        store
+            .try_acquire(&ready.continuation_authority(), Utc::now())
+            .await
+            .expect("read acquired result"),
+        GoalOwnerAdmissionAcquireResult::Acquired(_)
+    ));
+}
+
+#[tokio::test]
+async fn concurrent_claims_converge_on_one_durable_exhaustion() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    let first = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-a",
+            "request-a",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record first generation");
+    let first_lease = acquire(store, &first).await;
+    let terminal = finish_succeeded(store, &first_lease).await;
+    store
+        .retire(
+            &terminal.authority,
+            GoalOwnerAdmissionRetirementReason::Superseded,
+        )
+        .await
+        .expect("retire consumed generation");
+    let second = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-a",
+            "request-b",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record exhausted generation");
+    let authority = second.continuation_authority();
+    let store_a = store.clone();
+    let store_b = store.clone();
+    let (first_result, second_result) = tokio::join!(
+        store_a.try_acquire(&authority, Utc::now()),
+        store_b.try_acquire(&authority, Utc::now()),
+    );
+    for result in [
+        first_result.expect("first concurrent claim"),
+        second_result.expect("second concurrent claim"),
+    ] {
+        assert!(matches!(
+            result,
+            GoalOwnerAdmissionAcquireResult::Exhausted(_)
+        ));
+    }
+    let current = store
+        .get(thread_id)
+        .await
+        .expect("read current exhaustion")
+        .expect("current exhausted generation");
+    assert_eq!(current.phase, GoalOwnerAdmissionPhase::Terminal);
+    assert_eq!(
+        current.terminal_outcome,
+        GoalOwnerAdmissionTerminalOutcome::Exhausted
+    );
+}
+
+#[tokio::test]
+async fn malformed_and_contradictory_rows_fail_closed() {
+    assert!(
+        GoalOwnerAdmissionAccountContextFingerprint::try_from("user@example.com".to_string())
+            .is_err()
+    );
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
     let thread_id = ThreadId::new();
     let mut malformed = observation(
         thread_id,
@@ -500,24 +825,10 @@ async fn malformed_input_and_contradictory_database_updates_fail_closed() {
         GoalOwnerAdmissionPhase::Pending,
     );
     malformed.origin_turn_id.clear();
-    assert!(
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&malformed)
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .get(thread_id)
-            .await
-            .expect("read absent admission"),
-        None
-    );
+    assert!(store.observe_denial(&malformed).await.is_err());
+    assert_eq!(store.get(thread_id).await.expect("read absent row"), None);
 
-    let record = runtime
-        .goal_owner_admissions()
+    let record = store
         .observe_denial(&observation(
             thread_id,
             "goal-a",
@@ -529,243 +840,32 @@ async fn malformed_input_and_contradictory_database_updates_fail_closed() {
         .expect("record valid admission");
     assert!(
         sqlx::query(
-            "UPDATE goal_owner_admissions SET terminal_outcome = 'succeeded' WHERE thread_id = ?",
+            "UPDATE goal_owner_admissions SET terminal_outcome = 'succeeded' WHERE thread_id = ? AND generation = ?",
         )
         .bind(thread_id.to_string())
-        .execute(runtime.goal_owner_admissions().pool.as_ref())
+        .bind(record.authority.generation)
+        .execute(store.pool.as_ref())
+        .await
+        .is_err()
+    );
+    assert!(
+        sqlx::query(
+            "UPDATE goal_owner_admissions SET lease_cancellation_epoch = 9 WHERE thread_id = ? AND generation = ?",
+        )
+        .bind(thread_id.to_string())
+        .bind(record.authority.generation)
+        .execute(store.pool.as_ref())
         .await
         .is_err()
     );
     assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .get(thread_id)
-            .await
-            .expect("read valid admission after rejected update"),
+        store.get(thread_id).await.expect("read protected row"),
         Some(record)
     );
 }
 
-#[test]
-fn admission_timestamps_preserve_milliseconds_without_legacy_seconds_inference() {
-    let pre_2020 = DateTime::<Utc>::from_timestamp(946_684_800, 987_654_321).expect("timestamp");
-    let stored = admission_datetime_to_epoch_millis(pre_2020);
-    assert_eq!(stored, 946_684_800_987);
-    assert_eq!(
-        admission_epoch_millis_to_datetime(stored).expect("decode timestamp"),
-        DateTime::<Utc>::from_timestamp_millis(stored).expect("millisecond timestamp")
-    );
-}
-
 #[tokio::test]
-async fn phase_and_fingerprint_replays_fail_closed() {
-    assert!(
-        GoalOwnerAdmissionAccountContextFingerprint::try_from("user@example.com".to_string())
-            .is_err()
-    );
-    assert!(GoalOwnerAdmissionAccountContextFingerprint::try_from("a".repeat(63)).is_err());
-    let runtime = runtime().await;
-    for (thread_id, initial, conflicting) in [
-        (
-            ThreadId::new(),
-            GoalOwnerAdmissionPhase::Pending,
-            GoalOwnerAdmissionPhase::Dormant,
-        ),
-        (
-            ThreadId::new(),
-            GoalOwnerAdmissionPhase::Dormant,
-            GoalOwnerAdmissionPhase::Pending,
-        ),
-    ] {
-        let request = observation(thread_id, "goal", "request", Utc::now(), initial);
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&request)
-            .await
-            .expect("record admission");
-        let mut conflict = request;
-        conflict.phase = conflicting;
-        assert!(
-            runtime
-                .goal_owner_admissions()
-                .observe_denial(&conflict)
-                .await
-                .is_err()
-        );
-    }
-}
-
-#[tokio::test]
-async fn origin_history_replays_return_the_current_admission_across_replacements() {
-    let runtime = runtime().await;
-    let thread_id = ThreadId::new();
-    let deadline_at = Utc::now() - chrono::Duration::seconds(1);
-    let origin_a = observation(
-        thread_id,
-        "goal-a",
-        "request-a",
-        deadline_at,
-        GoalOwnerAdmissionPhase::Pending,
-    );
-    let first = runtime
-        .goal_owner_admissions()
-        .observe_denial(&origin_a)
-        .await
-        .expect("record first origin");
-    let origin_b = observation(
-        thread_id,
-        "goal-b",
-        "request-b",
-        deadline_at,
-        GoalOwnerAdmissionPhase::Pending,
-    );
-    let pending = runtime
-        .goal_owner_admissions()
-        .observe_denial(&origin_b)
-        .await
-        .expect("replace current admission with second origin");
-    assert_eq!(pending.authority.generation, 2);
-    assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&origin_a)
-            .await
-            .expect("replay first origin while second is pending"),
-        pending
-    );
-
-    let lease = runtime
-        .goal_owner_admissions()
-        .try_acquire(&pending.continuation_authority(), Utc::now())
-        .await
-        .expect("acquire second admission")
-        .expect("second admission should acquire");
-    assert!(
-        runtime
-            .goal_owner_admissions()
-            .open_lease(&lease)
-            .await
-            .expect("open second admission")
-    );
-    let terminal = runtime
-        .goal_owner_admissions()
-        .finish(
-            &lease,
-            GoalOwnerAdmissionTerminalOutcome::Succeeded,
-            GoalOwnerAdmissionTerminalDisposition::None,
-        )
-        .await
-        .expect("finish second admission")
-        .expect("finish should be accepted");
-    assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&origin_a)
-            .await
-            .expect("replay first origin after second is terminal"),
-        terminal
-    );
-    assert_eq!(first.authority.generation, 1);
-
-    let mut conflicting_old_replay = origin_a;
-    conflicting_old_replay.effective_model = Some("gpt-5.1".to_string());
-    assert!(
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&conflicting_old_replay)
-            .await
-            .is_err()
-    );
-}
-
-#[tokio::test]
-async fn concurrent_exact_origin_replays_converge_without_duplicate_history() {
-    let runtime = runtime().await;
-    let thread_id = ThreadId::new();
-    let origin = observation(
-        thread_id,
-        "goal-a",
-        "request-a",
-        Utc::now(),
-        GoalOwnerAdmissionPhase::Pending,
-    );
-    let store_a = runtime.goal_owner_admissions().clone();
-    let store_b = runtime.goal_owner_admissions().clone();
-    let (first, second) = tokio::join!(
-        store_a.observe_denial(&origin),
-        store_b.observe_denial(&origin),
-    );
-    let first = first.expect("first exact origin observation should succeed");
-    let second = second.expect("second exact origin observation should succeed");
-    assert_eq!(first, second);
-    assert_eq!(first.authority.generation, 1);
-    let origins = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM goal_owner_admission_origins WHERE thread_id = ?",
-    )
-    .bind(thread_id.to_string())
-    .fetch_one(runtime.goal_owner_admissions().pool.as_ref())
-    .await
-    .expect("count origin history rows");
-    assert_eq!(origins, 1);
-}
-
-#[tokio::test]
-async fn concurrent_distinct_origins_are_recorded_and_generation_ordered() {
-    let runtime = runtime().await;
-    let thread_id = ThreadId::new();
-    let origin_a = observation(
-        thread_id,
-        "goal-a",
-        "request-a",
-        Utc::now(),
-        GoalOwnerAdmissionPhase::Pending,
-    );
-    let origin_b = observation(
-        thread_id,
-        "goal-b",
-        "request-b",
-        Utc::now(),
-        GoalOwnerAdmissionPhase::Pending,
-    );
-    let store_a = runtime.goal_owner_admissions().clone();
-    let store_b = runtime.goal_owner_admissions().clone();
-    let (first, second) = tokio::join!(
-        store_a.observe_denial(&origin_a),
-        store_b.observe_denial(&origin_b),
-    );
-    let first = first.expect("first distinct origin observation should succeed");
-    let second = second.expect("second distinct origin observation should succeed");
-    let mut generations = [first.authority.generation, second.authority.generation];
-    generations.sort_unstable();
-    assert_eq!(generations, [1, 2]);
-
-    let current = runtime
-        .goal_owner_admissions()
-        .get(thread_id)
-        .await
-        .expect("read current admission")
-        .expect("current admission should exist");
-    assert_eq!(current.authority.generation, 2);
-    let origins = sqlx::query_scalar::<_, String>(
-        r#"
-SELECT origin_request_id
-FROM goal_owner_admission_origins
-WHERE thread_id = ?
-ORDER BY origin_request_id
-        "#,
-    )
-    .bind(thread_id.to_string())
-    .fetch_all(runtime.goal_owner_admissions().pool.as_ref())
-    .await
-    .expect("read origin history rows");
-    assert_eq!(
-        origins,
-        vec!["request-a".to_string(), "request-b".to_string()]
-    );
-}
-
-#[tokio::test]
-async fn direct_thread_goal_deletion_clears_admission_and_origin_history() {
+async fn deletion_clears_active_history_and_goal_chain() {
     let runtime = runtime().await;
     let thread_id = ThreadId::new();
     runtime
@@ -784,18 +884,16 @@ async fn direct_thread_goal_deletion_clears_admission_and_origin_history() {
             thread_id,
             "goal-a",
             "request-a",
-            Utc::now() - chrono::Duration::seconds(1),
+            Utc::now(),
             GoalOwnerAdmissionPhase::Pending,
         ))
         .await
-        .expect("record admission origin");
-
+        .expect("record admission");
     sqlx::query("DELETE FROM thread_goals WHERE thread_id = ?")
         .bind(thread_id.to_string())
         .execute(runtime.goal_owner_admissions().pool.as_ref())
         .await
-        .expect("delete thread goal directly");
-
+        .expect("delete thread goal");
     assert_eq!(
         runtime
             .goal_owner_admissions()
@@ -810,14 +908,33 @@ async fn direct_thread_goal_deletion_clears_admission_and_origin_history() {
     .bind(thread_id.to_string())
     .fetch_one(runtime.goal_owner_admissions().pool.as_ref())
     .await
-    .expect("count deleted origin history rows");
+    .expect("count deleted origins");
+    let chains = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM goal_owner_admission_goal_chains WHERE thread_id = ?",
+    )
+    .bind(thread_id.to_string())
+    .fetch_one(runtime.goal_owner_admissions().pool.as_ref())
+    .await
+    .expect("count deleted chains");
     assert_eq!(origins, 0);
+    assert_eq!(chains, 0);
     assert_eq!(
         runtime
             .goal_owner_admissions()
             .try_acquire(&record.continuation_authority(), Utc::now())
             .await
-            .expect("deleted admission cannot acquire"),
-        None
+            .expect("deleted authority result"),
+        GoalOwnerAdmissionAcquireResult::NotCurrent
+    );
+}
+
+#[test]
+fn admission_timestamps_preserve_milliseconds_without_legacy_seconds_inference() {
+    let pre_2020 = DateTime::<Utc>::from_timestamp(946_684_800, 987_654_321).expect("timestamp");
+    let stored = admission_datetime_to_epoch_millis(pre_2020);
+    assert_eq!(stored, 946_684_800_987);
+    assert_eq!(
+        admission_epoch_millis_to_datetime(stored).expect("decode timestamp"),
+        DateTime::<Utc>::from_timestamp_millis(stored).expect("millisecond timestamp")
     );
 }

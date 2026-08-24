@@ -1,5 +1,16 @@
+CREATE TABLE goal_owner_admission_goal_chains (
+    thread_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL CHECK(length(goal_id) BETWEEN 1 AND 512),
+    attempts_started INTEGER NOT NULL DEFAULT 0 CHECK(attempts_started >= 0),
+    max_attempts INTEGER NOT NULL CHECK(max_attempts >= 1),
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY(thread_id, goal_id),
+    CHECK(attempts_started <= max_attempts)
+);
+
 CREATE TABLE goal_owner_admissions (
-    thread_id TEXT PRIMARY KEY NOT NULL,
+    thread_id TEXT NOT NULL,
     goal_id TEXT NOT NULL CHECK(length(goal_id) BETWEEN 1 AND 512),
     generation INTEGER NOT NULL CHECK(generation >= 1),
     origin_turn_id TEXT NOT NULL CHECK(length(origin_turn_id) BETWEEN 1 AND 512),
@@ -41,15 +52,22 @@ CREATE TABLE goal_owner_admissions (
     )),
     lease_id TEXT,
     lease_acquired_at_ms INTEGER,
+    lease_cancellation_epoch INTEGER,
     deferred_terminal_disposition TEXT NOT NULL CHECK(deferred_terminal_disposition IN (
         'none',
         'await_user_turn',
         'manual_review'
     )),
+    retired_at_ms INTEGER,
+    retirement_reason TEXT CHECK(retirement_reason IN ('superseded', 'user_recovery')),
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY(thread_id, generation),
+    FOREIGN KEY(thread_id, goal_id) REFERENCES goal_owner_admission_goal_chains(thread_id, goal_id),
     CHECK(attempts_started <= max_attempts),
     CHECK((lease_id IS NULL) = (lease_acquired_at_ms IS NULL)),
+    CHECK((lease_id IS NULL) = (lease_cancellation_epoch IS NULL)),
+    CHECK((retired_at_ms IS NULL) = (retirement_reason IS NULL)),
     CHECK(
         (phase IN ('dormant', 'pending')
             AND terminal_outcome = 'none'
@@ -61,7 +79,7 @@ CREATE TABLE goal_owner_admissions (
             AND attempts_started > 0
             AND deferred_terminal_disposition = 'none')
         OR (phase = 'terminal' AND (
-            (terminal_outcome IN ('succeeded', 'rejected', 'exhausted')
+            (terminal_outcome IN ('succeeded', 'rejected')
                 AND lease_id IS NOT NULL
                 AND attempts_started > 0
                 AND deferred_terminal_disposition = 'none')
@@ -69,15 +87,21 @@ CREATE TABLE goal_owner_admissions (
                 AND lease_id IS NOT NULL
                 AND attempts_started > 0
                 AND deferred_terminal_disposition = 'manual_review')
-            OR (terminal_outcome = 'cancelled'
-                AND deferred_terminal_disposition IN ('await_user_turn', 'manual_review'))
+            OR (terminal_outcome IN ('exhausted', 'cancelled')
+                AND lease_id IS NULL
+                AND deferred_terminal_disposition = 'await_user_turn')
         ))
     )
 );
 
+CREATE UNIQUE INDEX goal_owner_admissions_one_active_generation
+ON goal_owner_admissions(thread_id)
+WHERE retired_at_ms IS NULL;
+
 CREATE TABLE goal_owner_admission_origins (
     thread_id TEXT NOT NULL,
     origin_request_id TEXT NOT NULL CHECK(length(origin_request_id) BETWEEN 1 AND 512),
+    generation INTEGER NOT NULL CHECK(generation >= 1),
     goal_id TEXT NOT NULL CHECK(length(goal_id) BETWEEN 1 AND 512),
     origin_turn_id TEXT NOT NULL CHECK(length(origin_turn_id) BETWEEN 1 AND 512),
     denial_class TEXT NOT NULL,
@@ -93,12 +117,14 @@ CREATE TABLE goal_owner_admission_origins (
     deadline_at_ms INTEGER NOT NULL,
     max_attempts INTEGER NOT NULL,
     requested_phase TEXT NOT NULL,
-    PRIMARY KEY(thread_id, origin_request_id)
+    PRIMARY KEY(thread_id, origin_request_id),
+    UNIQUE(thread_id, generation)
 );
 
 CREATE TRIGGER goal_owner_admissions_delete_origins
 AFTER DELETE ON thread_goals
 BEGIN
     DELETE FROM goal_owner_admissions WHERE thread_id = OLD.thread_id;
+    DELETE FROM goal_owner_admission_goal_chains WHERE thread_id = OLD.thread_id;
     DELETE FROM goal_owner_admission_origins WHERE thread_id = OLD.thread_id;
 END;
