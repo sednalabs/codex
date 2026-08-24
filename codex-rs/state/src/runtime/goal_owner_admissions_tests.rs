@@ -14,7 +14,7 @@ fn observation(
     goal_id: &str,
     origin_request_id: &str,
     deadline_at: DateTime<Utc>,
-    phase: GoalOwnerAdmissionPhase,
+    requested_phase: GoalOwnerAdmissionPhase,
 ) -> GoalOwnerAdmissionObservation {
     GoalOwnerAdmissionObservation {
         thread_id,
@@ -28,8 +28,8 @@ fn observation(
         account_context_fingerprint: Some(fingerprint()),
         deadline_at,
         max_attempts: 2,
-        requested_phase: phase,
-        phase,
+        requested_phase,
+        phase: requested_phase,
     }
 }
 
@@ -513,4 +513,224 @@ async fn phase_and_fingerprint_replays_fail_closed() {
                 .is_err()
         );
     }
+}
+
+#[tokio::test]
+async fn origin_history_replays_return_the_current_admission_across_replacements() {
+    let runtime = runtime().await;
+    let thread_id = ThreadId::new();
+    let deadline_at = Utc::now() - chrono::Duration::seconds(1);
+    let origin_a = observation(
+        thread_id,
+        "goal-a",
+        "request-a",
+        deadline_at,
+        GoalOwnerAdmissionPhase::Pending,
+    );
+    let first = runtime
+        .goal_owner_admissions()
+        .observe_denial(&origin_a)
+        .await
+        .expect("record first origin");
+    let origin_b = observation(
+        thread_id,
+        "goal-b",
+        "request-b",
+        deadline_at,
+        GoalOwnerAdmissionPhase::Pending,
+    );
+    let pending = runtime
+        .goal_owner_admissions()
+        .observe_denial(&origin_b)
+        .await
+        .expect("replace current admission with second origin");
+    assert_eq!(pending.authority.generation, 2);
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .observe_denial(&origin_a)
+            .await
+            .expect("replay first origin while second is pending"),
+        pending
+    );
+
+    let lease = runtime
+        .goal_owner_admissions()
+        .try_acquire(&pending.authority, Utc::now())
+        .await
+        .expect("acquire second admission")
+        .expect("second admission should acquire");
+    let terminal = runtime
+        .goal_owner_admissions()
+        .finish(
+            &lease,
+            GoalOwnerAdmissionTerminalOutcome::Succeeded,
+            GoalOwnerAdmissionTerminalDisposition::None,
+        )
+        .await
+        .expect("finish second admission")
+        .expect("finish should be accepted");
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .observe_denial(&origin_a)
+            .await
+            .expect("replay first origin after second is terminal"),
+        terminal
+    );
+    assert_eq!(first.authority.generation, 1);
+
+    let mut conflicting_old_replay = origin_a;
+    conflicting_old_replay.effective_model = Some("gpt-5.1".to_string());
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .observe_denial(&conflicting_old_replay)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn concurrent_exact_origin_replays_converge_without_duplicate_history() {
+    let runtime = runtime().await;
+    let thread_id = ThreadId::new();
+    let origin = observation(
+        thread_id,
+        "goal-a",
+        "request-a",
+        Utc::now(),
+        GoalOwnerAdmissionPhase::Pending,
+    );
+    let store_a = runtime.goal_owner_admissions().clone();
+    let store_b = runtime.goal_owner_admissions().clone();
+    let (first, second) = tokio::join!(
+        store_a.observe_denial(&origin),
+        store_b.observe_denial(&origin),
+    );
+    let first = first.expect("first exact origin observation should succeed");
+    let second = second.expect("second exact origin observation should succeed");
+    assert_eq!(first, second);
+    assert_eq!(first.authority.generation, 1);
+    let origins = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM goal_owner_admission_origins WHERE thread_id = ?",
+    )
+    .bind(thread_id.to_string())
+    .fetch_one(runtime.goal_owner_admissions().pool.as_ref())
+    .await
+    .expect("count origin history rows");
+    assert_eq!(origins, 1);
+}
+
+#[tokio::test]
+async fn concurrent_distinct_origins_are_recorded_and_generation_ordered() {
+    let runtime = runtime().await;
+    let thread_id = ThreadId::new();
+    let origin_a = observation(
+        thread_id,
+        "goal-a",
+        "request-a",
+        Utc::now(),
+        GoalOwnerAdmissionPhase::Pending,
+    );
+    let origin_b = observation(
+        thread_id,
+        "goal-b",
+        "request-b",
+        Utc::now(),
+        GoalOwnerAdmissionPhase::Pending,
+    );
+    let store_a = runtime.goal_owner_admissions().clone();
+    let store_b = runtime.goal_owner_admissions().clone();
+    let (first, second) = tokio::join!(
+        store_a.observe_denial(&origin_a),
+        store_b.observe_denial(&origin_b),
+    );
+    let first = first.expect("first distinct origin observation should succeed");
+    let second = second.expect("second distinct origin observation should succeed");
+    let mut generations = [first.authority.generation, second.authority.generation];
+    generations.sort_unstable();
+    assert_eq!(generations, [1, 2]);
+
+    let current = runtime
+        .goal_owner_admissions()
+        .get(thread_id)
+        .await
+        .expect("read current admission")
+        .expect("current admission should exist");
+    assert_eq!(current.authority.generation, 2);
+    let origins = sqlx::query_scalar::<_, String>(
+        r#"
+SELECT origin_request_id
+FROM goal_owner_admission_origins
+WHERE thread_id = ?
+ORDER BY origin_request_id
+        "#,
+    )
+    .bind(thread_id.to_string())
+    .fetch_all(runtime.goal_owner_admissions().pool.as_ref())
+    .await
+    .expect("read origin history rows");
+    assert_eq!(
+        origins,
+        vec!["request-a".to_string(), "request-b".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn direct_thread_goal_deletion_clears_admission_and_origin_history() {
+    let runtime = runtime().await;
+    let thread_id = ThreadId::new();
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "preserve no retry admission after deletion",
+            crate::ThreadGoalStatus::Active,
+            /*token_budget*/ None,
+        )
+        .await
+        .expect("record thread goal");
+    let record = runtime
+        .goal_owner_admissions()
+        .observe_denial(&observation(
+            thread_id,
+            "goal-a",
+            "request-a",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record admission origin");
+
+    sqlx::query("DELETE FROM thread_goals WHERE thread_id = ?")
+        .bind(thread_id.to_string())
+        .execute(runtime.goal_owner_admissions().pool.as_ref())
+        .await
+        .expect("delete thread goal directly");
+
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .get(thread_id)
+            .await
+            .expect("read deleted admission"),
+        None
+    );
+    let origins = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM goal_owner_admission_origins WHERE thread_id = ?",
+    )
+    .bind(thread_id.to_string())
+    .fetch_one(runtime.goal_owner_admissions().pool.as_ref())
+    .await
+    .expect("count deleted origin history rows");
+    assert_eq!(origins, 0);
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .try_acquire(&record.authority, Utc::now())
+            .await
+            .expect("deleted admission cannot acquire"),
+        None
+    );
 }
