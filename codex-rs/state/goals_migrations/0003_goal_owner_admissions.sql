@@ -14,11 +14,17 @@ CREATE TABLE goal_owner_admissions (
     provider_id TEXT CHECK(provider_id IS NULL OR length(provider_id) BETWEEN 1 AND 512),
     requested_model TEXT CHECK(requested_model IS NULL OR length(requested_model) BETWEEN 1 AND 512),
     effective_model TEXT CHECK(effective_model IS NULL OR length(effective_model) BETWEEN 1 AND 512),
-    account_domain TEXT CHECK(account_domain IS NULL OR length(account_domain) BETWEEN 1 AND 255),
+    account_context_fingerprint TEXT CHECK(
+        account_context_fingerprint IS NULL OR (
+            length(account_context_fingerprint) = 64
+            AND account_context_fingerprint NOT GLOB '*[^0-9a-f]*'
+        )
+    ),
     deadline_at_ms INTEGER NOT NULL,
     attempts_started INTEGER NOT NULL DEFAULT 0 CHECK(attempts_started >= 0),
     max_attempts INTEGER NOT NULL CHECK(max_attempts >= 1),
     cancellation_epoch INTEGER NOT NULL DEFAULT 0 CHECK(cancellation_epoch >= 0),
+    requested_phase TEXT NOT NULL CHECK(requested_phase IN ('dormant', 'pending')),
     phase TEXT NOT NULL CHECK(phase IN ('dormant', 'pending', 'in_flight', 'terminal')),
     terminal_outcome TEXT NOT NULL CHECK(terminal_outcome IN (
         'none',
@@ -47,8 +53,17 @@ CREATE TABLE goal_owner_admissions (
         OR (phase = 'in_flight'
             AND terminal_outcome = 'none'
             AND lease_id IS NOT NULL
+            AND attempts_started > 0
             AND deferred_terminal_disposition = 'none')
-        OR (phase = 'terminal'
-            AND terminal_outcome <> 'none')
+        OR (phase = 'terminal' AND (
+            (terminal_outcome IN ('succeeded', 'rejected', 'exhausted')
+                AND lease_id IS NOT NULL
+                AND deferred_terminal_disposition = 'none')
+            OR (terminal_outcome = 'uncertain'
+                AND lease_id IS NOT NULL
+                AND deferred_terminal_disposition = 'manual_review')
+            OR (terminal_outcome = 'cancelled'
+                AND deferred_terminal_disposition IN ('await_user_turn', 'manual_review'))
+        ))
     )
 );

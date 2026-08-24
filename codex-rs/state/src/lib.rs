@@ -60,6 +60,7 @@ pub use runtime::ExternalAgentConfigImportHistoryRecord;
 pub use runtime::ExternalAgentConfigImportSuccessRecord;
 pub use runtime::GoalAccountingMode;
 pub use runtime::GoalAccountingOutcome;
+pub use runtime::GoalOwnerAdmissionAccountContextFingerprint;
 pub use runtime::GoalOwnerAdmissionAuthority;
 pub use runtime::GoalOwnerAdmissionDenialClass;
 pub use runtime::GoalOwnerAdmissionLease;
