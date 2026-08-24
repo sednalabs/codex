@@ -152,6 +152,21 @@ pub struct GoalOwnerAdmissionRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GoalOwnerAdmissionOrigin {
+    goal_id: String,
+    origin_turn_id: String,
+    origin_request_id: String,
+    denial_class: GoalOwnerAdmissionDenialClass,
+    provider_id: Option<String>,
+    requested_model: Option<String>,
+    effective_model: Option<String>,
+    account_context_fingerprint: Option<GoalOwnerAdmissionAccountContextFingerprint>,
+    deadline_at_ms: i64,
+    max_attempts: i64,
+    requested_phase: GoalOwnerAdmissionPhase,
+}
+
 #[derive(Clone)]
 pub struct GoalOwnerAdmissionStore {
     pool: Arc<SqlitePool>,
@@ -188,25 +203,40 @@ WHERE phase = 'in_flight'
         fetch_record(self.pool.as_ref(), thread_id).await
     }
 
-    /// Insert a denial, or return the existing state for an exact replay.
+    /// Insert a denial, or return the current state for an exact origin replay.
     ///
-    /// A changed replay with the same origin request is rejected. A different origin
-    /// request advances the generation while preserving the cancellation epoch.
+    /// The immutable origin history and mutable current admission are coordinated in
+    /// one immediate write transaction. A changed replay with the same origin request
+    /// is rejected, even after a later origin has replaced the current admission. A
+    /// different origin request advances the generation while preserving the
+    /// cancellation epoch.
     pub async fn observe_denial(
         &self,
         observation: &GoalOwnerAdmissionObservation,
     ) -> anyhow::Result<GoalOwnerAdmissionRecord> {
         validate_observation(observation)?;
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let origin = fetch_origin(
+            &mut *transaction,
+            observation.thread_id,
+            &observation.origin_request_id,
+        )
+        .await?;
         let existing = fetch_record(&mut *transaction, observation.thread_id).await?;
-        if let Some(existing) = existing {
-            if observation_matches_record(observation, &existing) {
-                transaction.commit().await?;
-                return Ok(existing);
-            }
-            if existing.origin_request_id == observation.origin_request_id {
+        if let Some(origin) = origin {
+            if !observation_matches_origin(observation, &origin) {
                 bail!("conflicting replay for goal-owner admission origin request")
             }
+            let current = existing.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "goal-owner admission origin history exists without a current admission"
+                )
+            })?;
+            transaction.commit().await?;
+            return Ok(current);
+        }
+
+        let generation = if let Some(existing) = &existing {
             if existing.phase == GoalOwnerAdmissionPhase::InFlight
                 || (existing.phase == GoalOwnerAdmissionPhase::Terminal
                     && existing.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Uncertain
@@ -215,64 +245,70 @@ WHERE phase = 'in_flight'
             {
                 bail!("goal-owner admission replacement is not authorized for the current state")
             }
-            let generation = existing
+            existing
                 .authority
                 .generation
                 .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("goal-owner admission generation overflow"))?;
-            let now_ms = admission_datetime_to_epoch_millis(Utc::now());
-            let record = sqlx::query(REPLACE_ADMISSION_SQL)
-                .bind(&observation.goal_id)
-                .bind(generation)
-                .bind(&observation.origin_turn_id)
-                .bind(&observation.origin_request_id)
-                .bind(observation.denial_class.as_str())
-                .bind(&observation.provider_id)
-                .bind(&observation.requested_model)
-                .bind(&observation.effective_model)
-                .bind(
-                    observation
-                        .account_context_fingerprint
-                        .as_ref()
-                        .map(|value| value.as_str()),
-                )
-                .bind(admission_datetime_to_epoch_millis(observation.deadline_at))
-                .bind(observation.max_attempts)
-                .bind(existing.authority.cancellation_epoch)
-                .bind(observation.phase.as_str())
-                .bind(observation.phase.as_str())
-                .bind(now_ms)
-                .bind(observation.thread_id.to_string())
-                .fetch_one(&mut *transaction)
-                .await?;
-            transaction.commit().await?;
-            return record_from_row(&record);
-        }
+                .ok_or_else(|| anyhow::anyhow!("goal-owner admission generation overflow"))?
+        } else {
+            1
+        };
 
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
-        let record = sqlx::query(INSERT_ADMISSION_SQL)
-            .bind(observation.thread_id.to_string())
-            .bind(&observation.goal_id)
-            .bind(&observation.origin_turn_id)
-            .bind(&observation.origin_request_id)
-            .bind(observation.denial_class.as_str())
-            .bind(&observation.provider_id)
-            .bind(&observation.requested_model)
-            .bind(&observation.effective_model)
-            .bind(
-                observation
-                    .account_context_fingerprint
-                    .as_ref()
-                    .map(|value| value.as_str()),
-            )
-            .bind(admission_datetime_to_epoch_millis(observation.deadline_at))
-            .bind(observation.max_attempts)
-            .bind(observation.phase.as_str())
-            .bind(observation.phase.as_str())
-            .bind(now_ms)
-            .bind(now_ms)
-            .fetch_one(&mut *transaction)
-            .await?;
+        insert_origin(&mut transaction, observation).await?;
+        let record = match existing {
+            Some(existing) => {
+                sqlx::query(REPLACE_ADMISSION_SQL)
+                    .bind(&observation.goal_id)
+                    .bind(generation)
+                    .bind(&observation.origin_turn_id)
+                    .bind(&observation.origin_request_id)
+                    .bind(observation.denial_class.as_str())
+                    .bind(&observation.provider_id)
+                    .bind(&observation.requested_model)
+                    .bind(&observation.effective_model)
+                    .bind(
+                        observation
+                            .account_context_fingerprint
+                            .as_ref()
+                            .map(|value| value.as_str()),
+                    )
+                    .bind(admission_datetime_to_epoch_millis(observation.deadline_at))
+                    .bind(observation.max_attempts)
+                    .bind(existing.authority.cancellation_epoch)
+                    .bind(observation.requested_phase.as_str())
+                    .bind(observation.phase.as_str())
+                    .bind(now_ms)
+                    .bind(observation.thread_id.to_string())
+                    .fetch_one(&mut *transaction)
+                    .await?
+            }
+            None => {
+                sqlx::query(INSERT_ADMISSION_SQL)
+                    .bind(observation.thread_id.to_string())
+                    .bind(&observation.goal_id)
+                    .bind(&observation.origin_turn_id)
+                    .bind(&observation.origin_request_id)
+                    .bind(observation.denial_class.as_str())
+                    .bind(&observation.provider_id)
+                    .bind(&observation.requested_model)
+                    .bind(&observation.effective_model)
+                    .bind(
+                        observation
+                            .account_context_fingerprint
+                            .as_ref()
+                            .map(|value| value.as_str()),
+                    )
+                    .bind(admission_datetime_to_epoch_millis(observation.deadline_at))
+                    .bind(observation.max_attempts)
+                    .bind(observation.requested_phase.as_str())
+                    .bind(observation.phase.as_str())
+                    .bind(now_ms)
+                    .bind(now_ms)
+                    .fetch_one(&mut *transaction)
+                    .await?
+            }
+        };
         transaction.commit().await?;
         record_from_row(&record)
     }
@@ -460,6 +496,42 @@ WHERE thread_id = ?
 RETURNING *
 "#;
 
+async fn insert_origin(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    observation: &GoalOwnerAdmissionObservation,
+) -> anyhow::Result<()> {
+    let origin = origin_from_observation(observation);
+    sqlx::query(
+        r#"
+INSERT INTO goal_owner_admission_origins (
+    thread_id, origin_request_id, goal_id, origin_turn_id, denial_class, provider_id,
+    requested_model, effective_model, account_context_fingerprint, deadline_at_ms,
+    max_attempts, requested_phase
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(observation.thread_id.to_string())
+    .bind(&origin.origin_request_id)
+    .bind(&origin.goal_id)
+    .bind(&origin.origin_turn_id)
+    .bind(origin.denial_class.as_str())
+    .bind(&origin.provider_id)
+    .bind(&origin.requested_model)
+    .bind(&origin.effective_model)
+    .bind(
+        origin
+            .account_context_fingerprint
+            .as_ref()
+            .map(|value| value.as_str()),
+    )
+    .bind(origin.deadline_at_ms)
+    .bind(origin.max_attempts)
+    .bind(origin.requested_phase.as_str())
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
 async fn fetch_record<'e, E>(
     executor: E,
     thread_id: ThreadId,
@@ -472,6 +544,39 @@ where
         .fetch_optional(executor)
         .await?;
     row.map(|row| record_from_row(&row)).transpose()
+}
+
+async fn fetch_origin<'e, E>(
+    executor: E,
+    thread_id: ThreadId,
+    origin_request_id: &str,
+) -> anyhow::Result<Option<GoalOwnerAdmissionOrigin>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(
+        r#"
+SELECT
+    goal_id,
+    origin_turn_id,
+    origin_request_id,
+    denial_class,
+    provider_id,
+    requested_model,
+    effective_model,
+    account_context_fingerprint,
+    deadline_at_ms,
+    max_attempts,
+    requested_phase
+FROM goal_owner_admission_origins
+WHERE thread_id = ? AND origin_request_id = ?
+        "#,
+    )
+    .bind(thread_id.to_string())
+    .bind(origin_request_id)
+    .fetch_optional(executor)
+    .await?;
+    row.map(|row| origin_from_row(&row)).transpose()
 }
 
 fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdmissionRecord> {
@@ -523,6 +628,31 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
     Ok(record)
 }
 
+fn origin_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdmissionOrigin> {
+    let origin = GoalOwnerAdmissionOrigin {
+        goal_id: row.try_get("goal_id")?,
+        origin_turn_id: row.try_get("origin_turn_id")?,
+        origin_request_id: row.try_get("origin_request_id")?,
+        denial_class: GoalOwnerAdmissionDenialClass::try_from(
+            row.try_get::<String, _>("denial_class")?.as_str(),
+        )?,
+        provider_id: row.try_get("provider_id")?,
+        requested_model: row.try_get("requested_model")?,
+        effective_model: row.try_get("effective_model")?,
+        account_context_fingerprint: row
+            .try_get::<Option<String>, _>("account_context_fingerprint")?
+            .map(GoalOwnerAdmissionAccountContextFingerprint::try_from)
+            .transpose()?,
+        deadline_at_ms: row.try_get("deadline_at_ms")?,
+        max_attempts: row.try_get("max_attempts")?,
+        requested_phase: GoalOwnerAdmissionPhase::try_from(
+            row.try_get::<String, _>("requested_phase")?.as_str(),
+        )?,
+    };
+    validate_origin(&origin)?;
+    Ok(origin)
+}
+
 fn lease_from_record(record: GoalOwnerAdmissionRecord) -> anyhow::Result<GoalOwnerAdmissionLease> {
     if record.phase != GoalOwnerAdmissionPhase::InFlight {
         bail!("acquired goal-owner admission is not in flight")
@@ -539,40 +669,71 @@ fn lease_from_record(record: GoalOwnerAdmissionRecord) -> anyhow::Result<GoalOwn
 }
 
 fn validate_observation(observation: &GoalOwnerAdmissionObservation) -> anyhow::Result<()> {
-    validate_nonempty("goal id", &observation.goal_id, MAX_ORIGIN_ID_LENGTH)?;
+    validate_origin(&origin_from_observation(observation))?;
+    if !matches!(
+        observation.phase,
+        GoalOwnerAdmissionPhase::Dormant | GoalOwnerAdmissionPhase::Pending
+    ) || observation.requested_phase != observation.phase
+    {
+        bail!("new goal-owner admission must be dormant or pending")
+    }
+    Ok(())
+}
+
+fn origin_from_observation(
+    observation: &GoalOwnerAdmissionObservation,
+) -> GoalOwnerAdmissionOrigin {
+    GoalOwnerAdmissionOrigin {
+        goal_id: observation.goal_id.clone(),
+        origin_turn_id: observation.origin_turn_id.clone(),
+        origin_request_id: observation.origin_request_id.clone(),
+        denial_class: observation.denial_class,
+        provider_id: observation.provider_id.clone(),
+        requested_model: observation.requested_model.clone(),
+        effective_model: observation.effective_model.clone(),
+        account_context_fingerprint: observation.account_context_fingerprint.clone(),
+        deadline_at_ms: admission_datetime_to_epoch_millis(observation.deadline_at),
+        max_attempts: observation.max_attempts,
+        requested_phase: observation.requested_phase,
+    }
+}
+
+fn validate_origin(origin: &GoalOwnerAdmissionOrigin) -> anyhow::Result<()> {
+    validate_nonempty("goal id", &origin.goal_id, MAX_ORIGIN_ID_LENGTH)?;
     validate_nonempty(
         "origin turn id",
-        &observation.origin_turn_id,
+        &origin.origin_turn_id,
         MAX_ORIGIN_ID_LENGTH,
     )?;
     validate_nonempty(
         "origin request id",
-        &observation.origin_request_id,
+        &origin.origin_request_id,
         MAX_ORIGIN_ID_LENGTH,
     )?;
     validate_evidence(
         "provider id",
-        observation.provider_id.as_deref(),
+        origin.provider_id.as_deref(),
         MAX_EVIDENCE_LENGTH,
     )?;
     validate_evidence(
         "requested model",
-        observation.requested_model.as_deref(),
+        origin.requested_model.as_deref(),
         MAX_EVIDENCE_LENGTH,
     )?;
     validate_evidence(
         "effective model",
-        observation.effective_model.as_deref(),
+        origin.effective_model.as_deref(),
         MAX_EVIDENCE_LENGTH,
     )?;
-    if observation.max_attempts < 1 {
+    admission_epoch_millis_to_datetime(origin.deadline_at_ms)?;
+    if origin.max_attempts < 1 {
         bail!("goal-owner admission max attempts must be positive")
     }
     if !matches!(
-        observation.phase,
+        origin.requested_phase,
         GoalOwnerAdmissionPhase::Dormant | GoalOwnerAdmissionPhase::Pending
     ) {
-        bail!("new goal-owner admission must be dormant or pending")
+        bail!("goal-owner admission requested phase must be dormant or pending")
     }
     Ok(())
 }
@@ -737,22 +898,21 @@ fn terminal_state_is_coherent(record: &GoalOwnerAdmissionRecord, has_lease: bool
     }
 }
 
-fn observation_matches_record(
+fn observation_matches_origin(
     observation: &GoalOwnerAdmissionObservation,
-    record: &GoalOwnerAdmissionRecord,
+    origin: &GoalOwnerAdmissionOrigin,
 ) -> bool {
-    observation.goal_id == record.authority.goal_id
-        && observation.origin_turn_id == record.origin_turn_id
-        && observation.origin_request_id == record.origin_request_id
-        && observation.denial_class == record.denial_class
-        && observation.provider_id == record.provider_id
-        && observation.requested_model == record.requested_model
-        && observation.effective_model == record.effective_model
-        && observation.account_context_fingerprint == record.account_context_fingerprint
-        && admission_datetime_to_epoch_millis(observation.deadline_at)
-            == admission_datetime_to_epoch_millis(record.deadline_at)
-        && observation.max_attempts == record.max_attempts
-        && observation.phase == record.requested_phase
+    observation.goal_id == origin.goal_id
+        && observation.origin_turn_id == origin.origin_turn_id
+        && observation.origin_request_id == origin.origin_request_id
+        && observation.denial_class == origin.denial_class
+        && observation.provider_id == origin.provider_id
+        && observation.requested_model == origin.requested_model
+        && observation.effective_model == origin.effective_model
+        && observation.account_context_fingerprint == origin.account_context_fingerprint
+        && admission_datetime_to_epoch_millis(observation.deadline_at) == origin.deadline_at_ms
+        && observation.max_attempts == origin.max_attempts
+        && observation.requested_phase == origin.requested_phase
 }
 
 fn same_lease(record: &GoalOwnerAdmissionRecord, lease: &GoalOwnerAdmissionLease) -> bool {
