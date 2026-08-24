@@ -15,6 +15,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use codex_protocol::protocol::SessionSource;
+use codex_state::GoalOwnerAdmissionAcquireResult;
 use codex_state::GoalOwnerAdmissionContinuationAuthority;
 use codex_state::GoalOwnerAdmissionLease;
 use codex_state::GoalOwnerAdmissionPhase;
@@ -374,25 +375,34 @@ impl ModelRequestAdmissionBroker {
             return Ok(ModelRequestAdmissionDecision::Deferred);
         }
 
-        let lease = store
+        let acquire_result = store
             .try_acquire(continuation_authority, now)
             .await
             .map_err(storage_error)?;
-        if let Some(lease) = lease {
-            return Ok(ModelRequestAdmissionDecision::Admitted(Arc::new(
-                AdmittedModelRequest::new(store.clone(), lease),
-            )));
+        match acquire_result {
+            GoalOwnerAdmissionAcquireResult::Acquired(lease) => {
+                Ok(ModelRequestAdmissionDecision::Admitted(Arc::new(
+                    AdmittedModelRequest::new(store.clone(), lease),
+                )))
+            }
+            GoalOwnerAdmissionAcquireResult::Exhausted(_) => {
+                Ok(ModelRequestAdmissionDecision::Exhausted)
+            }
+            GoalOwnerAdmissionAcquireResult::Dormant => Ok(ModelRequestAdmissionDecision::Dormant),
+            GoalOwnerAdmissionAcquireResult::NotCurrent
+            | GoalOwnerAdmissionAcquireResult::NotEligible => {
+                // A failed acquisition can race with another owner or a
+                // lifecycle transition. A fresh read may expose a final,
+                // durable decision; a missing or still-uncertain record stays
+                // fail-closed and cannot authorize provider I/O.
+                let current = store.get(identity.thread_id).await.map_err(storage_error)?;
+                Ok(
+                    current.map_or(ModelRequestAdmissionDecision::Dormant, |record| {
+                        decision_for_record(&record, now)
+                    }),
+                )
+            }
         }
-
-        // A CAS miss means another owner may have opened the exact request. A
-        // fresh read can expose a final state, but a still-pending result is
-        // not permission to try again from this process.
-        let current = store.get(identity.thread_id).await.map_err(storage_error)?;
-        Ok(
-            current.map_or(ModelRequestAdmissionDecision::Dormant, |record| {
-                decision_for_record(&record, now)
-            }),
-        )
     }
 }
 
