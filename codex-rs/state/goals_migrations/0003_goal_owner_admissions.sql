@@ -9,6 +9,30 @@ CREATE TABLE goal_owner_admission_goal_chains (
     CHECK(attempts_started <= max_attempts)
 );
 
+CREATE TABLE goal_owner_admission_origins (
+    thread_id TEXT NOT NULL,
+    origin_request_id TEXT NOT NULL CHECK(length(origin_request_id) BETWEEN 1 AND 512),
+    generation INTEGER NOT NULL CHECK(generation >= 1),
+    goal_id TEXT NOT NULL CHECK(length(goal_id) BETWEEN 1 AND 512),
+    origin_turn_id TEXT NOT NULL CHECK(length(origin_turn_id) BETWEEN 1 AND 512),
+    denial_class TEXT NOT NULL,
+    configured_provider_key TEXT,
+    requested_model TEXT,
+    effective_provider_id TEXT,
+    effective_model TEXT,
+    intended_request_kind TEXT NOT NULL,
+    successor_turn_id TEXT NOT NULL,
+    logical_successor_request_id TEXT NOT NULL,
+    decision_id TEXT NOT NULL,
+    account_context_fingerprint TEXT,
+    deadline_at_ms INTEGER NOT NULL,
+    max_attempts INTEGER NOT NULL,
+    requested_phase TEXT NOT NULL,
+    PRIMARY KEY(thread_id, origin_request_id),
+    UNIQUE(thread_id, generation),
+    UNIQUE(thread_id, generation, goal_id, origin_request_id)
+);
+
 CREATE TABLE goal_owner_admissions (
     thread_id TEXT NOT NULL,
     goal_id TEXT NOT NULL CHECK(length(goal_id) BETWEEN 1 AND 512),
@@ -64,6 +88,8 @@ CREATE TABLE goal_owner_admissions (
     updated_at_ms INTEGER NOT NULL,
     PRIMARY KEY(thread_id, generation),
     FOREIGN KEY(thread_id, goal_id) REFERENCES goal_owner_admission_goal_chains(thread_id, goal_id),
+    FOREIGN KEY(thread_id, generation, goal_id, origin_request_id)
+        REFERENCES goal_owner_admission_origins(thread_id, generation, goal_id, origin_request_id),
     CHECK(attempts_started <= max_attempts),
     CHECK((lease_id IS NULL) = (lease_acquired_at_ms IS NULL)),
     CHECK((lease_id IS NULL) = (lease_cancellation_epoch IS NULL)),
@@ -101,29 +127,6 @@ CREATE TABLE goal_owner_admissions (
 CREATE UNIQUE INDEX goal_owner_admissions_one_active_generation
 ON goal_owner_admissions(thread_id)
 WHERE retired_at_ms IS NULL;
-
-CREATE TABLE goal_owner_admission_origins (
-    thread_id TEXT NOT NULL,
-    origin_request_id TEXT NOT NULL CHECK(length(origin_request_id) BETWEEN 1 AND 512),
-    generation INTEGER NOT NULL CHECK(generation >= 1),
-    goal_id TEXT NOT NULL CHECK(length(goal_id) BETWEEN 1 AND 512),
-    origin_turn_id TEXT NOT NULL CHECK(length(origin_turn_id) BETWEEN 1 AND 512),
-    denial_class TEXT NOT NULL,
-    configured_provider_key TEXT,
-    requested_model TEXT,
-    effective_provider_id TEXT,
-    effective_model TEXT,
-    intended_request_kind TEXT NOT NULL,
-    successor_turn_id TEXT NOT NULL,
-    logical_successor_request_id TEXT NOT NULL,
-    decision_id TEXT NOT NULL,
-    account_context_fingerprint TEXT,
-    deadline_at_ms INTEGER NOT NULL,
-    max_attempts INTEGER NOT NULL,
-    requested_phase TEXT NOT NULL,
-    PRIMARY KEY(thread_id, origin_request_id),
-    UNIQUE(thread_id, generation)
-);
 
 CREATE TRIGGER goal_owner_admissions_delete_origins
 AFTER DELETE ON thread_goals
