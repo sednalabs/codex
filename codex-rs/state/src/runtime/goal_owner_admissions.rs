@@ -68,6 +68,12 @@ admission_enum!(GoalOwnerAdmissionTerminalDisposition {
     ManualReview => "manual_review",
 });
 
+/// Reason an admission was explicitly retired without erasing physical evidence.
+admission_enum!(GoalOwnerAdmissionRetirementReason {
+    Superseded => "superseded",
+    UserRecovery => "user_recovery",
+});
+
 /// Canonical SHA-256 digest for non-secret account-context correlation evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalOwnerAdmissionAccountContextFingerprint(String);
@@ -137,6 +143,9 @@ pub struct GoalOwnerAdmissionObservation {
     /// Optional non-secret SHA-256 account-context correlation evidence.
     pub account_context_fingerprint: Option<GoalOwnerAdmissionAccountContextFingerprint>,
     pub deadline_at: DateTime<Utc>,
+    /// The chain-wide continuation-attempt maximum. Production scheduler policy
+    /// normally supplies one; higher values are retained only when explicitly
+    /// recorded with the immutable origin evidence.
     pub max_attempts: i64,
     /// Immutable requested state used to distinguish replays from lifecycle transitions.
     pub requested_phase: GoalOwnerAdmissionPhase,
@@ -152,7 +161,21 @@ pub struct GoalOwnerAdmissionLease {
     pub acquired_at: DateTime<Utc>,
 }
 
-/// Fully decoded durable admission state.
+/// Precise result of attempting to reserve a scheduler continuation.
+///
+/// A caller must treat every non-`Acquired` variant as non-permission to begin
+/// provider I/O. `Exhausted` carries the atomically terminalized record so the
+/// scheduler cannot mistake an exhausted pending row for a retryable miss.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoalOwnerAdmissionAcquireResult {
+    Acquired(GoalOwnerAdmissionLease),
+    Exhausted(GoalOwnerAdmissionRecord),
+    NotCurrent,
+    NotEligible,
+    Dormant,
+}
+
+/// Fully decoded durable admission state, including its immutable chain budget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalOwnerAdmissionRecord {
     pub authority: GoalOwnerAdmissionAuthority,
@@ -169,20 +192,30 @@ pub struct GoalOwnerAdmissionRecord {
     pub decision_id: Uuid,
     pub account_context_fingerprint: Option<GoalOwnerAdmissionAccountContextFingerprint>,
     pub deadline_at: DateTime<Utc>,
+    /// Attempts acquired in this generation only.
     pub attempts_started: i64,
+    /// The maximum for both this generation and its goal chain.
     pub max_attempts: i64,
+    /// Attempts acquired across every generation for this exact goal ID.
+    pub chain_attempts_started: i64,
+    pub chain_max_attempts: i64,
     pub requested_phase: GoalOwnerAdmissionPhase,
     pub phase: GoalOwnerAdmissionPhase,
     pub terminal_outcome: GoalOwnerAdmissionTerminalOutcome,
     pub lease_id: Option<Uuid>,
     pub lease_acquired_at: Option<DateTime<Utc>>,
+    /// The cancellation epoch at which the persisted lease was created.
+    pub lease_cancellation_epoch: Option<i64>,
     pub deferred_terminal_disposition: GoalOwnerAdmissionTerminalDisposition,
+    pub retired_at: Option<DateTime<Utc>>,
+    pub retirement_reason: Option<GoalOwnerAdmissionRetirementReason>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GoalOwnerAdmissionOrigin {
+    generation: i64,
     goal_id: String,
     origin_turn_id: String,
     origin_request_id: String,
@@ -211,13 +244,36 @@ impl GoalOwnerAdmissionStore {
         Self { pool }
     }
 
-    /// Recovers a lease based on its durable request-open boundary.
+    /// Recovers durable work after a process restart.
     ///
-    /// `acquired` is provably pre-network and can be returned to pending. An
-    /// `in_flight` lease may already have reached the provider, so reopen
-    /// terminalizes it conservatively instead.
+    /// Acquired leases have not crossed the provider boundary, so their
+    /// generation and chain counters are returned exactly once. In-flight work
+    /// retains its lease and becomes uncertain because the physical effect may
+    /// already exist.
     pub(crate) async fn recover_in_flight_on_open(pool: &SqlitePool) -> anyhow::Result<()> {
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query(
+            r#"
+UPDATE goal_owner_admission_goal_chains AS chain
+SET attempts_started = attempts_started - (
+    SELECT COUNT(*)
+    FROM goal_owner_admissions AS admission
+    WHERE admission.thread_id = chain.thread_id
+      AND admission.goal_id = chain.goal_id
+      AND admission.phase = 'acquired'
+)
+WHERE EXISTS (
+    SELECT 1
+    FROM goal_owner_admissions AS admission
+    WHERE admission.thread_id = chain.thread_id
+      AND admission.goal_id = chain.goal_id
+      AND admission.phase = 'acquired'
+)
+            "#,
+        )
+        .execute(&mut *transaction)
+        .await?;
         sqlx::query(
             r#"
 UPDATE goal_owner_admissions
@@ -225,12 +281,13 @@ SET phase = 'pending',
     attempts_started = attempts_started - 1,
     lease_id = NULL,
     lease_acquired_at_ms = NULL,
+    lease_cancellation_epoch = NULL,
     updated_at_ms = ?
 WHERE phase = 'acquired'
             "#,
         )
         .bind(now_ms)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
         sqlx::query(
             r#"
@@ -243,25 +300,35 @@ WHERE phase = 'in_flight'
             "#,
         )
         .bind(now_ms)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
+    /// Read the one active, non-retired admission for a thread.
     pub async fn get(
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
-        fetch_record(self.pool.as_ref(), thread_id).await
+        fetch_active_record(self.pool.as_ref(), thread_id).await
+    }
+
+    /// Read an exact generation, including retired history, by its fencing tuple.
+    pub async fn get_generation(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        validate_authority(authority)?;
+        fetch_record_for_authority(self.pool.as_ref(), authority).await
     }
 
     /// Insert a denial, or return the current state for an exact origin replay.
     ///
-    /// The immutable origin history and mutable current admission are coordinated in
-    /// one immediate write transaction. A changed replay with the same origin request
-    /// is rejected, even after a later origin has replaced the current admission. A
-    /// different origin request advances the generation while preserving the
-    /// cancellation epoch.
+    /// A changed origin can start only after the active generation has been
+    /// explicitly retired. The retirement preserves the old lifecycle row;
+    /// a same-goal replacement therefore shares its chain counter while a new
+    /// goal ID creates a fresh chain.
     pub async fn observe_denial(
         &self,
         observation: &GoalOwnerAdmissionObservation,
@@ -274,107 +341,93 @@ WHERE phase = 'in_flight'
             &observation.origin_request_id,
         )
         .await?;
-        let existing = fetch_record(&mut *transaction, observation.thread_id).await?;
         if let Some(origin) = origin {
             if !observation_matches_origin(observation, &origin) {
                 bail!("conflicting replay for goal-owner admission origin request")
             }
-            let current = existing.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "goal-owner admission origin history exists without a current admission"
+            let record = fetch_active_record(&mut *transaction, observation.thread_id)
+                .await?
+                .or(fetch_record_by_generation(
+                    &mut *transaction,
+                    observation.thread_id,
+                    origin.generation,
                 )
-            })?;
+                .await?)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "goal-owner admission origin history exists without its durable generation"
+                    )
+                })?;
             transaction.commit().await?;
-            return Ok(current);
+            return Ok(record);
         }
 
-        let generation = if let Some(existing) = &existing {
-            if matches!(
-                existing.phase,
-                GoalOwnerAdmissionPhase::Acquired | GoalOwnerAdmissionPhase::InFlight
-            ) || (existing.phase == GoalOwnerAdmissionPhase::Terminal
-                && existing.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Uncertain
-                && existing.deferred_terminal_disposition
-                    == GoalOwnerAdmissionTerminalDisposition::ManualReview)
-            {
-                bail!("goal-owner admission replacement is not authorized for the current state")
-            }
-            existing
-                .authority
-                .generation
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("goal-owner admission generation overflow"))?
-        } else {
-            1
-        };
+        if fetch_active_record(&mut *transaction, observation.thread_id)
+            .await?
+            .is_some()
+        {
+            bail!("active goal-owner admission must be explicitly retired before replacement")
+        }
 
+        let generation = next_generation(&mut transaction, observation.thread_id).await?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
-        insert_origin(&mut transaction, observation).await?;
-        let record = match existing {
-            Some(existing) => {
-                sqlx::query(REPLACE_ADMISSION_SQL)
-                    .bind(&observation.goal_id)
-                    .bind(generation)
-                    .bind(&observation.origin_turn_id)
-                    .bind(&observation.origin_request_id)
-                    .bind(observation.denial_class.as_str())
-                    .bind(&observation.configured_provider_key)
-                    .bind(&observation.requested_model)
-                    .bind(&observation.effective_provider_id)
-                    .bind(&observation.effective_model)
-                    .bind(&observation.intended_request_kind)
-                    .bind(&observation.successor_turn_id)
-                    .bind(&observation.logical_successor_request_id)
-                    .bind(observation.decision_id.to_string())
-                    .bind(
-                        observation
-                            .account_context_fingerprint
-                            .as_ref()
-                            .map(|value| value.as_str()),
-                    )
-                    .bind(admission_datetime_to_epoch_millis(observation.deadline_at))
-                    .bind(observation.max_attempts)
-                    .bind(existing.authority.cancellation_epoch)
-                    .bind(observation.requested_phase.as_str())
-                    .bind(observation.phase.as_str())
-                    .bind(now_ms)
-                    .bind(observation.thread_id.to_string())
-                    .fetch_one(&mut *transaction)
-                    .await?
-            }
-            None => {
-                sqlx::query(INSERT_ADMISSION_SQL)
-                    .bind(observation.thread_id.to_string())
-                    .bind(&observation.goal_id)
-                    .bind(&observation.origin_turn_id)
-                    .bind(&observation.origin_request_id)
-                    .bind(observation.denial_class.as_str())
-                    .bind(&observation.configured_provider_key)
-                    .bind(&observation.requested_model)
-                    .bind(&observation.effective_provider_id)
-                    .bind(&observation.effective_model)
-                    .bind(&observation.intended_request_kind)
-                    .bind(&observation.successor_turn_id)
-                    .bind(&observation.logical_successor_request_id)
-                    .bind(observation.decision_id.to_string())
-                    .bind(
-                        observation
-                            .account_context_fingerprint
-                            .as_ref()
-                            .map(|value| value.as_str()),
-                    )
-                    .bind(admission_datetime_to_epoch_millis(observation.deadline_at))
-                    .bind(observation.max_attempts)
-                    .bind(observation.requested_phase.as_str())
-                    .bind(observation.phase.as_str())
-                    .bind(now_ms)
-                    .bind(now_ms)
-                    .fetch_one(&mut *transaction)
-                    .await?
-            }
-        };
+        ensure_goal_chain(&mut transaction, observation, now_ms).await?;
+        insert_origin(&mut transaction, observation, generation).await?;
+        insert_admission(&mut transaction, observation, generation, now_ms).await?;
+        let record =
+            fetch_record_by_generation(&mut *transaction, observation.thread_id, generation)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("inserted goal-owner admission is missing"))?;
         transaction.commit().await?;
-        record_from_row(&record)
+        Ok(record)
+    }
+
+    /// Retire exactly one durable generation without changing its physical outcome.
+    ///
+    /// Retirement is a scheduler/user lifecycle decision, not a provider result:
+    /// an in-flight lease remains capable of recording its exact late definitive
+    /// provider outcome. A retired generation cannot be opened or acquired again.
+    pub async fn retire(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        reason: GoalOwnerAdmissionRetirementReason,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        validate_authority(authority)?;
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let result = sqlx::query(
+            r#"
+UPDATE goal_owner_admissions
+SET retired_at_ms = ?,
+    retirement_reason = ?,
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND goal_id = ?
+  AND generation = ?
+  AND cancellation_epoch = ?
+  AND retired_at_ms IS NULL
+            "#,
+        )
+        .bind(now_ms)
+        .bind(reason.as_str())
+        .bind(now_ms)
+        .bind(authority.thread_id.to_string())
+        .bind(&authority.goal_id)
+        .bind(authority.generation)
+        .bind(authority.cancellation_epoch)
+        .execute(&mut *transaction)
+        .await?;
+        let record = fetch_record_for_authority(&mut *transaction, authority).await?;
+        if result.rows_affected() == 1 {
+            let record = record.ok_or_else(|| anyhow::anyhow!("retired admission is missing"))?;
+            transaction.commit().await?;
+            return Ok(Some(record));
+        }
+        let replay = record.filter(|record| {
+            record.retirement_reason == Some(reason) && record.retired_at.is_some()
+        });
+        transaction.commit().await?;
+        Ok(replay)
     }
 
     /// Atomically reserve a deadline-eligible pending admission for one exact successor.
@@ -386,20 +439,99 @@ WHERE phase = 'in_flight'
         &self,
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         now: DateTime<Utc>,
-    ) -> anyhow::Result<Option<GoalOwnerAdmissionLease>> {
+    ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
         let authority = &continuation_authority.authority;
         validate_authority(authority)?;
         validate_continuation_authority(continuation_authority)?;
-        let lease_id = Uuid::now_v7();
         let now_ms = admission_datetime_to_epoch_millis(now);
-        let mut transaction = self.pool.begin().await?;
-        let record = sqlx::query(
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let Some(current) = fetch_active_record(&mut *transaction, authority.thread_id).await?
+        else {
+            transaction.commit().await?;
+            return Ok(GoalOwnerAdmissionAcquireResult::NotCurrent);
+        };
+        if current.continuation_authority() != continuation_authority.clone() {
+            transaction.commit().await?;
+            return Ok(GoalOwnerAdmissionAcquireResult::NotCurrent);
+        }
+        match current.phase {
+            GoalOwnerAdmissionPhase::Dormant => {
+                transaction.commit().await?;
+                return Ok(GoalOwnerAdmissionAcquireResult::Dormant);
+            }
+            GoalOwnerAdmissionPhase::Terminal
+                if current.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Exhausted =>
+            {
+                transaction.commit().await?;
+                return Ok(GoalOwnerAdmissionAcquireResult::Exhausted(current));
+            }
+            GoalOwnerAdmissionPhase::Pending if current.deadline_at <= now => {}
+            GoalOwnerAdmissionPhase::Pending
+            | GoalOwnerAdmissionPhase::Acquired
+            | GoalOwnerAdmissionPhase::InFlight
+            | GoalOwnerAdmissionPhase::Terminal => {
+                transaction.commit().await?;
+                return Ok(GoalOwnerAdmissionAcquireResult::NotEligible);
+            }
+        }
+
+        let chain_incremented = sqlx::query(
+            r#"
+UPDATE goal_owner_admission_goal_chains
+SET attempts_started = attempts_started + 1,
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND goal_id = ?
+  AND attempts_started < max_attempts
+            "#,
+        )
+        .bind(now_ms)
+        .bind(authority.thread_id.to_string())
+        .bind(&authority.goal_id)
+        .execute(&mut *transaction)
+        .await?;
+        if chain_incremented.rows_affected() == 0 {
+            let terminalized = sqlx::query(
+                r#"
+UPDATE goal_owner_admissions
+SET phase = 'terminal',
+    terminal_outcome = 'exhausted',
+    deferred_terminal_disposition = 'await_user_turn',
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND goal_id = ?
+  AND generation = ?
+  AND cancellation_epoch = ?
+  AND phase = 'pending'
+  AND retired_at_ms IS NULL
+                "#,
+            )
+            .bind(now_ms)
+            .bind(authority.thread_id.to_string())
+            .bind(&authority.goal_id)
+            .bind(authority.generation)
+            .bind(authority.cancellation_epoch)
+            .execute(&mut *transaction)
+            .await?;
+            if terminalized.rows_affected() != 1 {
+                bail!("goal-owner admission chain exhaustion lost its current pending generation")
+            }
+            let exhausted = fetch_record_for_authority(&mut *transaction, authority)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("exhausted admission is missing"))?;
+            transaction.commit().await?;
+            return Ok(GoalOwnerAdmissionAcquireResult::Exhausted(exhausted));
+        }
+
+        let lease_id = Uuid::now_v7();
+        let acquired = sqlx::query(
             r#"
 UPDATE goal_owner_admissions
 SET phase = 'acquired',
     attempts_started = attempts_started + 1,
     lease_id = ?,
     lease_acquired_at_ms = ?,
+    lease_cancellation_epoch = cancellation_epoch,
     updated_at_ms = ?
 WHERE thread_id = ?
   AND goal_id = ?
@@ -410,9 +542,8 @@ WHERE thread_id = ?
   AND logical_successor_request_id = ?
   AND decision_id = ?
   AND phase = 'pending'
-  AND deadline_at_ms <= ?
   AND attempts_started < max_attempts
-RETURNING *
+  AND retired_at_ms IS NULL
             "#,
         )
         .bind(lease_id.to_string())
@@ -426,22 +557,24 @@ RETURNING *
         .bind(&continuation_authority.successor_turn_id)
         .bind(&continuation_authority.logical_successor_request_id)
         .bind(continuation_authority.decision_id.to_string())
-        .bind(now_ms)
-        .fetch_optional(&mut *transaction)
+        .execute(&mut *transaction)
         .await?;
-        let lease = record
-            .map(|row| lease_from_record(record_from_row(&row)?))
-            .transpose()?;
+        if acquired.rows_affected() != 1 {
+            bail!("goal-owner admission chain increment lost its exact pending generation")
+        }
+        let record = fetch_record_for_authority(&mut *transaction, authority)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("acquired admission is missing"))?;
+        let lease = lease_from_record(record)?;
         transaction.commit().await?;
-        Ok(lease)
+        Ok(GoalOwnerAdmissionAcquireResult::Acquired(lease))
     }
 
     /// Atomically linearize an acquired lease as provider work immediately
-    /// before network I/O. A cancellation that commits first leaves this
-    /// method with no row, which prohibits the physical request.
+    /// before network I/O. A cancellation or retirement that commits first
+    /// leaves this method with no row, which prohibits the physical request.
     pub async fn open_lease(&self, lease: &GoalOwnerAdmissionLease) -> anyhow::Result<bool> {
-        validate_authority(&lease.authority)?;
-        validate_continuation_authority(&lease.continuation_authority)?;
+        validate_lease(lease)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let result = sqlx::query(
             r#"
@@ -458,6 +591,8 @@ WHERE thread_id = ?
   AND decision_id = ?
   AND phase = 'acquired'
   AND lease_id = ?
+  AND lease_cancellation_epoch = ?
+  AND retired_at_ms IS NULL
             "#,
         )
         .bind(now_ms)
@@ -470,6 +605,7 @@ WHERE thread_id = ?
         .bind(&lease.continuation_authority.logical_successor_request_id)
         .bind(lease.continuation_authority.decision_id.to_string())
         .bind(lease.lease_id.to_string())
+        .bind(lease.authority.cancellation_epoch)
         .execute(self.pool.as_ref())
         .await?;
         Ok(result.rows_affected() == 1)
@@ -480,15 +616,17 @@ WHERE thread_id = ?
         &self,
         lease: &GoalOwnerAdmissionLease,
     ) -> anyhow::Result<bool> {
-        validate_authority(&lease.authority)?;
+        validate_lease(lease)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
-        let result = sqlx::query(
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let released = sqlx::query(
             r#"
 UPDATE goal_owner_admissions
 SET phase = 'pending',
     attempts_started = attempts_started - 1,
     lease_id = NULL,
     lease_acquired_at_ms = NULL,
+    lease_cancellation_epoch = NULL,
     updated_at_ms = ?
 WHERE thread_id = ?
   AND goal_id = ?
@@ -496,6 +634,7 @@ WHERE thread_id = ?
   AND cancellation_epoch = ?
   AND phase = 'acquired'
   AND lease_id = ?
+  AND lease_cancellation_epoch = ?
             "#,
         )
         .bind(now_ms)
@@ -504,28 +643,57 @@ WHERE thread_id = ?
         .bind(lease.authority.generation)
         .bind(lease.authority.cancellation_epoch)
         .bind(lease.lease_id.to_string())
-        .execute(self.pool.as_ref())
+        .bind(lease.authority.cancellation_epoch)
+        .execute(&mut *transaction)
         .await?;
-        Ok(result.rows_affected() == 1)
+        if released.rows_affected() == 0 {
+            transaction.commit().await?;
+            return Ok(false);
+        }
+        let decremented = sqlx::query(
+            r#"
+UPDATE goal_owner_admission_goal_chains
+SET attempts_started = attempts_started - 1,
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND goal_id = ?
+  AND attempts_started > 0
+            "#,
+        )
+        .bind(now_ms)
+        .bind(lease.authority.thread_id.to_string())
+        .bind(&lease.authority.goal_id)
+        .execute(&mut *transaction)
+        .await?;
+        if decremented.rows_affected() != 1 {
+            bail!("released goal-owner admission is missing its chain attempt")
+        }
+        transaction.commit().await?;
+        Ok(true)
     }
 
     /// Finish only the exact in-flight lease. An exact terminal replay is idempotent.
+    /// A late definitive outcome may refine the same cancelled in-flight lease's
+    /// terminal uncertainty, but cannot turn that uncertainty into cancellation.
     pub async fn finish(
         &self,
         lease: &GoalOwnerAdmissionLease,
         outcome: GoalOwnerAdmissionTerminalOutcome,
         disposition: GoalOwnerAdmissionTerminalDisposition,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        validate_lease(lease)?;
         if matches!(
             outcome,
-            GoalOwnerAdmissionTerminalOutcome::None | GoalOwnerAdmissionTerminalOutcome::Cancelled
+            GoalOwnerAdmissionTerminalOutcome::None
+                | GoalOwnerAdmissionTerminalOutcome::Cancelled
+                | GoalOwnerAdmissionTerminalOutcome::Exhausted
         ) {
-            bail!("finish requires a non-cancelled terminal outcome")
+            bail!("finish requires a provider terminal outcome")
         }
         validate_terminal_transition(outcome, disposition)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
-        let mut transaction = self.pool.begin().await?;
-        let row = sqlx::query(
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let completed = sqlx::query(
             r#"
 UPDATE goal_owner_admissions
 SET phase = 'terminal',
@@ -538,7 +706,7 @@ WHERE thread_id = ?
   AND cancellation_epoch = ?
   AND phase = 'in_flight'
   AND lease_id = ?
-RETURNING *
+  AND lease_cancellation_epoch = ?
             "#,
         )
         .bind(outcome.as_str())
@@ -549,129 +717,301 @@ RETURNING *
         .bind(lease.authority.generation)
         .bind(lease.authority.cancellation_epoch)
         .bind(lease.lease_id.to_string())
-        .fetch_optional(&mut *transaction)
+        .bind(lease.authority.cancellation_epoch)
+        .execute(&mut *transaction)
         .await?;
-        if let Some(row) = row {
-            let record = record_from_row(&row)?;
+        if completed.rows_affected() == 1 {
+            let record = fetch_record_for_authority(&mut *transaction, &lease.authority)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("completed admission is missing"))?;
             transaction.commit().await?;
             return Ok(Some(record));
         }
-        transaction.rollback().await?;
 
-        let current = self.get(lease.authority.thread_id).await?;
-        match current {
-            Some(record) if exact_terminal_replay(&record, lease, outcome, disposition) => {
-                Ok(Some(record))
+        let current = fetch_record_for_authority(&mut *transaction, &lease.authority).await?;
+        let Some(current) = current else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        if can_refine_uncertainty(&current, lease, outcome, disposition) {
+            let refined = sqlx::query(
+                r#"
+UPDATE goal_owner_admissions
+SET terminal_outcome = ?,
+    deferred_terminal_disposition = ?,
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND goal_id = ?
+  AND generation = ?
+  AND phase = 'terminal'
+  AND terminal_outcome = 'uncertain'
+  AND deferred_terminal_disposition = 'manual_review'
+  AND lease_id = ?
+  AND lease_cancellation_epoch = ?
+                "#,
+            )
+            .bind(outcome.as_str())
+            .bind(disposition.as_str())
+            .bind(now_ms)
+            .bind(lease.authority.thread_id.to_string())
+            .bind(&lease.authority.goal_id)
+            .bind(lease.authority.generation)
+            .bind(lease.lease_id.to_string())
+            .bind(lease.authority.cancellation_epoch)
+            .execute(&mut *transaction)
+            .await?;
+            if refined.rows_affected() != 1 {
+                bail!("uncertain goal-owner admission refinement lost its exact lease")
             }
-            Some(record) if same_lease(&record, lease) => {
-                bail!("conflicting replay for goal-owner admission lease outcome")
-            }
-            _ => Ok(None),
+            let record = fetch_record_for_authority(&mut *transaction, &lease.authority)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("refined admission is missing"))?;
+            transaction.commit().await?;
+            return Ok(Some(record));
         }
+        if exact_terminal_replay(&current, lease, outcome, disposition) {
+            transaction.commit().await?;
+            return Ok(Some(current));
+        }
+        transaction.commit().await?;
+        if same_lease(&current, lease) {
+            bail!("conflicting replay for goal-owner admission lease outcome")
+        }
+        Ok(None)
     }
 
     /// Increment the cancellation epoch and terminalize the exact durable generation.
+    ///
+    /// Dormant, pending, and acquired states are definitely cancelled because
+    /// they have not crossed the provider boundary. In-flight work becomes
+    /// uncertain and retains its lease for a same-lease late provider outcome.
     pub async fn cancel(
         &self,
         authority: &GoalOwnerAdmissionAuthority,
         disposition: GoalOwnerAdmissionTerminalDisposition,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
         validate_authority(authority)?;
+        if disposition == GoalOwnerAdmissionTerminalDisposition::None {
+            bail!("goal-owner cancellation requires an operator disposition")
+        }
         let next_epoch = authority
             .cancellation_epoch
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("goal-owner admission cancellation epoch overflow"))?;
-        validate_cancellation_disposition(disposition)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
-        let mut transaction = self.pool.begin().await?;
-        let row = sqlx::query(
-            r#"
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current = fetch_active_record(&mut *transaction, authority.thread_id).await?;
+        let Some(current) = current else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        if current.authority != *authority {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        let cancelled = match current.phase {
+            GoalOwnerAdmissionPhase::Dormant
+            | GoalOwnerAdmissionPhase::Pending
+            | GoalOwnerAdmissionPhase::Acquired => {
+                sqlx::query(
+                    r#"
 UPDATE goal_owner_admissions
 SET phase = 'terminal',
     terminal_outcome = 'cancelled',
     cancellation_epoch = ?,
-    deferred_terminal_disposition = ?,
+    lease_id = NULL,
+    lease_acquired_at_ms = NULL,
+    lease_cancellation_epoch = NULL,
+    deferred_terminal_disposition = 'await_user_turn',
     updated_at_ms = ?
 WHERE thread_id = ?
   AND goal_id = ?
   AND generation = ?
   AND cancellation_epoch = ?
-  AND phase IN ('dormant', 'pending', 'acquired', 'in_flight')
-RETURNING *
-            "#,
-        )
-        .bind(next_epoch)
-        .bind(disposition.as_str())
-        .bind(now_ms)
-        .bind(authority.thread_id.to_string())
-        .bind(&authority.goal_id)
-        .bind(authority.generation)
-        .bind(authority.cancellation_epoch)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        if let Some(row) = row {
-            let record = record_from_row(&row)?;
-            transaction.commit().await?;
-            return Ok(Some(record));
-        }
-        transaction.rollback().await?;
-
-        let current = self.get(authority.thread_id).await?;
-        match current {
-            Some(record) if exact_cancellation_replay(&record, authority, disposition) => {
-                Ok(Some(record))
+  AND phase IN ('dormant', 'pending', 'acquired')
+  AND retired_at_ms IS NULL
+                    "#,
+                )
+                .bind(next_epoch)
+                .bind(now_ms)
+                .bind(authority.thread_id.to_string())
+                .bind(&authority.goal_id)
+                .bind(authority.generation)
+                .bind(authority.cancellation_epoch)
+                .execute(&mut *transaction)
+                .await?
             }
-            _ => Ok(None),
+            GoalOwnerAdmissionPhase::InFlight => {
+                sqlx::query(
+                    r#"
+UPDATE goal_owner_admissions
+SET phase = 'terminal',
+    terminal_outcome = 'uncertain',
+    cancellation_epoch = ?,
+    deferred_terminal_disposition = 'manual_review',
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND goal_id = ?
+  AND generation = ?
+  AND cancellation_epoch = ?
+  AND phase = 'in_flight'
+  AND retired_at_ms IS NULL
+                    "#,
+                )
+                .bind(next_epoch)
+                .bind(now_ms)
+                .bind(authority.thread_id.to_string())
+                .bind(&authority.goal_id)
+                .bind(authority.generation)
+                .bind(authority.cancellation_epoch)
+                .execute(&mut *transaction)
+                .await?
+            }
+            GoalOwnerAdmissionPhase::Terminal => {
+                transaction.commit().await?;
+                return Ok(exact_cancellation_replay(&current, authority).then_some(current));
+            }
+        };
+        if cancelled.rows_affected() != 1 {
+            bail!("goal-owner cancellation lost its exact current generation")
         }
+        let record = fetch_record_by_generation(
+            &mut *transaction,
+            authority.thread_id,
+            authority.generation,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("cancelled admission is missing"))?;
+        transaction.commit().await?;
+        Ok(Some(record))
     }
 }
 
-const INSERT_ADMISSION_SQL: &str = r#"
+const ADMISSION_SELECT: &str = r#"
+SELECT admission.*, chain.attempts_started AS chain_attempts_started,
+       chain.max_attempts AS chain_max_attempts
+FROM goal_owner_admissions AS admission
+JOIN goal_owner_admission_goal_chains AS chain
+  ON chain.thread_id = admission.thread_id AND chain.goal_id = admission.goal_id
+"#;
+
+async fn ensure_goal_chain(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    observation: &GoalOwnerAdmissionObservation,
+    now_ms: i64,
+) -> anyhow::Result<()> {
+    let existing = sqlx::query_scalar::<_, i64>(
+        "SELECT max_attempts FROM goal_owner_admission_goal_chains WHERE thread_id = ? AND goal_id = ?",
+    )
+    .bind(observation.thread_id.to_string())
+    .bind(&observation.goal_id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    if let Some(max_attempts) = existing {
+        if max_attempts != observation.max_attempts {
+            bail!("goal-owner admission chain max attempts conflicts with immutable history")
+        }
+        return Ok(());
+    }
+    sqlx::query(
+        r#"
+INSERT INTO goal_owner_admission_goal_chains (
+    thread_id, goal_id, max_attempts, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(observation.thread_id.to_string())
+    .bind(&observation.goal_id)
+    .bind(observation.max_attempts)
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn next_generation(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    thread_id: ThreadId,
+) -> anyhow::Result<i64> {
+    let latest = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(MAX(generation), 0) FROM goal_owner_admissions WHERE thread_id = ?",
+    )
+    .bind(thread_id.to_string())
+    .fetch_one(&mut **transaction)
+    .await?;
+    latest
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("goal-owner admission generation overflow"))
+}
+
+async fn insert_admission(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    observation: &GoalOwnerAdmissionObservation,
+    generation: i64,
+    now_ms: i64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
 INSERT INTO goal_owner_admissions (
     thread_id, goal_id, generation, origin_turn_id, origin_request_id, denial_class,
     configured_provider_key, requested_model, effective_provider_id, effective_model,
-    intended_request_kind, successor_turn_id,
-    logical_successor_request_id, decision_id, account_context_fingerprint, deadline_at_ms,
-    max_attempts, requested_phase, phase, terminal_outcome, deferred_terminal_disposition, created_at_ms,
-    updated_at_ms
-) VALUES (
-    ?, ?, 1,
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-    'none', 'none', ?, ?
-)
-RETURNING *
-"#;
-
-const REPLACE_ADMISSION_SQL: &str = r#"
-UPDATE goal_owner_admissions
-SET goal_id = ?, generation = ?, origin_turn_id = ?, origin_request_id = ?, denial_class = ?,
-    configured_provider_key = ?, requested_model = ?, effective_provider_id = ?, effective_model = ?,
-    intended_request_kind = ?, successor_turn_id = ?,
-    logical_successor_request_id = ?, decision_id = ?, account_context_fingerprint = ?,
-    deadline_at_ms = ?, attempts_started = 0, max_attempts = ?, cancellation_epoch = ?,
-    requested_phase = ?, phase = ?, terminal_outcome = 'none', lease_id = NULL, lease_acquired_at_ms = NULL,
-    deferred_terminal_disposition = 'none', updated_at_ms = ?
-WHERE thread_id = ?
-RETURNING *
-"#;
+    intended_request_kind, successor_turn_id, logical_successor_request_id, decision_id,
+    account_context_fingerprint, deadline_at_ms, max_attempts, requested_phase, phase,
+    terminal_outcome, deferred_terminal_disposition, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', 'none', ?, ?)
+        "#,
+    )
+    .bind(observation.thread_id.to_string())
+    .bind(&observation.goal_id)
+    .bind(generation)
+    .bind(&observation.origin_turn_id)
+    .bind(&observation.origin_request_id)
+    .bind(observation.denial_class.as_str())
+    .bind(&observation.configured_provider_key)
+    .bind(&observation.requested_model)
+    .bind(&observation.effective_provider_id)
+    .bind(&observation.effective_model)
+    .bind(&observation.intended_request_kind)
+    .bind(&observation.successor_turn_id)
+    .bind(&observation.logical_successor_request_id)
+    .bind(observation.decision_id.to_string())
+    .bind(
+        observation
+            .account_context_fingerprint
+            .as_ref()
+            .map(GoalOwnerAdmissionAccountContextFingerprint::as_str),
+    )
+    .bind(admission_datetime_to_epoch_millis(observation.deadline_at))
+    .bind(observation.max_attempts)
+    .bind(observation.requested_phase.as_str())
+    .bind(observation.phase.as_str())
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
 
 async fn insert_origin(
     transaction: &mut sqlx::Transaction<'_, Sqlite>,
     observation: &GoalOwnerAdmissionObservation,
+    generation: i64,
 ) -> anyhow::Result<()> {
-    let origin = origin_from_observation(observation);
+    let origin = origin_from_observation(observation, generation);
     sqlx::query(
         r#"
 INSERT INTO goal_owner_admission_origins (
-    thread_id, origin_request_id, goal_id, origin_turn_id, denial_class, configured_provider_key,
-    requested_model, effective_provider_id, effective_model, intended_request_kind, successor_turn_id,
-    logical_successor_request_id, decision_id, account_context_fingerprint, deadline_at_ms,
-    max_attempts, requested_phase
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    thread_id, origin_request_id, generation, goal_id, origin_turn_id, denial_class,
+    configured_provider_key, requested_model, effective_provider_id, effective_model,
+    intended_request_kind, successor_turn_id, logical_successor_request_id, decision_id,
+    account_context_fingerprint, deadline_at_ms, max_attempts, requested_phase
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(observation.thread_id.to_string())
     .bind(&origin.origin_request_id)
+    .bind(origin.generation)
     .bind(&origin.goal_id)
     .bind(&origin.origin_turn_id)
     .bind(origin.denial_class.as_str())
@@ -687,7 +1027,7 @@ INSERT INTO goal_owner_admission_origins (
         origin
             .account_context_fingerprint
             .as_ref()
-            .map(|value| value.as_str()),
+            .map(GoalOwnerAdmissionAccountContextFingerprint::as_str),
     )
     .bind(origin.deadline_at_ms)
     .bind(origin.max_attempts)
@@ -697,17 +1037,55 @@ INSERT INTO goal_owner_admission_origins (
     Ok(())
 }
 
-async fn fetch_record<'e, E>(
+async fn fetch_active_record<'e, E>(
     executor: E,
     thread_id: ThreadId,
 ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let row = sqlx::query("SELECT * FROM goal_owner_admissions WHERE thread_id = ?")
-        .bind(thread_id.to_string())
-        .fetch_optional(executor)
-        .await?;
+    let row = sqlx::query(&format!(
+        "{ADMISSION_SELECT} WHERE admission.thread_id = ? AND admission.retired_at_ms IS NULL"
+    ))
+    .bind(thread_id.to_string())
+    .fetch_optional(executor)
+    .await?;
+    row.map(|row| record_from_row(&row)).transpose()
+}
+
+async fn fetch_record_by_generation<'e, E>(
+    executor: E,
+    thread_id: ThreadId,
+    generation: i64,
+) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(&format!(
+        "{ADMISSION_SELECT} WHERE admission.thread_id = ? AND admission.generation = ?"
+    ))
+    .bind(thread_id.to_string())
+    .bind(generation)
+    .fetch_optional(executor)
+    .await?;
+    row.map(|row| record_from_row(&row)).transpose()
+}
+
+async fn fetch_record_for_authority<'e, E>(
+    executor: E,
+    authority: &GoalOwnerAdmissionAuthority,
+) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let row = sqlx::query(&format!(
+        "{ADMISSION_SELECT} WHERE admission.thread_id = ? AND admission.goal_id = ? AND admission.generation = ?"
+    ))
+    .bind(authority.thread_id.to_string())
+    .bind(&authority.goal_id)
+    .bind(authority.generation)
+    .fetch_optional(executor)
+    .await?;
     row.map(|row| record_from_row(&row)).transpose()
 }
 
@@ -721,23 +1099,10 @@ where
 {
     let row = sqlx::query(
         r#"
-SELECT
-    goal_id,
-    origin_turn_id,
-    origin_request_id,
-    denial_class,
-    configured_provider_key,
-    requested_model,
-    effective_provider_id,
-    effective_model,
-    intended_request_kind,
-    successor_turn_id,
-    logical_successor_request_id,
-    decision_id,
-    account_context_fingerprint,
-    deadline_at_ms,
-    max_attempts,
-    requested_phase
+SELECT generation, goal_id, origin_turn_id, origin_request_id, denial_class,
+       configured_provider_key, requested_model, effective_provider_id, effective_model,
+       intended_request_kind, successor_turn_id, logical_successor_request_id, decision_id,
+       account_context_fingerprint, deadline_at_ms, max_attempts, requested_phase
 FROM goal_owner_admission_origins
 WHERE thread_id = ? AND origin_request_id = ?
         "#,
@@ -752,6 +1117,8 @@ WHERE thread_id = ? AND origin_request_id = ?
 fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdmissionRecord> {
     let lease_id: Option<String> = row.try_get("lease_id")?;
     let lease_acquired_at_ms: Option<i64> = row.try_get("lease_acquired_at_ms")?;
+    let retired_at_ms: Option<i64> = row.try_get("retired_at_ms")?;
+    let retirement_reason: Option<String> = row.try_get("retirement_reason")?;
     let record = GoalOwnerAdmissionRecord {
         authority: GoalOwnerAdmissionAuthority {
             thread_id: ThreadId::try_from(row.try_get::<String, _>("thread_id")?)?,
@@ -779,6 +1146,8 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
         deadline_at: admission_epoch_millis_to_datetime(row.try_get("deadline_at_ms")?)?,
         attempts_started: row.try_get("attempts_started")?,
         max_attempts: row.try_get("max_attempts")?,
+        chain_attempts_started: row.try_get("chain_attempts_started")?,
+        chain_max_attempts: row.try_get("chain_max_attempts")?,
         requested_phase: GoalOwnerAdmissionPhase::try_from(
             row.try_get::<String, _>("requested_phase")?.as_str(),
         )?,
@@ -786,16 +1155,22 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
         terminal_outcome: GoalOwnerAdmissionTerminalOutcome::try_from(
             row.try_get::<String, _>("terminal_outcome")?.as_str(),
         )?,
-        lease_id: lease_id
-            .map(|lease_id| Uuid::parse_str(&lease_id))
-            .transpose()?,
+        lease_id: lease_id.map(|value| Uuid::parse_str(&value)).transpose()?,
         lease_acquired_at: lease_acquired_at_ms
             .map(admission_epoch_millis_to_datetime)
             .transpose()?,
+        lease_cancellation_epoch: row.try_get("lease_cancellation_epoch")?,
         deferred_terminal_disposition: GoalOwnerAdmissionTerminalDisposition::try_from(
             row.try_get::<String, _>("deferred_terminal_disposition")?
                 .as_str(),
         )?,
+        retired_at: retired_at_ms
+            .map(admission_epoch_millis_to_datetime)
+            .transpose()?,
+        retirement_reason: retirement_reason
+            .as_deref()
+            .map(GoalOwnerAdmissionRetirementReason::try_from)
+            .transpose()?,
         created_at: admission_epoch_millis_to_datetime(row.try_get("created_at_ms")?)?,
         updated_at: admission_epoch_millis_to_datetime(row.try_get("updated_at_ms")?)?,
     };
@@ -805,6 +1180,7 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
 
 fn origin_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdmissionOrigin> {
     let origin = GoalOwnerAdmissionOrigin {
+        generation: row.try_get("generation")?,
         goal_id: row.try_get("goal_id")?,
         origin_turn_id: row.try_get("origin_turn_id")?,
         origin_request_id: row.try_get("origin_request_id")?,
@@ -834,17 +1210,19 @@ fn origin_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
 }
 
 fn lease_from_record(record: GoalOwnerAdmissionRecord) -> anyhow::Result<GoalOwnerAdmissionLease> {
-    if record.phase != GoalOwnerAdmissionPhase::Acquired {
+    if record.phase != GoalOwnerAdmissionPhase::Acquired
+        || record.lease_cancellation_epoch != Some(record.authority.cancellation_epoch)
+    {
         bail!("acquired goal-owner admission is not reserved")
     }
     Ok(GoalOwnerAdmissionLease {
         continuation_authority: record.continuation_authority(),
         authority: record.authority,
-        lease_id: record.lease_id.ok_or_else(|| {
-            anyhow::anyhow!("in-flight goal-owner admission is missing its lease")
-        })?,
+        lease_id: record
+            .lease_id
+            .ok_or_else(|| anyhow::anyhow!("acquired goal-owner admission is missing its lease"))?,
         acquired_at: record.lease_acquired_at.ok_or_else(|| {
-            anyhow::anyhow!("in-flight goal-owner admission is missing its lease timestamp")
+            anyhow::anyhow!("acquired goal-owner admission is missing its lease timestamp")
         })?,
     })
 }
@@ -863,7 +1241,7 @@ impl GoalOwnerAdmissionRecord {
 }
 
 fn validate_observation(observation: &GoalOwnerAdmissionObservation) -> anyhow::Result<()> {
-    validate_origin(&origin_from_observation(observation))?;
+    validate_origin(&origin_from_observation(observation, 1))?;
     if !matches!(
         observation.phase,
         GoalOwnerAdmissionPhase::Dormant | GoalOwnerAdmissionPhase::Pending
@@ -876,8 +1254,10 @@ fn validate_observation(observation: &GoalOwnerAdmissionObservation) -> anyhow::
 
 fn origin_from_observation(
     observation: &GoalOwnerAdmissionObservation,
+    generation: i64,
 ) -> GoalOwnerAdmissionOrigin {
     GoalOwnerAdmissionOrigin {
+        generation,
         goal_id: observation.goal_id.clone(),
         origin_turn_id: observation.origin_turn_id.clone(),
         origin_request_id: observation.origin_request_id.clone(),
@@ -898,6 +1278,9 @@ fn origin_from_observation(
 }
 
 fn validate_origin(origin: &GoalOwnerAdmissionOrigin) -> anyhow::Result<()> {
+    if origin.generation < 1 {
+        bail!("invalid goal-owner admission generation")
+    }
     validate_nonempty("goal id", &origin.goal_id, MAX_ORIGIN_ID_LENGTH)?;
     validate_nonempty(
         "origin turn id",
@@ -987,6 +1370,15 @@ fn validate_continuation_authority(
     Ok(())
 }
 
+fn validate_lease(lease: &GoalOwnerAdmissionLease) -> anyhow::Result<()> {
+    validate_authority(&lease.authority)?;
+    validate_continuation_authority(&lease.continuation_authority)?;
+    if lease.continuation_authority.authority != lease.authority {
+        bail!("goal-owner admission lease has contradictory authority")
+    }
+    Ok(())
+}
+
 fn admission_datetime_to_epoch_millis(value: DateTime<Utc>) -> i64 {
     value.timestamp_millis()
 }
@@ -1003,7 +1395,6 @@ fn validate_terminal_transition(
     match outcome {
         GoalOwnerAdmissionTerminalOutcome::Succeeded
         | GoalOwnerAdmissionTerminalOutcome::Rejected
-        | GoalOwnerAdmissionTerminalOutcome::Exhausted
             if disposition == GoalOwnerAdmissionTerminalDisposition::None =>
         {
             Ok(())
@@ -1015,15 +1406,6 @@ fn validate_terminal_transition(
         }
         _ => bail!("invalid goal-owner admission terminal transition"),
     }
-}
-
-fn validate_cancellation_disposition(
-    disposition: GoalOwnerAdmissionTerminalDisposition,
-) -> anyhow::Result<()> {
-    if disposition == GoalOwnerAdmissionTerminalDisposition::None {
-        bail!("cancelled goal-owner admission requires a terminal disposition")
-    }
-    Ok(())
 }
 
 fn validate_nonempty(name: &str, value: &str, max_length: usize) -> anyhow::Result<()> {
@@ -1076,19 +1458,24 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
     if record.attempts_started < 0
         || record.max_attempts < 1
         || record.attempts_started > record.max_attempts
+        || record.chain_attempts_started < 0
+        || record.chain_max_attempts < 1
+        || record.chain_attempts_started > record.chain_max_attempts
+        || record.max_attempts != record.chain_max_attempts
     {
         bail!("invalid goal-owner admission attempt counters")
     }
     let has_lease = record.lease_id.is_some();
-    if has_lease != record.lease_acquired_at.is_some() {
-        bail!("contradictory goal-owner admission lease state")
+    if has_lease != record.lease_acquired_at.is_some()
+        || has_lease != record.lease_cancellation_epoch.is_some()
+        || record.retired_at.is_some() != record.retirement_reason.is_some()
+    {
+        bail!("contradictory goal-owner admission durable state")
     }
     match record.phase {
         GoalOwnerAdmissionPhase::Dormant | GoalOwnerAdmissionPhase::Pending => {
-            if record.requested_phase != record.phase {
-                bail!("contradictory requested goal-owner admission phase")
-            }
-            if record.terminal_outcome != GoalOwnerAdmissionTerminalOutcome::None
+            if record.requested_phase != record.phase
+                || record.terminal_outcome != GoalOwnerAdmissionTerminalOutcome::None
                 || has_lease
                 || record.deferred_terminal_disposition
                     != GoalOwnerAdmissionTerminalDisposition::None
@@ -1097,12 +1484,10 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
             }
         }
         GoalOwnerAdmissionPhase::Acquired | GoalOwnerAdmissionPhase::InFlight => {
-            if matches!(
-                record.requested_phase,
-                GoalOwnerAdmissionPhase::Acquired | GoalOwnerAdmissionPhase::InFlight
-            ) || record.terminal_outcome != GoalOwnerAdmissionTerminalOutcome::None
+            if record.terminal_outcome != GoalOwnerAdmissionTerminalOutcome::None
                 || !has_lease
                 || record.attempts_started == 0
+                || record.lease_cancellation_epoch != Some(record.authority.cancellation_epoch)
                 || record.deferred_terminal_disposition
                     != GoalOwnerAdmissionTerminalDisposition::None
             {
@@ -1111,12 +1496,6 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
         }
         GoalOwnerAdmissionPhase::Terminal => {
             if record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::None
-                || matches!(
-                    record.requested_phase,
-                    GoalOwnerAdmissionPhase::Acquired
-                        | GoalOwnerAdmissionPhase::InFlight
-                        | GoalOwnerAdmissionPhase::Terminal
-                )
                 || !terminal_state_is_coherent(record, has_lease)
             {
                 bail!("terminal goal-owner admission is missing its outcome")
@@ -1129,21 +1508,34 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
 fn terminal_state_is_coherent(record: &GoalOwnerAdmissionRecord, has_lease: bool) -> bool {
     match record.terminal_outcome {
         GoalOwnerAdmissionTerminalOutcome::Succeeded
-        | GoalOwnerAdmissionTerminalOutcome::Rejected
-        | GoalOwnerAdmissionTerminalOutcome::Exhausted => {
+        | GoalOwnerAdmissionTerminalOutcome::Rejected => {
             record.attempts_started > 0
                 && has_lease
                 && record.deferred_terminal_disposition
                     == GoalOwnerAdmissionTerminalDisposition::None
+                && record
+                    .lease_cancellation_epoch
+                    .is_some_and(|epoch| epoch <= record.authority.cancellation_epoch)
         }
         GoalOwnerAdmissionTerminalOutcome::Uncertain => {
             record.attempts_started > 0
                 && has_lease
                 && record.deferred_terminal_disposition
                     == GoalOwnerAdmissionTerminalDisposition::ManualReview
+                && record
+                    .lease_cancellation_epoch
+                    .is_some_and(|epoch| epoch <= record.authority.cancellation_epoch)
+        }
+        GoalOwnerAdmissionTerminalOutcome::Exhausted => {
+            !has_lease
+                && record.chain_attempts_started == record.chain_max_attempts
+                && record.deferred_terminal_disposition
+                    == GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn
         }
         GoalOwnerAdmissionTerminalOutcome::Cancelled => {
-            record.deferred_terminal_disposition != GoalOwnerAdmissionTerminalDisposition::None
+            !has_lease
+                && record.deferred_terminal_disposition
+                    == GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn
         }
         GoalOwnerAdmissionTerminalOutcome::None => false,
     }
@@ -1172,7 +1564,11 @@ fn observation_matches_origin(
 }
 
 fn same_lease(record: &GoalOwnerAdmissionRecord, lease: &GoalOwnerAdmissionLease) -> bool {
-    record.authority == lease.authority && record.lease_id == Some(lease.lease_id)
+    record.authority.thread_id == lease.authority.thread_id
+        && record.authority.goal_id == lease.authority.goal_id
+        && record.authority.generation == lease.authority.generation
+        && record.lease_id == Some(lease.lease_id)
+        && record.lease_cancellation_epoch == Some(lease.authority.cancellation_epoch)
 }
 
 fn exact_terminal_replay(
@@ -1187,10 +1583,28 @@ fn exact_terminal_replay(
         && record.deferred_terminal_disposition == disposition
 }
 
+fn can_refine_uncertainty(
+    record: &GoalOwnerAdmissionRecord,
+    lease: &GoalOwnerAdmissionLease,
+    outcome: GoalOwnerAdmissionTerminalOutcome,
+    disposition: GoalOwnerAdmissionTerminalDisposition,
+) -> bool {
+    same_lease(record, lease)
+        && record.phase == GoalOwnerAdmissionPhase::Terminal
+        && record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Uncertain
+        && record.deferred_terminal_disposition
+            == GoalOwnerAdmissionTerminalDisposition::ManualReview
+        && matches!(
+            outcome,
+            GoalOwnerAdmissionTerminalOutcome::Succeeded
+                | GoalOwnerAdmissionTerminalOutcome::Rejected
+        )
+        && disposition == GoalOwnerAdmissionTerminalDisposition::None
+}
+
 fn exact_cancellation_replay(
     record: &GoalOwnerAdmissionRecord,
     authority: &GoalOwnerAdmissionAuthority,
-    disposition: GoalOwnerAdmissionTerminalDisposition,
 ) -> bool {
     record.authority.thread_id == authority.thread_id
         && record.authority.goal_id == authority.goal_id
@@ -1201,8 +1615,19 @@ fn exact_cancellation_replay(
                 .checked_add(1)
                 .unwrap_or(i64::MIN)
         && record.phase == GoalOwnerAdmissionPhase::Terminal
-        && record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Cancelled
-        && record.deferred_terminal_disposition == disposition
+        && matches!(
+            (
+                record.terminal_outcome,
+                record.deferred_terminal_disposition
+            ),
+            (
+                GoalOwnerAdmissionTerminalOutcome::Cancelled,
+                GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn
+            ) | (
+                GoalOwnerAdmissionTerminalOutcome::Uncertain,
+                GoalOwnerAdmissionTerminalDisposition::ManualReview
+            )
+        )
 }
 
 #[cfg(test)]
