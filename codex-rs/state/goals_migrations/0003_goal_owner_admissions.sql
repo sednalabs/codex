@@ -69,6 +69,10 @@ CREATE TABLE goal_owner_admissions (
     CHECK((lease_id IS NULL) = (lease_cancellation_epoch IS NULL)),
     CHECK((retired_at_ms IS NULL) = (retirement_reason IS NULL)),
     CHECK(
+        retired_at_ms IS NULL
+        OR (phase NOT IN ('acquired', 'in_flight') AND terminal_outcome != 'uncertain')
+    ),
+    CHECK(
         (phase IN ('dormant', 'pending')
             AND terminal_outcome = 'none'
             AND lease_id IS NULL
@@ -125,6 +129,14 @@ CREATE TRIGGER goal_owner_admissions_delete_origins
 AFTER DELETE ON thread_goals
 BEGIN
     DELETE FROM goal_owner_admissions WHERE thread_id = OLD.thread_id;
+END;
+
+CREATE TRIGGER goal_owner_admissions_delete_last_history
+AFTER DELETE ON goal_owner_admissions
+WHEN NOT EXISTS (
+    SELECT 1 FROM goal_owner_admissions WHERE thread_id = OLD.thread_id
+)
+BEGIN
     DELETE FROM goal_owner_admission_goal_chains WHERE thread_id = OLD.thread_id;
     DELETE FROM goal_owner_admission_origins WHERE thread_id = OLD.thread_id;
 END;
