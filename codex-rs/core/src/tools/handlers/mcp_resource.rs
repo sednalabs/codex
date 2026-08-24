@@ -247,6 +247,9 @@ impl ReadResourceToolOutput {
             crate::tools::context::ToolCallSource::Direct => {
                 ToolExecutionStatus::from_success(self.success_for_logging())
             }
+            crate::tools::context::ToolCallSource::HostContinuityCheck => {
+                ToolExecutionStatus::from_success(self.success_for_logging())
+            }
             crate::tools::context::ToolCallSource::CodeMode { .. } => {
                 ToolExecutionStatus::Completed
             }

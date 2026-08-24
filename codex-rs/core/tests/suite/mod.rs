@@ -65,6 +65,7 @@ mod extension_sandbox;
 mod external_auth;
 mod fork_thread;
 mod git_enrichment;
+mod goal_error_continuation;
 #[cfg(not(target_os = "windows"))]
 mod guardian_review;
 #[cfg(not(target_os = "windows"))]
@@ -105,6 +106,7 @@ mod prompt_cache_key;
 mod prompt_caching;
 mod prompt_debug_tests;
 mod quota_exceeded;
+mod rate_limit_domain;
 mod realtime_conversation;
 mod realtime_initial_items;
 mod remote_env;

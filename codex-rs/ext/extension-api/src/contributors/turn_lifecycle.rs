@@ -1,5 +1,7 @@
+use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
 use std::time::Duration;
@@ -14,6 +16,36 @@ use crate::ExtensionData;
 /// notification for this exact turn.
 #[derive(Debug)]
 pub struct OwnerContinuationPending;
+
+/// Marks a provider-limited turn whose queued input must remain pending until a new
+/// authoritative provider admission exists. Unlike [`OwnerContinuationPending`], this does not
+/// preserve terminal status; it only prevents the same regular task from sampling again.
+#[derive(Debug)]
+pub struct OwnerContinuationDeferred;
+
+/// Marks the next automatic goal continuation turn for the bounded V2 health check.
+///
+/// This thread-scoped activation is consumed once when Core creates the turn; prompt text is
+/// never used as a control marker.
+#[derive(Debug)]
+pub struct GoalContinuationHealthCheck;
+
+/// Provider-declared rate-limit evidence for one exact thread and turn.
+///
+/// `None` means unavailable; Core must not infer account identity, shared quota, or
+/// independence from parentage when a provider does not report it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateLimitDomain {
+    pub thread_id: ThreadId,
+    pub provider_id: Option<String>,
+    pub requested_model: Option<String>,
+    pub effective_model: Option<String>,
+    pub account_context_key: Option<String>,
+    pub shared_quota_key: Option<String>,
+    pub snapshot: Option<RateLimitSnapshot>,
+    pub reset_at: Option<String>,
+    pub retry_after: Option<Duration>,
+}
 
 /// Input supplied when the host starts a turn.
 pub struct TurnStartInput<'a> {
@@ -62,6 +94,8 @@ pub struct TurnErrorInput<'a> {
     /// Provider-specified delay before a rate-limited request may be retried.
     /// `None` means the provider did not establish an eligible retry time.
     pub rate_limit_retry_after: Option<Duration>,
+    /// Exact-thread provider evidence associated with this error. Unknown scope remains `None`.
+    pub rate_limit_domain: RateLimitDomain,
     /// Store scoped to the host session runtime.
     pub session_store: &'a ExtensionData,
     /// Store scoped to this thread runtime.

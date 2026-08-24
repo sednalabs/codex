@@ -68,6 +68,9 @@ struct DeferredProviderContinuation {
 struct ProviderContinuationState {
     goal_id: Option<String>,
     attempts: u8,
+    /// In-memory fail-closed gate for this runtime. The durable thread-goal gate below
+    /// covers resume; this bit also covers a persistence failure or an exhausted attempt.
+    blocked: bool,
     pending: Option<DeferredProviderContinuation>,
 }
 
@@ -128,6 +131,18 @@ impl GoalRuntimeHandle {
 
     pub(crate) fn set_enabled(&self, enabled: bool) {
         self.inner.enabled.store(enabled, Ordering::Relaxed);
+        if !enabled {
+            let mut state = self
+                .inner
+                .provider_continuation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(pending) = state.pending.take() {
+                pending.cancellation.cancel();
+            }
+            state.attempts = MAX_PROVIDER_RATE_LIMIT_CONTINUATIONS_PER_GOAL;
+            state.blocked = true;
+        }
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
@@ -209,6 +224,29 @@ impl GoalRuntimeHandle {
         self.inner
             .analytics
             .status_changed(&goal, previous_status, GoalEventAttribution::NoTurn);
+        if replaced_existing_goal {
+            let pending = {
+                let mut state = self
+                    .inner
+                    .provider_continuation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let pending = state.pending.take();
+                state.goal_id = Some(goal.goal_id.clone());
+                state.attempts = 0;
+                state.blocked = false;
+                pending
+            };
+            if let Some(pending) = pending {
+                pending.cancellation.cancel();
+            }
+            self.inner
+                .state_dbs
+                .thread_goals()
+                .clear_thread_goal_continuation_deferral(self.thread_id())
+                .await
+                .map_err(|err| err.to_string())?;
+        }
         let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {
             !replaced_existing_goal && previous_goal.objective != goal.objective
         });
@@ -304,20 +342,21 @@ impl GoalRuntimeHandle {
         match goal {
             Some(goal) if goal.status == codex_state::ThreadGoalStatus::Active => {
                 accounting.mark_idle_goal_active(goal.goal_id.clone());
-                self.defer_provider_continuation(turn_id.to_string(), goal.goal_id, retry_after);
-                return Ok(true);
+                return self
+                    .defer_provider_continuation(turn_id.to_string(), goal.goal_id, retry_after)
+                    .await;
             }
             Some(_) | None => accounting.clear_active_goal(),
         }
         Ok(false)
     }
 
-    fn defer_provider_continuation(
+    async fn defer_provider_continuation(
         &self,
         turn_id: String,
         goal_id: String,
         retry_after: Option<Duration>,
-    ) {
+    ) -> Result<bool, String> {
         let mut state = self
             .inner
             .provider_continuation
@@ -329,16 +368,33 @@ impl GoalRuntimeHandle {
             }
             state.goal_id = Some(goal_id.clone());
             state.attempts = 0;
+            state.blocked = false;
         }
         if state.pending.is_some()
             || state.attempts >= MAX_PROVIDER_RATE_LIMIT_CONTINUATIONS_PER_GOAL
         {
-            return;
+            drop(state);
+            self.block_provider_continuation();
+            self.mark_provider_continuation_deferred().await?;
+            return Ok(false);
         }
+        let Some(delay) =
+            retry_after.filter(|delay| *delay <= MAX_PROVIDER_RATE_LIMIT_CONTINUATION_DELAY)
+        else {
+            state.attempts = MAX_PROVIDER_RATE_LIMIT_CONTINUATIONS_PER_GOAL;
+            state.blocked = true;
+            state.pending = None;
+            drop(state);
+            self.mark_provider_continuation_deferred().await?;
+            tracing::info!(
+                thread_id = %self.thread_id(),
+                "provider rate-limit continuation remains dormant without a bounded eligible delay"
+            );
+            return Ok(false);
+        };
         state.attempts += 1;
-        let eligible_at = retry_after
-            .filter(|delay| *delay <= MAX_PROVIDER_RATE_LIMIT_CONTINUATION_DELAY)
-            .and_then(|delay| Instant::now().checked_add(delay));
+        state.blocked = true;
+        let eligible_at = Instant::now().checked_add(delay);
         let cancellation = CancellationToken::new();
         state.pending = Some(DeferredProviderContinuation {
             turn_id,
@@ -347,16 +403,17 @@ impl GoalRuntimeHandle {
             cancellation: cancellation.clone(),
         });
         drop(state);
-
-        let Some(delay) =
-            retry_after.filter(|delay| *delay <= MAX_PROVIDER_RATE_LIMIT_CONTINUATION_DELAY)
-        else {
-            tracing::info!(
-                thread_id = %self.thread_id(),
-                "provider rate-limit continuation remains dormant without a bounded eligible delay"
-            );
-            return;
-        };
+        if let Err(err) = self.mark_provider_continuation_deferred().await {
+            let mut state = self
+                .inner
+                .provider_continuation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.pending = None;
+            state.attempts = MAX_PROVIDER_RATE_LIMIT_CONTINUATIONS_PER_GOAL;
+            state.blocked = true;
+            return Err(err);
+        }
         let runtime = Arc::downgrade(&self.inner);
         drop(tokio::spawn(async move {
             tokio::select! {
@@ -374,6 +431,24 @@ impl GoalRuntimeHandle {
                 );
             }
         }));
+        Ok(true)
+    }
+
+    async fn mark_provider_continuation_deferred(&self) -> Result<(), String> {
+        self.inner
+            .state_dbs
+            .thread_goals()
+            .mark_thread_goal_continuation_deferred(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    fn block_provider_continuation(&self) {
+        self.inner
+            .provider_continuation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .blocked = true;
     }
 
     pub(crate) async fn cancel_provider_continuation(&self) {
@@ -520,9 +595,10 @@ impl GoalRuntimeHandle {
             self.continue_provider_preserved_goal().await?;
             return Ok(());
         }
-        self.start_if_idle(|goal| {
-            vec![continuation_steering_item(&protocol_goal_from_state(goal))]
-        })
+        self.start_if_idle(
+            |goal| vec![continuation_steering_item(&protocol_goal_from_state(goal))],
+            /*goal_continuation*/ false,
+        )
         .await?;
         Ok(())
     }
@@ -555,7 +631,10 @@ impl GoalRuntimeHandle {
             pending.goal_id.clone()
         };
 
-        if self.start_if_idle(|_| Vec::new()).await? {
+        if self
+            .start_if_idle(|_| Vec::new(), /*goal_continuation*/ true)
+            .await?
+        {
             let mut state = self
                 .inner
                 .provider_continuation
@@ -568,6 +647,14 @@ impl GoalRuntimeHandle {
             {
                 state.pending = None;
             }
+            state.blocked = false;
+            drop(state);
+            self.inner
+                .state_dbs
+                .thread_goals()
+                .clear_thread_goal_continuation_deferral(self.thread_id())
+                .await
+                .map_err(|err| err.to_string())?;
         }
         Ok(())
     }
@@ -575,6 +662,7 @@ impl GoalRuntimeHandle {
     async fn start_if_idle(
         &self,
         input_for_goal: impl FnOnce(codex_state::ThreadGoal) -> Vec<ResponseItem>,
+        goal_continuation: bool,
     ) -> Result<bool, String> {
         if !self.tools_visible() {
             self.inner.accounting_state.clear_active_goal();
@@ -584,13 +672,24 @@ impl GoalRuntimeHandle {
         // change the goal after we read it but before the continuation launches.
         let _goal_state_permit = self.goal_state_permit().await?;
 
-        if self
-            .inner
-            .state_dbs
-            .thread_goals()
-            .has_thread_goal_continuation_deferral(self.thread_id())
-            .await
-            .map_err(|err| err.to_string())?
+        if !goal_continuation
+            && self
+                .inner
+                .provider_continuation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .blocked
+        {
+            return Ok(false);
+        }
+        if !goal_continuation
+            && self
+                .inner
+                .state_dbs
+                .thread_goals()
+                .has_thread_goal_continuation_deferral(self.thread_id())
+                .await
+                .map_err(|err| err.to_string())?
         {
             return Ok(false);
         }
@@ -619,7 +718,16 @@ impl GoalRuntimeHandle {
             self.inner.accounting_state.clear_active_goal();
             return Ok(false);
         }
-        match thread.try_start_turn_if_idle(input_for_goal(goal)).await {
+        let start_result = if goal_continuation
+            && codex_core::diagnostic_flags::goal_continuation_health_check_enabled()
+        {
+            thread
+                .try_start_goal_continuation_if_idle(input_for_goal(goal))
+                .await
+        } else {
+            thread.try_start_turn_if_idle(input_for_goal(goal)).await
+        };
+        match start_result {
             Ok(()) => {
                 return Ok(true);
             }

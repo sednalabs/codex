@@ -13,6 +13,8 @@ pub type ToolLifecycleFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>
 pub enum ToolCallSource {
     /// The model invoked the tool directly.
     Direct,
+    /// The host issued a bounded continuity check; this is not a provider call.
+    HostContinuityCheck,
     /// Code mode invoked the tool while executing a runtime cell.
     CodeMode {
         /// Runtime cell that issued the nested tool request.

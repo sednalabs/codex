@@ -449,6 +449,31 @@ impl CodexThread {
         self.session.try_start_turn_if_idle(items).await
     }
 
+    /// Starts one automatic goal continuation and activates its typed health-check context.
+    ///
+    /// If the idle gate rejects the start, remove the activation so a later unrelated turn
+    /// cannot inherit diagnostic behavior.
+    #[doc(hidden)]
+    pub async fn try_start_goal_continuation_if_idle(
+        &self,
+        items: Vec<ResponseItem>,
+    ) -> Result<(), TryStartTurnIfIdleError> {
+        self.session
+            .services
+            .thread_extension_data
+            .insert(codex_extension_api::GoalContinuationHealthCheck);
+        match self.try_start_turn_if_idle(items).await {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.session
+                    .services
+                    .thread_extension_data
+                    .remove::<codex_extension_api::GoalContinuationHealthCheck>();
+                Err(err)
+            }
+        }
+    }
+
     pub async fn set_app_server_client_info(
         &self,
         app_server_client_name: Option<String>,

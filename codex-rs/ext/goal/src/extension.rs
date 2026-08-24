@@ -8,8 +8,10 @@ use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::OwnerContinuationDeferred;
 use codex_extension_api::OwnerContinuationPending;
 use codex_extension_api::ThreadIdleInput;
+use codex_extension_api::ThreadInterruptInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadResumeInput;
 use codex_extension_api::ThreadStartInput;
@@ -32,6 +34,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadGoalStatus;
 use codex_protocol::protocol::TokenUsageInfo;
+use codex_protocol::protocol::TurnAbortReason;
 
 use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::accounting::GoalAccountingState;
@@ -167,6 +170,17 @@ where
         })
     }
 
+    fn on_thread_interrupt<'a>(
+        &'a self,
+        input: ThreadInterruptInput<'a>,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            if let Some(runtime) = goal_runtime_handle(input.thread_store) {
+                runtime.cancel_provider_continuation().await;
+            }
+        })
+    }
+
     fn on_thread_stop<'a>(&'a self, input: ThreadStopInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(runtime) = goal_runtime_handle(input.thread_store) {
@@ -288,6 +302,12 @@ where
                 return;
             }
 
+            // Ordinary steer/replacement preserves the owner and its queued work. Explicit
+            // interruption, review end, or budget stop wins over any pending provider timer.
+            if !matches!(input.reason, TurnAbortReason::Replaced) {
+                runtime.cancel_provider_continuation().await;
+            }
+
             let turn_id = input.turn_store.level_id();
             if let Err(err) = runtime
                 .account_active_goal_progress(
@@ -326,8 +346,13 @@ where
                     Ok(true) => {
                         input.turn_store.insert(OwnerContinuationPending);
                     }
-                    Ok(false) => {}
+                    Ok(false) => {
+                        // Preserve queued work without letting the current regular task sample
+                        // again when provider eligibility is unknown or exhausted.
+                        input.turn_store.insert(OwnerContinuationDeferred);
+                    }
                     Err(err) => {
+                        input.turn_store.insert(OwnerContinuationDeferred);
                         tracing::warn!(
                             error = ?input.error,
                             "failed to preserve active goal after provider limit: {err}"

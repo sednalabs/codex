@@ -141,6 +141,28 @@ SELECT EXISTS(
         .map_err(Into::into)
     }
 
+    /// Persist a conservative gate that prevents automatic goal continuation until an
+    /// authoritative provider retry admission is available. The gate is intentionally
+    /// thread-scoped and survives process resume; it is cleared only when a permitted
+    /// provider continuation actually starts or an explicit user turn begins.
+    pub async fn mark_thread_goal_continuation_deferred(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+INSERT INTO thread_goal_continuation_deferrals (thread_id)
+VALUES (?)
+ON CONFLICT(thread_id) DO NOTHING
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .execute(self.pool.as_ref())
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn clear_thread_goal_continuation_deferral(
         &self,
         thread_id: ThreadId,
