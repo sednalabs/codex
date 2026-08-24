@@ -565,6 +565,14 @@ impl CodexThread {
         self.io.agent_status.clone()
     }
 
+    /// Resolves a deferred owner terminal disposition after an extension has
+    /// cancelled provider-scoped continuation for the exact prior turn.
+    pub async fn resolve_pending_owner_continuation(&self, turn_id: &str) {
+        self.session
+            .resolve_pending_owner_continuation(turn_id)
+            .await;
+    }
+
     /// Returns the complete token usage snapshot currently cached for this thread.
     ///
     /// This accessor is intentionally narrower than direct session access: it lets

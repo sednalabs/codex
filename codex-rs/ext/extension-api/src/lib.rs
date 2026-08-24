@@ -39,6 +39,7 @@ pub use contributors::ExtensionFuture;
 pub use contributors::McpServerContribution;
 pub use contributors::McpServerContributionContext;
 pub use contributors::McpServerContributor;
+pub use contributors::OwnerContinuationPending;
 pub use contributors::PreviousWorldStateSection;
 pub use contributors::PromptFragment;
 pub use contributors::PromptSlot;

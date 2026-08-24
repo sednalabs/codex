@@ -40,6 +40,7 @@ pub use tool_lifecycle::ToolLifecycleFuture;
 pub use tool_lifecycle::ToolStartInput;
 pub use turn_input::TurnInputContext;
 pub use turn_input::TurnInputEnvironment;
+pub use turn_lifecycle::OwnerContinuationPending;
 pub use turn_lifecycle::TurnAbortInput;
 pub use turn_lifecycle::TurnErrorInput;
 pub use turn_lifecycle::TurnStartInput;

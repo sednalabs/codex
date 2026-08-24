@@ -63,6 +63,7 @@ use codex_exec_server::FileSystemSandboxContext;
 use codex_execpolicy::prefix_rule_migration;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::LoadedUserInstructions;
+use codex_extension_api::OwnerContinuationPending;
 use codex_extension_api::PromptFragment;
 use codex_extension_api::PromptSlot;
 use codex_extension_api::TurnContextContributionInput;
@@ -242,6 +243,7 @@ pub(crate) use self::input_queue::TurnInput;
 pub(crate) use self::input_queue::TurnInputQueue;
 use self::review::spawn_review_thread;
 use self::session::AppServerClientMetadata;
+use self::session::PendingOwnerContinuation;
 use self::session::Session;
 use self::session::SessionConfiguration;
 pub(crate) use self::session::SessionSettingsUpdate;
@@ -1936,6 +1938,13 @@ impl Session {
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
         let legacy_source = msg.clone();
+        let defer_owner_terminal_reduction = self.owner_continuation_pending(turn_context, &msg);
+        if defer_owner_terminal_reduction {
+            self.record_pending_owner_continuation(turn_context, &msg)
+                .await;
+        } else if matches!(msg, EventMsg::TurnStarted(_)) {
+            self.pending_owner_continuation.lock().await.take();
+        }
         if let EventMsg::Error(error) = &legacy_source
             && error
                 .codex_error_info
@@ -1958,7 +1967,8 @@ impl Session {
             id: turn_context.sub_id.clone(),
             msg,
         };
-        self.send_event_raw(event).await;
+        self.send_event_raw_with_terminal_reduction(event, defer_owner_terminal_reduction)
+            .await;
         self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
             .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
@@ -1975,7 +1985,39 @@ impl Session {
                 id: turn_context.sub_id.clone(),
                 msg: legacy,
             };
-            self.send_event_raw(legacy_event).await;
+            self.send_event_raw_with_terminal_reduction(
+                legacy_event,
+                defer_owner_terminal_reduction,
+            )
+            .await;
+        }
+    }
+
+    fn owner_continuation_pending(&self, turn_context: &TurnContext, msg: &EventMsg) -> bool {
+        matches!(msg, EventMsg::Error(_) | EventMsg::TurnComplete(_))
+            && turn_context
+                .extension_data
+                .get::<OwnerContinuationPending>()
+                .is_some()
+    }
+
+    async fn record_pending_owner_continuation(&self, turn_context: &TurnContext, msg: &EventMsg) {
+        let mut pending = self.pending_owner_continuation.lock().await;
+        let terminal_status = agent_status_from_event(msg);
+        match pending.as_mut() {
+            Some(existing) if existing.turn_id == turn_context.sub_id => {
+                if existing.terminal_status.is_none() {
+                    existing.terminal_status = terminal_status;
+                }
+            }
+            _ => {
+                *pending = Some(PendingOwnerContinuation {
+                    turn_id: turn_context.sub_id.clone(),
+                    session_source: turn_context.session_source.clone(),
+                    multi_agent_version: turn_context.multi_agent_version,
+                    terminal_status,
+                });
+            }
         }
     }
 
@@ -1990,6 +2032,10 @@ impl Session {
         }
 
         if !matches!(msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
+            return;
+        }
+
+        if self.owner_continuation_pending(turn_context, msg) {
             return;
         }
 
@@ -2020,7 +2066,7 @@ impl Session {
         }
 
         self.forward_child_completion_to_parent(
-            turn_context,
+            turn_context.sub_id.as_str(),
             *parent_thread_id,
             child_agent_path,
             status,
@@ -2031,7 +2077,7 @@ impl Session {
     /// Sends the standard completion envelope from a spawned MultiAgentV2 child to its parent.
     async fn forward_child_completion_to_parent(
         &self,
-        turn_context: &TurnContext,
+        turn_id: &str,
         parent_thread_id: ThreadId,
         child_agent_path: &codex_protocol::AgentPath,
         status: AgentStatus,
@@ -2080,7 +2126,7 @@ impl Session {
             self.services
                 .rollout_thread_trace
                 .record_agent_result_interaction(
-                    turn_context.sub_id.as_str(),
+                    turn_id,
                     parent_thread_id,
                     &AgentResultTracePayload {
                         child_agent_path: child_agent_path.as_str(),
@@ -2089,6 +2135,42 @@ impl Session {
                     },
                 );
         }
+    }
+
+    pub(crate) async fn resolve_pending_owner_continuation(&self, turn_id: &str) {
+        let pending = {
+            let mut pending = self.pending_owner_continuation.lock().await;
+            pending
+                .as_ref()
+                .is_some_and(|pending| pending.turn_id == turn_id)
+                .then(|| pending.take())
+                .flatten()
+        };
+        let Some(pending) = pending else {
+            return;
+        };
+        let Some(status) = pending.terminal_status else {
+            return;
+        };
+        self.agent_status.send_replace(status.clone());
+        if pending.multi_agent_version != MultiAgentVersion::V2 || !is_final(&status) {
+            return;
+        }
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            agent_path: Some(child_agent_path),
+            ..
+        }) = pending.session_source
+        else {
+            return;
+        };
+        self.forward_child_completion_to_parent(
+            turn_id,
+            parent_thread_id,
+            &child_agent_path,
+            status,
+        )
+        .await;
     }
 
     async fn maybe_mirror_event_text_to_realtime(&self, msg: &EventMsg) {
@@ -2146,7 +2228,12 @@ impl Session {
     }
 
     pub(crate) async fn send_event_raw(&self, event: Event) {
-        self.send_event_raw_with_persistence(event, /*persist*/ true)
+        self.send_event_raw_with_persistence(event, /*persist*/ true, /*defer*/ false)
+            .await;
+    }
+
+    async fn send_event_raw_with_terminal_reduction(&self, event: Event, defer: bool) {
+        self.send_event_raw_with_persistence(event, /*persist*/ true, defer)
             .await;
     }
 
@@ -2160,10 +2247,11 @@ impl Session {
                 true
             }
         };
-        self.send_event_raw_with_persistence(event, persist).await;
+        self.send_event_raw_with_persistence(event, persist, /*defer*/ false)
+            .await;
     }
 
-    async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {
+    async fn send_event_raw_with_persistence(&self, event: Event, persist: bool, defer: bool) {
         // Persist the event into rollout storage; the store applies its persistence policy.
         if persist {
             let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
@@ -2173,12 +2261,18 @@ impl Session {
             .rollout_thread_trace
             .record_protocol_event(&event.msg);
         self.services.log_usage_event(&event).await;
-        self.deliver_event_raw(event).await;
+        self.deliver_event_raw_with_terminal_reduction(event, defer)
+            .await;
     }
 
     async fn deliver_event_raw(&self, event: Event) {
+        self.deliver_event_raw_with_terminal_reduction(event, /*defer*/ false)
+            .await;
+    }
+
+    async fn deliver_event_raw_with_terminal_reduction(&self, event: Event, defer: bool) {
         // Record the last known agent status.
-        if let Some(status) = agent_status_from_event(&event.msg) {
+        if !defer && let Some(status) = agent_status_from_event(&event.msg) {
             self.agent_status.send_replace(status);
         }
         if let Err(e) = self.tx_event.send(event).await {

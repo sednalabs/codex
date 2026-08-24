@@ -507,6 +507,58 @@ async fn request_mcp_server_elicitation_auto_accepts_when_auto_deny_is_enabled()
 }
 
 #[tokio::test]
+async fn owner_continuation_pending_preserves_terminal_events_without_terminal_status() {
+    let (session, turn_context, rx) = make_session_and_context_with_rx().await;
+    turn_context
+        .extension_data
+        .insert(codex_extension_api::OwnerContinuationPending);
+
+    session
+        .send_event(
+            &turn_context,
+            EventMsg::Error(codex_protocol::protocol::ErrorEvent {
+                message: "provider limit".to_string(),
+                codex_error_info: Some(CodexErrorInfo::UsageLimitExceeded),
+            }),
+        )
+        .await;
+    session
+        .send_event(
+            &turn_context,
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: turn_context.sub_id.clone(),
+                started_at: None,
+                last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                provider_usage: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let delivered = vec![
+        rx.recv().await.expect("provider error event"),
+        rx.recv().await.expect("turn complete event"),
+    ];
+    assert!(matches!(delivered[0].msg, EventMsg::Error(_)));
+    assert!(matches!(delivered[1].msg, EventMsg::TurnComplete(_)));
+    assert_eq!(AgentStatus::PendingInit, session.agent_status().await);
+
+    session
+        .resolve_pending_owner_continuation(turn_context.sub_id.as_str())
+        .await;
+    assert_eq!(
+        AgentStatus::Errored("provider limit".to_string()),
+        session.agent_status().await
+    );
+}
+
+#[tokio::test]
 async fn interrupting_regular_turn_waiting_on_startup_prewarm_emits_turn_aborted() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
     let (_tx, startup_prewarm_rx) = tokio::sync::oneshot::channel::<()>();
@@ -5762,6 +5814,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         mcp_prewarm_task: std::sync::Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
+        pending_owner_continuation: Mutex::new(None),
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
@@ -7995,6 +8048,7 @@ where
         mcp_prewarm_task: std::sync::Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
+        pending_owner_continuation: Mutex::new(None),
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
