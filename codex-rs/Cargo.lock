@@ -4377,6 +4377,7 @@ dependencies = [
  "app_test_support",
  "arboard",
  "assert_matches",
+ "axum",
  "base64 0.22.1",
  "chrono",
  "clap",
