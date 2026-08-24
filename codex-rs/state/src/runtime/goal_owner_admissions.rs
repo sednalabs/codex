@@ -719,12 +719,14 @@ fn terminal_state_is_coherent(record: &GoalOwnerAdmissionRecord, has_lease: bool
         GoalOwnerAdmissionTerminalOutcome::Succeeded
         | GoalOwnerAdmissionTerminalOutcome::Rejected
         | GoalOwnerAdmissionTerminalOutcome::Exhausted => {
-            has_lease
+            record.attempts_started > 0
+                && has_lease
                 && record.deferred_terminal_disposition
                     == GoalOwnerAdmissionTerminalDisposition::None
         }
         GoalOwnerAdmissionTerminalOutcome::Uncertain => {
-            has_lease
+            record.attempts_started > 0
+                && has_lease
                 && record.deferred_terminal_disposition
                     == GoalOwnerAdmissionTerminalDisposition::ManualReview
         }

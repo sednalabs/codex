@@ -58,12 +58,37 @@ CREATE TABLE goal_owner_admissions (
         OR (phase = 'terminal' AND (
             (terminal_outcome IN ('succeeded', 'rejected', 'exhausted')
                 AND lease_id IS NOT NULL
+                AND attempts_started > 0
                 AND deferred_terminal_disposition = 'none')
             OR (terminal_outcome = 'uncertain'
                 AND lease_id IS NOT NULL
+                AND attempts_started > 0
                 AND deferred_terminal_disposition = 'manual_review')
             OR (terminal_outcome = 'cancelled'
                 AND deferred_terminal_disposition IN ('await_user_turn', 'manual_review'))
         ))
     )
 );
+
+CREATE TABLE goal_owner_admission_origins (
+    thread_id TEXT NOT NULL,
+    origin_request_id TEXT NOT NULL CHECK(length(origin_request_id) BETWEEN 1 AND 512),
+    goal_id TEXT NOT NULL CHECK(length(goal_id) BETWEEN 1 AND 512),
+    origin_turn_id TEXT NOT NULL CHECK(length(origin_turn_id) BETWEEN 1 AND 512),
+    denial_class TEXT NOT NULL,
+    provider_id TEXT,
+    requested_model TEXT,
+    effective_model TEXT,
+    account_context_fingerprint TEXT,
+    deadline_at_ms INTEGER NOT NULL,
+    max_attempts INTEGER NOT NULL,
+    requested_phase TEXT NOT NULL,
+    PRIMARY KEY(thread_id, origin_request_id)
+);
+
+CREATE TRIGGER goal_owner_admissions_delete_origins
+AFTER DELETE ON thread_goals
+BEGIN
+    DELETE FROM goal_owner_admissions WHERE thread_id = OLD.thread_id;
+    DELETE FROM goal_owner_admission_origins WHERE thread_id = OLD.thread_id;
+END;

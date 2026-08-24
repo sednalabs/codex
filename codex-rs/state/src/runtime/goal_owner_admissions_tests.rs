@@ -28,6 +28,7 @@ fn observation(
         account_context_fingerprint: Some(fingerprint()),
         deadline_at,
         max_attempts: 2,
+        requested_phase: phase,
         phase,
     }
 }
