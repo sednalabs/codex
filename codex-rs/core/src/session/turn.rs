@@ -200,7 +200,7 @@ pub(crate) async fn run_turn(
             error_kind,
             None,
         )
-            .await;
+        .await;
         error!("Failed to run pre-sampling compact");
         return Ok(None);
     }
@@ -444,7 +444,7 @@ pub(crate) async fn run_turn(
                             error_kind,
                             None,
                         )
-                            .await;
+                        .await;
                         return Ok(None);
                     }
                     if run_pending_session_start_hooks(&sess, &turn_context).await {
