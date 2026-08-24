@@ -1493,6 +1493,7 @@ async fn send_request_with_provider(provider: ModelProviderInfo) {
         TEST_INSTALLATION_ID.to_string(),
         provider,
         SessionSource::Exec,
+        /*state_db*/ None,
         "test_originator".to_string(),
         config.model_verbosity,
         /*enable_request_compression*/ false,
@@ -1528,6 +1529,7 @@ async fn send_request_with_provider(provider: ModelProviderInfo) {
             /*service_tier*/ None,
             &responses_metadata,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
+            codex_core::ModelRequestKind::Turn,
         )
         .await
         .expect("responses stream to start");
@@ -3228,6 +3230,7 @@ async fn azure_responses_request_includes_store_and_prefixed_item_ids() {
         TEST_INSTALLATION_ID.to_string(),
         provider.clone(),
         SessionSource::Exec,
+        /*state_db*/ None,
         "test_originator".to_string(),
         config.model_verbosity,
         /*enable_request_compression*/ false,
@@ -3342,6 +3345,7 @@ async fn azure_responses_request_includes_store_and_prefixed_item_ids() {
             /*service_tier*/ None,
             &responses_metadata,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
+            codex_core::ModelRequestKind::Turn,
         )
         .await
         .expect("responses stream to start");

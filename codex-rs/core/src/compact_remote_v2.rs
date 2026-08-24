@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::ModelRequestKind;
 use crate::Prompt;
 use crate::ResponseStream;
 use crate::capacity_retry::notify_and_wait_for_capacity_retry;
@@ -374,6 +375,7 @@ async fn run_remote_compaction_request_v2(
                 turn_context.config.service_tier.clone(),
                 responses_metadata,
                 &InferenceTraceContext::disabled(),
+                ModelRequestKind::RemoteCompactionV2,
             )
             .await
         {
