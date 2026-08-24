@@ -97,6 +97,45 @@ async fn finish_succeeded(
         .expect("persisted terminal outcome")
 }
 
+async fn insert_origin_history_only(
+    store: &GoalOwnerAdmissionStore,
+    thread_id: ThreadId,
+    origin_request_id: &str,
+    generation: i64,
+) {
+    sqlx::query(
+        r#"
+INSERT INTO goal_owner_admission_origins (
+    thread_id, origin_request_id, generation, goal_id, origin_turn_id, denial_class,
+    configured_provider_key, requested_model, effective_provider_id, effective_model,
+    intended_request_kind, successor_turn_id, logical_successor_request_id, decision_id,
+    account_context_fingerprint, deadline_at_ms, max_attempts, requested_phase
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(thread_id.to_string())
+    .bind(origin_request_id)
+    .bind(generation)
+    .bind("goal-history")
+    .bind("turn-history")
+    .bind("capacity")
+    .bind(Some("openai"))
+    .bind(Some("gpt-5"))
+    .bind(Some("openai"))
+    .bind(Option::<&str>::None)
+    .bind("turn")
+    .bind("turn-successor")
+    .bind(format!("successor-{origin_request_id}"))
+    .bind(Uuid::now_v7().to_string())
+    .bind(Option::<&str>::None)
+    .bind(0_i64)
+    .bind(1_i64)
+    .bind("pending")
+    .execute(store.pool.as_ref())
+    .await
+    .expect("insert immutable origin history without an admission");
+}
+
 #[tokio::test]
 async fn exact_origin_replay_is_idempotent_and_conflicting_replay_fails_closed() {
     let runtime = runtime().await;
@@ -131,6 +170,155 @@ async fn exact_origin_replay_is_idempotent_and_conflicting_replay_fails_closed()
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn exact_origin_replay_returns_its_retired_generation_while_newer_is_active() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    let origin_a = observation(
+        thread_id,
+        "goal-a",
+        "request-a",
+        Utc::now() - chrono::Duration::seconds(1),
+        GoalOwnerAdmissionPhase::Pending,
+    );
+    let first = store
+        .observe_denial(&origin_a)
+        .await
+        .expect("record first origin");
+    let first_lease = acquire(store, &first).await;
+    let first_terminal = finish_succeeded(store, &first_lease).await;
+    let first_retired = store
+        .retire(
+            &first_terminal.authority,
+            GoalOwnerAdmissionRetirementReason::Superseded,
+        )
+        .await
+        .expect("retire settled first generation")
+        .expect("record retired first generation");
+    let second = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-b",
+            "request-b",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record active second generation");
+
+    assert_eq!(
+        store.get(thread_id).await.expect("read active generation"),
+        Some(second)
+    );
+    assert_eq!(
+        store
+            .observe_denial(&origin_a)
+            .await
+            .expect("replay retired first origin"),
+        first_retired
+    );
+}
+
+#[tokio::test]
+async fn exact_origin_replay_fails_closed_when_its_generation_is_missing_while_newer_is_active() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    let origin_a = observation(
+        thread_id,
+        "goal-a",
+        "request-a",
+        Utc::now(),
+        GoalOwnerAdmissionPhase::Pending,
+    );
+    let first = store
+        .observe_denial(&origin_a)
+        .await
+        .expect("record first origin");
+    store
+        .retire(
+            &first.authority,
+            GoalOwnerAdmissionRetirementReason::Superseded,
+        )
+        .await
+        .expect("retire first generation")
+        .expect("record retired first generation");
+    let second = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-b",
+            "request-b",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record active second generation");
+    sqlx::query("DELETE FROM goal_owner_admissions WHERE thread_id = ? AND generation = ?")
+        .bind(thread_id.to_string())
+        .bind(first.authority.generation)
+        .execute(store.pool.as_ref())
+        .await
+        .expect("delete referenced historical generation");
+
+    assert_eq!(
+        store.get(thread_id).await.expect("read active generation"),
+        Some(second)
+    );
+    assert!(store.observe_denial(&origin_a).await.is_err());
+}
+
+#[tokio::test]
+async fn exact_origin_replay_fails_closed_when_its_generation_is_malformed_while_newer_is_active() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    let origin_a = observation(
+        thread_id,
+        "goal-a",
+        "request-a",
+        Utc::now(),
+        GoalOwnerAdmissionPhase::Pending,
+    );
+    let first = store
+        .observe_denial(&origin_a)
+        .await
+        .expect("record first origin");
+    store
+        .retire(
+            &first.authority,
+            GoalOwnerAdmissionRetirementReason::Superseded,
+        )
+        .await
+        .expect("retire first generation")
+        .expect("record retired first generation");
+    let second = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-b",
+            "request-b",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record active second generation");
+    sqlx::query(
+        "UPDATE goal_owner_admissions SET updated_at_ms = ? WHERE thread_id = ? AND generation = ?",
+    )
+    .bind(i64::MAX)
+    .bind(thread_id.to_string())
+    .bind(first.authority.generation)
+    .execute(store.pool.as_ref())
+    .await
+    .expect("inject malformed referenced historical generation");
+
+    assert_eq!(
+        store.get(thread_id).await.expect("read active generation"),
+        Some(second)
+    );
+    assert!(store.observe_denial(&origin_a).await.is_err());
 }
 
 #[tokio::test]
@@ -1286,6 +1474,124 @@ async fn direct_single_generation_delete_preserves_remaining_history_and_chain()
             .expect("read remaining generation"),
         Some(second)
     );
+}
+
+#[tokio::test]
+async fn deleting_highest_admission_generation_allocates_after_preserved_origin_history() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    let first = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-a",
+            "request-a",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record lower generation");
+    store
+        .retire(
+            &first.authority,
+            GoalOwnerAdmissionRetirementReason::Superseded,
+        )
+        .await
+        .expect("retire lower generation")
+        .expect("record retired lower generation");
+    let second = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-b",
+            "request-b",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record highest generation");
+    sqlx::query("DELETE FROM goal_owner_admissions WHERE thread_id = ? AND generation = ?")
+        .bind(thread_id.to_string())
+        .bind(second.authority.generation)
+        .execute(store.pool.as_ref())
+        .await
+        .expect("delete highest admission while lower history remains");
+    let highest_history = sqlx::query_scalar::<_, i64>(
+        "SELECT MAX(generation) FROM goal_owner_admission_origins WHERE thread_id = ?",
+    )
+    .bind(thread_id.to_string())
+    .fetch_one(store.pool.as_ref())
+    .await
+    .expect("read preserved highest origin generation");
+    assert_eq!(highest_history, second.authority.generation);
+
+    let third = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-c",
+            "request-c",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("allocate after preserved origin history");
+    assert_eq!(third.authority.generation, 3);
+}
+
+#[tokio::test]
+async fn origin_only_history_sets_the_next_admission_generation() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    insert_origin_history_only(store, thread_id, "request-history", 7).await;
+
+    let record = store
+        .observe_denial(&observation(
+            thread_id,
+            "goal-current",
+            "request-current",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("allocate after origin-only history");
+    assert_eq!(record.authority.generation, 8);
+}
+
+#[tokio::test]
+async fn origin_history_generation_overflow_fails_closed() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    insert_origin_history_only(store, thread_id, "request-overflow", i64::MAX).await;
+
+    assert!(
+        store
+            .observe_denial(&observation(
+                thread_id,
+                "goal-current",
+                "request-current",
+                Utc::now(),
+                GoalOwnerAdmissionPhase::Pending,
+            ))
+            .await
+            .is_err()
+    );
+    let admissions = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM goal_owner_admissions WHERE thread_id = ?",
+    )
+    .bind(thread_id.to_string())
+    .fetch_one(store.pool.as_ref())
+    .await
+    .expect("count failed allocation admissions");
+    let chains = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM goal_owner_admission_goal_chains WHERE thread_id = ?",
+    )
+    .bind(thread_id.to_string())
+    .fetch_one(store.pool.as_ref())
+    .await
+    .expect("count failed allocation chains");
+    assert_eq!(admissions, 0);
+    assert_eq!(chains, 0);
 }
 
 #[test]
