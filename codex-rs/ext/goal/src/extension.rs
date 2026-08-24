@@ -29,6 +29,7 @@ use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
 use codex_otel::MetricsClient;
 use codex_protocol::ThreadId;
+use codex_protocol::error::CodexErrKind;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -333,7 +334,10 @@ where
                 return;
             };
 
-            if matches!(input.error, CodexErrorInfo::UsageLimitExceeded)
+            let exact_retryable_usage_limit =
+                matches!(&input.error, CodexErrorInfo::UsageLimitExceeded)
+                    && input.error_kind == Some(CodexErrKind::UsageLimitReached);
+            if exact_retryable_usage_limit
                 && codex_core::diagnostic_flags::goal_owner_continuity_enabled()
             {
                 match runtime
@@ -362,13 +366,20 @@ where
                 return;
             }
 
-            let reason = match input.error {
-                CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
-                // The turn has ended because the error was non-retryable or its
-                // retries were exhausted. Block the goal to prevent automatic
-                // continuation from looping and consuming tokens, as can happen
-                // with compaction errors.
-                _ => ActiveGoalStopReason::TurnError,
+            // A protocol `UsageLimitExceeded` is also used for permanent provider denials.
+            // Only the exact source `UsageLimitReached` class is eligible for continuation;
+            // an unknown source remains non-continuing, while explicit permanent denials block
+            // the goal rather than presenting as a retryable usage window.
+            let permanent_provider_denial = matches!(
+                input.error_kind,
+                Some(CodexErrKind::QuotaExceeded | CodexErrKind::UsageNotIncluded)
+            );
+            let reason = if permanent_provider_denial {
+                ActiveGoalStopReason::TurnError
+            } else if matches!(&input.error, CodexErrorInfo::UsageLimitExceeded) {
+                ActiveGoalStopReason::UsageLimit
+            } else {
+                ActiveGoalStopReason::TurnError
             };
             if let Err(err) = runtime
                 .stop_active_goal_for_turn(input.turn_id, reason)

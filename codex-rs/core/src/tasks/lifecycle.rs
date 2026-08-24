@@ -1,5 +1,6 @@
 use codex_extension_api::ExtensionData;
 use codex_extension_api::RateLimitDomain;
+use codex_protocol::error::CodexErrKind;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
@@ -85,7 +86,12 @@ impl Session {
         turn_context: &TurnContext,
         error: CodexErrorInfo,
     ) {
-        self.emit_turn_error_lifecycle_with_rate_limit_delay(turn_context, error, None)
+        self.emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
+            turn_context,
+            error,
+            None,
+            None,
+        )
             .await;
     }
 
@@ -93,6 +99,22 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         error: CodexErrorInfo,
+        rate_limit_retry_after: Option<std::time::Duration>,
+    ) {
+        self.emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
+            turn_context,
+            error,
+            None,
+            rate_limit_retry_after,
+        )
+        .await;
+    }
+
+    pub(crate) async fn emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
+        &self,
+        turn_context: &TurnContext,
+        error: CodexErrorInfo,
+        error_kind: Option<CodexErrKind>,
         rate_limit_retry_after: Option<std::time::Duration>,
     ) {
         let rate_limit_domain = if matches!(&error, CodexErrorInfo::UsageLimitExceeded) {
@@ -122,6 +144,7 @@ impl Session {
                 .on_turn_error(codex_extension_api::TurnErrorInput {
                     turn_id: turn_context.sub_id.as_str(),
                     error: error.clone(),
+                    error_kind,
                     rate_limit_retry_after,
                     session_store: &self.services.session_extension_data,
                     thread_store: &self.services.thread_extension_data,

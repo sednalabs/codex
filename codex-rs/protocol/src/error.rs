@@ -355,6 +355,11 @@ impl CodexErr {
         &self.details
     }
 
+    /// Returns the original semantic error class without exposing provider payloads.
+    pub fn kind(&self) -> CodexErrKind {
+        self.into()
+    }
+
     pub fn is_retryable(&self) -> bool {
         match self.details() {
             CodexErrorDetails::TurnAborted
