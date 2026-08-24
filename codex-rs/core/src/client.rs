@@ -119,10 +119,10 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::feedback_tags;
+use crate::model_request_admission::InferenceRequestKind;
 use crate::model_request_admission::ModelRequestAdmissionBroker;
 use crate::model_request_admission::ModelRequestAdmissionDecision;
 use crate::model_request_admission::ModelRequestIdentity;
-use crate::model_request_admission::ModelRequestKind;
 use crate::model_request_admission::ModelRequestLeaseGuard;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::util::emit_feedback_auth_recovery_tags;
@@ -211,6 +211,8 @@ struct ModelClientState {
     thread_id: ThreadId,
     _installation_id: String,
     provider: SharedModelProvider,
+    configured_provider_key: String,
+    configured_requested_model: Option<String>,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
     originator: String,
@@ -443,6 +445,8 @@ impl ModelClient {
         thread_id: ThreadId,
         installation_id: String,
         provider_info: ModelProviderInfo,
+        configured_provider_key: String,
+        configured_requested_model: Option<String>,
         session_source: SessionSource,
         state_db: Option<StateDbHandle>,
         originator: String,
@@ -468,6 +472,8 @@ impl ModelClient {
                 thread_id,
                 _installation_id: installation_id,
                 provider: model_provider,
+                configured_provider_key,
+                configured_requested_model,
                 auth_env_telemetry,
                 session_source,
                 originator,
@@ -503,26 +509,55 @@ impl ModelClient {
             .unwrap_or_else(|| responses_metadata.session_id.clone())
     }
 
-    async fn admit_request(
+    async fn admit_inference_request(
         &self,
-        kind: ModelRequestKind,
+        kind: InferenceRequestKind,
         model_info: &ModelInfo,
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<ModelRequestAdmissionDecision> {
         self.state
             .request_admission_broker
-            .admit(&ModelRequestIdentity::new(
-                self.state.thread_id,
-                responses_metadata.turn_id.clone(),
-                kind,
-                self.state.provider.info().name.clone(),
-                model_info.slug.clone(),
-                model_info.slug.clone(),
-                service_tier,
-                self.state.session_source.clone(),
-                /*parent_continuity_decision_id*/ None,
-            ))
+            .admit(
+                &ModelRequestIdentity::inference(
+                    self.state.thread_id,
+                    responses_metadata.turn_id.clone(),
+                    kind,
+                    self.state.configured_provider_key.clone(),
+                    self.state.configured_requested_model.clone(),
+                    self.state.provider.info().name.clone(),
+                    model_info.slug.clone(),
+                    service_tier,
+                    self.state.session_source.clone(),
+                    /*parent_continuity_decision_id*/ None,
+                    /*logical_request_id*/ None,
+                ),
+                /*continuation_authority*/ None,
+            )
+            .await
+    }
+
+    async fn admit_prewarm_request(
+        &self,
+        model_info: &ModelInfo,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> Result<ModelRequestAdmissionDecision> {
+        self.state
+            .request_admission_broker
+            .admit(
+                &ModelRequestIdentity::prewarm(
+                    self.state.thread_id,
+                    responses_metadata.turn_id.clone(),
+                    self.state.configured_provider_key.clone(),
+                    self.state.configured_requested_model.clone(),
+                    self.state.provider.info().name.clone(),
+                    model_info.slug.clone(),
+                    service_tier,
+                    self.state.session_source.clone(),
+                ),
+                /*continuation_authority*/ None,
+            )
             .await
     }
 
@@ -602,8 +637,8 @@ impl ModelClient {
             return Ok(Vec::new());
         }
         let admission = self
-            .admit_request(
-                ModelRequestKind::RemoteCompact,
+            .admit_inference_request(
+                InferenceRequestKind::RemoteCompact,
                 model_info,
                 settings.service_tier.clone(),
                 responses_metadata,
@@ -1875,12 +1910,7 @@ impl ModelClientSession {
         let disabled_trace = InferenceTraceContext::disabled();
         let admission = self
             .client
-            .admit_request(
-                ModelRequestKind::Prewarm,
-                model_info,
-                service_tier.clone(),
-                responses_metadata,
-            )
+            .admit_prewarm_request(model_info, service_tier.clone(), responses_metadata)
             .await?;
         match self
             .stream_responses_websocket(
@@ -1926,7 +1956,7 @@ impl ModelClientSession {
     /// fall back to the HTTP Responses API transport otherwise. The trace context may be enabled or
     /// disabled, but is always explicit so transport paths do not need separate trace/no-trace
     /// branches.
-    pub async fn stream(
+    pub(crate) async fn stream_inference(
         &mut self,
         prompt: &Prompt,
         model_info: &ModelInfo,
@@ -1936,11 +1966,11 @@ impl ModelClientSession {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
-        request_kind: ModelRequestKind,
+        request_kind: InferenceRequestKind,
     ) -> Result<ResponseStream> {
         let admission = self
             .client
-            .admit_request(
+            .admit_inference_request(
                 request_kind,
                 model_info,
                 service_tier.clone(),
@@ -1997,6 +2027,36 @@ impl ModelClientSession {
             admission.terminalize_if_unfinished().await;
         }
         result
+    }
+
+    /// Streams one ordinary inference request within the current turn.
+    ///
+    /// Ordinary callers cannot choose the internal prewarm transport kind;
+    /// `Prewarm` is reserved for the private `generate=false` warmup path.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn stream(
+        &mut self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+        inference_trace: &InferenceTraceContext,
+    ) -> Result<ResponseStream> {
+        self.stream_inference(
+            prompt,
+            model_info,
+            session_telemetry,
+            effort,
+            summary,
+            service_tier,
+            responses_metadata,
+            inference_trace,
+            InferenceRequestKind::Turn,
+        )
+        .await
     }
 
     /// Permanently disables WebSockets for this Codex session and resets WebSocket state.

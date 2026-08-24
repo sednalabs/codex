@@ -1180,6 +1180,8 @@ impl Session {
                     thread_id,
                     installation_id.clone(),
                     session_configuration.provider.clone(),
+                    config.model_provider_id.clone(),
+                    config.model.clone(),
                     session_configuration.session_source.clone(),
                     state_db_ctx.clone(),
                     session_configuration.originator.clone(),

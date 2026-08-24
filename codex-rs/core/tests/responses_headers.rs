@@ -127,6 +127,8 @@ async fn responses_stream_includes_subagent_header_on_review() {
         thread_id,
         TEST_INSTALLATION_ID.to_string(),
         provider.clone(),
+        "test-provider".to_string(),
+        None,
         session_source.clone(),
         /*state_db*/ None,
         "test_originator".to_string(),
@@ -162,7 +164,6 @@ async fn responses_stream_includes_subagent_header_on_review() {
             /*service_tier*/ None,
             &responses_metadata,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
-            codex_core::ModelRequestKind::Turn,
         )
         .await
         .expect("stream failed");
@@ -267,6 +268,8 @@ async fn responses_stream_includes_subagent_header_on_other() {
         thread_id,
         TEST_INSTALLATION_ID.to_string(),
         provider.clone(),
+        "test-provider".to_string(),
+        None,
         session_source.clone(),
         /*state_db*/ None,
         "test_originator".to_string(),
@@ -302,7 +305,6 @@ async fn responses_stream_includes_subagent_header_on_other() {
             /*service_tier*/ None,
             &responses_metadata,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
-            codex_core::ModelRequestKind::Turn,
         )
         .await
         .expect("stream failed");
@@ -392,6 +394,8 @@ async fn responses_respects_model_info_overrides_from_config() {
         thread_id,
         TEST_INSTALLATION_ID.to_string(),
         provider.clone(),
+        "test-provider".to_string(),
+        None,
         session_source.clone(),
         /*state_db*/ None,
         "test_originator".to_string(),
@@ -427,7 +431,6 @@ async fn responses_respects_model_info_overrides_from_config() {
             /*service_tier*/ None,
             &responses_metadata,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
-            codex_core::ModelRequestKind::Turn,
         )
         .await
         .expect("stream failed");

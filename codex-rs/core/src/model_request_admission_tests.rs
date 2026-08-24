@@ -4,24 +4,38 @@ use chrono::Duration;
 use codex_state::GoalOwnerAdmissionDenialClass;
 use codex_state::GoalOwnerAdmissionObservation;
 use codex_state::GoalOwnerAdmissionPhase;
+use codex_state::GoalOwnerAdmissionRecord;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use tempfile::TempDir;
 
-fn identity(thread_id: ThreadId, kind: ModelRequestKind) -> ModelRequestIdentity {
-    ModelRequestIdentity::new(
+const SUCCESSOR_TURN_ID: &str = "turn-successor";
+const SUCCESSOR_REQUEST_ID: &str = "successor-request";
+
+fn identity(thread_id: ThreadId, kind: InferenceRequestKind) -> ModelRequestIdentity {
+    identity_with(thread_id, kind, SUCCESSOR_TURN_ID, SUCCESSOR_REQUEST_ID)
+}
+
+fn identity_with(
+    thread_id: ThreadId,
+    kind: InferenceRequestKind,
+    turn_id: &str,
+    logical_request_id: &str,
+) -> ModelRequestIdentity {
+    ModelRequestIdentity::inference(
         thread_id,
-        Some("turn-1".to_string()),
+        Some(turn_id.to_string()),
         kind,
-        "test-provider".to_string(),
-        "requested-model".to_string(),
+        "configured-provider".to_string(),
+        Some("configured-model".to_string()),
+        "effective-provider".to_string(),
         "effective-model".to_string(),
         Some("priority".to_string()),
         SessionSource::Cli,
         None,
+        Some(logical_request_id.to_string()),
     )
 }
 
@@ -41,22 +55,39 @@ fn observation(
     origin_request_id: &str,
     phase: GoalOwnerAdmissionPhase,
     deadline_at: chrono::DateTime<Utc>,
+    kind: InferenceRequestKind,
 ) -> GoalOwnerAdmissionObservation {
     GoalOwnerAdmissionObservation {
         thread_id,
         goal_id: "goal-a".to_string(),
-        origin_turn_id: "turn-1".to_string(),
+        origin_turn_id: "denial-turn".to_string(),
         origin_request_id: origin_request_id.to_string(),
         denial_class: GoalOwnerAdmissionDenialClass::Capacity,
-        provider_id: Some("test-provider".to_string()),
-        requested_model: Some("requested-model".to_string()),
+        configured_provider_key: Some("configured-provider".to_string()),
+        requested_model: Some("configured-model".to_string()),
+        effective_provider_id: Some("effective-provider".to_string()),
         effective_model: Some("effective-model".to_string()),
+        intended_request_kind: kind.as_str().to_string(),
+        successor_turn_id: SUCCESSOR_TURN_ID.to_string(),
+        logical_successor_request_id: SUCCESSOR_REQUEST_ID.to_string(),
+        decision_id: Uuid::now_v7(),
         account_context_fingerprint: None,
         deadline_at,
         max_attempts: 2,
         requested_phase: phase,
         phase,
     }
+}
+
+async fn admit(
+    broker: &ModelRequestAdmissionBroker,
+    record: &GoalOwnerAdmissionRecord,
+    identity: &ModelRequestIdentity,
+) -> ModelRequestAdmissionDecision {
+    broker
+        .admit(identity, Some(&record.continuation_authority()))
+        .await
+        .expect("evaluate exact admission")
 }
 
 async fn fake_stream_request(
@@ -79,36 +110,39 @@ async fn fake_unary_compact_request(
 }
 
 #[tokio::test]
-async fn stream_and_unary_admission_decisions_prevent_unapproved_network_io() {
+async fn nonterminal_records_require_exact_authority_before_any_provider_call() {
     let (_home, state_db) = runtime().await;
     let broker = ModelRequestAdmissionBroker::new(Some(state_db));
+    let store = broker
+        .state_db
+        .as_ref()
+        .expect("state runtime")
+        .goal_owner_admissions();
     let now = Utc::now();
 
-    let cases = [
+    for (phase, deadline, name) in [
         (GoalOwnerAdmissionPhase::Dormant, now, "dormant"),
         (
             GoalOwnerAdmissionPhase::Pending,
             now + Duration::minutes(1),
             "deferred",
         ),
-    ];
-    for (index, (phase, deadline, name)) in cases.into_iter().enumerate() {
+    ] {
         let thread_id = ThreadId::new();
-        let state_db = broker.state_db.as_ref().expect("state runtime");
-        state_db
-            .goal_owner_admissions()
+        store
             .observe_denial(&observation(
                 thread_id,
-                &format!("request-{name}-{index}"),
+                name,
                 phase,
                 deadline,
+                InferenceRequestKind::Turn,
             ))
             .await
             .expect("record blocked admission");
         let decision = broker
-            .admit(&identity(thread_id, ModelRequestKind::Turn))
+            .admit(&identity(thread_id, InferenceRequestKind::Turn), None)
             .await
-            .expect("evaluate admission");
+            .expect("evaluate blocked admission");
         let calls = AtomicUsize::new(0);
         assert!(fake_stream_request(&decision, &calls).await.is_err());
         assert!(fake_unary_compact_request(&decision, &calls).await.is_err());
@@ -117,51 +151,7 @@ async fn stream_and_unary_admission_decisions_prevent_unapproved_network_io() {
 }
 
 #[tokio::test]
-async fn eligible_lease_allows_exactly_one_stream_or_unary_request() {
-    let (_home, state_db) = runtime().await;
-    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
-
-    for kind in [ModelRequestKind::Turn, ModelRequestKind::RemoteCompact] {
-        let thread_id = ThreadId::new();
-        broker
-            .state_db
-            .as_ref()
-            .expect("state runtime")
-            .goal_owner_admissions()
-            .observe_denial(&observation(
-                thread_id,
-                &format!("request-{kind:?}"),
-                GoalOwnerAdmissionPhase::Pending,
-                Utc::now() - Duration::seconds(1),
-            ))
-            .await
-            .expect("record eligible admission");
-        let decision = broker
-            .admit(&identity(thread_id, kind))
-            .await
-            .expect("acquire admission");
-        let calls = AtomicUsize::new(0);
-        if kind == ModelRequestKind::RemoteCompact {
-            fake_unary_compact_request(&decision, &calls)
-                .await
-                .expect("one unary request");
-        } else {
-            fake_stream_request(&decision, &calls)
-                .await
-                .expect("one stream request");
-        }
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(decision.begin_network_request().await.is_err());
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "second lease use opened I/O"
-        );
-    }
-}
-
-#[tokio::test]
-async fn exhausted_cancelled_and_uncertain_admissions_cause_zero_network_requests() {
+async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_request() {
     let (_home, state_db) = runtime().await;
     let broker = ModelRequestAdmissionBroker::new(Some(state_db));
     let store = broker
@@ -169,188 +159,135 @@ async fn exhausted_cancelled_and_uncertain_admissions_cause_zero_network_request
         .as_ref()
         .expect("state runtime")
         .goal_owner_admissions();
-
-    for (origin, terminal_outcome) in [
-        ("exhausted", GoalOwnerAdmissionTerminalOutcome::Exhausted),
-        ("uncertain", GoalOwnerAdmissionTerminalOutcome::Uncertain),
-    ] {
-        let thread_id = ThreadId::new();
-        let record = store
-            .observe_denial(&observation(
-                thread_id,
-                origin,
-                GoalOwnerAdmissionPhase::Pending,
-                Utc::now() - Duration::seconds(1),
-            ))
-            .await
-            .expect("record eligible admission");
-        let lease = store
-            .try_acquire(&record.authority, Utc::now())
-            .await
-            .expect("acquire admission")
-            .expect("eligible lease");
-        store
-            .finish(
-                &lease,
-                terminal_outcome,
-                if terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Uncertain {
-                    GoalOwnerAdmissionTerminalDisposition::ManualReview
-                } else {
-                    GoalOwnerAdmissionTerminalDisposition::None
-                },
-            )
-            .await
-            .expect("terminalize admission");
-        let decision = broker
-            .admit(&identity(thread_id, ModelRequestKind::Turn))
-            .await
-            .expect("read terminal admission");
-        let calls = AtomicUsize::new(0);
-        assert!(fake_stream_request(&decision, &calls).await.is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "{origin} made network I/O");
-    }
-
     let thread_id = ThreadId::new();
     let record = store
         .observe_denial(&observation(
             thread_id,
-            "in-flight",
+            "exact",
             GoalOwnerAdmissionPhase::Pending,
             Utc::now() - Duration::seconds(1),
+            InferenceRequestKind::Turn,
         ))
         .await
         .expect("record eligible admission");
-    let _lease = store
-        .try_acquire(&record.authority, Utc::now())
-        .await
-        .expect("acquire admission")
-        .expect("eligible lease");
-    let decision = broker
-        .admit(&identity(thread_id, ModelRequestKind::Turn))
-        .await
-        .expect("read in-flight admission");
-    let calls = AtomicUsize::new(0);
-    assert!(fake_stream_request(&decision, &calls).await.is_err());
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        0,
-        "in-flight made network I/O"
-    );
+    let authority = record.continuation_authority();
 
+    let wrong_kind = identity(thread_id, InferenceRequestKind::RemoteCompact);
+    let wrong_turn = identity_with(
+        thread_id,
+        InferenceRequestKind::Turn,
+        "unrelated-memory-or-review-turn",
+        SUCCESSOR_REQUEST_ID,
+    );
+    let wrong_request = identity_with(
+        thread_id,
+        InferenceRequestKind::Turn,
+        SUCCESSOR_TURN_ID,
+        "unrelated-logical-request",
+    );
+    let mut wrong_effective_provider = identity(thread_id, InferenceRequestKind::Turn);
+    wrong_effective_provider.effective_provider_id = "unrelated-fallback-provider".to_string();
+    let mut wrong_authority = authority.clone();
+    wrong_authority.decision_id = Uuid::now_v7();
+
+    for (identity, authority) in [
+        (identity(thread_id, InferenceRequestKind::Turn), None),
+        (wrong_kind, Some(authority.clone())),
+        (wrong_turn, Some(authority.clone())),
+        (wrong_request, Some(authority.clone())),
+        (wrong_effective_provider, Some(authority.clone())),
+        (
+            identity(thread_id, InferenceRequestKind::Turn),
+            Some(wrong_authority),
+        ),
+    ] {
+        let decision = broker
+            .admit(&identity, authority.as_ref())
+            .await
+            .expect("evaluate fenced admission");
+        let calls = AtomicUsize::new(0);
+        assert!(fake_stream_request(&decision, &calls).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "fenced request made I/O");
+    }
+
+    let decision = admit(
+        &broker,
+        &record,
+        &identity(thread_id, InferenceRequestKind::Turn),
+    )
+    .await;
+    let calls = AtomicUsize::new(0);
+    fake_stream_request(&decision, &calls)
+        .await
+        .expect("exact successor is admitted");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(decision.begin_network_request().await.is_err());
+}
+
+#[tokio::test]
+async fn cancellation_before_request_open_fence_causes_zero_physical_calls() {
+    let (_home, state_db) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
+    let store = broker
+        .state_db
+        .as_ref()
+        .expect("state runtime")
+        .goal_owner_admissions();
     let thread_id = ThreadId::new();
     let record = store
         .observe_denial(&observation(
             thread_id,
-            "cancelled",
+            "cancel-before-open",
             GoalOwnerAdmissionPhase::Pending,
-            Utc::now() + Duration::minutes(1),
+            Utc::now() - Duration::seconds(1),
+            InferenceRequestKind::Turn,
         ))
         .await
-        .expect("record cancellable admission");
+        .expect("record eligible admission");
+    let decision = admit(
+        &broker,
+        &record,
+        &identity(thread_id, InferenceRequestKind::Turn),
+    )
+    .await;
     store
         .cancel(
             &record.authority,
             GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
         )
         .await
-        .expect("cancel admission");
-    let decision = broker
-        .admit(&identity(thread_id, ModelRequestKind::Turn))
-        .await
-        .expect("read cancelled admission");
+        .expect("cancel acquired reservation");
     let calls = AtomicUsize::new(0);
-    assert!(fake_unary_compact_request(&decision, &calls).await.is_err());
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        0,
-        "cancelled admission made network I/O"
-    );
+    assert!(fake_stream_request(&decision, &calls).await.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
-async fn denial_and_ambiguous_drop_terminalize_without_automatic_replay() {
+async fn terminal_success_is_unrestricted_before_identity_matching() {
     let (_home, state_db) = runtime().await;
     let broker = ModelRequestAdmissionBroker::new(Some(state_db));
-
-    for (origin, drop_after_open) in [("denial", false), ("drop", true)] {
-        let thread_id = ThreadId::new();
-        let store = broker
-            .state_db
-            .as_ref()
-            .expect("state runtime")
-            .goal_owner_admissions();
-        store
-            .observe_denial(&observation(
-                thread_id,
-                origin,
-                GoalOwnerAdmissionPhase::Pending,
-                Utc::now() - Duration::seconds(1),
-            ))
-            .await
-            .expect("record eligible admission");
-        let decision = broker
-            .admit(&identity(thread_id, ModelRequestKind::Turn))
-            .await
-            .expect("acquire admission");
-        let calls = Arc::new(AtomicUsize::new(0));
-        let mut lease = decision.begin_network_request().await.expect("one request");
-        calls.fetch_add(1, Ordering::SeqCst);
-        if drop_after_open {
-            lease
-                .transport_lost()
-                .await
-                .expect("terminalize uncertainty");
-        } else {
-            lease
-                .provider_denied()
-                .await
-                .expect("record provider denial");
-        }
-        let replay = broker
-            .admit(&identity(thread_id, ModelRequestKind::Turn))
-            .await
-            .expect("read terminal admission");
-        assert!(matches!(replay, ModelRequestAdmissionDecision::Dormant));
-        assert!(replay.begin_network_request().await.is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "third request opened I/O");
-    }
-}
-
-#[tokio::test]
-async fn unrestricted_and_typed_prewarm_do_not_consume_goal_owner_admission() {
-    let (_home, state_db) = runtime().await;
-    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
-    let calls = AtomicUsize::new(0);
-
-    let unrestricted = broker
-        .admit(&identity(ThreadId::new(), ModelRequestKind::Turn))
-        .await
-        .expect("absent admission is unrestricted");
-    fake_stream_request(&unrestricted, &calls)
-        .await
-        .expect("unrestricted stream");
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-
-    let thread_id = ThreadId::new();
     let store = broker
         .state_db
         .as_ref()
         .expect("state runtime")
         .goal_owner_admissions();
+    let thread_id = ThreadId::new();
     let record = store
         .observe_denial(&observation(
             thread_id,
             "succeeded",
             GoalOwnerAdmissionPhase::Pending,
             Utc::now() - Duration::seconds(1),
+            InferenceRequestKind::Turn,
         ))
         .await
         .expect("record eligible admission");
     let lease = store
-        .try_acquire(&record.authority, Utc::now())
+        .try_acquire(&record.continuation_authority(), Utc::now())
         .await
         .expect("acquire admission")
         .expect("eligible lease");
+    assert!(store.open_lease(&lease).await.expect("open admission"));
     store
         .finish(
             &lease,
@@ -358,29 +295,79 @@ async fn unrestricted_and_typed_prewarm_do_not_consume_goal_owner_admission() {
             GoalOwnerAdmissionTerminalDisposition::None,
         )
         .await
-        .expect("record successful lease");
-    let succeeded = broker
-        .admit(&identity(thread_id, ModelRequestKind::RemoteCompact))
-        .await
-        .expect("succeeded record becomes unrestricted");
-    fake_unary_compact_request(&succeeded, &calls)
-        .await
-        .expect("unrestricted unary request after success");
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+        .expect("finish successful admission");
 
-    let prewarm_identity = identity(ThreadId::new(), ModelRequestKind::Prewarm);
-    assert!(!prewarm_identity.kind.is_inference());
-    let prewarm = broker
-        .admit(&prewarm_identity)
+    let mut later_identity = identity(thread_id, InferenceRequestKind::RemoteCompact);
+    later_identity.configured_provider_key = "different-provider-map-key".to_string();
+    later_identity.configured_requested_model = Some("different-configured-model".to_string());
+    later_identity.effective_provider_id = "fallback-provider".to_string();
+    later_identity.effective_model = "fallback-model".to_string();
+    let decision = broker
+        .admit(&later_identity, None)
         .await
-        .expect("typed prewarm exemption");
+        .expect("succeeded admission is unrestricted");
     assert!(matches!(
-        prewarm,
+        decision,
         ModelRequestAdmissionDecision::Unrestricted
     ));
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        2,
-        "prewarm was counted as inference"
+    let calls = AtomicUsize::new(0);
+    fake_unary_compact_request(&decision, &calls)
+        .await
+        .expect("unrestricted successor can call provider");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn identity_preserves_configured_and_effective_provider_model_values() {
+    let thread_id = ThreadId::new();
+    for (configured_provider_key, configured_model, effective_provider, effective_model) in [
+        ("openai", Some("gpt-5"), "openai", "gpt-5"),
+        ("custom-alias", Some("my-alias"), "gateway", "gpt-5.1"),
+        ("openai", Some("gpt-5.1"), "fallback-provider", "gpt-5"),
+    ] {
+        let identity = ModelRequestIdentity::inference(
+            thread_id,
+            Some(SUCCESSOR_TURN_ID.to_string()),
+            InferenceRequestKind::Turn,
+            configured_provider_key.to_string(),
+            configured_model.map(ToString::to_string),
+            effective_provider.to_string(),
+            effective_model.to_string(),
+            None,
+            SessionSource::Cli,
+            None,
+            Some(SUCCESSOR_REQUEST_ID.to_string()),
+        );
+        assert_eq!(identity.configured_provider_key, configured_provider_key);
+        assert_eq!(
+            identity.configured_requested_model.as_deref(),
+            configured_model
+        );
+        assert_eq!(identity.effective_provider_id, effective_provider);
+        assert_eq!(identity.effective_model, effective_model);
+    }
+}
+
+#[tokio::test]
+async fn private_typed_prewarm_bypasses_the_admission_ledger_only_for_generate_false() {
+    let (_home, state_db) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
+    let identity = ModelRequestIdentity::prewarm(
+        ThreadId::new(),
+        Some(SUCCESSOR_TURN_ID.to_string()),
+        "configured-provider".to_string(),
+        Some("configured-model".to_string()),
+        "effective-provider".to_string(),
+        "effective-model".to_string(),
+        None,
+        SessionSource::Cli,
     );
+    let decision = broker
+        .admit(&identity, None)
+        .await
+        .expect("typed prewarm is unrestricted");
+    assert!(matches!(
+        decision,
+        ModelRequestAdmissionDecision::Unrestricted
+    ));
 }

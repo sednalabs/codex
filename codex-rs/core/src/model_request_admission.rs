@@ -15,6 +15,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use codex_protocol::protocol::SessionSource;
+use codex_state::GoalOwnerAdmissionContinuationAuthority;
 use codex_state::GoalOwnerAdmissionLease;
 use codex_state::GoalOwnerAdmissionPhase;
 use codex_state::GoalOwnerAdmissionRecord;
@@ -28,23 +29,43 @@ use uuid::Uuid;
 
 use crate::StateDbHandle;
 
-/// The logical purpose of a Responses request.
-///
-/// `Prewarm` is the only non-inference kind. It corresponds to the v2
-/// websocket `generate=false` request and is intentionally exempt from the
-/// goal-owner admission ledger.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ModelRequestKind {
+pub(crate) enum InferenceRequestKind {
     Turn,
     LocalCompaction,
     RemoteCompactionV2,
     RemoteCompact,
+}
+
+impl InferenceRequestKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Turn => "turn",
+            Self::LocalCompaction => "local_compaction",
+            Self::RemoteCompactionV2 => "remote_compaction_v2",
+            Self::RemoteCompact => "remote_compact",
+        }
+    }
+}
+
+/// The internal transport purpose. `Prewarm` is intentionally not an
+/// inference kind and is only constructible inside the private warmup path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ModelRequestKind {
+    Inference(InferenceRequestKind),
     Prewarm,
 }
 
 impl ModelRequestKind {
     pub(crate) const fn is_inference(self) -> bool {
-        !matches!(self, Self::Prewarm)
+        matches!(self, Self::Inference(_))
+    }
+
+    const fn inference_kind(self) -> Option<InferenceRequestKind> {
+        match self {
+            Self::Inference(kind) => Some(kind),
+            Self::Prewarm => None,
+        }
     }
 }
 
@@ -59,8 +80,9 @@ pub(crate) struct ModelRequestIdentity {
     pub(crate) turn_id: Option<String>,
     pub(crate) logical_request_id: String,
     pub(crate) kind: ModelRequestKind,
-    pub(crate) provider_id: String,
-    pub(crate) requested_model: String,
+    pub(crate) configured_provider_key: String,
+    pub(crate) configured_requested_model: Option<String>,
+    pub(crate) effective_provider_id: String,
     pub(crate) effective_model: String,
     pub(crate) service_tier: Option<String>,
     pub(crate) session_source: SessionSource,
@@ -68,24 +90,83 @@ pub(crate) struct ModelRequestIdentity {
 }
 
 impl ModelRequestIdentity {
-    pub(crate) fn new(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn inference(
         thread_id: ThreadId,
         turn_id: Option<String>,
-        kind: ModelRequestKind,
-        provider_id: String,
-        requested_model: String,
+        kind: InferenceRequestKind,
+        configured_provider_key: String,
+        configured_requested_model: Option<String>,
+        effective_provider_id: String,
         effective_model: String,
         service_tier: Option<String>,
         session_source: SessionSource,
         parent_continuity_decision_id: Option<Uuid>,
+        logical_request_id: Option<String>,
+    ) -> Self {
+        Self::new(
+            thread_id,
+            turn_id,
+            ModelRequestKind::Inference(kind),
+            configured_provider_key,
+            configured_requested_model,
+            effective_provider_id,
+            effective_model,
+            service_tier,
+            session_source,
+            parent_continuity_decision_id,
+            logical_request_id,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prewarm(
+        thread_id: ThreadId,
+        turn_id: Option<String>,
+        configured_provider_key: String,
+        configured_requested_model: Option<String>,
+        effective_provider_id: String,
+        effective_model: String,
+        service_tier: Option<String>,
+        session_source: SessionSource,
+    ) -> Self {
+        Self::new(
+            thread_id,
+            turn_id,
+            ModelRequestKind::Prewarm,
+            configured_provider_key,
+            configured_requested_model,
+            effective_provider_id,
+            effective_model,
+            service_tier,
+            session_source,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        thread_id: ThreadId,
+        turn_id: Option<String>,
+        kind: ModelRequestKind,
+        configured_provider_key: String,
+        configured_requested_model: Option<String>,
+        effective_provider_id: String,
+        effective_model: String,
+        service_tier: Option<String>,
+        session_source: SessionSource,
+        parent_continuity_decision_id: Option<Uuid>,
+        logical_request_id: Option<String>,
     ) -> Self {
         Self {
             thread_id,
             turn_id,
-            logical_request_id: Uuid::now_v7().to_string(),
+            logical_request_id: logical_request_id.unwrap_or_else(|| Uuid::now_v7().to_string()),
             kind,
-            provider_id,
-            requested_model,
+            configured_provider_key,
+            configured_requested_model,
+            effective_provider_id,
             effective_model,
             service_tier,
             session_source,
@@ -118,16 +199,40 @@ impl ModelRequestAdmissionDecision {
         match self {
             Self::Unrestricted => Ok(ModelRequestLeaseGuard::unrestricted()),
             Self::Admitted(admitted) => {
+                {
+                    let mut lifecycle = admitted.lifecycle.lock().await;
+                    if lifecycle.opening || lifecycle.request_opened {
+                        return Err(CodexErr::Fatal(
+                            "refusing a second physical request for one goal-owner admission lease"
+                                .to_string(),
+                        ));
+                    }
+                    if lifecycle.terminalized {
+                        return Err(CodexErr::Fatal(
+                            "goal-owner admission lease is already terminal".to_string(),
+                        ));
+                    }
+                    lifecycle.opening = true;
+                }
+
+                let opened = admitted
+                    .store
+                    .open_lease(&admitted.lease)
+                    .await
+                    .map_err(storage_error)?;
                 let mut lifecycle = admitted.lifecycle.lock().await;
-                if lifecycle.request_opened {
+                lifecycle.opening = false;
+                if !opened {
+                    lifecycle.terminalized = true;
+                    lifecycle.stage = LeaseStage::CancelledBeforeAcknowledgement;
                     return Err(CodexErr::Fatal(
-                        "refusing a second physical request for one goal-owner admission lease"
+                        "goal-owner admission was cancelled before its request-open fence"
                             .to_string(),
                     ));
                 }
                 if lifecycle.terminalized {
                     return Err(CodexErr::Fatal(
-                        "goal-owner admission lease is already terminal".to_string(),
+                        "goal-owner admission lease was terminalized while opening".to_string(),
                     ));
                 }
                 lifecycle.request_opened = true;
@@ -138,22 +243,27 @@ impl ModelRequestAdmissionDecision {
         }
     }
 
-    /// Terminalize an acquired lease when setup fails before a stream/response
-    /// guard has taken ownership. The ledger has no "setup failed" outcome;
-    /// conservative uncertainty prevents an automatic replay.
+    /// Release an acquired pre-network lease when local setup fails. If the
+    /// request-open fence has already won, preserve conservative terminal
+    /// handling instead.
     pub(crate) async fn terminalize_if_unfinished(&self) {
         let Self::Admitted(admitted) = self else {
             return;
         };
-        if let Err(error) = admitted
-            .finish_if_unfinished(
-                LeaseStage::CancelledBeforeAcknowledgement,
-                GoalOwnerAdmissionTerminalOutcome::Uncertain,
-                GoalOwnerAdmissionTerminalDisposition::ManualReview,
-            )
-            .await
-        {
-            warn!(error = %error, lease_id = %admitted.lease.lease_id, "failed to conservatively terminalize a goal-owner admission lease");
+        let request_opened = admitted.lifecycle.lock().await.request_opened;
+        let result = if request_opened {
+            admitted
+                .finish_if_unfinished(
+                    LeaseStage::CancelledBeforeAcknowledgement,
+                    GoalOwnerAdmissionTerminalOutcome::Uncertain,
+                    GoalOwnerAdmissionTerminalDisposition::ManualReview,
+                )
+                .await
+        } else {
+            admitted.release_if_unopened().await
+        };
+        if let Err(error) = result {
+            warn!(error = %error, lease_id = %admitted.lease.lease_id, "failed to release or terminalize a goal-owner admission lease");
         }
     }
 
@@ -203,14 +313,16 @@ impl ModelRequestAdmissionBroker {
     pub(crate) async fn admit(
         &self,
         identity: &ModelRequestIdentity,
+        continuation_authority: Option<&GoalOwnerAdmissionContinuationAuthority>,
     ) -> Result<ModelRequestAdmissionDecision> {
         debug!(
             thread_id = %identity.thread_id,
             turn_id = ?identity.turn_id,
             logical_request_id = %identity.logical_request_id,
             request_kind = ?identity.kind,
-            provider_id = %identity.provider_id,
-            requested_model = %identity.requested_model,
+            configured_provider_key = %identity.configured_provider_key,
+            configured_requested_model = ?identity.configured_requested_model,
+            effective_provider_id = %identity.effective_provider_id,
             effective_model = %identity.effective_model,
             service_tier = ?identity.service_tier,
             session_source = %identity.session_source,
@@ -233,10 +345,25 @@ impl ModelRequestAdmissionBroker {
         let Some(record) = record else {
             return Ok(ModelRequestAdmissionDecision::Unrestricted);
         };
+
+        // A prior successful continuation no longer restricts the thread,
+        // regardless of later model/provider resolution.
+        if record.phase == GoalOwnerAdmissionPhase::Terminal {
+            return Ok(decision_for_record(&record, now));
+        }
         if !record_matches_identity(&record, identity) {
             // A continuation lease is scoped to the provider/model evidence
             // that produced the original denial. Missing or different
             // evidence is not permission to send a different request.
+            return Ok(ModelRequestAdmissionDecision::Dormant);
+        }
+
+        let Some(continuation_authority) = continuation_authority else {
+            return Ok(ModelRequestAdmissionDecision::Dormant);
+        };
+        if !continuation_matches_record(continuation_authority, &record)
+            || !continuation_matches_identity(continuation_authority, identity)
+        {
             return Ok(ModelRequestAdmissionDecision::Dormant);
         }
 
@@ -248,7 +375,7 @@ impl ModelRequestAdmissionBroker {
         }
 
         let lease = store
-            .try_acquire(&record.authority, now)
+            .try_acquire(continuation_authority, now)
             .await
             .map_err(storage_error)?;
         if let Some(lease) = lease {
@@ -283,9 +410,9 @@ fn decision_for_record(
     now: chrono::DateTime<Utc>,
 ) -> ModelRequestAdmissionDecision {
     match record.phase {
-        GoalOwnerAdmissionPhase::Dormant | GoalOwnerAdmissionPhase::InFlight => {
-            ModelRequestAdmissionDecision::Dormant
-        }
+        GoalOwnerAdmissionPhase::Dormant
+        | GoalOwnerAdmissionPhase::Acquired
+        | GoalOwnerAdmissionPhase::InFlight => ModelRequestAdmissionDecision::Dormant,
         GoalOwnerAdmissionPhase::Pending => {
             if record.deadline_at > now {
                 ModelRequestAdmissionDecision::Deferred
@@ -316,9 +443,30 @@ fn record_matches_identity(
     record: &GoalOwnerAdmissionRecord,
     identity: &ModelRequestIdentity,
 ) -> bool {
-    record.provider_id.as_deref() == Some(identity.provider_id.as_str())
-        && record.requested_model.as_deref() == Some(identity.requested_model.as_str())
+    record.configured_provider_key.as_deref() == Some(identity.configured_provider_key.as_str())
+        && record.requested_model == identity.configured_requested_model
+        && record.effective_provider_id.as_deref() == Some(identity.effective_provider_id.as_str())
         && record.effective_model.as_deref() == Some(identity.effective_model.as_str())
+}
+
+fn continuation_matches_record(
+    continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
+    record: &GoalOwnerAdmissionRecord,
+) -> bool {
+    continuation_authority == &record.continuation_authority()
+}
+
+fn continuation_matches_identity(
+    continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
+    identity: &ModelRequestIdentity,
+) -> bool {
+    continuation_authority.authority.thread_id == identity.thread_id
+        && identity.turn_id.as_deref() == Some(continuation_authority.successor_turn_id.as_str())
+        && identity
+            .kind
+            .inference_kind()
+            .is_some_and(|kind| continuation_authority.intended_request_kind == kind.as_str())
+        && continuation_authority.logical_successor_request_id == identity.logical_request_id
 }
 
 fn storage_error(error: anyhow::Error) -> CodexErr {
@@ -350,6 +498,29 @@ impl AdmittedModelRequest {
         }
         lifecycle.acknowledged = true;
         lifecycle.stage = LeaseStage::Acknowledged;
+        Ok(())
+    }
+
+    async fn release_if_unopened(&self) -> Result<()> {
+        {
+            let lifecycle = self.lifecycle.lock().await;
+            if lifecycle.request_opened || lifecycle.terminalized {
+                return Ok(());
+            }
+        }
+        let released = self
+            .store
+            .release_acquired_lease(&self.lease)
+            .await
+            .map_err(storage_error)?;
+        if !released {
+            return Err(CodexErr::Fatal(
+                "goal-owner admission reservation is no longer current".to_string(),
+            ));
+        }
+        let mut lifecycle = self.lifecycle.lock().await;
+        lifecycle.terminalized = true;
+        lifecycle.stage = LeaseStage::CancelledBeforeAcknowledgement;
         Ok(())
     }
 
@@ -405,6 +576,7 @@ enum LeaseStage {
 
 #[derive(Debug)]
 struct LeaseLifecycle {
+    opening: bool,
     request_opened: bool,
     acknowledged: bool,
     terminalized: bool,
@@ -414,6 +586,7 @@ struct LeaseLifecycle {
 impl Default for LeaseLifecycle {
     fn default() -> Self {
         Self {
+            opening: false,
             request_opened: false,
             acknowledged: false,
             terminalized: false,

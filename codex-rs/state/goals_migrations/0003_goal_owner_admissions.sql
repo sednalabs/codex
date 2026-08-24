@@ -11,9 +11,14 @@ CREATE TABLE goal_owner_admissions (
         'policy_denied',
         'authentication_denied'
     )),
-    provider_id TEXT CHECK(provider_id IS NULL OR length(provider_id) BETWEEN 1 AND 512),
+    configured_provider_key TEXT CHECK(configured_provider_key IS NULL OR length(configured_provider_key) BETWEEN 1 AND 512),
     requested_model TEXT CHECK(requested_model IS NULL OR length(requested_model) BETWEEN 1 AND 512),
+    effective_provider_id TEXT CHECK(effective_provider_id IS NULL OR length(effective_provider_id) BETWEEN 1 AND 512),
     effective_model TEXT CHECK(effective_model IS NULL OR length(effective_model) BETWEEN 1 AND 512),
+    intended_request_kind TEXT NOT NULL CHECK(length(intended_request_kind) BETWEEN 1 AND 512),
+    successor_turn_id TEXT NOT NULL CHECK(length(successor_turn_id) BETWEEN 1 AND 512),
+    logical_successor_request_id TEXT NOT NULL CHECK(length(logical_successor_request_id) BETWEEN 1 AND 512),
+    decision_id TEXT NOT NULL CHECK(length(decision_id) BETWEEN 1 AND 512),
     account_context_fingerprint TEXT CHECK(
         account_context_fingerprint IS NULL OR (
             length(account_context_fingerprint) = 64
@@ -25,7 +30,7 @@ CREATE TABLE goal_owner_admissions (
     max_attempts INTEGER NOT NULL CHECK(max_attempts >= 1),
     cancellation_epoch INTEGER NOT NULL DEFAULT 0 CHECK(cancellation_epoch >= 0),
     requested_phase TEXT NOT NULL CHECK(requested_phase IN ('dormant', 'pending')),
-    phase TEXT NOT NULL CHECK(phase IN ('dormant', 'pending', 'in_flight', 'terminal')),
+    phase TEXT NOT NULL CHECK(phase IN ('dormant', 'pending', 'acquired', 'in_flight', 'terminal')),
     terminal_outcome TEXT NOT NULL CHECK(terminal_outcome IN (
         'none',
         'succeeded',
@@ -50,7 +55,7 @@ CREATE TABLE goal_owner_admissions (
             AND terminal_outcome = 'none'
             AND lease_id IS NULL
             AND deferred_terminal_disposition = 'none')
-        OR (phase = 'in_flight'
+        OR (phase IN ('acquired', 'in_flight')
             AND terminal_outcome = 'none'
             AND lease_id IS NOT NULL
             AND attempts_started > 0
@@ -76,9 +81,14 @@ CREATE TABLE goal_owner_admission_origins (
     goal_id TEXT NOT NULL CHECK(length(goal_id) BETWEEN 1 AND 512),
     origin_turn_id TEXT NOT NULL CHECK(length(origin_turn_id) BETWEEN 1 AND 512),
     denial_class TEXT NOT NULL,
-    provider_id TEXT,
+    configured_provider_key TEXT,
     requested_model TEXT,
+    effective_provider_id TEXT,
     effective_model TEXT,
+    intended_request_kind TEXT NOT NULL,
+    successor_turn_id TEXT NOT NULL,
+    logical_successor_request_id TEXT NOT NULL,
+    decision_id TEXT NOT NULL,
     account_context_fingerprint TEXT,
     deadline_at_ms INTEGER NOT NULL,
     max_attempts INTEGER NOT NULL,
