@@ -3106,7 +3106,7 @@ impl App {
         }
 
         match app_server.thread_archive(thread_id).await {
-            Ok(()) => AppRunControl::Exit(ExitReason::ThreadRemoved),
+            Ok(()) => AppRunControl::Exit(ExitReason::Archived(thread_id)),
             Err(err) => {
                 self.chat_widget
                     .add_error_message(format!("Failed to archive current thread: {err}"));

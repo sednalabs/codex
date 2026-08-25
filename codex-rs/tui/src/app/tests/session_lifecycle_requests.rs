@@ -385,20 +385,29 @@ async fn removing_remote_thread_omits_disconnect_guidance() -> Result<()> {
         app.active_thread_id = Some(thread_id);
         app.chat_widget.handle_thread_session(resumed.session);
         let mut tui = crate::tui::test_support::make_test_tui()?;
+        let archived = matches!(&event, AppEvent::ArchiveCurrentThread);
         let AppRunControl::Exit(reason) = app.handle_event(&mut tui, &mut server, event).await?
         else {
             panic!("removing the current thread must exit");
         };
-        assert_matches!(reason, ExitReason::ThreadRemoved);
+        if archived {
+            assert_matches!(reason, ExitReason::Archived(id) if id == thread_id);
+        } else {
+            assert_matches!(reason, ExitReason::ThreadRemoved);
+        }
         let mut exit_info = app.exit_info(reason);
         exit_info.token_usage = TokenUsage {
             output_tokens: 2,
             total_tokens: 2,
             ..Default::default()
         };
+        let mut expected = vec!["Token usage: total=2 input=0 output=2".to_string()];
+        if archived {
+            expected.push(format!("Session archived: {thread_id}"));
+        }
         assert_eq!(
             exit_info.format_exit_messages(/*color_enabled*/ false),
-            vec!["Token usage: total=2 input=0 output=2",]
+            expected
         );
         server.shutdown().await?;
         proxy.await??;
@@ -544,6 +553,38 @@ async fn external_transport_registers_dynamic_tools_and_finds_task_mentions() ->
 
     restarted_app_server.shutdown().await?;
     restarted_proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn archive_current_thread_reports_success_only_after_archiving() -> Result<()> {
+    let (mut app, _codex_home) = make_history_test_app().await?;
+    let thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            &app.config.codex_home,
+            "2026-08-25T01-00-00",
+            "2026-08-25T01:00:00Z",
+            "archive me",
+            Some(&app.config.model_provider_id),
+            /*git_info*/ None,
+        )
+        .expect("create rollout"),
+    )?;
+    let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+
+    app.active_thread_id = Some(ThreadId::new());
+    assert_matches!(
+        app.archive_current_thread(&mut app_server).await,
+        AppRunControl::Continue
+    );
+
+    app.active_thread_id = Some(thread_id);
+    assert_matches!(
+        app.archive_current_thread(&mut app_server).await,
+        AppRunControl::Exit(ExitReason::Archived(archived_id)) if archived_id == thread_id
+    );
+
+    app_server.shutdown().await?;
     Ok(())
 }
 

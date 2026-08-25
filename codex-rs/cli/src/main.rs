@@ -790,9 +790,10 @@ fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
             eprintln!("ERROR: {message}");
             true
         }
-        ExitReason::UserRequested | ExitReason::TurnInterrupted | ExitReason::ThreadRemoved => {
-            false
-        }
+        ExitReason::UserRequested
+        | ExitReason::Archived(_)
+        | ExitReason::TurnInterrupted
+        | ExitReason::ThreadRemoved => false,
     };
 
     let update_action = exit_info.update_action;
@@ -3786,6 +3787,32 @@ mod tests {
                 "Token usage so far: total=2 input=0 output=2",
             ]
         );
+    }
+
+    #[test]
+    fn format_exit_messages_includes_session_id_without_resume_hint() {
+        let mut exit_info = sample_exit_info(
+            Some("123e4567-e89b-12d3-a456-426614174000"),
+            /*thread_name*/ None,
+        );
+        exit_info.token_usage = TokenUsage::default();
+        exit_info.resume_hint = None;
+        let lines = exit_info.format_exit_messages(/*color_enabled*/ false);
+        insta::assert_snapshot!(lines.join("\n"), @"Session ID: 123e4567-e89b-12d3-a456-426614174000");
+    }
+
+    #[test]
+    fn format_exit_messages_confirms_archive() {
+        let mut exit_info = sample_exit_info(
+            Some("123e4567-e89b-12d3-a456-426614174000"),
+            /*thread_name*/ None,
+        );
+        exit_info.exit_reason = ExitReason::Archived(exit_info.thread_id.unwrap());
+        let lines = exit_info.format_exit_messages(/*color_enabled*/ false);
+        insta::assert_snapshot!(lines.join("\n"), @"
+        Token usage: total=2 input=0 output=2
+        Session archived: 123e4567-e89b-12d3-a456-426614174000
+        ");
     }
 
     #[test]
