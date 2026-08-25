@@ -60,6 +60,56 @@ fn signed_jwt<T: DeserializeOwned>(token: &str) -> Result<(JwtHeader, T)> {
 }
 
 #[derive(Deserialize)]
+pub(crate) struct OidcClaims {
+    iss: String,
+    sub: String,
+    aud: OAuthResource,
+    azp: Option<String>,
+    exp: u64,
+}
+
+pub(crate) fn oidc_identity(
+    assertion: &str,
+    expected_issuer: &str,
+    expected_audience: &str,
+) -> Result<OidcClaims> {
+    let (_, claims): (_, OidcClaims) = signed_jwt(assertion)?;
+    if claims.iss != expected_issuer || claims.sub.trim().is_empty() {
+        bail!("OIDC identity assertion issuer or subject does not match the enterprise IdP");
+    }
+    let (audience_matches, multiple_audiences) = match &claims.aud {
+        OAuthResource::Single(value) => (value == expected_audience, false),
+        OAuthResource::Multiple(values) => (
+            values.iter().any(|value| value == expected_audience),
+            values.len() > 1,
+        ),
+    };
+    if !audience_matches
+        || claims
+            .azp
+            .as_deref()
+            .is_some_and(|party| party != expected_audience)
+        || multiple_audiences && claims.azp.as_deref() != Some(expected_audience)
+    {
+        bail!("OIDC identity assertion audience or authorized party does not match the IdP client");
+    }
+    Ok(claims)
+}
+
+pub fn validate_oidc_identity_assertion(
+    assertion: &str,
+    expected_issuer: &str,
+    expected_audience: &str,
+) -> Result<()> {
+    let claims = oidc_identity(assertion, expected_issuer, expected_audience)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    if claims.exp <= now {
+        bail!("OIDC identity assertion is expired");
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
 struct IdJagClaims {
     iss: String,
     sub: String,

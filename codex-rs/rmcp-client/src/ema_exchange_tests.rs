@@ -19,6 +19,7 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 use super::*;
+use crate::ema_claims::validate_oidc_identity_assertion;
 
 fn http_client() -> Arc<dyn HttpClient> {
     Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
@@ -346,6 +347,40 @@ fn signed_claims_and_resource_tokens_cannot_widen_authority() -> Result<()> {
         }
     );
     Ok(())
+}
+
+#[test]
+fn identity_and_credential_destinations_are_bound() {
+    for endpoint in [
+        "http://idp.example/token",
+        "https://user:pass@idp.example/token",
+        "https://idp.example/token#fragment",
+    ] {
+        assert!(
+            validate_ema_oauth_endpoint(endpoint, "IdP").is_err(),
+            "accepted {endpoint}"
+        );
+    }
+    let original = claims("https://idp.example", "idp-client", "https://mcp.example");
+    assert!(
+        validate_oidc_identity_assertion(&jwt(&original), "https://idp.example", "idp-client")
+            .is_ok()
+    );
+    for (field, value) in [
+        ("iss", json!("https://other.example")),
+        ("aud", json!(["idp-client", "other"])),
+        ("azp", json!("other")),
+        ("exp", json!(0)),
+        ("sub", json!("")),
+    ] {
+        let mut changed = original.clone();
+        changed[field] = value;
+        assert!(
+            validate_oidc_identity_assertion(&jwt(&changed), "https://idp.example", "idp-client")
+                .is_err(),
+            "accepted changed {field}"
+        );
+    }
 }
 
 #[tokio::test]

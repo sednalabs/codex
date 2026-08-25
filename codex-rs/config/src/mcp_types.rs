@@ -260,10 +260,13 @@ impl McpServerConfig {
         self.environment_id == DEFAULT_MCP_SERVER_ENVIRONMENT_ID
     }
 
-    /// Keeps local OAuth credentials compatible while isolating executor-owned servers.
+    /// Keeps local OAuth credentials compatible while reserving managed credential namespaces.
     pub fn oauth_credential_name<'a>(&self, server_name: &'a str) -> Cow<'a, str> {
         if self.is_local_environment() {
-            if server_name.starts_with("executor:") || server_name.starts_with("local:") {
+            if server_name.starts_with("executor:")
+                || server_name.starts_with("local:")
+                || server_name.starts_with("ema-idp:")
+            {
                 Cow::Owned(format!("local:{server_name}"))
             } else {
                 Cow::Borrowed(server_name)
