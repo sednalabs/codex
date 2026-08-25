@@ -22,6 +22,7 @@ use crate::tools::ToolFilter;
 use crate::tools::ToolInfo;
 use crate::tools::filter_tools;
 use crate::tools::normalize_tools_for_model_with_prefix;
+use assert_matches::assert_matches;
 use codex_config::AppToolApproval;
 use codex_config::Constrained;
 use codex_config::McpServerAuth;
@@ -4654,6 +4655,68 @@ async fn reconciliation_reuses_legacy_stdio_server_with_existing_protocol_marker
     let reconciled = reconcile_reusable_server(&previous, config, runtime_context).await;
 
     assert!(previous.shares_test_connection_with(&reconciled, "docs"));
+}
+
+#[tokio::test]
+async fn reconciliation_replaces_connection_when_auth_mode_changes() -> anyhow::Result<()> {
+    let environment_manager = Arc::new(environment_manager_without_environments());
+    environment_manager.upsert_environment(
+        "customer-executor".to_string(),
+        "ws://127.0.0.1:1".to_string(),
+        /*connect_timeout*/ None,
+    )?;
+    let runtime_context = McpRuntimeContext::new(environment_manager, PathBuf::from("/tmp"));
+    let codex_home = tempdir()?;
+    let mcp_config = crate::mcp::tests::test_mcp_config(codex_home.path().to_path_buf());
+    let [config, refreshed_config] = [McpServerAuth::OAuth, McpServerAuth::ChatGpt].map(|auth| {
+        let mut config = reusable_server_config("https://chatgpt.com/backend-api/ps/mcp");
+        config.environment_id = "customer-executor".to_string();
+        config.auth = auth;
+        crate::effective_mcp_servers_from_configured(
+            HashMap::from([("docs".to_string(), config)]),
+            &mcp_config,
+            /*auth*/ None,
+        )
+        .remove("docs")
+        .expect("configured server should survive auth projection")
+        .config()
+        .clone()
+    });
+    let previous = manager_with_reusable_ready_server(
+        &config,
+        &runtime_context,
+        vec![create_test_tool("docs", "search")],
+    )
+    .await;
+
+    let reconciled = reconcile_reusable_server(&previous, refreshed_config, runtime_context).await;
+    let outcome = reconciled
+        .servers
+        .get("docs")
+        .expect("refreshed server should exist")
+        .connection
+        .client()
+        .await;
+    assert_matches!(
+        outcome.err().expect("changed auth mode must be validated"),
+        StartupOutcomeError::Failed {
+            error,
+            is_authentication_required,
+        } => {
+            assert_eq!(
+                (error.as_str(), is_authentication_required),
+                (
+                    "executor-owned MCP server `docs` cannot use hosted ChatGPT authentication; configure executor-owned credentials instead",
+                    false,
+                )
+            );
+        }
+    );
+    assert_eq!(
+        model_tool_names(&reconciled.list_all_tools().await),
+        HashSet::new()
+    );
+    Ok(())
 }
 
 #[tokio::test]
