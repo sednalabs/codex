@@ -71,6 +71,16 @@ enum GoalDbCorruption {
         thread_id: String,
         generation: i64,
     },
+    SetGoalId {
+        thread_id: String,
+        generation: i64,
+        goal_id: String,
+    },
+    SetOriginRequestId {
+        thread_id: String,
+        generation: i64,
+        origin_request_id: String,
+    },
     SetAdmissionEffectiveModel {
         thread_id: String,
         generation: i64,
@@ -118,6 +128,36 @@ async fn inject_goal_db_corruption(sqlite: &crate::SqliteConfig, corruption: Goa
             .execute(&pool)
             .await
             .expect("inject missing admission origin");
+        }
+        GoalDbCorruption::SetGoalId {
+            thread_id,
+            generation,
+            goal_id,
+        } => {
+            sqlx::query(
+                "UPDATE goal_owner_admissions SET goal_id = ? WHERE thread_id = ? AND generation = ?",
+            )
+            .bind(goal_id)
+            .bind(thread_id)
+            .bind(generation)
+            .execute(&pool)
+            .await
+            .expect("inject wrong goal");
+        }
+        GoalDbCorruption::SetOriginRequestId {
+            thread_id,
+            generation,
+            origin_request_id,
+        } => {
+            sqlx::query(
+                "UPDATE goal_owner_admissions SET origin_request_id = ? WHERE thread_id = ? AND generation = ?",
+            )
+            .bind(origin_request_id)
+            .bind(thread_id)
+            .bind(generation)
+            .execute(&pool)
+            .await
+            .expect("inject mismatched origin request");
         }
         GoalDbCorruption::SetAdmissionEffectiveModel {
             thread_id,
@@ -507,7 +547,11 @@ async fn malformed_origin_history_fails_closed_before_replay() {
 
 #[tokio::test]
 async fn joined_reader_rejects_wrong_goal_with_a_valid_newer_goal_chain() {
-    let runtime = runtime().await;
+    let codex_home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("initialize state runtime");
     let store = runtime.goal_owner_admissions();
     let thread_id = ThreadId::new();
     let origin_a = observation(
@@ -539,15 +583,15 @@ async fn joined_reader_rejects_wrong_goal_with_a_valid_newer_goal_chain() {
         ))
         .await
         .expect("record newer goal and chain");
-    sqlx::query(
-        "UPDATE goal_owner_admissions SET goal_id = ? WHERE thread_id = ? AND generation = ?",
+    inject_goal_db_corruption(
+        &sqlite,
+        GoalDbCorruption::SetGoalId {
+            thread_id: thread_id.to_string(),
+            generation: first.authority.generation,
+            goal_id: newer.authority.goal_id.clone(),
+        },
     )
-    .bind(&newer.authority.goal_id)
-    .bind(thread_id.to_string())
-    .bind(first.authority.generation)
-    .execute(store.pool.as_ref())
-    .await
-    .expect("inject wrong goal with a valid newer chain");
+    .await;
 
     assert!(store.get_generation(&first.authority).await.is_err());
     assert!(store.observe_denial(&origin_a).await.is_err());
@@ -562,7 +606,11 @@ async fn joined_reader_rejects_wrong_goal_with_a_valid_newer_goal_chain() {
 
 #[tokio::test]
 async fn joined_reader_rejects_mismatched_origin_request_and_immutable_evidence() {
-    let runtime = runtime().await;
+    let codex_home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("initialize state runtime");
     let store = runtime.goal_owner_admissions();
     let origin_request_mismatch = store
         .observe_denial(&observation(
@@ -574,15 +622,15 @@ async fn joined_reader_rejects_mismatched_origin_request_and_immutable_evidence(
         ))
         .await
         .expect("record origin-request case");
-    sqlx::query(
-        "UPDATE goal_owner_admissions SET origin_request_id = ? WHERE thread_id = ? AND generation = ?",
+    inject_goal_db_corruption(
+        &sqlite,
+        GoalDbCorruption::SetOriginRequestId {
+            thread_id: origin_request_mismatch.authority.thread_id.to_string(),
+            generation: origin_request_mismatch.authority.generation,
+            origin_request_id: "request-mismatch".to_string(),
+        },
     )
-    .bind("request-mismatch")
-    .bind(origin_request_mismatch.authority.thread_id.to_string())
-    .bind(origin_request_mismatch.authority.generation)
-    .execute(store.pool.as_ref())
-    .await
-    .expect("inject mismatched origin request");
+    .await;
     assert!(
         store
             .get(origin_request_mismatch.authority.thread_id)
@@ -618,13 +666,18 @@ async fn joined_reader_rejects_mismatched_origin_request_and_immutable_evidence(
 }
 
 #[tokio::test]
-async fn foreign_key_off_runtime_fails_closed_for_missing_active_origin() {
+async fn isolated_corruption_injection_fails_closed_for_missing_active_origin() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
     let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
         .await
         .expect("initialize state runtime");
     let store = runtime.goal_owner_admissions();
+    let foreign_keys = sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
+        .fetch_one(store.pool.as_ref())
+        .await
+        .expect("read normal runtime foreign-key enforcement mode");
+    assert_eq!(foreign_keys, 1);
 
     let pending = store
         .observe_denial(&observation(
