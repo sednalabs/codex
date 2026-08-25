@@ -649,7 +649,8 @@ async fn provider_limit_owner_preservation_keeps_active_goal_dormant_without_eli
     let admitted = harness
         .runtime_handle()
         .preserve_active_goal_after_provider_limit("turn-1", None)
-        .await?;
+        .await
+        .map_err(anyhow::Error::msg)?;
     assert!(
         !admitted,
         "unknown provider eligibility must remain dormant"
@@ -703,7 +704,8 @@ async fn provider_limit_continuation_admits_one_bounded_attempt_and_blocks_retri
         harness
             .runtime_handle()
             .preserve_active_goal_after_provider_limit("turn-1", Some(Duration::from_secs(1)))
-            .await?
+            .await
+            .map_err(anyhow::Error::msg)?
     );
     harness
         .abort_turn("turn-1", TurnAbortReason::Replaced)
@@ -712,7 +714,8 @@ async fn provider_limit_continuation_admits_one_bounded_attempt_and_blocks_retri
         !harness
             .runtime_handle()
             .preserve_active_goal_after_provider_limit("turn-1", Some(Duration::from_secs(1)))
-            .await?
+            .await
+            .map_err(anyhow::Error::msg)?
     );
     assert!(
         runtime
@@ -752,7 +755,8 @@ async fn explicit_abort_cancels_provider_continuation_without_clearing_work_gate
         harness
             .runtime_handle()
             .preserve_active_goal_after_provider_limit("turn-1", Some(Duration::from_secs(60)))
-            .await?
+            .await
+            .map_err(anyhow::Error::msg)?
     );
 
     harness.interrupt_thread().await;
@@ -1349,6 +1353,7 @@ fn tool_names(tools: &[Arc<dyn ToolExecutor<ToolCall>>]) -> Vec<String> {
 
 struct GoalExtensionHarness {
     registry: codex_extension_api::ExtensionRegistry<()>,
+    thread_id: ThreadId,
     session_store: ExtensionData,
     thread_store: ExtensionData,
     goal_service: Arc<GoalService>,
@@ -1391,6 +1396,7 @@ impl GoalExtensionHarness {
         }
         Ok(Self {
             registry,
+            thread_id,
             session_store,
             thread_store,
             goal_service,
