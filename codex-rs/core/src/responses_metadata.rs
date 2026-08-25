@@ -6,6 +6,7 @@ use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
 use codex_analytics::CompactionStrategy;
 use codex_analytics::CompactionTrigger;
+use codex_git_utils::SanitizedGitUrl;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -163,7 +164,7 @@ impl CodexResponsesRequestKind {
 #[derive(Clone, Debug, Serialize, Default)]
 pub(crate) struct TurnMetadataWorkspace {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) associated_remote_urls: Option<BTreeMap<String, String>>,
+    pub(crate) associated_remote_urls: Option<BTreeMap<String, SanitizedGitUrl>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) latest_git_commit_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

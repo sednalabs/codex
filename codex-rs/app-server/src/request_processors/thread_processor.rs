@@ -17,6 +17,7 @@ use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadSectionMoveResponse;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ThreadIdleCause;
+use codex_protocol::SanitizedGitUrl;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::ClientMcpExtensions;
@@ -1901,16 +1902,25 @@ impl ThreadRequestProcessor {
                         return Err(invalid_request("gitInfo must include at least one field"));
                     }
 
+                    let origin_url =
+                        Self::normalize_thread_metadata_git_field(origin_url, "gitInfo.originUrl")?;
+                    let origin_url = match origin_url {
+                        Some(Some(origin_url)) => {
+                            Some(Some(SanitizedGitUrl::try_from(origin_url).map_err(
+                                |_| invalid_request("gitInfo.originUrl must be a valid Git remote"),
+                            )?))
+                        }
+                        Some(None) => Some(None),
+                        None => None,
+                    };
+
                     Ok(StoreGitInfoPatch {
                         sha: Self::normalize_thread_metadata_git_field(sha, "gitInfo.sha")?,
                         branch: Self::normalize_thread_metadata_git_field(
                             branch,
                             "gitInfo.branch",
                         )?,
-                        origin_url: Self::normalize_thread_metadata_git_field(
-                            origin_url,
-                            "gitInfo.originUrl",
-                        )?,
+                        origin_url,
                     })
                 },
             )
@@ -5840,7 +5850,7 @@ pub(crate) fn thread_from_stored_thread(
     let git_info = thread.git_info.map(|info| ApiGitInfo {
         sha: info.commit_hash.map(|sha| sha.0),
         branch: info.branch,
-        origin_url: info.repository_url,
+        origin_url: info.repository_url.map(String::from),
     });
     let cwd = AbsolutePathBuf::relative_to_current_dir(path_utils::normalize_for_native_workdir(
         thread.cwd,
@@ -5916,7 +5926,7 @@ fn summary_from_stored_thread(
     let git_info = thread.git_info.map(|git| ConversationGitInfo {
         sha: git.commit_hash.map(|sha| sha.0),
         branch: git.branch,
-        origin_url: git.repository_url,
+        origin_url: git.repository_url.map(String::from),
     });
     ConversationSummary {
         conversation_id: thread.thread_id,
@@ -6016,7 +6026,7 @@ fn summary_from_thread_metadata(metadata: &ThreadMetadata) -> ConversationSummar
         metadata.agent_role.clone(),
         metadata.git_sha.clone(),
         metadata.git_branch.clone(),
-        metadata.git_origin_url.clone(),
+        metadata.git_origin_url.clone().map(String::from),
     )
 }
 

@@ -25,6 +25,7 @@ use crate::responses_metadata::subagent_header_value;
 use crate::responses_metadata::subagent_metadata_kind;
 use crate::sandbox_tags::permission_profile_policy_tag;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
+use codex_git_utils::SanitizedGitUrl;
 use codex_git_utils::get_git_remote_urls_assume_git_repo;
 use codex_git_utils::get_git_repo_root;
 use codex_git_utils::get_has_changes_in_repo;
@@ -51,7 +52,7 @@ pub(crate) struct McpTurnMetadataContext<'a> {
 
 #[derive(Clone, Debug, Default)]
 struct WorkspaceGitMetadata {
-    associated_remote_urls: Option<BTreeMap<String, String>>,
+    associated_remote_urls: Option<BTreeMap<String, SanitizedGitUrl>>,
     latest_git_commit_hash: Option<String>,
     has_changes: Option<bool>,
 }
