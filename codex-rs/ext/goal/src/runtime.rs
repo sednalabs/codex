@@ -635,20 +635,21 @@ impl GoalRuntimeHandle {
             .start_if_idle(|_| Vec::new(), /*goal_continuation*/ true)
             .await?
         {
-            let mut state = self
-                .inner
-                .provider_continuation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state
-                .pending
-                .as_ref()
-                .is_some_and(|pending| pending.goal_id == eligible_goal_id)
             {
-                state.pending = None;
+                let mut state = self
+                    .inner
+                    .provider_continuation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.goal_id == eligible_goal_id)
+                {
+                    state.pending = None;
+                }
+                state.blocked = false;
             }
-            state.blocked = false;
-            drop(state);
             self.inner
                 .state_dbs
                 .thread_goals()
