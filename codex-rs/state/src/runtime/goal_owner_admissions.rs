@@ -35,7 +35,7 @@ macro_rules! admission_enum {
     };
 }
 
-/// Exact provider denial recorded before a goal owner may attempt a retry.
+// Exact provider denial recorded before a goal owner may attempt a retry.
 admission_enum!(GoalOwnerAdmissionDenialClass {
     Capacity => "capacity",
     RateLimited => "rate_limited",
@@ -61,14 +61,14 @@ admission_enum!(GoalOwnerAdmissionTerminalOutcome {
     Uncertain => "uncertain",
 });
 
-/// Bounded instruction for a terminal admission that must remain deferred.
+// Bounded instruction for a terminal admission that must remain deferred.
 admission_enum!(GoalOwnerAdmissionTerminalDisposition {
     None => "none",
     AwaitUserTurn => "await_user_turn",
     ManualReview => "manual_review",
 });
 
-/// Reason an admission was explicitly retired without erasing physical evidence.
+// Reason an admission was explicitly retired without erasing physical evidence.
 admission_enum!(GoalOwnerAdmissionRetirementReason {
     Superseded => "superseded",
     UserRecovery => "user_recovery",
@@ -264,11 +264,9 @@ impl GoalOwnerAdmissionStore {
     pub(crate) async fn recover_in_flight_on_open(pool: &SqlitePool) -> anyhow::Result<()> {
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
-        let rows = sqlx::query(&format!(
-            "{ADMISSION_SELECT} WHERE (admission.phase = 'acquired' AND admission.retired_at_ms IS NULL) OR admission.phase = 'in_flight'"
-        ))
-        .fetch_all(&mut *transaction)
-        .await?;
+        let rows = recoverable_admissions_query()
+            .fetch_all(&mut *transaction)
+            .await?;
         for row in rows {
             record_from_row(&row)?;
         }
@@ -968,7 +966,8 @@ WHERE thread_id = ?
     }
 }
 
-const ADMISSION_SELECT: &str = r#"
+macro_rules! admission_select_query {
+    ($suffix:literal) => { sqlx::query(concat!(r#"
 SELECT
     admission.thread_id AS admission_thread_id,
     admission.goal_id AS admission_goal_id,
@@ -1030,7 +1029,13 @@ LEFT JOIN goal_owner_admission_origins AS origin
  AND origin.generation = admission.generation
 LEFT JOIN goal_owner_admission_goal_chains AS chain
   ON chain.thread_id = admission.thread_id AND chain.goal_id = admission.goal_id
-"#;
+"#, $suffix))
+    };
+}
+
+fn recoverable_admissions_query() -> sqlx::query::Query<'static, Sqlite, sqlx::sqlite::SqliteArguments> {
+    admission_select_query!(" WHERE (admission.phase = 'acquired' AND admission.retired_at_ms IS NULL) OR admission.phase = 'in_flight'")
+}
 
 async fn ensure_goal_chain(
     transaction: &mut sqlx::Transaction<'_, Sqlite>,
@@ -1207,9 +1212,7 @@ async fn fetch_active_record<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let row = sqlx::query(&format!(
-        "{ADMISSION_SELECT} WHERE admission.thread_id = ? AND admission.retired_at_ms IS NULL"
-    ))
+    let row = admission_select_query!(" WHERE admission.thread_id = ? AND admission.retired_at_ms IS NULL")
     .bind(thread_id.to_string())
     .fetch_optional(executor)
     .await?;
@@ -1224,9 +1227,7 @@ async fn fetch_record_by_generation<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let row = sqlx::query(&format!(
-        "{ADMISSION_SELECT} WHERE admission.thread_id = ? AND admission.generation = ?"
-    ))
+    let row = admission_select_query!(" WHERE admission.thread_id = ? AND admission.generation = ?")
     .bind(thread_id.to_string())
     .bind(generation)
     .fetch_optional(executor)
@@ -1241,9 +1242,7 @@ async fn fetch_record_for_authority<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let row = sqlx::query(&format!(
-        "{ADMISSION_SELECT} WHERE admission.thread_id = ? AND admission.generation = ?"
-    ))
+    let row = admission_select_query!(" WHERE admission.thread_id = ? AND admission.generation = ?")
     .bind(authority.thread_id.to_string())
     .bind(authority.generation)
     .fetch_optional(executor)
@@ -1284,7 +1283,7 @@ fn admission_integrity_error() -> anyhow::Error {
 }
 
 fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdmissionRecord> {
-    (|| {
+    (|| -> anyhow::Result<GoalOwnerAdmissionRecord> {
         let origin = GoalOwnerAdmissionOrigin {
             thread_id: ThreadId::try_from(row.try_get::<String, _>("origin_thread_id")?)?,
             generation: row.try_get("origin_generation")?,
