@@ -11,6 +11,7 @@ use codex_config::ConfigLoadOptions;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::load_config_toml_with_layer_stack;
 use codex_core::config::load_global_mcp_servers;
+use codex_core_plugins::installed_marketplaces::marketplace_install_root;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -37,14 +38,14 @@ const MANAGED_SCOPE: &str = "managed.read";
 const MOCK_ACCESS_TOKEN: &str = "mock-managed-access-token";
 const MOCK_REFRESH_TOKEN: &str = "mock-managed-refresh-token";
 
-struct CloudManagedMcpFixture {
+struct CloudManagedConfigFixture {
     server: MockServer,
     codex_home: TempDir,
     user_config: String,
     mcp_url: String,
 }
 
-impl CloudManagedMcpFixture {
+impl CloudManagedConfigFixture {
     async fn new() -> Result<Option<Self>> {
         let server = MockServer::start().await;
         let chatgpt_base_url = format!("{}/backend-api", server.uri());
@@ -67,7 +68,7 @@ impl CloudManagedMcpFixture {
                 != Some(chatgpt_base_url.as_str())
         {
             eprintln!(
-                "skipping cloud-managed MCP subprocess: host-managed authentication or backend routing prevents isolated mock credentials"
+                "skipping cloud-managed subprocess: host-managed authentication or backend routing prevents isolated mock credentials"
             );
             return Ok(None);
         }
@@ -90,7 +91,10 @@ impl CloudManagedMcpFixture {
              auth = \"oauth\"\n\
              scopes = [\"{MANAGED_SCOPE}\"]\n\n\
              [mcp_servers.{MANAGED_SERVER_NAME}.oauth]\n\
-             client_id = \"{MANAGED_CLIENT_ID}\"\n"
+             client_id = \"{MANAGED_CLIENT_ID}\"\n\n\
+             [marketplaces.managed]\n\
+             source_type = \"git\"\n\
+             source = \"https://github.com/owner/repo.git\"\n"
         );
         Mock::given(method("GET"))
             .and(path("/backend-api/wham/config/bundle"))
@@ -99,8 +103,8 @@ impl CloudManagedMcpFixture {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "config_toml": {
                     "enterprise_managed": [{
-                        "id": "managed-mcp-config",
-                        "name": "Managed MCP servers",
+                        "id": "managed-config",
+                        "name": "Managed resources",
                         "contents": managed_config,
                     }],
                 },
@@ -156,7 +160,7 @@ impl CloudManagedMcpFixture {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_and_get_resolve_cloud_managed_mcp_without_writing_user_config() -> Result<()> {
-    let Some(fixture) = CloudManagedMcpFixture::new().await? else {
+    let Some(fixture) = CloudManagedConfigFixture::new().await? else {
         return Ok(());
     };
 
@@ -187,7 +191,7 @@ async fn list_and_get_resolve_cloud_managed_mcp_without_writing_user_config() ->
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn login_and_logout_persist_only_cloud_managed_mcp_oauth_credentials() -> Result<()> {
-    let Some(fixture) = CloudManagedMcpFixture::new().await? else {
+    let Some(fixture) = CloudManagedConfigFixture::new().await? else {
         return Ok(());
     };
 
@@ -382,10 +386,28 @@ async fn login_and_logout_persist_only_cloud_managed_mcp_oauth_credentials() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn add_and_remove_do_not_copy_or_delete_cloud_managed_mcp_servers() -> Result<()> {
-    let Some(fixture) = CloudManagedMcpFixture::new().await? else {
+async fn add_and_remove_preserve_cloud_managed_resources() -> Result<()> {
+    let Some(fixture) = CloudManagedConfigFixture::new().await? else {
         return Ok(());
     };
+
+    let installed_root = marketplace_install_root(fixture.codex_home.path()).join("managed");
+    std::fs::create_dir_all(&installed_root)?;
+    let marker = installed_root.join("marker.txt");
+    std::fs::write(&marker, "installed")?;
+    // Exercise both the initial fetch and the cached bundle without a user entry.
+    for _ in 0..2 {
+        let output = fixture
+            .command(&["plugin", "marketplace", "remove", "managed"])?
+            .output()
+            .await?;
+        assert!(!output.status.success());
+        assert!(String::from_utf8(output.stderr)?.contains(
+            "marketplace `managed` is configured in enterprise-managed (Managed resources, managed-config); remove it from that configuration source instead"
+        ));
+        fixture.assert_user_config_unchanged()?;
+        assert_eq!(std::fs::read_to_string(&marker)?, "installed");
+    }
 
     fixture
         .output(&["mcp", "get", MANAGED_SERVER_NAME, "--json"])
