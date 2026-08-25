@@ -4488,35 +4488,6 @@ mod tests {
     }
 
     #[test]
-    fn app_server_code_mode_host_url_parses_independently_of_listen_transport() {
-        let app_server = app_server_from_args(
-            [
-                "codex",
-                "app-server",
-                "--code-mode-host",
-                "wss://example.test/code-mode",
-                "--listen",
-                "ws://127.0.0.1:4500",
-            ]
-            .as_ref(),
-        );
-
-        assert_eq!(
-            app_server.code_mode_host.code_mode_host,
-            Some(
-                url::Url::parse("wss://example.test/code-mode")
-                    .expect("test endpoint should parse")
-            )
-        );
-        assert_eq!(
-            app_server.listen,
-            codex_app_server::AppServerTransport::WebSocket {
-                bind_address: "127.0.0.1:4500".parse().expect("valid socket address"),
-            }
-        );
-    }
-
-    #[test]
     fn app_server_grpc_code_mode_host_url_parses_independently_of_listen_transport() {
         let app_server = app_server_from_args(
             [
@@ -4541,7 +4512,13 @@ mod tests {
         for endpoint in [
             "ftp://127.0.0.1:8765",
             "ws://",
+            "ws://127.0.0.1:8765",
+            "wss://example.test/code-mode",
+            "ws://alice:secret@example.test/code-mode",
+            "wss://alice:secret@example.test/code-mode",
             "wss://example.test/code-mode#fragment",
+            "http://",
+            "https://example.test/#fragment",
             "https://example.test/code-mode",
             "http://alice:secret@example.test",
             "https://alice:secret@example.test",

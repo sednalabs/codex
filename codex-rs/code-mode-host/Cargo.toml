@@ -18,7 +18,7 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-axum = { workspace = true, features = ["http1", "tokio", "ws"] }
+axum = { workspace = true, features = ["http1", "tokio"] }
 clap = { workspace = true, features = ["derive"] }
 codex-code-mode-protocol = { workspace = true }
 codex-code-mode-runtime = { workspace = true }
@@ -39,4 +39,3 @@ codex-code-mode = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
-tokio-tungstenite = { workspace = true }
