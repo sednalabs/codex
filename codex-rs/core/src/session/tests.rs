@@ -9824,8 +9824,7 @@ async fn realtime_conversation_list_voices_emits_builtin_list() {
     );
 }
 
-#[derive(Clone, Copy)]
-struct CompletingTask;
+struct CompletingTask(Option<async_channel::Sender<Vec<TurnInput>>>);
 
 impl SessionTask for CompletingTask {
     fn kind(&self) -> TaskKind {
@@ -9840,9 +9839,13 @@ impl SessionTask for CompletingTask {
         self: Arc<Self>,
         _session: Arc<SessionTaskContext>,
         _ctx: Arc<TurnContext>,
-        _input: Vec<TurnInput>,
-        _cancellation_token: CancellationToken,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
     ) -> crate::tasks::SessionTaskResult {
+        if let Some(sender) = self.0.as_ref() {
+            sender.send(input).await.expect("capture receiver open");
+            cancellation_token.cancelled().await;
+        }
         Ok(None)
     }
 }
@@ -10329,7 +10332,7 @@ async fn turn_complete_flushes_terminal_event_after_delivery() {
         }],
         client_id: None,
     }];
-    sess.spawn_task(Arc::clone(&tc), input, CompletingTask)
+    sess.spawn_task(Arc::clone(&tc), input, CompletingTask(None))
         .await;
 
     let event = recv_terminal_event(&rx, TerminalEventKind::TurnComplete).await;
@@ -10691,7 +10694,7 @@ async fn task_finish_emits_thread_idle_lifecycle_after_active_turn_clears() {
 
     let session = Arc::new(session);
     session
-        .spawn_task(Arc::new(turn_context), Vec::new(), CompletingTask)
+        .spawn_task(Arc::new(turn_context), Vec::new(), CompletingTask(None))
         .await;
 
     timeout(StdDuration::from_secs(2), idle_rx.recv())
@@ -10769,6 +10772,69 @@ async fn try_start_turn_if_idle_rejects_active_turn_without_injecting() {
     );
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn reserved_task_stages_automatic_input_with_empty_direct_input() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let item = user_message("synthetic idle input");
+    let turn_state = {
+        let _transition = sess.input_queue.lock_task_transition().await;
+        let mut active = sess.active_turn.lock().await;
+        Arc::clone(&active.get_or_insert_with(ActiveTurn::default).turn_state)
+    };
+    let (input_tx, input_rx) = async_channel::bounded(1);
+    sess.start_reserved_task(
+        Arc::clone(&tc),
+        Arc::clone(&turn_state),
+        vec![item.clone()],
+        CompletingTask(Some(input_tx)),
+    )
+    .await
+    .expect("reservation should publish");
+    assert!(
+        input_rx
+            .recv()
+            .await
+            .expect("captured direct input")
+            .is_empty()
+    );
+    {
+        let turn_state = turn_state.lock().await;
+        assert_eq!(
+            turn_state.pending_input.items,
+            vec![TurnInput::ResponseItem(item)]
+        );
+    }
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
+async fn stale_reserved_start_preserves_replacement_and_input() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let replacement = ActiveTurn::default();
+    let replacement_state = Arc::clone(&replacement.turn_state);
+    {
+        let _transition = sess.input_queue.lock_task_transition().await;
+        *sess.active_turn.lock().await = Some(replacement);
+    }
+    let stale_state = Arc::new(Mutex::new(TurnState::default()));
+    let input = vec![user_message("preserve stale input")];
+    let rejected = sess
+        .start_reserved_task(
+            Arc::clone(&tc),
+            Arc::clone(&stale_state),
+            input.clone(),
+            crate::tasks::RegularTask::new(),
+        )
+        .await
+        .expect_err("stale reservation should be rejected");
+    assert_eq!(input, rejected);
+    assert!(stale_state.lock().await.pending_input.items.is_empty());
+    let active = sess.active_turn.lock().await;
+    let active = active.as_ref().expect("replacement remains");
+    assert!(active.task.is_none());
+    assert!(Arc::ptr_eq(&active.turn_state, &replacement_state));
 }
 
 #[tokio::test]
