@@ -10505,6 +10505,7 @@ async fn turn_complete_flushes_terminal_event_after_delivery() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn turn_aborted_flushes_terminal_event_after_delivery() {
     let (mut sess, tc, rx) = make_session_and_context_with_rx().await;
+    let (ready_tx, ready_rx) = async_channel::bounded(1);
     let store = attach_in_memory_thread_store(
         Arc::get_mut(&mut sess).expect("session should be uniquely owned"),
     )
@@ -10517,15 +10518,11 @@ async fn turn_aborted_flushes_terminal_event_after_delivery() {
         }],
         client_id: None,
     }];
-    sess.spawn_task(
-        Arc::clone(&tc),
-        input,
-        NeverEndingTask {
-            kind: TaskKind::Regular,
-            listen_to_cancellation_token: true,
-        },
-    )
-    .await;
+    sess.spawn_task(Arc::clone(&tc), input, CompletingTask(Some(ready_tx)))
+        .await;
+    ready_rx.recv().await.expect("task run readiness");
+    let (_, _, phase, _) = active_task_details(&sess).await;
+    assert_eq!(RunningTaskPhase::Running, phase);
 
     let abort_task = tokio::spawn({
         let sess = Arc::clone(&sess);
@@ -10544,7 +10541,7 @@ async fn turn_aborted_flushes_terminal_event_after_delivery() {
     // 1. Task-runner flush after the task body observes cancellation.
     // 2. Interrupted-marker flush before TurnAborted so abort observers can reread it.
     // 3. Terminal-event flush after TurnAborted is appended.
-    let calls = wait_for_flush_count(&store, /*expected_flushes*/ 3).await;
+    let calls = store.calls().await;
     assert_eq!(3, calls.flush_thread);
 }
 
@@ -10646,6 +10643,7 @@ async fn abort_gracefully_emits_marker_before_turn_aborted() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    let (ready_tx, ready_rx) = async_channel::bounded(1);
     let input = vec![TurnInput::UserInput {
         content: vec![UserInput::Text {
             text: "hello".to_string(),
@@ -10653,15 +10651,11 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
         }],
         client_id: None,
     }];
-    sess.spawn_task(
-        Arc::clone(&tc),
-        input,
-        NeverEndingTask {
-            kind: TaskKind::Regular,
-            listen_to_cancellation_token: false,
-        },
-    )
-    .await;
+    sess.spawn_task(Arc::clone(&tc), input, CompletingTask(Some(ready_tx)))
+        .await;
+    ready_rx.recv().await.expect("task run readiness");
+    let (_, _, phase, _) = active_task_details(&sess).await;
+    assert_eq!(RunningTaskPhase::Running, phase);
 
     while rx.try_recv().is_ok() {}
 
@@ -10693,12 +10687,15 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
         .as_ref()
         .expect("running task")
         .identity;
+    let task_token = active_task_details(&sess).await.1;
     sess.on_task_finished(
         task_identity,
         Arc::clone(&tc),
         /*task_result*/ Ok(None),
     )
     .await;
+    task_token.cancel();
+    ready_rx.recv().await.expect_err("task should terminate");
 
     let history = sess.clone_history().await;
     let expected = ResponseItem::Message {
