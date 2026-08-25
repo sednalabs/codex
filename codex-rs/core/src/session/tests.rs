@@ -79,7 +79,10 @@ use tracing::Span;
 use crate::connectors::AppInfo;
 use crate::rollout::recorder::RolloutRecorder;
 use crate::state::ActiveTurn;
+use crate::state::RunningTaskPhase;
+use crate::state::TaskIdentity;
 use crate::state::TaskKind;
+use crate::state::TurnState;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskContext;
 use crate::tasks::UserShellCommandMode;
@@ -183,6 +186,7 @@ use opentelemetry_sdk::metrics::data::MetricData;
 use opentelemetry_sdk::metrics::data::ResourceMetrics;
 use std::path::Path;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tokio::time::timeout;
@@ -10007,17 +10011,23 @@ struct NeverEndingTask {
     listen_to_cancellation_token: bool,
 }
 
-async fn active_task_cancellation_token(sess: &Session) -> CancellationToken {
-    sess.active_turn
-        .lock()
-        .await
-        .as_ref()
-        .expect("active turn")
-        .task
-        .as_ref()
-        .expect("running task")
-        .cancellation_token
-        .clone()
+async fn active_task_details(
+    sess: &Session,
+) -> (
+    TaskIdentity,
+    CancellationToken,
+    RunningTaskPhase,
+    Arc<Mutex<TurnState>>,
+) {
+    let active = sess.active_turn.lock().await;
+    let active = active.as_ref().expect("active turn");
+    let task = active.task.as_ref().expect("running task");
+    (
+        task.identity,
+        task.cancellation_token.clone(),
+        task.phase,
+        Arc::clone(&active.turn_state),
+    )
 }
 
 async fn enqueue_test_sources(sess: &Session) {
@@ -10046,57 +10056,109 @@ async fn enqueue_test_sources(sess: &Session) {
 async fn task_input_transfer_preserves_or_commits_sources_at_atomic_boundaries() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     enqueue_test_sources(&sess).await;
-    let lifecycle = sess.input_queue.install_task_input_transfer_test_gate(0);
+    let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (started_tx, started_rx) = async_channel::bounded(1);
+    let task = || CountingTask(Arc::clone(&runs), started_tx.clone());
+    let mailbox = sess.input_queue.lock_mailbox_for_test().await;
     sess.start_task(
         Arc::clone(&tc),
-        Vec::new(),
-        NeverEndingTask {
-            kind: TaskKind::Regular,
-            listen_to_cancellation_token: true,
-        },
+        vec![TurnInput::UserInput {
+            content: vec![UserInput::Text {
+                text: "first".to_string(),
+                text_elements: Vec::new(),
+            }],
+            client_id: None,
+        }],
+        task(),
     )
     .await;
-    lifecycle.0.notified().await;
-    let cancellation_token = active_task_cancellation_token(&sess).await;
-    let before_commit = sess.input_queue.install_task_input_transfer_test_gate(0);
-    lifecycle.1.notify_one();
-    before_commit.0.notified().await;
-    cancellation_token.cancel();
+    let (first_identity, _, _, _) = active_task_details(&sess).await;
+    sess.input_queue
+        .wait_for_pending_turn_input_transfer_source(1)
+        .await;
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+    drop(mailbox);
     assert!(sess.input_queue.has_pending_mailbox_items().await);
     assert!(sess.input_queue.has_pending_terminal_completions().await);
-    let after_commit = sess.input_queue.install_task_input_transfer_test_gate(2);
-    sess.start_task(
-        Arc::clone(&tc),
-        Vec::new(),
-        NeverEndingTask {
-            kind: TaskKind::Regular,
-            listen_to_cancellation_token: true,
-        },
-    )
-    .await;
-    after_commit.0.notified().await;
-    let turn_state = Arc::clone(
-        &sess
-            .active_turn
-            .lock()
-            .await
-            .as_ref()
-            .expect("active turn")
-            .turn_state,
+    assert_eq!(
+        user_input_texts(sess.clone_history().await.raw_items())
+            .into_iter()
+            .filter(|text| *text == "first")
+            .count(),
+        1
     );
-    let pending = sess
-        .input_queue
-        .take_pending_input_for_turn_state(turn_state.as_ref())
+    let terminal = sess.input_queue.lock_terminal_for_test().await;
+    sess.start_task(Arc::clone(&tc), Vec::new(), task()).await;
+    sess.input_queue
+        .wait_for_pending_turn_input_transfer_source(2)
         .await;
+    sess.input_queue
+        .wait_for_pending_turn_input_transfer_source(3)
+        .await;
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+    drop(terminal);
+    assert!(sess.input_queue.has_pending_mailbox_items().await);
+    assert!(sess.input_queue.has_pending_terminal_completions().await);
+    assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+    sess.start_task(Arc::clone(&tc), Vec::new(), task()).await;
+    started_rx.recv().await.expect("successor task should run");
+    let (successor_identity, successor_token, phase, turn_state) = active_task_details(&sess).await;
+    assert_eq!(phase, RunningTaskPhase::Running);
     assert!(matches!(
-        pending.as_slice(),
+        sess.input_queue
+            .get_pending_input(&sess.active_turn)
+            .await
+            .as_slice(),
         [
             TurnInput::InterAgentCommunication(_),
             TurnInput::ResponseItem(_)
         ]
     ));
-    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+    assert!(!sess.input_queue.has_pending_mailbox_items().await);
+    assert!(!sess.input_queue.has_pending_terminal_completions().await);
+    sess.on_task_finished(first_identity, Arc::clone(&tc), Ok(None))
+        .await;
+    assert_eq!(
+        active_task_details(&sess).await.2,
+        RunningTaskPhase::Running
+    );
+    sess.on_task_finished(successor_identity, Arc::clone(&tc), Ok(None))
+        .await;
+    assert!(
+        sess.input_queue
+            .take_pending_input_for_turn_state(turn_state.as_ref())
+            .await
+            .is_empty()
+    );
+    successor_token.cancel();
+}
+
+struct CountingTask(
+    Arc<std::sync::atomic::AtomicUsize>,
+    async_channel::Sender<()>,
+);
+
+impl SessionTask for CountingTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+
+    fn span_name(&self) -> &'static str {
+        "session_task.counting"
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        _session: Arc<SessionTaskContext>,
+        _ctx: Arc<TurnContext>,
+        _input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> crate::tasks::SessionTaskResult {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.1.send(()).await.expect("start receiver open");
+        cancellation_token.cancelled().await;
+        Ok(None)
+    }
 }
 
 impl SessionTask for NeverEndingTask {

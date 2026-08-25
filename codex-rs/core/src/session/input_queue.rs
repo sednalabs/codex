@@ -43,9 +43,6 @@ pub(crate) struct TurnInputQueue {
     items: Vec<TurnInput>,
 }
 
-#[cfg(test)]
-pub(crate) type TaskInputTransferTestBarrier = Arc<(Notify, Notify)>;
-
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
@@ -59,7 +56,9 @@ pub(crate) struct InputQueue {
     #[cfg(test)]
     residency_submission_changed: Notify,
     #[cfg(test)]
-    task_input_transfer_test_gate: StdMutex<Option<(usize, TaskInputTransferTestBarrier)>>,
+    pending_turn_input_transfer_source_count: AtomicUsize,
+    #[cfg(test)]
+    pending_turn_input_transfer_waiting_for_source: Notify,
 }
 
 impl InputQueue {
@@ -79,54 +78,59 @@ impl InputQueue {
             #[cfg(test)]
             residency_submission_changed: Notify::new(),
             #[cfg(test)]
-            task_input_transfer_test_gate: StdMutex::new(None),
+            pending_turn_input_transfer_source_count: AtomicUsize::new(0),
+            #[cfg(test)]
+            pending_turn_input_transfer_waiting_for_source: Notify::new(),
         }
     }
 
     pub(crate) async fn lock_task_transition(&self) -> MutexGuard<'_, ()> {
         self.task_transition.lock().await
     }
-
     /// Lock mailbox before terminal; acquisition is non-consuming until commit.
+    #[expect(clippy::await_holding_invalid_type, reason = "atomic input transfer")]
     pub(crate) async fn pending_turn_input_transfer(&self) -> PendingTurnInputTransfer<'_> {
+        #[cfg(test)]
+        self.pending_turn_input_transfer_source_count
+            .fetch_add(1, Ordering::SeqCst);
+        #[cfg(test)]
+        self.pending_turn_input_transfer_waiting_for_source
+            .notify_one();
         let mailbox = self.mailbox_pending_mails.lock().await;
+        #[cfg(test)]
+        self.pending_turn_input_transfer_source_count
+            .fetch_add(1, Ordering::SeqCst);
+        #[cfg(test)]
+        self.pending_turn_input_transfer_waiting_for_source
+            .notify_one();
         let terminal = self.terminal_completions.lock().await;
         PendingTurnInputTransfer { mailbox, terminal }
     }
 
     #[cfg(test)]
-    pub(crate) fn install_task_input_transfer_test_gate(
+    pub(crate) async fn lock_terminal_for_test(
         &self,
-        steps_before_gate: usize,
-    ) -> TaskInputTransferTestBarrier {
-        let barrier = Arc::new((Notify::new(), Notify::new()));
-        *self
-            .task_input_transfer_test_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some((steps_before_gate, Arc::clone(&barrier)));
-        barrier
+    ) -> MutexGuard<'_, VecDeque<TerminalCompletionNotification>> {
+        self.terminal_completions.lock().await
     }
 
     #[cfg(test)]
-    pub(crate) async fn wait_for_task_input_transfer_test_gate(&self) {
-        let gate = {
-            let mut gate = self
-                .task_input_transfer_test_gate
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some((steps_before_gate, _)) = gate.as_mut() else {
-                return;
-            };
-            if *steps_before_gate > 0 {
-                *steps_before_gate -= 1;
-                return;
-            }
-            gate.take()
-        };
-        if let Some((_, barrier)) = gate {
-            barrier.0.notify_one();
-            barrier.1.notified().await;
+    pub(crate) async fn lock_mailbox_for_test(
+        &self,
+    ) -> MutexGuard<'_, VecDeque<InterAgentCommunication>> {
+        self.mailbox_pending_mails.lock().await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_pending_turn_input_transfer_source(&self, expected: usize) {
+        while self
+            .pending_turn_input_transfer_source_count
+            .load(Ordering::SeqCst)
+            < expected
+        {
+            self.pending_turn_input_transfer_waiting_for_source
+                .notified()
+                .await;
         }
     }
 
