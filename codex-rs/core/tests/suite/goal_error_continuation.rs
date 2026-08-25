@@ -326,9 +326,13 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         .await;
 
     let continuity = Arc::new(ContinuityFixture::default());
+    let thread_lifecycle_contributor: Arc<
+        dyn ThreadLifecycleContributor<codex_core::config::Config>,
+    > = continuity.clone();
+    let turn_lifecycle_contributor: Arc<dyn TurnLifecycleContributor> = continuity.clone();
     let mut extensions = ExtensionRegistryBuilder::<codex_core::config::Config>::new();
-    extensions.thread_lifecycle_contributor(Arc::clone(&continuity));
-    extensions.turn_lifecycle_contributor(Arc::clone(&continuity));
+    extensions.thread_lifecycle_contributor(thread_lifecycle_contributor);
+    extensions.turn_lifecycle_contributor(turn_lifecycle_contributor);
     let mut builder = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
