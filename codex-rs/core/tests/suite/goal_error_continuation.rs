@@ -34,6 +34,7 @@ use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -155,6 +156,11 @@ fn submit_user_turn(prompt: &str) -> Op {
 }
 
 fn body_contains(request: &wiremock::Request, text: &str) -> bool {
+    serde_json::from_slice::<Value>(&decoded_body(request))
+        .is_ok_and(|body| body.to_string().contains(text))
+}
+
+fn decoded_body(request: &wiremock::Request) -> Vec<u8> {
     let is_zstd = request
         .headers
         .get("content-encoding")
@@ -164,13 +170,19 @@ fn body_contains(request: &wiremock::Request, text: &str) -> bool {
                 .split(',')
                 .any(|entry| entry.trim().eq_ignore_ascii_case("zstd"))
         });
-    let body = if is_zstd {
+    if is_zstd {
         zstd::stream::decode_all(std::io::Cursor::new(&request.body))
             .expect("failed to decode zstd request body")
     } else {
         request.body.clone()
-    };
-    String::from_utf8_lossy(&body).contains(text)
+    }
+}
+
+fn request_has_input_type(request: &wiremock::Request, input_type: &str) -> bool {
+    serde_json::from_slice::<Value>(&decoded_body(request))
+        .ok()
+        .and_then(|body| body["input"].as_array().cloned())
+        .is_some_and(|items| items.iter().any(|item| item["type"] == input_type))
 }
 
 #[derive(Debug)]
@@ -286,7 +298,10 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
     .await;
     let sub_request = mount_response_once_match(
         &server,
-        |request: &wiremock::Request| body_contains(request, SUB_ORCHESTRATOR_TASK),
+        |request: &wiremock::Request| {
+            request_has_input_type(request, "agent_message")
+                && body_contains(request, SUB_ORCHESTRATOR_TASK)
+        },
         sse_response(sse(vec![
             ev_response_created("sub-live"),
             ev_assistant_message("sub-complete", "sub-orchestrator complete"),
@@ -359,6 +374,11 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         }
         sleep(Duration::from_millis(10)).await;
     }
+    assert_eq!(
+        1,
+        sub_request.requests().len(),
+        "one child initial delivery"
+    );
     orchestrator.submit(submit_user_turn(LIMIT_PROMPT)).await?;
     wait_for_event(
         &orchestrator,
@@ -410,10 +430,6 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
             .contains(&orchestrator_id),
         "owner thread identity must remain stable"
     );
-    assert!(
-        sub_request.requests().len() <= 1,
-        "nested child must not be replayed"
-    );
     let sub_thread_id = test
         .thread_manager
         .list_thread_ids()
@@ -421,13 +437,27 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         .into_iter()
         .find(|id| *id != root_thread_id && *id != orchestrator_id)
         .expect("nested descendant remains observable");
+    let child_body = sub_request.requests()[0].body_json();
+    let expected_child_thread_id = sub_thread_id.to_string();
     assert_eq!(
-        test.thread_manager
-            .get_thread(sub_thread_id)
-            .await?
-            .agent_status()
-            .await,
+        child_body
+            .pointer("/client_metadata/thread_id")
+            .and_then(Value::as_str),
+        Some(expected_child_thread_id.as_str())
+    );
+    let child_thread = test.thread_manager.get_thread(sub_thread_id).await?;
+    wait_for_event(&child_thread, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(
+        child_thread.agent_status().await,
         AgentStatus::Completed(Some("sub-orchestrator complete".to_string()))
+    );
+    assert_eq!(
+        1,
+        sub_request.requests().len(),
+        "nested child must not replay"
     );
     Ok(())
 }
