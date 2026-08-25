@@ -734,17 +734,14 @@ fn write_project_hooks(dot_codex: &Path) -> std::io::Result<()> {
 
 async fn install_user_prompt_test_hook(sess: &Session) {
     let config = sess.get_config().await;
-    let stack = config
-        .config_layer_stack
-        .with_user_config(
-            &config.codex_home.join(CONFIG_TOML_FILE),
-            toml::from_str(
-                r#"[hooks]
-UserPromptSubmit = [{ hooks = [{ type = "command", command = "true" }] }]"#,
-            )
-            .expect("test hook config"),
+    let stack = config.config_layer_stack.with_user_config(
+        &config.codex_home.join(CONFIG_TOML_FILE),
+        toml::from_str(
+            "[hooks]\nUserPromptSubmit = [{ hooks = [{ type = \"command\", command = \"true\" }] }]",
         )
-        .expect("test hook layer");
+        .expect("test hook config"),
+    )
+    .expect("test hook layer");
     sess.services.hooks.store(Arc::new(Hooks::new(HooksConfig {
         feature_enabled: true,
         bypass_hook_trust: true,
@@ -10893,15 +10890,13 @@ macro_rules! assert_counting_rejection {
     ($sess:expr, $tc:expr, $text:expr, $marker:expr, $reason:expr) => {{
         let input = vec![TurnInput::ResponseItem(user_message($text))];
         let marker = Arc::new(std::sync::atomic::AtomicUsize::new($marker));
-        let (tx, _rx) = async_channel::bounded(1);
         let rejection = $sess
             .try_start_task(
                 Arc::clone(&$tc),
                 input.clone(),
-                CountingTask(Arc::clone(&marker), tx),
+                CountingTask(Arc::clone(&marker), async_channel::bounded(1).0),
             )
-            .await
-            .expect_err("counting task should be rejected");
+            .await.expect_err("counting task should be rejected");
         assert_eq!((rejection.reason, rejection.rejected_initial_input_disposition), ($reason, crate::tasks::RejectedInitialInputDisposition::Discard));
         assert!(Arc::ptr_eq(&rejection.task.0, &marker) && Arc::ptr_eq(&rejection.turn_context, &$tc));
         assert!(matches!(rejection.input, crate::tasks::TaskStartInput::Initial(items) if items == input));
@@ -10925,21 +10920,20 @@ async fn closed_regular_uses_compatibility_recording_once() {
         vec!["closed regular distinctive"],
         user_input_texts(sess.clone_history().await.raw_items())
     );
-    let (mut hook_turn, mut client_id, mut hook_started, mut messages, mut completed) =
-        (None, None, 0, 0, 0);
+    let (mut hook_turn, mut client_id, mut starts, mut users, mut done) = (None, None, 0, 0, 0);
     for event in rx.try_iter() {
-        hook_started += usize::from(matches!(&event.msg, EventMsg::HookStarted(_)));
-        messages += usize::from(matches!(&event.msg, EventMsg::UserMessage(_)));
+        starts += usize::from(matches!(&event.msg, EventMsg::HookStarted(_)));
+        users += usize::from(matches!(&event.msg, EventMsg::UserMessage(_)));
         match event.msg {
             EventMsg::HookStarted(event) => hook_turn = event.turn_id,
-            EventMsg::HookCompleted(_) => completed += 1,
+            EventMsg::HookCompleted(_) => done += 1,
             EventMsg::UserMessage(event) => client_id = event.client_id,
             _ => panic!("rejected task emitted lifecycle event"),
         }
     }
-    assert_eq!((Some(tc.sub_id.clone()), 1), (hook_turn, hook_started));
-    assert_eq!((Some("client-b1a".to_string()), 1), (client_id, messages));
-    assert_eq!(1, completed);
+    assert_eq!((Some(tc.sub_id.clone()), 1), (hook_turn, starts));
+    assert_eq!((Some("client-b1a".to_string()), 1), (client_id, users));
+    assert_eq!(1, done);
     assert!(sess.active_turn.lock().await.is_none());
 }
 async fn assert_closed_synthetic<T: SessionTask>(task: T) {
