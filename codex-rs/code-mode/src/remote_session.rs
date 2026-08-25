@@ -184,6 +184,8 @@ struct OwnedCodeModeHost {
     endpoint: HostEndpoint,
     connection: StdMutex<Option<Arc<Connection>>>,
     connect_permit: Semaphore,
+    connection_generation: AtomicU64,
+    last_connection_error: StdMutex<Option<(u64, String)>>,
     next_session_id: AtomicU64,
 }
 
@@ -193,6 +195,8 @@ impl OwnedCodeModeHost {
             endpoint: HostEndpoint::Process(host_program),
             connection: StdMutex::new(None),
             connect_permit: Semaphore::new(/*permits*/ 1),
+            connection_generation: AtomicU64::new(0),
+            last_connection_error: StdMutex::new(None),
             next_session_id: AtomicU64::new(1),
         }
     }
@@ -205,6 +209,8 @@ impl OwnedCodeModeHost {
             },
             connection: StdMutex::new(None),
             connect_permit: Semaphore::new(/*permits*/ 1),
+            connection_generation: AtomicU64::new(0),
+            last_connection_error: StdMutex::new(None),
             next_session_id: AtomicU64::new(1),
         }
     }
@@ -214,18 +220,42 @@ impl OwnedCodeModeHost {
             return Ok(connection);
         }
 
+        let observed_generation = self.connection_generation.load(Ordering::Acquire);
         let _connect_permit = self.connect_permit.acquire().await.map_err(|_| {
             ConnectionError::Other("code-mode host connection coordinator closed".into())
         })?;
         if let Some(connection) = self.live_connection() {
             return Ok(connection);
         }
-        let new_connection = match &self.endpoint {
-            HostEndpoint::Process(host_program) => Connection::spawn(host_program).await?,
+        let completed_generation = self.connection_generation.load(Ordering::Acquire);
+        if completed_generation != observed_generation
+            && let Some((generation, error)) = self
+                .last_connection_error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            && *generation == completed_generation
+        {
+            return Err(ConnectionError::Other(error.clone()));
+        }
+        let connection = match &self.endpoint {
+            HostEndpoint::Process(host_program) => Connection::spawn(host_program).await,
             HostEndpoint::WebSocket {
                 websocket_url,
                 http_client_factory,
-            } => Connection::connect_websocket(websocket_url, http_client_factory).await?,
+            } => Connection::connect_websocket(websocket_url, http_client_factory).await,
+        };
+        let new_connection = match connection {
+            Ok(connection) => connection,
+            Err(error) => {
+                let generation = self.connection_generation.fetch_add(1, Ordering::AcqRel) + 1;
+                *self
+                    .last_connection_error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some((generation, error.to_string()));
+                return Err(error);
+            }
         };
         let new_connection = Arc::new(new_connection);
         *self

@@ -111,6 +111,8 @@ pub enum Feature {
     CodeModeBufferedExec,
     /// Run JavaScript code mode in the standalone host process.
     CodeModeHost,
+    /// Establish the code-mode host connection during session startup.
+    CodeModePrewarm,
     /// Terminate active code mode cells when their turn is interrupted.
     CodeModeInterrupt,
     /// Restrict model-visible tools to code mode entrypoints (`exec`, `wait`).
@@ -948,6 +950,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "code_mode_host",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::CodeModePrewarm,
+        key: "code_mode_prewarm",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::CodeModeInterrupt,
