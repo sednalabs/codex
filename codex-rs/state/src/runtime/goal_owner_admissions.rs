@@ -1476,7 +1476,7 @@ impl GoalOwnerAdmissionRecord {
 }
 
 fn validate_observation(observation: &GoalOwnerAdmissionObservation) -> anyhow::Result<()> {
-    validate_origin(&origin_from_observation(observation, 1))?;
+    validate_origin(&origin_from_observation(observation, /*generation*/ 1))?;
     if !matches!(
         observation.phase,
         GoalOwnerAdmissionPhase::Dormant | GoalOwnerAdmissionPhase::Pending

@@ -141,8 +141,8 @@ impl ModelRequestIdentity {
             effective_model,
             service_tier,
             session_source,
-            None,
-            None,
+            /*parent_continuity_decision_id*/ None,
+            /*logical_request_id*/ None,
         )
     }
 

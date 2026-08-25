@@ -2392,7 +2392,7 @@ async fn websocket_harness_with_provider_options(
         TEST_INSTALLATION_ID.to_string(),
         provider.clone(),
         "test-provider".to_string(),
-        None,
+        /*configured_requested_model*/ None,
         SessionSource::Exec,
         /*state_db*/ None,
         "test_originator".to_string(),

@@ -821,7 +821,7 @@ impl AgentControl {
         {
             new_thread.thread.session_telemetry().counter(
                 "codex.diagnostic.goal_continuation_health_check",
-                1,
+                /*inc*/ 1,
                 &[("stage", "continuity_child_initial_work_submitted")],
             );
             tracing::info!(

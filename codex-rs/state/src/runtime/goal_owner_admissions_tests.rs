@@ -2085,7 +2085,8 @@ async fn origin_only_history_sets_the_next_admission_generation() {
     let runtime = runtime().await;
     let store = runtime.goal_owner_admissions();
     let thread_id = ThreadId::new();
-    let historic = insert_origin_history_only(store, thread_id, "request-history", 7).await;
+    let historic =
+        insert_origin_history_only(store, thread_id, "request-history", /*generation*/ 7).await;
     assert!(store.observe_denial(&historic).await.is_err());
 
     let record = store
