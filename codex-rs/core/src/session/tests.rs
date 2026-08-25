@@ -4726,9 +4726,14 @@ fn falls_back_to_content_when_structured_is_null() {
 
     let got = ctr.into_function_call_output_payload();
     let expected = FunctionCallOutputPayload {
-        body: FunctionCallOutputBody::Text(
-            serde_json::to_string(&vec![text_block("hello"), text_block("world")]).unwrap(),
-        ),
+        body: FunctionCallOutputBody::ContentItems(vec![
+            FunctionCallOutputContentItem::InputText {
+                text: "hello".to_string(),
+            },
+            FunctionCallOutputContentItem::InputText {
+                text: "world".to_string(),
+            },
+        ]),
         success: Some(true),
     };
 
@@ -4766,9 +4771,11 @@ fn success_flag_true_with_no_error_and_content_used() {
 
     let got = ctr.into_function_call_output_payload();
     let expected = FunctionCallOutputPayload {
-        body: FunctionCallOutputBody::Text(
-            serde_json::to_string(&vec![text_block("alpha")]).unwrap(),
-        ),
+        body: FunctionCallOutputBody::ContentItems(vec![
+            FunctionCallOutputContentItem::InputText {
+                text: "alpha".to_string(),
+            },
+        ]),
         success: Some(true),
     };
 

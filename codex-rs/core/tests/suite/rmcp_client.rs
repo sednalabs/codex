@@ -587,6 +587,91 @@ async fn mcp_namespace_instructions_are_preserved_without_hiding_tools() -> anyh
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn text_only_mcp_content_uses_content_items() -> anyhow::Result<()> {
+    skip_if_wine_exec!(
+        Ok(()),
+        "requires a Windows test_stdio_server in the Wine-exec environment"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let call_id = "content-items-1";
+    let server_name = "rmcp";
+    let namespace = format!("mcp__{server_name}");
+    mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_function_call_with_namespace(
+                call_id,
+                &namespace,
+                "image_scenario",
+                r#"{"scenario":"text_only","caption":"content item fixture result"}"#,
+            ),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let final_mock = mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("msg-1", "done"),
+            responses::ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    let command = remote_aware_stdio_server_bin()?;
+    let fixture = test_codex()
+        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_config(move |config| {
+            insert_mcp_server(
+                config,
+                server_name,
+                stdio_transport(command, /*env*/ None, Vec::new()),
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    wait_for_mcp_server(&fixture.codex, server_name).await?;
+
+    fixture
+        .codex
+        .start_or_steer_turn(read_only_user_turn(&fixture, "return content items"))
+        .await?;
+    wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let output = final_mock.single_request().function_call_output(call_id);
+    let header = output["output"][0]["text"]
+        .as_str()
+        .expect("first content item should contain the wall-time header");
+    assert_wall_time_header(header);
+    assert_eq!(
+        output["output"],
+        json!([
+            {
+                "type": "input_text",
+                "text": header,
+            },
+            {
+                "type": "input_text",
+                "text": "content item fixture result",
+            },
+        ])
+    );
+
+    server.verify().await;
+    Ok(())
+}
+
 #[test_case(false; "configured servers")]
 #[test_case(true; "plugin servers")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2704,19 +2789,19 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let output_item = final_mock.single_request().function_call_output(call_id);
-    let output_text = output_item
-        .get("output")
-        .and_then(Value::as_str)
-        .expect("function_call_output output should be a JSON string");
-    let wrapped_payload = split_wall_time_wrapped_output(output_text);
-    let output_json: Value = serde_json::from_str(wrapped_payload)
-        .expect("function_call_output output should be valid JSON");
+    let header = output_item["output"][0]["text"]
+        .as_str()
+        .expect("first content item should contain the wall-time header");
+    assert_wall_time_header(header);
     assert_eq!(
-        output_json,
-        json!([{
-            "type": "text",
-            "text": "<image content omitted because you do not support image input>"
-        }])
+        output_item["output"],
+        json!([
+            {"type": "input_text", "text": header},
+            {
+                "type": "input_text",
+                "text": "<image content omitted because you do not support image input>",
+            },
+        ])
     );
     server.verify().await;
     Ok(())
