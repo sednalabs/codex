@@ -217,7 +217,7 @@ impl Respond for LimitSequenceResponder {
 
 async fn wait_for_thread_id(
     manager: &Arc<ThreadManager>,
-    root_thread_id: ThreadId,
+    excluded_thread_ids: &[ThreadId],
 ) -> Result<ThreadId> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -225,7 +225,7 @@ async fn wait_for_thread_id(
             .list_thread_ids()
             .await
             .into_iter()
-            .find(|thread_id| *thread_id != root_thread_id)
+            .find(|thread_id| !excluded_thread_ids.contains(thread_id))
         {
             return Ok(thread_id);
         }
@@ -367,9 +367,11 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
     continuity.set_thread_manager(&test.thread_manager);
     let root_thread_id = test.session_configured.thread_id;
     test.submit_turn(ROOT_PROMPT).await?;
-    let orchestrator_id = wait_for_thread_id(&test.thread_manager, root_thread_id).await?;
+    let orchestrator_id = wait_for_thread_id(&test.thread_manager, &[root_thread_id]).await?;
     let orchestrator = test.thread_manager.get_thread(orchestrator_id).await?;
 
+    let sub_thread_id =
+        wait_for_thread_id(&test.thread_manager, &[root_thread_id, orchestrator_id]).await?;
     let child_deadline = Instant::now() + Duration::from_secs(5);
     while sub_request.requests().is_empty() {
         if Instant::now() >= child_deadline {
@@ -433,13 +435,6 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
             .contains(&orchestrator_id),
         "owner thread identity must remain stable"
     );
-    let sub_thread_id = test
-        .thread_manager
-        .list_thread_ids()
-        .await
-        .into_iter()
-        .find(|id| *id != root_thread_id && *id != orchestrator_id)
-        .expect("nested descendant remains observable");
     let child_body = sub_request.requests()[0].body_json();
     let expected_child_thread_id = sub_thread_id.to_string();
     assert_eq!(
