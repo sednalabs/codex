@@ -967,7 +967,9 @@ WHERE thread_id = ?
 }
 
 macro_rules! admission_select_query {
-    ($suffix:literal) => { sqlx::query(concat!(r#"
+    ($suffix:literal) => {
+        sqlx::query(concat!(
+            r#"
 SELECT
     admission.thread_id AS admission_thread_id,
     admission.goal_id AS admission_goal_id,
@@ -1029,12 +1031,17 @@ LEFT JOIN goal_owner_admission_origins AS origin
  AND origin.generation = admission.generation
 LEFT JOIN goal_owner_admission_goal_chains AS chain
   ON chain.thread_id = admission.thread_id AND chain.goal_id = admission.goal_id
-"#, $suffix))
+"#,
+            $suffix
+        ))
     };
 }
 
-fn recoverable_admissions_query() -> sqlx::query::Query<'static, Sqlite, sqlx::sqlite::SqliteArguments> {
-    admission_select_query!(" WHERE (admission.phase = 'acquired' AND admission.retired_at_ms IS NULL) OR admission.phase = 'in_flight'")
+fn recoverable_admissions_query()
+-> sqlx::query::Query<'static, Sqlite, sqlx::sqlite::SqliteArguments> {
+    admission_select_query!(
+        " WHERE (admission.phase = 'acquired' AND admission.retired_at_ms IS NULL) OR admission.phase = 'in_flight'"
+    )
 }
 
 async fn ensure_goal_chain(
@@ -1212,7 +1219,9 @@ async fn fetch_active_record<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let row = admission_select_query!(" WHERE admission.thread_id = ? AND admission.retired_at_ms IS NULL")
+    let row = admission_select_query!(
+        " WHERE admission.thread_id = ? AND admission.retired_at_ms IS NULL"
+    )
     .bind(thread_id.to_string())
     .fetch_optional(executor)
     .await?;
@@ -1227,11 +1236,12 @@ async fn fetch_record_by_generation<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let row = admission_select_query!(" WHERE admission.thread_id = ? AND admission.generation = ?")
-    .bind(thread_id.to_string())
-    .bind(generation)
-    .fetch_optional(executor)
-    .await?;
+    let row =
+        admission_select_query!(" WHERE admission.thread_id = ? AND admission.generation = ?")
+            .bind(thread_id.to_string())
+            .bind(generation)
+            .fetch_optional(executor)
+            .await?;
     row.map(|row| record_from_row(&row)).transpose()
 }
 
@@ -1242,11 +1252,12 @@ async fn fetch_record_for_authority<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    let row = admission_select_query!(" WHERE admission.thread_id = ? AND admission.generation = ?")
-    .bind(authority.thread_id.to_string())
-    .bind(authority.generation)
-    .fetch_optional(executor)
-    .await?;
+    let row =
+        admission_select_query!(" WHERE admission.thread_id = ? AND admission.generation = ?")
+            .bind(authority.thread_id.to_string())
+            .bind(authority.generation)
+            .fetch_optional(executor)
+            .await?;
     let record = row.map(|row| record_from_row(&row)).transpose()?;
     Ok(record.filter(|record| record.authority.goal_id == authority.goal_id))
 }
