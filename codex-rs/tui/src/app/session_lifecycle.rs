@@ -546,13 +546,16 @@ impl App {
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = Some(receiver);
 
+        self.recap.note_focus_gained();
         self.recap = recap::RecapState::default();
 
         if !tui.is_terminal_focused() {
             self.recap.note_focus_lost(Instant::now());
         }
+        let now = Instant::now();
+        self.recap.seed_from_progress(recap_progress, now);
         self.recap
-            .seed_from_progress(recap_progress, Instant::now());
+            .schedule_check(thread_id, self.app_event_tx.clone(), now);
 
         let init = self.chatwidget_init_for_forked_or_resumed_thread(
             tui,

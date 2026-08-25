@@ -2897,6 +2897,11 @@ impl App {
             AppEvent::KeymapCleared { context, action } => {
                 self.apply_keymap_clear(context, action).await;
             }
+            AppEvent::CheckRecap { thread_id } => {
+                // The inference layer stacked on this change consumes the scheduled check.
+                let _ = thread_id;
+            }
+            AppEvent::RecapStarted { .. } | AppEvent::RecapGenerated { .. } => {}
         }
         Ok(AppRunControl::Continue)
     }

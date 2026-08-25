@@ -1325,6 +1325,33 @@ pub(crate) enum AppEvent {
         context: String,
         action: String,
     },
+
+    /// Recheck whether an unfocused thread is ready for an automatic recap.
+    CheckRecap {
+        thread_id: ThreadId,
+    },
+
+    /// Deliver the result of starting an automatic recap's temporary thread.
+    #[allow(dead_code)]
+    RecapStarted {
+        thread_id: ThreadId,
+        request_id: Uuid,
+        completed_turn_count: usize,
+        turn_revision: usize,
+        history: String,
+        result: Result<String, String>,
+    },
+
+    /// Deliver the generated recap from a temporary structured turn.
+    #[allow(dead_code)]
+    RecapGenerated {
+        thread_id: ThreadId,
+        request_id: Uuid,
+        temporary_thread_id: ThreadId,
+        completed_turn_count: usize,
+        turn_revision: usize,
+        result: Result<String, String>,
+    },
 }
 
 /// Named profile selection to apply after any required UI guardrails complete.
