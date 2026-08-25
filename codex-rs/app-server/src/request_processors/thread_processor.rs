@@ -1415,6 +1415,10 @@ impl ThreadRequestProcessor {
                 DynamicToolSpec::Namespace(namespace) => namespace.tools.len(),
             })
             .sum();
+        let history_mode = history_mode.or_else(|| {
+            (!config.ephemeral && thread_store.supports_paginated_history_lists())
+                .then_some(ThreadHistoryMode::Paginated)
+        });
         let mut thread_extension_init = ExtensionDataInit::new();
         if !selected_capability_roots.is_empty() {
             thread_extension_init.insert(selected_capability_roots);

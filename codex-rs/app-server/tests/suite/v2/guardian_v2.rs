@@ -24,6 +24,7 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::StrictReviewRequiredNotification;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
+use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadRollbackParams;
@@ -601,6 +602,8 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                 .start_thread(ThreadStartParams {
                     approval_policy: Some(AskForApproval::OnRequest),
                     approvals_reviewer: Some(requested_reviewer),
+                    history_mode: matches!(lifecycle, ThreadLifecycle::RootRollback)
+                        .then_some(ThreadHistoryMode::Legacy),
                     ..Default::default()
                 })
                 .await?;
