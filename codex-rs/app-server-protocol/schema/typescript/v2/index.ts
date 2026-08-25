@@ -479,6 +479,8 @@ export type { ThreadInjectItemsParams } from "./ThreadInjectItemsParams";
 export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";
 export type { ThreadItem } from "./ThreadItem";
 export type { ThreadItemEntry } from "./ThreadItemEntry";
+export type { ThreadItemsListParams } from "./ThreadItemsListParams";
+export type { ThreadItemsListResponse } from "./ThreadItemsListResponse";
 export type { ThreadListParams } from "./ThreadListParams";
 export type { ThreadListResponse } from "./ThreadListResponse";
 export type { ThreadLoadedListParams } from "./ThreadLoadedListParams";
@@ -512,6 +514,8 @@ export type { ThreadRealtimeTranscriptRole } from "./ThreadRealtimeTranscriptRol
 export type { ThreadResumeInitialTurnsPageParams } from "./ThreadResumeInitialTurnsPageParams";
 export type { ThreadResumeParams } from "./ThreadResumeParams";
 export type { ThreadResumeResponse } from "./ThreadResumeResponse";
+export type { ThreadRevertParams } from "./ThreadRevertParams";
+export type { ThreadRevertResponse } from "./ThreadRevertResponse";
 export type { ThreadRevertedNotification } from "./ThreadRevertedNotification";
 export type { ThreadRollbackParams } from "./ThreadRollbackParams";
 export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
@@ -547,6 +551,8 @@ export type { ThreadStatusChangedNotification } from "./ThreadStatusChangedNotif
 export type { ThreadTimelineEntry } from "./ThreadTimelineEntry";
 export type { ThreadTokenUsage } from "./ThreadTokenUsage";
 export type { ThreadTokenUsageUpdatedNotification } from "./ThreadTokenUsageUpdatedNotification";
+export type { ThreadTurnsListParams } from "./ThreadTurnsListParams";
+export type { ThreadTurnsListResponse } from "./ThreadTurnsListResponse";
 export type { ThreadUnarchiveParams } from "./ThreadUnarchiveParams";
 export type { ThreadUnarchiveResponse } from "./ThreadUnarchiveResponse";
 export type { ThreadUnarchivedNotification } from "./ThreadUnarchivedNotification";

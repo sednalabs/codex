@@ -398,7 +398,6 @@ pub struct ThreadResumeParams {
     /// When true, return only thread metadata and live-resume state without
     /// populating `thread.turns`. This is useful when the client plans to call
     /// `thread/turns/list` immediately after resuming.
-    #[experimental("thread/resume.excludeTurns")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exclude_turns: bool,
     /// When present, include a `thread/turns/list` page in the resume response
@@ -450,14 +449,12 @@ pub struct ThreadResumeResponse {
     ///
     /// Pass this as `cursor` to `thread/turns/list` with
     /// `sortDirection: "desc"`. The first page includes the turn identified by the cursor.
-    #[experimental("thread/resume.turnsBackwardsCursor")]
     #[serde(default)]
     pub turns_backwards_cursor: Option<String>,
     /// Opaque cursor for hydrating paginated items backwards.
     ///
     /// Pass this as `cursor` to `thread/items/list` with
     /// `sortDirection: "desc"`. The first page includes the item identified by the cursor.
-    #[experimental("thread/resume.itemsBackwardsCursor")]
     #[serde(default)]
     pub items_backwards_cursor: Option<String>,
 }
@@ -589,7 +586,6 @@ pub struct ThreadForkParams {
     /// When true, return only thread metadata and live fork state without
     /// populating `thread.turns`. This is useful when the client plans to call
     /// `thread/turns/list` immediately after forking.
-    #[experimental("thread/fork.excludeTurns")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exclude_turns: bool,
     /// When true, carry the source thread's current goal into the fork without
