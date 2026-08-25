@@ -24,6 +24,7 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use std::sync::OnceLock;
+use std::sync::atomic::Ordering;
 use tokio::sync::Semaphore;
 
 /// Context for an initialized model agent
@@ -53,6 +54,7 @@ pub(crate) struct Session {
     pub(super) mcp_prewarm_task: std::sync::Mutex<Option<JoinHandle<()>>>,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
+    pub(crate) task_admission_open: std::sync::atomic::AtomicBool,
     pub(super) pending_owner_continuation: Mutex<Option<PendingOwnerContinuation>>,
     pub(crate) input_queue: InputQueue,
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
@@ -523,6 +525,12 @@ impl Session {
     /// Returns the identity shared by the root thread and all descendant threads.
     pub(crate) fn session_id(&self) -> SessionId {
         self.services.agent_control.session_id()
+    }
+
+    pub(crate) async fn close_task_admission(&self) {
+        let _transition = self.input_queue.lock_task_transition().await;
+        let _active_turn = self.active_turn.lock().await;
+        self.task_admission_open.store(false, Ordering::Release);
     }
 
     pub(crate) async fn originator(&self) -> String {
@@ -1228,6 +1236,7 @@ impl Session {
                 mcp_prewarm_task: std::sync::Mutex::new(None),
                 conversation: Arc::new(RealtimeConversationManager::new()),
                 active_turn: Mutex::new(None),
+                task_admission_open: std::sync::atomic::AtomicBool::new(true),
                 pending_owner_continuation: Mutex::new(None),
                 input_queue: InputQueue::new(),
                 guardian_review_session: GuardianReviewSessionManager::default(),

@@ -28,6 +28,10 @@ impl RegularTask {
 }
 
 impl SessionTask for RegularTask {
+    fn rejected_initial_input_disposition(&self) -> super::RejectedInitialInputDisposition {
+        super::RejectedInitialInputDisposition::RecordAsRegularTurn
+    }
+
     fn kind(&self) -> TaskKind {
         TaskKind::Regular
     }

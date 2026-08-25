@@ -5,6 +5,7 @@ mod review;
 mod user_shell;
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -68,6 +69,33 @@ const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
 const TASK_COMPACT_METRIC: &str = "codex.task.compact";
 
 pub(crate) type SessionTaskResult = CodexResult<Option<String>>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RejectedInitialInputDisposition {
+    Discard,
+    RecordAsRegularTurn,
+}
+
+#[derive(Clone)]
+pub(crate) enum TaskStartInput {
+    Initial(Vec<TurnInput>),
+    ReservedPending(Vec<ResponseItem>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TaskStartRejectionReason {
+    AdmissionClosed,
+    ReservationLost,
+    Busy,
+}
+
+pub(crate) struct TaskStartRejection<T: SessionTask> {
+    pub(crate) reason: TaskStartRejectionReason,
+    pub(crate) task: Arc<T>,
+    pub(crate) turn_context: Arc<TurnContext>,
+    pub(crate) input: TaskStartInput,
+    pub(crate) rejected_initial_input_disposition: RejectedInitialInputDisposition,
+}
 
 #[cfg(test)]
 use codex_protocol::ThreadId;
@@ -271,6 +299,10 @@ pub(crate) trait SessionTask: Send + Sync + 'static {
     /// Returns the tracing name for a spawned task span.
     fn span_name(&self) -> &'static str;
 
+    fn rejected_initial_input_disposition(&self) -> RejectedInitialInputDisposition {
+        RejectedInitialInputDisposition::Discard
+    }
+
     /// Executes the task until completion or cancellation.
     ///
     /// Implementations typically stream protocol events using `session` and
@@ -380,7 +412,9 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) {
-        let _ = self.start_task_impl(turn_context, input, task, None).await;
+        if let Err(rejection) = self.try_start_task(turn_context, input, task).await {
+            self.handle_task_start_rejection(rejection).await;
+        }
     }
 
     pub(crate) async fn start_reserved_task<T: SessionTask>(
@@ -390,8 +424,54 @@ impl Session {
         input: Vec<ResponseItem>,
         task: T,
     ) -> Result<(), Vec<ResponseItem>> {
+        let reserved_state = Arc::clone(&turn_state);
+        match self
+            .try_start_reserved_task(turn_context, turn_state, input, task)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(rejection) => {
+                self.clear_reserved_idle_turn(&reserved_state).await;
+                Err(self.handle_task_start_rejection(rejection).await)
+            }
+        }
+    }
+
+    pub(crate) async fn try_start_task<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        task: T,
+    ) -> Result<(), TaskStartRejection<T>> {
+        self.start_task_impl(turn_context, input, task, None).await
+    }
+
+    pub(crate) async fn try_start_reserved_task<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        turn_state: Arc<tokio::sync::Mutex<TurnState>>,
+        input: Vec<ResponseItem>,
+        task: T,
+    ) -> Result<(), TaskStartRejection<T>> {
         self.start_task_impl(turn_context, Vec::new(), task, Some((turn_state, input)))
             .await
+    }
+
+    async fn handle_task_start_rejection<T: SessionTask>(
+        &self,
+        rejection: TaskStartRejection<T>,
+    ) -> Vec<ResponseItem> {
+        match rejection.input {
+            TaskStartInput::Initial(input) => {
+                if rejection.rejected_initial_input_disposition
+                    == RejectedInitialInputDisposition::RecordAsRegularTurn
+                {
+                    run_hooks_and_record_inputs(self, &rejection.turn_context, &input).await;
+                }
+                Vec::new()
+            }
+            TaskStartInput::ReservedPending(input) => input,
+        }
     }
 
     #[expect(clippy::await_holding_invalid_type, reason = "atomic source handoff")]
@@ -401,14 +481,32 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
         reservation: Option<(Arc<tokio::sync::Mutex<TurnState>>, Vec<ResponseItem>)>,
-    ) -> Result<(), Vec<ResponseItem>> {
+    ) -> Result<(), TaskStartRejection<T>> {
+        let rejected_initial_input_disposition = task.rejected_initial_input_disposition();
         let (reserved_turn_state, reserved_input) = match reservation {
             Some((turn_state, input)) => (Some(turn_state), Some(input)),
             None => (None, None),
         };
-        let task: Arc<dyn AnySessionTask> = Arc::new(task);
+        let task_value = Arc::new(task);
+        let task: Arc<dyn AnySessionTask> = task_value.clone();
         let task_kind = task.kind();
         let span_name = task.span_name();
+        let rejected_input = match reserved_input.as_ref() {
+            Some(input) => TaskStartInput::ReservedPending(input.clone()),
+            None => TaskStartInput::Initial(input.clone()),
+        };
+        let reject = |reason| {
+            turn_context
+                .turn_metadata_state
+                .cancel_git_enrichment_task();
+            TaskStartRejection {
+                reason,
+                task: Arc::clone(&task_value),
+                turn_context: Arc::clone(&turn_context),
+                input: rejected_input.clone(),
+                rejected_initial_input_disposition,
+            }
+        };
         let task_identity = TaskIdentity(uuid::Uuid::new_v4());
         let cancellation_token = CancellationToken::new();
         let done = Arc::new(Notify::new());
@@ -562,6 +660,9 @@ impl Session {
         {
             let _transition = self.input_queue.lock_task_transition().await;
             let mut active = self.active_turn.lock().await;
+            if !self.task_admission_open.load(Ordering::Acquire) {
+                return Err(reject(TaskStartRejectionReason::AdmissionClosed));
+            }
             let turn_state = if let Some(expected) = reserved_turn_state.as_ref() {
                 match active.as_ref() {
                     Some(active_turn)
@@ -570,16 +671,16 @@ impl Session {
                     {
                         Arc::clone(expected)
                     }
-                    _ => return Err(reserved_input.unwrap_or_default()),
+                    _ => return Err(reject(TaskStartRejectionReason::ReservationLost)),
                 }
             } else {
+                if active.is_some() {
+                    return Err(reject(TaskStartRejectionReason::Busy));
+                }
                 let turn = active.get_or_insert_with(ActiveTurn::default);
                 debug_assert!(turn.task.is_none());
                 Arc::clone(&turn.turn_state)
             };
-            if active.is_none() {
-                return Err(reserved_input.unwrap_or_default());
-            }
             if let Some(input) = reserved_input.as_ref() {
                 self.input_queue
                     .extend_pending_input_for_turn_state(
@@ -589,7 +690,7 @@ impl Session {
                     .await;
             }
             let Some(turn) = active.as_mut() else {
-                return Err(reserved_input.unwrap_or_default());
+                return Err(reject(TaskStartRejectionReason::Busy));
             };
             turn.task = Some(running_task);
         }
@@ -651,18 +752,9 @@ impl Session {
         let turn_context = self.new_default_turn_with_sub_id(sub_id).await;
         self.maybe_emit_model_warnings_for_turn(turn_context.as_ref())
             .await;
-        if self
-            .start_reserved_task(
-                turn_context,
-                turn_state.clone(),
-                Vec::new(),
-                RegularTask::new(),
-            )
-            .await
-            .is_err()
-        {
-            self.clear_reserved_idle_turn(&turn_state).await;
-        }
+        let _ = self
+            .start_reserved_task(turn_context, turn_state, Vec::new(), RegularTask::new())
+            .await;
     }
 
     pub async fn abort_all_tasks(self: &Arc<Self>, reason: TurnAbortReason) {
