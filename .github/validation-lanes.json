@@ -269,6 +269,34 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.core-turn-admission-custody-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "core-carry"
+      ],
+      "frontier_default": true,
+      "frontier_lane_sets": [
+        "subagents",
+        "core-carry"
+      ],
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-turn-admission-custody-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.core-subagent-surface-targeted",
       "groups": [
         "core"
@@ -2094,6 +2122,22 @@
         "codex-rs/core/src/agent/registry_tests.rs",
         "codex-rs/core/src/thread_manager.rs",
         "codex-rs/core/tests/suite/agent_execution.rs"
+      ]
+    },
+    {
+      "route_id": "core-turn-admission-custody",
+      "lane_ids": [
+        "codex.core-turn-admission-custody-targeted"
+      ],
+      "allowed_paths": [
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/src/tasks/mod.rs",
+        "justfile",
+        ".github/validation-lanes.json"
+      ],
+      "required_any_paths": [
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/src/tasks/mod.rs"
       ]
     },
     {
