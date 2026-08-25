@@ -553,14 +553,17 @@ async fn owner_continuation_pending_preserves_terminal_events_without_terminal_s
     ];
     assert!(matches!(delivered[0].msg, EventMsg::Error(_)));
     assert!(matches!(delivered[1].msg, EventMsg::TurnComplete(_)));
-    assert_eq!(AgentStatus::PendingInit, session.agent_status().await);
+    assert_eq!(
+        AgentStatus::PendingInit,
+        Session::agent_status(session.as_ref()).await
+    );
 
     session
         .resolve_pending_owner_continuation(turn_context.sub_id.as_str())
         .await;
     assert_eq!(
         AgentStatus::Errored("provider limit".to_string()),
-        session.agent_status().await
+        Session::agent_status(session.as_ref()).await
     );
 }
 
@@ -10799,13 +10802,12 @@ async fn reserved_task_stages_automatic_input_with_empty_direct_input() {
             .expect("captured direct input")
             .is_empty()
     );
-    {
-        let turn_state = turn_state.lock().await;
-        assert_eq!(
-            turn_state.pending_input.items,
-            vec![TurnInput::ResponseItem(item)]
-        );
-    }
+    assert_eq!(
+        sess.input_queue
+            .clone_pending_input_for_turn_state(turn_state.as_ref())
+            .await,
+        vec![TurnInput::ResponseItem(item)]
+    );
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
@@ -10830,7 +10832,12 @@ async fn stale_reserved_start_preserves_replacement_and_input() {
         .await
         .expect_err("stale reservation should be rejected");
     assert_eq!(input, rejected);
-    assert!(stale_state.lock().await.pending_input.items.is_empty());
+    assert!(
+        sess.input_queue
+            .clone_pending_input_for_turn_state(stale_state.as_ref())
+            .await
+            .is_empty()
+    );
     let active = sess.active_turn.lock().await;
     let active = active.as_ref().expect("replacement remains");
     assert!(active.task.is_none());
@@ -10897,7 +10904,12 @@ async fn pending_wake_stale_reservation_preserves_replacement_and_sources() {
         ));
     }
     assert!(!Arc::ptr_eq(&reserved_state, &replacement_state));
-    assert!(reserved_state.lock().await.pending_input.items.is_empty());
+    assert!(
+        sess.input_queue
+            .clone_pending_input_for_turn_state(reserved_state.as_ref())
+            .await
+            .is_empty()
+    );
     assert!(sess.input_queue.has_pending_mailbox_items().await);
     assert!(sess.input_queue.has_pending_terminal_completions().await);
 }

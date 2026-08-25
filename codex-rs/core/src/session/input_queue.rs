@@ -432,6 +432,14 @@ impl InputQueue {
         turn_state.lock().await.pending_input.items.extend(input);
     }
 
+    #[cfg(test)]
+    pub(crate) async fn clone_pending_input_for_turn_state(
+        &self,
+        turn_state: &Mutex<TurnState>,
+    ) -> Vec<TurnInput> {
+        turn_state.lock().await.pending_input.items.clone()
+    }
+
     pub(crate) async fn take_pending_input_for_turn_state(
         &self,
         turn_state: &Mutex<TurnState>,
