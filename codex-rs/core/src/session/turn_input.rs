@@ -120,6 +120,7 @@ impl PreparedTurnInputSettings {
         kind: TurnStartKind,
     ) -> CodexResult<Option<Arc<TurnContext>>> {
         let TurnStartOptions {
+            turn_trigger,
             final_output_json_schema,
             service_tier,
             parent_turn_id,
@@ -147,6 +148,11 @@ impl PreparedTurnInputSettings {
         let Some((turn_context, settings_snapshot)) = turn_context else {
             return Ok(None);
         };
+        if let Some(turn_trigger) = turn_trigger {
+            turn_context
+                .turn_metadata_state
+                .set_turn_trigger(turn_trigger);
+        }
         if emit_thread_settings_applied {
             thread_settings::emit_applied(session, submission_id, settings_snapshot).await;
         }
@@ -205,7 +211,12 @@ pub(super) async fn handle_recovery(
     thread_settings: ThreadSettingsOverrides,
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
-    let request = TurnInputRequest::user_input(Vec::new()).with_thread_settings(thread_settings);
+    let request = TurnInputRequest::user_input(Vec::new())
+        .with_thread_settings(thread_settings)
+        .on_start(TurnStartOptions {
+            turn_trigger: Some("retry".to_string()),
+            ..Default::default()
+        });
     start_if_idle(session, request, submission_id, TurnStartKind::Recovery).await
 }
 
@@ -482,7 +493,11 @@ impl Session {
             TurnInputRequest::user_input(vec![UserInput::Text {
                 text,
                 text_elements: Vec::new(),
-            }]),
+            }])
+            .on_start(TurnStartOptions {
+                turn_trigger: Some("realtime".to_string()),
+                ..Default::default()
+            }),
             TurnInputMode::StartOrSteer,
             submission_id.clone(),
         )

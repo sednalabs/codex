@@ -178,9 +178,16 @@ async fn recover_turn_if_idle_preserves_id_and_resumes_plan_mode() {
     })
     .await;
 
-    let user_input_groups = response_mock
-        .single_request()
-        .message_input_text_groups("user");
+    let request = response_mock.single_request();
+    let turn_metadata: Value = serde_json::from_str(
+        request
+            .header("x-codex-turn-metadata")
+            .as_deref()
+            .expect("recovered turn should include turn metadata"),
+    )
+    .expect("recovered turn metadata should be valid JSON");
+    assert_eq!(turn_metadata["turn_trigger"].as_str(), Some("retry"));
+    let user_input_groups = request.message_input_text_groups("user");
     assert_eq!(user_input_groups.len(), 1);
     assert_eq!(user_input_groups[0].len(), 1);
     assert!(user_input_groups[0][0].starts_with("<environment_context>"));
