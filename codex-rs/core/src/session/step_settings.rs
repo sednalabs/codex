@@ -101,6 +101,57 @@ impl ResolvedStepSettings {
         self.selected.personality
     }
 
+    pub(super) fn constrained_approval_policy(&self) -> &Constrained<AskForApproval> {
+        &self.selected.approval_policy
+    }
+
+    /// Applies sparse edits to the retained selection, preserving pinned metadata
+    /// unless model or personality selection changes, then resolves request values.
+    pub(super) async fn apply_update(
+        &self,
+        update: &StepSettingsUpdate,
+        constraints: &StepSettingsConstraints<'_>,
+        models_manager: &dyn ModelsManager,
+        overrides: &ModelInfoOverrides,
+        personality_enabled: bool,
+        fast_mode_enabled: bool,
+    ) -> ConstraintResult<Self> {
+        let selected = self.selected.apply(update, constraints)?;
+        let model_info = if selected.collaboration_mode.model()
+            == self.selected.collaboration_mode.model()
+            && selected.personality == self.selected.personality
+        {
+            Arc::clone(&self.model_info)
+        } else {
+            Arc::new(
+                selected
+                    .resolve_model_info(models_manager, overrides, personality_enabled)
+                    .await,
+            )
+        };
+        Ok(Self::new(Arc::new(selected), model_info, fast_mode_enabled))
+    }
+
+    /// Rechecks the retained selection against current managed constraints.
+    pub(super) fn revalidate(
+        &self,
+        constraints: &StepSettingsConstraints<'_>,
+    ) -> ConstraintResult<()> {
+        // TODO: Revisit the split with StepSettings::validate, which does not
+        // check inherited approval values against the supplied managed allow-lists.
+        // Sharing these checks would also make ordinary settings updates stricter
+        // after a requirements refresh.
+        self.selected.validate(constraints)?;
+        constraints
+            .requirements
+            .approval_policy
+            .can_set(&self.approval_policy())?;
+        constraints
+            .requirements
+            .approvals_reviewer
+            .can_set(&self.approvals_reviewer())
+    }
+
     pub(super) fn telemetry(&self, base: &SessionTelemetry) -> SessionTelemetry {
         base.clone().with_model(
             self.selected.collaboration_mode.model(),

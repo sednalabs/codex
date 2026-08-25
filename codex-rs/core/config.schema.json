@@ -907,6 +907,9 @@
             "steer": {
               "type": "boolean"
             },
+            "step_model_switching": {
+              "type": "boolean"
+            },
             "telepathy": {
               "type": "boolean"
             },
@@ -5914,6 +5917,9 @@
           "type": "boolean"
         },
         "steer": {
+          "type": "boolean"
+        },
+        "step_model_switching": {
           "type": "boolean"
         },
         "telepathy": {

@@ -229,6 +229,7 @@ mod rollout_budget;
 mod rollout_reconstruction;
 #[allow(clippy::module_inception)]
 pub(crate) mod session;
+mod step_activation;
 pub(crate) mod step_context;
 pub(crate) mod step_settings;
 mod thread_settings;

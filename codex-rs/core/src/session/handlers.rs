@@ -596,6 +596,15 @@ pub(super) async fn submission_loop(
                     thread_settings::update(&sess, sub.id.clone(), thread_settings).await;
                     false
                 }
+                Op::TurnSettings {
+                    turn_id,
+                    update,
+                    reply,
+                } => {
+                    let outcome = sess.apply_turn_settings(&turn_id, update).await;
+                    let _ = reply.send(outcome);
+                    false
+                }
                 Op::InterAgentCommunication { communication } => {
                     inter_agent_communication(
                         &sess,
