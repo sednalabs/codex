@@ -169,7 +169,7 @@ pub struct GoalOwnerAdmissionLease {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalOwnerAdmissionAcquireResult {
     Acquired(GoalOwnerAdmissionLease),
-    Exhausted(GoalOwnerAdmissionRecord),
+    Exhausted(Box<GoalOwnerAdmissionRecord>),
     NotCurrent,
     NotEligible,
     Dormant,
@@ -508,7 +508,9 @@ WHERE thread_id = ?
                 if current.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Exhausted =>
             {
                 transaction.commit().await?;
-                return Ok(GoalOwnerAdmissionAcquireResult::Exhausted(current));
+                return Ok(GoalOwnerAdmissionAcquireResult::Exhausted(Box::new(
+                    current,
+                )));
             }
             GoalOwnerAdmissionPhase::Pending if current.deadline_at <= now => {}
             GoalOwnerAdmissionPhase::Pending
@@ -565,7 +567,9 @@ WHERE thread_id = ?
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("exhausted admission is missing"))?;
             transaction.commit().await?;
-            return Ok(GoalOwnerAdmissionAcquireResult::Exhausted(exhausted));
+            return Ok(GoalOwnerAdmissionAcquireResult::Exhausted(Box::new(
+                exhausted,
+            )));
         }
 
         let lease_id = Uuid::now_v7();
