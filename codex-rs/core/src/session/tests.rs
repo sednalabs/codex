@@ -10872,14 +10872,6 @@ fn test_input(text: &str, client_id: Option<&str>) -> Vec<TurnInput> {
     }]
 }
 use crate::tasks::TaskStartRejectionReason as Reject;
-fn assert_enrichment_cancelled(tc: &TurnContext) {
-    let metadata = tc.turn_metadata_state.to_responses_metadata(
-        String::new(),
-        String::new(),
-        crate::responses_metadata::CodexResponsesRequestKind::Turn,
-    );
-    assert!(metadata.workspaces.is_empty());
-}
 async fn reserve_test_turn(sess: &Session) -> Arc<Mutex<TurnState>> {
     let _transition = sess.input_queue.lock_task_transition().await;
     let mut active = sess.active_turn.lock().await;
@@ -10920,6 +10912,7 @@ async fn closed_regular_uses_compatibility_recording_once() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
     install_user_prompt_test_hook(&sess).await;
     tc.turn_metadata_state.spawn_git_enrichment_task();
+    assert!(tc.turn_metadata_state.has_git_enrichment_task_for_test());
     sess.close_task_admission().await;
     sess.start_task(
         Arc::clone(&tc),
@@ -10927,12 +10920,16 @@ async fn closed_regular_uses_compatibility_recording_once() {
         crate::tasks::RegularTask::new(),
     )
     .await;
+    assert!(!tc.turn_metadata_state.has_git_enrichment_task_for_test());
     assert_eq!(
         vec!["closed regular distinctive"],
         user_input_texts(sess.clone_history().await.raw_items())
     );
-    let (mut hook_turn, mut client_id, mut completed) = (None, None, 0);
+    let (mut hook_turn, mut client_id, mut hook_started, mut messages, mut completed) =
+        (None, None, 0, 0, 0);
     for event in rx.try_iter() {
+        hook_started += usize::from(matches!(&event.msg, EventMsg::HookStarted(_)));
+        messages += usize::from(matches!(&event.msg, EventMsg::UserMessage(_)));
         match event.msg {
             EventMsg::HookStarted(event) => hook_turn = event.turn_id,
             EventMsg::HookCompleted(_) => completed += 1,
@@ -10940,21 +10937,22 @@ async fn closed_regular_uses_compatibility_recording_once() {
             _ => panic!("rejected task emitted lifecycle event"),
         }
     }
-    assert_eq!(Some(tc.sub_id.clone()), hook_turn);
-    assert_eq!((Some("client-b1a".to_string()), 1), (client_id, completed));
+    assert_eq!((Some(tc.sub_id.clone()), 1), (hook_turn, hook_started));
+    assert_eq!((Some("client-b1a".to_string()), 1), (client_id, messages));
+    assert_eq!(1, completed);
     assert!(sess.active_turn.lock().await.is_none());
-    assert_enrichment_cancelled(&tc);
 }
 async fn assert_closed_synthetic<T: SessionTask>(task: T) {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
     install_user_prompt_test_hook(&sess).await;
     tc.turn_metadata_state.spawn_git_enrichment_task();
+    assert!(tc.turn_metadata_state.has_git_enrichment_task_for_test());
     sess.close_task_admission().await;
     sess.start_task(Arc::clone(&tc), test_input("synthetic discard", None), task)
         .await;
+    assert!(!tc.turn_metadata_state.has_git_enrichment_task_for_test());
     assert!(sess.clone_history().await.raw_items().is_empty());
     assert!(sess.active_turn.lock().await.is_none() && rx.try_recv().is_err());
-    assert_enrichment_cancelled(&tc);
 }
 #[tokio::test]
 async fn closed_review_compact_and_shell_do_not_record() {
