@@ -4855,8 +4855,11 @@ name = "codex-worktree"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "codex-git-utils",
+ "codex-protocol",
  "dunce",
  "pretty_assertions",
+ "serde",
  "serde_json",
  "tempfile",
 ]
