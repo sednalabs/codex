@@ -10077,7 +10077,10 @@ async fn enqueue_test_sources(sess: &Session) {
 }
 
 #[tokio::test]
-#[expect(clippy::await_holding_invalid_type, reason = "deterministic source lock")]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "deterministic source lock"
+)]
 async fn task_input_transfer_preserves_or_commits_sources_at_atomic_boundaries() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     enqueue_test_sources(&sess).await;
@@ -10921,7 +10924,7 @@ async fn closed_regular_uses_compatibility_recording_once() {
         user_input_texts(sess.clone_history().await.raw_items())
     );
     let (mut hook_turn, mut client_id, mut starts, mut users, mut done) = (None, None, 0, 0, 0);
-    for event in rx.try_iter() {
+    while let Ok(event) = rx.try_recv() {
         starts += usize::from(matches!(&event.msg, EventMsg::HookStarted(_)));
         users += usize::from(matches!(&event.msg, EventMsg::UserMessage(_)));
         match event.msg {
