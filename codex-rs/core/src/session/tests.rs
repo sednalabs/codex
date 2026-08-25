@@ -132,6 +132,8 @@ use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ConversationAudioParams;
 use codex_protocol::protocol::CreditsSnapshot;
 use codex_protocol::protocol::GranularApprovalConfig;
+use codex_protocol::protocol::HookCompletedEvent;
+use codex_protocol::protocol::HookStartedEvent;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -2833,6 +2835,7 @@ async fn turn_start_lifecycle_exposes_turn_metadata_and_token_baseline() {
 
     struct TurnStartRecorder {
         records: Arc<std::sync::Mutex<Vec<RecordedTurnStart>>>,
+        ready_tx: async_channel::Sender<()>,
     }
 
     impl codex_extension_api::TurnLifecycleContributor for TurnStartRecorder {
@@ -2860,15 +2863,18 @@ async fn turn_start_lifecycle_exposes_turn_metadata_and_token_baseline() {
                             .get::<ThreadTurnStartMarker>()
                             .is_some(),
                     });
+                self.ready_tx.send(()).await.expect("turn start receiver");
             })
         }
     }
 
     let (mut session, turn_context) = make_session_and_context().await;
     let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (ready_tx, ready_rx) = async_channel::bounded(1);
     let mut builder = codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
     builder.turn_lifecycle_contributor(Arc::new(TurnStartRecorder {
         records: Arc::clone(&records),
+        ready_tx,
     }));
     session.services.extensions = Arc::new(builder.build());
     session
@@ -2911,6 +2917,10 @@ async fn turn_start_lifecycle_exposes_turn_metadata_and_token_baseline() {
         },
     )
     .await;
+    timeout(Duration::from_secs(2), ready_rx.recv())
+        .await
+        .expect("turn start readiness timeout")
+        .expect("turn start receiver");
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 
     let actual = records
@@ -10029,6 +10039,125 @@ async fn recv_terminal_event(
     .expect("terminal event should be delivered")
 }
 
+async fn recv_compat_event(
+    rx: &async_channel::Receiver<Event>,
+    turn_context: &TurnContext,
+    label: &str,
+) -> Event {
+    let event = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap_or_else(|_| panic!("{label} timeout"))
+        .unwrap_or_else(|_| panic!("{label} channel closed"));
+    assert_eq!(turn_context.sub_id, event.id, "{label} outer event id");
+    event
+}
+
+fn assert_compat_user_item(
+    item: TurnItem,
+    content: &[UserInput],
+    client_id: &Option<String>,
+    expected_id: Option<&str>,
+) -> String {
+    let item = match item {
+        TurnItem::UserMessage(item) => item,
+        other => panic!("expected user message item, got {other:?}"),
+    };
+    assert_eq!(content, item.content);
+    assert_eq!(client_id, &item.client_id);
+    if let Some(expected_id) = expected_id {
+        assert_eq!(expected_id, item.id);
+    } else {
+        assert!(!item.id.is_empty(), "user message item id");
+    }
+    item.id
+}
+
+async fn assert_compat_user_prefix(
+    rx: &async_channel::Receiver<Event>,
+    turn_context: &TurnContext,
+    expected_thread_id: ThreadId,
+    text: &str,
+    client_id: Option<&str>,
+) {
+    let expected = user_message(text);
+    let content = vec![UserInput::Text {
+        text: text.to_string(),
+        text_elements: Vec::new(),
+    }];
+    let client_id = client_id.map(ToOwned::to_owned);
+    let raw = recv_compat_event(rx, turn_context, "raw user message").await;
+    match raw.msg {
+        EventMsg::RawResponseItem(raw) => assert_eq!(
+            strip_response_item_ids(&strip_metadata_from_items(std::slice::from_ref(&raw.item))),
+            strip_response_item_ids(&strip_metadata_from_items(std::slice::from_ref(&expected))),
+        ),
+        other => panic!("expected raw user message, got {other:?}"),
+    }
+    let started = recv_compat_event(rx, turn_context, "user item started").await;
+    let started_id = match started.msg {
+        EventMsg::ItemStarted(event) => {
+            assert_eq!(expected_thread_id, event.thread_id);
+            assert_eq!(turn_context.sub_id, event.turn_id);
+            assert_compat_user_item(event.item, &content, &client_id, None)
+        }
+        other => panic!("expected user item started, got {other:?}"),
+    };
+    let completed = recv_compat_event(rx, turn_context, "user item completed").await;
+    match completed.msg {
+        EventMsg::ItemCompleted(event) => {
+            assert_eq!(expected_thread_id, event.thread_id);
+            assert_eq!(turn_context.sub_id, event.turn_id);
+            assert_compat_user_item(event.item, &content, &client_id, Some(&started_id));
+        }
+        other => panic!("expected user item completed, got {other:?}"),
+    }
+    let legacy = recv_compat_event(rx, turn_context, "legacy user message").await;
+    match legacy.msg {
+        EventMsg::UserMessage(event) => {
+            assert_eq!(text, event.message);
+            assert_eq!(client_id, event.client_id);
+        }
+        other => panic!("expected legacy user message, got {other:?}"),
+    }
+}
+
+async fn assert_interrupted_compat_prefix(
+    rx: &async_channel::Receiver<Event>,
+    turn_context: &TurnContext,
+    expected_thread_id: ThreadId,
+    text: &str,
+) {
+    assert_compat_user_prefix(rx, turn_context, expected_thread_id, text, None).await;
+    let marker = recv_compat_event(rx, turn_context, "interrupted marker").await;
+    let expected_marker = crate::tasks::interrupted_turn_history_marker(
+        crate::tasks::InterruptedTurnHistoryMarker::from_config_and_version(
+            turn_context.config.as_ref(),
+            turn_context.multi_agent_version,
+        ),
+    )
+    .expect("interrupt marker enabled");
+    match marker.msg {
+        EventMsg::RawResponseItem(marker) => assert_eq!(
+            strip_response_item_ids(&strip_metadata_from_items(std::slice::from_ref(
+                &marker.item
+            ))),
+            strip_response_item_ids(&strip_metadata_from_items(std::slice::from_ref(
+                &expected_marker,
+            ))),
+        ),
+        other => panic!("expected interrupted marker, got {other:?}"),
+    }
+    let aborted = recv_compat_event(rx, turn_context, "turn aborted").await;
+    match aborted.msg {
+        EventMsg::TurnAborted(event) => {
+            assert_eq!(Some(turn_context.sub_id.clone()), event.turn_id);
+            assert_eq!(TurnAbortReason::Interrupted, event.reason);
+        }
+        other => panic!("expected turn aborted, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err(), "events after turn aborted");
+}
+
 #[derive(Clone, Copy)]
 struct NeverEndingTask {
     kind: TaskKind,
@@ -10482,24 +10611,7 @@ async fn abort_regular_task_emits_marker_before_turn_aborted() {
     .await;
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
-
-    // Interrupts surface the model-visible `<turn_aborted>` marker before the abort event.
-    let marker_evt = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-        .await
-        .expect("timeout waiting for marker event")
-        .expect("event");
-    assert!(matches!(marker_evt.msg, EventMsg::RawResponseItem(_)));
-
-    let evt = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-        .await
-        .expect("timeout waiting for event")
-        .expect("event");
-    match evt.msg {
-        EventMsg::TurnAborted(e) => assert_eq!(TurnAbortReason::Interrupted, e.reason),
-        other => panic!("unexpected event: {other:?}"),
-    }
-    // No extra events should be emitted after an abort.
-    assert!(rx.try_recv().is_err());
+    assert_interrupted_compat_prefix(&rx, &tc, sess.thread_id, "hello").await;
 }
 
 #[tokio::test]
@@ -10523,24 +10635,7 @@ async fn abort_gracefully_emits_marker_before_turn_aborted() {
     .await;
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
-
-    // Gracefully cancelled tasks surface the model-visible marker before the abort event too.
-    let marker_evt = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-        .await
-        .expect("timeout waiting for marker event")
-        .expect("event");
-    assert!(matches!(marker_evt.msg, EventMsg::RawResponseItem(_)));
-
-    let evt = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-        .await
-        .expect("timeout waiting for event")
-        .expect("event");
-    match evt.msg {
-        EventMsg::TurnAborted(e) => assert_eq!(TurnAbortReason::Interrupted, e.reason),
-        other => panic!("unexpected event: {other:?}"),
-    }
-    // No extra events should be emitted after an abort.
-    assert!(rx.try_recv().is_err());
+    assert_interrupted_compat_prefix(&rx, &tc, sess.thread_id, "hello").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -10923,20 +11018,29 @@ async fn closed_regular_uses_compatibility_recording_once() {
         vec!["closed regular distinctive"],
         user_input_texts(sess.clone_history().await.raw_items())
     );
-    let (mut hook_turn, mut client_id, mut starts, mut users, mut done) = (None, None, 0, 0, 0);
-    while let Ok(event) = rx.try_recv() {
-        starts += usize::from(matches!(&event.msg, EventMsg::HookStarted(_)));
-        users += usize::from(matches!(&event.msg, EventMsg::UserMessage(_)));
-        match event.msg {
-            EventMsg::HookStarted(event) => hook_turn = event.turn_id,
-            EventMsg::HookCompleted(_) => done += 1,
-            EventMsg::UserMessage(event) => client_id = event.client_id,
-            _ => panic!("rejected task emitted lifecycle event"),
+    let hook_started = recv_compat_event(&rx, &tc, "hook started").await;
+    match hook_started.msg {
+        EventMsg::HookStarted(event) => {
+            assert_eq!(Some(tc.sub_id.clone()), event.turn_id);
         }
+        other => panic!("expected hook started, got {other:?}"),
     }
-    assert_eq!((Some(tc.sub_id.clone()), 1), (hook_turn, starts));
-    assert_eq!((Some("client-b1a".to_string()), 1), (client_id, users));
-    assert_eq!(1, done);
+    let hook_completed = recv_compat_event(&rx, &tc, "hook completed").await;
+    match hook_completed.msg {
+        EventMsg::HookCompleted(event) => {
+            assert_eq!(Some(tc.sub_id.clone()), event.turn_id);
+        }
+        other => panic!("expected hook completed, got {other:?}"),
+    }
+    assert_compat_user_prefix(
+        &rx,
+        &tc,
+        sess.thread_id,
+        "closed regular distinctive",
+        Some("client-b1a"),
+    )
+    .await;
+    assert!(rx.try_recv().is_err(), "closed task emitted extra events");
     assert!(sess.active_turn.lock().await.is_none());
 }
 async fn assert_closed_synthetic<T: SessionTask>(task: T) {
