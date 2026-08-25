@@ -581,12 +581,12 @@ impl Session {
                 return Err(reserved_input.unwrap_or_default());
             }
             if let Some(input) = reserved_input.as_ref() {
-                turn_state
-                    .lock()
-                    .await
-                    .pending_input
-                    .items
-                    .extend(input.iter().cloned().map(TurnInput::ResponseItem));
+                self.input_queue
+                    .extend_pending_input_for_turn_state(
+                        turn_state.as_ref(),
+                        input.iter().cloned().map(TurnInput::ResponseItem).collect(),
+                    )
+                    .await;
             }
             let Some(turn) = active.as_mut() else {
                 return Err(reserved_input.unwrap_or_default());
