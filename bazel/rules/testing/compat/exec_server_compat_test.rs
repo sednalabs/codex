@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -11,6 +10,11 @@ use codex_exec_server::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
 use codex_exec_server::CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR;
 use codex_exec_server::CODEX_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR;
 use codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR;
+use codex_exec_server_test_support::relay::TEST_TIMEOUT as VERSION_SKEW_TIMEOUT;
+use codex_exec_server_test_support::relay::accept_websocket;
+use codex_exec_server_test_support::relay::assert_relay_data_is_encrypted;
+use codex_exec_server_test_support::relay::proxy_relay_frames;
+use codex_exec_server_test_support::relay::registered_executor_public_key;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -31,19 +35,13 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-use crate::relay_support::ENVIRONMENT_ID;
-use crate::relay_support::EXECUTOR_REGISTRATION_ID;
-use crate::relay_support::HARNESS_KEY_AUTHORIZATION;
-use crate::relay_support::REGISTRY_TOKEN;
-use crate::relay_support::accept_websocket;
-use crate::relay_support::assert_relay_data_is_encrypted;
-use crate::relay_support::proxy_relay_frames;
-use crate::relay_support::registered_executor_public_key;
-
+const ENVIRONMENT_ID: &str = "env-noise-relay-test";
+const EXECUTOR_REGISTRATION_ID: &str = "registration-1";
+const HARNESS_KEY_AUTHORIZATION: &str = "harness-key-authorization";
+const REGISTRY_TOKEN: &str = "registry-token";
 const RELEASED_CODEX_ENV_VAR: &str = "CODEX_TEST_RELEASED_CODEX";
 const CURRENT_CODEX_ENV_VAR: &str = "CODEX_TEST_CURRENT_CODEX";
 const EXECUTOR_MARKER_ENV_VAR: &str = "CODEX_EXECUTOR_VERSION_SKEW_MARKER";
-const VERSION_SKEW_TIMEOUT: Duration = Duration::from_secs(30);
 const EXPECTED_OUTPUT: &str = "executor-version-skew-ok";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
