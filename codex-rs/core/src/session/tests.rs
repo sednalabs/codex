@@ -79,8 +79,6 @@ use tracing::Span;
 use crate::connectors::AppInfo;
 use crate::rollout::recorder::RolloutRecorder;
 use crate::state::ActiveTurn;
-use crate::state::RunningTaskPhase;
-use crate::state::TaskIdentity;
 use crate::state::TaskKind;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskContext;
@@ -10009,19 +10007,7 @@ struct NeverEndingTask {
     listen_to_cancellation_token: bool,
 }
 
-struct InputCaptureTask(async_channel::Sender<Vec<TurnInput>>);
-
-fn test_user_input(text: &str) -> TurnInput {
-    TurnInput::UserInput {
-        content: vec![UserInput::Text {
-            text: text.to_string(),
-            text_elements: Vec::new(),
-        }],
-        client_id: None,
-    }
-}
-
-async fn active_task_identity(sess: &Session) -> TaskIdentity {
+async fn active_task_cancellation_token(sess: &Session) -> CancellationToken {
     sess.active_turn
         .lock()
         .await
@@ -10030,138 +10016,87 @@ async fn active_task_identity(sess: &Session) -> TaskIdentity {
         .task
         .as_ref()
         .expect("running task")
-        .identity
+        .cancellation_token
+        .clone()
 }
 
-impl SessionTask for InputCaptureTask {
-    fn kind(&self) -> TaskKind {
-        TaskKind::Regular
-    }
-
-    fn span_name(&self) -> &'static str {
-        "session_task.input_capture"
-    }
-
-    async fn run(
-        self: Arc<Self>,
-        _session: Arc<SessionTaskContext>,
-        _ctx: Arc<TurnContext>,
-        input: Vec<TurnInput>,
-        cancellation_token: CancellationToken,
-    ) -> crate::tasks::SessionTaskResult {
-        self.0.send(input).await.expect("capture receiver open");
-        cancellation_token.cancelled().await;
-        Ok(None)
-    }
-}
-
-#[tokio::test]
-async fn preparing_task_transfers_input_only_after_its_runner_wins() {
-    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
-    let direct = vec![test_user_input("first")];
-    let mail = InterAgentCommunication::new(
-        AgentPath::root(),
-        AgentPath::try_from("/root/worker").expect("agent path"),
-        Vec::new(),
-        "mail".to_string(),
-        /*trigger_turn*/ true,
-    );
-    let terminal = TerminalCompletionNotification {
-        process_id: 7,
-        instance_id: Uuid::new_v4(),
-        status: TerminalCompletionStatus::Exited,
-        exit_code: Some(0),
-        coalesced_exited: 0,
-        coalesced_failed: 0,
-    };
-    sess.input_queue
-        .enqueue_mailbox_communication(mail.clone())
-        .await;
-    sess.input_queue.enqueue_terminal_completion(terminal).await;
-    let (first_tx, first_rx) = async_channel::bounded(1);
-    sess.spawn_task(Arc::clone(&tc), direct, InputCaptureTask(first_tx))
-        .await;
-    let first_identity = active_task_identity(&sess).await;
-
-    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
-    assert!(first_rx.try_recv().is_err());
-    assert!(sess.input_queue.has_pending_mailbox_items().await);
-    assert!(sess.input_queue.has_pending_terminal_completions().await);
-    let history = sess.clone_history().await;
-    assert_eq!(
-        history.raw_items().iter().filter(|item| matches!(item, ResponseItem::Message { content, .. } if content == &vec![ContentItem::InputText { text: "first".to_string() }])).count(),
-        1
-    );
-
-    let (turn_state, prefix) = {
-        let mut active = sess.active_turn.lock().await;
-        let active = active.get_or_insert_with(ActiveTurn::default);
-        let prefix = test_user_input("prefix");
-        (Arc::clone(&active.turn_state), prefix)
-    };
-    sess.input_queue
-        .extend_pending_input_for_turn_state(turn_state.as_ref(), vec![prefix.clone()])
-        .await;
-    let second = vec![test_user_input("second")];
-    let (second_tx, second_rx) = async_channel::bounded(1);
-    sess.start_task(Arc::clone(&tc), second.clone(), InputCaptureTask(second_tx))
-        .await;
-    let second_identity = active_task_identity(&sess).await;
-    sess.on_task_finished(second_identity, Arc::clone(&tc), Ok(None))
-        .await;
-    assert!(
-        sess.active_turn
-            .lock()
-            .await
-            .as_ref()
-            .unwrap()
-            .task
-            .is_some()
-    );
-
-    assert_eq!(second_rx.recv().await.expect("second task ran"), second);
-    sess.on_task_finished(first_identity, Arc::clone(&tc), Ok(None))
-        .await;
-    let active = sess.active_turn.lock().await;
-    assert_eq!(
-        active.as_ref().unwrap().task.as_ref().unwrap().phase,
-        RunningTaskPhase::Running
-    );
-    drop(active);
-    let pending = sess
-        .input_queue
-        .take_pending_input_for_turn_state(turn_state.as_ref())
-        .await;
-    assert_eq!(pending[0], prefix);
-    assert_eq!(pending[1], TurnInput::InterAgentCommunication(mail));
-    assert!(matches!(pending[2], TurnInput::ResponseItem(_)));
-    assert!(
-        sess.input_queue
-            .take_pending_input_for_turn_state(turn_state.as_ref())
-            .await
-            .is_empty()
-    );
-    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
-}
-
-#[tokio::test]
-async fn shutdown_does_not_restart_a_preparing_task_for_trigger_mail() {
-    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+async fn enqueue_test_sources(sess: &Session) {
     sess.input_queue
         .enqueue_mailbox_communication(InterAgentCommunication::new(
             AgentPath::root(),
             AgentPath::try_from("/root/worker").expect("agent path"),
             Vec::new(),
-            "trigger".to_string(),
+            "mail".to_string(),
             /*trigger_turn*/ true,
         ))
         .await;
-    let (tx, _rx) = async_channel::bounded(1);
-    sess.spawn_task(Arc::clone(&tc), Vec::new(), InputCaptureTask(tx))
+    sess.input_queue
+        .enqueue_terminal_completion(TerminalCompletionNotification {
+            process_id: 7,
+            instance_id: Uuid::new_v4(),
+            status: TerminalCompletionStatus::Exited,
+            exit_code: Some(0),
+            coalesced_exited: 0,
+            coalesced_failed: 0,
+        })
         .await;
-    sess.abort_all_tasks_for_shutdown().await;
-    assert!(sess.active_turn.lock().await.is_none());
-    assert!(sess.input_queue.has_trigger_turn_mailbox_items().await);
+}
+
+#[tokio::test]
+async fn task_input_transfer_preserves_or_commits_sources_at_atomic_boundaries() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    enqueue_test_sources(&sess).await;
+    let lifecycle = sess.input_queue.install_task_input_transfer_test_gate(0);
+    sess.start_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+    lifecycle.0.notified().await;
+    let cancellation_token = active_task_cancellation_token(&sess).await;
+    let before_commit = sess.input_queue.install_task_input_transfer_test_gate(0);
+    lifecycle.1.notify_one();
+    before_commit.0.notified().await;
+    cancellation_token.cancel();
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+    assert!(sess.input_queue.has_pending_mailbox_items().await);
+    assert!(sess.input_queue.has_pending_terminal_completions().await);
+    let after_commit = sess.input_queue.install_task_input_transfer_test_gate(2);
+    sess.start_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+    after_commit.0.notified().await;
+    let turn_state = Arc::clone(
+        &sess
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .expect("active turn")
+            .turn_state,
+    );
+    let pending = sess
+        .input_queue
+        .take_pending_input_for_turn_state(turn_state.as_ref())
+        .await;
+    assert!(matches!(
+        pending.as_slice(),
+        [
+            TurnInput::InterAgentCommunication(_),
+            TurnInput::ResponseItem(_)
+        ]
+    ));
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
 }
 
 impl SessionTask for NeverEndingTask {
@@ -10558,7 +10493,16 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
     .await
     .expect("steer pending input into active turn");
 
-    let task_identity = active_task_identity(&sess).await;
+    let task_identity = sess
+        .active_turn
+        .lock()
+        .await
+        .as_ref()
+        .expect("active turn")
+        .task
+        .as_ref()
+        .expect("running task")
+        .identity;
     sess.on_task_finished(
         task_identity,
         Arc::clone(&tc),

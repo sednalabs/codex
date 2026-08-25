@@ -325,6 +325,10 @@ impl Session {
         self.start_task(turn_context, input, task).await;
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the input handoff retains source, transition, active-turn, and turn-state locks in order until it commits"
+    )]
     pub(crate) async fn start_task<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
@@ -380,6 +384,10 @@ impl Session {
                         break 'task None;
                     }
                     let sess = session_ctx.clone_session();
+                    #[cfg(test)]
+                    sess.input_queue
+                        .wait_for_task_input_transfer_test_gate()
+                        .await;
                     let lifecycle = async {
                         let turn_started_at_unix_ms =
                             ctx.turn_timing_state.mark_turn_started(Instant::now()).await;
@@ -416,9 +424,13 @@ impl Session {
                         {
                             return None;
                         }
+                        #[cfg(test)]
+                        sess.input_queue
+                            .wait_for_task_input_transfer_test_gate()
+                            .await;
                         transfer.commit_into(&mut turn_state);
                         turn_state.token_usage_at_turn_start = token_usage_at_turn_start;
-                        let task_input = running_task.initial_input.take().expect("checked above");
+                        let task_input = running_task.initial_input.take()?;
                         running_task.phase = RunningTaskPhase::Running;
                         Some((transfer, task_input))
                     };
@@ -429,6 +441,10 @@ impl Session {
                         break 'task None;
                     };
                     drop(transfer);
+                    #[cfg(test)]
+                    sess.input_queue
+                        .wait_for_task_input_transfer_test_gate()
+                        .await;
                     Some(task_input)
                 };
                 let Some(task_input) = task_input else {

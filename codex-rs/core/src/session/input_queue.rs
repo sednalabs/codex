@@ -43,6 +43,9 @@ pub(crate) struct TurnInputQueue {
     items: Vec<TurnInput>,
 }
 
+#[cfg(test)]
+pub(crate) type TaskInputTransferTestBarrier = Arc<(Notify, Notify)>;
+
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
@@ -55,6 +58,8 @@ pub(crate) struct InputQueue {
     pending_residency_submissions: StdMutex<HashSet<String>>,
     #[cfg(test)]
     residency_submission_changed: Notify,
+    #[cfg(test)]
+    task_input_transfer_test_gate: StdMutex<Option<(usize, TaskInputTransferTestBarrier)>>,
 }
 
 impl InputQueue {
@@ -73,6 +78,8 @@ impl InputQueue {
             pending_residency_submissions: StdMutex::new(HashSet::new()),
             #[cfg(test)]
             residency_submission_changed: Notify::new(),
+            #[cfg(test)]
+            task_input_transfer_test_gate: StdMutex::new(None),
         }
     }
 
@@ -85,6 +92,42 @@ impl InputQueue {
         let mailbox = self.mailbox_pending_mails.lock().await;
         let terminal = self.terminal_completions.lock().await;
         PendingTurnInputTransfer { mailbox, terminal }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_task_input_transfer_test_gate(
+        &self,
+        steps_before_gate: usize,
+    ) -> TaskInputTransferTestBarrier {
+        let barrier = Arc::new((Notify::new(), Notify::new()));
+        *self
+            .task_input_transfer_test_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((steps_before_gate, Arc::clone(&barrier)));
+        barrier
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_task_input_transfer_test_gate(&self) {
+        let gate = {
+            let mut gate = self
+                .task_input_transfer_test_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some((steps_before_gate, _)) = gate.as_mut() else {
+                return;
+            };
+            if *steps_before_gate > 0 {
+                *steps_before_gate -= 1;
+                return;
+            }
+            gate.take()
+        };
+        if let Some((_, barrier)) = gate {
+            barrier.0.notify_one();
+            barrier.1.notified().await;
+        }
     }
 
     pub(crate) async fn begin_residency_activity(&self) -> OwnedMutexGuard<()> {
@@ -499,6 +542,7 @@ mod tests {
     use crate::context::TerminalCompletionStatus;
     use codex_protocol::AgentPath;
     use pretty_assertions::assert_eq;
+    use std::future::Future;
 
     fn make_mail(
         author: AgentPath,
@@ -577,8 +621,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropped_pending_turn_transfer_keeps_both_canonical_queues() {
-        let input_queue = Arc::new(InputQueue::new());
+    async fn dropping_pending_turn_transfer_keeps_both_canonical_queues() {
+        let input_queue = InputQueue::new();
         let mail = make_mail(
             AgentPath::root(),
             AgentPath::try_from("/root/worker").expect("agent path"),
@@ -594,25 +638,25 @@ mod tests {
             .await;
 
         let mailbox = input_queue.mailbox_pending_mails.lock().await;
-        let waiting_for_mailbox = tokio::spawn({
-            let input_queue = Arc::clone(&input_queue);
-            async move { input_queue.pending_turn_input_transfer().await }
-        });
-        tokio::task::yield_now().await;
-        waiting_for_mailbox.abort();
-        let _ = waiting_for_mailbox.await;
+        let mut waiting_for_mailbox = Box::pin(input_queue.pending_turn_input_transfer());
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                waiting_for_mailbox.as_mut().poll(cx).is_pending()
+            ))
+            .await
+        );
+        drop(waiting_for_mailbox);
         drop(mailbox);
 
         let terminal_lock = input_queue.terminal_completions.lock().await;
-        let waiting_for_terminal = tokio::spawn({
-            let input_queue = Arc::clone(&input_queue);
-            async move { input_queue.pending_turn_input_transfer().await }
-        });
-        while input_queue.mailbox_pending_mails.try_lock().is_ok() {
-            tokio::task::yield_now().await;
-        }
-        waiting_for_terminal.abort();
-        let _ = waiting_for_terminal.await;
+        let mut waiting_for_terminal = Box::pin(input_queue.pending_turn_input_transfer());
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                waiting_for_terminal.as_mut().poll(cx).is_pending()
+            ))
+            .await
+        );
+        drop(waiting_for_terminal);
         drop(terminal_lock);
         assert_eq!(
             input_queue.mailbox_pending_mails.lock().await.pop_front(),
