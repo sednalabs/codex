@@ -14,6 +14,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
+use tokio::sync::MutexGuard;
 #[cfg(test)]
 use tokio::sync::Notify;
 use tokio::sync::OwnedMutexGuard;
@@ -45,6 +46,7 @@ pub(crate) struct TurnInputQueue {
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
+    task_transition: Mutex<()>,
     mailbox_pending_mails: Mutex<VecDeque<InterAgentCommunication>>,
     terminal_completions: Mutex<VecDeque<TerminalCompletionNotification>>,
     residency_transition: Arc<Mutex<()>>,
@@ -62,6 +64,7 @@ impl InputQueue {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
         Self {
             activity_tx,
+            task_transition: Mutex::new(()),
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
             terminal_completions: Mutex::new(VecDeque::new()),
             residency_transition: Arc::new(Mutex::new(())),
@@ -71,6 +74,17 @@ impl InputQueue {
             #[cfg(test)]
             residency_submission_changed: Notify::new(),
         }
+    }
+
+    pub(crate) async fn lock_task_transition(&self) -> MutexGuard<'_, ()> {
+        self.task_transition.lock().await
+    }
+
+    /// Lock mailbox before terminal; acquisition is non-consuming until commit.
+    pub(crate) async fn pending_turn_input_transfer(&self) -> PendingTurnInputTransfer<'_> {
+        let mailbox = self.mailbox_pending_mails.lock().await;
+        let terminal = self.terminal_completions.lock().await;
+        PendingTurnInputTransfer { mailbox, terminal }
     }
 
     pub(crate) async fn begin_residency_activity(&self) -> OwnedMutexGuard<()> {
@@ -448,6 +462,29 @@ impl InputQueue {
     }
 }
 
+pub(crate) struct PendingTurnInputTransfer<'a> {
+    mailbox: MutexGuard<'a, VecDeque<InterAgentCommunication>>,
+    terminal: MutexGuard<'a, VecDeque<TerminalCompletionNotification>>,
+}
+
+impl PendingTurnInputTransfer<'_> {
+    pub(crate) fn commit_into(&mut self, turn_state: &mut TurnState) {
+        if !turn_state.accepts_mailbox_delivery_for_current_turn() {
+            return;
+        }
+        turn_state.pending_input.items.extend(
+            self.mailbox
+                .drain(..)
+                .map(TurnInput::InterAgentCommunication),
+        );
+        turn_state.pending_input.items.extend(
+            self.terminal.drain(..).map(|completion| {
+                TurnInput::ResponseItem(ContextualUserFragment::into(completion))
+            }),
+        );
+    }
+}
+
 impl TurnInputQueue {
     fn has_user_input(&self) -> bool {
         self.items
@@ -537,6 +574,54 @@ mod tests {
             .await;
 
         assert_eq!(input_queue.terminal_completions.lock().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn dropped_pending_turn_transfer_keeps_both_canonical_queues() {
+        let input_queue = Arc::new(InputQueue::new());
+        let mail = make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            "mail",
+            /*trigger_turn*/ true,
+        );
+        let terminal = terminal_completion(/*process_id*/ 7, uuid::Uuid::new_v4());
+        input_queue
+            .enqueue_mailbox_communication(mail.clone())
+            .await;
+        input_queue
+            .enqueue_terminal_completion(terminal.clone())
+            .await;
+
+        let mailbox = input_queue.mailbox_pending_mails.lock().await;
+        let waiting_for_mailbox = tokio::spawn({
+            let input_queue = Arc::clone(&input_queue);
+            async move { input_queue.pending_turn_input_transfer().await }
+        });
+        tokio::task::yield_now().await;
+        waiting_for_mailbox.abort();
+        let _ = waiting_for_mailbox.await;
+        drop(mailbox);
+
+        let terminal_lock = input_queue.terminal_completions.lock().await;
+        let waiting_for_terminal = tokio::spawn({
+            let input_queue = Arc::clone(&input_queue);
+            async move { input_queue.pending_turn_input_transfer().await }
+        });
+        while input_queue.mailbox_pending_mails.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        waiting_for_terminal.abort();
+        let _ = waiting_for_terminal.await;
+        drop(terminal_lock);
+        assert_eq!(
+            input_queue.mailbox_pending_mails.lock().await.pop_front(),
+            Some(mail)
+        );
+        assert_eq!(
+            input_queue.terminal_completions.lock().await.pop_front(),
+            Some(terminal)
+        );
     }
 
     #[tokio::test]

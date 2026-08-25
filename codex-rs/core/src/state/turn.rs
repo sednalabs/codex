@@ -21,6 +21,7 @@ use tokio::sync::oneshot;
 
 use crate::agent::control::AgentExecutionGuard;
 use crate::mcp_tool_call::McpToolApprovalMetadata;
+use crate::session::TurnInput;
 use crate::session::TurnInputQueue;
 use crate::session::turn_context::TurnContext;
 use crate::tasks::AnySessionTask;
@@ -71,10 +72,22 @@ pub(crate) enum TaskKind {
     Compact,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TaskIdentity(pub(crate) uuid::Uuid);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RunningTaskPhase {
+    Preparing,
+    Running,
+}
+
 pub(crate) struct RunningTask {
     pub(crate) done: Arc<Notify>,
+    pub(crate) identity: TaskIdentity,
+    pub(crate) phase: RunningTaskPhase,
     pub(crate) kind: TaskKind,
     pub(crate) task: Arc<dyn AnySessionTask>,
+    pub(crate) initial_input: Option<Vec<TurnInput>>,
     pub(crate) cancellation_token: CancellationToken,
     pub(crate) handle: AbortOnDropHandle<()>,
     pub(crate) turn_context: Arc<TurnContext>,

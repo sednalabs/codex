@@ -582,7 +582,7 @@ async fn shutdown_session_runtime(sess: &Arc<Session>) {
         startup_prewarm.abort().await;
     }
     let _ = sess.conversation.shutdown().await;
-    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    sess.abort_all_tasks_for_shutdown().await;
     sess.services
         .unified_exec_manager
         .terminate_all_processes()
