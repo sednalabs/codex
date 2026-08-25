@@ -8,6 +8,8 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::protocol::AdditionalContextEntry as CoreAdditionalContextEntry;
 use codex_protocol::protocol::AdditionalContextKind as CoreAdditionalContextKind;
+use codex_protocol::protocol::TurnSettingsUpdate;
+use codex_protocol::protocol::TurnSettingsUpdateOutcome;
 use codex_skills::system_cache_root_dir;
 
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
@@ -195,6 +197,45 @@ impl TurnRequestProcessor {
         self.thread_settings_update_inner(request_id, params)
             .await
             .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn turn_settings_update(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: TurnSettingsUpdateParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+            .await?;
+        let (reply, outcome) = oneshot::channel();
+        self.submit_core_op(
+            request_id,
+            &thread,
+            Op::TurnSettings {
+                turn_id: params.turn_id,
+                update: TurnSettingsUpdate {
+                    model: params.model,
+                    // Match thread/settings/update: public null does not clear effort.
+                    effort: params.effort.map(Some),
+                    summary: params.summary,
+                    service_tier: params.service_tier,
+                },
+                reply,
+            },
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to submit turn settings: {err}")))?;
+        let outcome = outcome
+            .await
+            .map_err(|_| internal_error("turn settings operation ended before replying"))?;
+        let status = match outcome {
+            TurnSettingsUpdateOutcome::Applied => TurnSettingsUpdateStatus::Applied,
+            TurnSettingsUpdateOutcome::TargetUnavailable => {
+                TurnSettingsUpdateStatus::TargetUnavailable
+            }
+            TurnSettingsUpdateOutcome::Rejected { reason } => return Err(invalid_request(reason)),
+        };
+        Ok(Some(TurnSettingsUpdateResponse { status }.into()))
     }
 
     pub(crate) async fn turn_steer(

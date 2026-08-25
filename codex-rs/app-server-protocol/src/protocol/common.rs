@@ -973,6 +973,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::TurnStartResponse,
     },
+    #[experimental("turn/settings/update")]
+    TurnSettingsUpdate => "turn/settings/update" {
+        params: v2::TurnSettingsUpdateParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::TurnSettingsUpdateResponse,
+    },
     TurnSteer => "turn/steer" {
         params: v2::TurnSteerParams,
         inspect_params: true,

@@ -1455,6 +1455,11 @@ impl MessageProcessor {
             ClientRequest::TurnSteer { params, .. } => {
                 self.turn_processor.turn_steer(&request_id, params).await
             }
+            ClientRequest::TurnSettingsUpdate { params, .. } => {
+                self.turn_processor
+                    .turn_settings_update(&request_id, params)
+                    .await
+            }
             ClientRequest::TurnInterrupt { params, .. } => {
                 self.turn_processor
                     .turn_interrupt(&request_id, params)

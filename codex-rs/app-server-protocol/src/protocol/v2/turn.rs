@@ -35,6 +35,54 @@ pub enum TurnStatus {
 }
 
 // Turn APIs
+/// Experimental settings changes for one running turn, not future turns.
+/// Unsupported fields are rejected rather than silently ignored.
+/// Any live task kind may accept publication. Child sessions and consumers of
+/// frozen initial settings are unchanged.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct TurnSettingsUpdateParams {
+    pub thread_id: String,
+    pub turn_id: String,
+    /// Omission or `null` leaves the model unchanged.
+    #[ts(optional = nullable)]
+    pub model: Option<String>,
+    /// Omission or `null` leaves the effort unchanged.
+    #[ts(optional = nullable)]
+    pub effort: Option<ReasoningEffort>,
+    /// Omission or `null` leaves the summary preference unchanged.
+    #[ts(optional = nullable)]
+    pub summary: Option<ReasoningSummary>,
+    /// `null` clears the requested tier; omission leaves it unchanged.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub service_tier: Option<Option<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct TurnSettingsUpdateResponse {
+    pub status: TurnSettingsUpdateStatus,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum TurnSettingsUpdateStatus {
+    /// Published for subsequent captures, even if the values were unchanged.
+    /// Already captured steps are unchanged; a later inference is not guaranteed.
+    Applied,
+    /// No matching live task remained available for publication.
+    TargetUnavailable,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
