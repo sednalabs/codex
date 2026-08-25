@@ -11,6 +11,7 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 
 /// Model and execution settings selected for an individual model step within
@@ -64,9 +65,15 @@ impl ModelInfoOverrides {
     }
 }
 
-/// Partial edits to configured step settings.
+/// Sparse edits applied independently to each settings owner.
+///
+/// Do not materialize a partial update against one settings owner and reuse
+/// that full value for another. Merge the requested edits with each target.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct StepSettingsUpdate {
+    pub(crate) model: Option<String>,
+    pub(crate) effort: Option<Option<ReasoningEffort>>,
+    /// A complete collaboration mode takes precedence over model and effort edits.
     pub(crate) collaboration_mode: Option<CollaborationMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummary>,
     pub(crate) service_tier: Option<Option<String>>,
@@ -92,9 +99,13 @@ impl StepSettings {
         constraints: &StepSettingsConstraints<'_>,
     ) -> ConstraintResult<Self> {
         let mut next = self.clone();
-        if let Some(collaboration_mode) = update.collaboration_mode.clone() {
-            next.collaboration_mode = collaboration_mode;
-        }
+        next.collaboration_mode = update.collaboration_mode.clone().unwrap_or_else(|| {
+            self.collaboration_mode.with_updates(
+                update.model.clone(),
+                update.effort.clone(),
+                /*developer_instructions*/ None,
+            )
+        });
         if let Some(summary) = update.reasoning_summary {
             next.reasoning_summary = Some(summary);
         }

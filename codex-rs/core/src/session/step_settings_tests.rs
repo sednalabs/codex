@@ -7,6 +7,8 @@ use codex_config::ConfigLayerStack;
 use codex_config::RequirementSource;
 use codex_config::Sourced;
 use codex_features::Feature;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Settings;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -268,5 +270,116 @@ async fn environment_only_update_revalidates_existing_step_settings() {
         Some(ConstraintError::AutoReviewRequired {
             model: "protected-model".to_string(),
         }),
+    );
+}
+
+fn configured_settings() -> StepSettings {
+    StepSettings {
+        collaboration_mode: CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model: "model-a".to_string(),
+                reasoning_effort: Some(ReasoningEffort::Low),
+                developer_instructions: Some("keep these instructions".to_string()),
+            },
+        },
+        reasoning_summary: Some(ReasoningSummary::Concise),
+        service_tier: None,
+        personality: Some(Personality::Friendly),
+        approval_policy: Constrained::allow_any(AskForApproval::OnRequest),
+        approvals_reviewer: ApprovalsReviewer::User,
+    }
+}
+
+fn step_settings_constraints(requirements: &ConfigRequirements) -> StepSettingsConstraints<'_> {
+    StepSettingsConstraints {
+        requirements,
+        guardian_approval_enabled: false,
+        trusted_guardian_reviewer: false,
+        has_full_disk_write_access: false,
+    }
+}
+
+#[test]
+fn sparse_patch_uses_the_settings_version_being_updated() {
+    let requirements = ConfigRequirements::default();
+    let constraints = step_settings_constraints(&requirements);
+    let initial = configured_settings();
+    let tier_update = StepSettingsUpdate {
+        service_tier: Some(Some("fast".to_string())),
+        ..Default::default()
+    };
+    let latest = initial
+        .apply(
+            &StepSettingsUpdate {
+                model: Some("model-b".to_string()),
+                effort: Some(Some(ReasoningEffort::High)),
+                ..Default::default()
+            },
+            &constraints,
+        )
+        .expect("model update should apply");
+
+    let updated = latest
+        .apply(&tier_update, &constraints)
+        .expect("a previously prepared sparse update should apply");
+    let expected = StepSettings {
+        service_tier: Some(ServiceTier::Fast.request_value().to_string()),
+        ..latest
+    };
+    assert_eq!(updated, expected);
+}
+
+#[test]
+fn collaboration_replacement_wins_and_effort_clear_remains_sparse() {
+    let requirements = ConfigRequirements::default();
+    let constraints = step_settings_constraints(&requirements);
+    let initial = configured_settings();
+    let replacement = CollaborationMode {
+        mode: ModeKind::Plan,
+        settings: Settings {
+            model: "model-b".to_string(),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            developer_instructions: None,
+        },
+    };
+    let replaced = initial
+        .apply(
+            &StepSettingsUpdate {
+                model: Some("ignored-model".to_string()),
+                effort: Some(Some(ReasoningEffort::High)),
+                collaboration_mode: Some(replacement.clone()),
+                ..Default::default()
+            },
+            &constraints,
+        )
+        .expect("collaboration mode should replace model and effort edits");
+    assert_eq!(
+        replaced,
+        StepSettings {
+            collaboration_mode: replacement.clone(),
+            ..initial
+        }
+    );
+
+    let cleared = replaced
+        .apply(
+            &StepSettingsUpdate {
+                effort: Some(None),
+                ..Default::default()
+            },
+            &constraints,
+        )
+        .expect("effort clear should apply");
+    assert_eq!(
+        cleared,
+        StepSettings {
+            collaboration_mode: replacement.with_updates(
+                /*model*/ None,
+                Some(None),
+                /*developer_instructions*/ None,
+            ),
+            ..replaced
+        }
     );
 }

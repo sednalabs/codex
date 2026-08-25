@@ -21,7 +21,7 @@ pub(super) async fn update(
     submission_id: String,
     overrides: ThreadSettingsOverrides,
 ) {
-    let updates = prepare_update(session, overrides).await;
+    let updates = prepare_update(overrides);
     if let Err(error) = apply_update(session, submission_id.clone(), updates).await {
         session
             .send_event_raw(Event {
@@ -36,10 +36,7 @@ pub(super) async fn update(
 }
 
 /// Converts protocol overrides into the internal settings update shape.
-pub(super) async fn prepare_update(
-    session: &Session,
-    overrides: ThreadSettingsOverrides,
-) -> SessionSettingsUpdate {
+pub(super) fn prepare_update(overrides: ThreadSettingsOverrides) -> SessionSettingsUpdate {
     let ThreadSettingsOverrides {
         environments,
         profile_workspace_roots,
@@ -56,22 +53,11 @@ pub(super) async fn prepare_update(
         collaboration_mode,
         personality,
     } = overrides;
-    let collaboration_mode = match collaboration_mode {
-        Some(collaboration_mode) => collaboration_mode,
-        None => {
-            let state = session.state.lock().await;
-            // Model and reasoning effort live in CollaborationMode settings today, so
-            // partial thread-settings updates refresh those fields on the active mode.
-            state
-                .session_configuration
-                .step_settings
-                .collaboration_mode
-                .with_updates(model, effort, /*developer_instructions*/ None)
-        }
-    };
     SessionSettingsUpdate {
         step_settings: StepSettingsUpdate {
-            collaboration_mode: Some(collaboration_mode),
+            model,
+            effort,
+            collaboration_mode,
             reasoning_summary: summary,
             service_tier,
             personality,

@@ -1602,6 +1602,24 @@ impl Session {
         &self,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<SessionSettingsCommit> {
+        let Some(commit) = self.update_settings_if(updates, |_, _| true).await? else {
+            unreachable!("unconditional settings updates must commit");
+        };
+        Ok(commit)
+    }
+
+    /// Evaluates the caller's synchronous predicate against the current configuration
+    /// and validated candidate under the same state lock used for publication.
+    /// This prevents a stale admission decision. Rejection has no settings or runtime
+    /// effects.
+    ///
+    /// The predicate must be fast and side-effect-free. It must not block, acquire
+    /// other locks, or call back into `Session`.
+    async fn update_settings_if(
+        &self,
+        updates: SessionSettingsUpdate,
+        should_commit: impl FnOnce(&SessionConfiguration, &SessionConfiguration) -> bool + Send,
+    ) -> ConstraintResult<Option<SessionSettingsCommit>> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
         let (commit, previous_config, new_config, permission_profile_changed, mcp_inputs_changed) = {
             let mut state = self.state.lock().await;
@@ -1613,6 +1631,10 @@ impl Session {
                     return Err(err);
                 }
             };
+
+            if !should_commit(&state.session_configuration, &updated) {
+                return Ok(None);
+            }
 
             let previous_config = notify_config_contributors
                 .then(|| self.build_effective_session_config(&state.session_configuration));
@@ -1662,7 +1684,7 @@ impl Session {
         if mcp_inputs_changed {
             self.schedule_mcp_prewarm();
         }
-        Ok(commit)
+        Ok(Some(commit))
     }
 
     pub(crate) async fn preview_settings(

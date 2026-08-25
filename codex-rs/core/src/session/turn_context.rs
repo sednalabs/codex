@@ -758,18 +758,36 @@ impl Session {
         sub_id: String,
         updates: SessionSettingsUpdate,
     ) -> CodexResult<(Arc<TurnContext>, ThreadSettingsSnapshot)> {
+        let Some(turn) = self
+            .new_turn_with_sub_id_if(sub_id, updates, |_, _| true)
+            .await?
+        else {
+            unreachable!("unconditional turn construction must accept valid settings");
+        };
+        Ok(turn)
+    }
+
+    /// Commits accepted settings atomically, then constructs the turn without holding
+    /// the state lock. The caller owns admission policy.
+    ///
+    /// `should_start` runs under the state lock against the current and validated
+    /// proposed configurations. It must be fast and side-effect-free, and must not
+    /// block, acquire other locks, or call back into `Session`.
+    pub(super) async fn new_turn_with_sub_id_if(
+        &self,
+        sub_id: String,
+        updates: SessionSettingsUpdate,
+        should_start: impl FnOnce(&SessionConfiguration, &SessionConfiguration) -> bool + Send,
+    ) -> CodexResult<Option<(Arc<TurnContext>, ThreadSettingsSnapshot)>> {
         let final_output_json_schema = updates.final_output_json_schema.clone();
         let service_tier_for_turn = updates.service_tier_for_turn.clone();
-        let update_result = self
-            .update_settings(updates)
-            .await
-            .map_err(|err| CodexErr::InvalidRequest(err.to_string()));
-        let commit = match update_result {
-            Ok(commit) => commit,
-            Err(err) => {
-                let message = err.to_string();
+        let commit = match self.update_settings_if(updates, should_start).await {
+            Ok(Some(commit)) => commit,
+            Ok(None) => return Ok(None),
+            Err(error) => {
+                let message = CodexErr::InvalidRequest(error.to_string()).to_string();
                 self.send_event_raw(Event {
-                    id: sub_id.clone(),
+                    id: sub_id,
                     msg: EventMsg::Error(ErrorEvent {
                         message: message.clone(),
                         codex_error_info: Some(CodexErrorInfo::BadRequest),
@@ -787,9 +805,10 @@ impl Session {
         let turn_context = self
             .new_turn_from_configuration(sub_id, configuration, final_output_json_schema)
             .await;
-        Ok((turn_context, commit.snapshot))
+        Ok(Some((turn_context, commit.snapshot)))
     }
 
+    /// Builds a turn from the exact committed settings without starting a task.
     async fn new_turn_from_configuration(
         &self,
         sub_id: String,

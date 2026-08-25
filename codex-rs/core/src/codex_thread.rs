@@ -522,7 +522,7 @@ impl CodexThread {
         &self,
         overrides: CodexThreadSettingsOverrides,
     ) -> ConstraintResult<ThreadConfigSnapshot> {
-        let updates = self.thread_settings_update(overrides).await;
+        let updates = Self::thread_settings_update(overrides);
         self.session.preview_settings(&updates).await
     }
 
@@ -534,14 +534,11 @@ impl CodexThread {
         &self,
         settings: CodexThreadSettingsOverrides,
     ) -> ConstraintResult<()> {
-        let updates = self.thread_settings_update(settings).await;
+        let updates = Self::thread_settings_update(settings);
         self.session.update_settings(updates).await.map(|_| ())
     }
 
-    async fn thread_settings_update(
-        &self,
-        overrides: CodexThreadSettingsOverrides,
-    ) -> SessionSettingsUpdate {
+    fn thread_settings_update(overrides: CodexThreadSettingsOverrides) -> SessionSettingsUpdate {
         let CodexThreadSettingsOverrides {
             environments,
             profile_workspace_roots,
@@ -558,18 +555,11 @@ impl CodexThread {
             collaboration_mode,
             personality,
         } = overrides;
-        let collaboration_mode = if let Some(collaboration_mode) = collaboration_mode {
-            collaboration_mode
-        } else {
-            self.session
-                .collaboration_mode()
-                .await
-                .with_updates(model, effort, /*developer_instructions*/ None)
-        };
-
         SessionSettingsUpdate {
             step_settings: StepSettingsUpdate {
-                collaboration_mode: Some(collaboration_mode),
+                model,
+                effort,
+                collaboration_mode,
                 reasoning_summary: summary,
                 service_tier,
                 personality,
