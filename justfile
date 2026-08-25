@@ -134,7 +134,7 @@ lifecycle-custody-diagnostics:
     cargo test -p codex-core session::tests::closed_regular_uses_compatibility_recording_once --lib -- --nocapture --exact --test-threads=1
     cargo test -p codex-core session::tests::turn_start_lifecycle_exposes_turn_metadata_and_token_baseline --lib -- --nocapture --exact --test-threads=1
     cargo test -p codex-core --test all suite::goal_error_continuation::usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity -- --nocapture --exact --test-threads=1
-    cargo test -p codex-git-attribution policy_resolution_retries_after_auth_refresh --lib -- --nocapture --exact --test-threads=1
+    cargo test -p codex-git-attribution tests::policy_resolution_retries_after_auth_refresh --lib -- --nocapture --exact --test-threads=1
 
 # Carry-only downstream behavior smoke checks (core-only seam).
 core-carry-core-smoke:
