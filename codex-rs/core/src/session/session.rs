@@ -1350,6 +1350,7 @@ impl Session {
                     | RolloutItem::InterAgentCommunicationMetadata { .. }
                     | RolloutItem::TurnContext(_)
                     | RolloutItem::WorldState(_)
+                    | RolloutItem::RealtimeItem(_)
                     | RolloutItem::SecurityRiskScore(_) => {}
                 }
             }
