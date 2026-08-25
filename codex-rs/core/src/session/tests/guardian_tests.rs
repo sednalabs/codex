@@ -499,7 +499,6 @@ async fn strict_auto_review_turn_grant_forces_guardian_for_exec_command_policy_s
                 kind: crate::state::TaskKind::Regular,
                 listen_to_cancellation_token: true,
             },
-            crate::tasks::MailboxParentProvenance::Ignore,
         )
         .await;
 

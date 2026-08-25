@@ -128,11 +128,8 @@ async fn start_turn_if_idle_keeps_automatic_plan_rejections_atomic(
 #[tokio::test]
 async fn recover_turn_if_idle_preserves_id_and_resumes_plan_mode() {
     let server = responses::start_mock_server().await;
-    let response_mock = responses::mount_sse_once(
-        &server,
-        responses::sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
-    )
-    .await;
+    let response_mock =
+        responses::mount_sse_once(&server, responses::sse_completed("resp-1")).await;
     let test = test_codex()
         .build_with_auto_env(&server)
         .await
@@ -155,6 +152,7 @@ async fn recover_turn_if_idle_preserves_id_and_resumes_plan_mode() {
                 ..Default::default()
             },
             trace: None,
+            cyber_access_program: None,
         })
         .await
         .expect("recovered turn should start");
@@ -163,6 +161,10 @@ async fn recover_turn_if_idle_preserves_id_and_resumes_plan_mode() {
         StartIfIdleSubmission::Started {
             turn_id: turn_id.to_string(),
         }
+    );
+    assert_eq!(
+        test.codex.config_snapshot().await.collaboration_mode.mode,
+        ModeKind::Plan
     );
 
     let started = wait_for_event(&test.codex, |event| {

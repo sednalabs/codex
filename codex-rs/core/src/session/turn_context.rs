@@ -25,6 +25,7 @@ use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnEnvironmentSelection;
+use codex_protocol::turn_input::CyberAccessProgram;
 use codex_sandboxing::policy_transforms::effective_permission_profile;
 use codex_skills_extension::HostSkillsSnapshot;
 use codex_skills_extension::SkillLoadOutcome;
@@ -173,6 +174,13 @@ impl std::fmt::Debug for TurnEnvironment {
     }
 }
 
+/// Request options for one turn, separate from persistent thread settings.
+#[derive(Default)]
+pub(crate) struct NewTurnContextOptions {
+    pub(crate) final_output_json_schema: Option<Value>,
+    pub(crate) cyber_access_program: Option<CyberAccessProgram>,
+}
+
 /// The context needed for a single turn of the thread.
 #[derive(Debug)]
 pub struct TurnContext {
@@ -221,6 +229,8 @@ pub struct TurnContext {
     pub(crate) terminal_error: Arc<Mutex<Option<ErrorEvent>>>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
+    /// Effective cyber treatment for this turn, including any child-agent inheritance.
+    pub(crate) cyber_access_program: Option<CyberAccessProgram>,
 }
 
 enum TurnMultiAgentRuntime {
@@ -532,6 +542,7 @@ impl TurnContext {
             model_verification_emitted: AtomicBool::new(
                 self.model_verification_emitted.load(Ordering::Relaxed),
             ),
+            cyber_access_program: self.cyber_access_program,
         }
     }
 
@@ -581,6 +592,7 @@ impl TurnContext {
             multi_agent_version: Some(self.multi_agent_version),
             multi_agent_mode: None,
             realtime_active: Some(self.realtime_active),
+            cyber_access_program: self.cyber_access_program,
             effort: self.reasoning_effort().cloned(),
             summary: ReasoningSummaryConfig::Auto,
         }
@@ -784,6 +796,7 @@ impl Session {
             terminal_error: Arc::new(Mutex::new(None)),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),
+            cyber_access_program: None,
         }
     }
 
@@ -791,9 +804,10 @@ impl Session {
         &self,
         sub_id: String,
         updates: SessionSettingsUpdate,
+        options: NewTurnContextOptions,
     ) -> CodexResult<(Arc<TurnContext>, ThreadSettingsSnapshot)> {
         let Some((turn_context, snapshot)) = self
-            .new_turn_with_sub_id_if(sub_id, updates, |_, _| true)
+            .new_turn_with_sub_id_if(sub_id, updates, options, |_, _| true)
             .await?
         else {
             unreachable!("unconditional turn construction must accept valid settings");
@@ -811,9 +825,9 @@ impl Session {
         &self,
         sub_id: String,
         updates: SessionSettingsUpdate,
+        options: NewTurnContextOptions,
         should_start: impl FnOnce(&SessionConfiguration, &SessionConfiguration) -> bool + Send,
     ) -> CodexResult<Option<(Arc<TurnContext>, ThreadSettingsSnapshot)>> {
-        let final_output_json_schema = updates.final_output_json_schema.clone();
         let service_tier_for_turn = updates.service_tier_for_turn.clone();
         let commit = match self.update_settings_if(updates, should_start).await {
             Ok(Some(commit)) => commit,
@@ -837,7 +851,7 @@ impl Session {
             Arc::make_mut(&mut configuration.step_settings).service_tier = Some(service_tier);
         }
         let turn_context = self
-            .new_turn_from_configuration(sub_id, configuration, final_output_json_schema)
+            .new_turn_from_configuration(sub_id, configuration, options)
             .await;
         Ok(Some((turn_context, commit.snapshot)))
     }
@@ -847,12 +861,12 @@ impl Session {
         &self,
         sub_id: String,
         session_configuration: SessionConfiguration,
-        final_output_json_schema: Option<Option<Value>>,
+        options: NewTurnContextOptions,
     ) -> Arc<TurnContext> {
         self.new_turn_context_from_configuration(
             sub_id,
             session_configuration,
-            final_output_json_schema,
+            options,
             TurnMultiAgentRuntime::ResolveAndStore,
             self.git_enrichment_policy,
         )
@@ -867,7 +881,7 @@ impl Session {
         self.new_turn_context_from_configuration(
             sub_id,
             session_configuration,
-            /*final_output_json_schema*/ None,
+            NewTurnContextOptions::default(),
             TurnMultiAgentRuntime::Preview,
             GitEnrichmentPolicy::Skip,
         )
@@ -879,7 +893,7 @@ impl Session {
         &self,
         sub_id: String,
         session_configuration: SessionConfiguration,
-        final_output_json_schema: Option<Option<Value>>,
+        options: NewTurnContextOptions,
         multi_agent_runtime: TurnMultiAgentRuntime,
         git_enrichment_policy: GitEnrichmentPolicy,
     ) -> Arc<TurnContext> {
@@ -988,8 +1002,9 @@ impl Session {
         turn_context.extension_data.insert(trusted_plugin_roots);
         turn_context.realtime_active = self.conversation.running_state().await.is_some();
 
-        if let Some(final_schema) = final_output_json_schema {
-            turn_context.final_output_json_schema = final_schema;
+        turn_context.final_output_json_schema = options.final_output_json_schema;
+        if turn_context.config.model_provider_id == codex_model_provider_info::OPENAI_PROVIDER_ID {
+            turn_context.cyber_access_program = options.cyber_access_program;
         }
         let turn_context = Arc::new(turn_context);
         if git_enrichment_policy == GitEnrichmentPolicy::Fresh
@@ -1041,18 +1056,21 @@ impl Session {
     }
 
     pub(crate) async fn new_default_turn(&self) -> Arc<TurnContext> {
-        self.new_default_turn_with_sub_id(self.next_internal_sub_id())
-            .await
-    }
-
-    pub(crate) async fn new_default_turn_with_sub_id(&self, sub_id: String) -> Arc<TurnContext> {
-        let session_configuration = self.default_turn_configuration().await;
-        self.new_turn_from_configuration(
-            sub_id,
-            session_configuration,
-            /*final_output_json_schema*/ None,
+        self.new_turn_with_default_settings(
+            self.next_internal_sub_id(),
+            NewTurnContextOptions::default(),
         )
         .await
+    }
+
+    pub(crate) async fn new_turn_with_default_settings(
+        &self,
+        sub_id: String,
+        options: NewTurnContextOptions,
+    ) -> Arc<TurnContext> {
+        let session_configuration = self.default_turn_configuration().await;
+        self.new_turn_from_configuration(sub_id, session_configuration, options)
+            .await
     }
 
     pub(crate) async fn new_startup_prewarm_turn_with_sub_id(

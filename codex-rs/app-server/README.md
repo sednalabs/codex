@@ -914,6 +914,10 @@ You can optionally specify config overrides on the new turn. If specified, these
 
 `serviceTierForTurn` overrides the tier only when the request starts a new turn, without changing the thread's saved tier. Use `"default"` for standard speed, or omit it (or pass `null`) to inherit the thread's tier. It is ignored when the request steers an active turn. The existing `serviceTier` field still changes the tier for subsequent turns, including when both fields are supplied.
 
+Experimental `cyberAccessProgram` also applies only to the new turn. It accepts `standard`, `daybreakBlue`, or `daybreakRed`; omission preserves automatic backend behavior. For ChatGPT-authenticated requests through the built-in OpenAI provider, Codex sends the corresponding `standard`, `daybreak_blue`, or `daybreak_red` value in `access_programs.cyber` on Responses and remote-compaction requests. WebSocket `response.create` messages carry the choice per request, so changing it does not require reconnecting. The server still enforces workspace authorization and model restrictions. API-key and custom-provider requests omit this field. This field does not change the saved model or grant access.
+
+Child agents use the invoking turn's choice when spawned or started on a new follow-up, including after a reload. Input delivered into an already-running child turn does not change that turn's choice.
+
 `approvalsReviewer` accepts:
 
 - `"user"` — default. Review approval requests directly in the client.

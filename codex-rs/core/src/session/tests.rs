@@ -1234,6 +1234,7 @@ async fn new_turn_refreshes_managed_network_proxy_for_sandbox_change() -> anyhow
                 sandbox_policy: Some(SandboxPolicy::DangerFullAccess),
                 ..Default::default()
             },
+            Default::default(),
         )
         .await?;
 
@@ -3679,6 +3680,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         multi_agent_version: None,
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
+        cyber_access_program: None,
         effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
@@ -5594,7 +5596,7 @@ enabled = false
     }
 
     let child_turn = session
-        .new_default_turn_with_sub_id("role-skill-turn".to_string())
+        .new_turn_with_default_settings("role-skill-turn".to_string(), Default::default())
         .await;
     let skills_snapshot = child_turn.skills_snapshot();
     let child_skill = skills_snapshot
@@ -5791,7 +5793,11 @@ async fn permission_profile_updates_apply_to_next_turn_environment() {
 
         let next_turn = if apply_on_turn_start {
             let (next_turn, _) = session
-                .new_turn_with_sub_id("permission-profile-update".to_string(), updates)
+                .new_turn_with_sub_id(
+                    "permission-profile-update".to_string(),
+                    updates,
+                    Default::default(),
+                )
                 .await
                 .expect("turn permission profile update should succeed");
             next_turn
@@ -5906,6 +5912,7 @@ async fn absolute_cwd_update_with_turn_environment_is_allowed() {
                 )),
                 ..Default::default()
             },
+            Default::default(),
         )
         .await
         .expect("absolute cwd with explicit environments should succeed");
@@ -7473,6 +7480,7 @@ async fn turn_environments_set_primary_environment() {
                 )),
                 ..Default::default()
             },
+            Default::default(),
         )
         .await
         .expect("turn should start");
@@ -7667,6 +7675,7 @@ async fn empty_turn_environments_clear_primary_environment() {
                 )),
                 ..Default::default()
             },
+            Default::default(),
         )
         .await
         .expect("turn should start");
@@ -8931,6 +8940,7 @@ async fn mcp_policy_changes_schedule_runtime_refresh() {
                 },
                 ..Default::default()
             },
+            Default::default(),
         )
         .await
         .expect("approval policy update should succeed");
@@ -11036,8 +11046,7 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
                 "pending trigger".to_string(),
                 /*trigger_turn*/ true,
             ),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
+            Default::default(),
         )
         .await;
 
@@ -11116,11 +11125,7 @@ async fn queue_only_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
         .defer_mailbox_delivery_to_next_turn(&sess.active_turn, &tc.sub_id)
         .await;
     sess.input_queue
-        .enqueue_mailbox_communication(
-            communication.clone(),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
-        )
+        .enqueue_mailbox_communication(communication.clone(), Default::default())
         .await;
 
     assert!(
@@ -11128,8 +11133,11 @@ async fn queue_only_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
         "queue-only mailbox mail should stay buffered once the current turn emitted its answer"
     );
     assert_eq!(
-        sess.input_queue.get_pending_input(&sess.active_turn).await,
-        (Vec::new(), None, None)
+        sess.input_queue
+            .get_pending_input(&sess.active_turn)
+            .await
+            .0,
+        Vec::new()
     );
 
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
@@ -11165,8 +11173,7 @@ async fn trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
                 "late trigger update".to_string(),
                 /*trigger_turn*/ true,
             ),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
+            Default::default(),
         )
         .await;
 
@@ -11204,11 +11211,7 @@ async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
         .defer_mailbox_delivery_to_next_turn(&sess.active_turn, &tc.sub_id)
         .await;
     sess.input_queue
-        .enqueue_mailbox_communication(
-            communication.clone(),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
-        )
+        .enqueue_mailbox_communication(communication.clone(), Default::default())
         .await;
     let submission = submit_steer_only(
         &sess,
@@ -11260,11 +11263,7 @@ async fn stale_defer_mailbox_delivery_does_not_override_steered_input() {
         .defer_mailbox_delivery_to_next_turn(&sess.active_turn, &tc.sub_id)
         .await;
     sess.input_queue
-        .enqueue_mailbox_communication(
-            communication.clone(),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
-        )
+        .enqueue_mailbox_communication(communication.clone(), Default::default())
         .await;
     let submission = submit_steer_only(
         &sess,
@@ -11320,11 +11319,7 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
         .defer_mailbox_delivery_to_next_turn(&sess.active_turn, &tc.sub_id)
         .await;
     sess.input_queue
-        .enqueue_mailbox_communication(
-            communication.clone(),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
-        )
+        .enqueue_mailbox_communication(communication.clone(), Default::default())
         .await;
 
     let item = ResponseItem::FunctionCall {

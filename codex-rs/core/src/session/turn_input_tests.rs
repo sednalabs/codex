@@ -175,11 +175,12 @@ async fn start_only_rejects_active_turn_without_injecting() {
         submission
     );
     assert_eq!(
-        (Vec::<TurnInput>::new(), None, None),
+        Vec::<TurnInput>::new(),
         session
             .input_queue
             .get_pending_input(&session.active_turn)
             .await
+            .0
     );
 
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
@@ -211,6 +212,7 @@ async fn recovery_rejects_active_turn_without_injecting_or_applying_settings() {
             approval_policy: Some(AskForApproval::Never),
             ..Default::default()
         },
+        TurnStartOptions::default(),
         "recovered-turn".to_string(),
     )
     .await
@@ -235,8 +237,9 @@ async fn recovery_rejects_active_turn_without_injecting_or_applying_settings() {
         session
             .input_queue
             .get_pending_input(&session.active_turn)
-            .await,
-        (Vec::<TurnInput>::new(), None, None)
+            .await
+            .0,
+        Vec::<TurnInput>::new()
     );
 
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
@@ -310,11 +313,12 @@ async fn start_only_rejects_current_plan_before_validating_settings() {
     assert_eq!(session.thread_settings_snapshot().await, desired_settings);
     assert!(session.active_turn.lock().await.is_none());
     assert_eq!(
-        (Vec::<TurnInput>::new(), None, None),
+        Vec::<TurnInput>::new(),
         session
             .input_queue
             .get_pending_input(&session.active_turn)
             .await
+            .0
     );
 }
 
@@ -569,8 +573,9 @@ async fn automatic_admission_rechecks_plan_mode_without_committing_sparse_settin
         session
             .input_queue
             .get_pending_input(&session.active_turn)
-            .await,
-        (Vec::<TurnInput>::new(), None, None)
+            .await
+            .0,
+        Vec::<TurnInput>::new()
     );
 
     // The rejected candidate is valid and would have real runtime effects if
@@ -657,8 +662,9 @@ async fn admission_revalidates_constraints_before_committing(kind: TurnStartKind
         session
             .input_queue
             .get_pending_input(&session.active_turn)
-            .await,
-        (Vec::<TurnInput>::new(), None, None)
+            .await
+            .0,
+        Vec::<TurnInput>::new()
     );
 }
 
@@ -746,8 +752,7 @@ async fn start_only_rejects_pending_trigger_turn_without_injecting() {
                 "pending trigger".to_string(),
                 /*trigger_turn*/ true,
             ),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
+            Default::default(),
         )
         .await;
 
@@ -840,7 +845,7 @@ async fn rejects_non_regular_turns() {
             .turn_metadata_state
             .set_root_turn_id("incoming-root".to_string());
         let turn_context = session
-            .new_default_turn_with_sub_id("turn".to_string())
+            .new_turn_with_default_settings("turn".to_string(), Default::default())
             .await;
         turn_context
             .turn_metadata_state

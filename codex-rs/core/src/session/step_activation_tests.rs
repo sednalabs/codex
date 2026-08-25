@@ -223,7 +223,7 @@ async fn activation_fixture(models: Vec<ModelInfo>) -> ActivationFixture {
     settings.reasoning_summary = Some(ReasoningSummary::Concise);
     settings.service_tier = None;
     let prepared = session
-        .new_default_turn_with_sub_id("step-activation-turn".to_string())
+        .new_turn_with_default_settings("step-activation-turn".to_string(), Default::default())
         .await;
     let turn = Arc::clone(&prepared);
     let finish = Arc::new(Notify::new());
@@ -538,7 +538,10 @@ async fn delayed_activation_does_not_retarget_a_task(change: TaskChangeDuringLoo
             let replacement = match change {
                 TaskChangeDuringLookup::FinishedAndReplaced => {
                     session
-                        .new_default_turn_with_sub_id("replacement-turn".to_string())
+                        .new_turn_with_default_settings(
+                            "replacement-turn".to_string(),
+                            Default::default(),
+                        )
                         .await
                 }
                 TaskChangeDuringLookup::FinishedAndReusedContext => Arc::clone(&turn),

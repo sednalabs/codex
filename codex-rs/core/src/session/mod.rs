@@ -363,6 +363,7 @@ use codex_protocol::protocol::WarningEvent;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
+use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use codex_skills_extension::HostSkillsService;
 use codex_tools::ToolName;
@@ -887,6 +888,7 @@ impl SessionIo {
     pub(crate) async fn submit_recover_turn(
         &self,
         thread_settings: ThreadSettingsOverrides,
+        start_options: TurnStartOptions,
         trace: Option<W3cTraceContext>,
         turn_id: String,
     ) -> CodexResult<TurnInputSubmission> {
@@ -895,6 +897,7 @@ impl SessionIo {
             id: turn_id,
             op: Op::RecoverTurn {
                 thread_settings,
+                start_options,
                 reply: reply_tx,
             },
             trace,
@@ -2151,8 +2154,7 @@ impl Session {
                 parent_thread_id,
                 communication,
                 context,
-                /*parent_turn_id*/ None,
-                /*root_turn_id*/ None,
+                TurnStartOptions::default(),
             )
             .await
         {

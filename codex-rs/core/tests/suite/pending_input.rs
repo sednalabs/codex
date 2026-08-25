@@ -6,6 +6,7 @@ use codex_core::StartIfIdleSubmission;
 use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
+use codex_core::TurnStartOptions;
 use codex_core::config::CurrentTimeReminderConfig;
 use codex_extension_items::ExtensionItem;
 use codex_extension_items::sleep::SleepItem;
@@ -28,6 +29,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::turn_input::CyberAccessProgram;
 use codex_protocol::user_input::UserInput;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
@@ -343,6 +345,7 @@ async fn enqueue_queue_only_agent_mail(codex: &CodexThread, text: &str) {
                 text.to_string(),
                 /*trigger_turn*/ false,
             ),
+            start_options: Default::default(),
         })
         .await
         .expect("submit queue-only agent mail");
@@ -457,26 +460,55 @@ impl codex_extension_api::ThreadLifecycleContributor<codex_core::config::Config>
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn queue_only_agent_mail_wakes_sleeping_root_and_persists_message() {
+async fn queue_only_agent_mail_wakes_sleeping_root_with_previous_turn_context() {
     const CHILD_MESSAGE: &str = "worker completed";
 
-    let (server, _completions) =
-        start_streaming_sse_server(vec![response_completed_chunks("resp-1")]).await;
+    let server = responses::start_mock_server().await;
+    let requests = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse_completed("resp-initial"),
+            responses::sse_completed("resp-wake"),
+        ],
+    )
+    .await;
     let mut extensions =
         codex_extension_api::ExtensionRegistryBuilder::<codex_core::config::Config>::new();
     extensions.thread_lifecycle_contributor(Arc::new(SleepingRootExtension));
     let codex = test_codex()
         .with_model("gpt-5.4")
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_extensions(Arc::new(extensions.build()))
-        .build_with_streaming_server(&server)
+        .build_with_auto_env(&server)
         .await
         .expect("build Codex test session")
         .codex;
 
+    codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "wait for the worker".to_string(),
+                text_elements: Vec::new(),
+            }])
+            .on_start(TurnStartOptions {
+                cyber_access_program: Some(CyberAccessProgram::Standard),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("start initial turn");
+    wait_for_turn_complete(&codex).await;
     enqueue_queue_only_agent_mail(&codex, CHILD_MESSAGE).await;
     wait_for_turn_complete(&codex).await;
 
-    assert_eq!(server.requests().await.len(), 1);
+    assert_eq!(
+        requests
+            .requests()
+            .iter()
+            .map(|request| request.body_json()["access_programs"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!({"cyber": "standard"}); 2],
+    );
     let history = codex
         .load_history(/*include_archived*/ true)
         .await
@@ -1199,6 +1231,7 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
                         PENDING_MESSAGE.to_string(),
                         /*trigger_turn*/ true,
                     ),
+                    start_options: Default::default(),
                 })
                 .await?;
             codex.submit(Op::RealtimeConversationListVoices).await?;

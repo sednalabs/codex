@@ -1222,6 +1222,7 @@ impl AppServerSession {
                     output_schema,
                     collaboration_mode,
                     multi_agent_mode: None,
+                    cyber_access_program: None,
                 },
             })
             .await

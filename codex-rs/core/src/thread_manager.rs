@@ -118,8 +118,12 @@ pub(crate) type ThreadIdGenerator = Arc<dyn Fn() -> ThreadId + Send + Sync>;
 fn capture_test_op(op: &Op) -> Option<Op> {
     match op {
         Op::Interrupt => Some(Op::Interrupt),
-        Op::InterAgentCommunication { communication } => Some(Op::InterAgentCommunication {
+        Op::InterAgentCommunication {
+            communication,
+            start_options,
+        } => Some(Op::InterAgentCommunication {
             communication: communication.clone(),
+            start_options: start_options.clone(),
         }),
         Op::Shutdown => Some(Op::Shutdown),
         _ => None,

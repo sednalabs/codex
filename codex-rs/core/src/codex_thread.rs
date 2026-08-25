@@ -55,6 +55,7 @@ use codex_protocol::turn_input::SuspendTurnOutcome;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
+use codex_protocol::turn_input::TurnStartOptions;
 use codex_thread_store::PersistContext;
 use codex_thread_store::StoredThread;
 use codex_thread_store::StoredThreadHistory;
@@ -391,10 +392,15 @@ impl CodexThread {
             turn_id,
             thread_settings,
             trace,
+            cyber_access_program,
         } = request;
+        let start_options = TurnStartOptions {
+            cyber_access_program,
+            ..Default::default()
+        };
         match self
             .io
-            .submit_recover_turn(thread_settings, trace, turn_id)
+            .submit_recover_turn(thread_settings, start_options, trace, turn_id)
             .await?
         {
             TurnInputSubmission::Started { turn_id } => {

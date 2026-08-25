@@ -742,15 +742,16 @@ impl AgentControl {
         )
         .await;
 
+        let start_options = TurnStartOptions {
+            parent_turn_id: options.parent_turn_id,
+            root_turn_id: options.root_turn_id,
+            cyber_access_program: options.cyber_access_program,
+            ..Default::default()
+        };
         match initial_input {
             SpawnInitialInput::UserInput(input) => {
-                self.send_input(
-                    new_thread.thread_id,
-                    input,
-                    options.parent_turn_id,
-                    options.root_turn_id,
-                )
-                .await?;
+                self.send_input(new_thread.thread_id, input, start_options)
+                    .await?;
             }
             SpawnInitialInput::InterAgentCommunication(communication, context) => {
                 self.send_inter_agent_communication_after_capacity_check(
@@ -758,8 +759,7 @@ impl AgentControl {
                     &state,
                     communication,
                     context,
-                    options.parent_turn_id,
-                    options.root_turn_id,
+                    start_options,
                 )
                 .await?;
             }

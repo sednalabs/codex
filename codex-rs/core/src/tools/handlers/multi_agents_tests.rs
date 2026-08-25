@@ -1132,7 +1132,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
         *id == child_thread_id
             && matches!(
                 op,
-                Op::InterAgentCommunication { communication }
+                Op::InterAgentCommunication { communication, .. }
                     if communication.author == AgentPath::root()
                         && communication.recipient.as_str() == "/root/test_process"
                         && communication.other_recipients.is_empty()
@@ -1159,7 +1159,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
         *id == child_thread_id
             && matches!(
                 op,
-                Op::InterAgentCommunication { communication }
+                Op::InterAgentCommunication { communication, .. }
                     if communication.author == AgentPath::root()
                         && communication.recipient.as_str() == "/root/test_process"
                         && communication.other_recipients.is_empty()
@@ -1355,7 +1355,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         *id == root.thread_id
             && matches!(
                 op,
-                Op::InterAgentCommunication { communication }
+                Op::InterAgentCommunication { communication, .. }
                     if communication.author == child_path
                         && communication.recipient == AgentPath::root()
                         && communication.other_recipients.is_empty()
@@ -1869,7 +1869,7 @@ async fn multi_agent_v2_send_message_rejects_interrupt_parameter() {
     assert!(!ops_for_agent.iter().any(|op| matches!(op, Op::Interrupt)));
     assert!(!ops_for_agent.iter().any(|op| matches!(
         op,
-        Op::InterAgentCommunication { communication }
+        Op::InterAgentCommunication { communication, .. }
             if communication.author == AgentPath::root()
                 && communication.recipient.as_str() == "/root/worker"
                 && communication.other_recipients.is_empty()
@@ -1956,7 +1956,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         *id == agent_id
             && matches!(
                 op,
-                Op::InterAgentCommunication { communication }
+                Op::InterAgentCommunication { communication, .. }
                     if communication.author == AgentPath::root()
                         && communication.recipient == worker_path
                         && communication.encrypted_content.as_deref() == Some("continue")
@@ -2003,7 +2003,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
                     (id == root.thread_id)
                         .then_some(op)
                         .and_then(|op| match op {
-                            Op::InterAgentCommunication { communication }
+                            Op::InterAgentCommunication { communication, .. }
                                 if communication.author == worker_path
                                     && communication.recipient == AgentPath::root()
                                     && communication.other_recipients.is_empty()
@@ -2149,7 +2149,7 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
             (id == root.thread_id)
                 .then_some(op)
                 .and_then(|op| match op {
-                    Op::InterAgentCommunication { communication }
+                    Op::InterAgentCommunication { communication, .. }
                         if communication.author.as_str() == "/root/worker"
                             && communication.recipient == AgentPath::root()
                             && communication.other_recipients.is_empty()
@@ -3019,8 +3019,7 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
                 "hello from worker".to_string(),
                 /*trigger_turn*/ false,
             ),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
+            Default::default(),
         )
         .await;
 
@@ -3524,8 +3523,7 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
                 "completed".to_string(),
                 /*trigger_turn*/ false,
             ),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
+            Default::default(),
         )
         .await;
 
@@ -3601,8 +3599,7 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
                 "already queued".to_string(),
                 /*trigger_turn*/ false,
             ),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
+            Default::default(),
         )
         .await;
 
@@ -3704,8 +3701,7 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
                 "from worker b".to_string(),
                 /*trigger_turn*/ false,
             ),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
+            Default::default(),
         )
         .await;
 
@@ -3796,8 +3792,7 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
                 "sensitive child output".to_string(),
                 /*trigger_turn*/ false,
             ),
-            /*parent_turn_id*/ None,
-            /*root_turn_id*/ None,
+            Default::default(),
         )
         .await;
 

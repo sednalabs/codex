@@ -13,10 +13,10 @@ use super::session::Session;
 use super::session::SessionConfiguration;
 use super::session::SessionSettingsUpdate;
 use super::thread_settings;
+use super::turn_context::NewTurnContextOptions;
 use super::turn_context::TurnContext;
 use crate::state::ActiveTurn;
 use crate::state::TurnState;
-use crate::tasks::MailboxParentProvenance;
 use crate::tasks::RegularTask;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::error::CodexErr;
@@ -125,23 +125,30 @@ impl PreparedTurnInputSettings {
             service_tier,
             parent_turn_id,
             root_turn_id,
+            cyber_access_program,
         } = self.start_options;
         let emit_thread_settings_applied = self.thread_settings_update.is_some();
         let mut updates = self.thread_settings_update.unwrap_or_default();
-        updates.final_output_json_schema = Some(final_output_json_schema);
         updates.service_tier_for_turn = service_tier;
 
+        let options = NewTurnContextOptions {
+            final_output_json_schema,
+            cyber_access_program,
+        };
         let turn_context = match kind {
             TurnStartKind::User | TurnStartKind::Recovery => Some(
                 session
-                    .new_turn_with_sub_id(submission_id.clone(), updates)
+                    .new_turn_with_sub_id(submission_id.clone(), updates, options)
                     .await?,
             ),
             TurnStartKind::Automatic => {
                 session
-                    .new_turn_with_sub_id_if(submission_id.clone(), updates, |current, proposed| {
-                        kind.permits_settings(current, proposed)
-                    })
+                    .new_turn_with_sub_id_if(
+                        submission_id.clone(),
+                        updates,
+                        options,
+                        |current, proposed| kind.permits_settings(current, proposed),
+                    )
                     .await?
             }
         };
@@ -209,13 +216,14 @@ pub(super) async fn handle(
 pub(super) async fn handle_recovery(
     session: &Arc<Session>,
     thread_settings: ThreadSettingsOverrides,
+    start_options: TurnStartOptions,
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
     let request = TurnInputRequest::user_input(Vec::new())
         .with_thread_settings(thread_settings)
         .on_start(TurnStartOptions {
             turn_trigger: Some("retry".to_string()),
-            ..Default::default()
+            ..start_options
         });
     start_if_idle(session, request, submission_id, TurnStartKind::Recovery).await
 }
@@ -425,12 +433,7 @@ async fn start_if_idle(
         }
     }
     session
-        .start_task(
-            turn_context,
-            task_input,
-            RegularTask::new(),
-            MailboxParentProvenance::Ignore,
-        )
+        .start_task(turn_context, task_input, RegularTask::new())
         .await;
     Ok(TurnInputSubmission::Started {
         turn_id: submission_id,
