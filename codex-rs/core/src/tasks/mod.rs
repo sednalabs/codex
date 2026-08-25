@@ -458,7 +458,7 @@ impl Session {
     }
 
     async fn handle_task_start_rejection<T: SessionTask>(
-        &self,
+        self: &Arc<Self>,
         rejection: TaskStartRejection<T>,
     ) -> Vec<ResponseItem> {
         match rejection.input {

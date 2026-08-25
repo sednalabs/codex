@@ -737,14 +737,11 @@ async fn install_user_prompt_test_hook(sess: &Session) {
     let stack = config
         .config_layer_stack
         .with_user_config(
-            Path::new("/tmp/codex-b1a-user-prompt-hooks.toml"),
-            serde_json::from_value(serde_json::json!({
-                "hooks": {
-                    "UserPromptSubmit": [{
-                        "hooks": [{"type": "command", "command": "true"}],
-                    }],
-                },
-            }))
+            &config.codex_home.join(CONFIG_TOML_FILE),
+            toml::from_str(
+                r#"[hooks]
+UserPromptSubmit = [{ hooks = [{ type = "command", command = "true" }] }]"#,
+            )
             .expect("test hook config"),
         )
         .expect("test hook layer");
@@ -10867,35 +10864,36 @@ async fn stale_reserved_start_preserves_replacement_and_input() {
     assert!(active.task.is_none());
     assert!(Arc::ptr_eq(&active.turn_state, &replacement_state));
 }
+#[rustfmt::skip]
 fn test_input(text: &str, client_id: Option<&str>) -> Vec<TurnInput> {
     vec![TurnInput::UserInput {
-        content: vec![UserInput::Text {
-            text: text.to_string(),
-            text_elements: Vec::new(),
-        }],
+        content: vec![UserInput::Text { text: text.to_string(), text_elements: vec![] }],
         client_id: client_id.map(str::to_string),
     }]
 }
 use crate::tasks::TaskStartRejectionReason as Reject;
+fn assert_enrichment_cancelled(tc: &TurnContext) {
+    let metadata = tc.turn_metadata_state.to_responses_metadata(
+        String::new(),
+        String::new(),
+        crate::responses_metadata::CodexResponsesRequestKind::Turn,
+    );
+    assert!(metadata.workspaces.is_empty());
+}
 async fn reserve_test_turn(sess: &Session) -> Arc<Mutex<TurnState>> {
     let _transition = sess.input_queue.lock_task_transition().await;
     let mut active = sess.active_turn.lock().await;
     Arc::clone(&active.get_or_insert_with(ActiveTurn::default).turn_state)
 }
+#[rustfmt::skip]
 macro_rules! assert_reserved_rejection {
     ($sess:expr, $tc:expr, $state:expr, $text:expr) => {{
-        let input = vec![user_message($text)];
         assert_eq!(
-            input.clone(),
-            $sess
-                .start_reserved_task(
-                    Arc::clone(&$tc),
-                    $state,
-                    input,
-                    crate::tasks::RegularTask::new(),
-                )
-                .await
-                .expect_err("reserved admission should return input")
+            vec![user_message($text)],
+            $sess.start_reserved_task(
+                Arc::clone(&$tc), $state, vec![user_message($text)],
+                crate::tasks::RegularTask::new(),
+            ).await.expect_err("reserved admission should return input")
         );
     }};
 }
@@ -10912,7 +10910,7 @@ macro_rules! assert_counting_rejection {
             )
             .await
             .expect_err("counting task should be rejected");
-        assert_eq!(rejection.reason, $reason);
+        assert_eq!((rejection.reason, rejection.rejected_initial_input_disposition), ($reason, crate::tasks::RejectedInitialInputDisposition::Discard));
         assert!(Arc::ptr_eq(&rejection.task.0, &marker) && Arc::ptr_eq(&rejection.turn_context, &$tc));
         assert!(matches!(rejection.input, crate::tasks::TaskStartInput::Initial(items) if items == input));
     }};
@@ -10934,36 +10932,39 @@ async fn closed_regular_uses_compatibility_recording_once() {
         user_input_texts(sess.clone_history().await.raw_items())
     );
     let (mut hook_turn, mut client_id, mut completed) = (None, None, 0);
-    while let Ok(event) = rx.try_recv() {
+    for event in rx.try_iter() {
         match event.msg {
-            EventMsg::HookStarted(event) => assert!(hook_turn.replace(event.turn_id).is_none()),
+            EventMsg::HookStarted(event) => hook_turn = event.turn_id,
             EventMsg::HookCompleted(_) => completed += 1,
-            EventMsg::UserMessage(UserMessageEvent { client_id: id, .. }) => {
-                assert!(client_id.replace(id).is_none())
-            }
+            EventMsg::UserMessage(event) => client_id = event.client_id,
             _ => panic!("rejected task emitted lifecycle event"),
         }
     }
     assert_eq!(Some(tc.sub_id.clone()), hook_turn);
     assert_eq!((Some("client-b1a".to_string()), 1), (client_id, completed));
     assert!(sess.active_turn.lock().await.is_none());
+    assert_enrichment_cancelled(&tc);
 }
 async fn assert_closed_synthetic<T: SessionTask>(task: T) {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    install_user_prompt_test_hook(&sess).await;
+    tc.turn_metadata_state.spawn_git_enrichment_task();
     sess.close_task_admission().await;
     sess.start_task(Arc::clone(&tc), test_input("synthetic discard", None), task)
         .await;
     assert!(sess.clone_history().await.raw_items().is_empty());
     assert!(sess.active_turn.lock().await.is_none() && rx.try_recv().is_err());
+    assert_enrichment_cancelled(&tc);
 }
 #[tokio::test]
 async fn closed_review_compact_and_shell_do_not_record() {
-    assert_closed_synthetic(crate::tasks::ReviewTask::new()).await;
-    assert_closed_synthetic(crate::tasks::CompactTask::default()).await;
-    assert_closed_synthetic(crate::tasks::UserShellCommandTask::new(
-        "echo no".to_string(),
-    ))
-    .await;
+    tokio::join!(
+        assert_closed_synthetic(crate::tasks::ReviewTask::new()),
+        assert_closed_synthetic(crate::tasks::CompactTask::default()),
+        assert_closed_synthetic(crate::tasks::UserShellCommandTask::new(
+            "echo no".to_string(),
+        )),
+    );
 }
 #[tokio::test]
 async fn closed_reserved_compatibility_clears_only_its_reservation() {
