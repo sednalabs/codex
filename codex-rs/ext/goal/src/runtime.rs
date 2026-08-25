@@ -357,34 +357,67 @@ impl GoalRuntimeHandle {
         goal_id: String,
         retry_after: Option<Duration>,
     ) -> Result<bool, String> {
-        let mut state = self
-            .inner
-            .provider_continuation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.goal_id.as_deref() != Some(goal_id.as_str()) {
-            if let Some(pending) = state.pending.take() {
-                pending.cancellation.cancel();
-            }
-            state.goal_id = Some(goal_id.clone());
-            state.attempts = 0;
-            state.blocked = false;
+        enum ProviderContinuationAction {
+            Blocked,
+            Dormant,
+            Scheduled {
+                delay: Duration,
+                cancellation: CancellationToken,
+            },
         }
-        if state.pending.is_some()
-            || state.attempts >= MAX_PROVIDER_RATE_LIMIT_CONTINUATIONS_PER_GOAL
-        {
-            drop(state);
+
+        let action = {
+            let mut state = self
+                .inner
+                .provider_continuation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.goal_id.as_deref() != Some(goal_id.as_str()) {
+                if let Some(pending) = state.pending.take() {
+                    pending.cancellation.cancel();
+                }
+                state.goal_id = Some(goal_id.clone());
+                state.attempts = 0;
+                state.blocked = false;
+            }
+            if state.pending.is_some()
+                || state.attempts >= MAX_PROVIDER_RATE_LIMIT_CONTINUATIONS_PER_GOAL
+            {
+                ProviderContinuationAction::Blocked
+            } else if let Some(delay) =
+                retry_after.filter(|delay| *delay <= MAX_PROVIDER_RATE_LIMIT_CONTINUATION_DELAY)
+            {
+                state.attempts += 1;
+                state.blocked = true;
+                let eligible_at = Instant::now().checked_add(delay);
+                let cancellation = CancellationToken::new();
+                state.pending = Some(DeferredProviderContinuation {
+                    turn_id,
+                    goal_id,
+                    eligible_at,
+                    cancellation: cancellation.clone(),
+                });
+                ProviderContinuationAction::Scheduled {
+                    delay,
+                    cancellation,
+                }
+            } else {
+                state.attempts = MAX_PROVIDER_RATE_LIMIT_CONTINUATIONS_PER_GOAL;
+                state.blocked = true;
+                state.pending = None;
+                ProviderContinuationAction::Dormant
+            }
+        };
+        if matches!(&action, &ProviderContinuationAction::Blocked) {
             self.block_provider_continuation();
             self.mark_provider_continuation_deferred().await?;
             return Ok(false);
         }
-        let Some(delay) =
-            retry_after.filter(|delay| *delay <= MAX_PROVIDER_RATE_LIMIT_CONTINUATION_DELAY)
+        let ProviderContinuationAction::Scheduled {
+            delay,
+            cancellation,
+        } = action
         else {
-            state.attempts = MAX_PROVIDER_RATE_LIMIT_CONTINUATIONS_PER_GOAL;
-            state.blocked = true;
-            state.pending = None;
-            drop(state);
             self.mark_provider_continuation_deferred().await?;
             tracing::info!(
                 thread_id = %self.thread_id(),
@@ -392,17 +425,6 @@ impl GoalRuntimeHandle {
             );
             return Ok(false);
         };
-        state.attempts += 1;
-        state.blocked = true;
-        let eligible_at = Instant::now().checked_add(delay);
-        let cancellation = CancellationToken::new();
-        state.pending = Some(DeferredProviderContinuation {
-            turn_id,
-            goal_id,
-            eligible_at,
-            cancellation: cancellation.clone(),
-        });
-        drop(state);
         if let Err(err) = self.mark_provider_continuation_deferred().await {
             let mut state = self
                 .inner
