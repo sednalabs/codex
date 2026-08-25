@@ -601,6 +601,9 @@
             "background_paginated_rollout_migration": {
               "type": "boolean"
             },
+            "bedrock_setup_wizard": {
+              "type": "boolean"
+            },
             "browser_use": {
               "type": "boolean"
             },
@@ -5614,6 +5617,9 @@
           "type": "boolean"
         },
         "background_paginated_rollout_migration": {
+          "type": "boolean"
+        },
+        "bedrock_setup_wizard": {
           "type": "boolean"
         },
         "browser_use": {
