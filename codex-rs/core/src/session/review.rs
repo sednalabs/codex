@@ -93,6 +93,7 @@ pub(super) async fn spawn_review_thread(
             state.session_configuration.thread_source.clone(),
             state
                 .session_configuration
+                .step_settings
                 .service_tier
                 .clone()
                 .or_else(|| config.service_tier.clone()),

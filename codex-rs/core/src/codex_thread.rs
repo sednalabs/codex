@@ -6,6 +6,7 @@ use crate::session::SessionIo;
 use crate::session::SessionSettingsUpdate;
 use crate::session::new_submission_id;
 use crate::session::session::Session;
+use crate::session::step_settings::StepSettingsUpdate;
 use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
 use codex_exec_server::SelectedCapabilityRootsStatus;
@@ -567,18 +568,20 @@ impl CodexThread {
         };
 
         SessionSettingsUpdate {
+            step_settings: StepSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode),
+                reasoning_summary: summary,
+                service_tier,
+                personality,
+                approval_policy,
+                approvals_reviewer,
+            },
             environments,
             profile_workspace_roots,
-            approval_policy,
-            approvals_reviewer,
             sandbox_policy,
             permission_profile,
             active_permission_profile,
             windows_sandbox_level,
-            collaboration_mode: Some(collaboration_mode),
-            reasoning_summary: summary,
-            service_tier,
-            personality,
             ..Default::default()
         }
     }

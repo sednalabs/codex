@@ -572,18 +572,22 @@ impl Session {
         let config = session_configuration.original_config_do_not_use.clone();
         let mut per_turn_config = (*config).clone();
         per_turn_config.cwd = cwd;
-        per_turn_config.permissions.approval_policy = session_configuration.approval_policy.clone();
+        per_turn_config.permissions.approval_policy =
+            session_configuration.step_settings.approval_policy.clone();
         let workspace_roots = self.services.turn_environments.primary_workspace_roots();
         per_turn_config.workspace_roots = workspace_roots.clone();
         per_turn_config
             .permissions
             .set_workspace_roots(workspace_roots);
-        per_turn_config.model_reasoning_effort =
-            session_configuration.collaboration_mode.reasoning_effort();
-        per_turn_config.model_reasoning_summary = session_configuration.model_reasoning_summary;
-        per_turn_config.service_tier = session_configuration.service_tier.clone();
-        per_turn_config.personality = session_configuration.personality;
-        per_turn_config.approvals_reviewer = session_configuration.approvals_reviewer;
+        per_turn_config.model_reasoning_effort = session_configuration
+            .step_settings
+            .collaboration_mode
+            .reasoning_effort();
+        per_turn_config.model_reasoning_summary =
+            session_configuration.step_settings.reasoning_summary;
+        per_turn_config.service_tier = session_configuration.step_settings.service_tier.clone();
+        per_turn_config.personality = session_configuration.step_settings.personality;
+        per_turn_config.approvals_reviewer = session_configuration.step_settings.approvals_reviewer;
         session_configuration
             .apply_permission_profile_to_permissions(&mut per_turn_config.permissions);
         let permission_profile = session_configuration.permission_profile();
@@ -614,7 +618,13 @@ impl Session {
     ) -> Config {
         let mut config =
             self.build_per_turn_config(session_configuration, session_configuration.cwd().clone());
-        config.model = Some(session_configuration.collaboration_mode.model().to_string());
+        config.model = Some(
+            session_configuration
+                .step_settings
+                .collaboration_mode
+                .model()
+                .to_string(),
+        );
         config
     }
 
@@ -640,13 +650,17 @@ impl Session {
         sub_id: String,
         skills_snapshot: HostSkillsSnapshot,
     ) -> TurnContext {
-        let collaboration_mode = &session_configuration.collaboration_mode;
+        let collaboration_mode = &session_configuration.step_settings.collaboration_mode;
         let reasoning_effort = collaboration_mode.reasoning_effort();
         let reasoning_summary = session_configuration
-            .model_reasoning_summary
+            .step_settings
+            .reasoning_summary
             .unwrap_or(model_info.default_reasoning_summary);
         let session_telemetry = session_telemetry.clone().with_model(
-            session_configuration.collaboration_mode.model(),
+            session_configuration
+                .step_settings
+                .collaboration_mode
+                .model(),
             model_info.slug.as_str(),
         );
         let session_source = session_configuration.session_source.clone();
@@ -723,7 +737,7 @@ impl Session {
                 .developer_instructions
                 .clone(),
             multi_agent_version,
-            personality: session_configuration.personality,
+            personality: session_configuration.step_settings.personality,
             network,
             windows_sandbox_level: session_configuration.windows_sandbox_level,
             available_models,
@@ -768,7 +782,7 @@ impl Session {
         let mut configuration = commit.configuration;
         // Apply the override only to the turn's copy, after persisting thread settings.
         if let Some(service_tier) = service_tier_for_turn {
-            configuration.service_tier = Some(service_tier);
+            Arc::make_mut(&mut configuration.step_settings).service_tier = Some(service_tier);
         }
         let turn_context = self
             .new_turn_from_configuration(sub_id, configuration, final_output_json_schema)
@@ -833,8 +847,16 @@ impl Session {
             .services
             .models_manager
             .get_model_info(
-                session_configuration.collaboration_mode.model(),
-                &per_turn_config.to_models_manager_config(),
+                session_configuration
+                    .step_settings
+                    .collaboration_mode
+                    .model(),
+                &session_configuration
+                    .model_info_overrides
+                    .models_manager_config(
+                        session_configuration.step_settings.personality,
+                        self.features.enabled(Feature::Personality),
+                    ),
             )
             .await;
         self.services

@@ -3,6 +3,7 @@
 
 use super::session::Session;
 use super::session::SessionSettingsUpdate;
+use super::step_settings::StepSettingsUpdate;
 use crate::config::ConstraintResult;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
@@ -63,23 +64,26 @@ pub(super) async fn prepare_update(
             // partial thread-settings updates refresh those fields on the active mode.
             state
                 .session_configuration
+                .step_settings
                 .collaboration_mode
                 .with_updates(model, effort, /*developer_instructions*/ None)
         }
     };
     SessionSettingsUpdate {
+        step_settings: StepSettingsUpdate {
+            collaboration_mode: Some(collaboration_mode),
+            reasoning_summary: summary,
+            service_tier,
+            personality,
+            approval_policy,
+            approvals_reviewer,
+        },
         environments,
         profile_workspace_roots,
-        approval_policy,
-        approvals_reviewer,
         sandbox_policy,
         permission_profile,
         active_permission_profile,
         windows_sandbox_level,
-        collaboration_mode: Some(collaboration_mode),
-        reasoning_summary: summary,
-        service_tier,
-        personality,
         ..Default::default()
     }
 }

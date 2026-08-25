@@ -85,7 +85,7 @@ impl PreparedTurnInputSettings {
     fn would_enter_plan_mode(&self) -> bool {
         self.thread_settings_update
             .as_ref()
-            .and_then(|updates| updates.collaboration_mode.as_ref())
+            .and_then(|updates| updates.step_settings.collaboration_mode.as_ref())
             .is_some_and(|collaboration_mode| collaboration_mode.mode == ModeKind::Plan)
     }
 

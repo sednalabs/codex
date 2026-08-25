@@ -41,8 +41,9 @@ impl Session {
         // This gap predates that API: an internal Windows-level-only settings update
         // can leave the published MCP configuration stale.
         current.cwd() != next.cwd()
-            || current.approval_policy.value() != next.approval_policy.value()
-            || current.approvals_reviewer != next.approvals_reviewer
+            || current.step_settings.approval_policy.value()
+                != next.step_settings.approval_policy.value()
+            || current.step_settings.approvals_reviewer != next.step_settings.approvals_reviewer
             || current.permission_profile() != next.permission_profile()
             || updates.environments.as_ref().is_some_and(|environments| {
                 environments.environments != self.services.turn_environments.selections()

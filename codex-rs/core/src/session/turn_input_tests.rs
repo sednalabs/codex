@@ -133,7 +133,7 @@ async fn accepted_input_applies_thread_settings() {
 
     let state = session.state.lock().await;
     assert_eq!(
-        state.session_configuration.approvals_reviewer,
+        state.session_configuration.step_settings.approvals_reviewer,
         codex_config::types::ApprovalsReviewer::AutoReview
     );
     assert!(
@@ -240,7 +240,8 @@ async fn start_only_rejects_plan_mode_without_injecting() {
     collaboration_mode.mode = ModeKind::Plan;
     {
         let mut state = session.state.lock().await;
-        state.session_configuration.collaboration_mode = collaboration_mode;
+        Arc::make_mut(&mut state.session_configuration.step_settings).collaboration_mode =
+            collaboration_mode;
     }
 
     let submission = submit_start_only(
@@ -272,7 +273,8 @@ async fn start_only_accepts_user_input_in_plan_mode() {
     collaboration_mode.mode = ModeKind::Plan;
     {
         let mut state = session.state.lock().await;
-        state.session_configuration.collaboration_mode = collaboration_mode;
+        Arc::make_mut(&mut state.session_configuration.step_settings).collaboration_mode =
+            collaboration_mode;
         state.merge_connector_selection(["calendar".to_string()]);
     }
 
@@ -307,7 +309,8 @@ async fn start_only_rejects_empty_user_input_in_plan_mode() {
     collaboration_mode.mode = ModeKind::Plan;
     {
         let mut state = session.state.lock().await;
-        state.session_configuration.collaboration_mode = collaboration_mode;
+        Arc::make_mut(&mut state.session_configuration.step_settings).collaboration_mode =
+            collaboration_mode;
     }
 
     let submission = submit_start_only(

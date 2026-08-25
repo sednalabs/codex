@@ -1,4 +1,6 @@
 use super::mcp_refresh::McpRefresh;
+use super::step_settings::StepSettings;
+use super::step_settings::StepSettingsUpdate;
 use super::turn_context::TurnEnvironment;
 use super::*;
 use crate::agents_md_manager::AgentsMdManager;
@@ -3290,7 +3292,10 @@ async fn config_change_contributor_observes_effective_config_changes() {
     );
     session
         .update_settings(SessionSettingsUpdate {
-            collaboration_mode: Some(collaboration_mode),
+            step_settings: StepSettingsUpdate {
+                collaboration_mode: Some(collaboration_mode),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await
@@ -4327,17 +4332,20 @@ async fn set_rate_limits_retains_previous_credits() {
     };
     let session_configuration = SessionConfiguration {
         provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
-        collaboration_mode,
-        model_reasoning_summary: config.model_reasoning_summary,
+        step_settings: Arc::new(StepSettings {
+            collaboration_mode,
+            reasoning_summary: config.model_reasoning_summary,
+            service_tier: None,
+            personality: config.personality,
+            approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
+        }),
+        model_info_overrides: config.to_models_manager_config().into(),
         developer_instructions: config.developer_instructions.clone(),
-        service_tier: None,
-        personality: config.personality,
         base_instructions: config
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
-        approval_policy: config.permissions.approval_policy.clone(),
-        approvals_reviewer: config.approvals_reviewer,
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         allow_login_shell: config.permissions.allow_login_shell,
         shell_environment_policy: config.permissions.shell_environment_policy.clone(),
@@ -4440,17 +4448,20 @@ async fn set_rate_limits_updates_plan_type_when_present() {
     };
     let session_configuration = SessionConfiguration {
         provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
-        collaboration_mode,
-        model_reasoning_summary: config.model_reasoning_summary,
+        step_settings: Arc::new(StepSettings {
+            collaboration_mode,
+            reasoning_summary: config.model_reasoning_summary,
+            service_tier: None,
+            personality: config.personality,
+            approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
+        }),
+        model_info_overrides: config.to_models_manager_config().into(),
         developer_instructions: config.developer_instructions.clone(),
-        service_tier: None,
-        personality: config.personality,
         base_instructions: config
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
-        approval_policy: config.permissions.approval_policy.clone(),
-        approvals_reviewer: config.approvals_reviewer,
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         allow_login_shell: config.permissions.allow_login_shell,
         shell_environment_policy: config.permissions.shell_environment_policy.clone(),
@@ -4946,7 +4957,10 @@ async fn session_settings_null_service_tier_update_uses_default_service_tier() {
     let updated = session_configuration
         .apply(
             &SessionSettingsUpdate {
-                service_tier: Some(None),
+                step_settings: StepSettingsUpdate {
+                    service_tier: Some(None),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             &[],
@@ -4954,7 +4968,7 @@ async fn session_settings_null_service_tier_update_uses_default_service_tier() {
         .expect("null service tier update should apply");
 
     assert_eq!(
-        updated.service_tier,
+        updated.step_settings.service_tier,
         Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string())
     );
 }
@@ -4966,7 +4980,10 @@ async fn session_settings_legacy_fast_service_tier_update_uses_priority_request_
     let updated = session_configuration
         .apply(
             &SessionSettingsUpdate {
-                service_tier: Some(Some("fast".to_string())),
+                step_settings: StepSettingsUpdate {
+                    service_tier: Some(Some("fast".to_string())),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             &[],
@@ -4974,7 +4991,7 @@ async fn session_settings_legacy_fast_service_tier_update_uses_priority_request_
         .expect("legacy fast service tier update should apply");
 
     assert_eq!(
-        updated.service_tier,
+        updated.step_settings.service_tier,
         Some(ServiceTier::Fast.request_value().to_string())
     );
 }
@@ -4998,17 +5015,20 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
 
     SessionConfiguration {
         provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
-        collaboration_mode,
-        model_reasoning_summary: config.model_reasoning_summary,
+        step_settings: Arc::new(StepSettings {
+            collaboration_mode,
+            reasoning_summary: config.model_reasoning_summary,
+            service_tier: None,
+            personality: config.personality,
+            approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
+        }),
+        model_info_overrides: config.to_models_manager_config().into(),
         developer_instructions: config.developer_instructions.clone(),
-        service_tier: None,
-        personality: config.personality,
         base_instructions: config
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
-        approval_policy: config.permissions.approval_policy.clone(),
-        approvals_reviewer: config.approvals_reviewer,
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         allow_login_shell: config.permissions.allow_login_shell,
         shell_environment_policy: config.permissions.shell_environment_policy.clone(),
@@ -5589,8 +5609,11 @@ async fn session_settings_commit_keeps_snapshot_across_postcommit_wait() {
         .expect("network refresh lock");
     let mut first_update = Box::pin(tokio::task::unconstrained(session.update_settings(
         SessionSettingsUpdate {
+            step_settings: StepSettingsUpdate {
+                service_tier: Some(Some(ServiceTier::Fast.request_value().to_string())),
+                ..Default::default()
+            },
             permission_profile: Some(PermissionProfile::read_only()),
-            service_tier: Some(Some(ServiceTier::Fast.request_value().to_string())),
             ..Default::default()
         },
     )));
@@ -5603,7 +5626,10 @@ async fn session_settings_commit_keeps_snapshot_across_postcommit_wait() {
     let expected = session.thread_settings_snapshot().await;
     let later_commit = session
         .update_settings(SessionSettingsUpdate {
-            service_tier: Some(None),
+            step_settings: StepSettingsUpdate {
+                service_tier: Some(None),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await
@@ -5838,17 +5864,20 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
             config.model_provider.clone(),
             Some(Arc::clone(&auth_manager)),
         ),
-        collaboration_mode,
-        model_reasoning_summary: config.model_reasoning_summary,
+        step_settings: Arc::new(StepSettings {
+            collaboration_mode,
+            reasoning_summary: config.model_reasoning_summary,
+            service_tier: None,
+            personality: config.personality,
+            approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
+        }),
+        model_info_overrides: config.to_models_manager_config().into(),
         developer_instructions: config.developer_instructions.clone(),
-        service_tier: None,
-        personality: config.personality,
         base_instructions: config
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
-        approval_policy: config.permissions.approval_policy.clone(),
-        approvals_reviewer: config.approvals_reviewer,
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         allow_login_shell: config.permissions.allow_login_shell,
         shell_environment_policy: config.permissions.shell_environment_policy.clone(),
@@ -5988,17 +6017,20 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             config.model_provider.clone(),
             Some(Arc::clone(&auth_manager)),
         ),
-        collaboration_mode,
-        model_reasoning_summary: config.model_reasoning_summary,
+        step_settings: Arc::new(StepSettings {
+            collaboration_mode,
+            reasoning_summary: config.model_reasoning_summary,
+            service_tier: None,
+            personality: config.personality,
+            approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
+        }),
+        model_info_overrides: config.to_models_manager_config().into(),
         developer_instructions: config.developer_instructions.clone(),
-        service_tier: None,
-        personality: config.personality,
         base_instructions: config
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
-        approval_policy: config.permissions.approval_policy.clone(),
-        approvals_reviewer: config.approvals_reviewer,
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         allow_login_shell: config.permissions.allow_login_shell,
         shell_environment_policy: config.permissions.shell_environment_policy.clone(),
@@ -6278,17 +6310,20 @@ async fn make_session_with_config_and_rx(
             config.model_provider.clone(),
             Some(Arc::clone(&auth_manager)),
         ),
-        collaboration_mode,
-        model_reasoning_summary: config.model_reasoning_summary,
+        step_settings: Arc::new(StepSettings {
+            collaboration_mode,
+            reasoning_summary: config.model_reasoning_summary,
+            service_tier: None,
+            personality: config.personality,
+            approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
+        }),
+        model_info_overrides: config.to_models_manager_config().into(),
         developer_instructions: config.developer_instructions.clone(),
-        service_tier: None,
-        personality: config.personality,
         base_instructions: config
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
-        approval_policy: config.permissions.approval_policy.clone(),
-        approvals_reviewer: config.approvals_reviewer,
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         allow_login_shell: config.permissions.allow_login_shell,
         shell_environment_policy: config.permissions.shell_environment_policy.clone(),
@@ -6401,17 +6436,20 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
             config.model_provider.clone(),
             Some(Arc::clone(&auth_manager)),
         ),
-        collaboration_mode,
-        model_reasoning_summary: config.model_reasoning_summary,
+        step_settings: Arc::new(StepSettings {
+            collaboration_mode,
+            reasoning_summary: config.model_reasoning_summary,
+            service_tier: None,
+            personality: config.personality,
+            approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
+        }),
+        model_info_overrides: config.to_models_manager_config().into(),
         developer_instructions: config.developer_instructions.clone(),
-        service_tier: None,
-        personality: config.personality,
         base_instructions: config
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
-        approval_policy: config.permissions.approval_policy.clone(),
-        approvals_reviewer: config.approvals_reviewer,
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         allow_login_shell: config.permissions.allow_login_shell,
         shell_environment_policy: config.permissions.shell_environment_policy.clone(),
@@ -8205,17 +8243,20 @@ where
             config.model_provider.clone(),
             Some(Arc::clone(&auth_manager)),
         ),
-        collaboration_mode,
-        model_reasoning_summary: config.model_reasoning_summary,
+        step_settings: Arc::new(StepSettings {
+            collaboration_mode,
+            reasoning_summary: config.model_reasoning_summary,
+            service_tier: None,
+            personality: config.personality,
+            approval_policy: config.permissions.approval_policy.clone(),
+            approvals_reviewer: config.approvals_reviewer,
+        }),
+        model_info_overrides: config.to_models_manager_config().into(),
         developer_instructions: config.developer_instructions.clone(),
-        service_tier: None,
-        personality: config.personality,
         base_instructions: config
             .base_instructions
             .clone()
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
-        approval_policy: config.permissions.approval_policy.clone(),
-        approvals_reviewer: config.approvals_reviewer,
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         allow_login_shell: config.permissions.allow_login_shell,
         shell_environment_policy: config.permissions.shell_environment_policy.clone(),
@@ -8574,8 +8615,11 @@ async fn refreshed_mcp_binding_captures_current_approval_authority() {
 
     session
         .update_settings(SessionSettingsUpdate {
-            approval_policy: Some(AskForApproval::Never),
-            approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+            step_settings: StepSettingsUpdate {
+                approval_policy: Some(AskForApproval::Never),
+                approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+                ..Default::default()
+            },
             permission_profile: Some(PermissionProfile::Disabled),
             ..Default::default()
         })
@@ -8645,7 +8689,10 @@ async fn mcp_elicitation_reviewer_uses_latest_runtime_authority() {
 
     session
         .update_settings(SessionSettingsUpdate {
-            approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+            step_settings: StepSettingsUpdate {
+                approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await
@@ -8687,7 +8734,10 @@ async fn mcp_elicitation_reviewer_uses_latest_runtime_authority() {
 
     session
         .update_settings(SessionSettingsUpdate {
-            approval_policy: Some(AskForApproval::Never),
+            step_settings: StepSettingsUpdate {
+                approval_policy: Some(AskForApproval::Never),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .await
@@ -8781,7 +8831,10 @@ async fn mcp_policy_changes_schedule_runtime_refresh() {
         .new_turn_with_sub_id(
             "policy-change".to_string(),
             SessionSettingsUpdate {
-                approval_policy: Some(AskForApproval::Never),
+                step_settings: StepSettingsUpdate {
+                    approval_policy: Some(AskForApproval::Never),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )

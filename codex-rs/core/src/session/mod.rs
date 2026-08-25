@@ -41,6 +41,7 @@ use crate::image_preparation::unified_image_budget_enabled;
 use crate::parse_turn_item;
 use crate::realtime_conversation::RealtimeConversationManager;
 use crate::session::step_context::StepContext;
+use crate::session::step_settings::StepSettings;
 use crate::session::turn_context::TurnEnvironment;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::skills_load_input_from_config;
@@ -193,7 +194,6 @@ use crate::codex_thread::ThreadConfigSnapshot;
 #[cfg(test)]
 use crate::compact::collect_user_messages;
 use crate::config::Config;
-use crate::config::Constrained;
 use crate::config::ConstraintResult;
 use crate::config::PermissionProfileSnapshot;
 use crate::config::PermissionProfileState;
@@ -230,6 +230,7 @@ mod rollout_reconstruction;
 #[allow(clippy::module_inception)]
 pub(crate) mod session;
 pub(crate) mod step_context;
+pub(crate) mod step_settings;
 mod thread_settings;
 pub(crate) mod time_reminder;
 mod token_budget;
@@ -705,14 +706,17 @@ impl Session {
                 config.model_provider.clone(),
                 Some(Arc::clone(&auth_manager)),
             ),
-            collaboration_mode,
-            model_reasoning_summary: config.model_reasoning_summary,
-            service_tier,
+            step_settings: Arc::new(StepSettings {
+                collaboration_mode,
+                reasoning_summary: config.model_reasoning_summary,
+                service_tier,
+                personality: config.personality,
+                approval_policy: config.permissions.approval_policy.clone(),
+                approvals_reviewer: config.approvals_reviewer,
+            }),
+            model_info_overrides: config.to_models_manager_config().into(),
             developer_instructions: config.developer_instructions.clone(),
-            personality: config.personality,
             base_instructions,
-            approval_policy: config.permissions.approval_policy.clone(),
-            approvals_reviewer: config.approvals_reviewer,
             permission_profile_state: session_permission_profile_state_from_config(&config)?,
             allow_login_shell: config.permissions.allow_login_shell,
             shell_environment_policy: config.permissions.shell_environment_policy.clone(),
@@ -3517,7 +3521,11 @@ impl Session {
 
     pub(crate) async fn collaboration_mode(&self) -> CollaborationMode {
         let state = self.state.lock().await;
-        state.session_configuration.collaboration_mode.clone()
+        state
+            .session_configuration
+            .step_settings
+            .collaboration_mode
+            .clone()
     }
 
     pub(crate) fn multi_agent_version(&self) -> Option<MultiAgentVersion> {
