@@ -2490,7 +2490,9 @@ fn item_review_summary_key(pending_review: &PendingReviewState) -> Option<ToolIt
             turn_id: pending_review.turn_id.clone(),
             item_id: pending_review.item_id.clone()?,
         }),
-        ReviewSubjectKind::Permissions | ReviewSubjectKind::NetworkAccess => None,
+        ReviewSubjectKind::WriteStdin
+        | ReviewSubjectKind::Permissions
+        | ReviewSubjectKind::NetworkAccess => None,
     }
 }
 
@@ -3030,6 +3032,11 @@ fn guardian_review_subject_metadata(
             "command_execution".to_string(),
             ReviewTrigger::Initial,
         ),
+        GuardianApprovalReviewAction::WriteStdin { .. } => (
+            ReviewSubjectKind::WriteStdin,
+            "write_stdin".to_string(),
+            ReviewTrigger::Initial,
+        ),
         GuardianApprovalReviewAction::Execve { .. } => (
             ReviewSubjectKind::CommandExecution,
             "command_execution".to_string(),
@@ -3081,6 +3088,7 @@ fn guardian_review_requested_additional_permissions(action: &GuardianApprovalRev
                 || permissions.file_system.is_some()
         }
         GuardianApprovalReviewAction::Command { .. }
+        | GuardianApprovalReviewAction::WriteStdin { .. }
         | GuardianApprovalReviewAction::Execve { .. }
         | GuardianApprovalReviewAction::McpToolCall { .. } => false,
     }
@@ -3094,6 +3102,7 @@ fn guardian_review_requested_network_access(action: &GuardianApprovalReviewActio
         }
         GuardianApprovalReviewAction::ApplyPatch { .. }
         | GuardianApprovalReviewAction::Command { .. }
+        | GuardianApprovalReviewAction::WriteStdin { .. }
         | GuardianApprovalReviewAction::Execve { .. }
         | GuardianApprovalReviewAction::McpToolCall { .. } => false,
     }
