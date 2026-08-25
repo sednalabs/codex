@@ -10837,6 +10837,71 @@ async fn stale_reserved_start_preserves_replacement_and_input() {
     assert!(Arc::ptr_eq(&active.turn_state, &replacement_state));
 }
 
+struct PendingWakeHookReset(ThreadId, Arc<tokio::sync::Notify>);
+
+impl Drop for PendingWakeHookReset {
+    fn drop(&mut self) {
+        crate::tasks::clear_pending_wake_reservation_hook(self.0, &self.1);
+    }
+}
+
+#[tokio::test]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "hold configuration lock to gate pending-wake context preparation"
+)]
+async fn pending_wake_stale_reservation_preserves_replacement_and_sources() {
+    let (sess, _tc, _rx) = make_session_and_context_with_rx().await;
+    enqueue_test_sources(&sess).await;
+    let hook = Arc::new(tokio::sync::Notify::new());
+    let notified = hook.notified();
+    let thread_id = sess.thread_id;
+    crate::tasks::set_pending_wake_reservation_hook(thread_id, Some(Arc::clone(&hook)));
+    let _hook_reset = PendingWakeHookReset(thread_id, Arc::clone(&hook));
+    let state_guard = sess.state.lock().await;
+    let wake = tokio::spawn({
+        let sess = Arc::clone(&sess);
+        async move {
+            sess.maybe_start_turn_for_pending_work_with_sub_id("wake".to_string())
+                .await;
+        }
+    });
+    notified.await;
+    let reserved_state = {
+        let active = sess.active_turn.lock().await;
+        Arc::clone(
+            &active
+                .as_ref()
+                .expect("pending wake reservation")
+                .turn_state,
+        )
+    };
+    let replacement = ActiveTurn::default();
+    let replacement_state = Arc::clone(&replacement.turn_state);
+    {
+        let _transition = sess.input_queue.lock_task_transition().await;
+        *sess.active_turn.lock().await = Some(replacement);
+    }
+    drop(state_guard);
+    wake.await.expect("pending wake task");
+    {
+        let active = sess.active_turn.lock().await;
+        assert!(active.as_ref().expect("replacement remains").task.is_none());
+    }
+    sess.clear_reserved_idle_turn(&reserved_state).await;
+    {
+        let active = sess.active_turn.lock().await;
+        assert!(Arc::ptr_eq(
+            &active.as_ref().expect("replacement remains").turn_state,
+            &replacement_state
+        ));
+    }
+    assert!(!Arc::ptr_eq(&reserved_state, &replacement_state));
+    assert!(reserved_state.lock().await.pending_input.items.is_empty());
+    assert!(sess.input_queue.has_pending_mailbox_items().await);
+    assert!(sess.input_queue.has_pending_terminal_completions().await);
+}
+
 #[tokio::test]
 async fn try_start_turn_if_idle_rejects_plan_mode_without_injecting() {
     let (sess, _tc, _rx) = make_session_and_context_with_rx().await;

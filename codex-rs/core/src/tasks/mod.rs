@@ -69,6 +69,58 @@ const TASK_COMPACT_METRIC: &str = "codex.task.compact";
 
 pub(crate) type SessionTaskResult = CodexResult<Option<String>>;
 
+#[cfg(test)]
+use codex_protocol::ThreadId;
+
+#[cfg(test)]
+static PENDING_WAKE_RESERVATION_HOOKS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<ThreadId, Arc<Notify>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn set_pending_wake_reservation_hook(thread_id: ThreadId, hook: Option<Arc<Notify>>) {
+    let mut hooks = PENDING_WAKE_RESERVATION_HOOKS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .expect("pending wake hook lock");
+    match hook {
+        Some(hook) => {
+            hooks.insert(thread_id, hook);
+        }
+        None => {
+            hooks.remove(&thread_id);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_pending_wake_reservation_hook(thread_id: ThreadId, expected: &Arc<Notify>) {
+    let mut hooks = PENDING_WAKE_RESERVATION_HOOKS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .expect("pending wake hook lock");
+    if hooks
+        .get(&thread_id)
+        .is_some_and(|hook| Arc::ptr_eq(hook, expected))
+    {
+        hooks.remove(&thread_id);
+    }
+}
+
+#[cfg(test)]
+fn notify_pending_wake_reservation(session: &Session) {
+    let hook = {
+        let hooks = PENDING_WAKE_RESERVATION_HOOKS
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+            .lock()
+            .expect("pending wake hook lock");
+        hooks.get(&session.thread_id).cloned()
+    };
+    if let Some(hook) = hook {
+        hook.notify_one();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InterruptedTurnHistoryMarker {
     Disabled,
@@ -594,6 +646,8 @@ impl Session {
             let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
             Arc::clone(&active_turn.turn_state)
         };
+        #[cfg(test)]
+        notify_pending_wake_reservation(self);
         let turn_context = self.new_default_turn_with_sub_id(sub_id).await;
         self.maybe_emit_model_warnings_for_turn(turn_context.as_ref())
             .await;
