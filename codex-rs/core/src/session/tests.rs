@@ -553,17 +553,16 @@ async fn owner_continuation_pending_preserves_terminal_events_without_terminal_s
     ];
     assert!(matches!(delivered[0].msg, EventMsg::Error(_)));
     assert!(matches!(delivered[1].msg, EventMsg::TurnComplete(_)));
-    assert_eq!(
-        AgentStatus::PendingInit,
-        Session::agent_status(session.as_ref()).await
-    );
+    let agent_status = session.agent_status.subscribe();
+    assert_eq!(AgentStatus::PendingInit, agent_status.borrow().clone());
 
     session
         .resolve_pending_owner_continuation(turn_context.sub_id.as_str())
         .await;
+    let agent_status = session.agent_status.subscribe();
     assert_eq!(
         AgentStatus::Errored("provider limit".to_string()),
-        Session::agent_status(session.as_ref()).await
+        agent_status.borrow().clone()
     );
 }
 
