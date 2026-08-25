@@ -973,6 +973,7 @@ impl From<CoreTurnItem> for ThreadItem {
                     transparent_background: None,
                     failure: None,
                     saved_path: image.saved_path,
+                    imagegen_request_id: None,
                 })
             }
             CoreTurnItem::EnteredReviewMode(review) => ThreadItem::EnteredReviewMode {

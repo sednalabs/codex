@@ -517,6 +517,7 @@ mod tests {
             transparent_background: None,
             failure: None,
             saved_path: None,
+            imagegen_request_id: None,
         });
         let expected_completed_item = ExtensionItem::ImageGeneration(ImageGenerationItem {
             id: "call-image".to_string(),
@@ -526,6 +527,7 @@ mod tests {
             transparent_background: Some(true),
             failure: None,
             saved_path: Some(expected_path.clone()),
+            imagegen_request_id: None,
         });
         codex_tools::TurnItemEmitter::emit_started(
             &emitter,

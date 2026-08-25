@@ -2833,6 +2833,7 @@ fn tool_item_event(input: ToolItemEventInput<'_>) -> Option<TrackEventRequest> {
                         revised_prompt_present: item.revised_prompt.is_some(),
                         saved_path_present: item.saved_path.is_some(),
                         transparent_background: item.transparent_background,
+                        imagegen_request_id: item.imagegen_request_id.clone(),
                     },
                 },
             ))

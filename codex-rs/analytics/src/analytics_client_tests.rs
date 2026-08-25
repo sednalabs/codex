@@ -5121,6 +5121,7 @@ async fn image_generation_events_preserve_transparent_background_metadata() {
             transparent_background,
             failure: None,
             saved_path: None,
+            imagegen_request_id: None,
         });
 
         reducer
@@ -5265,6 +5266,7 @@ async fn turn_event_counts_completed_tool_items() {
             transparent_background: None,
             failure: None,
             saved_path: None,
+            imagegen_request_id: Some("req-imagegen-123".to_string()),
         }),
     ];
 
@@ -5352,6 +5354,17 @@ async fn turn_event_counts_completed_tool_items() {
         ]
         .map(|event_type| (event_type, "session-thread-2", "turn-2", "root-ancestor"))
         .to_vec()
+    );
+
+    let image_generation_event = out
+        .iter()
+        .find(|event| matches!(event, TrackEventRequest::ImageGeneration(_)))
+        .expect("image generation event should be emitted");
+    let payload =
+        serde_json::to_value(image_generation_event).expect("serialize image generation event");
+    assert_eq!(
+        payload["event_params"]["imagegen_request_id"],
+        json!("req-imagegen-123")
     );
 
     let mcp_tool_call_event = out

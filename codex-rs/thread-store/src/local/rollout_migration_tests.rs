@@ -441,6 +441,7 @@ async fn migration_preserves_image_generation_failure_metadata() {
             resets_at: Some(1_786_150_800),
         }),
         saved_path: None,
+        imagegen_request_id: None,
     };
     let image_completion =
         RolloutItem::EventMsg(EventMsg::ImageGenerationEnd(ImageGenerationEndEvent {

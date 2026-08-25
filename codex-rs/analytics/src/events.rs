@@ -896,6 +896,7 @@ pub(crate) struct CodexImageGenerationEventParams {
     pub(crate) revised_prompt_present: bool,
     pub(crate) saved_path_present: bool,
     pub(crate) transparent_background: Option<bool>,
+    pub(crate) imagegen_request_id: Option<String>,
 }
 
 #[derive(Serialize)]
