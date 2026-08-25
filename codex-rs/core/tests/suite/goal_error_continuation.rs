@@ -178,11 +178,15 @@ fn decoded_body(request: &wiremock::Request) -> Vec<u8> {
     }
 }
 
-fn request_has_input_type(request: &wiremock::Request, input_type: &str) -> bool {
+fn request_has_input_item(request: &wiremock::Request, input_type: &str, text: &str) -> bool {
     serde_json::from_slice::<Value>(&decoded_body(request))
         .ok()
         .and_then(|body| body["input"].as_array().cloned())
-        .is_some_and(|items| items.iter().any(|item| item["type"] == input_type))
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item["type"] == input_type && item.to_string().contains(text))
+        })
 }
 
 #[derive(Debug)]
@@ -299,8 +303,7 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
     let sub_request = mount_response_once_match(
         &server,
         |request: &wiremock::Request| {
-            request_has_input_type(request, "agent_message")
-                && body_contains(request, SUB_ORCHESTRATOR_TASK)
+            request_has_input_item(request, "agent_message", SUB_ORCHESTRATOR_TASK)
         },
         sse_response(sse(vec![
             ev_response_created("sub-live"),
