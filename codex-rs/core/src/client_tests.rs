@@ -1,6 +1,7 @@
 use super::AuthRequestTelemetryContext;
 use super::CompactConversationRequestSettings;
 use super::ModelClient;
+use super::ModelRequestAdmissionDecision;
 use super::PendingUnauthorizedRetry;
 use super::Prompt;
 use super::UnauthorizedRecoveryExecution;
