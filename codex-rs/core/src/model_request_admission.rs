@@ -382,7 +382,7 @@ impl ModelRequestAdmissionBroker {
         match acquire_result {
             GoalOwnerAdmissionAcquireResult::Acquired(lease) => {
                 Ok(ModelRequestAdmissionDecision::Admitted(Arc::new(
-                    AdmittedModelRequest::new(store.clone(), lease),
+                    AdmittedModelRequest::new(store.clone(), *lease),
                 )))
             }
             GoalOwnerAdmissionAcquireResult::Exhausted(_) => {

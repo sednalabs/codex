@@ -291,7 +291,7 @@ async fn terminal_success_is_unrestricted_before_identity_matching() {
         .await
         .expect("acquire admission")
     {
-        GoalOwnerAdmissionAcquireResult::Acquired(lease) => lease,
+        GoalOwnerAdmissionAcquireResult::Acquired(lease) => *lease,
         result => panic!("expected eligible lease, got {result:?}"),
     };
     assert!(store.open_lease(&lease).await.expect("open admission"));

@@ -204,7 +204,7 @@ async fn acquire(
         .await
         .expect("try to acquire admission")
     {
-        GoalOwnerAdmissionAcquireResult::Acquired(lease) => lease,
+        GoalOwnerAdmissionAcquireResult::Acquired(lease) => *lease,
         result => panic!("expected acquired admission, got {result:?}"),
     }
 }
