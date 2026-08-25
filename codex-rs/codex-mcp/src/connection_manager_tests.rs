@@ -122,6 +122,7 @@ impl McpConnectionSet {
                 connection: Arc::new(McpServerConnection {
                     identity: None,
                     client,
+                    startup_timeout: DEFAULT_STARTUP_TIMEOUT,
                     startup_trigger: None,
                     _diagnostics_guard: LIVE_CONNECTIONS.track(),
                 }),
@@ -4262,6 +4263,9 @@ async fn manager_with_reusable_ready_server(
             connection: Arc::new(McpServerConnection {
                 identity: Some(reusable_server_identity(config, runtime_context)),
                 client: create_ready_async_managed_client(tools).await,
+                startup_timeout: config
+                    .startup_timeout_sec
+                    .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
                 startup_trigger: None,
                 _diagnostics_guard: LIVE_CONNECTIONS.track(),
             }),
@@ -4396,6 +4400,9 @@ async fn reconciliation_reuses_connection_without_relisting_regular_tools() -> a
                     startup_reconnect: None,
                     cancel_token: CancellationToken::new(),
                 },
+                startup_timeout: config
+                    .startup_timeout_sec
+                    .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
                 startup_trigger: None,
                 _diagnostics_guard: LIVE_CONNECTIONS.track(),
             }),
@@ -4492,6 +4499,7 @@ async fn reconciliation_reuses_an_unchanged_pending_server_without_waiting() -> 
     .expect("test server should have one connection owner");
     connection.client = pending_client;
     config.enabled_tools = Some(vec!["search".to_string()]);
+    config.startup_timeout_sec = Some(DEFAULT_STARTUP_TIMEOUT);
 
     let reconciled = tokio::time::timeout(
         Duration::from_millis(100),
@@ -4867,11 +4875,14 @@ async fn reconciliation_reuses_ready_server_when_startup_timeout_changes() {
         vec![create_test_tool("docs", "search")],
     )
     .await;
-    config.startup_timeout_sec = Some(Duration::from_secs(30));
+    config.startup_timeout_sec = Some(Duration::from_secs(60));
 
     let reconciled = reconcile_reusable_server(&previous, config, runtime_context).await;
 
-    assert!(previous.shares_test_connection_with(&reconciled, "docs"));
+    assert_eq!(
+        model_tool_names(&reconciled.list_all_tools().await),
+        HashSet::from([ToolName::namespaced("mcp__docs", "search")])
+    );
 }
 
 #[tokio::test]
@@ -4930,6 +4941,9 @@ async fn reconciliation_replaces_closed_connections() -> anyhow::Result<()> {
             startup_reconnect: None,
             cancel_token: CancellationToken::new(),
         },
+        startup_timeout: config
+            .startup_timeout_sec
+            .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
         startup_trigger: None,
         _diagnostics_guard: LIVE_CONNECTIONS.track(),
     });

@@ -37,6 +37,7 @@ use crate::mcp::ToolPluginProvenance;
 use crate::pagination::MAX_CODEX_APPS_TOOL_CATALOG_ITEMS;
 use crate::pagination::MAX_MCP_CATALOG_ITEMS;
 use crate::rmcp_client::AsyncManagedClient;
+use crate::rmcp_client::DEFAULT_STARTUP_TIMEOUT;
 use crate::rmcp_client::DEFAULT_TOOL_TIMEOUT;
 use crate::rmcp_client::ManagedClient;
 use crate::rmcp_client::StartupOutcomeError;
@@ -81,6 +82,8 @@ static LIVE_CONNECTIONS: Gauge = Gauge::new("mcp.connections.live");
 pub(crate) struct McpServerConnection {
     identity: Option<McpServerConnectionIdentity>,
     client: AsyncManagedClient,
+    // Startup-only budget; changing it must not replace a ready connection.
+    startup_timeout: Duration,
     startup_trigger: Option<watch::Sender<bool>>,
     _diagnostics_guard: GaugeGuard,
 }
@@ -299,6 +302,9 @@ impl McpConnectionSet {
             let metadata = McpServerMetadata::from(&server);
             let configured_config = server.config().clone();
             let configured_tool_filter = ToolFilter::from_config(&configured_config);
+            let startup_timeout = configured_config
+                .startup_timeout_sec
+                .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
             let configured_tool_timeout = Some(
                 configured_config
                     .tool_timeout_sec
@@ -385,6 +391,7 @@ impl McpConnectionSet {
                 let reusable_pending_startup = connection.identity.as_ref()
                     == Some(&connection_identity)
                     && !connection.client.startup_complete.load(Ordering::Acquire)
+                    && connection.startup_timeout == startup_timeout
                     && !connection.startup_is_dormant()
                     && !connection.client.cancel_token.is_cancelled()
                     && previous_view.catalog_item_limit == catalog_item_limit
@@ -544,6 +551,7 @@ impl McpConnectionSet {
                     connection: Arc::new(McpServerConnection {
                         identity: Some(connection_identity),
                         client: async_managed_client.clone(),
+                        startup_timeout,
                         startup_trigger,
                         _diagnostics_guard: LIVE_CONNECTIONS.track(),
                     }),
