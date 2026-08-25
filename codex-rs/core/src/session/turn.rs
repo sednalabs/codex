@@ -198,7 +198,7 @@ pub(crate) async fn run_turn(
             turn_context.as_ref(),
             error.clone(),
             error_kind,
-            None,
+            /*rate_limit_retry_after*/ None,
         )
         .await;
         error!("Failed to run pre-sampling compact");
@@ -442,7 +442,7 @@ pub(crate) async fn run_turn(
                             turn_context.as_ref(),
                             error.clone(),
                             error_kind,
-                            None,
+                            /*rate_limit_retry_after*/ None,
                         )
                         .await;
                         return Ok(None);
@@ -1296,7 +1296,7 @@ async fn run_goal_continuation_child_check(
 
     turn_context.session_telemetry.counter(
         "codex.diagnostic.goal_continuation_health_check",
-        1,
+        /*inc*/ 1,
         &[("stage", "continuity_child_dispatch_attempt")],
     );
     tracing::info!(
@@ -1320,7 +1320,7 @@ async fn run_goal_continuation_child_check(
         Ok(_) => {
             turn_context.session_telemetry.counter(
                 "codex.diagnostic.goal_continuation_health_check",
-                1,
+                /*inc*/ 1,
                 &[("stage", "continuity_child_dispatch_completed")],
             );
             tracing::info!(
@@ -1336,7 +1336,7 @@ async fn run_goal_continuation_child_check(
         Err(error) => {
             turn_context.session_telemetry.counter(
                 "codex.diagnostic.goal_continuation_health_check",
-                1,
+                /*inc*/ 1,
                 &[("stage", "continuity_child_dispatch_failed")],
             );
             warn!(

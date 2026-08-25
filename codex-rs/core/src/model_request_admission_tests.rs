@@ -35,7 +35,7 @@ fn identity_with(
         "effective-model".to_string(),
         Some("priority".to_string()),
         SessionSource::Cli,
-        None,
+        /*parent_continuity_decision_id*/ None,
         Some(logical_request_id.to_string()),
     )
 }
@@ -141,7 +141,10 @@ async fn nonterminal_records_require_exact_authority_before_any_provider_call() 
             .await
             .expect("record blocked admission");
         let decision = broker
-            .admit(&identity(thread_id, InferenceRequestKind::Turn), None)
+            .admit(
+                &identity(thread_id, InferenceRequestKind::Turn),
+                /*continuation_authority*/ None,
+            )
             .await
             .expect("evaluate blocked admission");
         let calls = AtomicUsize::new(0);
@@ -307,7 +310,7 @@ async fn terminal_success_is_unrestricted_before_identity_matching() {
     later_identity.effective_provider_id = "fallback-provider".to_string();
     later_identity.effective_model = "fallback-model".to_string();
     let decision = broker
-        .admit(&later_identity, None)
+        .admit(&later_identity, /*continuation_authority*/ None)
         .await
         .expect("succeeded admission is unrestricted");
     assert!(matches!(
@@ -337,9 +340,9 @@ fn identity_preserves_configured_and_effective_provider_model_values() {
             configured_model.map(ToString::to_string),
             effective_provider.to_string(),
             effective_model.to_string(),
-            None,
+            /*service_tier*/ None,
             SessionSource::Cli,
-            None,
+            /*parent_continuity_decision_id*/ None,
             Some(SUCCESSOR_REQUEST_ID.to_string()),
         );
         assert_eq!(identity.configured_provider_key, configured_provider_key);
@@ -363,11 +366,11 @@ async fn private_typed_prewarm_bypasses_the_admission_ledger_only_for_generate_f
         Some("configured-model".to_string()),
         "effective-provider".to_string(),
         "effective-model".to_string(),
-        None,
+        /*service_tier*/ None,
         SessionSource::Cli,
     );
     let decision = broker
-        .admit(&identity, None)
+        .admit(&identity, /*continuation_authority*/ None)
         .await
         .expect("typed prewarm is unrestricted");
     assert!(matches!(

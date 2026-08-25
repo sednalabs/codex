@@ -89,8 +89,8 @@ impl Session {
         self.emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
             turn_context,
             error,
-            None,
-            None,
+            /*error_kind*/ None,
+            /*rate_limit_retry_after*/ None,
         )
         .await;
     }
@@ -104,7 +104,7 @@ impl Session {
         self.emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
             turn_context,
             error,
-            None,
+            /*error_kind*/ None,
             rate_limit_retry_after,
         )
         .await;

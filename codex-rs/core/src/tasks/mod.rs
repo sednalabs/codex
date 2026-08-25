@@ -447,7 +447,8 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) -> Result<(), TaskStartRejection<T>> {
-        self.start_task_impl(turn_context, input, task, None).await
+        self.start_task_impl(turn_context, input, task, /*reservation*/ None)
+            .await
     }
 
     pub(crate) async fn try_start_reserved_task<T: SessionTask>(

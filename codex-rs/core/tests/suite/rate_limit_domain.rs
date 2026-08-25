@@ -55,7 +55,7 @@ fn only_an_explicit_shared_quota_key_can_match_another_domain() {
 
 #[test]
 fn unknown_account_and_quota_scope_is_not_claimed_independent() {
-    let domain = domain(ThreadId::new(), "provider", None);
+    let domain = domain(ThreadId::new(), "provider", /*shared_quota_key*/ None);
 
     assert_eq!(domain.account_context_key, None);
     assert_eq!(domain.shared_quota_key, None);

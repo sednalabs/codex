@@ -648,7 +648,7 @@ async fn provider_limit_owner_preservation_keeps_active_goal_dormant_without_eli
 
     let admitted = harness
         .runtime_handle()
-        .preserve_active_goal_after_provider_limit("turn-1", None)
+        .preserve_active_goal_after_provider_limit("turn-1", /*retry_after*/ None)
         .await
         .map_err(anyhow::Error::msg)?;
     assert!(

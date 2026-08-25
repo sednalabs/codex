@@ -641,7 +641,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
         /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         ModelProviderInfo::create_openai_provider(/* base_url */ /*base_url*/ None),
         "openai".to_string(),
-        None,
+        /*configured_requested_model*/ None,
         codex_protocol::protocol::SessionSource::Exec,
         /*state_db*/ None,
         "test_originator".to_string(),
@@ -10096,7 +10096,7 @@ async fn assert_compat_user_prefix(
         EventMsg::ItemStarted(event) => {
             assert_eq!(expected_thread_id, event.thread_id);
             assert_eq!(turn_context.sub_id, event.turn_id);
-            assert_compat_user_item(event.item, &content, &client_id, None)
+            assert_compat_user_item(event.item, &content, &client_id, /*expected_id*/ None)
         }
         other => panic!("expected user item started, got {other:?}"),
     };
@@ -10125,7 +10125,14 @@ async fn assert_interrupted_compat_prefix(
     expected_thread_id: ThreadId,
     text: &str,
 ) {
-    assert_compat_user_prefix(rx, turn_context, expected_thread_id, text, None).await;
+    assert_compat_user_prefix(
+        rx,
+        turn_context,
+        expected_thread_id,
+        text,
+        /*client_id*/ None,
+    )
+    .await;
     let marker = recv_compat_event(rx, turn_context, "interrupted marker").await;
     let expected_marker = crate::tasks::interrupted_turn_history_marker(
         crate::tasks::InterruptedTurnHistoryMarker::from_config_and_version(
@@ -10229,7 +10236,7 @@ async fn task_input_transfer_preserves_or_commits_sources_at_atomic_boundaries()
     .await;
     let (first_identity, _, _, _) = active_task_details(&sess).await;
     sess.input_queue
-        .wait_for_pending_turn_input_transfer_source(1)
+        .wait_for_pending_turn_input_transfer_source(/*expected*/ 1)
         .await;
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
     drop(mailbox);
@@ -10245,10 +10252,10 @@ async fn task_input_transfer_preserves_or_commits_sources_at_atomic_boundaries()
     let terminal = sess.input_queue.lock_terminal_for_test().await;
     sess.start_task(Arc::clone(&tc), Vec::new(), task()).await;
     sess.input_queue
-        .wait_for_pending_turn_input_transfer_source(2)
+        .wait_for_pending_turn_input_transfer_source(/*expected*/ 2)
         .await;
     sess.input_queue
-        .wait_for_pending_turn_input_transfer_source(3)
+        .wait_for_pending_turn_input_transfer_source(/*expected*/ 3)
         .await;
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
     drop(terminal);
@@ -11047,8 +11054,12 @@ async fn assert_closed_synthetic<T: SessionTask>(task: T) {
     tc.turn_metadata_state.spawn_git_enrichment_task();
     assert!(tc.turn_metadata_state.has_git_enrichment_task_for_test());
     sess.close_task_admission().await;
-    sess.start_task(Arc::clone(&tc), test_input("synthetic discard", None), task)
-        .await;
+    sess.start_task(
+        Arc::clone(&tc),
+        test_input("synthetic discard", /*client_id*/ None),
+        task,
+    )
+    .await;
     assert!(!tc.turn_metadata_state.has_git_enrichment_task_for_test());
     assert!(sess.clone_history().await.raw_items().is_empty());
     assert!(sess.active_turn.lock().await.is_none() && rx.try_recv().is_err());

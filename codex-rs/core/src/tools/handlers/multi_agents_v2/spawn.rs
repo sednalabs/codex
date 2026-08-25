@@ -51,7 +51,7 @@ async fn handle_spawn_agent(
     if crate::diagnostic_flags::goal_continuation_health_check_enabled() {
         turn.session_telemetry.counter(
             "codex.diagnostic.goal_continuation_health_check",
-            1,
+            /*inc*/ 1,
             &[("stage", "continuity_child_handler_attempt")],
         );
         tracing::info!(
@@ -139,7 +139,7 @@ async fn handle_spawn_agent(
     if crate::diagnostic_flags::goal_continuation_health_check_enabled() {
         turn.session_telemetry.counter(
             "codex.diagnostic.goal_continuation_health_check",
-            1,
+            /*inc*/ 1,
             &[("stage", "continuity_child_control_attempt")],
         );
         tracing::info!(
@@ -212,7 +212,7 @@ async fn handle_spawn_agent(
     if crate::diagnostic_flags::goal_continuation_health_check_enabled() {
         turn.session_telemetry.counter(
             "codex.diagnostic.goal_continuation_health_check",
-            1,
+            /*inc*/ 1,
             &[("stage", "continuity_child_published")],
         );
         tracing::info!(
