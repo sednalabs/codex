@@ -312,6 +312,14 @@ impl TurnMetadataState {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_git_enrichment_task_for_test(&self) -> bool {
+        self.enrichment_task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
     async fn fetch_workspace_git_metadata(&self) -> WorkspaceGitMetadata {
         let (head_commit_hash, associated_remote_urls, has_changes) = tokio::join!(
             get_head_commit_hash(&self.cwd),
