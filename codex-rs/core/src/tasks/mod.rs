@@ -33,10 +33,7 @@ use crate::session::session::Session;
 use crate::session::turn::run_hooks_and_record_inputs;
 use crate::session::turn_context::TurnContext;
 use crate::state::ActiveTurn;
-use crate::state::RunningTask;
-use crate::state::RunningTaskPhase;
-use crate::state::TaskIdentity;
-use crate::state::TaskKind;
+use crate::state::{RunningTask, RunningTaskPhase, TaskIdentity, TaskKind};
 use codex_analytics::TurnProfileFact;
 use codex_analytics::TurnTokenUsageFact;
 use codex_login::AuthManager;
@@ -325,10 +322,7 @@ impl Session {
         self.start_task(turn_context, input, task).await;
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "the input handoff retains source, transition, active-turn, and turn-state locks in order until it commits"
-    )]
+    #[expect(clippy::await_holding_invalid_type, reason = "atomic source handoff")]
     pub(crate) async fn start_task<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
@@ -384,10 +378,6 @@ impl Session {
                         break 'task None;
                     }
                     let sess = session_ctx.clone_session();
-                    #[cfg(test)]
-                    sess.input_queue
-                        .wait_for_task_input_transfer_test_gate()
-                        .await;
                     let lifecycle = async {
                         let turn_started_at_unix_ms =
                             ctx.turn_timing_state.mark_turn_started(Instant::now()).await;
@@ -424,10 +414,6 @@ impl Session {
                         {
                             return None;
                         }
-                        #[cfg(test)]
-                        sess.input_queue
-                            .wait_for_task_input_transfer_test_gate()
-                            .await;
                         transfer.commit_into(&mut turn_state);
                         turn_state.token_usage_at_turn_start = token_usage_at_turn_start;
                         let task_input = running_task.initial_input.take()?;
@@ -441,10 +427,6 @@ impl Session {
                         break 'task None;
                     };
                     drop(transfer);
-                    #[cfg(test)]
-                    sess.input_queue
-                        .wait_for_task_input_transfer_test_gate()
-                        .await;
                     Some(task_input)
                 };
                 let Some(task_input) = task_input else {
@@ -578,6 +560,7 @@ impl Session {
         .await;
     }
 
+    #[expect(clippy::await_holding_invalid_type, reason = "atomic abort transition")]
     async fn abort_tasks(self: &Arc<Self>, reason: TurnAbortReason, restart_pending_work: bool) {
         let mut aborted_turn = false;
         let mut active_turn_to_clear = None;
@@ -612,6 +595,7 @@ impl Session {
         }
     }
 
+    #[expect(clippy::await_holding_invalid_type, reason = "atomic turn selection")]
     pub(crate) async fn abort_turn_if_active(
         self: &Arc<Self>,
         turn_id: &str,
@@ -654,6 +638,7 @@ impl Session {
         true
     }
 
+    #[expect(clippy::await_holding_invalid_type, reason = "completion transition")]
     pub async fn on_task_finished(
         self: &Arc<Self>,
         task_identity: TaskIdentity,
