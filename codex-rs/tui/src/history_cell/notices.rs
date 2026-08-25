@@ -103,7 +103,7 @@ const CYBER_ENTERPRISE_TRUSTED_ACCESS_URL: &str =
 pub(crate) fn new_safety_access_block_event() -> SafetyAccessBlockCell {
     SafetyAccessBlockCell {
         body: "We take extra caution with requests involving biological research and applications that could pose safety risks. Eligible researchers can apply for Trusted Access.",
-        trusted_access_url: "https://www.openai.com/form/trusted-access-for-biology-research/",
+        trusted_access_url: "https://chatgpt.com/r/b749fb02595e04c3007a54375f3f4374",
     }
 }
 
