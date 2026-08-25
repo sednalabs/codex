@@ -732,6 +732,29 @@ fn write_project_hooks(dot_codex: &Path) -> std::io::Result<()> {
     )
 }
 
+async fn install_user_prompt_test_hook(sess: &Session) {
+    let config = sess.get_config().await;
+    let stack = config
+        .config_layer_stack
+        .with_user_config(
+            Path::new("/tmp/codex-b1a-user-prompt-hooks.toml"),
+            serde_json::from_value(serde_json::json!({
+                "hooks": {
+                    "UserPromptSubmit": [{
+                        "hooks": [{"type": "command", "command": "true"}],
+                    }],
+                },
+            }))
+            .expect("test hook config"),
+        )
+        .expect("test hook layer");
+    sess.services.hooks.store(Arc::new(Hooks::new(HooksConfig {
+        feature_enabled: true,
+        bypass_hook_trust: true,
+        config_layer_stack: Some(stack),
+        ..HooksConfig::default()
+    })));
+}
 async fn write_project_trust_config(
     codex_home: &Path,
     trusted_projects: &[(&Path, TrustLevel)],
@@ -5828,6 +5851,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         mcp_prewarm_task: std::sync::Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
+        task_admission_open: std::sync::atomic::AtomicBool::new(true),
         pending_owner_continuation: Mutex::new(None),
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
@@ -8065,6 +8089,7 @@ where
         mcp_prewarm_task: std::sync::Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
+        task_admission_open: std::sync::atomic::AtomicBool::new(true),
         pending_owner_continuation: Mutex::new(None),
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
@@ -10842,7 +10867,156 @@ async fn stale_reserved_start_preserves_replacement_and_input() {
     assert!(active.task.is_none());
     assert!(Arc::ptr_eq(&active.turn_state, &replacement_state));
 }
+fn test_input(text: &str, client_id: Option<&str>) -> Vec<TurnInput> {
+    vec![TurnInput::UserInput {
+        content: vec![UserInput::Text {
+            text: text.to_string(),
+            text_elements: Vec::new(),
+        }],
+        client_id: client_id.map(str::to_string),
+    }]
+}
+use crate::tasks::TaskStartRejectionReason as Reject;
+async fn reserve_test_turn(sess: &Session) -> Arc<Mutex<TurnState>> {
+    let _transition = sess.input_queue.lock_task_transition().await;
+    let mut active = sess.active_turn.lock().await;
+    Arc::clone(&active.get_or_insert_with(ActiveTurn::default).turn_state)
+}
+macro_rules! assert_reserved_rejection {
+    ($sess:expr, $tc:expr, $state:expr, $text:expr) => {{
+        let input = vec![user_message($text)];
+        assert_eq!(
+            input.clone(),
+            $sess
+                .start_reserved_task(
+                    Arc::clone(&$tc),
+                    $state,
+                    input,
+                    crate::tasks::RegularTask::new(),
+                )
+                .await
+                .expect_err("reserved admission should return input")
+        );
+    }};
+}
+macro_rules! assert_counting_rejection {
+    ($sess:expr, $tc:expr, $text:expr, $marker:expr, $reason:expr) => {{
+        let input = vec![TurnInput::ResponseItem(user_message($text))];
+        let marker = Arc::new(std::sync::atomic::AtomicUsize::new($marker));
+        let (tx, _rx) = async_channel::bounded(1);
+        let rejection = $sess
+            .try_start_task(
+                Arc::clone(&$tc),
+                input.clone(),
+                CountingTask(Arc::clone(&marker), tx),
+            )
+            .await
+            .expect_err("counting task should be rejected");
+        assert_eq!(rejection.reason, $reason);
+        assert!(Arc::ptr_eq(&rejection.task.0, &marker) && Arc::ptr_eq(&rejection.turn_context, &$tc));
+        assert!(matches!(rejection.input, crate::tasks::TaskStartInput::Initial(items) if items == input));
+    }};
+}
+#[tokio::test]
+async fn closed_regular_uses_compatibility_recording_once() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    install_user_prompt_test_hook(&sess).await;
+    tc.turn_metadata_state.spawn_git_enrichment_task();
+    sess.close_task_admission().await;
+    sess.start_task(
+        Arc::clone(&tc),
+        test_input("closed regular distinctive", Some("client-b1a")),
+        crate::tasks::RegularTask::new(),
+    )
+    .await;
+    assert_eq!(
+        vec!["closed regular distinctive"],
+        user_input_texts(sess.clone_history().await.raw_items())
+    );
+    let (mut hook_turn, mut client_id, mut completed) = (None, None, 0);
+    while let Ok(event) = rx.try_recv() {
+        match event.msg {
+            EventMsg::HookStarted(event) => assert!(hook_turn.replace(event.turn_id).is_none()),
+            EventMsg::HookCompleted(_) => completed += 1,
+            EventMsg::UserMessage(UserMessageEvent { client_id: id, .. }) => {
+                assert!(client_id.replace(id).is_none())
+            }
+            _ => panic!("rejected task emitted lifecycle event"),
+        }
+    }
+    assert_eq!(Some(tc.sub_id.clone()), hook_turn);
+    assert_eq!((Some("client-b1a".to_string()), 1), (client_id, completed));
+    assert!(sess.active_turn.lock().await.is_none());
+}
+async fn assert_closed_synthetic<T: SessionTask>(task: T) {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    sess.close_task_admission().await;
+    sess.start_task(Arc::clone(&tc), test_input("synthetic discard", None), task)
+        .await;
+    assert!(sess.clone_history().await.raw_items().is_empty());
+    assert!(sess.active_turn.lock().await.is_none() && rx.try_recv().is_err());
+}
+#[tokio::test]
+async fn closed_review_compact_and_shell_do_not_record() {
+    assert_closed_synthetic(crate::tasks::ReviewTask::new()).await;
+    assert_closed_synthetic(crate::tasks::CompactTask::default()).await;
+    assert_closed_synthetic(crate::tasks::UserShellCommandTask::new(
+        "echo no".to_string(),
+    ))
+    .await;
+}
+#[tokio::test]
+async fn closed_reserved_compatibility_clears_only_its_reservation() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let owned_state = reserve_test_turn(&sess).await;
+    sess.close_task_admission().await;
+    assert_reserved_rejection!(&sess, tc, Arc::clone(&owned_state), "owned reservation");
+    assert!(sess.active_turn.lock().await.is_none());
+    let successor = ActiveTurn::default();
+    let successor_state = Arc::clone(&successor.turn_state);
+    {
+        let _transition = sess.input_queue.lock_task_transition().await;
+        *sess.active_turn.lock().await = Some(successor);
+    }
+    assert_reserved_rejection!(&sess, tc, owned_state, "stale reservation");
+    assert!(sess.active_turn.lock().await.as_ref().is_some_and(|turn| {
+        turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, &successor_state)
+    }));
+}
+#[tokio::test]
+async fn direct_rejections_preserve_incumbents_and_typed_custody() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let (incumbent_tx, incumbent_rx) = async_channel::bounded(1);
+    sess.start_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        CountingTask(
+            Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+            incumbent_tx,
+        ),
+    )
+    .await;
+    incumbent_rx.recv().await.expect("incumbent should run");
+    let (identity, _, phase, state) = active_task_details(&sess).await;
+    assert_counting_rejection!(&sess, tc, "busy custody", 2, Reject::Busy);
+    let (current, _, current_phase, current_state) = active_task_details(&sess).await;
+    assert!(identity == current && phase == current_phase && Arc::ptr_eq(&state, &current_state));
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let turn_state = reserve_test_turn(&sess).await;
+    assert_counting_rejection!(&sess, tc, "reserved custody", 3, Reject::Busy);
+    assert!(
+        sess.active_turn.lock().await.as_ref().is_some_and(|turn| {
+            turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, &turn_state)
+        })
+    );
+
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.close_task_admission().await;
+    assert_counting_rejection!(&sess, tc, "closed custody", 4, Reject::AdmissionClosed);
+    assert!(sess.active_turn.lock().await.is_none());
+}
 struct PendingWakeHookReset(ThreadId, Arc<tokio::sync::Notify>);
 
 impl Drop for PendingWakeHookReset {
