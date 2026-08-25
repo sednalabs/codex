@@ -1,21 +1,21 @@
 //! Determines when an unfocused conversation is ready for an automatic recap.
 
-// The stacked event-dispatch change activates the generation methods.
-#![allow(dead_code)]
-
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
 use super::App;
 use crate::app_event::AppEvent;
+use crate::app_event::RecapTrigger;
 use crate::app_event_sender::AppEventSender;
 use crate::app_server_session::AppServerSession;
 use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::ThreadRecapHistoryCell;
+use crate::history_cell::ThreadRecapLoadingCell;
 use crate::history_cell::UserHistoryCell;
+use crate::pager_overlay::Overlay;
 use crate::temporary_structured_request::TemporaryStructuredThreadOptions;
 use crate::temporary_structured_request::run_temporary_structured_turn;
 use crate::temporary_structured_request::start_temporary_thread;
@@ -36,6 +36,9 @@ pub(super) const RECAP_DELAY: Duration = Duration::from_secs(/*secs*/ 3 * 60);
 const RECAP_HISTORY_MAX_TURNS: usize = 8;
 const RECAP_MAX_CHARS: usize = 320;
 const RECAP_RETRY_DELAY: Duration = Duration::from_secs(/*secs*/ 30);
+const MANUAL_RECAP_FAILURE_MESSAGE: &str = "Could not generate a recap. Please try again.";
+const MANUAL_RECAP_IN_PROGRESS_MESSAGE: &str = "A recap is already being generated.";
+const MANUAL_RECAP_EMPTY_HISTORY_MESSAGE: &str = "There is no conversation history to recap.";
 const RECAP_PROMPT_PREFIX: &str = concat!(
     "Write a brief catch-up for a user returning to this Codex task. ",
     "In at most 40 words and one or two plain-text sentences, explain the ",
@@ -46,7 +49,7 @@ const RECAP_PROMPT_PREFIX: &str = concat!(
     "of inventing more work. Use the user's language; omit greetings, ",
     "markdown, lists, and tool chatter.\n\nRecent conversation:\n",
 );
-const RECAP_PROMPT_MAX_BYTES: usize = 900;
+pub(super) const RECAP_PROMPT_MAX_BYTES: usize = 900;
 
 fn render_recap_message(role: &str, content: &str, max_bytes: usize) -> Option<String> {
     let prefix = format!("{role}: ");
@@ -167,24 +170,79 @@ fn parse_recap(response: &str) -> Option<String> {
 pub(super) struct RecapRequest {
     pub(super) thread_id: ThreadId,
     pub(super) request_id: Uuid,
+    pub(super) trigger: RecapTrigger,
     pub(super) completed_turn_count: usize,
     pub(super) turn_revision: usize,
 }
 
 impl App {
-    pub(super) fn request_recap(&mut self, app_server: &AppServerSession, thread_id: ThreadId) {
+    fn clear_recap_request(&mut self, trigger: RecapTrigger) {
+        self.recap.clear_in_flight_request();
+
+        if !matches!(trigger, RecapTrigger::Manual) {
+            return;
+        }
+
+        self.chat_widget.clear_recap_loading();
+
+        let Some(index) = self
+            .transcript_cells
+            .iter()
+            .rposition(|cell| cell.as_any().is::<ThreadRecapLoadingCell>())
+        else {
+            return;
+        };
+
+        self.transcript_cells.remove(index);
+        if let Some(Overlay::Transcript(overlay)) = &mut self.overlay {
+            overlay.replace_cells(self.transcript_cells.clone());
+        }
+    }
+
+    fn retry_or_report_recap_failure(&mut self, request: RecapRequest) {
+        match request.trigger {
+            RecapTrigger::Automatic => self.recap.schedule_retry(
+                request.thread_id,
+                self.app_event_tx.clone(),
+                request.turn_revision,
+            ),
+            RecapTrigger::Manual => self
+                .chat_widget
+                .add_error_message(MANUAL_RECAP_FAILURE_MESSAGE.to_string()),
+        }
+    }
+
+    pub(super) fn request_recap(
+        &mut self,
+        app_server: &AppServerSession,
+        thread_id: ThreadId,
+        trigger: RecapTrigger,
+    ) {
         if self.recap.in_flight_request.is_some() {
+            if matches!(trigger, RecapTrigger::Manual) {
+                self.chat_widget
+                    .add_error_message(MANUAL_RECAP_IN_PROGRESS_MESSAGE.to_string());
+            }
             return;
         }
 
         let history = recap_history(&self.transcript_cells);
         if history.is_empty() {
+            if matches!(trigger, RecapTrigger::Manual) {
+                self.chat_widget
+                    .add_error_message(MANUAL_RECAP_EMPTY_HISTORY_MESSAGE.to_string());
+            }
             return;
+        }
+
+        if matches!(trigger, RecapTrigger::Manual) {
+            self.chat_widget.show_recap_loading();
         }
 
         let request = RecapRequest {
             thread_id,
             request_id: Uuid::new_v4(),
+            trigger,
             completed_turn_count: self.recap.completed_turns,
             turn_revision: self.recap.turn_revision,
         };
@@ -219,6 +277,7 @@ impl App {
             event_sender.send(AppEvent::RecapStarted {
                 thread_id: request.thread_id,
                 request_id: request.request_id,
+                trigger: request.trigger,
                 completed_turn_count: request.completed_turn_count,
                 turn_revision: request.turn_revision,
                 history,
@@ -227,6 +286,7 @@ impl App {
         });
 
         self.recap.in_flight_request_id = Some(request.request_id);
+        self.recap.in_flight_trigger = Some(request.trigger);
         self.recap.in_flight_request = Some(task);
     }
 
@@ -240,10 +300,12 @@ impl App {
         let RecapRequest {
             thread_id,
             request_id,
+            trigger,
             completed_turn_count,
             turn_revision,
         } = request;
-        let is_current_request = self.recap.in_flight_request_id == Some(request_id);
+        let is_current_request = self.recap.in_flight_request_id == Some(request_id)
+            && self.recap.in_flight_trigger == Some(trigger);
         if is_current_request {
             self.recap.in_flight_request.take();
         }
@@ -252,13 +314,17 @@ impl App {
             Ok(temporary_thread_id) => temporary_thread_id,
             Err(error) => {
                 if is_current_request {
-                    self.recap.in_flight_request_id = None;
+                    self.clear_recap_request(trigger);
                     tracing::warn!(%thread_id, %error, "failed to start thread recap request");
-                    self.recap
-                        .schedule_retry(thread_id, self.app_event_tx.clone(), turn_revision);
+                    self.retry_or_report_recap_failure(request);
                 }
                 return;
             }
+        };
+
+        let trigger_is_eligible = match trigger {
+            RecapTrigger::Automatic => self.recap.should_generate(Instant::now()),
+            RecapTrigger::Manual => true,
         };
 
         let request_is_fresh = is_current_request
@@ -266,20 +332,19 @@ impl App {
             && !self.chat_widget.is_user_turn_pending_or_running()
             && self.recap.completed_turns == completed_turn_count
             && self.recap.turn_revision == turn_revision
-            && self.recap.should_generate(Instant::now());
+            && trigger_is_eligible;
         let Ok(temporary_thread_id) = ThreadId::from_string(&temporary_thread_id_text) else {
             if is_current_request {
-                self.recap.in_flight_request_id = None;
+                self.clear_recap_request(trigger);
                 tracing::warn!(%thread_id, "thread recap request returned an invalid thread ID");
-                self.recap
-                    .schedule_retry(thread_id, self.app_event_tx.clone(), turn_revision);
+                self.retry_or_report_recap_failure(request);
             }
             return;
         };
 
         if !request_is_fresh {
             if is_current_request {
-                self.recap.in_flight_request_id = None;
+                self.clear_recap_request(trigger);
             }
             let request_handle = app_server.request_handle();
             tokio::spawn(async move {
@@ -309,6 +374,7 @@ impl App {
             event_sender.send(AppEvent::RecapGenerated {
                 thread_id,
                 request_id,
+                trigger,
                 temporary_thread_id,
                 completed_turn_count,
                 turn_revision,
@@ -329,18 +395,18 @@ impl App {
         let RecapRequest {
             thread_id,
             request_id,
+            trigger,
             completed_turn_count,
             turn_revision,
         } = request;
         if self.recap.in_flight_request_id != Some(request_id)
+            || self.recap.in_flight_trigger != Some(trigger)
             || self.recap.in_flight_thread_id != Some(temporary_thread_id)
         {
             return None;
         }
 
-        self.recap.in_flight_request_id = None;
-        self.recap.in_flight_thread_id = None;
-        self.recap.in_flight_request.take();
+        self.clear_recap_request(trigger);
 
         if self.current_displayed_thread_id() != Some(thread_id)
             || self.chat_widget.is_user_turn_pending_or_running()
@@ -354,8 +420,7 @@ impl App {
             Ok(response) => {
                 let Some(recap) = parse_recap(&response) else {
                     tracing::warn!(%thread_id, "generated thread recap was invalid");
-                    self.recap
-                        .schedule_retry(thread_id, self.app_event_tx.clone(), turn_revision);
+                    self.retry_or_report_recap_failure(request);
                     return None;
                 };
 
@@ -364,8 +429,7 @@ impl App {
             }
             Err(error) => {
                 tracing::warn!(%thread_id, %error, "failed to generate thread recap");
-                self.recap
-                    .schedule_retry(thread_id, self.app_event_tx.clone(), turn_revision);
+                self.retry_or_report_recap_failure(request);
                 None
             }
         }
@@ -407,11 +471,19 @@ pub(super) struct RecapState {
     scheduled_check: Option<JoinHandle<()>>,
     retry_revision: Option<usize>,
     in_flight_request_id: Option<Uuid>,
+    in_flight_trigger: Option<RecapTrigger>,
     in_flight_thread_id: Option<ThreadId>,
     in_flight_request: Option<JoinHandle<()>>,
 }
 
 impl RecapState {
+    fn clear_in_flight_request(&mut self) {
+        self.in_flight_request_id = None;
+        self.in_flight_trigger = None;
+        self.in_flight_thread_id = None;
+        self.in_flight_request.take();
+    }
+
     pub(super) fn seed_from_turns(&mut self, turns: &[Turn], now: Instant) {
         self.seed_from_progress(RecapProgress::from_turns(turns), now);
     }
@@ -456,9 +528,9 @@ impl RecapState {
         }
 
         self.retry_revision = None;
-        self.in_flight_request_id = None;
-        self.in_flight_thread_id = None;
-        self.in_flight_request.take();
+        if self.in_flight_trigger == Some(RecapTrigger::Automatic) {
+            self.clear_in_flight_request();
+        }
     }
 
     pub(super) fn note_turn_finished(&mut self, status: &TurnStatus, now: Instant) {

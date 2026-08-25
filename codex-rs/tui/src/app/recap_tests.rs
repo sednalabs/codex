@@ -12,12 +12,14 @@ use super::recap_history;
 use super::recap_prompt;
 use crate::app::test_support::make_test_app;
 use crate::app_event::AppEvent;
+use crate::app_event::RecapTrigger;
 use crate::app_event_sender::AppEventSender;
 use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
 use crate::history_cell::ThreadRecapHistoryCell;
+use crate::history_cell::ThreadRecapLoadingCell;
 use crate::history_cell::UserHistoryCell;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnStatus;
@@ -273,6 +275,43 @@ async fn regaining_focus_cancels_scheduled_check() {
         task_rx.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
     ));
+}
+
+#[test]
+fn regaining_focus_preserves_only_manual_in_flight_request() {
+    let request_id = Uuid::new_v4();
+    let thread_id = ThreadId::new();
+    let mut state = RecapState::default();
+    state.in_flight_request_id = Some(request_id);
+    state.in_flight_trigger = Some(RecapTrigger::Manual);
+    state.in_flight_thread_id = Some(thread_id);
+
+    state.note_focus_gained();
+
+    assert_eq!(
+        (
+            state.in_flight_request_id,
+            state.in_flight_trigger,
+            state.in_flight_thread_id,
+        ),
+        (
+            Some(request_id),
+            Some(RecapTrigger::Manual),
+            Some(thread_id),
+        )
+    );
+
+    state.in_flight_trigger = Some(RecapTrigger::Automatic);
+    state.note_focus_gained();
+
+    assert_eq!(
+        (
+            state.in_flight_request_id,
+            state.in_flight_trigger,
+            state.in_flight_thread_id,
+        ),
+        (None, None, None)
+    );
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -537,6 +576,7 @@ fn track_in_flight_recap(app: &mut App, thread_id: ThreadId) -> (RecapRequest, T
     let request = RecapRequest {
         thread_id,
         request_id: Uuid::new_v4(),
+        trigger: RecapTrigger::Automatic,
         completed_turn_count: 3,
         turn_revision: 3,
     };
@@ -544,6 +584,7 @@ fn track_in_flight_recap(app: &mut App, thread_id: ThreadId) -> (RecapRequest, T
     app.recap.completed_turns = request.completed_turn_count;
     app.recap.turn_revision = request.turn_revision;
     app.recap.in_flight_request_id = Some(request.request_id);
+    app.recap.in_flight_trigger = Some(request.trigger);
     app.recap.in_flight_thread_id = Some(temporary_thread_id);
     app.recap.in_flight_request = Some(tokio::spawn(async {}));
     (request, temporary_thread_id)
@@ -616,6 +657,39 @@ async fn newer_terminal_turn_invalidates_generated_recap() {
     assert!(cell.is_none());
     assert_eq!(app.recap.last_recapped_turn_count, None);
     assert!(app.recap.in_flight_request.is_none());
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn manual_recap_failure_does_not_schedule_retry() {
+    let thread_id = ThreadId::new();
+    let mut app = app_with_visible_thread(thread_id).await;
+    let (mut request, temporary_thread_id) = track_in_flight_recap(&mut app, thread_id);
+    request.trigger = RecapTrigger::Manual;
+    app.recap.in_flight_trigger = Some(RecapTrigger::Manual);
+    app.transcript_cells
+        .push(Arc::new(ThreadRecapLoadingCell::new(
+            /*animations_enabled*/ false,
+        )));
+
+    assert!(
+        app.handle_generated_recap(
+            request,
+            temporary_thread_id,
+            Err("temporary failure".to_string()),
+        )
+        .is_none()
+    );
+
+    tokio::time::advance(RECAP_RETRY_DELAY).await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(app.recap.retry_revision, None);
+    assert!(app.recap.scheduled_check.is_none());
+    assert!(
+        !app.transcript_cells
+            .iter()
+            .any(|cell| cell.as_any().is::<ThreadRecapLoadingCell>())
+    );
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]

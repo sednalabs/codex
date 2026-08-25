@@ -230,6 +230,52 @@ pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
     PlainHistoryCell { lines }
 }
 
+#[derive(Debug)]
+pub(crate) struct ThreadRecapLoadingCell {
+    start_time: Instant,
+    animations_enabled: bool,
+}
+
+impl ThreadRecapLoadingCell {
+    pub(crate) fn new(animations_enabled: bool) -> Self {
+        Self {
+            start_time: Instant::now(),
+            animations_enabled,
+        }
+    }
+}
+
+impl HistoryCell for ThreadRecapLoadingCell {
+    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        vec![
+            vec![
+                activity_indicator(
+                    Some(self.start_time),
+                    MotionMode::from_animations_enabled(self.animations_enabled),
+                    ReducedMotionIndicator::StaticBullet,
+                )
+                .unwrap_or_else(|| "•".dim()),
+                " ".into(),
+                "Generating conversation recap".bold(),
+                "…".dim(),
+            ]
+            .into(),
+        ]
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        vec![Line::from("Generating conversation recap...")]
+    }
+
+    fn transcript_animation_tick(&self) -> Option<u64> {
+        if !self.animations_enabled {
+            return None;
+        }
+
+        Some((self.start_time.elapsed().as_millis() / 50) as u64)
+    }
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct ThreadRecapHistoryCell {

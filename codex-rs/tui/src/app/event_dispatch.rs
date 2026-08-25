@@ -6,6 +6,7 @@
 use super::resize_reflow::trailing_run_start;
 use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
+use crate::app_event::RecapTrigger;
 use crate::app_event::ThreadTitleDestination;
 use crate::app_server_session::ForkGoalContinuation;
 use crate::app_server_session::UnsupportedLegacyPermissionProfile;
@@ -2897,11 +2898,71 @@ impl App {
             AppEvent::KeymapCleared { context, action } => {
                 self.apply_keymap_clear(context, action).await;
             }
-            AppEvent::CheckRecap { thread_id } => {
-                // The inference layer stacked on this change consumes the scheduled check.
-                let _ = thread_id;
+            AppEvent::GenerateRecap { thread_id } => {
+                if self.current_displayed_thread_id() == Some(thread_id) {
+                    if self.chat_widget.is_user_turn_pending_or_running() {
+                        self.chat_widget.add_error_message(
+                            "Wait for the current task to finish before running /recap.".to_string(),
+                        );
+                    } else {
+                        self.request_recap(app_server, thread_id, RecapTrigger::Manual);
+                    }
+                }
             }
-            AppEvent::RecapStarted { .. } | AppEvent::RecapGenerated { .. } => {}
+            AppEvent::CheckRecap { thread_id } => {
+                if self.current_displayed_thread_id() == Some(thread_id)
+                    && !self.chat_widget.is_user_turn_pending_or_running()
+                    && self.recap.should_generate(std::time::Instant::now())
+                {
+                    self.request_recap(app_server, thread_id, RecapTrigger::Automatic);
+                }
+            }
+            AppEvent::RecapStarted {
+                thread_id,
+                request_id,
+                trigger,
+                completed_turn_count,
+                turn_revision,
+                history,
+                result,
+            } => {
+                self.handle_recap_started(
+                    app_server,
+                    recap::RecapRequest {
+                        thread_id,
+                        request_id,
+                        trigger,
+                        completed_turn_count,
+                        turn_revision,
+                    },
+                    history,
+                    result,
+                );
+            }
+            AppEvent::RecapGenerated {
+                thread_id,
+                request_id,
+                trigger,
+                temporary_thread_id,
+                completed_turn_count,
+                turn_revision,
+                result,
+            } => {
+                self.temporary_structured_requests.remove(&temporary_thread_id);
+                if let Some(cell) = self.handle_generated_recap(
+                    recap::RecapRequest {
+                        thread_id,
+                        request_id,
+                        trigger,
+                        completed_turn_count,
+                        turn_revision,
+                    },
+                    temporary_thread_id,
+                    result,
+                ) {
+                    self.insert_history_cell(tui, Box::new(cell));
+                }
+            }
         }
         Ok(AppRunControl::Continue)
     }

@@ -1421,6 +1421,14 @@ fn mcp_inventory_loading_without_animations_is_stable() {
 }
 
 #[test]
+fn thread_recap_loading_without_animations_snapshot() {
+    let cell = ThreadRecapLoadingCell::new(/*animations_enabled*/ false);
+    let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
+
+    insta::assert_snapshot!(rendered, @"• Generating conversation recap…");
+}
+
+#[test]
 fn completed_mcp_tool_call_success_snapshot() {
     let invocation = McpInvocation {
         server: "search".into(),
