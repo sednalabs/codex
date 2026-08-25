@@ -60,6 +60,7 @@ impl Session {
         }
 
         let turn_state = {
+            let _transition = self.input_queue.lock_task_transition().await;
             let mut active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
                 return Err(TryStartTurnIfIdleError::new(
@@ -115,18 +116,23 @@ impl Session {
             ));
         }
 
-        self.input_queue
-            .extend_pending_input_for_turn_state(
-                turn_state.as_ref(),
-                input.into_iter().map(TurnInput::ResponseItem).collect(),
-            )
-            .await;
-        self.start_task(turn_context, Vec::new(), RegularTask::new())
-            .await;
-        Ok(())
+        match self
+            .start_reserved_task(turn_context, turn_state, input, RegularTask::new())
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(input) => Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::Busy,
+                input,
+            )),
+        }
     }
 
-    async fn clear_reserved_idle_turn(&self, turn_state: &Arc<tokio::sync::Mutex<TurnState>>) {
+    pub(crate) async fn clear_reserved_idle_turn(
+        &self,
+        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+    ) {
+        let _transition = self.input_queue.lock_task_transition().await;
         let mut active_turn_guard = self.active_turn.lock().await;
         if let Some(active_turn) = active_turn_guard.as_ref()
             && active_turn.task.is_none()

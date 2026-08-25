@@ -33,7 +33,7 @@ use crate::session::session::Session;
 use crate::session::turn::run_hooks_and_record_inputs;
 use crate::session::turn_context::TurnContext;
 use crate::state::ActiveTurn;
-use crate::state::{RunningTask, RunningTaskPhase, TaskIdentity, TaskKind};
+use crate::state::{RunningTask, RunningTaskPhase, TaskIdentity, TaskKind, TurnState};
 use codex_analytics::TurnProfileFact;
 use codex_analytics::TurnTokenUsageFact;
 use codex_login::AuthManager;
@@ -322,13 +322,38 @@ impl Session {
         self.start_task(turn_context, input, task).await;
     }
 
-    #[expect(clippy::await_holding_invalid_type, reason = "atomic source handoff")]
     pub(crate) async fn start_task<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
     ) {
+        let _ = self.start_task_impl(turn_context, input, task, None).await;
+    }
+
+    pub(crate) async fn start_reserved_task<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        turn_state: Arc<tokio::sync::Mutex<TurnState>>,
+        input: Vec<ResponseItem>,
+        task: T,
+    ) -> Result<(), Vec<ResponseItem>> {
+        self.start_task_impl(turn_context, Vec::new(), task, Some((turn_state, input)))
+            .await
+    }
+
+    #[expect(clippy::await_holding_invalid_type, reason = "atomic source handoff")]
+    async fn start_task_impl<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        task: T,
+        reservation: Option<(Arc<tokio::sync::Mutex<TurnState>>, Vec<ResponseItem>)>,
+    ) -> Result<(), Vec<ResponseItem>> {
+        let (reserved_turn_state, reserved_input) = match reservation {
+            Some((turn_state, input)) => (Some(turn_state), Some(input)),
+            None => (None, None),
+        };
         let task: Arc<dyn AnySessionTask> = Arc::new(task);
         let task_kind = task.kind();
         let span_name = task.span_name();
@@ -485,11 +510,39 @@ impl Session {
         {
             let _transition = self.input_queue.lock_task_transition().await;
             let mut active = self.active_turn.lock().await;
-            let turn = active.get_or_insert_with(ActiveTurn::default);
-            debug_assert!(turn.task.is_none());
+            let turn_state = if let Some(expected) = reserved_turn_state.as_ref() {
+                match active.as_ref() {
+                    Some(active_turn)
+                        if active_turn.task.is_none()
+                            && Arc::ptr_eq(&active_turn.turn_state, expected) =>
+                    {
+                        Arc::clone(expected)
+                    }
+                    _ => return Err(reserved_input.unwrap_or_default()),
+                }
+            } else {
+                let turn = active.get_or_insert_with(ActiveTurn::default);
+                debug_assert!(turn.task.is_none());
+                Arc::clone(&turn.turn_state)
+            };
+            if active.is_none() {
+                return Err(reserved_input.unwrap_or_default());
+            }
+            if let Some(input) = reserved_input.as_ref() {
+                turn_state
+                    .lock()
+                    .await
+                    .pending_input
+                    .items
+                    .extend(input.iter().cloned().map(TurnInput::ResponseItem));
+            }
+            let Some(turn) = active.as_mut() else {
+                return Err(reserved_input.unwrap_or_default());
+            };
             turn.task = Some(running_task);
         }
         let _ = published_tx.send(());
+        Ok(())
     }
 
     /// Returns whether an extension has marked this thread as durably asleep.
@@ -532,19 +585,30 @@ impl Session {
             return;
         }
 
-        {
+        let turn_state = {
+            let _transition = self.input_queue.lock_task_transition().await;
             let mut active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
                 return;
             }
-            *active_turn = Some(ActiveTurn::default());
-        }
-
+            let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
+            Arc::clone(&active_turn.turn_state)
+        };
         let turn_context = self.new_default_turn_with_sub_id(sub_id).await;
         self.maybe_emit_model_warnings_for_turn(turn_context.as_ref())
             .await;
-        self.start_task(turn_context, Vec::new(), RegularTask::new())
-            .await;
+        if self
+            .start_reserved_task(
+                turn_context,
+                turn_state.clone(),
+                Vec::new(),
+                RegularTask::new(),
+            )
+            .await
+            .is_err()
+        {
+            self.clear_reserved_idle_turn(&turn_state).await;
+        }
     }
 
     pub async fn abort_all_tasks(self: &Arc<Self>, reason: TurnAbortReason) {
