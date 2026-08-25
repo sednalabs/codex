@@ -2280,6 +2280,7 @@ dependencies = [
  "codex-utils-home-dir",
  "codex-windows-sandbox",
  "dotenvy",
+ "pathdiff",
  "pretty_assertions",
  "tempfile",
  "tokio",
