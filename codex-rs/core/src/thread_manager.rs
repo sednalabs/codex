@@ -55,6 +55,7 @@ use codex_protocol::mcp::OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionConfiguredEvent;
@@ -1938,6 +1939,14 @@ impl ThreadManagerState {
             starting.retain(|runtime| runtime.strong_count() != 0);
             starting.push(Arc::downgrade(&source_changed_during_startup));
         }
+        let windows_sandbox_proxy_settings_mode = if matches!(
+            &session_source,
+            SessionSource::Internal(InternalSessionSource::Guardian)
+        ) {
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Preserve
+        } else {
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile
+        };
         let (session, io) = Box::pin(Session::spawn(SessionSpawnArgs {
             config,
             allow_provider_model_fallback,
@@ -1977,8 +1986,7 @@ impl ThreadManagerState {
             external_time_provider: self.external_time_provider.clone(),
             inherited_multi_agent_version: multi_agent_version,
             git_enrichment_policy: GitEnrichmentPolicy::Fresh,
-            windows_sandbox_proxy_settings_mode:
-                codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+            windows_sandbox_proxy_settings_mode,
         }))
         .await?;
         // Enable Full Access form input only after session startup so a required MCP server cannot
