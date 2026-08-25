@@ -125,16 +125,28 @@ core-turn-admission-custody-targeted:
 
 # Temporary lifecycle custody diagnostics for hosted assertion evidence.
 lifecycle-custody-diagnostics:
-    cargo test -p codex-core agent::control::residency::tests::spawned_v2_terminal_child_unloads_at_terminal_idle_deadline --lib -- --nocapture --exact --test-threads=1
-    cargo test -p codex-core agent::control::residency::tests::terminal_idle_unload_defers_for_finalizer_then_retries --lib -- --nocapture --exact --test-threads=1
-    cargo test -p codex-core agent::control::residency::tests::terminal_idle_unload_failure_preserves_trigger_mail_and_residency --lib -- --nocapture --exact --test-threads=1
-    cargo test -p codex-core agent::control::residency::tests::terminal_idle_unload_rearms_after_accepted_send_input_invalidates_deadline --lib -- --nocapture --exact --test-threads=1
-    cargo test -p codex-core session::tests::abort_gracefully_emits_marker_before_turn_aborted --lib -- --nocapture --exact --test-threads=1
-    cargo test -p codex-core session::tests::abort_regular_task_emits_marker_before_turn_aborted --lib -- --nocapture --exact --test-threads=1
-    cargo test -p codex-core session::tests::closed_regular_uses_compatibility_recording_once --lib -- --nocapture --exact --test-threads=1
-    cargo test -p codex-core session::tests::turn_start_lifecycle_exposes_turn_metadata_and_token_baseline --lib -- --nocapture --exact --test-threads=1
-    cargo test -p codex-core --test all suite::goal_error_continuation::usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity -- --nocapture --exact --test-threads=1
-    cargo test -p codex-git-attribution tests::policy_resolution_retries_after_auth_refresh --lib -- --nocapture --exact --test-threads=1
+    set +e; \
+    status=0; \
+    run_test() { \
+      label="$1"; \
+      shift; \
+      echo "BEGIN $label"; \
+      RUST_MIN_STACK=8388608 "$@"; \
+      result=$?; \
+      echo "END $label status=$result"; \
+      if [ "$result" -ne 0 ]; then status=1; fi; \
+    }; \
+    run_test "residency/spawned-v2-terminal-child" cargo test -p codex-core agent::control::residency::tests::spawned_v2_terminal_child_unloads_at_terminal_idle_deadline --lib -- --nocapture --exact --test-threads=1; \
+    run_test "residency/terminal-idle-finalizer" cargo test -p codex-core agent::control::residency::tests::terminal_idle_unload_defers_for_finalizer_then_retries --lib -- --nocapture --exact --test-threads=1; \
+    run_test "residency/terminal-idle-failure" cargo test -p codex-core agent::control::residency::tests::terminal_idle_unload_failure_preserves_trigger_mail_and_residency --lib -- --nocapture --exact --test-threads=1; \
+    run_test "residency/terminal-idle-rearm" cargo test -p codex-core agent::control::residency::tests::terminal_idle_unload_rearms_after_accepted_send_input_invalidates_deadline --lib -- --nocapture --exact --test-threads=1; \
+    run_test "session/abort-gracefully" cargo test -p codex-core session::tests::abort_gracefully_emits_marker_before_turn_aborted --lib -- --nocapture --exact --test-threads=1; \
+    run_test "session/abort-regular" cargo test -p codex-core session::tests::abort_regular_task_emits_marker_before_turn_aborted --lib -- --nocapture --exact --test-threads=1; \
+    run_test "session/closed-regular" cargo test -p codex-core session::tests::closed_regular_uses_compatibility_recording_once --lib -- --nocapture --exact --test-threads=1; \
+    run_test "session/turn-start-lifecycle" cargo test -p codex-core session::tests::turn_start_lifecycle_exposes_turn_metadata_and_token_baseline --lib -- --nocapture --exact --test-threads=1; \
+    run_test "integration/goal-error-continuation" cargo test -p codex-core --test all suite::goal_error_continuation::usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity -- --nocapture --exact --test-threads=1; \
+    run_test "git-attribution/auth-refresh" cargo test -p codex-git-attribution tests::policy_resolution_retries_after_auth_refresh --lib -- --nocapture --exact --test-threads=1; \
+    exit "$status"
 
 # Carry-only downstream behavior smoke checks (core-only seam).
 core-carry-core-smoke:
