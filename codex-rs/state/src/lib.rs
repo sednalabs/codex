@@ -78,6 +78,7 @@ pub use runtime::GoalUpdate;
 pub use runtime::MemoryStore;
 pub use runtime::RemoteControlEnrollmentRecord;
 pub use runtime::RuntimeDbBackup;
+pub use runtime::SqliteIntegrityCheck;
 pub use runtime::SqliteQueueStore;
 pub use runtime::ThreadFilterOptions;
 pub use runtime::backup_runtime_db_for_fresh_start;
