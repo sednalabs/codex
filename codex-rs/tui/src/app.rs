@@ -226,6 +226,7 @@ mod permission_shortcuts;
 mod pets;
 mod platform_actions;
 mod plugin_mentions;
+mod recap;
 mod replay_filter;
 mod resize_reflow;
 mod safety_buffering;
@@ -633,6 +634,7 @@ pub(crate) struct App {
     // Serialize hook enablement writes per hook so stale completions cannot
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
+    recap: recap::RecapState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -754,7 +756,10 @@ impl App {
         event: TuiEvent,
     ) -> Result<AppRunControl> {
         let screen_size = tui.screen_size_for_event(&event)?;
-        if !matches!(&event, TuiEvent::Key(_) | TuiEvent::Paste(_)) {
+        if !matches!(
+            &event,
+            TuiEvent::Key(_) | TuiEvent::Paste(_) | TuiEvent::FocusLost
+        ) {
             self.expire_pending_key_chord();
             self.handle_draw_pre_render(tui, screen_size)?;
         }
@@ -767,6 +772,16 @@ impl App {
         } else {
             event
         };
+
+        match &event {
+            TuiEvent::FocusLost => {
+                self.recap.note_focus_lost(Instant::now());
+            }
+            TuiEvent::FocusGained => {
+                self.recap.note_focus_gained();
+            }
+            _ => {}
+        }
 
         if self.overlay.is_some() {
             let _ = self
@@ -786,7 +801,7 @@ impl App {
                     let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
                     self.chat_widget.handle_paste(pasted);
                 }
-                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) => {
+                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
                     if self.backtrack_render_pending {
                         self.rebuild_transcript_after_backtrack(tui, screen_size.into())?;
                         self.backtrack_render_pending = false;
@@ -839,6 +854,7 @@ impl App {
                         self.app_event_tx.send(AppEvent::LaunchExternalEditor);
                     }
                 }
+                TuiEvent::FocusLost => {}
             }
         }
         Ok(AppRunControl::Continue)

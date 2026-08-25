@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg_attr(not(test), allow(dead_code))]
+const RECAP_HEADING: &str = "Conversation recap";
+
 #[cfg_attr(debug_assertions, allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct UpdateAvailableHistoryCell {
@@ -225,4 +228,62 @@ pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
     // in terminals like Ghostty.
     let lines: Vec<Line<'static>> = vec![vec![format!("■ {message}").red()].into()];
     PlainHistoryCell { lines }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug)]
+pub(crate) struct ThreadRecapHistoryCell {
+    recap: String,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl ThreadRecapHistoryCell {
+    pub(crate) fn new(recap: String) -> Self {
+        Self { recap }
+    }
+}
+
+impl HistoryCell for ThreadRecapHistoryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let width = usize::from(width);
+        let mut remaining_width = width;
+        let mut heading = Vec::new();
+
+        if remaining_width > 0 {
+            heading.push("─".dim());
+            remaining_width -= 1;
+        }
+        if remaining_width > 0 {
+            heading.push(" ".dim());
+            remaining_width -= 1;
+        }
+
+        let (visible_heading, _suffix, heading_width) =
+            take_prefix_by_width(RECAP_HEADING, remaining_width);
+        if !visible_heading.is_empty() {
+            heading.push(visible_heading.bold());
+            remaining_width -= heading_width;
+        }
+        if remaining_width > 0 {
+            heading.push(" ".dim());
+            remaining_width -= 1;
+        }
+        if remaining_width > 0 {
+            heading.push("─".repeat(remaining_width).dim());
+        }
+
+        let wrap_width = width.saturating_sub(2).max(1);
+        let body = raw_lines_from_source(&self.recap);
+        let wrapped = adaptive_wrap_lines(body, RtOptions::new(wrap_width));
+        let mut lines = vec![heading.into(), Line::default()];
+        lines.extend(prefix_lines(wrapped, "  ".into(), "  ".into()));
+
+        lines
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::from(RECAP_HEADING)];
+        lines.extend(raw_lines_from_source(&self.recap));
+        lines
+    }
 }

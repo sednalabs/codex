@@ -181,8 +181,10 @@ async fn run_startup_hooks_review_app(
                     }
                 }
             }
-            TuiEvent::Paste(_) => {}
-            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) => draw_view(tui, &view)?,
+            TuiEvent::Paste(_) | TuiEvent::FocusLost => {}
+            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
+                draw_view(tui, &view)?;
+            }
         }
     }
 }

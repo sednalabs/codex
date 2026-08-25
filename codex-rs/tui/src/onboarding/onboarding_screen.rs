@@ -541,7 +541,10 @@ pub(crate) async fn run_onboarding_app(
                         TuiEvent::Paste(text) => {
                             onboarding_screen.handle_paste(text);
                         }
-                        TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) => {
+                        TuiEvent::Draw
+                        | TuiEvent::Resume
+                        | TuiEvent::Resize(_)
+                        | TuiEvent::FocusGained => {
                             if !did_full_clear_after_success
                                 && onboarding_screen.steps.iter().any(|step| {
                                     if let Step::Auth(w) = step {
@@ -576,6 +579,7 @@ pub(crate) async fn run_onboarding_app(
                                 frame.render_widget_ref(&onboarding_screen, frame.area());
                             });
                         }
+                        TuiEvent::FocusLost => {}
                     }
                 }
             }

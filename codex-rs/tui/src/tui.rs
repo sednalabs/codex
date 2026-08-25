@@ -576,6 +576,10 @@ pub enum TuiEvent {
     /// The app refreshes terminal geometry for this draw because resize events are not delivered
     /// while the process is suspended.
     Resume,
+    /// A terminal focus notification indicating that the terminal or tab became active.
+    FocusGained,
+    /// A terminal focus notification indicating that the terminal or tab became inactive.
+    FocusLost,
 }
 
 pub struct Tui {
@@ -670,6 +674,10 @@ impl Tui {
     ) {
         self.notification_backend = Some(detect_backend(method));
         self.notification_condition = condition;
+    }
+
+    pub(crate) fn is_terminal_focused(&self) -> bool {
+        self.terminal_focused.load(Ordering::Relaxed)
     }
 
     pub fn frame_requester(&self) -> FrameRequester {
@@ -775,7 +783,7 @@ impl Tui {
     /// Emit a desktop notification now if the terminal is unfocused.
     /// Returns true if a notification was posted.
     pub fn notify(&mut self, message: impl AsRef<str>) -> bool {
-        let terminal_focused = self.terminal_focused.load(Ordering::Relaxed);
+        let terminal_focused = self.is_terminal_focused();
         if !should_emit_notification(self.notification_condition, terminal_focused) {
             return false;
         }
