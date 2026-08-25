@@ -616,26 +616,17 @@ impl App {
                 self.insert_pending_usage_output_after_stream_shutdown(tui);
             }
             AppEvent::StartCommitAnimation => {
-                if self
-                    .commit_anim_running
-                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    let tx = self.app_event_tx.clone();
-                    let running = self.commit_anim_running.clone();
-                    thread::spawn(move || {
-                        while running.load(Ordering::Relaxed) {
-                            thread::sleep(COMMIT_ANIMATION_TICK);
-                            tx.send(AppEvent::CommitTick);
-                        }
-                    });
-                }
+                self.commit_animation.get_or_insert_with(|| {
+                    let mut interval = tokio::time::interval_at(
+                        tokio::time::Instant::now() + COMMIT_ANIMATION_TICK,
+                        COMMIT_ANIMATION_TICK,
+                    );
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    interval
+                });
             }
             AppEvent::StopCommitAnimation => {
-                self.commit_anim_running.store(false, Ordering::Release);
-            }
-            AppEvent::CommitTick => {
-                self.chat_widget.on_commit_tick();
+                self.commit_animation = None;
             }
             AppEvent::Exit(mode) => {
                 if matches!(mode, ExitMode::ShutdownFirst | ExitMode::ShutdownAfterInterrupt) {

@@ -504,7 +504,7 @@ See the Codex keymap documentation for supported actions and examples."
             transcript_reflow: TranscriptReflowState::default(),
             initial_history_replay_buffer: None,
             scrollback_has_older_history: false,
-            commit_anim_running: Arc::new(AtomicBool::new(false)),
+            commit_animation: None,
             status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
             terminal_title_invalid_items_warned: terminal_title_invalid_items_warned.clone(),
             skill_load_warnings: SkillLoadWarningState::default(),
@@ -810,6 +810,18 @@ See the Codex keymap documentation for supported actions and examples."
                     } => {
                         app.chat_widget.refresh_goal_status_indicator_for_time_tick();
                         app.chat_widget.refresh_terminal_title();
+                        AppRunControl::Continue
+                    }
+                    () = async {
+                        match app.commit_animation.as_mut() {
+                            Some(interval) => {
+                                interval.tick().await;
+                            }
+                            None => std::future::pending().await,
+                        }
+                    }, if !has_pending_app_events => {
+                        crate::session_log::log_commit_tick();
+                        app.chat_widget.on_commit_tick();
                         AppRunControl::Continue
                     }
                 };

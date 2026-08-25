@@ -190,8 +190,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::select;
@@ -568,8 +566,8 @@ pub(crate) struct App {
     pub(crate) keymap: RuntimeKeymap,
     pub(crate) key_chord_matcher: KeyChordMatcher,
 
-    /// Controls the animation thread that sends CommitTick events.
-    pub(crate) commit_anim_running: Arc<AtomicBool>,
+    /// The foreground loop owns stream pacing; stopped animations have no timer.
+    pub(crate) commit_animation: Option<tokio::time::Interval>,
     // Shared across ChatWidget instances so invalid status-line config warnings only emit once.
     status_line_invalid_items_warned: Arc<AtomicBool>,
     // Shared across ChatWidget instances so invalid terminal-title config warnings only emit once.
