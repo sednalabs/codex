@@ -215,25 +215,27 @@ impl Respond for LimitSequenceResponder {
     }
 }
 
-async fn wait_for_thread_id(
+async fn wait_for_thread_spawn(
     manager: &Arc<ThreadManager>,
-    excluded_thread_ids: &[ThreadId],
+    created_threads: &mut tokio::sync::broadcast::Receiver<ThreadId>,
+    expected_parent_thread_id: ThreadId,
 ) -> Result<ThreadId> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(thread_id) = manager
-            .list_thread_ids()
-            .await
-            .into_iter()
-            .find(|thread_id| !excluded_thread_ids.contains(thread_id))
-        {
-            return Ok(thread_id);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let thread_id = created_threads.recv().await?;
+            let thread = manager.get_thread(thread_id).await?;
+            let source = thread.config_snapshot().await.session_source;
+            if matches!(
+                source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { parent_thread_id, .. })
+                    if parent_thread_id == expected_parent_thread_id
+            ) {
+                return Ok(thread_id);
+            }
         }
-        if Instant::now() >= deadline {
-            anyhow::bail!("timed out waiting for ThreadSpawn owner");
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for ThreadSpawn publication"))?
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -365,13 +367,15 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         });
     let test = builder.build(&server).await?;
     continuity.set_thread_manager(&test.thread_manager);
+    let mut created_threads = test.thread_manager.subscribe_thread_created();
     let root_thread_id = test.session_configured.thread_id;
     test.submit_turn(ROOT_PROMPT).await?;
-    let orchestrator_id = wait_for_thread_id(&test.thread_manager, &[root_thread_id]).await?;
+    let orchestrator_id =
+        wait_for_thread_spawn(&test.thread_manager, &mut created_threads, root_thread_id).await?;
     let orchestrator = test.thread_manager.get_thread(orchestrator_id).await?;
 
     let sub_thread_id =
-        wait_for_thread_id(&test.thread_manager, &[root_thread_id, orchestrator_id]).await?;
+        wait_for_thread_spawn(&test.thread_manager, &mut created_threads, orchestrator_id).await?;
     let child_deadline = Instant::now() + Duration::from_secs(5);
     while sub_request.requests().is_empty() {
         if Instant::now() >= child_deadline {
