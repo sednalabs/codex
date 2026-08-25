@@ -397,7 +397,9 @@ pub struct ThreadResumeParams {
     pub personality: Option<Personality>,
     /// When true, return only thread metadata and live-resume state without
     /// populating `thread.turns`. This is useful when the client plans to call
-    /// `thread/turns/list` immediately after resuming.
+    /// `thread/turns/list` immediately after resuming. Full-history hydration
+    /// is deprecated for paginated threads; use this with `thread/turns/list`
+    /// and `thread/items/list` instead.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exclude_turns: bool,
     /// When present, include a `thread/turns/list` page in the resume response
@@ -585,7 +587,9 @@ pub struct ThreadForkParams {
     pub thread_source: Option<ThreadSource>,
     /// When true, return only thread metadata and live fork state without
     /// populating `thread.turns`. This is useful when the client plans to call
-    /// `thread/turns/list` immediately after forking.
+    /// `thread/turns/list` immediately after forking. Full-history hydration
+    /// is deprecated for paginated threads; use this with `thread/turns/list`
+    /// and `thread/items/list` instead.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exclude_turns: bool,
     /// When true, carry the source thread's current goal into the fork without
@@ -1646,6 +1650,9 @@ pub enum ThreadActiveFlag {
 pub struct ThreadReadParams {
     pub thread_id: String,
     /// When true, include turns and their items from rollout history.
+    /// Full-history hydration is deprecated for paginated threads; prefer a
+    /// metadata-only read and page with `thread/turns/list` and
+    /// `thread/items/list`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub include_turns: bool,
 }

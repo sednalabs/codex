@@ -367,7 +367,7 @@ To continue a stored session, call `thread/resume` with the `thread.id` you prev
 
 Parent-owned Multi-Agent V2 children are an exception: `thread/resume` ignores configuration overrides and reattaches to the existing child. An unloaded child is reloaded through its actual, currently loaded parent using parent-derived configuration. If that owner-controlled reload cannot be performed, the request returns JSON-RPC error `-32600`; resume the parent first, or use `thread/read` or `thread/turns/list` to inspect the child's stored history without loading it. This policy follows the child's multi-agent runtime, including leaf workers whose models cannot delegate further.
 
-By default, `thread/resume` includes the reconstructed turn history in `thread.turns`. Clients can pass `excludeTurns: true` to return only thread metadata and live resume state, then call `thread/turns/list` separately if they want to page the turn history over the network. A cold paginated resume can still replay persisted `thread/tokenUsage/updated` when it can identify the corresponding stored turn; resuming an already-loaded thread waits for the next live update.
+By default, `thread/resume` includes the reconstructed turn history in `thread.turns`. Full-history hydration is deprecated for paginated threads and emits `deprecationNotice`; clients should pass `excludeTurns: true` to return only thread metadata and live resume state, then page with `thread/turns/list` and `thread/items/list`. A cold paginated resume can still replay persisted `thread/tokenUsage/updated` when it can identify the corresponding stored turn; resuming an already-loaded thread waits for the next live update.
 
 Paginated threads keep the same resume contract as legacy threads. A default resume materializes the full projected history into `thread.turns`; `excludeTurns: true` keeps that array empty and includes `turnsBackwardsCursor` and `itemsBackwardsCursor` for the durable history visible at the resume boundary. Pass each cursor directly to its matching list API with `sortDirection: "desc"`; the first page includes the row identified by the cursor, while newer records arrive through live notifications. Either cursor is `null` when there is no durable row yet.
 
@@ -423,7 +423,7 @@ To branch from a stored session, call `thread/fork` with the `thread.id`. This c
 { "method": "thread/started", "params": { "thread": { … } } }
 ```
 
-Like `thread/resume`, clients can pass `excludeTurns: true` to `thread/fork` to return only thread metadata in `thread.turns` and page history with `thread/turns/list`. Metadata-only forks do not replay restored `thread/tokenUsage/updated`. Ephemeral forks of paginated threads require `excludeTurns: true`.
+Like `thread/resume`, full-history hydration is deprecated for paginated `thread/fork` and emits `deprecationNotice`. Clients should pass `excludeTurns: true` to return only thread metadata in `thread.turns` and page history with `thread/turns/list` and `thread/items/list`. Metadata-only forks do not replay restored `thread/tokenUsage/updated`. Ephemeral forks of paginated threads require `excludeTurns: true`.
 
 ### Example: List threads (with pagination & filters)
 
@@ -574,8 +574,10 @@ Later, after the idle unload timeout:
 
 Use `thread/read` to fetch a stored thread by id without resuming it. Pass `includeTurns` when you want thread history loaded into `thread.turns`. The returned thread includes `parentThreadId`, `agentNickname`, and `agentRole` for subagent threads when available.
 
-Paginated threads can also use `includeTurns: true`, but clients should prefer
-`thread/turns/list` and `thread/items/list` for incremental history loading.
+Paginated threads can also use `includeTurns: true`, but full-history hydration
+is deprecated and emits `deprecationNotice`. Clients should omit `includeTurns`
+(or set it to `false`), then use `thread/turns/list` and `thread/items/list` for
+incremental history loading.
 
 ```json
 { "method": "thread/read", "id": 22, "params": { "threadId": "thr_123" } }

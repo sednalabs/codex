@@ -17899,7 +17899,7 @@
           "type": "boolean"
         },
         "excludeTurns": {
-          "description": "When true, return only thread metadata and live fork state without populating `thread.turns`. This is useful when the client plans to call `thread/turns/list` immediately after forking.",
+          "description": "When true, return only thread metadata and live fork state without populating `thread.turns`. This is useful when the client plans to call `thread/turns/list` immediately after forking. Full-history hydration is deprecated for paginated threads; use this with `thread/turns/list` and `thread/items/list` instead.",
           "type": "boolean"
         },
         "lastTurnId": {
@@ -19474,7 +19474,7 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
         "includeTurns": {
-          "description": "When true, include turns and their items from rollout history.",
+          "description": "When true, include turns and their items from rollout history. Full-history hydration is deprecated for paginated threads; prefer a metadata-only read and page with `thread/turns/list` and `thread/items/list`.",
           "type": "boolean"
         },
         "threadId": {
@@ -20101,7 +20101,7 @@
           ]
         },
         "excludeTurns": {
-          "description": "When true, return only thread metadata and live-resume state without populating `thread.turns`. This is useful when the client plans to call `thread/turns/list` immediately after resuming.",
+          "description": "When true, return only thread metadata and live-resume state without populating `thread.turns`. This is useful when the client plans to call `thread/turns/list` immediately after resuming. Full-history hydration is deprecated for paginated threads; use this with `thread/turns/list` and `thread/items/list` instead.",
           "type": "boolean"
         },
         "model": {

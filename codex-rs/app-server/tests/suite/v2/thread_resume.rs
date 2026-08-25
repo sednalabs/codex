@@ -24,6 +24,7 @@ use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
+use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
 use codex_app_server_protocol::ItemStartedNotification;
@@ -2381,6 +2382,80 @@ async fn thread_resume_can_skip_turns_for_metadata_only_resume() -> Result<()> {
 
     assert_eq!(thread.id, conversation_id);
     assert!(thread.turns.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_warns_for_paginated_full_history_hydration() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    mock_responses_config(&server.uri()).write(codex_home.path())?;
+
+    let conversation_id = create_fake_paginated_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        "Saved user message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized()
+        .await?;
+
+    let cold_resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let notice: DeprecationNoticeNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("deprecationNotice"),
+    )
+    .await??;
+    assert_eq!(
+        notice,
+        DeprecationNoticeNotification {
+            summary: "Full-history hydration is deprecated for paginated threads; use `excludeTurns: true`, then page with `thread/turns/list` and `thread/items/list`.".to_string(),
+            details: None,
+        }
+    );
+    let _: ThreadResumeResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(cold_resume_id)).await??;
+
+    mcp.clear_message_buffer();
+    let loaded_resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let _: DeprecationNoticeNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("deprecationNotice"),
+    )
+    .await??;
+    let _: ThreadResumeResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(loaded_resume_id)).await??;
+
+    mcp.clear_message_buffer();
+    let metadata_resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id,
+            exclude_turns: true,
+            ..Default::default()
+        })
+        .await?;
+    let _: ThreadResumeResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(metadata_resume_id)).await??;
+    assert!(
+        !mcp.pending_notification_methods()
+            .contains(&"deprecationNotice".to_string())
+    );
 
     Ok(())
 }
