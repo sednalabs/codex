@@ -10053,6 +10053,7 @@ async fn enqueue_test_sources(sess: &Session) {
 }
 
 #[tokio::test]
+#[expect(clippy::await_holding_invalid_type, reason = "deterministic source lock")]
 async fn task_input_transfer_preserves_or_commits_sources_at_atomic_boundaries() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     enqueue_test_sources(&sess).await;
