@@ -633,7 +633,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[expect(clippy::await_holding_invalid_type, reason = "deterministic source lock")]
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "deterministic source lock"
+    )]
     async fn dropping_pending_turn_transfer_keeps_both_canonical_queues() {
         let input_queue = InputQueue::new();
         let mail = make_mail(
