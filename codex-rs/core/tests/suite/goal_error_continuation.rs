@@ -27,6 +27,7 @@ use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_response_once_match;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
@@ -283,7 +284,7 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         ]),
     )
     .await;
-    let sub_request = mount_sse_once_match(
+    let sub_request = mount_response_once_match(
         &server,
         |request: &wiremock::Request| body_contains(request, SUB_ORCHESTRATOR_TASK),
         sse_response(sse(vec![
@@ -324,10 +325,10 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         .mount(&server)
         .await;
 
-    let continuity = ContinuityFixture::default();
+    let continuity = Arc::new(ContinuityFixture::default());
     let mut extensions = ExtensionRegistryBuilder::<codex_core::config::Config>::new();
-    extensions.thread_lifecycle_contributor(continuity.clone());
-    extensions.turn_lifecycle_contributor(continuity.clone());
+    extensions.thread_lifecycle_contributor(Arc::clone(&continuity));
+    extensions.turn_lifecycle_contributor(Arc::clone(&continuity));
     let mut builder = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
