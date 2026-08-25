@@ -223,7 +223,9 @@ async fn wait_for_thread_spawn(
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let thread_id = created_threads.recv().await?;
-            let thread = manager.get_thread(thread_id).await?;
+            let Ok(thread) = manager.get_thread(thread_id).await else {
+                continue;
+            };
             let source = thread.config_snapshot().await.session_source;
             if matches!(
                 source,
