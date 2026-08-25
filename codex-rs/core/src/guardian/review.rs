@@ -249,7 +249,7 @@ async fn record_guardian_non_denial(session: &Arc<Session>, turn_id: &str) {
 }
 
 async fn record_guardian_denial(session: &Arc<Session>, turn: &Arc<TurnContext>, turn_id: &str) {
-    let policy = if turn.model_info.model_specialty.as_deref() == Some(MODEL_SPECIALTY_CYBER) {
+    let policy = if turn.model_info().model_specialty.as_deref() == Some(MODEL_SPECIALTY_CYBER) {
         GuardianRejectionCircuitBreakerPolicy::CyberModel
     } else {
         GuardianRejectionCircuitBreakerPolicy::Standard
@@ -335,7 +335,7 @@ async fn run_guardian_review(
         .config
         .config_layer_stack
         .requirements()
-        .auto_review_required_for_model(&turn.model_info.slug)
+        .auto_review_required_for_model(&turn.model_info().slug)
         || turn.config.features.enabled(Feature::GuardianV2))
         && !requires_synchronous_review
         && options
@@ -722,7 +722,7 @@ async fn run_guardian_review(
             assessment.rationale.trim()
         };
         let rejection_instructions = turn
-            .model_info
+            .model_info()
             .model_messages
             .as_ref()
             .and_then(|messages| messages.auto_review.as_ref())
@@ -847,7 +847,7 @@ pub(super) async fn guardian_review_session_config(
             fallback
         }
     };
-    let model_override = turn.model_info.auto_review_model_override.as_deref();
+    let model_override = turn.model_info().auto_review_model_override.as_deref();
     let review_model_id = model_override.unwrap_or(default_review_model_id);
     let review_model = available_models
         .iter()
@@ -868,17 +868,17 @@ pub(super) async fn guardian_review_session_config(
         (review_model_id.to_string(), reasoning_effort)
     } else {
         let reasoning_effort = preferred_reasoning_effort(
-            turn.model_info
+            turn.model_info()
                 .supported_reasoning_levels
                 .iter()
                 .any(|preset| preset.effort == codex_protocol::openai_models::ReasoningEffort::Low),
-            turn.reasoning_effort
-                .clone()
-                .or_else(|| turn.model_info.default_reasoning_level.clone()),
+            turn.reasoning_effort()
+                .or(turn.model_info().default_reasoning_level.as_ref())
+                .cloned(),
         );
         (
             model_override
-                .unwrap_or(turn.model_info.slug.as_str())
+                .unwrap_or(turn.model_info().slug.as_str())
                 .to_string(),
             reasoning_effort,
         )
@@ -899,7 +899,7 @@ pub(super) async fn guardian_review_session_config(
         guardian_reasoning_effort.clone(),
         guardian_model_info.model_messages.as_ref(),
     )?;
-    if turn.model_info.node_repl_auto_review_required {
+    if turn.model_info().node_repl_auto_review_required {
         spawn_config
             .features
             .enable(Feature::RetainClientDeveloperMessages)
@@ -909,7 +909,7 @@ pub(super) async fn guardian_review_session_config(
                 )
             })?;
     }
-    if guardian_model != turn.model_info.slug {
+    if guardian_model != turn.model_info().slug {
         spawn_config.model_context_window = None;
         spawn_config.model_auto_compact_token_limit = None;
     }
@@ -974,8 +974,8 @@ async fn run_guardian_review_session_before_deadline(
                 guardian_catalog_contains_auto_review: session_config.catalog_contains_auto_review,
                 guardian_review_model_overridden: session_config.model_overridden,
                 guardian_review_model_override: session_config.model_override,
-                reasoning_summary: turn.reasoning_summary,
-                personality: turn.personality,
+                reasoning_summary: turn.reasoning_summary(),
+                personality: turn.personality(),
                 external_cancel,
                 deadline,
             }),

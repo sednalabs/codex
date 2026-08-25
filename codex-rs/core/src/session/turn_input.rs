@@ -130,7 +130,7 @@ impl PreparedTurnInputSettings {
         updates.final_output_json_schema = Some(final_output_json_schema);
         updates.service_tier_for_turn = service_tier;
 
-        let turn = match kind {
+        let turn_context = match kind {
             TurnStartKind::User | TurnStartKind::Recovery => Some(
                 session
                     .new_turn_with_sub_id(submission_id.clone(), updates)
@@ -144,7 +144,7 @@ impl PreparedTurnInputSettings {
                     .await?
             }
         };
-        let Some((turn_context, settings_snapshot)) = turn else {
+        let Some((turn_context, settings_snapshot)) = turn_context else {
             return Ok(None);
         };
         if emit_thread_settings_applied {

@@ -5,6 +5,7 @@ use crate::guardian::GUARDIAN_REVIEWER_NAME;
 use crate::plugins::plugins_manager_for_config;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::step_context::StepContext;
+use crate::session::tests::update_turn_settings_for_test;
 use crate::test_support::models_manager_with_provider;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolOutput;
@@ -97,7 +98,9 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
     .await;
 
     let (mut session, mut turn_context_raw) = make_session_and_context().await;
-    Arc::make_mut(&mut turn_context_raw.model_info).node_repl_auto_review_required = true;
+    update_turn_settings_for_test(&mut turn_context_raw, |settings| {
+        Arc::make_mut(&mut settings.model_info).node_repl_auto_review_required = true;
+    });
     *session.active_turn.lock().await = Some(ActiveTurn::default());
     Arc::make_mut(&mut turn_context_raw.config)
         .permissions

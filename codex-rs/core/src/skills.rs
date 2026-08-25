@@ -150,7 +150,7 @@ pub(crate) async fn maybe_emit_implicit_skill_invocation(
         .analytics_events_client
         .track_skill_invocations(
             build_track_events_context(
-                turn_context.model_info.slug.clone(),
+                turn_context.model_info().slug.clone(),
                 sess.thread_id.to_string(),
                 turn_context.sub_id.clone(),
                 turn_context.originator.clone(),

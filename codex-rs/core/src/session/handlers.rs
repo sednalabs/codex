@@ -119,12 +119,8 @@ pub async fn run_user_shell_command(sess: &Arc<Session>, sub_id: String, command
     }
 
     let turn_context = sess.new_default_turn_with_sub_id(sub_id).await;
-    sess.spawn_task(
-        Arc::clone(&turn_context),
-        Vec::new(),
-        UserShellCommandTask::new(command),
-    )
-    .await;
+    sess.spawn_task(turn_context, Vec::new(), UserShellCommandTask::new(command))
+        .await;
 }
 
 pub async fn resolve_elicitation(
@@ -243,8 +239,7 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
 pub async fn compact(sess: &Arc<Session>, sub_id: String) {
     let turn_context = sess.new_default_turn_with_sub_id(sub_id).await;
 
-    sess.spawn_task(Arc::clone(&turn_context), Vec::new(), CompactTask)
-        .await;
+    sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
 }
 
 pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32) {

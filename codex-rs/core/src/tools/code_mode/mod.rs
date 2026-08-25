@@ -277,7 +277,7 @@ pub(super) async fn handle_runtime_response(
 }
 
 fn sanitize_runtime_image_detail(turn: &TurnContext, items: &mut [FunctionCallOutputContentItem]) {
-    sanitize_image_detail_items(can_request_original_image_detail(&turn.model_info), items);
+    sanitize_image_detail_items(can_request_original_image_detail(turn.model_info()), items);
 }
 
 fn format_script_status(response: &RuntimeResponse) -> String {

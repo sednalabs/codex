@@ -287,7 +287,7 @@ pub(crate) async fn handle_mcp_tool_call(
                     &call_id,
                     invocation,
                     item_metadata.clone(),
-                    crate::guardian::guardian_timeout_message(&turn_context.model_info),
+                    crate::guardian::guardian_timeout_message(turn_context.model_info()),
                     /*already_started*/ true,
                 )
                 .await
@@ -449,7 +449,7 @@ async fn handle_approved_mcp_tool_call(
                         .map(|(connector_id, action_name)| HostedFileUploadContext {
                             connector_id: connector_id.clone(),
                             action_name: action_name.clone(),
-                            model: turn_context.model_info.slug.clone(),
+                            model: turn_context.model_info().slug.clone(),
                         });
                     let rewritten_arguments = rewrite_mcp_tool_arguments_for_openai_files(
                         sess,
@@ -491,7 +491,7 @@ async fn handle_approved_mcp_tool_call(
                 .await
                 .map_err(|error| format!("tool call error: {error:?}"))?;
             let result = sanitize_mcp_tool_result_for_model(
-                &turn_context.model_info.input_modalities,
+                &turn_context.model_info().input_modalities,
                 Ok(result),
             )?;
             Ok(maybe_request_codex_apps_auth_elicitation(
@@ -1023,7 +1023,7 @@ async fn maybe_track_codex_app_used(
     };
 
     let tracking = build_track_events_context(
-        turn_context.model_info.slug.clone(),
+        turn_context.model_info().slug.clone(),
         sess.thread_id.to_string(),
         turn_context.sub_id.clone(),
         turn_context.originator.clone(),
@@ -1193,7 +1193,7 @@ fn build_mcp_tool_call_request_meta(
     if let Some(turn_metadata) = turn_context
         .turn_metadata_state
         .current_meta_value_for_mcp_request(McpTurnMetadataContext {
-            model: turn_context.model_info.slug.as_str(),
+            model: turn_context.model_info().slug.as_str(),
             reasoning_effort: turn_context.effective_reasoning_effort(),
         })
     {
@@ -1317,7 +1317,7 @@ async fn maybe_request_mcp_tool_approval(
     let approvals_reviewer = connectors::mcp_approvals_reviewer_from_layers(
         &config.config_layer_stack,
         config.approvals_reviewer,
-        Some(turn_context.model_info.slug.as_str()),
+        Some(turn_context.model_info().slug.as_str()),
         &invocation.server,
         metadata.connector_id.as_deref(),
     );

@@ -497,7 +497,7 @@ impl Session {
                 _ => {}
             }
         }
-        resolution.into_tool_result(&ctx.review_context.turn().model_info)
+        resolution.into_tool_result(ctx.review_context.turn().model_info())
     }
 
     async fn request_reviewer_approval(

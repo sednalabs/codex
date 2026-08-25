@@ -1379,7 +1379,7 @@ impl Session {
                     .await;
 
                 // If resuming, warn when the last recorded model differs from the current one.
-                let curr: &str = turn_context.model_info.slug.as_str();
+                let curr: &str = turn_context.model_info().slug.as_str();
                 if let Some(prev) = previous_turn_settings
                     .as_ref()
                     .map(|settings| settings.model.as_str())
@@ -3069,7 +3069,7 @@ impl Session {
         let mut items = items.to_vec();
         let image_preparation_mode = if unified_image_budget_enabled(
             &turn_context.config.features,
-            &turn_context.model_info,
+            turn_context.model_info(),
         ) {
             ImagePreparationMode::UnifiedBudget
         } else {
@@ -3202,7 +3202,7 @@ impl Session {
                 .note_recorded_items(&response_items);
             state
                 .history
-                .record_annotated_items(&items, turn_context.model_info.truncation_policy.into());
+                .record_annotated_items(&items, turn_context.model_info().truncation_policy.into());
         }
         for image in image_preparations {
             self.services
@@ -3286,6 +3286,10 @@ impl Session {
         cancellation_token: &CancellationToken,
         required_servers: &[String],
     ) -> CodexResult<Arc<StepContext>> {
+        // Capture once before asynchronous planning; all request consumers
+        // retain this immutable settings version even if the turn is updated.
+        let settings = turn_context.current_settings.load_full();
+        let session_telemetry = settings.telemetry(&turn_context.session_telemetry);
         // Keep selections fixed for the turn while allowing their startup work to finish.
         let environments = turn_context.environments.refresh_readiness();
         self.services
@@ -3354,6 +3358,8 @@ impl Session {
         });
         extension_data.insert(selected_plugins.clone());
         turn_context.extension_data.insert(selected_plugins);
+        // Tool planning still uses the admitted turn. Migrating it to the
+        // captured model is a separate step from diagnostic activation.
         let tool_router = turn::built_tools(
             self.as_ref(),
             turn_context.as_ref(),
@@ -3365,13 +3371,8 @@ impl Session {
         .or_cancel(cancellation_token)
         .await??;
         Ok(Arc::new(StepContext {
-            model_info: Arc::clone(&turn_context.model_info),
-            reasoning_effort: turn_context.reasoning_effort.clone(),
-            reasoning_summary: turn_context.reasoning_summary,
-            service_tier: turn_context.config.service_tier.clone(),
-            approval_policy: turn_context.approval_policy(),
-            approvals_reviewer: turn_context.config.approvals_reviewer,
-            session_telemetry: turn_context.session_telemetry.clone(),
+            settings,
+            session_telemetry,
             turn: turn_context,
             environments,
             selected_capability_roots,
@@ -3399,7 +3400,7 @@ impl Session {
             state.current_time_reminder.note_recorded_items(items);
             state.record_items(
                 items.iter(),
-                turn_context.model_info.truncation_policy.into(),
+                turn_context.model_info().truncation_policy.into(),
             );
         }
         self.persist_rollout_items(&[
@@ -3414,10 +3415,11 @@ impl Session {
 
     async fn maybe_warn_on_server_model_mismatch(
         self: &Arc<Self>,
-        turn_context: &Arc<TurnContext>,
+        step_context: &StepContext,
         server_model: String,
     ) -> bool {
-        let requested_model = turn_context.model_info.slug.clone();
+        let turn_context = &step_context.turn;
+        let requested_model = step_context.settings.model_info.slug.clone();
         let server_model_normalized = server_model.to_ascii_lowercase();
         let requested_model_normalized = requested_model.to_ascii_lowercase();
         if server_model_normalized == requested_model_normalized {

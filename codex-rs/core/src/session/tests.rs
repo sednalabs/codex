@@ -1,6 +1,8 @@
 use super::mcp_refresh::McpRefresh;
+use super::step_settings::ResolvedStepSettings;
 use super::step_settings::StepSettings;
 use super::step_settings::StepSettingsUpdate;
+pub(crate) use super::step_settings::tests::update_selected_settings_for_test;
 use super::turn_context::TurnEnvironment;
 use super::*;
 use crate::agents_md_manager::AgentsMdManager;
@@ -212,16 +214,31 @@ pub(crate) fn mcp_config_for_test(config: &crate::config::Config) -> Arc<codex_m
     ))
 }
 
+/// Updates both initial/current views before sharing a test turn context.
+pub(crate) fn update_turn_settings_for_test(
+    turn: &mut TurnContext,
+    update: impl FnOnce(&mut super::step_settings::ResolvedStepSettings),
+) {
+    let mut settings = turn.initial_settings.as_ref().clone();
+    update(&mut settings);
+    let settings = Arc::new(settings);
+    turn.initial_settings = Arc::clone(&settings);
+    turn.current_settings.store(settings);
+}
+
 impl StepContext {
     pub(crate) fn for_test(turn: Arc<TurnContext>) -> Arc<Self> {
         let environments = turn.environments.clone();
+        // Unit fixtures still customize the legacy Config directly.
+        // Production capture instead takes the turn's current snapshot.
+        let mut settings = turn.initial_settings.as_ref().clone();
+        update_selected_settings_for_test(&mut settings, |selected| {
+            selected.approval_policy = turn.config.permissions.approval_policy.clone();
+            selected.approvals_reviewer = turn.config.approvals_reviewer;
+        });
+        settings.service_tier = turn.config.service_tier.clone();
         Arc::new(Self {
-            model_info: Arc::clone(&turn.model_info),
-            reasoning_effort: turn.reasoning_effort.clone(),
-            reasoning_summary: turn.reasoning_summary,
-            service_tier: turn.config.service_tier.clone(),
-            approval_policy: turn.approval_policy(),
-            approvals_reviewer: turn.config.approvals_reviewer,
+            settings: Arc::new(settings),
             session_telemetry: turn.session_telemetry.clone(),
             turn: Arc::clone(&turn),
             environments,
@@ -496,7 +513,7 @@ async fn world_state_extension_metrics_follow_turn_model_switch() {
         .session_telemetry
         .clone()
         .with_metrics(metrics.clone());
-    let next_model = if turn_context.model_info.slug == "gpt-5.4" {
+    let next_model = if turn_context.model_info().slug == "gpt-5.4" {
         "gpt-5.2"
     } else {
         "gpt-5.4"
@@ -2890,8 +2907,10 @@ async fn recompute_token_usage_updates_model_context_window() {
         }));
     }
 
-    Arc::make_mut(&mut turn_context.model_info).context_window = Some(128_000);
-    Arc::make_mut(&mut turn_context.model_info).effective_context_window_percent = 100;
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        Arc::make_mut(&mut settings.model_info).context_window = Some(128_000);
+        Arc::make_mut(&mut settings.model_info).effective_context_window_percent = 100;
+    });
 
     session.recompute_token_usage(&turn_context).await;
 
@@ -3655,12 +3674,12 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: None,
-        personality: turn_context.personality,
+        personality: turn_context.personality(),
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
-        effort: turn_context.reasoning_effort.clone(),
+        effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let turn_id = previous_context_item
@@ -3962,7 +3981,7 @@ async fn thread_rollback_recomputes_previous_turn_settings_and_reference_context
     assert_eq!(
         sess.previous_turn_settings().await,
         Some(PreviousTurnSettings {
-            model: tc.model_info.slug.clone(),
+            model: tc.model_info().slug.clone(),
             comp_hash: None,
             realtime_active: Some(tc.realtime_active),
         })
@@ -4585,7 +4604,7 @@ async fn includes_timed_out_message() {
     };
     let (_, turn_context) = make_session_and_context().await;
 
-    let out = format_exec_output_str(&exec, turn_context.model_info.truncation_policy.into());
+    let out = format_exec_output_str(&exec, turn_context.model_info().truncation_policy.into());
 
     assert_eq!(
         out,
@@ -4596,7 +4615,38 @@ async fn includes_timed_out_message() {
 #[tokio::test]
 async fn turn_context_with_model_updates_model_fields() {
     let (session, mut turn_context) = make_session_and_context().await;
-    turn_context.reasoning_effort = Some(ReasoningEffortConfig::Minimal);
+    let config = Arc::make_mut(&mut turn_context.config);
+    config.features.enable(Feature::FastMode).unwrap();
+    config.model_reasoning_effort = Some(ReasoningEffortConfig::Minimal);
+    config.model_reasoning_summary = Some(ReasoningSummaryConfig::Detailed);
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        let mut selected = settings.selected().clone();
+        selected.collaboration_mode.settings.reasoning_effort =
+            Some(ReasoningEffortConfig::Minimal);
+        selected.reasoning_summary = Some(ReasoningSummaryConfig::Detailed);
+        selected.service_tier = Some(ServiceTier::Fast.request_value().to_string());
+        *settings = ResolvedStepSettings::new(
+            Arc::new(selected),
+            Arc::clone(&settings.model_info),
+            /*fast_mode_enabled*/ true,
+        );
+    });
+    Arc::make_mut(&mut turn_context.config).service_tier =
+        turn_context.initial_settings.service_tier.clone();
+    let captured = turn_context.current_settings.load_full();
+    let mut current_selection = captured.selected().clone();
+    current_selection.reasoning_summary = Some(ReasoningSummaryConfig::None);
+    current_selection.service_tier = None;
+    current_selection
+        .collaboration_mode
+        .settings
+        .reasoning_effort = Some(ReasoningEffortConfig::High);
+    let current = Arc::new(ResolvedStepSettings::new(
+        Arc::new(current_selection),
+        Arc::clone(turn_context.model_info()),
+        /*fast_mode_enabled*/ true,
+    ));
+    turn_context.current_settings.store(Arc::clone(&current));
     let updated = turn_context
         .with_model("gpt-5.4".to_string(), &session.services.models_manager)
         .await;
@@ -4609,12 +4659,48 @@ async fn turn_context_with_model_updates_model_fields() {
         )
         .await;
 
+    // Historical model selection starts from the frozen turn settings, not a
+    // later publication, and retains its selected summary/tier.
+    assert_eq!(
+        (
+            updated.reasoning_summary(),
+            updated.initial_settings.service_tier.as_deref()
+        ),
+        (
+            ReasoningSummaryConfig::Detailed,
+            Some(ServiceTier::Fast.request_value())
+        ),
+    );
+    assert_eq!(
+        (
+            updated.config.model_reasoning_summary,
+            updated.config.service_tier.as_deref()
+        ),
+        (
+            Some(ReasoningSummaryConfig::Detailed),
+            Some(ServiceTier::Fast.request_value())
+        ),
+    );
+    assert!(Arc::ptr_eq(&captured, &turn_context.initial_settings));
+    assert!(Arc::ptr_eq(
+        &current,
+        &turn_context.current_settings.load_full()
+    ));
+    assert!(!Arc::ptr_eq(&captured, &updated.initial_settings));
+    assert!(Arc::ptr_eq(
+        &updated.initial_settings,
+        &updated.current_settings.load_full()
+    ));
+    assert!(!Arc::ptr_eq(
+        &updated.current_settings.load_full(),
+        &turn_context.current_settings.load_full()
+    ));
     assert_eq!(updated.config.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(updated.collaboration_mode().model(), "gpt-5.4");
-    assert_eq!(updated.model_info.as_ref(), &expected_model_info);
+    assert_eq!(updated.model_info().as_ref(), &expected_model_info);
     assert_eq!(
-        updated.reasoning_effort,
-        Some(ReasoningEffortConfig::Medium)
+        updated.reasoning_effort(),
+        Some(&ReasoningEffortConfig::Medium)
     );
     assert_eq!(
         updated.collaboration_mode().reasoning_effort(),
@@ -6251,7 +6337,11 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         session.services.shell_zsh_path.as_ref(),
         session.services.main_execve_wrapper_exe.as_ref(),
         per_turn_config,
-        model_info,
+        Arc::new(super::step_settings::ResolvedStepSettings::new(
+            Arc::clone(&session_configuration.step_settings),
+            Arc::new(model_info),
+            config.features.enabled(Feature::FastMode),
+        )),
         &models_manager,
         /*network*/ None,
         resolved_turn_environments,
@@ -8476,7 +8566,11 @@ where
         session.services.shell_zsh_path.as_ref(),
         session.services.main_execve_wrapper_exe.as_ref(),
         per_turn_config,
-        model_info,
+        Arc::new(super::step_settings::ResolvedStepSettings::new(
+            Arc::clone(&session_configuration.step_settings),
+            Arc::new(model_info),
+            config.features.enabled(Feature::FastMode),
+        )),
         &models_manager,
         /*network*/ None,
         resolved_turn_environments,
@@ -9137,7 +9231,7 @@ async fn record_context_updates_emits_environment_item_for_network_changes() {
     let previous_context = Arc::new(previous_context);
     let mut current_context = previous_context
         .with_model(
-            previous_context.model_info.slug.clone(),
+            previous_context.model_info().slug.clone(),
             &session.services.models_manager,
         )
         .await;
@@ -9193,7 +9287,7 @@ async fn record_context_updates_emits_environment_item_for_cwd_changes() {
     let previous_context = Arc::new(previous_context);
     let mut current_context = previous_context
         .with_model(
-            previous_context.model_info.slug.clone(),
+            previous_context.model_info().slug.clone(),
             &session.services.models_manager,
         )
         .await;
@@ -9250,7 +9344,7 @@ async fn record_context_updates_use_environment_permission_profile_and_workspace
     let previous_context = Arc::new(previous_context);
     let mut current_context = previous_context
         .with_model(
-            previous_context.model_info.slug.clone(),
+            previous_context.model_info().slug.clone(),
             &session.services.models_manager,
         )
         .await;
@@ -9304,7 +9398,7 @@ async fn record_context_updates_emits_environment_item_for_time_changes() {
     let previous_context = Arc::new(previous_context);
     let mut current_context = previous_context
         .with_model(
-            previous_context.model_info.slug.clone(),
+            previous_context.model_info().slug.clone(),
             &session.services.models_manager,
         )
         .await;
@@ -9328,7 +9422,7 @@ async fn record_context_updates_omits_environment_item_when_disabled() {
     let previous_context = Arc::new(previous_context);
     let mut current_context = previous_context
         .with_model(
-            previous_context.model_info.slug.clone(),
+            previous_context.model_info().slug.clone(),
             &session.services.models_manager,
         )
         .await;
@@ -9393,7 +9487,7 @@ async fn record_context_updates_emits_realtime_start_when_session_becomes_live()
     let previous_context = Arc::new(previous_context);
     let mut current_context = previous_context
         .with_model(
-            previous_context.model_info.slug.clone(),
+            previous_context.model_info().slug.clone(),
             &session.services.models_manager,
         )
         .await;
@@ -9417,7 +9511,7 @@ async fn record_context_updates_emits_realtime_end_when_session_stops_being_live
     previous_context.realtime_active = true;
     let mut current_context = previous_context
         .with_model(
-            previous_context.model_info.slug.clone(),
+            previous_context.model_info().slug.clone(),
             &session.services.models_manager,
         )
         .await;
@@ -9561,8 +9655,10 @@ async fn build_initial_context_includes_turn_context_fragments_from_extensions()
     let mut builder = codex_extension_api::ExtensionRegistryBuilder::new();
     builder.prompt_contributor(Arc::new(TurnContextExtensionTestContributor));
     session.services.extensions = Arc::new(builder.build());
-    Arc::make_mut(&mut turn_context.model_info).context_window = Some(100);
-    Arc::make_mut(&mut turn_context.model_info).effective_context_window_percent = 50;
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        Arc::make_mut(&mut settings.model_info).context_window = Some(100);
+        Arc::make_mut(&mut settings.model_info).effective_context_window_percent = 50;
+    });
     turn_context
         .extension_data
         .insert(TurnContextExtensionTestState {
@@ -9588,8 +9684,10 @@ async fn record_context_updates_includes_turn_context_fragments_on_steady_state_
     let mut builder = codex_extension_api::ExtensionRegistryBuilder::new();
     builder.prompt_contributor(Arc::new(TurnContextExtensionTestContributor));
     session.services.extensions = Arc::new(builder.build());
-    Arc::make_mut(&mut turn_context.model_info).context_window = Some(200);
-    Arc::make_mut(&mut turn_context.model_info).effective_context_window_percent = 25;
+    update_turn_settings_for_test(&mut turn_context, |settings| {
+        Arc::make_mut(&mut settings.model_info).context_window = Some(200);
+        Arc::make_mut(&mut settings.model_info).effective_context_window_percent = 25;
+    });
     turn_context
         .extension_data
         .insert(TurnContextExtensionTestState {
@@ -9770,7 +9868,7 @@ async fn build_initial_context_restates_realtime_start_when_reference_context_is
     let (session, mut turn_context) = make_session_and_context().await;
     turn_context.realtime_active = true;
     let previous_turn_settings = PreviousTurnSettings {
-        model: turn_context.model_info.slug.clone(),
+        model: turn_context.model_info().slug.clone(),
         comp_hash: None,
         realtime_active: Some(true),
     };
@@ -10121,7 +10219,7 @@ async fn build_initial_context_prepends_model_switch_message() {
 async fn record_context_updates_and_set_reference_context_item_persists_full_reinjection_to_rollout()
  {
     let (mut session, previous_context) = make_session_and_context().await;
-    let next_model = if previous_context.model_info.slug == "gpt-5.4" {
+    let next_model = if previous_context.model_info().slug == "gpt-5.4" {
         "gpt-5.2"
     } else {
         "gpt-5.4"
@@ -10150,7 +10248,7 @@ async fn record_context_updates_and_set_reference_context_item_persists_full_rei
 
     session
         .set_previous_turn_settings(Some(PreviousTurnSettings {
-            model: previous_context.model_info.slug.clone(),
+            model: previous_context.model_info().slug.clone(),
             comp_hash: None,
             realtime_active: Some(previous_context.realtime_active),
         }))
@@ -11402,10 +11500,10 @@ async fn sample_rollout(
             && content.iter().any(|c| {
                 matches!(c, ContentItem::InputText { text } if text.contains("<personality_spec>"))
             }))
-    }) && let Some(p) = reconstruction_turn.personality
+    }) && let Some(p) = reconstruction_turn.personality()
         && session.features.enabled(Feature::Personality)
         && let Some(personality_message) = reconstruction_turn
-            .model_info
+            .model_info()
             .model_messages
             .as_ref()
             .and_then(|m| m.get_personality_message(Some(p)).filter(|s| !s.is_empty()))
@@ -11425,20 +11523,20 @@ async fn sample_rollout(
     }
     live_history.record_items(
         initial_context.iter(),
-        reconstruction_turn.model_info.truncation_policy.into(),
+        reconstruction_turn.model_info().truncation_policy.into(),
     );
 
     let user1 = user_message("first user");
     live_history.record_items(
         std::iter::once(&user1),
-        reconstruction_turn.model_info.truncation_policy.into(),
+        reconstruction_turn.model_info().truncation_policy.into(),
     );
     rollout_items.push(RolloutItem::ResponseItem(user1.clone().into()));
 
     let assistant1 = assistant_message("assistant reply one");
     live_history.record_items(
         std::iter::once(&assistant1),
-        reconstruction_turn.model_info.truncation_policy.into(),
+        reconstruction_turn.model_info().truncation_policy.into(),
     );
     rollout_items.push(RolloutItem::ResponseItem(assistant1.clone().into()));
 
@@ -11461,14 +11559,14 @@ async fn sample_rollout(
     let user2 = user_message("second user");
     live_history.record_items(
         std::iter::once(&user2),
-        reconstruction_turn.model_info.truncation_policy.into(),
+        reconstruction_turn.model_info().truncation_policy.into(),
     );
     rollout_items.push(RolloutItem::ResponseItem(user2.clone().into()));
 
     let assistant2 = assistant_message("assistant reply two");
     live_history.record_items(
         std::iter::once(&assistant2),
-        reconstruction_turn.model_info.truncation_policy.into(),
+        reconstruction_turn.model_info().truncation_policy.into(),
     );
     rollout_items.push(RolloutItem::ResponseItem(assistant2.clone().into()));
 
@@ -11491,14 +11589,14 @@ async fn sample_rollout(
     let user3 = user_message("third user");
     live_history.record_items(
         std::iter::once(&user3),
-        reconstruction_turn.model_info.truncation_policy.into(),
+        reconstruction_turn.model_info().truncation_policy.into(),
     );
     rollout_items.push(RolloutItem::ResponseItem(user3.into()));
 
     let assistant3 = assistant_message("assistant reply three");
     live_history.record_items(
         std::iter::once(&assistant3),
-        reconstruction_turn.model_info.truncation_policy.into(),
+        reconstruction_turn.model_info().truncation_policy.into(),
     );
     rollout_items.push(RolloutItem::ResponseItem(assistant3.into()));
 

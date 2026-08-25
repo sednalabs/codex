@@ -386,11 +386,9 @@ async fn multi_agent_v2_spawn_fork_turns_all_applies_agent_type_override() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
-    let turn = TurnContext {
-        config: Arc::new(config),
-        multi_agent_version: codex_protocol::protocol::MultiAgentVersion::V2,
-        ..turn
-    };
+    let mut turn = turn;
+    turn.config = Arc::new(config);
+    turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
 
     SpawnAgentHandlerV2::default()
         .handle(invocation(
@@ -915,11 +913,9 @@ async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
-    let turn = TurnContext {
-        config: Arc::new(config),
-        multi_agent_version: codex_protocol::protocol::MultiAgentVersion::V2,
-        ..turn
-    };
+    let mut turn = turn;
+    turn.config = Arc::new(config);
+    turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
     let parent_provider_id = turn.config.model_provider_id.clone();
 
     let output = SpawnAgentHandlerV2::default()
@@ -4534,7 +4530,7 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
     let base_instructions = BaseInstructions {
         text: "base".to_string(),
         provenance: Some(BaseInstructionsProvenance::Model {
-            model: turn.model_info.slug.clone(),
+            model: turn.model_info().slug.clone(),
         }),
     };
     turn.developer_instructions = Some("dev".to_string());
@@ -4581,10 +4577,10 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
     let mut expected = (*turn.config).clone();
     expected.base_instructions_provenance = base_instructions.provenance.clone();
     expected.base_instructions = Some(base_instructions.text);
-    expected.model = Some(turn.model_info.slug.clone());
+    expected.model = Some(turn.model_info().slug.clone());
     expected.model_provider = turn.provider.info().clone();
-    expected.model_reasoning_effort = turn.reasoning_effort.clone();
-    expected.model_reasoning_summary = Some(turn.reasoning_summary);
+    expected.model_reasoning_effort = turn.reasoning_effort().cloned();
+    expected.model_reasoning_summary = Some(turn.reasoning_summary());
     expected.developer_instructions = turn.developer_instructions.clone();
     #[allow(deprecated)]
     {
@@ -4604,7 +4600,7 @@ async fn build_agent_resume_config_clears_base_instructions() {
     let mut base_config = (*turn.config).clone();
     base_config.base_instructions = Some("caller-base".to_string());
     base_config.base_instructions_provenance = Some(BaseInstructionsProvenance::Model {
-        model: turn.model_info.slug.clone(),
+        model: turn.model_info().slug.clone(),
     });
     turn.config = Arc::new(base_config);
     Arc::make_mut(&mut turn.config)
@@ -4634,10 +4630,10 @@ async fn build_agent_resume_config_clears_base_instructions() {
     let mut expected = (*turn.config).clone();
     expected.base_instructions = None;
     expected.base_instructions_provenance = None;
-    expected.model = Some(turn.model_info.slug.clone());
+    expected.model = Some(turn.model_info().slug.clone());
     expected.model_provider = turn.provider.info().clone();
-    expected.model_reasoning_effort = turn.reasoning_effort.clone();
-    expected.model_reasoning_summary = Some(turn.reasoning_summary);
+    expected.model_reasoning_effort = turn.reasoning_effort().cloned();
+    expected.model_reasoning_summary = Some(turn.reasoning_summary());
     expected.developer_instructions = turn.developer_instructions.clone();
     #[allow(deprecated)]
     {

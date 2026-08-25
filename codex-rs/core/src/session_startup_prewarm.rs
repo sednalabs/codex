@@ -314,11 +314,11 @@ async fn schedule_startup_prewarm_inner(
     client_session
         .prewarm_websocket(
             &startup_prompt,
-            &step_context.model_info,
+            &step_context.settings.model_info,
             &step_context.session_telemetry,
-            step_context.reasoning_effort.clone(),
-            step_context.reasoning_summary,
-            step_context.service_tier.clone(),
+            step_context.settings.reasoning_effort().cloned(),
+            step_context.settings.reasoning_summary,
+            step_context.settings.service_tier.clone(),
             &responses_metadata,
         )
         .await?;

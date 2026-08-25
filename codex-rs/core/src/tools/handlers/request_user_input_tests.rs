@@ -2,6 +2,8 @@ use super::*;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::tests::make_session_and_context_with_rx;
+use crate::session::tests::update_selected_settings_for_test;
+use crate::session::tests::update_turn_settings_for_test;
 use crate::state::ActiveTurn;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -224,9 +226,14 @@ async fn guardian_user_input_evidence_is_bounded() {
 #[tokio::test]
 async fn request_user_input_sets_blocking_from_turn_mode() {
     let (session, mut turn, events) = make_session_and_context_with_rx().await;
-    Arc::get_mut(&mut turn)
-        .expect("turn context should be uniquely owned")
-        .mode = ModeKind::Plan;
+    update_turn_settings_for_test(
+        Arc::get_mut(&mut turn).expect("turn context should be uniquely owned"),
+        |settings| {
+            update_selected_settings_for_test(settings, |selected| {
+                selected.collaboration_mode.mode = ModeKind::Plan;
+            });
+        },
+    );
     *session.active_turn.lock().await = Some(ActiveTurn::default());
 
     let request = tokio::spawn({

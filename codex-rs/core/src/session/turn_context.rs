@@ -1,9 +1,11 @@
+use super::step_settings::ResolvedStepSettings;
 use super::*;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::exec_policy::AllowPrefixRules;
 use crate::shell_snapshot::ShellSnapshotFile;
 use crate::tools::sandboxing::executor_windows_sandbox_level;
+use arc_swap::ArcSwap;
 use codex_core_plugins::PluginCommandAttribution;
 use codex_core_plugins::ResolvedPluginMetricsOperation;
 use codex_core_plugins::TrustedPluginRoots;
@@ -174,18 +176,17 @@ pub struct TurnContext {
     pub(crate) realtime_active: bool,
     pub(crate) code_mode_available: bool,
     /// Turn-scoped configuration. Read step-specific settings such as service tier and
-    /// approvals reviewer from the corresponding `StepContext` fields instead.
+    /// approvals reviewer from the corresponding `StepContext` instead.
     pub config: Arc<Config>,
     pub(crate) auth_manager: Option<Arc<AuthManager>>,
-    /// Legacy turn model; step-scoped execution should use `StepContext::model_info`.
-    pub(crate) model_info: Arc<ModelInfo>,
+    /// Frozen settings used to construct this context. Legacy turn consumers
+    /// keep this view even when later steps use different settings.
+    pub(crate) initial_settings: Arc<ResolvedStepSettings>,
+    /// Snapshot for the next step; request consumers use their captured StepContext.
+    pub(super) current_settings: ArcSwap<ResolvedStepSettings>,
     /// Turn-wide telemetry; model-attributed step work should use `StepContext::session_telemetry`.
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) provider: SharedModelProvider,
-    /// Legacy turn effort; step-scoped execution should use `StepContext::reasoning_effort`.
-    pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
-    /// Legacy turn summary; step-scoped execution should use `StepContext::reasoning_summary`.
-    pub(crate) reasoning_summary: ReasoningSummaryConfig,
     pub(crate) session_source: SessionSource,
     pub(crate) history_mode: ThreadHistoryMode,
     pub(crate) parent_thread_id: Option<ThreadId>,
@@ -200,10 +201,7 @@ pub struct TurnContext {
     pub(crate) timezone: Option<String>,
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) developer_instructions: Option<String>,
-    pub(crate) mode: ModeKind,
-    pub(crate) collaboration_mode_developer_instructions: Option<String>,
     pub(crate) multi_agent_version: MultiAgentVersion,
-    pub(crate) personality: Option<Personality>,
     pub(crate) network: Option<NetworkProxy>,
     // TODO(anp): Reconcile this parallel turn snapshot with TurnEnvironment::sandbox_context
     // so owner-provided environment settings govern the remaining sandbox decisions.
@@ -226,6 +224,46 @@ enum TurnMultiAgentRuntime {
 }
 
 impl TurnContext {
+    /// Legacy: returns the frozen initial-turn model metadata.
+    /// Step-scoped consumers should use their captured `StepContext::settings`.
+    pub(crate) fn model_info(&self) -> &Arc<ModelInfo> {
+        &self.initial_settings.model_info
+    }
+
+    /// Legacy: returns the frozen initial-turn reasoning-effort selection.
+    /// Step-scoped consumers should use their captured `StepContext::settings`.
+    pub(crate) fn reasoning_effort(&self) -> Option<&ReasoningEffortConfig> {
+        self.initial_settings.reasoning_effort()
+    }
+
+    /// Legacy: returns the frozen initial-turn effective reasoning summary.
+    /// Step-scoped consumers should use their captured `StepContext::settings`.
+    pub(crate) fn reasoning_summary(&self) -> ReasoningSummaryConfig {
+        self.initial_settings.reasoning_summary
+    }
+
+    /// Legacy: returns the frozen initial-turn collaboration mode kind.
+    /// Step-scoped consumers should use their captured `StepContext::settings`.
+    pub(crate) fn mode(&self) -> ModeKind {
+        self.initial_settings.selected_collaboration_mode().mode
+    }
+
+    /// Legacy: returns the frozen initial-turn personality.
+    /// Step-scoped consumers should use their captured `StepContext::settings`.
+    pub(crate) fn personality(&self) -> Option<Personality> {
+        self.initial_settings.personality()
+    }
+
+    /// Legacy: returns the frozen initial-turn collaboration-mode developer instructions.
+    /// Step-scoped consumers should use their captured `StepContext::settings`.
+    pub(crate) fn collaboration_mode_developer_instructions(&self) -> &Option<String> {
+        &self
+            .initial_settings
+            .selected_collaboration_mode()
+            .settings
+            .developer_instructions
+    }
+
     pub(crate) fn skills_snapshot(&self) -> Arc<HostSkillsSnapshot> {
         let Some(snapshot) = self.extension_data.get::<HostSkillsSnapshot>() else {
             unreachable!("every turn has a host skills snapshot");
@@ -233,13 +271,15 @@ impl TurnContext {
         snapshot
     }
 
+    /// Legacy: returns the frozen initial-turn collaboration mode with the resolved model slug.
+    /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn collaboration_mode(&self) -> CollaborationMode {
         CollaborationMode {
-            mode: self.mode,
+            mode: self.mode(),
             settings: Settings {
-                model: self.model_info.slug.clone(),
-                reasoning_effort: self.reasoning_effort.clone(),
-                developer_instructions: self.collaboration_mode_developer_instructions.clone(),
+                model: self.model_info().slug.clone(),
+                reasoning_effort: self.reasoning_effort().cloned(),
+                developer_instructions: self.collaboration_mode_developer_instructions().clone(),
             },
         }
     }
@@ -266,12 +306,14 @@ impl TurnContext {
             .await
     }
 
-    /// Approval policy admitted with the turn; step-scoped actions should use
-    /// `StepContext::approval_policy` instead.
+    /// Legacy: returns the frozen initial-turn approval policy.
+    /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn approval_policy(&self) -> AskForApproval {
         self.config.permissions.approval_policy.value()
     }
 
+    /// Legacy: returns the frozen initial-turn prefix-rule policy.
+    /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn allow_prefix_rules(&self) -> AllowPrefixRules {
         let ignore_rules = self
             .config
@@ -280,8 +322,9 @@ impl TurnContext {
             .auto_review
             .as_ref()
             .and_then(|auto_review| auto_review.ignore_rules.as_ref())
-            .is_some_and(|models| models.contains(&self.model_info.slug));
-        if self.model_info.model_specialty.as_deref() == Some(MODEL_SPECIALTY_CYBER) || ignore_rules
+            .is_some_and(|models| models.contains(&self.model_info().slug));
+        if self.model_info().model_specialty.as_deref() == Some(MODEL_SPECIALTY_CYBER)
+            || ignore_rules
         {
             AllowPrefixRules::IgnoreForCyberModel
         } else {
@@ -354,21 +397,27 @@ impl TurnContext {
         workspace_roots
     }
 
+    /// Legacy: returns the frozen initial-turn reasoning effort, including the initial model default.
+    /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn effective_reasoning_effort(&self) -> Option<ReasoningEffortConfig> {
-        self.reasoning_effort
-            .clone()
-            .or_else(|| self.model_info.default_reasoning_level.clone())
+        self.reasoning_effort()
+            .or(self.model_info().default_reasoning_level.as_ref())
+            .cloned()
     }
 
+    /// Legacy: returns the frozen initial-turn reasoning-effort label for tracing.
+    /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn effective_reasoning_effort_for_tracing(&self) -> String {
         self.effective_reasoning_effort()
             .map(|effort| effort.to_string())
             .unwrap_or_else(|| "default".to_string())
     }
 
+    /// Legacy: returns the frozen initial-turn model context window.
+    /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn model_context_window(&self) -> Option<i64> {
-        let effective_context_window_percent = self.model_info.effective_context_window_percent;
-        self.model_info
+        let effective_context_window_percent = self.model_info().effective_context_window_percent;
+        self.model_info()
             .resolved_context_window()
             .map(|context_window| {
                 context_window.saturating_mul(effective_context_window_percent) / 100
@@ -401,10 +450,9 @@ impl TurnContext {
             .iter()
             .map(|preset| preset.effort.clone())
             .collect::<Vec<_>>();
-        let reasoning_effort = if let Some(current_reasoning_effort) = self.reasoning_effort.clone()
-        {
-            if supported_reasoning_levels.contains(&current_reasoning_effort) {
-                Some(current_reasoning_effort)
+        let reasoning_effort = if let Some(current_reasoning_effort) = self.reasoning_effort() {
+            if supported_reasoning_levels.contains(current_reasoning_effort) {
+                Some(current_reasoning_effort.clone())
             } else {
                 supported_reasoning_levels
                     .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
@@ -426,6 +474,19 @@ impl TurnContext {
             )
             .await;
         let model_info = Arc::new(model_info);
+        let mut selected = self.initial_settings.selected().clone();
+        selected.collaboration_mode = selected.collaboration_mode.with_updates(
+            Some(model),
+            Some(reasoning_effort),
+            /*developer_instructions*/ None,
+        );
+        let step_settings = Arc::new(ResolvedStepSettings::new(
+            Arc::new(selected),
+            model_info,
+            config.features.enabled(Feature::FastMode),
+        ));
+        config.service_tier = step_settings.service_tier.clone();
+        let session_telemetry = step_settings.telemetry(&self.session_telemetry);
 
         Self {
             sub_id: self.sub_id.clone(),
@@ -434,14 +495,10 @@ impl TurnContext {
             code_mode_available: self.code_mode_available,
             config: Arc::new(config),
             auth_manager: self.auth_manager.clone(),
-            model_info: Arc::clone(&model_info),
-            session_telemetry: self
-                .session_telemetry
-                .clone()
-                .with_model(model.as_str(), model_info.slug.as_str()),
+            initial_settings: Arc::clone(&step_settings),
+            current_settings: ArcSwap::from(step_settings),
+            session_telemetry,
             provider: self.provider.clone(),
-            reasoning_effort,
-            reasoning_summary: self.reasoning_summary,
             session_source: self.session_source.clone(),
             history_mode: self.history_mode,
             parent_thread_id: self.parent_thread_id,
@@ -453,12 +510,7 @@ impl TurnContext {
             timezone: self.timezone.clone(),
             app_server_client_name: self.app_server_client_name.clone(),
             developer_instructions: self.developer_instructions.clone(),
-            mode: self.mode,
-            collaboration_mode_developer_instructions: self
-                .collaboration_mode_developer_instructions
-                .clone(),
             multi_agent_version: self.multi_agent_version,
-            personality: self.personality,
             network: self.network.clone(),
             windows_sandbox_level: self.windows_sandbox_level,
             available_models,
@@ -517,14 +569,14 @@ impl TurnContext {
             ),
             network: self.turn_context_network_item(),
             file_system_sandbox_policy: self.non_legacy_file_system_sandbox_policy(),
-            model: self.model_info.slug.clone(),
-            comp_hash: self.model_info.comp_hash.clone(),
-            personality: self.personality,
+            model: self.model_info().slug.clone(),
+            comp_hash: self.model_info().comp_hash.clone(),
+            personality: self.personality(),
             collaboration_mode: Some(self.collaboration_mode()),
             multi_agent_version: Some(self.multi_agent_version),
             multi_agent_mode: None,
             realtime_active: Some(self.realtime_active),
-            effort: self.reasoning_effort.clone(),
+            effort: self.reasoning_effort().cloned(),
             summary: ReasoningSummaryConfig::Auto,
         }
     }
@@ -642,7 +694,7 @@ impl Session {
         shell_zsh_path: Option<&PathBuf>,
         main_execve_wrapper_exe: Option<&PathBuf>,
         per_turn_config: Config,
-        model_info: ModelInfo,
+        step_settings: Arc<ResolvedStepSettings>,
         models_manager: &SharedModelsManager,
         network: Option<NetworkProxy>,
         environments: TurnEnvironmentSnapshot,
@@ -650,21 +702,9 @@ impl Session {
         sub_id: String,
         skills_snapshot: HostSkillsSnapshot,
     ) -> TurnContext {
-        let collaboration_mode = &session_configuration.step_settings.collaboration_mode;
-        let reasoning_effort = collaboration_mode.reasoning_effort();
-        let reasoning_summary = session_configuration
-            .step_settings
-            .reasoning_summary
-            .unwrap_or(model_info.default_reasoning_summary);
-        let session_telemetry = session_telemetry.clone().with_model(
-            session_configuration
-                .step_settings
-                .collaboration_mode
-                .model(),
-            model_info.slug.as_str(),
-        );
+        let model_info = &step_settings.model_info;
+        let session_telemetry_for_context = step_settings.telemetry(session_telemetry);
         let session_source = session_configuration.session_source.clone();
-        let session_telemetry_for_context = session_telemetry;
         let available_models = models_manager.try_list_models().unwrap_or_default();
         let unified_exec_shell_mode = UnifiedExecShellMode::for_session(
             per_turn_config.features.get(),
@@ -674,12 +714,8 @@ impl Session {
         );
 
         let mut per_turn_config = per_turn_config;
-        super::token_budget::apply_model_defaults(&mut per_turn_config, &model_info);
-        per_turn_config.service_tier = get_service_tier(
-            per_turn_config.service_tier,
-            per_turn_config.features.enabled(Feature::FastMode),
-            &model_info,
-        );
+        super::token_budget::apply_model_defaults(&mut per_turn_config, model_info);
+        per_turn_config.service_tier = step_settings.service_tier.clone();
         let permission_profile = environments.permission_profile_or_else(|| {
             per_turn_config.permissions.effective_permission_profile()
         });
@@ -701,7 +737,7 @@ impl Session {
             session_configuration.windows_sandbox_level,
             network.is_some(),
             auto_review_enabled,
-            &model_info,
+            model_info,
         ));
         turn_metadata_state
             .set_responses_api_metadata(per_turn_config.responses_api_metadata.clone());
@@ -715,11 +751,10 @@ impl Session {
             code_mode_available: true,
             config: per_turn_config,
             auth_manager,
-            model_info: Arc::new(model_info),
+            initial_settings: Arc::clone(&step_settings),
+            current_settings: ArcSwap::from(step_settings),
             session_telemetry: session_telemetry_for_context,
             provider,
-            reasoning_effort,
-            reasoning_summary,
             session_source,
             history_mode: session_configuration.history_mode,
             parent_thread_id: session_configuration.parent_thread_id,
@@ -731,13 +766,7 @@ impl Session {
             timezone: Some(timezone),
             app_server_client_name: session_configuration.app_server_client_name.clone(),
             developer_instructions: session_configuration.developer_instructions.clone(),
-            mode: collaboration_mode.mode,
-            collaboration_mode_developer_instructions: collaboration_mode
-                .settings
-                .developer_instructions
-                .clone(),
             multi_agent_version,
-            personality: session_configuration.step_settings.personality,
             network,
             windows_sandbox_level: session_configuration.windows_sandbox_level,
             available_models,
@@ -758,13 +787,13 @@ impl Session {
         sub_id: String,
         updates: SessionSettingsUpdate,
     ) -> CodexResult<(Arc<TurnContext>, ThreadSettingsSnapshot)> {
-        let Some(turn) = self
+        let Some((turn_context, snapshot)) = self
             .new_turn_with_sub_id_if(sub_id, updates, |_, _| true)
             .await?
         else {
             unreachable!("unconditional turn construction must accept valid settings");
         };
-        Ok(turn)
+        Ok((turn_context, snapshot))
     }
 
     /// Commits accepted settings atomically, then constructs the turn without holding
@@ -808,7 +837,7 @@ impl Session {
         Ok(Some((turn_context, commit.snapshot)))
     }
 
-    /// Builds a turn from the exact committed settings without starting a task.
+    /// Constructs a turn from the exact committed settings without starting a task.
     async fn new_turn_from_configuration(
         &self,
         sub_id: String,
@@ -862,20 +891,12 @@ impl Session {
             .map(TurnEnvironment::permission_profile)
             .cloned()
             .unwrap_or_else(|| session_configuration.permission_profile());
-        let model_info = self
-            .services
-            .models_manager
-            .get_model_info(
-                session_configuration
-                    .step_settings
-                    .collaboration_mode
-                    .model(),
-                &session_configuration
-                    .model_info_overrides
-                    .models_manager_config(
-                        session_configuration.step_settings.personality,
-                        self.features.enabled(Feature::Personality),
-                    ),
+        let model_info = session_configuration
+            .step_settings
+            .resolve_model_info(
+                self.services.models_manager.as_ref(),
+                &session_configuration.model_info_overrides,
+                self.features.enabled(Feature::Personality),
             )
             .await;
         self.services
@@ -924,6 +945,11 @@ impl Session {
                 .snapshot_for_config(&skills_input, fs)
                 .await
         };
+        let step_settings = Arc::new(ResolvedStepSettings::new(
+            Arc::clone(&session_configuration.step_settings),
+            Arc::new(model_info),
+            self.features.enabled(Feature::FastMode),
+        ));
         let mut turn_context: TurnContext = Self::make_turn_context(
             self.thread_id(),
             self.session_id(),
@@ -936,7 +962,7 @@ impl Session {
             self.services.shell_zsh_path.as_ref(),
             self.services.main_execve_wrapper_exe.as_ref(),
             per_turn_config,
-            model_info,
+            step_settings,
             &self.services.models_manager,
             self.services
                 .network_proxy
@@ -973,13 +999,13 @@ impl Session {
     }
 
     pub(crate) async fn maybe_emit_model_warnings_for_turn(&self, tc: &TurnContext) {
-        if tc.model_info.used_fallback_model_metadata {
+        if tc.model_info().used_fallback_model_metadata {
             self.send_event(
                 tc,
                 EventMsg::Warning(WarningEvent {
                     message: format!(
                         "Model metadata for `{}` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.",
-                        tc.model_info.slug
+                        tc.model_info().slug
                     ),
                 }),
             )
@@ -1002,7 +1028,7 @@ impl Session {
         }
 
         if let Some(message) =
-            unsupported_code_mode_warning(&tc.model_info, tc.config.features.get())
+            unsupported_code_mode_warning(tc.model_info(), tc.config.features.get())
         {
             self.send_event(tc, EventMsg::Warning(WarningEvent { message }))
                 .await;

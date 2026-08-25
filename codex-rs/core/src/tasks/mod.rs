@@ -375,7 +375,7 @@ impl Session {
             otel.name = span_name,
             thread.id = %self.thread_id,
             turn.id = %turn_context.sub_id,
-            model = %turn_context.model_info.slug,
+            model = %turn_context.model_info().slug,
             codex.turn.reasoning_effort = %reasoning_effort,
             codex.turn.token_usage.input_tokens = field::Empty,
             codex.turn.token_usage.cached_input_tokens = field::Empty,

@@ -2,6 +2,7 @@ use super::*;
 use crate::config::Constrained;
 use crate::session::step_settings::StepSettingsUpdate;
 use crate::session::tests::make_session_and_context_with_rx;
+use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskResult;
@@ -126,7 +127,7 @@ async fn accepted_input_applies_thread_settings() {
             collaboration_mode: Some(CollaborationMode {
                 mode: ModeKind::Default,
                 settings: Settings {
-                    model: turn_context.model_info.slug.clone(),
+                    model: turn_context.model_info().slug.clone(),
                     reasoning_effort: config.model_reasoning_effort.clone(),
                     developer_instructions: None,
                 },
@@ -382,6 +383,14 @@ async fn prepared_user_updates_merge_with_settings_at_turn_start() {
         );
         assert_eq!(session.collaboration_mode().await, expected);
         assert_eq!(turn_context.collaboration_mode(), expected);
+        assert_eq!(
+            turn_context.initial_settings.selected_collaboration_mode(),
+            &expected
+        );
+        assert!(Arc::ptr_eq(
+            &turn_context.initial_settings.model_info,
+            turn_context.model_info(),
+        ));
     }
 }
 
@@ -432,6 +441,10 @@ async fn automatic_admission_uses_current_candidate_after_plan_preview() {
     );
     assert_eq!(session.collaboration_mode().await, expected);
     assert_eq!(turn_context.collaboration_mode(), expected);
+    assert_eq!(
+        turn_context.initial_settings.selected_collaboration_mode(),
+        &expected
+    );
 }
 
 #[tokio::test]

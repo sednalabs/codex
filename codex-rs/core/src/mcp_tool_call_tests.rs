@@ -93,7 +93,7 @@ fn approval_config(turn_context: &TurnContext) -> codex_mcp::McpConfig {
 
 fn mcp_turn_metadata_context(turn_context: &TurnContext) -> McpTurnMetadataContext<'_> {
     McpTurnMetadataContext {
-        model: turn_context.model_info.slug.as_str(),
+        model: turn_context.model_info().slug.as_str(),
         reasoning_effort: turn_context.effective_reasoning_effort(),
     }
 }
@@ -1038,15 +1038,15 @@ async fn mcp_tool_call_request_meta_includes_turn_metadata_for_custom_server() {
         turn_metadata
             .get("model")
             .and_then(serde_json::Value::as_str),
-        Some(turn_context.model_info.slug.as_str())
+        Some(turn_context.model_info().slug.as_str())
     );
     assert_eq!(
         turn_metadata["node_repl_auto_review_required"],
-        serde_json::Value::Bool(turn_context.model_info.node_repl_auto_review_required),
+        serde_json::Value::Bool(turn_context.model_info().node_repl_auto_review_required),
     );
     assert_eq!(
         turn_metadata["node_repl_disabled"],
-        serde_json::Value::Bool(turn_context.model_info.node_repl_disabled),
+        serde_json::Value::Bool(turn_context.model_info().node_repl_disabled),
     );
     assert_eq!(
         turn_metadata
@@ -2496,7 +2496,7 @@ async fn permission_request_hook_allows_mcp_tool_call() {
             "turn_id": "turn_id",
             "cwd": turn_cwd,
             "transcript_path": null,
-            "model": turn_context.model_info.slug,
+            "model": turn_context.model_info().slug,
             "permission_mode": "default",
             "tool_name": "mcp__memory__create_entities",
             "hook_event_name": "PermissionRequest",
@@ -2566,7 +2566,7 @@ async fn permission_request_hook_uses_hook_tool_name_without_metadata() {
             "turn_id": "turn_id",
             "cwd": turn_cwd,
             "transcript_path": null,
-            "model": turn_context.model_info.slug,
+            "model": turn_context.model_info().slug,
             "permission_mode": "default",
             "tool_name": "mcp__memory__create_entities",
             "hook_event_name": "PermissionRequest",

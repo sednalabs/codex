@@ -741,7 +741,7 @@ impl UnifiedExecProcessManager {
             truncation_policy: context
                 .step_context
                 .turn
-                .model_info
+                .model_info()
                 .truncation_policy
                 .into(),
             max_output_tokens: request.max_output_tokens,

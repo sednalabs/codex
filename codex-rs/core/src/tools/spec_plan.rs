@@ -373,7 +373,7 @@ pub(crate) fn finalize_tool_router(
         .config
         .tool_registry
         .turn_metadata_includes_tool_info
-        && turn_context.model_info.use_responses_lite;
+        && turn_context.model_info().use_responses_lite;
 
     if turn_context.config.tool_registry.error_on_tool_collisions {
         if let Some(tool_name) = registry.first_collision() {
@@ -547,7 +547,7 @@ fn hosted_model_tool_specs(
     registered_extension_tool_names: &[ToolName],
 ) -> Vec<ToolSpec> {
     // Responses Lite accepts schemas for client-executed tools, not hosted Responses tools.
-    if turn_context.model_info.use_responses_lite
+    if turn_context.model_info().use_responses_lite
         || crate::guardian::is_basic_session_source(&turn_context.session_source)
     {
         return Vec::new();
@@ -567,7 +567,7 @@ fn hosted_model_tool_specs(
     if let Some(hosted_web_search_tool) = create_web_search_tool(WebSearchToolOptions {
         web_search_mode,
         web_search_config,
-        web_search_tool_type: turn_context.model_info.web_search_tool_type,
+        web_search_tool_type: turn_context.model_info().web_search_tool_type,
     }) {
         specs.push(hosted_web_search_tool);
     }
@@ -575,7 +575,7 @@ fn hosted_model_tool_specs(
 }
 
 pub(crate) fn search_tool_enabled(turn_context: &TurnContext) -> bool {
-    turn_context.model_info.supports_search_tool && namespace_tools_enabled(turn_context)
+    turn_context.model_info().supports_search_tool && namespace_tools_enabled(turn_context)
 }
 
 pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
@@ -602,7 +602,7 @@ fn collab_tools_enabled(turn_context: &TurnContext) -> bool {
         ),
         MultiAgentVersion::V2 => {
             turn_context.session_source.get_agent_path().is_none()
-                || turn_context.model_info.multi_agent_version == Some(MultiAgentVersion::V2)
+                || turn_context.model_info().multi_agent_version == Some(MultiAgentVersion::V2)
         }
     }
 }
@@ -633,7 +633,7 @@ fn image_generation_available(turn_context: &TurnContext) -> bool {
     }
 
     if !turn_context
-        .model_info
+        .model_info()
         .input_modalities
         .contains(&InputModality::Image)
     {
@@ -794,8 +794,10 @@ fn register_code_mode_executors(
             &namespace_descriptions,
             turn_context.config.code_mode.default_exec_yield_time_ms,
             tool_mode == ToolMode::CodeModeOnly,
-            if unified_image_budget_enabled(&turn_context.config.features, &turn_context.model_info)
-            {
+            if unified_image_budget_enabled(
+                &turn_context.config.features,
+                turn_context.model_info(),
+            ) {
                 codex_code_mode::ImageDetailVisibility::Hidden
             } else {
                 codex_code_mode::ImageDetailVisibility::Visible
@@ -908,7 +910,7 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
             if turn_context.config.features.enabled(Feature::ShellTool)
                 && turn_context.config.features.enabled(Feature::UnifiedExec)
                 && !matches!(
-                    turn_context.model_info.shell_type,
+                    turn_context.model_info().shell_type,
                     ConfigShellToolType::Disabled
                 )
             {
@@ -926,11 +928,11 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
             if turn_context.config.features.enabled(Feature::ViewImage) {
                 registry.add(ViewImageHandler::new(ViewImageToolOptions {
                     can_request_original_image_detail: can_request_original_image_detail(
-                        &turn_context.model_info,
+                        turn_context.model_info(),
                     ),
                     unified_image_budget: unified_image_budget_enabled(
                         &turn_context.config.features,
-                        &turn_context.model_info,
+                        turn_context.model_info(),
                     ),
                     include_environment_id,
                 }));
@@ -948,7 +950,7 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
 fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
     namespace_tools_enabled(turn_context)
         && turn_context.provider.capabilities().web_search
-        && (turn_context.model_info.use_responses_lite
+        && (turn_context.model_info().use_responses_lite
             || turn_context
                 .config
                 .features
@@ -975,7 +977,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
         || !features.enabled(Feature::ShellTool)
         || !features.enabled(Feature::UnifiedExec)
         || matches!(
-            turn_context.model_info.shell_type,
+            turn_context.model_info().shell_type,
             ConfigShellToolType::Disabled
         )
     {
@@ -1051,7 +1053,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
 
     if !turn_context.session_source.is_non_root_agent()
         && turn_context
-            .model_info
+            .model_info()
             .experimental_supported_tools
             .iter()
             .any(|tool| tool == "send_user_message_async")
@@ -1096,14 +1098,15 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         ));
     }
 
-    if environment_mode.has_environment() && turn_context.model_info.apply_patch_tool_type.is_some()
+    if environment_mode.has_environment()
+        && turn_context.model_info().apply_patch_tool_type.is_some()
     {
         let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
         registry.add(ApplyPatchHandler::new(include_environment_id));
     }
 
     if turn_context
-        .model_info
+        .model_info()
         .experimental_supported_tools
         .iter()
         .any(|tool| tool == "test_sync_tool")
@@ -1115,11 +1118,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
         registry.add(ViewImageHandler::new(ViewImageToolOptions {
             can_request_original_image_detail: can_request_original_image_detail(
-                &turn_context.model_info,
+                turn_context.model_info(),
             ),
             unified_image_budget: unified_image_budget_enabled(
                 &turn_context.config.features,
-                &turn_context.model_info,
+                turn_context.model_info(),
             ),
             include_environment_id,
         }));

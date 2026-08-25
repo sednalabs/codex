@@ -438,7 +438,7 @@ impl GuardianReviewSessionManager {
             .with_node_repl_policy_eligibility(
                 parent_context
                     .turn()
-                    .model_info
+                    .model_info()
                     .node_repl_auto_review_required,
             );
             let spawn_cancel_token = self.cancellation_token.child_token();
@@ -528,7 +528,7 @@ impl GuardianReviewSessionManager {
             params
                 .parent_context
                 .turn()
-                .model_info
+                .model_info()
                 .node_repl_auto_review_required,
         );
         let mut spawned_trunk = false;
@@ -952,7 +952,7 @@ async fn run_review_on_session(
                 .sync_session_approved_hosts_to(&review_session.session.services.network_approval)
                 .await;
 
-            if params.parent_context.turn().model_info.node_repl_auto_review_required
+            if params.parent_context.turn().model_info().node_repl_auto_review_required
                 && matches!(
                     &params.request,
                     GuardianApprovalRequest::McpToolCall { server, tool_name, .. }
@@ -1607,10 +1607,10 @@ mod tests {
 
     async fn test_review_params() -> GuardianReviewSessionParams {
         let (session, turn) = crate::session::tests::make_session_and_context().await;
-        let model = turn.model_info.slug.clone();
-        let reasoning_effort = turn.reasoning_effort.clone();
-        let reasoning_summary = turn.reasoning_summary;
-        let personality = turn.personality;
+        let model = turn.model_info().slug.clone();
+        let reasoning_effort = turn.reasoning_effort().cloned();
+        let reasoning_summary = turn.reasoning_summary();
+        let personality = turn.personality();
         #[allow(deprecated)]
         let cwd = turn.cwd.clone();
         let spawn_config = build_guardian_review_session_config(
