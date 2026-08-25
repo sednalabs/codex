@@ -20,6 +20,7 @@ use codex_windows_sandbox::ErrorStage;
 use codex_windows_sandbox::ExitPayload;
 use codex_windows_sandbox::FramedMessage;
 use codex_windows_sandbox::IPC_PROTOCOL_VERSION;
+use codex_windows_sandbox::LaunchDesktop;
 use codex_windows_sandbox::LocalSid;
 use codex_windows_sandbox::Message;
 use codex_windows_sandbox::OutputPayload;
@@ -295,6 +296,15 @@ fn spawn_ipc_process(req: &SpawnRequest) -> Result<IpcSpawnedProcess> {
     }
 
     let effective_cwd = effective_cwd(&req.cwd, Some(log_dir.as_path()));
+    let desktop = if req.use_private_desktop {
+        LaunchDesktop::open_private(
+            req.private_desktop_name
+                .as_deref()
+                .context("runner: missing parent-owned private desktop")?,
+        )?
+    } else {
+        LaunchDesktop::prepare(/*use_private_desktop*/ false, Some(log_dir.as_path()))?
+    };
 
     let mut conpty_owner = None;
     let mut hpc_handle: Option<HANDLE> = None;
@@ -305,8 +315,7 @@ fn spawn_ipc_process(req: &SpawnRequest) -> Result<IpcSpawnedProcess> {
             &req.command,
             &effective_cwd,
             &req.env,
-            req.use_private_desktop,
-            Some(log_dir.as_path()),
+            desktop,
         )?;
         let job = conpty
             .job()
@@ -348,7 +357,7 @@ fn spawn_ipc_process(req: &SpawnRequest) -> Result<IpcSpawnedProcess> {
             } else {
                 ConsoleMode::Inherit
             },
-            req.use_private_desktop,
+            desktop,
             Some(log_dir.as_path()),
         )?;
         let pi = spawned_pipes.process;
