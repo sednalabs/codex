@@ -168,7 +168,7 @@ pub struct GoalOwnerAdmissionLease {
 /// scheduler cannot mistake an exhausted pending row for a retryable miss.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalOwnerAdmissionAcquireResult {
-    Acquired(GoalOwnerAdmissionLease),
+    Acquired(Box<GoalOwnerAdmissionLease>),
     Exhausted(Box<GoalOwnerAdmissionRecord>),
     NotCurrent,
     NotEligible,
@@ -616,7 +616,7 @@ WHERE thread_id = ?
             .ok_or_else(|| anyhow::anyhow!("acquired admission is missing"))?;
         let lease = lease_from_record(record)?;
         transaction.commit().await?;
-        Ok(GoalOwnerAdmissionAcquireResult::Acquired(lease))
+        Ok(GoalOwnerAdmissionAcquireResult::Acquired(Box::new(lease)))
     }
 
     /// Atomically linearize an acquired lease as provider work immediately
