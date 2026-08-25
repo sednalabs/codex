@@ -1019,10 +1019,17 @@ async fn wait_for_thread_to_unload_after_terminal_idle_deadline(
     manager: &ThreadManager,
     thread_id: ThreadId,
 ) {
-    assert!(
-        thread_unloads_after_terminal_idle_deadline(manager, thread_id).await,
-        "the watcher should unload after its terminal idle deadline"
-    );
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if manager.get_thread(thread_id).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the watcher should unload after its terminal idle deadline"));
 }
 
 async fn thread_unloads_after_terminal_idle_deadline(
