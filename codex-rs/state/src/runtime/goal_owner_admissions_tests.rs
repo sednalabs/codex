@@ -66,6 +66,94 @@ async fn runtime() -> Arc<StateRuntime> {
     .expect("initialize state runtime")
 }
 
+enum GoalDbCorruption {
+    DeleteOrigin {
+        thread_id: String,
+        generation: i64,
+    },
+    SetAdmissionEffectiveModel {
+        thread_id: String,
+        generation: i64,
+        effective_model: String,
+    },
+    SetOriginEffectiveModel {
+        thread_id: String,
+        generation: i64,
+        effective_model: String,
+    },
+}
+
+/// Open an isolated, foreign-key-disabled connection only for deliberate
+/// integrity-test corruption. All assertions and production reads continue to
+/// use the normal state-runtime pool with its foreign-key policy unchanged.
+async fn inject_goal_db_corruption(sqlite: &crate::SqliteConfig, corruption: GoalDbCorruption) {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(sqlite.goals_db_path())
+                .create_if_missing(false)
+                .foreign_keys(false),
+        )
+        .await
+        .expect("open isolated corruption injector");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
+            .fetch_one(&pool)
+            .await
+            .expect("read corruption injector foreign-key mode"),
+        0
+    );
+
+    match corruption {
+        GoalDbCorruption::DeleteOrigin {
+            thread_id,
+            generation,
+        } => {
+            sqlx::query(
+                "DELETE FROM goal_owner_admission_origins WHERE thread_id = ? AND generation = ?",
+            )
+            .bind(thread_id)
+            .bind(generation)
+            .execute(&pool)
+            .await
+            .expect("inject missing admission origin");
+        }
+        GoalDbCorruption::SetAdmissionEffectiveModel {
+            thread_id,
+            generation,
+            effective_model,
+        } => {
+            sqlx::query(
+                "UPDATE goal_owner_admissions SET effective_model = ? WHERE thread_id = ? AND generation = ?",
+            )
+            .bind(effective_model)
+            .bind(thread_id)
+            .bind(generation)
+            .execute(&pool)
+            .await
+            .expect("inject acquired admission corruption");
+        }
+        GoalDbCorruption::SetOriginEffectiveModel {
+            thread_id,
+            generation,
+            effective_model,
+        } => {
+            sqlx::query(
+                "UPDATE goal_owner_admission_origins SET effective_model = ? WHERE thread_id = ? AND generation = ?",
+            )
+            .bind(effective_model)
+            .bind(thread_id)
+            .bind(generation)
+            .execute(&pool)
+            .await
+            .expect("inject in-flight origin corruption");
+        }
+    }
+
+    pool.close().await;
+}
+
 async fn acquire(
     store: &GoalOwnerAdmissionStore,
     record: &GoalOwnerAdmissionRecord,
@@ -531,13 +619,12 @@ async fn joined_reader_rejects_mismatched_origin_request_and_immutable_evidence(
 
 #[tokio::test]
 async fn foreign_key_off_runtime_fails_closed_for_missing_active_origin() {
-    let runtime = runtime().await;
-    let store = runtime.goal_owner_admissions();
-    let foreign_keys = sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
-        .fetch_one(store.pool.as_ref())
+    let codex_home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
         .await
-        .expect("read foreign-key enforcement mode");
-    assert_eq!(foreign_keys, 0);
+        .expect("initialize state runtime");
+    let store = runtime.goal_owner_admissions();
 
     let pending = store
         .observe_denial(&observation(
@@ -549,12 +636,14 @@ async fn foreign_key_off_runtime_fails_closed_for_missing_active_origin() {
         ))
         .await
         .expect("record pending admission");
-    sqlx::query("DELETE FROM goal_owner_admission_origins WHERE thread_id = ? AND generation = ?")
-        .bind(pending.authority.thread_id.to_string())
-        .bind(pending.authority.generation)
-        .execute(store.pool.as_ref())
-        .await
-        .expect("delete origin with foreign keys disabled");
+    inject_goal_db_corruption(
+        &sqlite,
+        GoalDbCorruption::DeleteOrigin {
+            thread_id: pending.authority.thread_id.to_string(),
+            generation: pending.authority.generation,
+        },
+    )
+    .await;
     assert!(store.get(pending.authority.thread_id).await.is_err());
     assert!(
         store
@@ -574,12 +663,14 @@ async fn foreign_key_off_runtime_fails_closed_for_missing_active_origin() {
         .await
         .expect("record acquired admission");
     let lease = acquire(store, &acquired).await;
-    sqlx::query("DELETE FROM goal_owner_admission_origins WHERE thread_id = ? AND generation = ?")
-        .bind(acquired.authority.thread_id.to_string())
-        .bind(acquired.authority.generation)
-        .execute(store.pool.as_ref())
-        .await
-        .expect("delete acquired origin with foreign keys disabled");
+    inject_goal_db_corruption(
+        &sqlite,
+        GoalDbCorruption::DeleteOrigin {
+            thread_id: acquired.authority.thread_id.to_string(),
+            generation: acquired.authority.generation,
+        },
+    )
+    .await;
     assert!(store.open_lease(&lease).await.is_err());
     assert_eq!(
         raw_admission_phase(store, &acquired.authority).await,
@@ -623,7 +714,11 @@ async fn corrupted_acquired_admission_cannot_open_provider_work() {
 
 #[tokio::test]
 async fn recovery_rejects_corrupt_acquired_rows_before_mutating_any_affected_row() {
-    let runtime = runtime().await;
+    let codex_home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("initialize state runtime");
     let store = runtime.goal_owner_admissions();
     let acquired = store
         .observe_denial(&observation(
@@ -653,15 +748,15 @@ async fn recovery_rejects_corrupt_acquired_rows_before_mutating_any_affected_row
             .await
             .expect("open lease")
     );
-    sqlx::query(
-        "UPDATE goal_owner_admissions SET effective_model = ? WHERE thread_id = ? AND generation = ?",
+    inject_goal_db_corruption(
+        &sqlite,
+        GoalDbCorruption::SetAdmissionEffectiveModel {
+            thread_id: acquired.authority.thread_id.to_string(),
+            generation: acquired.authority.generation,
+            effective_model: "gpt-corrupted".to_string(),
+        },
     )
-    .bind("gpt-corrupted")
-    .bind(acquired.authority.thread_id.to_string())
-    .bind(acquired.authority.generation)
-    .execute(store.pool.as_ref())
-    .await
-    .expect("inject acquired corruption");
+    .await;
 
     assert!(
         GoalOwnerAdmissionStore::recover_in_flight_on_open(store.pool.as_ref())
@@ -682,7 +777,11 @@ async fn recovery_rejects_corrupt_acquired_rows_before_mutating_any_affected_row
 
 #[tokio::test]
 async fn recovery_rejects_corrupt_in_flight_rows_before_mutating_any_affected_row() {
-    let runtime = runtime().await;
+    let codex_home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("initialize state runtime");
     let store = runtime.goal_owner_admissions();
     let acquired = store
         .observe_denial(&observation(
@@ -712,15 +811,15 @@ async fn recovery_rejects_corrupt_in_flight_rows_before_mutating_any_affected_ro
             .await
             .expect("open lease")
     );
-    sqlx::query(
-        "UPDATE goal_owner_admission_origins SET effective_model = ? WHERE thread_id = ? AND generation = ?",
+    inject_goal_db_corruption(
+        &sqlite,
+        GoalDbCorruption::SetOriginEffectiveModel {
+            thread_id: in_flight.authority.thread_id.to_string(),
+            generation: in_flight.authority.generation,
+            effective_model: "gpt-corrupted".to_string(),
+        },
     )
-    .bind("gpt-corrupted")
-    .bind(in_flight.authority.thread_id.to_string())
-    .bind(in_flight.authority.generation)
-    .execute(store.pool.as_ref())
-    .await
-    .expect("inject in-flight origin corruption");
+    .await;
 
     assert!(
         GoalOwnerAdmissionStore::recover_in_flight_on_open(store.pool.as_ref())
@@ -1253,7 +1352,7 @@ async fn restart_does_not_reopen_a_durably_exhausted_chain() {
         .await
         .expect("read exhausted current admission")
         .expect("exhausted admission remains current");
-    assert_eq!(persisted, exhausted);
+    assert_eq!(persisted, *exhausted);
     assert_eq!(persisted.chain_attempts_started, 1);
     assert_eq!(persisted.chain_max_attempts, 1);
 }
