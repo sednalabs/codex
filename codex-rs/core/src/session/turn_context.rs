@@ -143,14 +143,9 @@ impl TurnEnvironment {
     }
 
     pub(crate) fn permission_profile_with_workspace_roots(&self) -> PermissionProfile {
-        let workspace_roots = self
-            .workspace_roots()
-            .iter()
-            .filter_map(|workspace_root| workspace_root.to_abs_path().ok())
-            .collect::<Vec<_>>();
         self.permission_profile()
             .clone()
-            .materialize_project_roots_with_workspace_roots(&workspace_roots)
+            .materialize_project_roots_with_path_uris(self.workspace_roots())
     }
 
     pub(crate) fn selection(&self) -> TurnEnvironmentSelection {

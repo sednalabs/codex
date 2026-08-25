@@ -6,6 +6,7 @@ use crate::elicitation::ElicitationRequestRouter;
 use crate::elicitation::ElicitationReviewRequest;
 use crate::elicitation::ElicitationReviewer;
 use crate::elicitation::elicitation_is_rejected_by_policy;
+use crate::mcp::tests::test_elicitation_config;
 use crate::rmcp_client::AsyncManagedClient;
 use crate::rmcp_client::CODEX_APPS_RECONNECT_INITIAL_BACKOFF;
 use crate::rmcp_client::CodexAppsStartupReconnect;
@@ -43,6 +44,7 @@ use codex_protocol::approvals::ElicitationRequest;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::McpStartupFailureReason;
 use codex_rmcp_client::ElicitationResponse;
@@ -104,8 +106,11 @@ impl McpConnectionSet {
             prefix_mcp_tool_names,
             non_prefixed_mcp_tool_servers: Vec::new(),
             elicitation_requests: ElicitationRequestManager::new(
-                approval_policy.value(),
-                permission_profile.get().clone(),
+                test_elicitation_config(
+                    "server",
+                    approval_policy.value(),
+                    permission_profile.get().clone(),
+                ),
                 /*reviewer*/ None,
                 /*lifecycle*/ None,
                 ElicitationRequestRouter::default(),
@@ -205,9 +210,15 @@ fn store_current_tools(cache_context: &ConnectorRuntimeContext<ToolInfo>, tools:
 }
 
 async fn capture_binding(manager: &Arc<McpConnectionSet>) -> McpBinding {
+    let mut config = crate::mcp::tests::test_mcp_config(std::env::temp_dir());
+    config.server_permission_profiles = manager
+        .servers
+        .keys()
+        .map(|name| (name.clone(), PermissionProfile::default()))
+        .collect();
     manager
         .capture_binding_with_metadata(
-            Arc::new(crate::mcp::tests::test_mcp_config(std::env::temp_dir())),
+            Arc::new(config),
             /*plugins_available*/ false,
             /*required_servers*/ &[],
         )
@@ -787,8 +798,7 @@ fn elicitation_granular_policy_respects_never_and_config() {
 #[tokio::test]
 async fn disabled_permissions_auto_accept_elicitation_with_empty_form_schema() {
     let manager = ElicitationRequestManager::new(
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
+        test_elicitation_config("server", AskForApproval::Never, PermissionProfile::Disabled),
         /*reviewer*/ None,
         /*lifecycle*/ None,
         ElicitationRequestRouter::default(),
@@ -822,8 +832,7 @@ async fn disabled_permissions_auto_accept_elicitation_with_empty_form_schema() {
 #[tokio::test]
 async fn disabled_permissions_do_not_auto_accept_elicitation_with_requested_fields() {
     let manager = ElicitationRequestManager::new(
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
+        test_elicitation_config("server", AskForApproval::Never, PermissionProfile::Disabled),
         /*reviewer*/ None,
         /*lifecycle*/ None,
         ElicitationRequestRouter::default(),
@@ -914,8 +923,7 @@ async fn assert_elicitation_declined_with_reviewer_calls(
 ) {
     let reviewer = Arc::new(DecliningElicitationReviewer::default());
     let manager = ElicitationRequestManager::new(
-        approval_policy,
-        PermissionProfile::Disabled,
+        test_elicitation_config(server_name, approval_policy, PermissionProfile::Disabled),
         Some(reviewer.clone()),
         /*lifecycle*/ None,
         full_access_form_input_enabled_router(),
@@ -955,8 +963,7 @@ async fn assert_requested_user_input_is_declined(
     router: ElicitationRequestRouter,
 ) {
     let manager = ElicitationRequestManager::new(
-        approval_policy,
-        permission_profile,
+        test_elicitation_config("server", approval_policy, permission_profile),
         /*reviewer*/ None,
         /*lifecycle*/ None,
         router,
@@ -1043,8 +1050,7 @@ async fn assert_disabled_permissions_surface_requested_user_input(
     let router = full_access_form_input_enabled_router();
     let reviewer = Arc::new(DecliningElicitationReviewer::default());
     let manager = ElicitationRequestManager::new(
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
+        test_elicitation_config("server", AskForApproval::Never, PermissionProfile::Disabled),
         Some(reviewer.clone()),
         /*lifecycle*/ None,
         router.clone(),
@@ -1190,8 +1196,7 @@ async fn on_request_approval_forms_remain_with_the_reviewer() {
 #[tokio::test]
 async fn disabled_permissions_decline_user_input_without_an_event_channel() {
     let manager = ElicitationRequestManager::new(
-        AskForApproval::Never,
-        PermissionProfile::Disabled,
+        test_elicitation_config("server", AskForApproval::Never, PermissionProfile::Disabled),
         /*reviewer*/ None,
         /*lifecycle*/ None,
         full_access_form_input_enabled_router(),
@@ -1222,8 +1227,11 @@ async fn disabled_permissions_decline_user_input_without_an_event_channel() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_authority_updates_never_auto_approve_mixed_policy() {
     let manager = ElicitationRequestManager::new(
-        AskForApproval::Never,
-        PermissionProfile::default(),
+        test_elicitation_config(
+            "server",
+            AskForApproval::Never,
+            PermissionProfile::default(),
+        ),
         /*reviewer*/ None,
         /*lifecycle*/ None,
         ElicitationRequestRouter::default(),
@@ -1232,14 +1240,20 @@ async fn concurrent_authority_updates_never_auto_approve_mixed_policy() {
     let updater = tokio::spawn(async move {
         for _ in 0..1_000 {
             assert!(updating_manager.update(
-                AskForApproval::OnRequest,
-                PermissionProfile::Disabled,
+                test_elicitation_config(
+                    "server",
+                    AskForApproval::OnRequest,
+                    PermissionProfile::Disabled
+                ),
                 /*reviewer*/ None,
                 /*lifecycle*/ None,
             ));
             assert!(updating_manager.update(
-                AskForApproval::Never,
-                PermissionProfile::default(),
+                test_elicitation_config(
+                    "server",
+                    AskForApproval::Never,
+                    PermissionProfile::default()
+                ),
                 /*reviewer*/ None,
                 /*lifecycle*/ None,
             ));
@@ -1292,15 +1306,21 @@ async fn shared_elicitation_router_targets_the_exact_pending_request() {
         }
     });
     let manager_a = ElicitationRequestManager::new(
-        AskForApproval::OnRequest,
-        PermissionProfile::default(),
+        test_elicitation_config(
+            "server",
+            AskForApproval::OnRequest,
+            PermissionProfile::default(),
+        ),
         /*reviewer*/ None,
         Some(lifecycle.clone()),
         router.clone(),
     );
     let manager_b = ElicitationRequestManager::new(
-        AskForApproval::OnRequest,
-        PermissionProfile::default(),
+        test_elicitation_config(
+            "server",
+            AskForApproval::OnRequest,
+            PermissionProfile::default(),
+        ),
         /*reviewer*/ None,
         Some(lifecycle),
         router.clone(),
@@ -1392,8 +1412,11 @@ async fn shared_elicitation_router_targets_the_exact_pending_request() {
 async fn cancelled_elicitation_is_removed_without_affecting_other_pending_requests() {
     let router = ElicitationRequestRouter::default();
     let manager = ElicitationRequestManager::new(
-        AskForApproval::OnRequest,
-        PermissionProfile::default(),
+        test_elicitation_config(
+            "server",
+            AskForApproval::OnRequest,
+            PermissionProfile::default(),
+        ),
         /*reviewer*/ None,
         /*lifecycle*/ None,
         router.clone(),
@@ -4849,8 +4872,14 @@ async fn reconciliation_updates_elicitation_policy_without_restarting_ready_serv
             .authority
             .lock()
             .expect("elicitation authority lock");
-        authority.approval_policy = AskForApproval::Never;
-        authority.permission_profile = PermissionProfile::Disabled;
+        let config = Arc::make_mut(
+            &mut authority
+                .as_mut()
+                .expect("test manager should have permission authority")
+                .config,
+        );
+        config.approval_policy = Constrained::allow_any(AskForApproval::Never);
+        config.permission_profile = PermissionProfile::Disabled;
     }
 
     let reconciled = reconcile_reusable_server(&previous, config, runtime_context).await;
@@ -4861,8 +4890,12 @@ async fn reconciliation_updates_elicitation_policy_without_restarting_ready_serv
         .authority
         .lock()
         .expect("elicitation authority lock");
-    assert_eq!(authority.approval_policy, AskForApproval::OnRequest);
-    assert_eq!(authority.permission_profile, PermissionProfile::default());
+    let config = &authority
+        .as_ref()
+        .expect("reconciled manager should have permission authority")
+        .config;
+    assert_eq!(config.approval_policy.value(), AskForApproval::OnRequest);
+    assert_eq!(config.permission_profile, PermissionProfile::default());
 }
 
 #[tokio::test]

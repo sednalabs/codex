@@ -178,6 +178,24 @@ impl Session {
             return;
         };
         loop {
+            let environments = self.services.turn_environments.snapshot().await;
+            let ready_environments = environments
+                .turn_environments()
+                .map(|environment| {
+                    (
+                        environment.selection.environment_id.clone(),
+                        Arc::clone(&environment.environment),
+                    )
+                })
+                .collect();
+            // Attachment resolution can finish after the owner's configuration callback.
+            if !self
+                .services
+                .mcp_runtime
+                .current_environments_match(&ready_environments)
+            {
+                self.mark_mcp_runtime_dirty();
+            }
             let auth = self.services.auth_manager.auth_cached();
             if !self
                 .services
@@ -232,9 +250,6 @@ impl Session {
             )
             .await;
             refresh_invalidation.published = true;
-            if !self.mcp_refresh.is_pending() {
-                return;
-            }
         }
     }
 
@@ -813,9 +828,14 @@ async fn review_guardian_mcp_elicitation(
     let approval_policy = mcp_config.approval_policy.value();
     match approval_policy {
         AskForApproval::Never => {
+            let Some(permission_profile) =
+                mcp_config.permission_profile_for_server(&request.server_name)
+            else {
+                return Ok(Some(mcp_elicitation_decline_without_message()));
+            };
             if codex_mcp::mcp_permission_prompt_is_auto_approved(
                 approval_policy,
-                &mcp_config.permission_profile,
+                permission_profile,
                 codex_mcp::McpPermissionPromptAutoApproveContext::default(),
             ) && matches!(
                 &request.elicitation,
