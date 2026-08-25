@@ -1,5 +1,10 @@
 load("//:defs.bzl", "codex_rust_crate")
 
+exports_files(
+    ["src/proto/codex.exec_server.relay.v1.rs"],
+    visibility = ["//codex-rs/exec-server/tests/support:__pkg__"],
+)
+
 codex_rust_crate(
     name = "exec-server",
     crate_name = "codex_exec_server",
