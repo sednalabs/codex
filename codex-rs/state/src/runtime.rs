@@ -485,6 +485,8 @@ mod tests {
             _tags: &[(&str, &str)],
         ) {
         }
+
+        fn histogram(&self, _name: &str, _value: i64, _tags: &[(&str, &str)]) {}
     }
 
     fn tags_to_map(tags: &[(&str, &str)]) -> BTreeMap<String, String> {

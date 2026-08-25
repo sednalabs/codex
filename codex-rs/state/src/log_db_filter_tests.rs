@@ -32,6 +32,18 @@ async fn sqlite_sink_filters_noisy_targets_without_dropping_useful_diagnostics()
     tracing::warn!(target: "sqlx::pool::acquire", "dropped-slow-acquire-warning");
     tracing::warn!(target: "sqlx::other", "dropped-sqlx-warning");
     tracing::info!(target: "sqlx_application", "retained-unrelated-target");
+    tracing::debug!(target: "opentelemetry-otlp", "dropped-otlp-export");
+    tracing::error!(target: "opentelemetry-http", "dropped-http-export");
+    tracing::trace!(target: "h2::proto::streams", "dropped-http2-trace");
+    tracing::debug!(target: "tonic::transport::channel", "dropped-grpc-transport-debug");
+    tracing::debug!(target: "tower::buffer::worker", "dropped-grpc-buffer-debug");
+    tracing::warn!(
+        target: "h2::proto::ping_pong",
+        "recv PING ack that we never sent: {:?}",
+        "synthetic-ack"
+    );
+    tracing::warn!(target: "h2::proto::ping_pong", "retained-http2-ping-warning");
+    tracing::warn!(target: "h2::proto::streams", "retained-http2-warning");
     tracing::debug!(target: "rmcp::transport", "dropped-rmcp-debug");
     tracing::info!(target: "rmcp::transport", "retained-rmcp-info");
     tracing::debug!(
@@ -96,6 +108,12 @@ async fn sqlite_sink_filters_noisy_targets_without_dropping_useful_diagnostics()
                 "sqlx_application",
                 Some("retained-unrelated-target")
             ),
+            (
+                "WARN",
+                "h2::proto::ping_pong",
+                Some("retained-http2-ping-warning")
+            ),
+            ("WARN", "h2::proto::streams", Some("retained-http2-warning")),
             ("INFO", "rmcp::transport", Some("retained-rmcp-info")),
             (
                 "INFO",
