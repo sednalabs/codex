@@ -108,11 +108,11 @@ impl PreparedTurnInputSettings {
         updates.service_tier_for_turn = service_tier;
 
         // new_turn_with_sub_id already emits an error event when settings are invalid.
-        let turn_context = session
+        let (turn_context, settings_snapshot) = session
             .new_turn_with_sub_id(submission_id.clone(), updates)
             .await?;
         if emit_thread_settings_applied {
-            thread_settings::emit_applied(session, submission_id).await;
+            thread_settings::emit_applied(session, submission_id, settings_snapshot).await;
         }
         if let Some(parent_turn_id) = parent_turn_id {
             turn_context

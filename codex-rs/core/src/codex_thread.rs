@@ -534,7 +534,7 @@ impl CodexThread {
         settings: CodexThreadSettingsOverrides,
     ) -> ConstraintResult<()> {
         let updates = self.thread_settings_update(settings).await;
-        self.session.update_settings(updates).await
+        self.session.update_settings(updates).await.map(|_| ())
     }
 
     async fn thread_settings_update(

@@ -743,59 +743,15 @@ impl Session {
         &self,
         sub_id: String,
         updates: SessionSettingsUpdate,
-    ) -> CodexResult<Arc<TurnContext>> {
-        let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
-        let update_result: CodexResult<_> = {
-            let mut state = self.state.lock().await;
-            match self.apply_session_settings(&state.session_configuration, &updates) {
-                Ok(next) => {
-                    let mcp_inputs_changed =
-                        self.mcp_inputs_differ(&state.session_configuration, &next, &updates);
-                    if mcp_inputs_changed {
-                        self.mark_mcp_runtime_dirty();
-                    }
-                    let previous_permission_profile =
-                        state.session_configuration.permission_profile();
-                    let next_permission_profile = next.permission_profile();
-                    let permission_profile_changed =
-                        previous_permission_profile != next_permission_profile;
-                    let previous_config = notify_config_contributors
-                        .then(|| self.build_effective_session_config(&state.session_configuration));
-                    let environment_config = next.inferred_environment_config();
-                    if let Some(environments) = &updates.environments {
-                        self.services
-                            .turn_environments
-                            .update_selections(&environments.environments, &environment_config);
-                    } else if state.session_configuration.inferred_environment_config()
-                        != environment_config
-                    {
-                        self.services
-                            .turn_environments
-                            .update_thread_config(&environment_config);
-                    }
-                    state.session_configuration = next.clone();
-                    let new_config = notify_config_contributors
-                        .then(|| self.build_effective_session_config(&state.session_configuration));
-                    Ok((
-                        next,
-                        mcp_inputs_changed,
-                        permission_profile_changed,
-                        previous_config,
-                        new_config,
-                    ))
-                }
-                Err(err) => Err(CodexErr::InvalidRequest(err.to_string())),
-            }
-        };
-
-        let (
-            mut session_configuration,
-            mcp_inputs_changed,
-            permission_profile_changed,
-            previous_config,
-            new_config,
-        ) = match update_result {
-            Ok(update) => update,
+    ) -> CodexResult<(Arc<TurnContext>, ThreadSettingsSnapshot)> {
+        let final_output_json_schema = updates.final_output_json_schema.clone();
+        let service_tier_for_turn = updates.service_tier_for_turn.clone();
+        let update_result = self
+            .update_settings(updates)
+            .await
+            .map_err(|err| CodexErr::InvalidRequest(err.to_string()));
+        let commit = match update_result {
+            Ok(commit) => commit,
             Err(err) => {
                 let message = err.to_string();
                 self.send_event_raw(Event {
@@ -809,26 +765,15 @@ impl Session {
                 return Err(CodexErr::InvalidRequest(message));
             }
         };
-        self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
-        if mcp_inputs_changed {
-            self.schedule_mcp_prewarm();
-        }
-
-        if permission_profile_changed {
-            self.refresh_managed_network_proxy_for_current_permission_profile()
-                .await;
-        }
+        let mut configuration = commit.configuration;
         // Apply the override only to the turn's copy, after persisting thread settings.
-        if let Some(service_tier) = updates.service_tier_for_turn {
-            session_configuration.service_tier = Some(service_tier);
+        if let Some(service_tier) = service_tier_for_turn {
+            configuration.service_tier = Some(service_tier);
         }
-        Ok(self
-            .new_turn_from_configuration(
-                sub_id,
-                session_configuration,
-                updates.final_output_json_schema,
-            )
-            .await)
+        let turn_context = self
+            .new_turn_from_configuration(sub_id, configuration, final_output_json_schema)
+            .await;
+        Ok((turn_context, commit.snapshot))
     }
 
     async fn new_turn_from_configuration(

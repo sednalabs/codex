@@ -249,6 +249,7 @@ use self::review::spawn_review_thread;
 use self::session::AppServerClientMetadata;
 use self::session::Session;
 use self::session::SessionConfiguration;
+use self::session::SessionSettingsCommit;
 pub(crate) use self::session::SessionSettingsUpdate;
 #[cfg(test)]
 use self::turn::AssistantMessageStreamParsers;
@@ -1596,9 +1597,9 @@ impl Session {
     pub(crate) async fn update_settings(
         &self,
         updates: SessionSettingsUpdate,
-    ) -> ConstraintResult<()> {
+    ) -> ConstraintResult<SessionSettingsCommit> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
-        let (previous_config, new_config, permission_profile_changed, mcp_inputs_changed) = {
+        let (commit, previous_config, new_config, permission_profile_changed, mcp_inputs_changed) = {
             let mut state = self.state.lock().await;
             let updated = match self.apply_session_settings(&state.session_configuration, &updates)
             {
@@ -1635,7 +1636,14 @@ impl Session {
             state.session_configuration = updated;
             let new_config = notify_config_contributors
                 .then(|| self.build_effective_session_config(&state.session_configuration));
+            let commit = SessionSettingsCommit {
+                configuration: state.session_configuration.clone(),
+                snapshot: state
+                    .session_configuration
+                    .thread_settings_snapshot(&self.services.turn_environments.selections()),
+            };
             (
+                commit,
                 previous_config,
                 new_config,
                 permission_profile_changed,
@@ -1650,7 +1658,7 @@ impl Session {
         if mcp_inputs_changed {
             self.schedule_mcp_prewarm();
         }
-        Ok(())
+        Ok(commit)
     }
 
     pub(crate) async fn preview_settings(

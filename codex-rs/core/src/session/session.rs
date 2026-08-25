@@ -589,6 +589,12 @@ impl SessionConfiguration {
     }
 }
 
+/// The configuration and public snapshot published by one settings commit.
+pub(crate) struct SessionSettingsCommit {
+    pub(crate) configuration: SessionConfiguration,
+    pub(crate) snapshot: ThreadSettingsSnapshot,
+}
+
 #[derive(Default, Clone)]
 pub(crate) struct SessionSettingsUpdate {
     pub(crate) environments: Option<TurnEnvironmentSelections>,

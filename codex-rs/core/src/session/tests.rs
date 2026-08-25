@@ -5570,6 +5570,56 @@ async fn session_configuration_apply_preserves_absolute_cwd_write_root_on_cwd_up
 }
 
 #[tokio::test]
+async fn session_settings_commit_keeps_snapshot_across_postcommit_wait() {
+    let (session, _turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config
+                .permissions
+                .set_permission_profile(PermissionProfile::workspace_write())
+                .expect("set initial permission profile");
+        },
+    )
+    .await;
+    let refresh_guard = session
+        .managed_network_proxy_refresh_lock
+        .acquire()
+        .await
+        .expect("network refresh lock");
+    let mut first_update = Box::pin(tokio::task::unconstrained(session.update_settings(
+        SessionSettingsUpdate {
+            permission_profile: Some(PermissionProfile::read_only()),
+            service_tier: Some(Some(ServiceTier::Fast.request_value().to_string())),
+            ..Default::default()
+        },
+    )));
+
+    // Pause after the commit, while its managed-network refresh is blocked.
+    {
+        let mut context = std::task::Context::from_waker(futures::task::noop_waker_ref());
+        assert!(std::future::Future::poll(first_update.as_mut(), &mut context).is_pending());
+    }
+    let expected = session.thread_settings_snapshot().await;
+    let later_commit = session
+        .update_settings(SessionSettingsUpdate {
+            service_tier: Some(None),
+            ..Default::default()
+        })
+        .await
+        .expect("later settings update");
+    drop(refresh_guard);
+
+    let commit = first_update.await.expect("first settings update");
+    let configuration_snapshot = commit
+        .configuration
+        .thread_settings_snapshot(&session.services.turn_environments.selections());
+    assert_eq!(commit.snapshot, expected);
+    assert_eq!(configuration_snapshot, expected);
+    assert_ne!(later_commit.snapshot, expected);
+}
+
+#[tokio::test]
 async fn session_update_settings_does_not_rewrite_sticky_environment_cwds() {
     let (session, turn_context) = make_session_and_context().await;
     #[allow(deprecated)]
@@ -5628,10 +5678,11 @@ async fn permission_profile_updates_apply_to_next_turn_environment() {
         };
 
         let next_turn = if apply_on_turn_start {
-            session
+            let (next_turn, _) = session
                 .new_turn_with_sub_id("permission-profile-update".to_string(), updates)
                 .await
-                .expect("turn permission profile update should succeed")
+                .expect("turn permission profile update should succeed");
+            next_turn
         } else {
             session
                 .update_settings(updates)
@@ -5733,7 +5784,7 @@ async fn absolute_cwd_update_with_turn_environment_is_allowed() {
     };
     std::fs::create_dir_all(absolute_cwd.as_path()).expect("create absolute turn dir");
 
-    let turn_context = session
+    let (turn_context, _) = session
         .new_turn_with_sub_id(
             "sub-1".to_string(),
             SessionSettingsUpdate {
@@ -7284,7 +7335,7 @@ async fn turn_environments_set_primary_environment() {
         AbsolutePathBuf::try_from(session.get_config().await.cwd.as_path().join("selected"))
             .expect("absolute path");
 
-    let turn_context = session
+    let (turn_context, _) = session
         .new_turn_with_sub_id(
             "sub-1".to_string(),
             SessionSettingsUpdate {
@@ -7478,7 +7529,7 @@ async fn primary_environment_uses_first_turn_environment() {
 async fn empty_turn_environments_clear_primary_environment() {
     let (session, _turn_context, _rx) = make_session_and_context_with_rx().await;
 
-    let turn_context = session
+    let (turn_context, _) = session
         .new_turn_with_sub_id(
             "sub-1".to_string(),
             SessionSettingsUpdate {

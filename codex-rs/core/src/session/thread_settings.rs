@@ -10,6 +10,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::protocol::ThreadSettingsSnapshot;
 use std::sync::Arc;
 
 /// Applies standalone thread settings and reports invalid overrides through the
@@ -89,14 +90,20 @@ pub(super) async fn apply_update(
     submission_id: String,
     updates: SessionSettingsUpdate,
 ) -> ConstraintResult<()> {
-    session.update_settings(updates).await?;
-    emit_applied(session, submission_id).await;
+    let commit = session.update_settings(updates).await?;
+    emit_applied(session, submission_id, commit.snapshot).await;
     Ok(())
 }
 
-/// Emits the thread-owned settings after a successful update.
-pub(super) async fn emit_applied(session: &Session, submission_id: String) {
-    let msg = applied_event(session).await;
+/// Emits the snapshot published by one successful settings update.
+pub(super) async fn emit_applied(
+    session: &Session,
+    submission_id: String,
+    snapshot: ThreadSettingsSnapshot,
+) {
+    let msg = EventMsg::ThreadSettingsApplied(ThreadSettingsAppliedEvent {
+        thread_settings: snapshot,
+    });
     session
         .send_event_raw_without_materializing_rollout(Event {
             id: submission_id,
@@ -105,8 +112,7 @@ pub(super) async fn emit_applied(session: &Session, submission_id: String) {
         .await;
 }
 
-/// Builds the thread-owned settings event used by live updates and
-/// synthesized fork history.
+/// Builds the current thread-settings event for synthesized fork history.
 pub(super) async fn applied_event(session: &Session) -> EventMsg {
     EventMsg::ThreadSettingsApplied(ThreadSettingsAppliedEvent {
         thread_settings: session.thread_settings_snapshot().await,
