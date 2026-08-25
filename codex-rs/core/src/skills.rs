@@ -45,7 +45,7 @@ pub(crate) fn emit_explicit_skill_invocations(
         .iter()
         .map(|skill| &skill.path_to_skills_md)
         .collect::<HashSet<_>>();
-    let model_slug_tag = sanitize_metric_tag_value(turn_context.model_info.slug.as_str());
+    let model_slug_tag = sanitize_metric_tag_value(turn_context.model_info().slug.as_str());
     let reasoning_effort = turn_context.effective_reasoning_effort_for_tracing();
     for skill in mentioned_skills {
         let skill_name_tag = sanitize_metric_tag_value(skill.name.as_str());
@@ -137,7 +137,7 @@ pub(crate) async fn maybe_emit_implicit_skill_invocation(
     let skill_name_tag = sanitize_metric_tag_value(skill_name.as_str());
     let plugin_id_tag =
         sanitize_metric_tag_value(invocation.plugin_id.as_deref().unwrap_or("unattributed"));
-    let model_slug_tag = sanitize_metric_tag_value(turn_context.model_info.slug.as_str());
+    let model_slug_tag = sanitize_metric_tag_value(turn_context.model_info().slug.as_str());
     let reasoning_effort = turn_context.effective_reasoning_effort_for_tracing();
     record_plugin_turn_usage(
         turn_context.extension_data.as_ref(),
