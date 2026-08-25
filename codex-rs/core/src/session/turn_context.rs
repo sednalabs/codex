@@ -43,6 +43,8 @@ pub(crate) struct TurnEnvironment {
     pub(crate) selection: TurnEnvironmentSelection,
     pub(crate) config_origin: EnvironmentConfigOrigin,
     pub(crate) environment: Arc<Environment>,
+    /// Cached from the selected executor; `None` means it did not report them.
+    pub(crate) temporary_directories: Option<Vec<PathUri>>,
     pub(crate) shell: Option<shell::Shell>,
     pub(crate) shell_snapshot: ShellSnapshotTask,
     pub(crate) shell_snapshot_v2_supported: bool,
@@ -60,6 +62,7 @@ impl TurnEnvironment {
             selection,
             config_origin,
             environment,
+            temporary_directories: None,
             shell,
             shell_snapshot: futures::future::ready(None).boxed().shared(),
             shell_snapshot_v2_supported: false,
@@ -123,6 +126,7 @@ impl TurnEnvironment {
             permissions: permissions.into(),
             cwd: Some(self.cwd().clone()),
             workspace_roots: self.workspace_roots().to_vec(),
+            temporary_directories: self.temporary_directories.clone(),
             windows_sandbox_level: executor_windows_sandbox_level(
                 config.windows_sandbox_level,
                 self.cwd(),
@@ -161,6 +165,7 @@ impl std::fmt::Debug for TurnEnvironment {
             .field("environment", &self.environment)
             .field("cwd", &self.selection.cwd)
             .field("workspace_roots", &self.selection.workspace_roots)
+            .field("temporary_directories", &self.temporary_directories)
             .field("shell", &self.shell)
             .field("config", self.config())
             .field("config_origin", &self.config_origin)

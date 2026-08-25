@@ -266,6 +266,17 @@ pub struct RawFileSystemSandboxPolicy {
     pub entries: Vec<RawFileSystemSandboxEntry>,
 }
 
+/// Executor-owned paths needed to interpret filesystem sandbox policy entries.
+///
+/// Orchestrator callers keep these as `PathUri` values until execution crosses
+/// into the executor that owns them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FileSystemSandboxPolicyContext<'a> {
+    pub cwd: &'a PathUri,
+    pub workspace_roots: &'a [PathUri],
+    pub temporary_directories: Option<&'a [PathUri]>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedFileSystemEntry {
     path: AbsolutePathBuf,
