@@ -416,6 +416,7 @@ async fn skill_mcp_dependency_oauth_uses_configured_http_client() -> Result<()> 
             .and_then(|server| server.oauth.as_ref()),
         Some(&McpServerOAuthConfig {
             client_id: None,
+            callback_url: None,
             callback_port: Some(skill_callback_port),
         })
     );

@@ -1920,6 +1920,10 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "callback_url": {
+          "description": "Registered callback URL associated with this OAuth client.",
+          "type": "string"
+        },
         "client_id": {
           "description": "Explicit OAuth client identifier to present during authorization and token exchange.",
           "type": "string"

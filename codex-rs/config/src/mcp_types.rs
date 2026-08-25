@@ -146,6 +146,10 @@ pub struct McpServerOAuthConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
 
+    /// Registered callback URL associated with this OAuth client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callback_url: Option<String>,
+
     /// Fixed callback port that takes precedence over Codex's global OAuth callback port.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub callback_port: Option<u16>,
