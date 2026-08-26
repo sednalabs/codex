@@ -1680,7 +1680,7 @@ Because audio is intentionally separate from `ThreadItem`, clients can opt out o
 The app-server streams JSON-RPC notifications while a turn is running. Each turn emits `turn/started` when it begins running and ends with `turn/completed` (final `turn` status). Token usage events stream separately via `thread/tokenUsage/updated`. Clients subscribe to the events they care about, rendering each item incrementally as updates arrive. The per-item lifecycle is always: `item/started` → zero or more item-specific deltas → `item/completed`.
 
 - `turn/started` — `{ turn }` with the turn id, empty `items`, and `status: "inProgress"`.
-- `turn/completed` — `{ turn }` where `turn.status` is `completed`, `interrupted`, or `failed`; successful turns include their final agent message when available, and failures carry `{ error: { message, codexErrorInfo?, additionalDetails? } }`.
+- `turn/completed` — `{ turn }` where `turn.status` is `completed`, `interrupted`, or `failed`; successful turns include their final agent message when available, and failures carry `{ error: { message, codexErrorInfo?, additionalDetails?, misalignment? } }`.
 - `turn/diff/updated` — `{ threadId, turnId, diff }` represents the up-to-date snapshot of the turn-level unified diff, emitted after every FileChange item. `diff` is the latest aggregated unified diff across every file change in the turn. UIs can render this to show the full "what changed" view without stitching individual `fileChange` items.
 - `turn/plan/updated` — `{ turnId, explanation?, plan }` whenever the agent shares or changes its plan; each `plan` entry is `{ step, status }` with `status` in `pending`, `inProgress`, or `completed`.
 - `rawResponse/completed` — internal-only; when `thread/start.experimentalRawEvents` is enabled, emits `{ threadId, turnId, responseId, usage }` once for each upstream Responses API completion. `usage` is the exact upstream usage payload mapped to the app-server token breakdown shape and is `null` when the upstream completion omitted usage. Unlike `thread/tokenUsage/updated`, this notification is not accumulated, estimated, persisted, or replayed.
@@ -1760,7 +1760,7 @@ There are additional item-specific events:
 
 Ownership rejections for parent-owned Multi-Agent V2 subagents return JSON-RPC error code `-32600` with message `direct app-server input is not allowed for multi-agent v2 sub-agents`.
 
-`error` event is emitted whenever the server hits an error mid-turn (for example, upstream model errors or quota limits). Carries the same `{ error: { message, codexErrorInfo?, additionalDetails? } }` payload as `turn.status: "failed"` and may precede that terminal notification.
+`error` event is emitted whenever the server hits an error mid-turn (for example, upstream model errors or quota limits). Carries the same `{ error: { message, codexErrorInfo?, additionalDetails?, misalignment? } }` payload as `turn.status: "failed"` and may precede that terminal notification.
 
 `codexErrorInfo` maps to the `CodexErrorInfo` enum. Common values:
 
@@ -1782,6 +1782,16 @@ Ownership rejections for parent-owned Multi-Agent V2 subagents return JSON-RPC e
 - `Other`: all unclassified errors
 
 When an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant.
+
+For `misalignmentPolicyViolation`, optional `misalignment` details contain `errorType`,
+`detailedExplanation`, and `steer: { message }`. Error categories are open-ended. A category alone
+remains a terminal block; clients may offer continuation only when both a substantive explanation
+and a steering message are present. To continue after user confirmation, submit the steering
+message with the existing `turn/start` method and include
+`responsesapiClientMetadata: { misalignment_override: JSON.stringify({ timestamp, feedback }) }`,
+where `timestamp` is the confirmation time in Unix milliseconds and `feedback` is the user's
+explanation. Misalignment explanation and steering details are delivered live but excluded from
+persisted rollout errors, so unavailable details after a restart remain a terminal block.
 
 ## Approvals
 

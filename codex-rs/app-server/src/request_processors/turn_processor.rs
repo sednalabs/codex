@@ -1028,6 +1028,7 @@ impl TurnRequestProcessor {
                             ),
                         };
                         let error = TurnError {
+                            misalignment: None,
                             message: message.clone(),
                             codex_error_info: Some(CodexErrorInfo::ActiveTurnNotSteerable {
                                 turn_kind: turn_kind.into(),

@@ -1192,6 +1192,7 @@ impl ThreadHistoryBuilder {
         let changed_turn = if let Some(turn) = self.current_turn.as_mut() {
             turn.status = TurnStatus::Failed;
             turn.error = Some(V2TurnError {
+                misalignment: payload.misalignment.clone().map(Into::into),
                 message: payload.message.clone(),
                 codex_error_info: payload.codex_error_info.clone().map(Into::into),
                 additional_details: None,
@@ -1250,6 +1251,7 @@ impl ThreadHistoryBuilder {
 
     fn handle_turn_complete(&mut self, payload: &TurnCompleteEvent) {
         let terminal_error = payload.error.as_ref().map(|error| V2TurnError {
+            misalignment: error.misalignment.clone().map(Into::into),
             message: error.message.clone(),
             codex_error_info: error.codex_error_info.clone().map(Into::into),
             additional_details: None,
@@ -3821,6 +3823,7 @@ mod tests {
                 started_at: Some(10),
                 last_agent_message: None,
                 error: Some(ErrorEvent {
+                    misalignment: None,
                     message: "Selected model is at capacity. Please try a different model.".into(),
                     codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
                 }),
@@ -3851,6 +3854,7 @@ mod tests {
                     }],
                     status: TurnStatus::Failed,
                     error: Some(TurnError {
+                        misalignment: None,
                         message: "Selected model is at capacity. Please try a different model."
                             .into(),
                         codex_error_info: Some(
@@ -4203,6 +4207,7 @@ mod tests {
                 delivery: None,
             }),
             EventMsg::Error(ErrorEvent {
+                misalignment: None,
                 message: "rollback failed".into(),
                 codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
             }),
@@ -4246,6 +4251,7 @@ mod tests {
                 time_to_first_token_ms: None,
             }),
             EventMsg::Error(ErrorEvent {
+                misalignment: None,
                 message: "request-level failure".into(),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
             }),
@@ -4298,6 +4304,7 @@ mod tests {
                 ..Default::default()
             }),
             EventMsg::Error(ErrorEvent {
+                misalignment: None,
                 message: "stream failure".into(),
                 codex_error_info: Some(CodexErrorInfo::ResponseStreamDisconnected {
                     http_status_code: Some(502),
@@ -4325,6 +4332,7 @@ mod tests {
         assert_eq!(
             turns[0].error,
             Some(TurnError {
+                misalignment: None,
                 message: "stream failure".into(),
                 codex_error_info: Some(
                     crate::protocol::v2::CodexErrorInfo::ResponseStreamDisconnected {
@@ -4359,6 +4367,7 @@ mod tests {
                 started_at: Some(10),
                 last_agent_message: None,
                 error: Some(ErrorEvent {
+                    misalignment: None,
                     message: "Selected model is at capacity. Please try a different model.".into(),
                     codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
                 }),
@@ -4388,6 +4397,7 @@ mod tests {
                 }],
                 status: TurnStatus::Failed,
                 error: Some(TurnError {
+                    misalignment: None,
                     message: "Selected model is at capacity. Please try a different model.".into(),
                     codex_error_info: Some(crate::protocol::v2::CodexErrorInfo::ServerOverloaded),
                     additional_details: None,

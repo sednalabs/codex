@@ -511,6 +511,7 @@ impl Session {
                 self.send_event_raw(Event {
                     id: submission_id,
                     msg: EventMsg::Error(ErrorEvent {
+                        misalignment: None,
                         message: format!("failed to submit turn input: {reason:?}"),
                         codex_error_info: Some(CodexErrorInfo::BadRequest),
                     }),

@@ -68,6 +68,7 @@ fn projects_turn_lifecycle_without_prior_builder_state() {
 #[test]
 fn projects_failed_turn_completion_as_snapshot() {
     let error = ErrorEvent {
+        misalignment: None,
         message: "request failed".to_string(),
         codex_error_info: None,
     };
@@ -91,6 +92,7 @@ fn projects_failed_turn_completion_as_snapshot() {
                 turn_id: "turn-1".to_string(),
                 status: TurnStatus::Failed,
                 error: Some(TurnError {
+                    misalignment: None,
                     message: "request failed".to_string(),
                     codex_error_info: None,
                     additional_details: None,

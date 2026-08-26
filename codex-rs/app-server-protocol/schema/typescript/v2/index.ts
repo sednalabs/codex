@@ -297,6 +297,8 @@ export type { MemoryCitation } from "./MemoryCitation";
 export type { MemoryCitationEntry } from "./MemoryCitationEntry";
 export type { MergeStrategy } from "./MergeStrategy";
 export type { MigrationDetails } from "./MigrationDetails";
+export type { MisalignmentErrorDetails } from "./MisalignmentErrorDetails";
+export type { MisalignmentSteer } from "./MisalignmentSteer";
 export type { Model } from "./Model";
 export type { ModelAvailabilityNux } from "./ModelAvailabilityNux";
 export type { ModelListParams } from "./ModelListParams";

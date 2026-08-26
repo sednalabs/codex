@@ -965,6 +965,7 @@ pub(crate) async fn apply_bespoke_event_handling(
             }
 
             let turn_error = TurnError {
+                misalignment: ev.misalignment.map(Into::into),
                 message: ev.message,
                 codex_error_info: ev.codex_error_info.map(V2CodexErrorInfo::from),
                 additional_details: None,
@@ -982,6 +983,7 @@ pub(crate) async fn apply_bespoke_event_handling(
             // We don't need to update the turn summary store for stream errors as they are intermediate error states for retries,
             // but we notify the client.
             let turn_error = TurnError {
+                misalignment: None,
                 message: ev.message,
                 codex_error_info: ev.codex_error_info.map(V2CodexErrorInfo::from),
                 additional_details: ev.additional_details,
@@ -1831,6 +1833,7 @@ async fn on_request_permissions_response(
                 conversation_id,
                 &turn_id,
                 TurnError {
+                    misalignment: None,
                     message,
                     codex_error_info: None,
                     additional_details: None,
@@ -3303,6 +3306,7 @@ mod tests {
         handle_error(
             conversation_id,
             TurnError {
+                misalignment: None,
                 message: "boom".to_string(),
                 codex_error_info: Some(V2CodexErrorInfo::InternalServerError),
                 additional_details: None,
@@ -3315,6 +3319,7 @@ mod tests {
         assert_eq!(
             turn_summary.last_error,
             Some(TurnError {
+                misalignment: None,
                 message: "boom".to_string(),
                 codex_error_info: Some(V2CodexErrorInfo::InternalServerError),
                 additional_details: None,
@@ -3703,6 +3708,7 @@ mod tests {
         handle_error(
             conversation_id,
             TurnError {
+                misalignment: None,
                 message: "oops".to_string(),
                 codex_error_info: None,
                 additional_details: None,
@@ -3753,6 +3759,7 @@ mod tests {
         handle_error(
             conversation_id,
             TurnError {
+                misalignment: None,
                 message: "bad".to_string(),
                 codex_error_info: Some(V2CodexErrorInfo::Other),
                 additional_details: None,
@@ -3788,6 +3795,7 @@ mod tests {
                 assert_eq!(
                     n.turn.error,
                     Some(TurnError {
+                        misalignment: None,
                         message: "bad".to_string(),
                         codex_error_info: Some(V2CodexErrorInfo::Other),
                         additional_details: None,
@@ -4000,6 +4008,7 @@ mod tests {
         handle_error(
             conversation_a,
             TurnError {
+                misalignment: None,
                 message: "a1".to_string(),
                 codex_error_info: Some(V2CodexErrorInfo::BadRequest),
                 additional_details: None,
@@ -4021,6 +4030,7 @@ mod tests {
         handle_error(
             conversation_b,
             TurnError {
+                misalignment: None,
                 message: "b1".to_string(),
                 codex_error_info: None,
                 additional_details: None,
@@ -4057,6 +4067,7 @@ mod tests {
                 assert_eq!(
                     n.turn.error,
                     Some(TurnError {
+                        misalignment: None,
                         message: "a1".to_string(),
                         codex_error_info: Some(V2CodexErrorInfo::BadRequest),
                         additional_details: None,
@@ -4075,6 +4086,7 @@ mod tests {
                 assert_eq!(
                     n.turn.error,
                     Some(TurnError {
+                        misalignment: None,
                         message: "b1".to_string(),
                         codex_error_info: None,
                         additional_details: None,

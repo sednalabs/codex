@@ -9,6 +9,7 @@ use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::MisalignmentErrorDetails;
 use codex_protocol::protocol::ModelVerification;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnModerationMetadataEvent;
@@ -107,6 +108,8 @@ struct Error {
     message: Option<String>,
     plan_type: Option<String>,
     resets_at: Option<i64>,
+    #[serde(default)]
+    misalignment: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -428,7 +431,12 @@ pub fn process_responses_event(
                                 "This request was blocked due to a misalignment policy violation."
                                     .to_string()
                             });
-                        response_error = ApiError::MisalignmentPolicyViolation { message };
+                        response_error = ApiError::MisalignmentPolicyViolation {
+                            message,
+                            misalignment: error.misalignment.and_then(|details| {
+                                serde_json::from_value::<MisalignmentErrorDetails>(details).ok()
+                            }),
+                        };
                     } else if matches!(error.code.as_deref(), Some("invalid_prompt" | "bio_policy"))
                     {
                         let message = error
@@ -1212,8 +1220,12 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         match &events[0] {
-            Err(ApiError::MisalignmentPolicyViolation { message }) => {
+            Err(ApiError::MisalignmentPolicyViolation {
+                message,
+                misalignment,
+            }) => {
                 assert_eq!(message, "This request violated the misalignment policy.");
+                assert_eq!(misalignment, &None);
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -1239,13 +1251,85 @@ mod tests {
 
             assert_eq!(events.len(), 1);
             match &events[0] {
-                Err(ApiError::MisalignmentPolicyViolation { message }) => assert_eq!(
+                Err(ApiError::MisalignmentPolicyViolation { message, .. }) => assert_eq!(
                     message,
                     "This request was blocked due to a misalignment policy violation."
                 ),
                 other => panic!("unexpected event: {other:?}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn misalignment_policy_violation_preserves_public_continuation_details() {
+        let raw_error = json!({
+            "type": "response.failed",
+            "response": {
+                "id": "resp_fatal_misalignment",
+                "status": "failed",
+                "error": {
+                    "code": "misalignment_policy_violation",
+                    "message": "This request violated the misalignment policy.",
+                    "misalignment": {
+                        "error_type": "future_safety_category",
+                        "detailed_explanation": "The agent attempted an external transfer.",
+                        "steer": { "message": "Do not transfer the user's files." }
+                    }
+                }
+            }
+        });
+        let sse = format!("event: response.failed\ndata: {raw_error}\n\n");
+        let events = collect_events(&[sse.as_bytes()]).await;
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(ApiError::MisalignmentPolicyViolation {
+                message,
+                misalignment,
+            }) => {
+                assert_eq!(message, "This request violated the misalignment policy.");
+                assert_eq!(
+                    misalignment,
+                    &Some(MisalignmentErrorDetails {
+                        error_type: Some("future_safety_category".to_string()),
+                        detailed_explanation: Some(
+                            "The agent attempted an external transfer.".to_string()
+                        ),
+                        steer: Some(codex_protocol::protocol::MisalignmentSteer {
+                            message: "Do not transfer the user's files.".to_string(),
+                        }),
+                    })
+                );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_misalignment_details_preserve_the_fatal_policy_error() {
+        let raw_error = json!({
+            "type": "response.failed",
+            "response": {
+                "id": "resp_fatal_misalignment",
+                "status": "failed",
+                "error": {
+                    "code": "misalignment_policy_violation",
+                    "message": "This request violated the misalignment policy.",
+                    "misalignment": { "steer": { "message": 42 } }
+                }
+            }
+        });
+        let sse = format!("event: response.failed\ndata: {raw_error}\n\n");
+        let events = collect_events(&[sse.as_bytes()]).await;
+
+        assert_eq!(events.len(), 1);
+        assert_matches!(
+            &events[0],
+            Err(ApiError::MisalignmentPolicyViolation {
+                misalignment: None,
+                ..
+            })
+        );
     }
 
     #[tokio::test]
@@ -1913,6 +1997,7 @@ mod tests {
             code: Some("rate_limit_exceeded".to_string()),
             plan_type: None,
             resets_at: None,
+            misalignment: None,
         };
 
         let delay = try_parse_retry_after(&err);
@@ -1927,6 +2012,7 @@ mod tests {
             code: Some("rate_limit_exceeded".to_string()),
             plan_type: None,
             resets_at: None,
+            misalignment: None,
         };
         let delay = try_parse_retry_after(&err);
         assert_eq!(delay, Some(Duration::from_secs_f64(1.898)));
@@ -1940,6 +2026,7 @@ mod tests {
             code: Some("rate_limit_exceeded".to_string()),
             plan_type: None,
             resets_at: None,
+            misalignment: None,
         };
         let delay = try_parse_retry_after(&err);
         assert_eq!(delay, Some(Duration::from_secs(35)));

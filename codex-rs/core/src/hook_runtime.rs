@@ -588,6 +588,7 @@ pub(crate) async fn run_legacy_after_agent_hook(
         return false;
     };
     let event = EventMsg::Error(codex_protocol::protocol::ErrorEvent {
+        misalignment: None,
         message,
         codex_error_info: Some(CodexErrorInfo::Other),
     });

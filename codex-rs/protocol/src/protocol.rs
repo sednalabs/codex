@@ -1983,11 +1983,59 @@ pub struct ExitedReviewModeEvent {
 
 // Individual event payload types matching each `EventMsg` variant.
 
+/// Public, customer-facing details supplied by the Responses API for a misalignment block.
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct MisalignmentErrorDetails {
+    /// Open-ended classification; new values must not prevent the error from being surfaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    /// A localized explanation is required before a client may offer continuation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detailed_explanation: Option<String>,
+    /// Model-visible instruction to submit if the user elects to continue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer: Option<MisalignmentSteer>,
+}
+
+impl fmt::Debug for MisalignmentErrorDetails {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MisalignmentErrorDetails")
+            .field("error_type", &self.error_type)
+            .field(
+                "has_detailed_explanation",
+                &self.detailed_explanation.is_some(),
+            )
+            .field("has_steer", &self.steer.is_some())
+            .finish()
+    }
+}
+
+/// Public steering instruction returned alongside a resumable misalignment block.
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct MisalignmentSteer {
+    pub message: String,
+}
+
+impl fmt::Debug for MisalignmentSteer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MisalignmentSteer")
+            .field("message", &"[REDACTED]")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct ErrorEvent {
     pub message: String,
     #[serde(default)]
     pub codex_error_info: Option<CodexErrorInfo>,
+    /// Sensitive explanation and steering are delivered live but never enter rollout storage.
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub misalignment: Option<MisalignmentErrorDetails>,
 }
 
 impl ErrorEvent {
@@ -5565,6 +5613,7 @@ mod tests {
     #[test]
     fn rollback_failed_error_does_not_affect_turn_status() {
         let event = ErrorEvent {
+            misalignment: None,
             message: "rollback failed".into(),
             codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
         };
@@ -5574,6 +5623,7 @@ mod tests {
     #[test]
     fn active_turn_not_steerable_error_does_not_affect_turn_status() {
         let event = ErrorEvent {
+            misalignment: None,
             message: "cannot steer a review turn".into(),
             codex_error_info: Some(CodexErrorInfo::ActiveTurnNotSteerable {
                 turn_kind: NonSteerableTurnKind::Review,
@@ -5585,10 +5635,42 @@ mod tests {
     #[test]
     fn generic_error_affects_turn_status() {
         let event = ErrorEvent {
+            misalignment: None,
             message: "generic".into(),
             codex_error_info: Some(CodexErrorInfo::Other),
         };
         assert!(event.affects_turn_status());
+    }
+
+    #[test]
+    fn misalignment_explanation_and_steer_are_never_serialized_into_error_events() {
+        let event = ErrorEvent {
+            message: "This request violated the misalignment policy.".to_string(),
+            codex_error_info: Some(CodexErrorInfo::MisalignmentPolicyViolation),
+            misalignment: Some(MisalignmentErrorDetails {
+                error_type: Some("unauthorized_data_transfer".to_string()),
+                detailed_explanation: Some("Sensitive customer explanation".to_string()),
+                steer: Some(MisalignmentSteer {
+                    message: "Sensitive customer steering".to_string(),
+                }),
+            }),
+        };
+
+        let serialized = serde_json::to_value(&event).expect("serialize error event");
+        assert_eq!(
+            serialized,
+            json!({
+                "message": "This request violated the misalignment policy.",
+                "codex_error_info": "misalignment_policy_violation"
+            })
+        );
+        let restored: ErrorEvent =
+            serde_json::from_value(serialized).expect("deserialize persisted error event");
+        assert_eq!(restored.misalignment, None);
+
+        let debug = format!("{event:?}");
+        assert!(!debug.contains("Sensitive customer explanation"));
+        assert!(!debug.contains("Sensitive customer steering"));
     }
 
     #[test]

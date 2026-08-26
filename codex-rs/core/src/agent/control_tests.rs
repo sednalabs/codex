@@ -487,6 +487,7 @@ async fn on_event_updates_status_from_task_complete() {
         (None, AgentStatus::Completed(Some("done".to_string()))),
         (
             Some(ErrorEvent {
+                misalignment: None,
                 message: "denied".to_string(),
                 codex_error_info: None,
             }),
@@ -509,6 +510,7 @@ async fn on_event_updates_status_from_task_complete() {
 #[tokio::test]
 async fn on_event_updates_status_from_error() {
     let status = agent_status_from_event(&EventMsg::Error(ErrorEvent {
+        misalignment: None,
         message: "boom".to_string(),
         codex_error_info: None,
     }));

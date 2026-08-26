@@ -2310,6 +2310,7 @@ mod tests {
             .send(Event {
                 id: "prior-turn".to_string(),
                 msg: EventMsg::Error(ErrorEvent {
+                    misalignment: None,
                     message: "stale guardian error".to_string(),
                     codex_error_info: None,
                 }),
@@ -2351,6 +2352,7 @@ mod tests {
             .send(Event {
                 id: "current-turn".to_string(),
                 msg: EventMsg::Error(ErrorEvent {
+                    misalignment: None,
                     message: "temporary failure".to_string(),
                     codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
                 }),

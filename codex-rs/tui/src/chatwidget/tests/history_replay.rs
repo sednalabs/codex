@@ -95,6 +95,7 @@ async fn replayed_failed_turns_preserve_overload_warnings_between_retries() {
             /*duration_ms*/ None,
             /*error*/
             Some(AppServerTurnError {
+                misalignment: None,
                 message: error_message.to_string(),
                 codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
                 additional_details: None,
@@ -1024,6 +1025,7 @@ async fn replayed_retryable_app_server_error_keeps_turn_running() {
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
+                misalignment: None,
                 message: "Reconnecting... 1/5".to_string(),
                 codex_error_info: None,
                 additional_details: Some("Idle timeout waiting for SSE".to_string()),

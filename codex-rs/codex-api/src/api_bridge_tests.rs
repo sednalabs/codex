@@ -199,10 +199,104 @@ fn assert_misalignment_policy_violation_from_http_body(status: http::StatusCode)
         body: Some(body),
     }));
 
-    let CodexErrorDetails::MisalignmentPolicyViolation { message } = err.details() else {
+    let CodexErrorDetails::MisalignmentPolicyViolation {
+        message,
+        misalignment,
+    } = err.details()
+    else {
         panic!("expected CodexErrorDetails::MisalignmentPolicyViolation, got {err:?}");
     };
     assert_eq!(message, "This request violated the misalignment policy.");
+    assert_eq!(misalignment, &None);
+    assert!(!err.is_retryable());
+}
+
+#[test]
+fn map_api_error_preserves_misalignment_details_from_403_body() {
+    let body = serde_json::json!({
+        "error": {
+            "message": "This request violated the misalignment policy.",
+            "code": "misalignment_policy_violation",
+            "misalignment": {
+                "error_type": "unauthorized_data_transfer",
+                "detailed_explanation": "The agent attempted an external transfer.",
+                "steer": { "message": "Do not transfer the user's files." }
+            }
+        }
+    })
+    .to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::FORBIDDEN,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some(body),
+    }));
+
+    let CodexErrorDetails::MisalignmentPolicyViolation {
+        message,
+        misalignment,
+    } = err.details()
+    else {
+        panic!("expected CodexErrorDetails::MisalignmentPolicyViolation, got {err:?}");
+    };
+    assert_eq!(message, "This request violated the misalignment policy.");
+    assert_eq!(
+        misalignment,
+        &Some(MisalignmentErrorDetails {
+            error_type: Some("unauthorized_data_transfer".to_string()),
+            detailed_explanation: Some("The agent attempted an external transfer.".to_string()),
+            steer: Some(codex_protocol::protocol::MisalignmentSteer {
+                message: "Do not transfer the user's files.".to_string(),
+            }),
+        })
+    );
+    assert!(!err.is_retryable());
+}
+
+#[test]
+fn map_api_error_preserves_misalignment_details_from_wrapped_websocket_error() {
+    let body = serde_json::json!({
+        "type": "error",
+        "status": 403,
+        "error": {
+            "message": "This websocket request violated the misalignment policy.",
+            "code": "misalignment_policy_violation",
+            "misalignment": {
+                "error_type": "future_safety_category",
+                "detailed_explanation": "The agent attempted an external transfer.",
+                "steer": { "message": "Do not transfer the user's files." }
+            }
+        }
+    })
+    .to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::FORBIDDEN,
+        url: Some("ws://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some(body),
+    }));
+
+    let CodexErrorDetails::MisalignmentPolicyViolation {
+        message,
+        misalignment,
+    } = err.details()
+    else {
+        panic!("expected CodexErrorDetails::MisalignmentPolicyViolation, got {err:?}");
+    };
+    assert_eq!(
+        message,
+        "This websocket request violated the misalignment policy."
+    );
+    assert_eq!(
+        misalignment,
+        &Some(MisalignmentErrorDetails {
+            error_type: Some("future_safety_category".to_string()),
+            detailed_explanation: Some("The agent attempted an external transfer.".to_string()),
+            steer: Some(codex_protocol::protocol::MisalignmentSteer {
+                message: "Do not transfer the user's files.".to_string(),
+            }),
+        })
+    );
     assert!(!err.is_retryable());
 }
 
