@@ -117,7 +117,8 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                                 rate_limits: rate_limits.map(Box::new),
                                 promo_message,
                                 rate_limit_reached_type,
-                            });
+                            })
+                            .with_recognized_http_usage_limit_source();
                         } else if err.error.error_type.as_deref() == Some("usage_not_included") {
                             return CodexErr::UsageNotIncluded;
                         }

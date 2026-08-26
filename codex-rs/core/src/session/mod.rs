@@ -4077,6 +4077,7 @@ impl Session {
     pub(crate) fn record_rate_limit_domain(
         &self,
         turn_context: &TurnContext,
+        authority: ProviderEvidenceAuthority,
         snapshot: Option<RateLimitSnapshot>,
         reset_at: Option<String>,
         retry_after: Option<std::time::Duration>,
@@ -4089,7 +4090,7 @@ impl Session {
                 resolved_model: Some(turn_context.model_info.slug.clone()),
             },
             provider_limit_evidence: ProviderLimitEvidence {
-                authority: ProviderEvidenceAuthority::UnknownLostProvenance,
+                authority,
                 snapshot,
                 reset_at,
                 retry_after,

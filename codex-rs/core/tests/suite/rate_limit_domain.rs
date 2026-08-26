@@ -66,6 +66,11 @@ fn provider_evidence_authority_is_explicit() {
         "provider",
         ProviderEvidenceAuthority::UnknownUnsupportedTransport,
     );
+    let domain_c = domain(
+        ThreadId::new(),
+        "provider",
+        ProviderEvidenceAuthority::RecognizedHttpUsageLimit,
+    );
 
     assert_eq!(
         domain_a.provider_limit_evidence.authority,
@@ -74,6 +79,10 @@ fn provider_evidence_authority_is_explicit() {
     assert_eq!(
         domain_b.provider_limit_evidence.authority,
         ProviderEvidenceAuthority::UnknownUnsupportedTransport
+    );
+    assert_eq!(
+        domain_c.provider_limit_evidence.authority,
+        ProviderEvidenceAuthority::RecognizedHttpUsageLimit
     );
     assert_ne!(
         domain_a.provider_limit_evidence.authority,
