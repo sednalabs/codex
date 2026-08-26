@@ -993,6 +993,9 @@
             },
             "workspace_owner_usage_nudge": {
               "type": "boolean"
+            },
+            "write_stdin_approval": {
+              "type": "boolean"
             }
           },
           "type": "object"
@@ -6142,6 +6145,9 @@
           "type": "boolean"
         },
         "workspace_owner_usage_nudge": {
+          "type": "boolean"
+        },
+        "write_stdin_approval": {
           "type": "boolean"
         }
       },

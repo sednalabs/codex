@@ -887,7 +887,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
     assert_eq!(approval.approval_id.as_deref(), None);
     let first_approval_call_id = approval.call_id.clone();
     assert!(!approval.turn_id.is_empty());
-    assert_eq!(approval.cwd, test.config.cwd);
+    assert_eq!(approval.cwd, test.config.cwd.clone().into());
     assert_eq!(
         approval.reason.as_deref(),
         Some("codex-network-test.invalid is not in the allowed_domains")
@@ -1387,7 +1387,7 @@ async fn unattributed_network_request_uses_active_turn_environment_fallback() ->
     let proxy_request = tokio::spawn(raw_http_proxy_request(proxy_addr, NETWORK_TEST_HOST));
     let approval = expect_network_approval(&test, LOCAL_ENVIRONMENT_ID).await?;
     assert_eq!(approval.command, ["network-access", NETWORK_TEST_TARGET]);
-    assert_eq!(approval.cwd, test.config.cwd);
+    assert_eq!(approval.cwd, test.config.cwd.clone().into());
     test.codex
         .submit(Op::ExecApproval {
             id: approval.effective_approval_id(),

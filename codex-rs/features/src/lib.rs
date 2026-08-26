@@ -137,6 +137,8 @@ pub enum Feature {
     ApplyPatchPreserveLineEndings,
     /// Allow exec tools to request additional permissions while staying sandboxed.
     ExecPermissionApprovals,
+    /// Require approval before writing input to escalated unified-exec terminals.
+    WriteStdinApproval,
     /// Expose the built-in request_permissions tool.
     RequestPermissionsTool,
     /// Allow the model to request web searches that fetch live content.
@@ -1076,6 +1078,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ExecPermissionApprovals,
         key: "exec_permission_approvals",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::WriteStdinApproval,
+        key: "write_stdin_approval",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

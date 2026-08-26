@@ -1371,6 +1371,7 @@ fn guardian_write_stdin_preserves_input_and_foreign_cwd() -> serde_json::Result<
     let action = GuardianApprovalRequest::WriteStdin {
         id: "terminal-open".to_string(),
         approval_id: "terminal-write".to_string(),
+        environment_id: "windows-executor".to_string(),
         process_id: 1000,
         input: input.to_string(),
         cwd: cwd.clone(),
@@ -1381,6 +1382,7 @@ fn guardian_write_stdin_preserves_input_and_foreign_cwd() -> serde_json::Result<
         guardian_approval_request_to_json(&action)?,
         serde_json::json!({
             "tool": "write_stdin",
+            "environment_id": "windows-executor",
             "session_id": 1000,
             "chars": input,
             "cwd": r"C:\workspace",

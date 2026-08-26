@@ -106,6 +106,7 @@ pub struct UnifiedExecRuntime<'a> {
 pub(crate) struct UnifiedExecAttempt {
     pub(crate) process: UnifiedExecProcess,
     pub(crate) metrics_sidecar: Option<PluginMetricsSidecar>,
+    pub(crate) escalated: bool,
 }
 
 fn unified_exec_options(
@@ -475,6 +476,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                     return Ok(UnifiedExecAttempt {
                         process,
                         metrics_sidecar,
+                        escalated: attempt.is_escalated(),
                     });
                 }
                 None => {
@@ -519,6 +521,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
         Ok(UnifiedExecAttempt {
             process,
             metrics_sidecar,
+            escalated: attempt.is_escalated(),
         })
     }
 }

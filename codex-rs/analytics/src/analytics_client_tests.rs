@@ -2808,58 +2808,89 @@ async fn plugin_measurement_batch_emits_directly_and_filters_invalid_rows() {
 
 #[tokio::test]
 async fn command_execution_approval_response_publishes_user_review_event() {
-    let mut reducer = AnalyticsReducer::default();
-    let mut events = Vec::new();
+    for (kind, approval_id, subject, trigger) in [
+        (None, None, "command_execution", "initial"),
+        (
+            None,
+            Some("execve-approval"),
+            "command_execution",
+            "execve_intercept",
+        ),
+        (
+            Some("writeStdin"),
+            Some("stdin-approval"),
+            "write_stdin",
+            "initial",
+        ),
+    ] {
+        let mut reducer = AnalyticsReducer::default();
+        let mut events = Vec::new();
 
-    ingest_review_prerequisites(&mut reducer, &mut events).await;
-    reducer
-        .ingest(
-            AnalyticsFact::ServerRequest {
-                connection_id: 7,
-                request: Box::new(sample_command_approval_request(
-                    /*request_id*/ 41, /*approval_id*/ None,
-                )),
-            },
-            &mut events,
-        )
-        .await;
-    assert!(events.is_empty());
+        ingest_review_prerequisites(&mut reducer, &mut events).await;
+        let mut request = serde_json::to_value(sample_command_approval_request(
+            /*request_id*/ 41,
+            approval_id,
+        ))
+        .expect("serialize approval request");
+        // Missing kind models requests from older app-servers.
+        if let Some(kind) = kind {
+            request["params"]["kind"] = json!(kind);
+        } else {
+            request["params"].as_object_mut().unwrap().remove("kind");
+        }
+        reducer
+            .ingest(
+                AnalyticsFact::ServerRequest {
+                    connection_id: 7,
+                    request: Box::new(
+                        serde_json::from_value(request).expect("deserialize approval request"),
+                    ),
+                },
+                &mut events,
+            )
+            .await;
+        assert!(events.is_empty());
 
-    reducer
-        .ingest(
-            AnalyticsFact::ServerResponse {
-                completed_at_ms: 1_042,
-                response: Box::new(sample_command_approval_response(
-                    /*request_id*/ 41,
-                    CommandExecutionApprovalDecision::Accept,
-                )),
-            },
-            &mut events,
-        )
-        .await;
+        reducer
+            .ingest(
+                AnalyticsFact::ServerResponse {
+                    completed_at_ms: 1_042,
+                    response: Box::new(sample_command_approval_response(
+                        /*request_id*/ 41,
+                        CommandExecutionApprovalDecision::Accept,
+                    )),
+                },
+                &mut events,
+            )
+            .await;
 
-    let payload = serde_json::to_value(&events).expect("serialize events");
-    assert_eq!(payload.as_array().expect("events array").len(), 1);
-    assert_eq!(payload[0]["event_type"], "codex_review_event");
-    assert_eq!(payload[0]["event_params"]["thread_id"], "thread-1");
-    assert_eq!(payload[0]["event_params"]["turn_id"], "turn-1");
-    assert_eq!(payload[0]["event_params"]["item_id"], "item-1");
-    assert_eq!(payload[0]["event_params"]["review_id"], "user:41");
-    assert_eq!(payload[0]["event_params"]["thread_source"], "user");
-    assert_eq!(
-        payload[0]["event_params"]["subject_kind"],
-        "command_execution"
-    );
-    assert_eq!(
-        payload[0]["event_params"]["subject_name"],
-        "command_execution"
-    );
-    assert_eq!(payload[0]["event_params"]["reviewer"], "user");
-    assert_eq!(payload[0]["event_params"]["trigger"], "initial");
-    assert_eq!(payload[0]["event_params"]["status"], "approved");
-    assert_eq!(payload[0]["event_params"]["started_at_ms"], 1_000);
-    assert_eq!(payload[0]["event_params"]["completed_at_ms"], 1_042);
-    assert_eq!(payload[0]["event_params"]["duration_ms"], 42);
+        let payload = serde_json::to_value(&events).expect("serialize events");
+        assert_eq!(payload.as_array().expect("events array").len(), 1);
+        assert_eq!(payload[0]["event_type"], "codex_review_event");
+        assert_eq!(payload[0]["event_params"]["thread_id"], "thread-1");
+        assert_eq!(payload[0]["event_params"]["turn_id"], "turn-1");
+        assert_eq!(payload[0]["event_params"]["item_id"], "item-1");
+        assert_eq!(payload[0]["event_params"]["review_id"], "user:41");
+        assert_eq!(payload[0]["event_params"]["thread_source"], "user");
+        assert_eq!(payload[0]["event_params"]["subject_kind"], subject);
+        assert_eq!(payload[0]["event_params"]["subject_name"], subject);
+        assert_eq!(payload[0]["event_params"]["reviewer"], "user");
+        assert_eq!(payload[0]["event_params"]["trigger"], trigger);
+        assert_eq!(payload[0]["event_params"]["status"], "approved");
+        assert_eq!(payload[0]["event_params"]["started_at_ms"], 1_000);
+        assert_eq!(payload[0]["event_params"]["completed_at_ms"], 1_042);
+        assert_eq!(payload[0]["event_params"]["duration_ms"], 42);
+
+        // Stdin reviews must not count toward the parent command's approval summary.
+        events.clear();
+        ingest_completed_command_execution_item(&mut reducer, &mut events, "thread-1", "item-1")
+            .await;
+        let item = serde_json::to_value(&events[0]).expect("serialize tool item event");
+        assert_eq!(
+            item["event_params"]["review_count"],
+            u64::from(kind.is_none())
+        );
+    }
 }
 
 async fn ingest_code_mode_facts(

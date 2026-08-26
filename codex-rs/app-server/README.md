@@ -1822,6 +1822,8 @@ Order of messages:
 
 `kind` distinguishes command approvals from writes to an existing terminal. Requests from older servers without `kind` retain `command` semantics; `approvalId` alone does not distinguish stdin writes from execve interception.
 
+When stdin approvals are enabled, a `write_stdin` approval sets `kind: "writeStdin"`, references the original terminal command's `itemId`, and has its own `approvalId`. The request belongs to the current turn, which may differ from the turn that opened the terminal. With `approvalsReviewer: "auto_review"`, the `item/autoApprovalReview/*` notifications likewise target the original command item and carry an action of type `writeStdin` with `approvalId`, `processId`, `stdin`, and `cwd`. For stdin approvals, `cwd` is the terminal’s launch directory, not its current working directory. Approving or denying a stdin write does not start, complete, or change the status of the parent command-execution item.
+
 ### File change approvals
 
 Order of messages:

@@ -2475,11 +2475,12 @@ impl Session {
     pub async fn request_command_approval(
         &self,
         turn_context: &TurnContext,
+        kind: ExecApprovalKind,
         call_id: String,
         approval_id: Option<String>,
         environment_id: Option<String>,
         command: Vec<String>,
-        cwd: AbsolutePathBuf,
+        cwd: PathUri,
         reason: Option<String>,
         network_approval_context: Option<NetworkApprovalContext>,
         proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
@@ -2489,7 +2490,7 @@ impl Session {
     ) -> ReviewDecision {
         let _elicitation = self.services.elicitations.register();
         //  command-level approvals use `call_id`.
-        // `approval_id` is only present for subcommand callbacks (execve intercept)
+        // `approval_id` identifies subcommand callbacks and stdin writes.
         let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
         // Add the tx_approve callback to the map before sending the request.
         let (tx_approve, rx_approve) = oneshot::channel();
@@ -2528,14 +2529,17 @@ impl Session {
                 additional_permissions.as_ref(),
             )
         });
-        let plugin_attribution = plugin_attribution_override
-            .or_else(|| turn_context.plugin_attribution_for_command(&command, &cwd));
+        let plugin_attribution = plugin_attribution_override.or_else(|| {
+            cwd.to_abs_path()
+                .ok()
+                .and_then(|cwd| turn_context.plugin_attribution_for_command(&command, &cwd))
+        });
         let (plugin_id, script_path) = plugin_attribution
             .as_ref()
             .map(PluginCommandAttribution::serialized_fields)
             .unzip();
         let event = EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
-            kind: ExecApprovalKind::Command,
+            kind,
             call_id,
             plugin_id,
             script_path,
@@ -2544,7 +2548,7 @@ impl Session {
             environment_id,
             started_at_ms: now_unix_timestamp_ms(),
             command,
-            cwd,
+            cwd: cwd.into(),
             reason,
             network_approval_context,
             proposed_execpolicy_amendment,
