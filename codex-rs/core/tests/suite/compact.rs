@@ -2720,10 +2720,10 @@ async fn pre_sampling_compact_failure_reports_previous_model_without_continuatio
     let request_log = mount_response_sequence(
         &server,
         vec![
-            sse(vec![
+            sse_response(sse(vec![
                 ev_assistant_message("m1", "before switch"),
                 ev_completed_with_tokens("r1", /*total_tokens*/ 120_000),
-            ]),
+            ])),
             invalid_request_response("previous-model compaction was rejected"),
             invalid_request_response("current-model compaction was rejected"),
         ],
