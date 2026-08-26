@@ -47,7 +47,13 @@ mod delegate;
 mod grpc;
 mod grpc_transport;
 mod peer;
+mod trace_transport;
 mod transport;
+
+pub use self::trace_transport::bind_otlp_trace_receiver;
+pub use self::trace_transport::run_otel_trace_listener;
+pub use self::trace_transport::run_otlp_trace_receiver;
+pub use self::trace_transport::trace_batch_channel;
 
 const MAX_IN_FLIGHT_REQUESTS: usize = 256;
 const MAX_ACTIVE_CELLS: usize = 128;
@@ -84,6 +90,12 @@ impl HostLimits {
 }
 
 /// Runs the code-mode host on its configured stdio or gRPC transport.
+#[tracing::instrument(
+    name = "code_mode_host.run_main",
+    level = "info",
+    skip_all,
+    fields(otel.name = "code_mode_host.run_main")
+)]
 pub async fn run_main(listen_url: &str) -> Result<()> {
     transport::run_transport(listen_url).await
 }
@@ -294,11 +306,12 @@ impl HostState {
         request_id: RequestId,
         request: HostRequest,
     ) -> Result<(), anyhow::Error> {
+        let request_kind = RequestKind::from(&request);
         let cancellation = self
             .requests
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .start(request_id, RequestKind::from(&request))?;
+            .start(request_id, request_kind)?;
         let Ok(permit) = self.limits.request_permit() else {
             self.respond(
                 request_id,
@@ -328,12 +341,26 @@ impl HostState {
         });
     }
 
+    #[tracing::instrument(
+        name = "code_mode_host.request",
+        level = "info",
+        skip_all,
+        fields(
+            otel.name = "code_mode_host.request",
+            request.kind = RequestKind::from(&request).as_str(),
+            request.id = ?request_id,
+            call_id = tracing::field::Empty,
+        )
+    )]
     async fn handle_request(
         &self,
         request_id: RequestId,
         request: HostRequest,
         cancellation: CancellationToken,
     ) {
+        if let HostRequest::Execute { request, .. } = &request {
+            tracing::Span::current().record("call_id", request.tool_call_id.as_str());
+        }
         if self.closing.load(Ordering::Acquire) {
             self.respond(
                 request_id,
@@ -579,6 +606,16 @@ impl RequestKind {
 
     fn is_cancellable(self) -> bool {
         matches!(self, Self::Execute | Self::Wait)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenSession => "open_session",
+            Self::Execute => "execute",
+            Self::Wait => "wait",
+            Self::Terminate => "terminate",
+            Self::ShutdownSession => "shutdown_session",
+        }
     }
 }
 

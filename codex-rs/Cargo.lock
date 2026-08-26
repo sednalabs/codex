@@ -2597,6 +2597,7 @@ dependencies = [
  "codex-code-mode",
  "codex-code-mode-protocol",
  "codex-code-mode-runtime",
+ "codex-otel",
  "codex-protocol",
  "codex-utils-cargo-bin",
  "futures",
