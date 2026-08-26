@@ -1835,6 +1835,65 @@ async fn responses_websocket_uses_incremental_create_on_prefix() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_websocket_uses_incremental_create_on_prefix() {
+    skip_if_no_network!();
+
+    let server = start_websocket_server(vec![vec![
+        vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg_1", "assistant output"),
+            ev_completed("resp-1"),
+        ],
+        vec![ev_response_created("resp-2"), ev_completed("resp-2")],
+    ]])
+    .await;
+
+    let mut harness = websocket_harness(&server).await;
+    harness.model_info.use_responses_lite = true;
+    let mut client_session = harness.client.new_session();
+    let mut initial_item = message_item("hello");
+    initial_item.set_id(Some(ResponseItemId::with_suffix("msg", "supplied")));
+    let prompt_one = prompt_with_input_and_instructions(vec![initial_item.clone()], "base");
+    let prompt_two = prompt_with_input_and_instructions(
+        vec![
+            initial_item,
+            assistant_message_item("1", "assistant output"),
+            message_item("second"),
+        ],
+        "base",
+    );
+
+    stream_until_complete(&mut client_session, &harness, &prompt_one).await;
+    stream_until_complete(&mut client_session, &harness, &prompt_two).await;
+
+    let connection = server.single_connection();
+    assert_eq!(connection.len(), 2);
+    let first = connection.first().expect("missing request").body_json();
+    let second = connection.get(1).expect("missing request").body_json();
+    let first_input = first["input"].as_array().expect("request input");
+
+    assert_eq!(first_input.len(), 3);
+    assert!(
+        first_input[0]["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("at_"))
+    );
+    assert!(
+        first_input[1]["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("msg_"))
+    );
+    assert_eq!(first_input[2]["id"], "msg_supplied");
+    assert_eq!(second["previous_response_id"].as_str(), Some("resp-1"));
+    assert_eq!(
+        second["input"],
+        serde_json::to_value(&prompt_two.input[2..]).expect("serialize incremental items")
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_websocket_forwards_turn_metadata_on_initial_and_incremental_create() {
     skip_if_no_network!();
 
