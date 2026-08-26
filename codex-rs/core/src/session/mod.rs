@@ -4110,7 +4110,7 @@ impl Session {
             billing_surface = %billing_surface,
             reset_at = ?domain.provider_limit_evidence.reset_at,
             retry_after = ?domain.provider_limit_evidence.retry_after,
-            "provider eligibility evidence recorded for exact thread"
+            "local request correlation and rate-limit facts recorded"
         );
         self.services.thread_extension_data.insert(domain);
     }
