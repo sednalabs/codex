@@ -297,6 +297,16 @@ Example with notification opt-out:
 
 ### Plugin configuration scope
 
+Plugin activation and MCP settings use the existing merged configuration, including
+system settings and trusted project overrides. `skills/list` resolves plugin skills
+independently for each requested working directory.
+
+Omitted or empty catalog `cwds` exclude project configuration, including the
+app-server process's project.
+
+Marketplace definitions can come from system configuration, but configured Git
+marketplaces currently require an existing downloaded snapshot.
+
 `marketplace/remove` rejects removal when the marketplace name is defined in another
 enabled layer of the operation's loaded config stack. Otherwise it removes the
 snapshot and any base-user entry; a base-user entry is not required for cleanup.
