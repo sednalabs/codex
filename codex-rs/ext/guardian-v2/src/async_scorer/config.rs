@@ -245,7 +245,7 @@ impl GuardianV2Config {
                 .review_scope
                 .as_ref()
                 .and_then(|review_scope| review_scope.computer_use_only)
-                .unwrap_or(false)
+                .unwrap_or(true)
             {
                 GuardianV2ReviewScope::ComputerUseOnly
             } else {
@@ -265,7 +265,7 @@ impl GuardianV2Config {
                     }),
                 include_images: transcript_config
                     .and_then(|transcript| transcript.include_images)
-                    .unwrap_or(false),
+                    .unwrap_or(true),
                 max_message_entry_tokens,
                 max_tool_entry_tokens,
                 max_message_transcript_tokens,

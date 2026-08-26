@@ -142,7 +142,7 @@ async fn installed_extension_reconnects_after_auth_refresh() -> Result<()> {
         .get::<GuardianV2ScoreProgress>()
         .expect("Guardian v2 should initialize");
     let turn_store = ExtensionData::new("turn-1");
-    let tool_name = ToolName::plain("read_file");
+    let tool_name = ToolName::namespaced("mcp__node_repl__", "js");
     let payload = ToolPayload::Function {
         arguments: r#"{"path":"README.md"}"#.to_owned(),
     };
@@ -175,7 +175,7 @@ async fn installed_extension_reconnects_after_auth_refresh() -> Result<()> {
                 .fast_approval_decision(
                     &session_store,
                     thread_store,
-                    "review action",
+                    r#"{"tool":"mcp_tool_call","server":"node_repl"}"#,
                     /*extension_metrics*/ None,
                 )
                 .await,
@@ -675,7 +675,9 @@ async fn sample_configured_conversation_history(
 ) -> Result<(serde_json::Value, TestCodex, ExtensionRegistry<Config>)> {
     let thread_server = responses::start_mock_server().await;
     let guardian_policy = guardian_policy.map(str::to_owned);
-    let guardian_config = guardian_config.to_owned();
+    let guardian_config = format!(
+        "{guardian_config}\n[features.guardianv2.review_scope]\ncomputer_use_only = false\n"
+    );
     let has_model_defaults = model_defaults.is_some();
     let builder = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
@@ -692,10 +694,8 @@ async fn sample_configured_conversation_history(
         .with_model("gpt-5.5")
         .with_config(move |config| config.guardian_policy_config = guardian_policy)
         .with_pre_build_hook(move |home| {
-            if !guardian_config.is_empty() {
-                std::fs::write(home.join("config.toml"), guardian_config)
-                    .expect("Guardian v2 configuration should be written");
-            }
+            std::fs::write(home.join("config.toml"), guardian_config)
+                .expect("Guardian v2 configuration should be written");
         });
     let mut builder = if let Some(model_defaults) = model_defaults {
         builder.with_model_info_override("gpt-5.5", move |model| {
@@ -1387,7 +1387,7 @@ max_recent_non_user_entries = 8
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn contributor_includes_configured_transcript_images() -> Result<()> {
+async fn contributor_includes_transcript_images_by_default() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let history = vec![
@@ -1426,9 +1426,6 @@ async fn contributor_includes_configured_transcript_images() -> Result<()> {
     let configuration = r#"
 [features.guardianv2]
 enabled = true
-
-[features.guardianv2.transcript]
-include_images = true
 "#;
     let (request, _test, _registry) = sample_configured_conversation_history(
         history,
@@ -1869,7 +1866,7 @@ async fn contributor_skips_models_requiring_managed_guardian_review() -> Result<
             .fast_approval_decision(
                 &session_store,
                 thread_store,
-                "review action",
+                r#"{"tool":"mcp_tool_call","server":"node_repl"}"#,
                 /*extension_metrics*/ None,
             )
             .await,
@@ -1877,7 +1874,7 @@ async fn contributor_skips_models_requiring_managed_guardian_review() -> Result<
     );
 
     let turn_store = ExtensionData::new("turn-1");
-    let tool_name = ToolName::plain("read_file");
+    let tool_name = ToolName::namespaced("mcp__node_repl__", "js");
     let payload = ToolPayload::Function {
         arguments: json!({ "path": "protected.md" }).to_string(),
     };
@@ -2262,7 +2259,7 @@ async fn contributor_reuses_the_latest_compatible_parent_compaction() -> Result<
         .with_pre_build_hook(|home| {
             std::fs::write(
                 home.join("config.toml"),
-                "[features.guardianv2]\nenabled = true\nmax_parent_compaction_tokens = 256\n",
+                "[features.guardianv2]\nenabled = true\nmax_parent_compaction_tokens = 256\n\n[features.guardianv2.review_scope]\ncomputer_use_only = false\n",
             )
             .expect("Guardian v2 parent compaction configuration should be written");
         })

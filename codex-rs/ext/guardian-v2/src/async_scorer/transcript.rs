@@ -69,7 +69,7 @@ impl Default for TranscriptConfig {
     fn default() -> Self {
         Self {
             sources: vec![TranscriptSource::ToolCalls, TranscriptSource::ToolOutputs],
-            include_images: false,
+            include_images: true,
             max_message_entry_tokens: MAX_MESSAGE_ENTRY_TOKENS,
             max_tool_entry_tokens: MAX_TOOL_ENTRY_TOKENS,
             max_message_transcript_tokens: MAX_MESSAGE_TRANSCRIPT_TOKENS,

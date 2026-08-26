@@ -536,10 +536,11 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             ("approvals_reviewer = \"user\"", ApprovalsReviewer::User)
         }
     };
-    let guardian_scope_config = if matches!(scope, GuardianToolScope::ComputerUseOnly { .. }) {
-        "\n\n[features.guardianv2]\nenabled = true\n\n[features.guardianv2.review_scope]\ncomputer_use_only = true"
-    } else {
-        ""
+    let guardian_scope_config = match scope {
+        GuardianToolScope::AllTools => {
+            "\n\n[features.guardianv2]\nenabled = true\n\n[features.guardianv2.review_scope]\ncomputer_use_only = false"
+        }
+        GuardianToolScope::ComputerUseOnly { .. } => "\n\n[features.guardianv2]\nenabled = true",
     };
     let mut mock_config = MockResponsesConfig::new(&responses_url)
         .with_model(MODEL)
@@ -550,9 +551,6 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             "[mcp_servers.{server_name}]\nurl = \"{mcp_server_url}/mcp\"\ndefault_tools_approval_mode = \"prompt\"\n\n[analytics]\nenabled = true\n\n[otel]\nmetrics_exporter = {{ otlp-http = {{ endpoint = \"{responses_url}/metrics\", protocol = \"json\" }} }}{guardian_scope_config}"
         ))
         .enable_feature(Feature::GuardianApproval);
-    if matches!(scope, GuardianToolScope::AllTools) {
-        mock_config = mock_config.enable_feature(Feature::GuardianV2);
-    }
     if lifecycle.has_user_input() || lifecycle.has_root_user_input() {
         mock_config = mock_config.enable_feature(Feature::DefaultModeRequestUserInput);
     }
