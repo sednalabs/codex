@@ -42,6 +42,16 @@ enum TerminalIdleUnloadAttempt {
     Deferred,
 }
 
+struct TerminalIdleUnloadRequest<'a> {
+    manager: &'a Arc<ThreadManagerState>,
+    registry: &'a AgentRegistry,
+    metadata: &'a crate::agent::registry::AgentMetadata,
+    expected_thread: &'a Arc<CodexThread>,
+    watcher_generation: u64,
+    timer_generation: u64,
+    runtime_activity_generation: u64,
+}
+
 pub(crate) struct V2ResidencySlot {
     residency: Arc<V2Residency>,
     active: bool,
@@ -164,15 +174,15 @@ impl AgentControl {
                         };
                         match control
                             .v2_residency
-                            .try_unload_terminal_idle(
-                                &manager,
-                                control.state.as_ref(),
-                                &metadata,
-                                &thread,
+                            .try_unload_terminal_idle(TerminalIdleUnloadRequest {
+                                manager: &manager,
+                                registry: control.state.as_ref(),
+                                metadata: &metadata,
+                                expected_thread: &thread,
                                 watcher_generation,
                                 timer_generation,
                                 runtime_activity_generation,
-                            )
+                            })
                             .await
                         {
                             TerminalIdleUnloadAttempt::Unloaded
@@ -431,7 +441,7 @@ impl V2Residency {
                     manager,
                     registry,
                     metadata.as_ref(),
-                    lifecycle.as_mut().map(|guard| &mut **guard),
+                    lifecycle.as_deref_mut(),
                     candidate_thread,
                 )
                 .await
@@ -445,46 +455,41 @@ impl V2Residency {
 
     async fn try_unload_terminal_idle(
         &self,
-        manager: &Arc<ThreadManagerState>,
-        registry: &AgentRegistry,
-        metadata: &crate::agent::registry::AgentMetadata,
-        expected_thread: &Arc<CodexThread>,
-        watcher_generation: u64,
-        timer_generation: u64,
-        runtime_activity_generation: u64,
+        request: TerminalIdleUnloadRequest<'_>,
     ) -> TerminalIdleUnloadAttempt {
-        let _reload = metadata.lifecycle.lock_reload().await;
-        let mut lifecycle = metadata.lifecycle.lock().await;
-        if !registry.metadata_is_current(expected_thread.session.thread_id(), metadata)
-            || !lifecycle.terminal_idle_unload_watcher_is_current(watcher_generation)
+        let thread_id = request.expected_thread.session.thread_id();
+        let _reload = request.metadata.lifecycle.lock_reload().await;
+        let mut lifecycle = request.metadata.lifecycle.lock().await;
+        if !request
+            .registry
+            .metadata_is_current(thread_id, request.metadata)
+            || !lifecycle.terminal_idle_unload_watcher_is_current(request.watcher_generation)
         {
             return TerminalIdleUnloadAttempt::SupersededIdentity;
         }
-        if !lifecycle.terminal_idle_unload_is_current(timer_generation) {
+        if !lifecycle.terminal_idle_unload_is_current(request.timer_generation) {
             return TerminalIdleUnloadAttempt::DeadlineInvalidated;
         }
-        let Ok(thread) = manager
-            .get_thread(expected_thread.session.thread_id())
-            .await
-        else {
+        let Ok(thread) = request.manager.get_thread(thread_id).await else {
             return TerminalIdleUnloadAttempt::Missing;
         };
-        if !Arc::ptr_eq(&thread, expected_thread) {
+        if !Arc::ptr_eq(&thread, request.expected_thread) {
             return TerminalIdleUnloadAttempt::SupersededIdentity;
         }
         if !is_resident_candidate(thread.as_ref()) {
             return TerminalIdleUnloadAttempt::Deferred;
         }
         let _residency_transition = thread.session.input_queue.lock_residency_transition().await;
-        if thread.session.input_queue.residency_activity_generation() != runtime_activity_generation
+        if thread.session.input_queue.residency_activity_generation()
+            != request.runtime_activity_generation
         {
             return TerminalIdleUnloadAttempt::Deferred;
         }
         if self
             .try_unload_candidate(
-                manager,
-                registry,
-                Some(metadata),
+                request.manager,
+                request.registry,
+                Some(request.metadata),
                 Some(&mut lifecycle),
                 thread,
             )
@@ -492,12 +497,9 @@ impl V2Residency {
         {
             TerminalIdleUnloadAttempt::Unloaded
         } else {
-            match manager
-                .get_thread(expected_thread.session.thread_id())
-                .await
-            {
+            match request.manager.get_thread(thread_id).await {
                 Err(_) => TerminalIdleUnloadAttempt::Missing,
-                Ok(current) if Arc::ptr_eq(&current, expected_thread) => {
+                Ok(current) if Arc::ptr_eq(&current, request.expected_thread) => {
                     TerminalIdleUnloadAttempt::Deferred
                 }
                 Ok(_) => TerminalIdleUnloadAttempt::SupersededIdentity,
