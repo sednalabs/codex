@@ -62,13 +62,22 @@ struct PendingOwnerContinuation {
     turn_id: String,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct ContinuityFixture {
     thread_manager: Arc<Mutex<Option<Weak<ThreadManager>>>>,
     continuation_starts: Arc<std::sync::atomic::AtomicUsize>,
+    owner_idle_tx: tokio::sync::mpsc::UnboundedSender<ThreadId>,
 }
 
 impl ContinuityFixture {
+    fn new(owner_idle_tx: tokio::sync::mpsc::UnboundedSender<ThreadId>) -> Self {
+        Self {
+            thread_manager: Arc::new(Mutex::new(None)),
+            continuation_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            owner_idle_tx,
+        }
+    }
+
     fn set_thread_manager(&self, thread_manager: &Arc<ThreadManager>) {
         *self.thread_manager.lock().expect("continuity fixture lock") =
             Some(Arc::downgrade(thread_manager));
@@ -92,6 +101,10 @@ impl ThreadLifecycleContributor<codex_core::config::Config> for ContinuityFixtur
 
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            let Ok(thread_id) = ThreadId::from_string(input.thread_store.level_id()) else {
+                return;
+            };
+            let _ = self.owner_idle_tx.send(thread_id);
             let Some(pending) = input.thread_store.remove::<PendingOwnerContinuation>() else {
                 return;
             };
@@ -104,9 +117,6 @@ impl ThreadLifecycleContributor<codex_core::config::Config> for ContinuityFixtur
                 .and_then(Weak::upgrade)
             else {
                 input.thread_store.insert((*pending).to_owned());
-                return;
-            };
-            let Ok(thread_id) = ThreadId::from_string(input.thread_store.level_id()) else {
                 return;
             };
             let Ok(thread) = manager.get_thread(thread_id).await else {
@@ -347,7 +357,8 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         .mount(&server)
         .await;
 
-    let continuity = Arc::new(ContinuityFixture::default());
+    let (owner_idle_tx, mut owner_idle_rx) = tokio::sync::mpsc::unbounded_channel();
+    let continuity = Arc::new(ContinuityFixture::new(owner_idle_tx));
     let thread_lifecycle_contributor: Arc<
         dyn ThreadLifecycleContributor<codex_core::config::Config>,
     > = continuity.clone();
@@ -388,6 +399,20 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         matches!(event, EventMsg::TurnComplete(complete) if complete.turn_id == initial_spawn_turn_id)
     })
     .await;
+    let owner_idle_thread_id = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let thread_id = owner_idle_rx
+                .recv()
+                .await
+                .expect("owner-idle signal channel should remain open");
+            if thread_id == orchestrator_id {
+                return thread_id;
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for orchestrator owner-idle signal"))?;
+    assert_eq!(owner_idle_thread_id, orchestrator_id);
 
     let sub_thread_id =
         wait_for_thread_spawn(&test.thread_manager, &mut created_threads, orchestrator_id).await?;
@@ -404,11 +429,6 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         "one child initial delivery"
     );
     orchestrator.submit(submit_user_turn(LIMIT_PROMPT)).await?;
-    wait_for_event(
-        &orchestrator,
-        |event| matches!(event, EventMsg::UserMessage(message) if message.message == LIMIT_PROMPT),
-    )
-    .await;
     let limit_turn_id = loop {
         let event = wait_for_event(&orchestrator, |event| {
             matches!(event, EventMsg::TurnStarted(_))
@@ -418,6 +438,11 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
             break started.turn_id;
         }
     };
+    wait_for_event(
+        &orchestrator,
+        |event| matches!(event, EventMsg::UserMessage(message) if message.message == LIMIT_PROMPT),
+    )
+    .await;
     let old_turn_complete = loop {
         let event = wait_for_event(&orchestrator, |event| {
             matches!(event, EventMsg::TurnComplete(complete) if complete.turn_id == limit_turn_id)
