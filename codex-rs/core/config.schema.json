@@ -3818,6 +3818,8 @@
               "find_backward": null,
               "find_forward": null,
               "insert_line_start": null,
+              "jump_bottom": null,
+              "jump_top": null,
               "move_down": null,
               "move_left": null,
               "move_line_end": null,
@@ -3846,6 +3848,8 @@
               "motion_down": null,
               "motion_find_backward": null,
               "motion_find_forward": null,
+              "motion_jump_bottom": null,
+              "motion_jump_top": null,
               "motion_left": null,
               "motion_line_end": null,
               "motion_line_start": null,
@@ -4634,6 +4638,8 @@
             "find_backward": null,
             "find_forward": null,
             "insert_line_start": null,
+            "jump_bottom": null,
+            "jump_top": null,
             "move_down": null,
             "move_left": null,
             "move_line_end": null,
@@ -4669,6 +4675,8 @@
             "motion_down": null,
             "motion_find_backward": null,
             "motion_find_forward": null,
+            "motion_jump_bottom": null,
+            "motion_jump_top": null,
             "motion_left": null,
             "motion_line_end": null,
             "motion_line_start": null,
@@ -4981,6 +4989,22 @@
           ],
           "description": "Enter insert mode at first non-blank of line (`I`)."
         },
+        "jump_bottom": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Jump to the last buffer line (`G`)."
+        },
+        "jump_top": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Begin a jump to the first buffer line (`gg`)."
+        },
         "move_down": {
           "allOf": [
             {
@@ -5195,6 +5219,22 @@
             }
           ],
           "description": "Motion: find the next character on the current line (`f`)."
+        },
+        "motion_jump_bottom": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Motion: jump to the last buffer line (`G`)."
+        },
+        "motion_jump_top": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Motion: begin a jump to the first buffer line (`gg`)."
         },
         "motion_left": {
           "allOf": [
