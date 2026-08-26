@@ -250,7 +250,7 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
     }))?;
     let sub_spawn_args = serde_json::to_string(&json!({
         "message": SUB_ORCHESTRATOR_TASK,
-        "task_name": "sub-orchestrator",
+        "task_name": "sub_orchestrator",
         "fork_turns": "none"
     }))?;
 
@@ -375,6 +375,19 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
     let orchestrator_id =
         wait_for_thread_spawn(&test.thread_manager, &mut created_threads, root_thread_id).await?;
     let orchestrator = test.thread_manager.get_thread(orchestrator_id).await?;
+    let initial_spawn_turn_id = loop {
+        let event = wait_for_event(&orchestrator, |event| {
+            matches!(event, EventMsg::TurnStarted(_))
+        })
+        .await;
+        if let EventMsg::TurnStarted(started) = event {
+            break started.turn_id;
+        }
+    };
+    wait_for_event(&orchestrator, |event| {
+        matches!(event, EventMsg::TurnComplete(complete) if complete.turn_id == initial_spawn_turn_id)
+    })
+    .await;
 
     let sub_thread_id =
         wait_for_thread_spawn(&test.thread_manager, &mut created_threads, orchestrator_id).await?;
