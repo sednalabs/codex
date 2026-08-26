@@ -86,16 +86,7 @@ pub(crate) enum TaskStartInput {
     ReservedPending(Vec<ResponseItem>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TaskStartRejectionReason {
-    AdmissionClosed,
-    ReservationLost,
-    Busy,
-}
-
-pub(crate) struct TaskStartRejection<T: SessionTask> {
-    pub(crate) reason: TaskStartRejectionReason,
-    pub(crate) task: Arc<T>,
+pub(crate) struct TaskStartRejection {
     pub(crate) turn_context: Arc<TurnContext>,
     pub(crate) input: TaskStartInput,
     pub(crate) rejected_initial_input_disposition: RejectedInitialInputDisposition,
@@ -446,7 +437,7 @@ impl Session {
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
-    ) -> Result<(), TaskStartRejection<T>> {
+    ) -> Result<(), TaskStartRejection> {
         self.start_task_impl(turn_context, input, task, /*reservation*/ None)
             .await
     }
@@ -457,14 +448,14 @@ impl Session {
         turn_state: Arc<tokio::sync::Mutex<TurnState>>,
         input: Vec<ResponseItem>,
         task: T,
-    ) -> Result<(), TaskStartRejection<T>> {
+    ) -> Result<(), TaskStartRejection> {
         self.start_task_impl(turn_context, Vec::new(), task, Some((turn_state, input)))
             .await
     }
 
-    async fn handle_task_start_rejection<T: SessionTask>(
+    async fn handle_task_start_rejection(
         self: &Arc<Self>,
-        rejection: TaskStartRejection<T>,
+        rejection: TaskStartRejection,
     ) -> Vec<ResponseItem> {
         match rejection.input {
             TaskStartInput::Initial(input) => {
@@ -486,27 +477,24 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
         reservation: Option<(Arc<tokio::sync::Mutex<TurnState>>, Vec<ResponseItem>)>,
-    ) -> Result<(), TaskStartRejection<T>> {
+    ) -> Result<(), TaskStartRejection> {
         let rejected_initial_input_disposition = task.rejected_initial_input_disposition();
         let (reserved_turn_state, reserved_input) = match reservation {
             Some((turn_state, input)) => (Some(turn_state), Some(input)),
             None => (None, None),
         };
-        let task_value = Arc::new(task);
-        let task: Arc<dyn AnySessionTask> = task_value.clone();
+        let task: Arc<dyn AnySessionTask> = Arc::new(task);
         let task_kind = task.kind();
         let span_name = task.span_name();
         let rejected_input = match reserved_input.as_ref() {
             Some(input) => TaskStartInput::ReservedPending(input.clone()),
             None => TaskStartInput::Initial(input.clone()),
         };
-        let reject = |reason| {
+        let reject = || {
             turn_context
                 .turn_metadata_state
                 .cancel_git_enrichment_task();
             TaskStartRejection {
-                reason,
-                task: Arc::clone(&task_value),
                 turn_context: Arc::clone(&turn_context),
                 input: rejected_input.clone(),
                 rejected_initial_input_disposition,
@@ -666,7 +654,7 @@ impl Session {
             let _transition = self.input_queue.lock_task_transition().await;
             let mut active = self.active_turn.lock().await;
             if !self.task_admission_open.load(Ordering::Acquire) {
-                return Err(reject(TaskStartRejectionReason::AdmissionClosed));
+                return Err(reject());
             }
             let turn_state = if let Some(expected) = reserved_turn_state.as_ref() {
                 match active.as_ref() {
@@ -676,11 +664,11 @@ impl Session {
                     {
                         Arc::clone(expected)
                     }
-                    _ => return Err(reject(TaskStartRejectionReason::ReservationLost)),
+                    _ => return Err(reject()),
                 }
             } else {
                 if active.is_some() {
-                    return Err(reject(TaskStartRejectionReason::Busy));
+                    return Err(reject());
                 }
                 let turn = active.get_or_insert_with(ActiveTurn::default);
                 debug_assert!(turn.task.is_none());
@@ -695,7 +683,7 @@ impl Session {
                     .await;
             }
             let Some(turn) = active.as_mut() else {
-                return Err(reject(TaskStartRejectionReason::Busy));
+                return Err(reject());
             };
             turn.task = Some(running_task);
         }

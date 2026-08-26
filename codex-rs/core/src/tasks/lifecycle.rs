@@ -95,21 +95,6 @@ impl Session {
         .await;
     }
 
-    pub(crate) async fn emit_turn_error_lifecycle_with_rate_limit_delay(
-        &self,
-        turn_context: &TurnContext,
-        error: CodexErrorInfo,
-        rate_limit_retry_after: Option<std::time::Duration>,
-    ) {
-        self.emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
-            turn_context,
-            error,
-            /*error_kind*/ None,
-            rate_limit_retry_after,
-        )
-        .await;
-    }
-
     pub(crate) async fn emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
         &self,
         turn_context: &TurnContext,

@@ -10968,7 +10968,6 @@ fn test_input(text: &str, client_id: Option<&str>) -> Vec<TurnInput> {
         client_id: client_id.map(str::to_string),
     }]
 }
-use crate::tasks::TaskStartRejectionReason as Reject;
 async fn reserve_test_turn(sess: &Session) -> Arc<Mutex<TurnState>> {
     let _transition = sess.input_queue.lock_task_transition().await;
     let mut active = sess.active_turn.lock().await;
@@ -10987,7 +10986,7 @@ macro_rules! assert_reserved_rejection {
     }};
 }
 macro_rules! assert_counting_rejection {
-    ($sess:expr, $tc:expr, $text:expr, $marker:expr, $reason:expr) => {{
+    ($sess:expr, $tc:expr, $text:expr, $marker:expr) => {{
         let input = vec![TurnInput::ResponseItem(user_message($text))];
         let marker = Arc::new(std::sync::atomic::AtomicUsize::new($marker));
         let rejection = $sess
@@ -10997,8 +10996,12 @@ macro_rules! assert_counting_rejection {
                 CountingTask(Arc::clone(&marker), async_channel::bounded(1).0),
             )
             .await.expect_err("counting task should be rejected");
-        assert_eq!((rejection.reason, rejection.rejected_initial_input_disposition), ($reason, crate::tasks::RejectedInitialInputDisposition::Discard));
-        assert!(Arc::ptr_eq(&rejection.task.0, &marker) && Arc::ptr_eq(&rejection.turn_context, &$tc));
+        assert_eq!(
+            rejection.rejected_initial_input_disposition,
+            crate::tasks::RejectedInitialInputDisposition::Discard
+        );
+        assert_eq!(marker.load(Ordering::SeqCst), $marker);
+        assert!(Arc::ptr_eq(&rejection.turn_context, &$tc));
         assert!(matches!(rejection.input, crate::tasks::TaskStartInput::Initial(items) if items == input));
     }};
 }
@@ -11104,14 +11107,14 @@ async fn direct_rejections_preserve_incumbents_and_typed_custody() {
     .await;
     incumbent_rx.recv().await.expect("incumbent should run");
     let (identity, _, phase, state) = active_task_details(&sess).await;
-    assert_counting_rejection!(&sess, tc, "busy custody", 2, Reject::Busy);
+    assert_counting_rejection!(&sess, tc, "busy custody", 2);
     let (current, _, current_phase, current_state) = active_task_details(&sess).await;
     assert!(identity == current && phase == current_phase && Arc::ptr_eq(&state, &current_state));
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     let turn_state = reserve_test_turn(&sess).await;
-    assert_counting_rejection!(&sess, tc, "reserved custody", 3, Reject::Busy);
+    assert_counting_rejection!(&sess, tc, "reserved custody", 3);
     assert!(
         sess.active_turn.lock().await.as_ref().is_some_and(|turn| {
             turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, &turn_state)
@@ -11120,7 +11123,7 @@ async fn direct_rejections_preserve_incumbents_and_typed_custody() {
 
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     sess.close_task_admission().await;
-    assert_counting_rejection!(&sess, tc, "closed custody", 4, Reject::AdmissionClosed);
+    assert_counting_rejection!(&sess, tc, "closed custody", 4);
     assert!(sess.active_turn.lock().await.is_none());
 }
 struct PendingWakeHookReset(ThreadId, Arc<tokio::sync::Notify>);
