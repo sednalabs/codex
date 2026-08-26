@@ -32,6 +32,8 @@ use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
+use core_test_support::streaming_sse::StreamingSseChunk;
+use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use serde_json::Value;
@@ -42,8 +44,7 @@ use std::sync::Weak;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::time::Instant;
-use tokio::time::sleep;
+use tokio::sync::oneshot;
 use wiremock::Match;
 use wiremock::Mock;
 use wiremock::Request;
@@ -67,14 +68,19 @@ struct ContinuityFixture {
     thread_manager: Arc<Mutex<Option<Weak<ThreadManager>>>>,
     continuation_starts: Arc<std::sync::atomic::AtomicUsize>,
     owner_idle_tx: tokio::sync::mpsc::UnboundedSender<ThreadId>,
+    continuation_started_tx: tokio::sync::mpsc::UnboundedSender<ThreadId>,
 }
 
 impl ContinuityFixture {
-    fn new(owner_idle_tx: tokio::sync::mpsc::UnboundedSender<ThreadId>) -> Self {
+    fn new(
+        owner_idle_tx: tokio::sync::mpsc::UnboundedSender<ThreadId>,
+        continuation_started_tx: tokio::sync::mpsc::UnboundedSender<ThreadId>,
+    ) -> Self {
         Self {
             thread_manager: Arc::new(Mutex::new(None)),
             continuation_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             owner_idle_tx,
+            continuation_started_tx,
         }
     }
 
@@ -126,6 +132,7 @@ impl ThreadLifecycleContributor<codex_core::config::Config> for ContinuityFixtur
             if thread.try_start_turn_if_idle(Vec::new()).await.is_ok() {
                 self.continuation_starts
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = self.continuation_started_tx.send(thread_id);
             } else {
                 input.thread_store.insert((*pending).to_owned());
             }
@@ -314,17 +321,32 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         ]),
     )
     .await;
+    let (child_release_tx, child_release_rx) = oneshot::channel();
+    let child_chunks = vec![
+        StreamingSseChunk {
+            gate: None,
+            body: sse(vec![ev_response_created("sub-live")]),
+        },
+        StreamingSseChunk {
+            gate: Some(child_release_rx),
+            body: sse(vec![
+                ev_assistant_message("sub-complete", "sub-orchestrator complete"),
+                ev_completed("sub-live"),
+            ]),
+        },
+    ];
+    let (child_stream_server, mut child_stream_completions) =
+        start_streaming_sse_server(vec![child_chunks]).await;
+    let child_stream_completion = child_stream_completions.remove(0);
     let sub_request = mount_response_once_match(
         &server,
         |request: &wiremock::Request| {
             request_has_input_item(request, "agent_message", SUB_ORCHESTRATOR_TASK)
         },
-        sse_response(sse(vec![
-            ev_response_created("sub-live"),
-            ev_assistant_message("sub-complete", "sub-orchestrator complete"),
-            ev_completed("sub-live"),
-        ]))
-        .set_delay(Duration::from_millis(750)),
+        ResponseTemplate::new(307).insert_header(
+            "Location",
+            format!("{}/v1/responses", child_stream_server.uri()),
+        ),
     )
     .await;
 
@@ -342,8 +364,7 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         ev_response_created("orchestrator-continuation"),
         ev_assistant_message("orchestrator-resumed", "owner resumed"),
         ev_completed("orchestrator-continuation"),
-    ]))
-    .set_delay(Duration::from_millis(250));
+    ]));
     Mock::given(method("POST"))
         .and(path_regex(".*/responses$"))
         .and(LimitPromptMatcher)
@@ -358,7 +379,12 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         .await;
 
     let (owner_idle_tx, mut owner_idle_rx) = tokio::sync::mpsc::unbounded_channel();
-    let continuity = Arc::new(ContinuityFixture::new(owner_idle_tx));
+    let (continuation_started_tx, mut continuation_started_rx) =
+        tokio::sync::mpsc::unbounded_channel();
+    let continuity = Arc::new(ContinuityFixture::new(
+        owner_idle_tx,
+        continuation_started_tx,
+    ));
     let thread_lifecycle_contributor: Arc<
         dyn ThreadLifecycleContributor<codex_core::config::Config>,
     > = continuity.clone();
@@ -416,13 +442,19 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
 
     let sub_thread_id =
         wait_for_thread_spawn(&test.thread_manager, &mut created_threads, orchestrator_id).await?;
-    let child_deadline = Instant::now() + Duration::from_secs(5);
-    while sub_request.requests().is_empty() {
-        if Instant::now() >= child_deadline {
-            anyhow::bail!("timed out waiting for nested sidecar request");
+    let child_thread = test.thread_manager.get_thread(sub_thread_id).await?;
+    let child_turn_id = loop {
+        let event = wait_for_event(&child_thread, |event| {
+            matches!(event, EventMsg::TurnStarted(_))
+        })
+        .await;
+        if let EventMsg::TurnStarted(started) = event {
+            break started.turn_id;
         }
-        sleep(Duration::from_millis(10)).await;
-    }
+    };
+    tokio::time::timeout(Duration::from_secs(5), child_stream_server.wait_for_request_count(1))
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for nested sidecar stream"))?;
     assert_eq!(
         1,
         sub_request.requests().len(),
@@ -443,35 +475,54 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         |event| matches!(event, EventMsg::UserMessage(message) if message.message == LIMIT_PROMPT),
     )
     .await;
-    let old_turn_complete = loop {
+    let limit_turn_complete = loop {
         let event = wait_for_event(&orchestrator, |event| {
             matches!(event, EventMsg::TurnComplete(complete) if complete.turn_id == limit_turn_id)
         })
         .await;
         if let EventMsg::TurnComplete(complete) = event {
-            break complete.turn_id;
+            break complete;
         }
     };
-    assert_eq!(
-        old_turn_complete, limit_turn_id,
-        "provider turn must remain observable"
-    );
+    assert_eq!(limit_turn_complete.turn_id, limit_turn_id, "provider turn must remain observable");
+    assert!(matches!(
+        limit_turn_complete
+            .error
+            .as_ref()
+            .and_then(|error| error.codex_error_info.as_ref()),
+        Some(CodexErrorInfo::UsageLimitExceeded)
+    ));
     assert!(
         !matches!(orchestrator.agent_status().await, AgentStatus::Errored(_)),
         "owner status must stay non-terminal while continuation is admitted"
     );
 
-    let continuation_deadline = Instant::now() + Duration::from_secs(5);
-    while continuity
-        .continuation_starts
-        .load(std::sync::atomic::Ordering::SeqCst)
-        == 0
-    {
-        if Instant::now() >= continuation_deadline {
-            anyhow::bail!("timed out waiting for same-thread continuation");
+    child_release_tx.send(()).expect("release child stream");
+    tokio::time::timeout(Duration::from_secs(5), child_stream_completion)
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for child stream completion"))?
+        .expect("child stream completion timestamp");
+    wait_for_event(&child_thread, |event| {
+        matches!(event, EventMsg::TurnComplete(complete) if complete.turn_id == child_turn_id)
+    })
+    .await;
+    assert_eq!(
+        child_thread.agent_status().await,
+        AgentStatus::Completed(Some("sub-orchestrator complete".to_string()))
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let thread_id = continuation_started_rx
+                .recv()
+                .await
+                .expect("continuation signal channel should remain open");
+            if thread_id == orchestrator_id {
+                return;
+            }
         }
-        sleep(Duration::from_millis(10)).await;
-    }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for owner continuation"))?;
     assert!(
         test.thread_manager
             .list_thread_ids()
@@ -487,19 +538,12 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
             .and_then(Value::as_str),
         Some(expected_child_thread_id.as_str())
     );
-    let child_thread = test.thread_manager.get_thread(sub_thread_id).await?;
-    wait_for_event(&child_thread, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-    assert_eq!(
-        child_thread.agent_status().await,
-        AgentStatus::Completed(Some("sub-orchestrator complete".to_string()))
-    );
     assert_eq!(
         1,
         sub_request.requests().len(),
         "nested child must not replay"
     );
+    assert_eq!(1, child_stream_server.requests().await.len());
+    child_stream_server.shutdown().await;
     Ok(())
 }
