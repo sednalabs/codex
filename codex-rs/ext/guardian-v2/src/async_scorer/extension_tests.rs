@@ -22,6 +22,7 @@ use codex_extension_api::ToolName;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
+use codex_history::RolloutItem;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::ExternalAuth;
@@ -1726,6 +1727,27 @@ async fn contributor_samples_tool_calls_with_the_existing_luna_pool() -> Result<
         }
     );
     assert!(score.sampled_at.is_some());
+    test.codex.ensure_rollout_materialized().await;
+    let persisted_score = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(persisted_score) = test
+                .codex
+                .load_history(/*include_archived*/ false)
+                .await?
+                .items
+                .into_iter()
+                .find_map(|item| match item {
+                    RolloutItem::SecurityRiskScore(score) => Some(score),
+                    _ => None,
+                })
+            {
+                return Ok::<_, anyhow::Error>(persisted_score);
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+    assert_eq!(&persisted_score, score.as_ref());
     assert_eq!(
         registry
             .fast_approval_decision(

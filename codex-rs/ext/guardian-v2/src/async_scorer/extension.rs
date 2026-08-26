@@ -29,6 +29,7 @@ use codex_extension_api::ToolName;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
+use codex_history::RolloutItem;
 use codex_login::AgentIdentityAuthPolicy;
 use codex_login::AuthManager;
 use codex_model_provider::create_model_provider;
@@ -796,6 +797,19 @@ impl GuardianV2Extension {
                     .latest_scored_tool_call
                     .fetch_max(tool_call_index, Ordering::Release);
                 classification_finished_at = Some(Instant::now());
+                if !config.ephemeral
+                    && let Err(error) = thread
+                        .append_rollout_items(&[RolloutItem::SecurityRiskScore(score)])
+                        .await
+                {
+                    tracing::warn!(
+                        %thread_id,
+                        %turn_id,
+                        %call_id,
+                        %error,
+                        "failed to persist Guardian V2 classification result"
+                    );
+                }
                 Ok("success")
             }
             .await;
