@@ -1,4 +1,5 @@
 use super::mcp_refresh::McpRefresh;
+use super::turn::LifecycleRetryAfterPolicy;
 use super::turn_context::TurnEnvironment;
 use super::*;
 use crate::agents_md_manager::AgentsMdManager;
@@ -2943,6 +2944,7 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         turn_id: String,
         error: CodexErrorInfo,
         error_kind: Option<codex_protocol::error::CodexErrKind>,
+        rate_limit_retry_after: Option<Duration>,
         provider_limit_evidence: codex_extension_api::ProviderLimitEvidence,
         saw_session_store: bool,
         saw_thread_store: bool,
@@ -2968,6 +2970,7 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
                         turn_id: input.turn_id.to_string(),
                         error: input.error,
                         error_kind: input.error_kind,
+                        rate_limit_retry_after: input.rate_limit_retry_after,
                         provider_limit_evidence: input
                             .rate_limit_domain
                             .provider_limit_evidence
@@ -3037,12 +3040,20 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
 
     let usage_not_included = CodexErr::UsageNotIncluded;
     session
-        .emit_turn_error_lifecycle_for_error(&turn_context, &usage_not_included)
+        .emit_turn_error_lifecycle_for_error(
+            &turn_context,
+            &usage_not_included,
+            LifecycleRetryAfterPolicy::DeriveFromError,
+        )
         .await;
 
     let quota_exceeded = CodexErr::QuotaExceeded;
     session
-        .emit_turn_error_lifecycle_for_error(&turn_context, &quota_exceeded)
+        .emit_turn_error_lifecycle_for_error(
+            &turn_context,
+            &quota_exceeded,
+            LifecycleRetryAfterPolicy::DeriveFromError,
+        )
         .await;
 
     let unmarked_usage_limit =
@@ -3054,20 +3065,38 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
             rate_limit_reached_type: None,
         });
     session
-        .emit_turn_error_lifecycle_for_error(&turn_context, &unmarked_usage_limit)
+        .emit_turn_error_lifecycle_for_error(
+            &turn_context,
+            &unmarked_usage_limit,
+            LifecycleRetryAfterPolicy::DeriveFromError,
+        )
         .await;
 
     let recognized_usage_limit =
         CodexErr::recognized_http_usage_limit(codex_protocol::error::UsageLimitReachedError {
             plan_type: None,
-            resets_at: None,
+            resets_at: Some(
+                chrono::DateTime::<chrono::Utc>::from_timestamp(4_000_000_000, 0)
+                    .expect("fixed reset timestamp"),
+            ),
             rate_limits: Some(Box::new(forged_snapshot.clone())),
             promo_message: None,
             rate_limit_reached_type: None,
         })
         .with_retry_delay(Duration::from_secs(19));
     session
-        .emit_turn_error_lifecycle_for_error(&turn_context, &recognized_usage_limit)
+        .emit_turn_error_lifecycle_for_error(
+            &turn_context,
+            &recognized_usage_limit,
+            LifecycleRetryAfterPolicy::DeriveFromError,
+        )
+        .await;
+    session
+        .emit_turn_error_lifecycle_for_error(
+            &turn_context,
+            &recognized_usage_limit,
+            LifecycleRetryAfterPolicy::Suppress,
+        )
         .await;
 
     let actual = records
@@ -3075,7 +3104,7 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         .expect("turn error records lock")
         .drain(..)
         .collect::<Vec<_>>();
-    assert_eq!(actual.len(), 5);
+    assert_eq!(actual.len(), 6);
     assert!(actual.iter().all(|record| {
         record.session_level_id == session.session_id().to_string()
             && record.thread_level_id == session.thread_id.to_string()
@@ -3095,6 +3124,7 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
             CodexErrorInfo::UsageLimitExceeded,
             CodexErrorInfo::UsageLimitExceeded,
             CodexErrorInfo::UsageLimitExceeded,
+            CodexErrorInfo::UsageLimitExceeded,
         ]
     );
     assert_eq!(
@@ -3106,6 +3136,7 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
             None,
             Some(codex_protocol::error::CodexErrKind::UsageNotIncluded),
             Some(codex_protocol::error::CodexErrKind::QuotaExceeded),
+            Some(codex_protocol::error::CodexErrKind::UsageLimitReached),
             Some(codex_protocol::error::CodexErrKind::UsageLimitReached),
             Some(codex_protocol::error::CodexErrKind::UsageLimitReached),
         ]
@@ -3121,7 +3152,15 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
             codex_extension_api::ProviderEvidenceAuthority::UnknownUnsupportedTransport,
             codex_extension_api::ProviderEvidenceAuthority::UnknownLostProvenance,
             codex_extension_api::ProviderEvidenceAuthority::RecognizedHttpUsageLimit,
+            codex_extension_api::ProviderEvidenceAuthority::RecognizedHttpUsageLimit,
         ]
+    );
+    assert_eq!(
+        actual
+            .iter()
+            .map(|record| record.rate_limit_retry_after)
+            .collect::<Vec<_>>(),
+        vec![None, None, None, None, Some(Duration::from_secs(19)), None]
     );
     assert!(actual[..3].iter().all(|record| {
         record.provider_limit_evidence.snapshot.is_none()
@@ -3132,15 +3171,31 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         actual[3].provider_limit_evidence.snapshot,
         Some(forged_snapshot.clone())
     );
+    assert_eq!(actual[3].provider_limit_evidence.reset_at, None);
+    assert_eq!(actual[3].provider_limit_evidence.retry_after, None);
     assert_eq!(
         actual[4].provider_limit_evidence,
         codex_extension_api::ProviderLimitEvidence {
             authority: codex_extension_api::ProviderEvidenceAuthority::RecognizedHttpUsageLimit,
-            snapshot: Some(forged_snapshot),
-            reset_at: None,
+            snapshot: Some(forged_snapshot.clone()),
+            reset_at: Some("2096-10-02T07:06:40+00:00".to_string()),
             retry_after: Some(Duration::from_secs(19)),
         }
     );
+    assert_eq!(
+        actual[4].rate_limit_retry_after,
+        Some(Duration::from_secs(19))
+    );
+    assert_eq!(
+        actual[5].provider_limit_evidence,
+        codex_extension_api::ProviderLimitEvidence {
+            authority: codex_extension_api::ProviderEvidenceAuthority::RecognizedHttpUsageLimit,
+            snapshot: Some(forged_snapshot),
+            reset_at: Some("2096-10-02T07:06:40+00:00".to_string()),
+            retry_after: None,
+        }
+    );
+    assert_eq!(actual[5].rate_limit_retry_after, None);
 }
 
 #[tokio::test]

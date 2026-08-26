@@ -150,6 +150,20 @@ struct GoalContinuationHealthCheckTurn;
 #[derive(Clone, Copy, Debug)]
 struct GoalContinuationChildCheckDispatched;
 
+/// Core-only policy controlling whether a lifecycle callback may expose a retry delay from its
+/// source error.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum LifecycleRetryAfterPolicy {
+    DeriveFromError,
+    Suppress,
+}
+
+#[derive(Debug)]
+struct PreSamplingCompactFailure {
+    error: CodexErr,
+    issuing_turn_context: Arc<TurnContext>,
+}
+
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
 ///
@@ -179,7 +193,7 @@ pub(crate) async fn run_turn(
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    if let Err(err) = run_pre_sampling_compact(
+    if let Err(failure) = run_pre_sampling_compact(
         &sess,
         &turn_context,
         &mut client_session,
@@ -187,12 +201,20 @@ pub(crate) async fn run_turn(
     )
     .await
     {
-        if matches!(err.details(), CodexErrorDetails::TurnAborted) {
+        let PreSamplingCompactFailure {
+            error,
+            issuing_turn_context,
+        } = failure;
+        if matches!(error.details(), CodexErrorDetails::TurnAborted) {
             run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
-            return Err(err);
+            return Err(error);
         }
-        sess.emit_turn_error_lifecycle_for_error(turn_context.as_ref(), &err)
-            .await;
+        sess.emit_turn_error_lifecycle_for_error(
+            issuing_turn_context.as_ref(),
+            &error,
+            LifecycleRetryAfterPolicy::Suppress,
+        )
+        .await;
         error!("Failed to run pre-sampling compact");
         return Ok(None);
     }
@@ -428,8 +450,12 @@ pub(crate) async fn run_turn(
                         if matches!(err.details(), CodexErrorDetails::TurnAborted) {
                             return Err(err);
                         }
-                        sess.emit_turn_error_lifecycle_for_error(turn_context.as_ref(), &err)
-                            .await;
+                        sess.emit_turn_error_lifecycle_for_error(
+                            turn_context.as_ref(),
+                            &err,
+                            LifecycleRetryAfterPolicy::Suppress,
+                        )
+                        .await;
                         return Ok(None);
                     }
                     if run_pending_session_start_hooks(&sess, &turn_context).await {
@@ -526,8 +552,12 @@ pub(crate) async fn run_turn(
             }
             Err(e) => {
                 info!("Turn error: {e:#}");
-                sess.emit_turn_error_lifecycle_for_error(turn_context.as_ref(), &e)
-                    .await;
+                sess.emit_turn_error_lifecycle_for_error(
+                    turn_context.as_ref(),
+                    &e,
+                    LifecycleRetryAfterPolicy::DeriveFromError,
+                )
+                .await;
                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
                 let error_event = e.to_error_event(/*message_prefix*/ None);
                 sess.send_event(&turn_context, EventMsg::Error(error_event))
@@ -905,7 +935,7 @@ async fn run_pre_sampling_compact(
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
     cancellation_token: &CancellationToken,
-) -> CodexResult<()> {
+) -> Result<(), PreSamplingCompactFailure> {
     maybe_run_previous_model_inline_compact(sess, turn_context, client_session, cancellation_token)
         .await?;
     let token_status =
@@ -916,7 +946,11 @@ async fn run_pre_sampling_compact(
         // Pre-turn compaction runs before run_turn creates the normal sampling step.
         let step_context = sess
             .capture_step_context(Arc::clone(turn_context), cancellation_token)
-            .await?;
+            .await
+            .map_err(|error| PreSamplingCompactFailure {
+                error,
+                issuing_turn_context: Arc::clone(turn_context),
+            })?;
         run_auto_compact(
             sess,
             step_context,
@@ -927,7 +961,11 @@ async fn run_pre_sampling_compact(
             CompactionPhase::PreTurn,
             cancellation_token,
         )
-        .await?;
+        .await
+        .map_err(|error| PreSamplingCompactFailure {
+            error,
+            issuing_turn_context: Arc::clone(turn_context),
+        })?;
     }
     Ok(())
 }
@@ -968,13 +1006,13 @@ async fn capture_current_model_fallback_step_context(
 /// Runs pre-sampling compaction against the previous model when its compaction compatibility
 /// hash changed or when switching to a smaller context-window model.
 ///
-/// Returns `Err(_)` only when compaction was attempted and failed.
+/// Returns the exact error and turn context when pre-sampling compaction setup or execution fails.
 async fn maybe_run_previous_model_inline_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
     cancellation_token: &CancellationToken,
-) -> CodexResult<()> {
+) -> Result<(), PreSamplingCompactFailure> {
     let Some(previous_turn_settings) = sess.previous_turn_settings().await else {
         return Ok(());
     };
@@ -992,14 +1030,22 @@ async fn maybe_run_previous_model_inline_compact(
     if should_compact_for_comp_hash_change {
         let step_context = sess
             .capture_step_context(Arc::clone(&previous_model_turn_context), cancellation_token)
-            .await?;
+            .await
+            .map_err(|error| PreSamplingCompactFailure {
+                error,
+                issuing_turn_context: Arc::clone(&previous_model_turn_context),
+            })?;
         let fallback_step_context = capture_current_model_fallback_step_context(
             sess,
             turn_context,
             previous_model.as_str(),
             cancellation_token,
         )
-        .await?;
+        .await
+        .map_err(|error| PreSamplingCompactFailure {
+            error,
+            issuing_turn_context: Arc::clone(turn_context),
+        })?;
         run_auto_compact(
             sess,
             step_context,
@@ -1010,7 +1056,11 @@ async fn maybe_run_previous_model_inline_compact(
             CompactionPhase::PreTurn,
             cancellation_token,
         )
-        .await?;
+        .await
+        .map_err(|error| PreSamplingCompactFailure {
+            error,
+            issuing_turn_context: Arc::clone(&previous_model_turn_context),
+        })?;
         return Ok(());
     }
 
@@ -1041,14 +1091,22 @@ async fn maybe_run_previous_model_inline_compact(
     if should_run {
         let step_context = sess
             .capture_step_context(Arc::clone(&previous_model_turn_context), cancellation_token)
-            .await?;
+            .await
+            .map_err(|error| PreSamplingCompactFailure {
+                error,
+                issuing_turn_context: Arc::clone(&previous_model_turn_context),
+            })?;
         let fallback_step_context = capture_current_model_fallback_step_context(
             sess,
             turn_context,
             previous_model.as_str(),
             cancellation_token,
         )
-        .await?;
+        .await
+        .map_err(|error| PreSamplingCompactFailure {
+            error,
+            issuing_turn_context: Arc::clone(turn_context),
+        })?;
         run_auto_compact(
             sess,
             step_context,
@@ -1059,7 +1117,11 @@ async fn maybe_run_previous_model_inline_compact(
             CompactionPhase::PreTurn,
             cancellation_token,
         )
-        .await?;
+        .await
+        .map_err(|error| PreSamplingCompactFailure {
+            error,
+            issuing_turn_context: Arc::clone(&previous_model_turn_context),
+        })?;
     }
     Ok(())
 }

@@ -14,6 +14,7 @@ use codex_protocol::protocol::TurnAbortReason;
 use std::time::Duration;
 
 use crate::session::session::Session;
+use crate::session::turn::LifecycleRetryAfterPolicy;
 use crate::session::turn_context::TurnContext;
 
 impl Session {
@@ -113,14 +114,19 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         error: &CodexErr,
+        retry_after_policy: LifecycleRetryAfterPolicy,
     ) {
-        let rate_limit_retry_after = match error.details() {
+        let derived_retry_after = match error.details() {
             CodexErrorDetails::UsageLimitReached(details) => error.retry_delay().or_else(|| {
                 details
                     .resets_at
                     .and_then(|reset_at| (reset_at - Utc::now()).to_std().ok())
             }),
             _ => None,
+        };
+        let rate_limit_retry_after = match retry_after_policy {
+            LifecycleRetryAfterPolicy::DeriveFromError => derived_retry_after,
+            LifecycleRetryAfterPolicy::Suppress => None,
         };
         let rate_limit_domain = match error.details() {
             CodexErrorDetails::UsageLimitReached(details) => RateLimitDomain {
