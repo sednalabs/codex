@@ -1,5 +1,6 @@
 use super::*;
 use base64::Engine;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::RateLimitReachedType;
 use pretty_assertions::assert_eq;
 
@@ -12,16 +13,42 @@ fn map_api_error_maps_server_overloaded() {
 #[test]
 fn map_api_error_preserves_retry_delay() {
     let retry_delay = std::time::Duration::from_secs(17);
-    let err = map_api_error(ApiError::Retryable {
-        message: "retry later".to_string(),
-        delay: Some(retry_delay),
-    });
-
-    assert!(matches!(
-        err.details(),
-        CodexErrorDetails::Stream(message) if message == "retry later"
-    ));
-    assert_eq!(err.retry_delay(), Some(retry_delay));
+    for (error, expected_code, expected_message) in [
+        (
+            ApiError::Retryable {
+                message: "retry later".to_string(),
+                delay: Some(retry_delay),
+            },
+            CodexErrorInfo::Other,
+            "stream disconnected before completion: retry later",
+        ),
+        (
+            ApiError::RateLimitExceeded {
+                message: "retry later".to_string(),
+                delay: Some(retry_delay),
+            },
+            CodexErrorInfo::RateLimitExceeded,
+            "rate limit exceeded: retry later",
+        ),
+    ] {
+        let err = map_api_error(error);
+        assert_eq!(
+            (
+                err.to_codex_protocol_error(),
+                err.retry_delay(),
+                err.is_retryable(),
+                err.http_status_code_value(),
+                err.to_string(),
+            ),
+            (
+                expected_code,
+                Some(retry_delay),
+                true,
+                None,
+                expected_message.to_string(),
+            )
+        );
+    }
 }
 
 #[test]

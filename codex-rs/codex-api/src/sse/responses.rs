@@ -440,7 +440,12 @@ pub fn process_responses_event(
                     } else {
                         let delay = try_parse_retry_after(&error);
                         let message = error.message.unwrap_or_default();
-                        response_error = ApiError::Retryable { message, delay };
+                        response_error = match error.code.as_deref() {
+                            Some("rate_limit_exceeded") => {
+                                ApiError::RateLimitExceeded { message, delay }
+                            }
+                            _ => ApiError::Retryable { message, delay },
+                        };
                     }
                 }
                 return Err(ResponsesEventError::Api(response_error));
@@ -1058,7 +1063,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn error_when_error_event() {
+    async fn rate_limit_error_preserves_retry_delay() {
         let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_689bcf18d7f08194bf3440ba62fe05d803fee0cdac429894","object":"response","created_at":1755041560,"status":"failed","background":false,"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5.1 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."}, "usage":null,"user":null,"metadata":{}}}"#;
 
         let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
@@ -1068,14 +1073,55 @@ mod tests {
         assert_eq!(events.len(), 1);
 
         match &events[0] {
-            Err(ApiError::Retryable { message, delay }) => {
+            Err(ApiError::RateLimitExceeded { message, delay }) => {
                 assert_eq!(
                     message,
                     "Rate limit reached for gpt-5.1 in organization org-AAA on tokens per min (TPM): Limit 30000, Used 22999, Requested 12528. Please try again in 11.054s. Visit https://platform.openai.com/account/rate-limits to learn more."
                 );
                 assert_eq!(*delay, Some(Duration::from_secs_f64(11.054)));
             }
-            other => panic!("unexpected second event: {other:?}"),
+            other => panic!("unexpected rate-limit event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_response_classification_uses_error_code() {
+        for (code, message) in [
+            ("rate_limit_exceeded", "Temporary limit."),
+            (
+                "unknown_error",
+                "Rate limit reached. Please try again in 1s.",
+            ),
+        ] {
+            let event = json!({
+                "type": "response.failed",
+                "response": { "error": { "code": code, "message": message } },
+            });
+            let sse = format!("event: response.failed\ndata: {event}\n\n");
+            let events = collect_events(&[sse.as_bytes()]).await;
+            match (code, events.as_slice()) {
+                (
+                    "rate_limit_exceeded",
+                    [
+                        Err(ApiError::RateLimitExceeded {
+                            message: actual,
+                            delay,
+                        }),
+                    ],
+                )
+                | (
+                    "unknown_error",
+                    [
+                        Err(ApiError::Retryable {
+                            message: actual,
+                            delay,
+                        }),
+                    ],
+                ) => {
+                    assert_eq!((actual.as_str(), *delay), (message, None));
+                }
+                _ => panic!("unexpected events for {code}: {events:?}"),
+            }
         }
     }
 

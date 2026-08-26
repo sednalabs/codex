@@ -359,7 +359,10 @@ impl LunaSampler {
         let retryable = match error {
             LunaSamplerError::ConnectionTimeout
             | LunaSamplerError::Api(
-                ApiError::Retryable { .. } | ApiError::Stream(_) | ApiError::ServerOverloaded,
+                ApiError::Retryable { .. }
+                | ApiError::RateLimitExceeded { .. }
+                | ApiError::Stream(_)
+                | ApiError::ServerOverloaded,
             )
             | LunaSamplerError::Api(ApiError::Transport(
                 TransportError::RetryLimit

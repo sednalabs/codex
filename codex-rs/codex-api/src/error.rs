@@ -23,6 +23,11 @@ pub enum ApiError {
         message: String,
         delay: Option<Duration>,
     },
+    #[error("rate limit exceeded: {message}")]
+    RateLimitExceeded {
+        message: String,
+        delay: Option<Duration>,
+    },
     #[error("rate limit: {0}")]
     RateLimit(String),
     #[error("invalid request: {message}")]

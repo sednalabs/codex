@@ -1767,6 +1767,7 @@ Ownership rejections for parent-owned Multi-Agent V2 subagents return JSON-RPC e
 - `ContextWindowExceeded`
 - `SessionBudgetExceeded`
 - `UsageLimitExceeded`
+- `rateLimitExceeded`: an upstream rate limit received inside a streaming response; the turn fails with this category only after its existing stream retry budget is exhausted
 - `misalignmentPolicyViolation`: a non-retryable request blocked by the misalignment policy
 - `HttpConnectionFailed { httpStatusCode? }`: upstream HTTP failures including 4xx/5xx
 - `ResponseStreamConnectionFailed { httpStatusCode? }`: failure to connect to the response SSE stream

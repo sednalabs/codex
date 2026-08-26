@@ -29,6 +29,13 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 None => error,
             }
         }
+        ApiError::RateLimitExceeded { message, delay } => {
+            let error = CodexErr::new(CodexErrorDetails::RateLimitExceeded(message));
+            match delay {
+                Some(delay) => error.with_retry_delay(delay),
+                None => error,
+            }
+        }
         ApiError::Stream(msg) => CodexErr::Stream(msg),
         ApiError::ServerOverloaded => CodexErr::ServerOverloaded,
         ApiError::Api { status, message } => {

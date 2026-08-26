@@ -1,4 +1,6 @@
 use super::*;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use pretty_assertions::assert_eq;
 
 const SAFETY_BUFFERING_HEADER_TEXT: &str =
@@ -1359,6 +1361,26 @@ async fn live_app_server_stream_recovery_restores_previous_status_header() {
     assert_eq!(status.header(), "Working");
     assert_eq!(status.details(), None);
     assert!(chat.status_state.retry_status_header.is_none());
+}
+
+#[tokio::test]
+async fn live_app_server_rate_limit_error_renders_upstream_message() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let error = CodexErr::from(CodexErrorDetails::RateLimitExceeded(
+        "Please try again in 10s.".to_string(),
+    ));
+
+    handle_error(
+        &mut chat,
+        error.to_string(),
+        Some(error.to_codex_protocol_error().into()),
+    );
+
+    let lines = drain_insert_history(&mut rx)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    assert_chatwidget_snapshot!("rate_limit_exceeded_error", lines_to_single_string(&lines));
 }
 
 #[tokio::test]
