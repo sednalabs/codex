@@ -65,6 +65,10 @@ pub struct ProviderLimitEvidence {
     pub authority: ProviderEvidenceAuthority,
     pub snapshot: Option<RateLimitSnapshot>,
     pub reset_at: Option<String>,
+    /// Retry delay exposed to this lifecycle callback, when available and intentionally passed
+    /// through. `None` means no retry delay is exposed to this callback: it may be unavailable or
+    /// intentionally suppressed for the lifecycle route. It never grants retry permission and
+    /// does not assert provider eligibility.
     pub retry_after: Option<Duration>,
 }
 
@@ -127,8 +131,10 @@ pub struct TurnErrorInput<'a> {
     /// `None` means the protocol-facing error was synthesized without enough source context;
     /// extensions must fail closed rather than infer a retryable provider denial from it.
     pub error_kind: Option<CodexErrKind>,
-    /// Provider-specified delay before a rate-limited request may be retried.
-    /// `None` means the provider did not establish an eligible retry time.
+    /// Retry delay exposed to this lifecycle callback, when available and intentionally passed
+    /// through. `None` means no retry delay is exposed to this callback: it may be unavailable or
+    /// intentionally suppressed for the lifecycle route. It never grants retry permission and
+    /// does not assert provider eligibility.
     pub rate_limit_retry_after: Option<Duration>,
     /// Host-provided, per-callback local request correlation plus authority-tagged provider-limit
     /// evidence associated with this error. Provider-limit evidence may be explicitly unknown;
