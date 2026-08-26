@@ -11000,7 +11000,7 @@ macro_rules! assert_counting_rejection {
             rejection.rejected_initial_input_disposition,
             crate::tasks::RejectedInitialInputDisposition::Discard
         );
-        assert_eq!(marker.load(Ordering::SeqCst), $marker);
+        assert_eq!(marker.load(std::sync::atomic::Ordering::SeqCst), $marker);
         assert!(Arc::ptr_eq(&rejection.turn_context, &$tc));
         assert!(matches!(rejection.input, crate::tasks::TaskStartInput::Initial(items) if items == input));
     }};
