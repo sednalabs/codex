@@ -1901,7 +1901,7 @@ async fn contributor_persists_nested_code_mode_action_with_score() -> Result<()>
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn contributor_skips_models_requiring_managed_guardian_review() -> Result<()> {
+async fn contributor_skips_required_models_in_standard_scope() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let thread_server = responses::start_mock_server().await;
@@ -1960,6 +1960,16 @@ async fn contributor_skips_models_requiring_managed_guardian_review() -> Result<
             thread_store,
         })
         .await;
+
+    let mut guardian_config = thread_store
+        .get::<crate::async_scorer::config::GuardianV2Config>()
+        .expect("Guardian v2 should have initialized")
+        .as_ref()
+        .clone();
+    guardian_config.review_scope = GuardianV2ReviewScope::Standard {
+        sandboxed_exec_commands: false,
+    };
+    thread_store.insert(guardian_config);
 
     let mut model_info = test
         .thread_manager
