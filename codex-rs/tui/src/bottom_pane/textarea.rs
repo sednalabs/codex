@@ -311,7 +311,7 @@ impl TextArea {
         }
         match self.vim_pending {
             VimPending::None => KeymapContext::VimNormal,
-            VimPending::Replace => KeymapContext::Editor,
+            VimPending::Replace | VimPending::Find { .. } => KeymapContext::Editor,
             VimPending::Operator(_) => KeymapContext::VimOperator,
             VimPending::TextObject { .. } => KeymapContext::VimTextObject,
         }
@@ -718,7 +718,7 @@ impl TextArea {
                 self.handle_vim_text_object(operator, scope, event);
                 return;
             }
-            VimPending::Replace => {
+            VimPending::Replace | VimPending::Find { .. } => {
                 self.handle_vim_pending_command(pending, event);
                 return;
             }
@@ -876,7 +876,7 @@ impl TextArea {
             self.start_vim_edit(VimAction::Change(VimEditTarget::Line));
             return true;
         }
-        false
+        self.handle_vim_operator_command(op, event)
     }
 
     fn handle_vim_text_object(

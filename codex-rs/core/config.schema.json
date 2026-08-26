@@ -3807,6 +3807,8 @@
               "delete_char": null,
               "delete_to_line_end": null,
               "enter_insert": null,
+              "find_backward": null,
+              "find_forward": null,
               "insert_line_start": null,
               "move_down": null,
               "move_left": null,
@@ -3826,16 +3828,22 @@
               "start_delete_operator": null,
               "start_yank_operator": null,
               "substitute_char": null,
+              "till_backward": null,
+              "till_forward": null,
               "yank_line": null
             },
             "vim_operator": {
               "cancel": null,
               "delete_line": null,
               "motion_down": null,
+              "motion_find_backward": null,
+              "motion_find_forward": null,
               "motion_left": null,
               "motion_line_end": null,
               "motion_line_start": null,
               "motion_right": null,
+              "motion_till_backward": null,
+              "motion_till_forward": null,
               "motion_up": null,
               "motion_word_backward": null,
               "motion_word_end": null,
@@ -4615,6 +4623,8 @@
             "delete_char": null,
             "delete_to_line_end": null,
             "enter_insert": null,
+            "find_backward": null,
+            "find_forward": null,
             "insert_line_start": null,
             "move_down": null,
             "move_left": null,
@@ -4634,6 +4644,8 @@
             "start_delete_operator": null,
             "start_yank_operator": null,
             "substitute_char": null,
+            "till_backward": null,
+            "till_forward": null,
             "yank_line": null
           }
         },
@@ -4647,10 +4659,14 @@
             "cancel": null,
             "delete_line": null,
             "motion_down": null,
+            "motion_find_backward": null,
+            "motion_find_forward": null,
             "motion_left": null,
             "motion_line_end": null,
             "motion_line_start": null,
             "motion_right": null,
+            "motion_till_backward": null,
+            "motion_till_forward": null,
             "motion_up": null,
             "motion_word_backward": null,
             "motion_word_end": null,
@@ -4933,6 +4949,22 @@
           ],
           "description": "Enter insert mode at cursor (`i`)."
         },
+        "find_backward": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Find the previous character on the current line (`F`)."
+        },
+        "find_forward": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Find the next character on the current line (`f`)."
+        },
         "insert_line_start": {
           "allOf": [
             {
@@ -5085,6 +5117,22 @@
           ],
           "description": "Delete character under cursor and enter insert mode (`s`)."
         },
+        "till_backward": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Stop after the previous character on the current line (`T`)."
+        },
+        "till_forward": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Stop before the next character on the current line (`t`)."
+        },
         "yank_line": {
           "allOf": [
             {
@@ -5124,6 +5172,22 @@
           ],
           "description": "Motion: down one line (`j`)."
         },
+        "motion_find_backward": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Motion: find the previous character on the current line (`F`)."
+        },
+        "motion_find_forward": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Motion: find the next character on the current line (`f`)."
+        },
         "motion_left": {
           "allOf": [
             {
@@ -5155,6 +5219,22 @@
             }
           ],
           "description": "Motion: right (`l`)."
+        },
+        "motion_till_backward": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Motion: stop after the previous character on the current line (`T`)."
+        },
+        "motion_till_forward": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Motion: stop before the next character on the current line (`t`)."
         },
         "motion_up": {
           "allOf": [
