@@ -833,6 +833,42 @@ async fn steer_only_enforces_expected_turn_id() {
         },
         submission
     );
+
+    let output: ResponseItem = serde_json::from_value(serde_json::json!({
+        "type": "function_call_output",
+        "name": "send_message_to_thread",
+        "output": "delegated work",
+    }))
+    .expect("valid standalone output");
+
+    let submission = handle(
+        &session,
+        TurnInputRequest::new(SubmittedTurnInput::ResponseItem(output)),
+        TurnInputMode::StartOrSteer,
+        "test-submission".to_string(),
+    )
+    .await
+    .expect("standalone output should steer the active turn");
+
+    assert_eq!(
+        submission,
+        TurnInputSubmission::Steered {
+            turn_id: turn_context.sub_id.clone()
+        }
+    );
+    let turn_state = session
+        .input_queue
+        .turn_state_for_sub_id(&session.active_turn, &turn_context.sub_id)
+        .await
+        .expect("active turn state");
+    assert_eq!(
+        session
+            .input_queue
+            .subscribe_activity(Some(turn_state.as_ref()))
+            .await
+            .1,
+        Some(crate::session::input_queue::InputQueueActivity::Steer)
+    );
 }
 
 #[tokio::test]

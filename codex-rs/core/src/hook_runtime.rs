@@ -624,7 +624,7 @@ pub(crate) async fn inspect_pending_input(
             )
             .await
         }
-        TurnInput::ResponseItem(_) => HookRuntimeOutcome {
+        TurnInput::ResponseItem(_) | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {
             should_stop: false,
             additional_contexts: Vec::new(),
         },
@@ -654,6 +654,10 @@ pub(crate) async fn record_pending_input(
         }
         TurnInput::ResponseItem(item) => {
             sess.record_annotated_conversation_items(turn_context, vec![item])
+                .await;
+        }
+        TurnInput::FunctionCallOutput(item) => {
+            sess.record_conversation_items(turn_context, std::slice::from_ref(&item))
                 .await;
         }
         TurnInput::InterAgentCommunication(communication) => {
