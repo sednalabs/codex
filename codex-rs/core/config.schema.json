@@ -1441,6 +1441,10 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "persist_scores": {
+          "description": "Persist reviewed actions and risk scores to rollout files for debugging.",
+          "type": "boolean"
+        },
         "reasoning_effort": {
           "$ref": "#/definitions/ReasoningEffort"
         },

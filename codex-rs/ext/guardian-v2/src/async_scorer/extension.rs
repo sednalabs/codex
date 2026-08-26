@@ -804,7 +804,8 @@ impl GuardianV2Extension {
                     .latest_scored_tool_call
                     .fetch_max(tool_call_index, Ordering::Release);
                 classification_finished_at = Some(Instant::now());
-                if !config.ephemeral
+                if guardian_config.persist_scores
+                    && !config.ephemeral
                     && let Err(error) = thread
                         .append_rollout_items(&[RolloutItem::SecurityRiskScore(score)])
                         .await

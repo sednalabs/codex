@@ -129,6 +129,9 @@ pub struct GuardianV2ConfigToml {
     /// Route Guardian review and classification through the unmetered Codex endpoints.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub free_guardian: Option<bool>,
+    /// Persist reviewed actions and risk scores to rollout files for debugging.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persist_scores: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classifier_instructions: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

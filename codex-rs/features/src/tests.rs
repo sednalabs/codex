@@ -164,6 +164,7 @@ fn guardian_v2_feature_config_deserializes_classifier_and_transcript_settings() 
 [guardianv2]
 enabled = true
 free_guardian = true
+persist_scores = true
 classifier_instructions = "Review this action"
 review_threshold = 0.65
 max_tool_call_lag = 2
@@ -194,6 +195,7 @@ max_recent_non_user_entries = 12
         Some(FeatureToml::Config(crate::GuardianV2ConfigToml {
             enabled: Some(true),
             free_guardian: Some(true),
+            persist_scores: Some(true),
             classifier_instructions: Some("Review this action".to_owned()),
             review_threshold: Some(0.65),
             max_tool_call_lag: Some(2),

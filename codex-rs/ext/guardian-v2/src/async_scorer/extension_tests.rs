@@ -1770,26 +1770,16 @@ async fn contributor_samples_tool_calls_with_the_existing_luna_pool() -> Result<
     );
     assert!(score.sampled_at.is_some());
     test.codex.ensure_rollout_materialized().await;
-    let persisted_score = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Some(persisted_score) = test
-                .codex
-                .load_history(/*include_archived*/ false)
-                .await?
-                .items
-                .into_iter()
-                .find_map(|item| match item {
-                    RolloutItem::SecurityRiskScore(score) => Some(score),
-                    _ => None,
-                })
-            {
-                return Ok::<_, anyhow::Error>(persisted_score);
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await??;
-    assert_eq!(&persisted_score, score.as_ref());
+    assert!(
+        !test
+            .codex
+            .load_history(/*include_archived*/ false)
+            .await?
+            .items
+            .into_iter()
+            .any(|item| matches!(item, RolloutItem::SecurityRiskScore(_))),
+        "risk scores should not be persisted unless explicitly enabled"
+    );
     assert_eq!(
         registry
             .fast_approval_decision(
@@ -1867,7 +1857,7 @@ async fn contributor_persists_nested_code_mode_action_with_score() -> Result<()>
         Vec::new(),
         r#"{"path":"README.md"}"#,
         Some(TEST_GUARDIAN_POLICY),
-        "",
+        "[features.guardianv2]\nenabled = true\npersist_scores = true\n",
         /*model_defaults*/ None,
         ToolCallSource::CodeMode {
             cell_id: "cell-1".to_owned(),
