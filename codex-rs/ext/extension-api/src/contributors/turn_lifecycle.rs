@@ -48,6 +48,11 @@ pub struct LocalRequestIdentity {
 pub enum ProviderEvidenceAuthority {
     UnknownUnsupportedTransport,
     UnknownLostProvenance,
+    /// The API bridge decoded an HTTP 429 with `error.type == "usage_limit_reached"`.
+    ///
+    /// This identifies only the recognized parser path. It does not establish provider,
+    /// account, quota, model, or retry authority.
+    RecognizedHttpUsageLimit,
 }
 
 /// Provider-limit facts associated with one exact request.

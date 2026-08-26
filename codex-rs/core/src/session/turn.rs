@@ -81,6 +81,7 @@ use codex_async_utils::OrCancelExt;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_extension_api::ExtensionData;
+use codex_extension_api::ProviderEvidenceAuthority;
 use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
@@ -93,6 +94,7 @@ use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrSource;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::PlanItem;
@@ -552,8 +554,15 @@ pub(crate) async fn run_turn(
                     _ => None,
                 };
                 if let CodexErrorDetails::UsageLimitReached(details) = e.details() {
+                    let authority = match e.codex_source() {
+                        Some(CodexErrSource::RecognizedHttpUsageLimit) => {
+                            ProviderEvidenceAuthority::RecognizedHttpUsageLimit
+                        }
+                        None => ProviderEvidenceAuthority::UnknownLostProvenance,
+                    };
                     sess.record_rate_limit_domain(
                         &turn_context,
+                        authority,
                         details.rate_limits.as_deref().cloned(),
                         details.resets_at.map(|reset_at| reset_at.to_rfc3339()),
                         rate_limit_retry_after,

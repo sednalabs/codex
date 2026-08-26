@@ -2934,13 +2934,14 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
     struct SessionTurnErrorMarker;
     struct ThreadTurnErrorMarker;
 
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
     struct RecordedTurnError {
         session_level_id: String,
         thread_level_id: String,
         turn_level_id: String,
         turn_id: String,
         error: CodexErrorInfo,
+        provider_evidence_authority: codex_extension_api::ProviderEvidenceAuthority,
         saw_session_store: bool,
         saw_thread_store: bool,
     }
@@ -2964,6 +2965,10 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
                         turn_level_id: input.turn_store.level_id().to_string(),
                         turn_id: input.turn_id.to_string(),
                         error: input.error,
+                        provider_evidence_authority: input
+                            .rate_limit_domain
+                            .provider_limit_evidence
+                            .authority,
                         saw_session_store: input
                             .session_store
                             .get::<SessionTurnErrorMarker>()
@@ -2993,12 +2998,14 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         .thread_extension_data
         .insert(ThreadTurnErrorMarker);
 
-    let expected = RecordedTurnError {
+    let expected_unknown = RecordedTurnError {
         session_level_id: session.session_id().to_string(),
         thread_level_id: session.thread_id.to_string(),
         turn_level_id: turn_context.sub_id.clone(),
         turn_id: turn_context.sub_id.clone(),
         error: CodexErrorInfo::UsageLimitExceeded,
+        provider_evidence_authority:
+            codex_extension_api::ProviderEvidenceAuthority::UnknownUnsupportedTransport,
         saw_session_store: true,
         saw_thread_store: true,
     };
@@ -3007,12 +3014,27 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         .emit_turn_error_lifecycle(&turn_context, CodexErrorInfo::UsageLimitExceeded)
         .await;
 
+    session.record_rate_limit_domain(
+        &turn_context,
+        codex_extension_api::ProviderEvidenceAuthority::RecognizedHttpUsageLimit,
+        None,
+        None,
+        None,
+    );
+    session
+        .emit_turn_error_lifecycle(&turn_context, CodexErrorInfo::UsageLimitExceeded)
+        .await;
+
+    let mut expected_recognized = expected_unknown.clone();
+    expected_recognized.provider_evidence_authority =
+        codex_extension_api::ProviderEvidenceAuthority::RecognizedHttpUsageLimit;
+
     let actual = records
         .lock()
         .expect("turn error records lock")
         .drain(..)
         .collect::<Vec<_>>();
-    assert_eq!(vec![expected], actual);
+    assert_eq!(vec![expected_unknown, expected_recognized], actual);
 }
 
 #[tokio::test]
