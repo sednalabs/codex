@@ -445,6 +445,8 @@ async fn load_rollout_items_preserves_security_risk_scores() -> std::io::Result<
             ("action_risk".to_string(), 0.76),
             ("data_exfiltration".to_string(), 0.31),
         ]),
+        call_id: Some("call-1".to_owned()),
+        action: Some(serde_json::json!({"path": "README.md", "tool": "read_file"})),
         sampled_at: None,
     };
     let security_risk_item = RolloutItem::SecurityRiskScore(security_risk.clone());

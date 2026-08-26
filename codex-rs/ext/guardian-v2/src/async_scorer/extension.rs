@@ -453,6 +453,8 @@ impl GuardianV2Extension {
     fn record_fail_closed_score(thread_store: &ExtensionData, sampled_at: SystemTime) {
         let score = SecurityRiskScore {
             scores: BTreeMap::from([("action_risk".to_owned(), 1.0)]),
+            call_id: None,
+            action: None,
             sampled_at: Some(sampled_at.into()),
         };
         thread_store.insert_if(score.clone(), |previous| {
@@ -772,6 +774,10 @@ impl GuardianV2Extension {
                 };
                 let score = SecurityRiskScore {
                     scores: BTreeMap::from([("action_risk".to_owned(), action_risk)]),
+                    call_id: Some(call_id.clone()),
+                    action: Some(
+                        serde_json::from_str(&planned_action).map_err(|error| error.to_string())?,
+                    ),
                     sampled_at: Some(sampled_at.into()),
                 };
                 let accepted =
