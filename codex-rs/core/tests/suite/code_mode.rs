@@ -1209,14 +1209,11 @@ async fn code_mode_only_guides_all_tools_search_and_calls_deferred_app_tools() -
 
     let server = responses::start_mock_server().await;
     let apps_server = AppsTestServer::mount_searchable(&server).await?;
-    let resp_mock = responses::mount_sse_once(
-        &server,
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_custom_tool_call(
-                "call-1",
-                "exec",
-                r#"
+    let originating_item_id = "ctc_code_mode_origin";
+    let mut exec_call = ev_custom_tool_call(
+        "call-1",
+        "exec",
+        r#"
 const tool = ALL_TOOLS.find(
   ({ name }) => name === "mcp__codex_apps__calendar_timezone_option_99"
 );
@@ -1231,7 +1228,13 @@ if (!tool) {
   }));
 }
 "#,
-            ),
+    );
+    exec_call["item"]["id"] = serde_json::json!(originating_item_id);
+    let resp_mock = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            exec_call,
             ev_completed("resp-1"),
         ]),
     )
@@ -1324,6 +1327,13 @@ if (!tool) {
             "isError": false,
             "text": "called calendar_timezone_option_99 for  at  with ",
         })
+    );
+    let apps_tool_calls = recorded_apps_tool_calls(&server).await;
+    assert!(
+        apps_tool_calls.iter().any(|call| {
+            call.pointer("/params/_meta/itemId") == Some(&serde_json::json!(originating_item_id))
+        }),
+        "the nested MCP call should inherit its code cell's originating Responses item"
     );
 
     Ok(())

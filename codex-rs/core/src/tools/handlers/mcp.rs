@@ -171,6 +171,7 @@ impl McpHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        let originating_item_id = invocation.originating_item_id().await;
         let ToolInvocation {
             session,
             step_context,
@@ -197,6 +198,7 @@ impl McpHandler {
             &step_context,
             &cancellation_token,
             call_id.clone(),
+            originating_item_id,
             &self.tool_info,
             self.hook_tool_name(),
             tool_name,
