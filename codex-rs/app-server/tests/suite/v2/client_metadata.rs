@@ -116,6 +116,7 @@ async fn turn_start_forwards_client_metadata_to_responses_request_v2() -> Result
         metadata["window_id"].as_str(),
         request.header("x-codex-window-id").as_deref()
     );
+    assert_eq!(metadata["window_number"].as_u64(), Some(0));
     assert!(
         metadata["context_window_id"]
             .as_str()
@@ -193,6 +194,7 @@ async fn turn_start_sends_fork_lineage_in_turn_metadata_for_thread_fork_v2() -> 
         metadata["forked_from_thread_id"].as_str(),
         Some(source_thread_id.as_str())
     );
+    assert!(metadata.get("forked_from_ordinal_exclusive").is_none());
     assert_eq!(metadata["thread_id"].as_str(), Some(thread.id.as_str()));
     assert_eq!(metadata["turn_id"].as_str(), Some(turn.id.as_str()));
 

@@ -188,6 +188,7 @@ async fn state_db_init_backfills_before_returning() -> anyhow::Result<()> {
             session_id: thread_id.into(),
             id: thread_id,
             forked_from_id: None,
+            forked_from_ordinal_exclusive: None,
             parent_thread_id: None,
             timestamp: "2026-01-27T12:34:56Z".to_string(),
             cwd: home.path().to_path_buf(),
@@ -728,7 +729,7 @@ async fn referenced_paginated_rollout_starts_at_history_cutoff_and_resumes() -> 
         &config,
         RolloutRecorderParams::new(
             ThreadId::new(),
-            /*forked_from_id*/ None,
+            Some(history_base.thread_id),
             /*parent_thread_id*/ None,
             SessionSource::Exec,
             /*thread_source*/ None,
@@ -737,12 +738,19 @@ async fn referenced_paginated_rollout_starts_at_history_cutoff_and_resumes() -> 
             Vec::new(),
         )
         .with_history_mode(ThreadHistoryMode::Paginated)
-        .with_history_base(Some(history_base)),
+        .with_history_base(Some(history_base))
+        .with_forked_from_ordinal_exclusive(Some(history_base.end_ordinal_exclusive)),
     )
     .await?;
     let rollout_path = recorder.rollout_path().to_path_buf();
     recorder.persist().await?;
     recorder.shutdown().await?;
+
+    let meta = crate::read_session_meta_line(&rollout_path).await?.meta;
+    assert_eq!(
+        meta.forked_from_ordinal_exclusive,
+        Some(history_base.end_ordinal_exclusive)
+    );
 
     let resumed =
         RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone())).await?;

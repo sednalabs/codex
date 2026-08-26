@@ -2976,6 +2976,10 @@ pub struct SessionMeta {
     pub id: ThreadId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forked_from_id: Option<ThreadId>,
+    /// Exclusive ordinal inherited from the logical fork parent, independent of `history_base`.
+    /// Revert may replace the physical history base while retaining this fork boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from_ordinal_exclusive: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_thread_id: Option<ThreadId>,
     pub timestamp: String,
@@ -3037,6 +3041,7 @@ impl Default for SessionMeta {
             session_id: id.into(),
             id,
             forked_from_id: None,
+            forked_from_ordinal_exclusive: None,
             parent_thread_id: None,
             timestamp: String::new(),
             cwd: PathBuf::new(),
@@ -5885,7 +5890,9 @@ mod tests {
 
         assert_eq!(session_meta.history_mode, ThreadHistoryMode::Legacy);
         assert_eq!(session_meta.history_base, None);
+        assert_eq!(session_meta.forked_from_ordinal_exclusive, None);
         let serialized = serde_json::to_value(&session_meta)?;
+        assert!(serialized.get("forked_from_ordinal_exclusive").is_none());
         assert_eq!(serialized["history_mode"], json!("legacy"));
         let mut unknown = serialized;
         unknown["history_mode"] = json!("future");
