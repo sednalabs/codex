@@ -63,13 +63,9 @@ use codex_exec_server::FileSystemSandboxContext;
 use codex_execpolicy::prefix_rule_migration;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::LoadedUserInstructions;
-use codex_extension_api::LocalRequestIdentity;
 use codex_extension_api::OwnerContinuationPending;
 use codex_extension_api::PromptFragment;
 use codex_extension_api::PromptSlot;
-use codex_extension_api::ProviderEvidenceAuthority;
-use codex_extension_api::ProviderLimitEvidence;
-use codex_extension_api::RateLimitDomain;
 use codex_extension_api::TurnContextContributionInput;
 use codex_features::FEATURES;
 use codex_features::Feature;
@@ -4069,51 +4065,6 @@ impl Session {
             let mut state = self.state.lock().await;
             state.set_rate_limits(new_rate_limits);
         }
-    }
-
-    /// Records rate-limit evidence in this exact thread's extension scope.
-    /// Local request identity is kept separate from provider evidence, whose authority is
-    /// unknown after the provider denial has been normalized by Core.
-    pub(crate) fn record_rate_limit_domain(
-        &self,
-        turn_context: &TurnContext,
-        authority: ProviderEvidenceAuthority,
-        snapshot: Option<RateLimitSnapshot>,
-        reset_at: Option<String>,
-        retry_after: Option<std::time::Duration>,
-    ) {
-        let domain = RateLimitDomain {
-            local_request_identity: LocalRequestIdentity {
-                thread_id: self.thread_id,
-                configured_provider_key: Some(turn_context.config.model_provider_id.clone()),
-                requested_model: turn_context.config.model.clone(),
-                resolved_model: Some(turn_context.model_info.slug.clone()),
-            },
-            provider_limit_evidence: ProviderLimitEvidence {
-                authority,
-                snapshot,
-                reset_at,
-                retry_after,
-            },
-        };
-        let billing_surface = match self.services.auth_manager.auth_mode() {
-            Some(mode) if mode.has_chatgpt_account() => "chatgpt_credits",
-            Some(mode) if !mode.uses_codex_backend() => "api_tokens",
-            Some(_) => "codex_backend_unknown",
-            None => "unknown",
-        };
-        info!(
-            thread_id = %domain.local_request_identity.thread_id,
-            configured_provider_key = ?domain.local_request_identity.configured_provider_key,
-            requested_model = ?domain.local_request_identity.requested_model,
-            resolved_model = ?domain.local_request_identity.resolved_model,
-            provider_evidence_authority = ?domain.provider_limit_evidence.authority,
-            billing_surface = %billing_surface,
-            reset_at = ?domain.provider_limit_evidence.reset_at,
-            retry_after = ?domain.provider_limit_evidence.retry_after,
-            "local request correlation and rate-limit facts recorded"
-        );
-        self.services.thread_extension_data.insert(domain);
     }
 
     pub(crate) async fn mcp_dependency_prompted(&self) -> HashSet<String> {

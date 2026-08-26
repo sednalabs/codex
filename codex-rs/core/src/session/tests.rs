@@ -53,6 +53,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::TrustLevel;
+use codex_protocol::error::CodexErr;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::FileSystemPermissions;
@@ -2934,14 +2935,15 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
     struct SessionTurnErrorMarker;
     struct ThreadTurnErrorMarker;
 
-    #[derive(Clone, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq)]
     struct RecordedTurnError {
         session_level_id: String,
         thread_level_id: String,
         turn_level_id: String,
         turn_id: String,
         error: CodexErrorInfo,
-        provider_evidence_authority: codex_extension_api::ProviderEvidenceAuthority,
+        error_kind: Option<codex_protocol::error::CodexErrKind>,
+        provider_limit_evidence: codex_extension_api::ProviderLimitEvidence,
         saw_session_store: bool,
         saw_thread_store: bool,
     }
@@ -2965,10 +2967,11 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
                         turn_level_id: input.turn_store.level_id().to_string(),
                         turn_id: input.turn_id.to_string(),
                         error: input.error,
-                        provider_evidence_authority: input
+                        error_kind: input.error_kind,
+                        provider_limit_evidence: input
                             .rate_limit_domain
                             .provider_limit_evidence
-                            .authority,
+                            .clone(),
                         saw_session_store: input
                             .session_store
                             .get::<SessionTurnErrorMarker>()
@@ -2998,43 +3001,146 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
         .thread_extension_data
         .insert(ThreadTurnErrorMarker);
 
-    let expected_unknown = RecordedTurnError {
-        session_level_id: session.session_id().to_string(),
-        thread_level_id: session.thread_id.to_string(),
-        turn_level_id: turn_context.sub_id.clone(),
-        turn_id: turn_context.sub_id.clone(),
-        error: CodexErrorInfo::UsageLimitExceeded,
-        provider_evidence_authority:
-            codex_extension_api::ProviderEvidenceAuthority::UnknownUnsupportedTransport,
-        saw_session_store: true,
-        saw_thread_store: true,
+    let forged_snapshot = RateLimitSnapshot {
+        limit_id: Some("forged-limit".to_string()),
+        limit_name: Some("forged-name".to_string()),
+        primary: None,
+        secondary: None,
+        credits: None,
+        individual_limit: None,
+        spend_control_reached: Some(true),
+        plan_type: None,
+        rate_limit_reached_type: None,
     };
+    session
+        .services
+        .thread_extension_data
+        .insert(codex_extension_api::RateLimitDomain {
+            local_request_identity: codex_extension_api::LocalRequestIdentity {
+                thread_id: session.thread_id,
+                configured_provider_key: Some("forged-provider".to_string()),
+                requested_model: Some("forged-model".to_string()),
+                resolved_model: Some("forged-resolved-model".to_string()),
+            },
+            provider_limit_evidence: codex_extension_api::ProviderLimitEvidence {
+                authority: codex_extension_api::ProviderEvidenceAuthority::RecognizedHttpUsageLimit,
+                snapshot: Some(forged_snapshot.clone()),
+                reset_at: Some("forged-reset".to_string()),
+                retry_after: Some(Duration::from_secs(999)),
+            },
+        });
 
+    // A protocol-only callback must get a fresh unknown projection, not the forged thread state.
     session
         .emit_turn_error_lifecycle(&turn_context, CodexErrorInfo::UsageLimitExceeded)
         .await;
 
-    session.record_rate_limit_domain(
-        &turn_context,
-        codex_extension_api::ProviderEvidenceAuthority::RecognizedHttpUsageLimit,
-        None,
-        None,
-        None,
-    );
+    let usage_not_included = CodexErr::UsageNotIncluded;
     session
-        .emit_turn_error_lifecycle(&turn_context, CodexErrorInfo::UsageLimitExceeded)
+        .emit_turn_error_lifecycle_for_error(&turn_context, &usage_not_included)
         .await;
 
-    let mut expected_recognized = expected_unknown.clone();
-    expected_recognized.provider_evidence_authority =
-        codex_extension_api::ProviderEvidenceAuthority::RecognizedHttpUsageLimit;
+    let quota_exceeded = CodexErr::QuotaExceeded;
+    session
+        .emit_turn_error_lifecycle_for_error(&turn_context, &quota_exceeded)
+        .await;
+
+    let unmarked_usage_limit =
+        CodexErr::UsageLimitReached(codex_protocol::error::UsageLimitReachedError {
+            plan_type: None,
+            resets_at: None,
+            rate_limits: Some(Box::new(forged_snapshot.clone())),
+            promo_message: None,
+            rate_limit_reached_type: None,
+        });
+    session
+        .emit_turn_error_lifecycle_for_error(&turn_context, &unmarked_usage_limit)
+        .await;
+
+    let recognized_usage_limit =
+        CodexErr::recognized_http_usage_limit(codex_protocol::error::UsageLimitReachedError {
+            plan_type: None,
+            resets_at: None,
+            rate_limits: Some(Box::new(forged_snapshot.clone())),
+            promo_message: None,
+            rate_limit_reached_type: None,
+        })
+        .with_retry_delay(Duration::from_secs(19));
+    session
+        .emit_turn_error_lifecycle_for_error(&turn_context, &recognized_usage_limit)
+        .await;
 
     let actual = records
         .lock()
         .expect("turn error records lock")
         .drain(..)
         .collect::<Vec<_>>();
-    assert_eq!(vec![expected_unknown, expected_recognized], actual);
+    assert_eq!(actual.len(), 5);
+    assert!(actual.iter().all(|record| {
+        record.session_level_id == session.session_id().to_string()
+            && record.thread_level_id == session.thread_id.to_string()
+            && record.turn_level_id == turn_context.sub_id
+            && record.turn_id == turn_context.sub_id
+            && record.saw_session_store
+            && record.saw_thread_store
+    }));
+    assert_eq!(
+        actual
+            .iter()
+            .map(|record| record.error.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            CodexErrorInfo::UsageLimitExceeded,
+            CodexErrorInfo::UsageLimitExceeded,
+            CodexErrorInfo::UsageLimitExceeded,
+            CodexErrorInfo::UsageLimitExceeded,
+            CodexErrorInfo::UsageLimitExceeded,
+        ]
+    );
+    assert_eq!(
+        actual
+            .iter()
+            .map(|record| record.error_kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            None,
+            Some(codex_protocol::error::CodexErrKind::UsageNotIncluded),
+            Some(codex_protocol::error::CodexErrKind::QuotaExceeded),
+            Some(codex_protocol::error::CodexErrKind::UsageLimitReached),
+            Some(codex_protocol::error::CodexErrKind::UsageLimitReached),
+        ]
+    );
+    assert_eq!(
+        actual
+            .iter()
+            .map(|record| record.provider_limit_evidence.authority)
+            .collect::<Vec<_>>(),
+        vec![
+            codex_extension_api::ProviderEvidenceAuthority::UnknownUnsupportedTransport,
+            codex_extension_api::ProviderEvidenceAuthority::UnknownUnsupportedTransport,
+            codex_extension_api::ProviderEvidenceAuthority::UnknownUnsupportedTransport,
+            codex_extension_api::ProviderEvidenceAuthority::UnknownLostProvenance,
+            codex_extension_api::ProviderEvidenceAuthority::RecognizedHttpUsageLimit,
+        ]
+    );
+    assert!(actual[..3].iter().all(|record| {
+        record.provider_limit_evidence.snapshot.is_none()
+            && record.provider_limit_evidence.reset_at.is_none()
+            && record.provider_limit_evidence.retry_after.is_none()
+    }));
+    assert_eq!(
+        actual[3].provider_limit_evidence.snapshot,
+        Some(forged_snapshot.clone())
+    );
+    assert_eq!(
+        actual[4].provider_limit_evidence,
+        codex_extension_api::ProviderLimitEvidence {
+            authority: codex_extension_api::ProviderEvidenceAuthority::RecognizedHttpUsageLimit,
+            snapshot: Some(forged_snapshot),
+            reset_at: None,
+            retry_after: Some(Duration::from_secs(19)),
+        }
+    );
 }
 
 #[tokio::test]

@@ -368,10 +368,16 @@ impl CodexErr {
         self.source
     }
 
-    /// Marks this error as produced by the recognized HTTP usage-limit parser.
-    pub fn with_recognized_http_usage_limit_source(mut self) -> Self {
-        self.source = Some(CodexErrSource::RecognizedHttpUsageLimit);
-        self
+    /// Constructs a usage-limit error with in-process parser provenance.
+    ///
+    /// The marker is diagnostic data only; it is not an admission, retry, or security
+    /// capability.
+    pub fn recognized_http_usage_limit(error: UsageLimitReachedError) -> Self {
+        Self {
+            details: CodexErrorDetails::UsageLimitReached(error),
+            retry_delay: None,
+            source: Some(CodexErrSource::RecognizedHttpUsageLimit),
+        }
     }
 
     /// Returns the semantic failure and its diagnostic payload.

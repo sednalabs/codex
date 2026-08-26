@@ -70,7 +70,6 @@ use crate::tools::spec_plan::tool_suggest_enabled;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::turn_timing::record_turn_ttft_metric;
 use crate::util::error_or_panic;
-use chrono::Utc;
 use codex_analytics::AppInvocation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
@@ -81,7 +80,6 @@ use codex_async_utils::OrCancelExt;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_extension_api::ExtensionData;
-use codex_extension_api::ProviderEvidenceAuthority;
 use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
@@ -94,7 +92,6 @@ use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::error::CodexErr;
-use codex_protocol::error::CodexErrSource;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::PlanItem;
@@ -194,15 +191,8 @@ pub(crate) async fn run_turn(
             run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
             return Err(err);
         }
-        let error_kind = Some(err.kind());
-        let error = err.to_codex_protocol_error();
-        sess.emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
-            turn_context.as_ref(),
-            error.clone(),
-            error_kind,
-            /*rate_limit_retry_after*/ None,
-        )
-        .await;
+        sess.emit_turn_error_lifecycle_for_error(turn_context.as_ref(), &err)
+            .await;
         error!("Failed to run pre-sampling compact");
         return Ok(None);
     }
@@ -438,15 +428,8 @@ pub(crate) async fn run_turn(
                         if matches!(err.details(), CodexErrorDetails::TurnAborted) {
                             return Err(err);
                         }
-                        let error_kind = Some(err.kind());
-                        let error = err.to_codex_protocol_error();
-                        sess.emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
-                            turn_context.as_ref(),
-                            error.clone(),
-                            error_kind,
-                            /*rate_limit_retry_after*/ None,
-                        )
-                        .await;
+                        sess.emit_turn_error_lifecycle_for_error(turn_context.as_ref(), &err)
+                            .await;
                         return Ok(None);
                     }
                     if run_pending_session_start_hooks(&sess, &turn_context).await {
@@ -543,40 +526,8 @@ pub(crate) async fn run_turn(
             }
             Err(e) => {
                 info!("Turn error: {e:#}");
-                let rate_limit_retry_after = match e.details() {
-                    CodexErrorDetails::UsageLimitReached(details) => {
-                        e.retry_delay().or_else(|| {
-                            details
-                                .resets_at
-                                .and_then(|reset_at| (reset_at - Utc::now()).to_std().ok())
-                        })
-                    }
-                    _ => None,
-                };
-                if let CodexErrorDetails::UsageLimitReached(details) = e.details() {
-                    let authority = match e.codex_source() {
-                        Some(CodexErrSource::RecognizedHttpUsageLimit) => {
-                            ProviderEvidenceAuthority::RecognizedHttpUsageLimit
-                        }
-                        None => ProviderEvidenceAuthority::UnknownLostProvenance,
-                    };
-                    sess.record_rate_limit_domain(
-                        &turn_context,
-                        authority,
-                        details.rate_limits.as_deref().cloned(),
-                        details.resets_at.map(|reset_at| reset_at.to_rfc3339()),
-                        rate_limit_retry_after,
-                    );
-                }
-                let error_kind = Some(e.kind());
-                let error = e.to_codex_protocol_error();
-                sess.emit_turn_error_lifecycle_with_kind_and_rate_limit_delay(
-                    turn_context.as_ref(),
-                    error.clone(),
-                    error_kind,
-                    rate_limit_retry_after,
-                )
-                .await;
+                sess.emit_turn_error_lifecycle_for_error(turn_context.as_ref(), &e)
+                    .await;
                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
                 let error_event = e.to_error_event(/*message_prefix*/ None);
                 sess.send_event(&turn_context, EventMsg::Error(error_event))
