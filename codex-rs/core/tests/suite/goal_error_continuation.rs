@@ -206,6 +206,180 @@ fn request_has_input_item(request: &wiremock::Request, input_type: &str, text: &
         })
 }
 
+fn request_matches_current_input(
+    request: &wiremock::Request,
+    input_type: &str,
+    text: Option<&str>,
+    call_id: Option<&str>,
+    expected_subagent: Option<&str>,
+) -> bool {
+    let Some(body) = serde_json::from_slice::<Value>(&decoded_body(request)).ok() else {
+        return false;
+    };
+    let Some(current_input) = body["input"].as_array().and_then(|items| items.last()) else {
+        return false;
+    };
+    let Some(client_metadata) = body["client_metadata"].as_object() else {
+        return false;
+    };
+    let Some(thread_id) = client_metadata["thread_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+    else {
+        return false;
+    };
+    let Some(turn_id) = client_metadata["turn_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+    else {
+        return false;
+    };
+    let Some(turn_metadata_json) = client_metadata["x-codex-turn-metadata"].as_str() else {
+        return false;
+    };
+    let Ok(turn_metadata) = serde_json::from_str::<Value>(turn_metadata_json) else {
+        return false;
+    };
+    if turn_metadata["thread_id"].as_str() != Some(thread_id)
+        || turn_metadata["turn_id"].as_str() != Some(turn_id)
+        || client_metadata["x-openai-subagent"].as_str() != expected_subagent
+        || current_input
+            .pointer("/internal_chat_message_metadata_passthrough/turn_id")
+            .and_then(Value::as_str)
+            != Some(turn_id)
+    {
+        return false;
+    }
+    if current_input["type"].as_str() != Some(input_type) {
+        return false;
+    }
+    if input_type == "message" && current_input["role"].as_str() != Some("user") {
+        return false;
+    }
+    if let Some(text) = text {
+        let Some(content) = current_input["content"].as_array() else {
+            return false;
+        };
+        if !content
+            .iter()
+            .any(|item| item["type"] == "input_text" && item["text"].as_str() == Some(text))
+        {
+            return false;
+        }
+    }
+    if let Some(call_id) = call_id
+        && current_input["call_id"].as_str() != Some(call_id)
+    {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod matcher_tests {
+    use super::*;
+    use wiremock::http::HeaderMap;
+    use wiremock::http::Method;
+
+    fn request_with_body(body: Value) -> wiremock::Request {
+        wiremock::Request {
+            url: "http://localhost/v1/responses"
+                .parse()
+                .expect("valid request URL"),
+            method: Method::POST,
+            headers: HeaderMap::new(),
+            body: serde_json::to_vec(&body).expect("serialize request body"),
+        }
+    }
+
+    fn body_with_input(input: Value, subagent: Option<&str>) -> Value {
+        let turn_metadata = serde_json::json!({
+            "thread_id": "thread",
+            "turn_id": "turn",
+        })
+        .to_string();
+        let mut client_metadata = serde_json::json!({
+            "thread_id": "thread",
+            "turn_id": "turn",
+            "x-codex-turn-metadata": turn_metadata,
+        });
+        if let Some(subagent) = subagent {
+            client_metadata["x-openai-subagent"] = serde_json::json!(subagent);
+        }
+        serde_json::json!({
+            "input": input,
+            "client_metadata": client_metadata,
+        })
+    }
+
+    #[test]
+    fn current_input_matcher_ignores_stale_history_and_checks_identity() {
+        let root_message = serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": ROOT_PROMPT}],
+            "internal_chat_message_metadata_passthrough": {"turn_id": "turn"},
+        });
+        let stale_root_request = request_with_body(body_with_input(
+            serde_json::json!([
+                root_message.clone(),
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "later turn"}],
+                    "internal_chat_message_metadata_passthrough": {"turn_id": "turn"},
+                },
+            ]),
+            None,
+        ));
+        assert!(!request_matches_current_input(
+            &stale_root_request,
+            "message",
+            Some(ROOT_PROMPT),
+            /*call_id*/ None,
+            /*expected_subagent*/ None,
+        ));
+
+        let current_root_request = request_with_body(body_with_input(
+            serde_json::json!([root_message.clone()]),
+            None,
+        ));
+        assert!(request_matches_current_input(
+            &current_root_request,
+            "message",
+            Some(ROOT_PROMPT),
+            /*call_id*/ None,
+            /*expected_subagent*/ None,
+        ));
+
+        let owner_followup_request = request_with_body(body_with_input(
+            serde_json::json!([
+                root_message,
+                {
+                    "type": "function_call_output",
+                    "call_id": "sub-spawn-call",
+                    "internal_chat_message_metadata_passthrough": {"turn_id": "turn"},
+                },
+            ]),
+            Some("collab_spawn"),
+        ));
+        assert!(request_matches_current_input(
+            &owner_followup_request,
+            "function_call_output",
+            /*text*/ None,
+            Some("sub-spawn-call"),
+            Some("collab_spawn"),
+        ));
+        assert!(!request_matches_current_input(
+            &owner_followup_request,
+            "function_call_output",
+            /*text*/ None,
+            Some("root-spawn-call"),
+            /*expected_subagent*/ None,
+        ));
+    }
+}
+
 #[derive(Debug)]
 struct LimitPromptMatcher;
 
@@ -276,7 +450,15 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
 
     mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| body_contains(request, ROOT_PROMPT),
+        |request: &wiremock::Request| {
+            request_matches_current_input(
+                request,
+                "message",
+                Some(ROOT_PROMPT),
+                /*call_id*/ None,
+                /*expected_subagent*/ None,
+            )
+        },
         sse(vec![
             ev_response_created("root-spawn"),
             ev_function_call_with_namespace(
@@ -291,7 +473,15 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
     .await;
     mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| body_contains(request, ORCHESTRATOR_TASK),
+        |request: &wiremock::Request| {
+            request_matches_current_input(
+                request,
+                "agent_message",
+                Some(ORCHESTRATOR_TASK),
+                /*call_id*/ None,
+                Some("collab_spawn"),
+            )
+        },
         sse(vec![
             ev_response_created("orchestrator-spawn"),
             ev_function_call_with_namespace(
@@ -306,7 +496,15 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
     .await;
     mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| body_contains(request, "root-spawn-call"),
+        |request: &wiremock::Request| {
+            request_matches_current_input(
+                request,
+                "function_call_output",
+                /*text*/ None,
+                Some("root-spawn-call"),
+                /*expected_subagent*/ None,
+            )
+        },
         sse(vec![
             ev_response_created("root-followup"),
             ev_assistant_message("root-done", "orchestrator started"),
@@ -316,7 +514,15 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
     .await;
     mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| body_contains(request, "sub-spawn-call"),
+        |request: &wiremock::Request| {
+            request_matches_current_input(
+                request,
+                "function_call_output",
+                /*text*/ None,
+                Some("sub-spawn-call"),
+                Some("collab_spawn"),
+            )
+        },
         sse(vec![
             ev_response_created("orchestrator-followup"),
             ev_assistant_message("orchestrator-ready", "sub-orchestrator started"),
