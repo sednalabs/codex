@@ -16,8 +16,11 @@ use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_exec_server::RemoveOptions;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ExtensionEventSink;
+use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
+use codex_extension_api::SkillInvocationContributor;
+use codex_extension_api::SkillInvocationInput;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
@@ -2457,6 +2460,23 @@ async fn production_turn_uses_provider_host_catalog_and_core_snapshot_injection(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn production_turn_suppresses_only_the_superseded_host_skill_prompt() -> Result<()> {
+    #[derive(Default)]
+    struct SkillInvocationRecorder(Mutex<Vec<String>>);
+
+    impl SkillInvocationContributor for SkillInvocationRecorder {
+        fn on_skill_invocation<'a>(
+            &'a self,
+            input: SkillInvocationInput<'a>,
+        ) -> ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(input.skill_resource.to_owned());
+            })
+        }
+    }
+
     let server = responses::start_mock_server().await;
     let response = mount_sse_once(
         &server,
@@ -2498,6 +2518,8 @@ async fn production_turn_suppresses_only_the_superseded_host_skill_prompt() -> R
         warnings: Vec::new(),
     };
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    let recorder = Arc::new(SkillInvocationRecorder::default());
+    extensions.skill_invocation_contributor(recorder.clone());
     install_with_providers(
         &mut extensions,
         SkillProviders::new().with_provider(SkillProviderSource::new(
@@ -2541,6 +2563,13 @@ async fn production_turn_suppresses_only_the_superseded_host_skill_prompt() -> R
                 "<skill>\n<name>first-host</name>\n<path>{provider_resource}</path>\n{provider_contents}\n</skill>"
             ),
         ]
+    );
+    assert_eq!(
+        *recorder
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        vec![second_skill_path.display().to_string()]
     );
 
     Ok(())

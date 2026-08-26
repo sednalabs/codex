@@ -534,7 +534,7 @@ where
                         .filter(|host_skill| host_skill.name == entry.name)
                     {
                         injected_host_skill_prompts
-                            .insert_path(host_skill.path_to_skills_md.to_string_lossy());
+                            .insert_superseded_path(host_skill.path_to_skills_md.to_string_lossy());
                     }
                 }
             }

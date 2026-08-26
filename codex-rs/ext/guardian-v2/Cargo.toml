@@ -24,6 +24,7 @@ codex-model-provider = { workspace = true }
 codex-models-manager = { workspace = true }
 codex-network-proxy = { workspace = true }
 codex-protocol = { workspace = true }
+dirs = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

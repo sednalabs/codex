@@ -44,6 +44,7 @@ use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
 use tokio::sync::oneshot;
 
+use super::trusted_skills::GuardianTrustedSkillsFragment;
 use super::trusted_tools::GuardianTrustedToolFragment;
 
 pub(crate) const MODEL: &str = "gpt-5.6-luna";
@@ -93,6 +94,8 @@ pub struct LunaSamplingRequest {
     pub trusted_review_evidence: Vec<String>,
     /// Host-attested metadata for the current home-owned MCP tool or connector.
     pub trusted_tool_context: Option<GuardianTrustedToolFragment>,
+    /// Host-verified paths of user-owned skills invoked during this turn.
+    pub trusted_skill_paths: Vec<String>,
     /// Ordered untrusted input entries that the model should classify.
     pub input: Vec<String>,
     /// Optional bounded screenshots accompanying the transcript.
@@ -476,6 +479,13 @@ impl LunaSampler {
         }
         if let Some(fragment) = request.trusted_tool_context {
             input.push(ContextualUserFragment::into(fragment));
+        }
+        if !request.trusted_skill_paths.is_empty() {
+            input.push(ContextualUserFragment::into(
+                GuardianTrustedSkillsFragment {
+                    paths: request.trusted_skill_paths,
+                },
+            ));
         }
         input.push(ResponseItem::Message {
             id: None,
