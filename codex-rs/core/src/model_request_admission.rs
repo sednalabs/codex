@@ -58,7 +58,7 @@ enum ModelRequestKind {
 }
 
 impl ModelRequestKind {
-    pub(crate) const fn is_inference(self) -> bool {
+    const fn is_inference(self) -> bool {
         matches!(self, Self::Inference(_))
     }
 
@@ -80,7 +80,7 @@ pub(crate) struct ModelRequestIdentity {
     pub(crate) thread_id: ThreadId,
     pub(crate) turn_id: Option<String>,
     pub(crate) logical_request_id: String,
-    pub(crate) kind: ModelRequestKind,
+    kind: ModelRequestKind,
     pub(crate) configured_provider_key: String,
     pub(crate) configured_requested_model: Option<String>,
     pub(crate) effective_provider_id: String,
