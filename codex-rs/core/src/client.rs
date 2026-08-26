@@ -1416,7 +1416,7 @@ impl ModelClientSession {
             provider = %self.client.state.provider.info().name,
             wire_api = %self.client.state.provider.info().wire_api,
             transport = "responses_websocket",
-            api.path = "responses",
+            api.path = params.endpoint.path(),
             turn.has_metadata_header = params.responses_metadata.has_turn_metadata()
         )
     )]
@@ -1504,7 +1504,7 @@ impl ModelClientSession {
             wire_api = %self.client.state.provider.info().wire_api,
             transport = "responses_http",
             http.method = "POST",
-            api.path = "responses",
+            api.path = tracing::field::Empty,
             turn.has_metadata_header = responses_metadata.has_turn_metadata()
         )
     )]
@@ -1530,6 +1530,7 @@ impl ModelClientSession {
             let endpoint = self
                 .client
                 .responses_endpoint(client_setup.auth.as_ref(), &model_info.slug);
+            tracing::Span::current().record("api.path", endpoint.path());
             let transport = self
                 .client
                 .build_api_transport(&client_setup.api_provider, endpoint.path())?;
@@ -1657,7 +1658,7 @@ impl ModelClientSession {
             model = %model_info.slug,
             wire_api = %self.client.state.provider.info().wire_api,
             transport = "responses_websocket",
-            api.path = "responses",
+            api.path = tracing::field::Empty,
             turn.has_metadata_header = responses_metadata.has_turn_metadata(),
             websocket.warmup = warmup
         )
@@ -1688,6 +1689,7 @@ impl ModelClientSession {
             let endpoint = self
                 .client
                 .responses_endpoint(client_setup.auth.as_ref(), &model_info.slug);
+            tracing::Span::current().record("api.path", endpoint.path());
             let request_auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),

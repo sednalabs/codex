@@ -96,7 +96,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
         fields(
             transport = "responses_http",
             http.method = "POST",
-            api.path = "responses"
+            api.path = self.endpoint.path()
         )
     )]
     pub async fn stream_request(
@@ -136,7 +136,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
         fields(
             transport = "responses_http",
             http.method = "POST",
-            api.path = "responses",
+            api.path = self.endpoint.path(),
             turn.has_state = turn_state.is_some()
         )
     )]

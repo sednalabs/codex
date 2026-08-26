@@ -182,6 +182,7 @@ struct ResponsesWebsocketTimingLogContext {
 
 pub struct ResponsesWebsocketConnection {
     stream: Arc<Mutex<Option<WsStream>>>,
+    endpoint: ResponsesEndpoint,
     // TODO (pakrym): is this the right place for timeout?
     idle_timeout: Duration,
     server_reasoning_included: bool,
@@ -193,6 +194,7 @@ impl std::fmt::Debug for ResponsesWebsocketConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResponsesWebsocketConnection")
             .field("stream", &"<ws-stream>")
+            .field("endpoint", &self.endpoint)
             .field("idle_timeout", &self.idle_timeout)
             .field("server_reasoning_included", &self.server_reasoning_included)
             .field("server_model", &self.server_model)
@@ -208,9 +210,11 @@ impl ResponsesWebsocketConnection {
         server_reasoning_included: bool,
         server_model: Option<String>,
         telemetry: Option<Arc<dyn WebsocketTelemetry>>,
+        endpoint: ResponsesEndpoint,
     ) -> Self {
         Self {
             stream: Arc::new(Mutex::new(Some(stream))),
+            endpoint,
             idle_timeout,
             server_reasoning_included,
             server_model,
@@ -226,7 +230,7 @@ impl ResponsesWebsocketConnection {
         name = "responses_websocket.stream_request",
         level = "info",
         skip_all,
-        fields(transport = "responses_websocket", api.path = "responses")
+        fields(transport = "responses_websocket", api.path = self.endpoint.path())
     )]
     pub async fn stream_request(
         &self,
@@ -388,7 +392,7 @@ impl ResponsesWebsocketClient {
         name = "responses_websocket.connect",
         level = "info",
         skip_all,
-        fields(transport = "responses_websocket", api.path = "responses")
+        fields(transport = "responses_websocket", api.path = self.endpoint.path())
     )]
     pub async fn connect(
         &self,
@@ -415,6 +419,7 @@ impl ResponsesWebsocketClient {
             server_reasoning_included,
             server_model,
             telemetry,
+            self.endpoint,
         ))
     }
 
