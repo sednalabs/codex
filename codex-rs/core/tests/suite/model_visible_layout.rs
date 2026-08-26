@@ -213,6 +213,7 @@ async fn model_visible_environment_context_preserves_foreign_workspace_roots() -
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
+                permission_profile: Some(PermissionProfile::workspace_write()),
                 environments: Some(TurnEnvironmentSelections::new(
                     test.config.cwd.clone(),
                     vec![TurnEnvironmentSelection {
@@ -240,6 +241,10 @@ async fn model_visible_environment_context_preserves_foreign_workspace_roots() -
     assert!(
         environment_context.contains("<workspace_roots><root>C:\\workspace</root>"),
         "foreign workspace root should remain visible to the model: {environment_context}"
+    );
+    assert!(
+        environment_context.contains("<entry access=\"write\"><path>C:\\workspace</path>"),
+        "foreign workspace root should retain its permissions: {environment_context}"
     );
 
     Ok(())

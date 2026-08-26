@@ -455,10 +455,10 @@ impl AgentControl {
                     let owner_environment = parent_environments
                         .turn_environments()
                         .find(|environment| {
-                            environment.selection.environment_id == *environment_id
-                                && environment.cwd() == &selection.cwd
-                                && environment.workspace_roots()
-                                    == selection.workspace_roots.as_slice()
+                            let parent_selection = &environment.selection;
+                            parent_selection.environment_id == selection.environment_id
+                                && parent_selection.cwd == selection.cwd
+                                && parent_selection.workspace_roots == selection.workspace_roots
                         })
                         .ok_or_else(|| {
                             invalid_environment("no longer matches a ready parent environment")
@@ -493,8 +493,8 @@ impl AgentControl {
                     let cwd = selection.cwd.to_abs_path().map_err(|_| {
                         invalid_environment("working directory is not a local absolute path")
                     })?;
-                    let roots = selection
-                        .workspace_roots
+                    let roots = owner_environment
+                        .workspace_roots()
                         .iter()
                         .map(PathUri::to_abs_path)
                         .collect::<Result<Vec<_>, _>>()

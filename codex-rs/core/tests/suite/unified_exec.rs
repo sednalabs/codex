@@ -391,6 +391,7 @@ async fn exec_command_uses_installed_environment_shell_policy_with_explicit_over
             &selection,
             EnvironmentConfig {
                 allow_login_shell: true,
+                workspace_roots: selection.workspace_roots.clone(),
                 permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::Disabled),
                 shell_environment_policy: ShellEnvironmentPolicy {
                     inherit: ShellEnvironmentPolicyInherit::None,

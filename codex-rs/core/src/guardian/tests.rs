@@ -649,7 +649,7 @@ async fn build_guardian_prompt_includes_parent_turn_denied_reads() -> anyhow::Re
     };
     environment.config_mut().permission_profile =
         PermissionProfileSnapshot::legacy(environment_permission_profile);
-    environment.selection.workspace_roots = vec![
+    environment.config_mut().workspace_roots = vec![
         PathUri::from_abs_path(&workspace_root),
         PathUri::from_abs_path(&second_workspace_root),
     ];

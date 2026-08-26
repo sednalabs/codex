@@ -9432,6 +9432,7 @@ async fn record_context_updates_use_environment_permission_profile_and_workspace
     let cwd = environment.cwd().clone();
     let workspace_root = current_context.config.cwd.join("selected-workspace");
     let mut environment_config = environment.config().clone();
+    environment_config.workspace_roots = vec![PathUri::from_abs_path(&workspace_root)];
     environment_config.permission_profile =
         PermissionProfileSnapshot::legacy(PermissionProfile::workspace_write());
     current_context.environments.environments[0] =

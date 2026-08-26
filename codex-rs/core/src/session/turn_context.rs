@@ -104,7 +104,7 @@ impl TurnEnvironment {
     }
 
     pub(crate) fn workspace_roots(&self) -> &[PathUri] {
-        &self.selection.workspace_roots
+        &self.config().workspace_roots
     }
 
     pub(crate) fn permission_profile(&self) -> &PermissionProfile {
@@ -160,7 +160,7 @@ impl std::fmt::Debug for TurnEnvironment {
             .field("environment_id", &self.selection.environment_id)
             .field("environment", &self.environment)
             .field("cwd", &self.selection.cwd)
-            .field("workspace_roots", &self.selection.workspace_roots)
+            .field("workspace_roots", &self.config().workspace_roots)
             .field("temporary_directories", &self.temporary_directories)
             .field("shell", &self.shell)
             .field("config", self.config())
