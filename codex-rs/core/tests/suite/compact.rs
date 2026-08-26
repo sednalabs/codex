@@ -2730,8 +2730,10 @@ async fn pre_sampling_compact_failure_reports_previous_model_without_continuatio
     )
     .await;
 
+    type LifecycleContexts = Arc<std::sync::Mutex<Vec<(Option<String>, Option<String>)>>>;
+
     struct LifecycleRecorder {
-        contexts: Arc<std::sync::Mutex<Vec<(Option<String>, Option<String>)>>>,
+        contexts: LifecycleContexts,
     }
 
     impl codex_extension_api::TurnLifecycleContributor for LifecycleRecorder {

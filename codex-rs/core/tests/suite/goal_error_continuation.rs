@@ -272,7 +272,10 @@ fn request_matches_current_input(
     };
     if turn_metadata["thread_id"].as_str() != Some(thread_id)
         || turn_metadata["turn_id"].as_str() != Some(turn_id)
-        || client_metadata["x-openai-subagent"].as_str() != expected_subagent
+        || client_metadata
+            .get("x-openai-subagent")
+            .and_then(Value::as_str)
+            != expected_subagent
         || current_input
             .pointer("/internal_chat_message_metadata_passthrough/turn_id")
             .and_then(Value::as_str)
@@ -381,7 +384,7 @@ mod matcher_tests {
         });
         let stale_root_request = request_with_body(body_with_input(
             serde_json::json!([
-                root_message.clone(),
+                root_message,
                 {
                     "type": "message",
                     "role": "user",
@@ -389,7 +392,7 @@ mod matcher_tests {
                     "internal_chat_message_metadata_passthrough": {"turn_id": "turn"},
                 },
             ]),
-            None,
+            /* subagent */ None,
         ));
         assert!(!request_matches_current_input(
             &stale_root_request,
@@ -400,8 +403,8 @@ mod matcher_tests {
         ));
 
         let current_root_request = request_with_body(body_with_input(
-            serde_json::json!([root_message.clone(), environment_context.clone()]),
-            None,
+            serde_json::json!([root_message, environment_context]),
+            /* subagent */ None,
         ));
         assert!(request_matches_current_input(
             &current_root_request,
@@ -428,7 +431,7 @@ mod matcher_tests {
             "internal_chat_message_metadata_passthrough": {"turn_id": "turn"},
         });
         let owner_initial_request = request_with_body(body_with_input(
-            serde_json::json!([owner_agent_message.clone(), environment_context.clone()]),
+            serde_json::json!([owner_agent_message, environment_context]),
             Some("collab_spawn"),
         ));
         assert!(request_matches_current_input(
@@ -458,7 +461,7 @@ mod matcher_tests {
                     ],
                     "internal_chat_message_metadata_passthrough": {"turn_id": "turn"},
                 },
-                environment_context.clone(),
+                environment_context,
             ]),
             Some("collab_spawn"),
         ));
@@ -478,7 +481,7 @@ mod matcher_tests {
                     "call_id": "sub-spawn-call",
                     "internal_chat_message_metadata_passthrough": {"turn_id": "turn"},
                 },
-                environment_context.clone(),
+                environment_context,
             ]),
             Some("collab_spawn"),
         ));
