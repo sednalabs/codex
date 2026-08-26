@@ -46,7 +46,7 @@ pub(crate) struct TurnInputQueue {
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
-    task_transition: Mutex<()>,
+    task_transition: Arc<Mutex<()>>,
     mailbox_pending_mails: Mutex<VecDeque<InterAgentCommunication>>,
     terminal_completions: Mutex<VecDeque<TerminalCompletionNotification>>,
     residency_transition: Arc<Mutex<()>>,
@@ -68,7 +68,7 @@ impl InputQueue {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
         Self {
             activity_tx,
-            task_transition: Mutex::new(()),
+            task_transition: Arc::new(Mutex::new(())),
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
             terminal_completions: Mutex::new(VecDeque::new()),
             residency_transition: Arc::new(Mutex::new(())),
@@ -84,8 +84,8 @@ impl InputQueue {
         }
     }
 
-    pub(crate) async fn lock_task_transition(&self) -> MutexGuard<'_, ()> {
-        self.task_transition.lock().await
+    pub(crate) async fn lock_task_transition(&self) -> OwnedMutexGuard<()> {
+        Arc::clone(&self.task_transition).lock_owned().await
     }
     /// Lock mailbox before terminal; acquisition is non-consuming until commit.
     #[expect(clippy::await_holding_invalid_type, reason = "atomic input transfer")]

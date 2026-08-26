@@ -775,7 +775,6 @@ impl Session {
         .await;
     }
 
-    #[expect(clippy::await_holding_invalid_type, reason = "atomic abort transition")]
     async fn abort_tasks(self: &Arc<Self>, reason: TurnAbortReason, restart_pending_work: bool) {
         let mut aborted_turn = false;
         let mut active_turn_to_clear = None;
@@ -810,7 +809,6 @@ impl Session {
         }
     }
 
-    #[expect(clippy::await_holding_invalid_type, reason = "atomic turn selection")]
     pub(crate) async fn abort_turn_if_active(
         self: &Arc<Self>,
         turn_id: &str,
@@ -853,7 +851,6 @@ impl Session {
         true
     }
 
-    #[expect(clippy::await_holding_invalid_type, reason = "completion transition")]
     pub async fn on_task_finished(
         self: &Arc<Self>,
         task_identity: TaskIdentity,
