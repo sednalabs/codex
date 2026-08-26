@@ -111,14 +111,13 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                                 .error
                                 .resets_at
                                 .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0));
-                            return CodexErr::UsageLimitReached(UsageLimitReachedError {
+                            return CodexErr::recognized_http_usage_limit(UsageLimitReachedError {
                                 plan_type: err.error.plan_type,
                                 resets_at,
                                 rate_limits: rate_limits.map(Box::new),
                                 promo_message,
                                 rate_limit_reached_type,
-                            })
-                            .with_recognized_http_usage_limit_source();
+                            });
                         } else if err.error.error_type.as_deref() == Some("usage_not_included") {
                             return CodexErr::UsageNotIncluded;
                         }

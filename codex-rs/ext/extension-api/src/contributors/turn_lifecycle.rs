@@ -68,7 +68,11 @@ pub struct ProviderLimitEvidence {
     pub retry_after: Option<Duration>,
 }
 
-/// Local request identity and separately-authorized provider-limit evidence.
+/// Host-provided, per-callback diagnostic projection of local request identity and provider-limit
+/// evidence.
+///
+/// Contributors may write thread-scoped extension state, but that state is never authority for
+/// this projection and is not read back by Core to populate it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RateLimitDomain {
     pub local_request_identity: LocalRequestIdentity,
@@ -126,9 +130,9 @@ pub struct TurnErrorInput<'a> {
     /// Provider-specified delay before a rate-limited request may be retried.
     /// `None` means the provider did not establish an eligible retry time.
     pub rate_limit_retry_after: Option<Duration>,
-    /// Local request correlation plus authority-tagged provider-limit evidence associated with
-    /// this error. Provider-limit evidence may be explicitly unknown; this is not a claim of
-    /// exact-thread provider evidence.
+    /// Host-provided, per-callback local request correlation plus authority-tagged provider-limit
+    /// evidence associated with this error. Provider-limit evidence may be explicitly unknown;
+    /// contributor-writable thread state is never read back as authority for this projection.
     pub rate_limit_domain: RateLimitDomain,
     /// Store scoped to the host session runtime.
     pub session_store: &'a ExtensionData,
