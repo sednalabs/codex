@@ -1061,6 +1061,7 @@ async fn execute_inner(
                                         "name": "webSearch", "status": null
                                     })),
                                     ThreadItem::UserMessage { .. }
+                                    | ThreadItem::FunctionCallOutput { .. }
                                     | ThreadItem::HookPrompt { .. }
                                     | ThreadItem::AgentMessage { .. }
                                     | ThreadItem::Plan { .. }
@@ -1316,6 +1317,23 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
             ThreadItem::HookPrompt { id, fragments } => json!({
                 "type": "hookPrompt", "id": id, "fragmentCount": fragments.len()
             }),
+            ThreadItem::FunctionCallOutput {
+                id,
+                name,
+                namespace,
+                output,
+            } => {
+                let mut item = json!({
+                    "type": "functionCallOutput", "id": id, "name": name, "namespace": namespace
+                });
+                if include_outputs {
+                    item["output"] = output_summary(
+                        output.to_text().as_deref().unwrap_or("[non-text output]"),
+                        output_chars,
+                    );
+                }
+                item
+            }
             ThreadItem::AgentMessage { id, text, phase, .. } => json!({
                 "type": "agentMessage", "id": id, "text": truncate(text, DEFAULT_OUTPUT_CHARS), "phase": phase
             }),

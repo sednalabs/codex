@@ -25,6 +25,7 @@ use codex_hooks::hook_execution_mode_label;
 use codex_hooks::hook_handler_type_label;
 use codex_otel::HOOK_RUN_DURATION_METRIC;
 use codex_otel::HOOK_RUN_METRIC;
+use codex_protocol::items::FunctionCallOutputItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ResponseItem;
@@ -659,6 +660,24 @@ pub(crate) async fn record_pending_input(
         TurnInput::FunctionCallOutput(item) => {
             sess.record_conversation_items(turn_context, std::slice::from_ref(&item))
                 .await;
+            if let ResponseItem::FunctionCallOutput {
+                id: Some(id),
+                name: Some(name),
+                namespace,
+                output,
+                ..
+            } = item
+            {
+                let item = TurnItem::FunctionCallOutput(FunctionCallOutputItem {
+                    id: id.to_string(),
+                    name,
+                    namespace,
+                    output: output.body,
+                });
+                sess.emit_turn_item_started(turn_context, &item).await;
+                sess.emit_turn_item_completed(turn_context, item).await;
+            }
+            sess.ensure_rollout_materialized(persist_context).await;
         }
         TurnInput::InterAgentCommunication(communication) => {
             sess.record_inter_agent_communication(turn_context, communication)

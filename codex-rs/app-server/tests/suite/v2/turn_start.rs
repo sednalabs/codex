@@ -1473,15 +1473,15 @@ async fn turn_start_rejects_combined_oversized_text_input() -> Result<()> {
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
-            thread_id: thread.id,
+            thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![
                 V2UserInput::Text {
-                    text: first,
+                    text: first.clone(),
                     text_elements: Vec::new(),
                 },
                 V2UserInput::Text {
-                    text: second,
+                    text: second.clone(),
                     text_elements: Vec::new(),
                 },
             ],
@@ -1503,6 +1503,30 @@ async fn turn_start_rejects_combined_oversized_text_input() -> Result<()> {
     assert_eq!(data["input_error_code"], INPUT_TOO_LARGE_ERROR_CODE);
     assert_eq!(data["max_chars"], MAX_USER_INPUT_TEXT_CHARS);
     assert_eq!(data["actual_chars"], actual_chars);
+
+    let tool_req = mcp
+        .send_raw_request(
+            "turn/start",
+            Some(json!({
+                "threadId": thread.id,
+                "input": [],
+                "toolOutput": {
+                    "name": "send_message_to_thread",
+                    "output": [
+                        { "type": "input_text", "text": first },
+                        { "type": "input_text", "text": second },
+                    ],
+                },
+            })),
+        )
+        .await?;
+    let err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(tool_req)),
+    )
+    .await??;
+    assert_eq!(err.error.code, INVALID_PARAMS_ERROR_CODE);
+    assert_eq!(err.error.data, Some(data));
 
     let turn_started = tokio::time::timeout(
         std::time::Duration::from_millis(250),
@@ -3003,6 +3027,7 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
                     text_elements: Vec::new(),
                 }],
                 turn_trigger: None,
+                tool_output: None,
                 responsesapi_client_metadata: None,
                 additional_context: None,
                 cwd: Some(first_cwd.clone()),
@@ -3054,6 +3079,7 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
                     text_elements: Vec::new(),
                 }],
                 turn_trigger: None,
+                tool_output: None,
                 responsesapi_client_metadata: None,
                 additional_context: None,
                 cwd: None,
