@@ -274,14 +274,6 @@ impl CodexThread {
             .await
     }
 
-    pub(crate) async fn submit_with_residency_transition_held(
-        &self,
-        op: Op,
-    ) -> CodexResult<String> {
-        self.submit_with_residency_transition_held_and_trace(op, /*trace*/ None)
-            .await
-    }
-
     pub(crate) async fn submit_with_residency_transition_held_and_trace(
         &self,
         op: Op,
