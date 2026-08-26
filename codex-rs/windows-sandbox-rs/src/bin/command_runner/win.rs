@@ -10,6 +10,9 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 mod cwd_junction;
+#[cfg(test)]
+#[path = "win/input_loop_tests.rs"]
+mod input_loop_tests;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -442,8 +445,10 @@ fn spawn_input_loop(
         loop {
             let msg = match read_frame(&mut reader) {
                 Ok(Some(v)) => v,
-                Ok(None) => break,
-                Err(_) => break,
+                Ok(None) | Err(_) => {
+                    terminate_job_or_process(&job, process, log_dir.as_deref());
+                    break;
+                }
             };
             match msg.message {
                 Message::Stdin { payload } => {
