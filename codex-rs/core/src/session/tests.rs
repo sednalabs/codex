@@ -3130,7 +3130,7 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
     assert_eq!(
         actual
             .iter()
-            .map(|record| record.error_kind.clone())
+            .map(|record| record.error_kind)
             .collect::<Vec<_>>(),
         vec![
             None,
