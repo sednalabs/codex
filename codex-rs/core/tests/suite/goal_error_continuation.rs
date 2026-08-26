@@ -452,9 +452,12 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
             break started.turn_id;
         }
     };
-    tokio::time::timeout(Duration::from_secs(5), child_stream_server.wait_for_request_count(1))
-        .await
-        .map_err(|_| anyhow::anyhow!("timed out waiting for nested sidecar stream"))?;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        child_stream_server.wait_for_request_count(/*count*/ 1),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for nested sidecar stream"))?;
     assert_eq!(
         1,
         sub_request.requests().len(),
@@ -484,7 +487,10 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
             break complete;
         }
     };
-    assert_eq!(limit_turn_complete.turn_id, limit_turn_id, "provider turn must remain observable");
+    assert_eq!(
+        limit_turn_complete.turn_id, limit_turn_id,
+        "provider turn must remain observable"
+    );
     assert!(matches!(
         limit_turn_complete
             .error

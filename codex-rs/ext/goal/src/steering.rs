@@ -65,7 +65,7 @@ fn continuation_prompt(goal: &ThreadGoal) -> String {
         .map(|budget| (budget - goal.tokens_used).max(0).to_string())
         .unwrap_or_else(|| "unbounded".to_string());
 
-    let mut prompt = CONTINUATION_PROMPT_TEMPLATE
+    CONTINUATION_PROMPT_TEMPLATE
         .render([
             ("objective", objective.as_str()),
             ("tokens_used", tokens_used.as_str()),
@@ -74,9 +74,7 @@ fn continuation_prompt(goal: &ThreadGoal) -> String {
         ])
         .unwrap_or_else(|err| {
             panic!("embedded goals/continuation.md template failed to render: {err}")
-        });
-
-    prompt
+        })
 }
 
 fn budget_limit_prompt(goal: &ThreadGoal) -> String {
