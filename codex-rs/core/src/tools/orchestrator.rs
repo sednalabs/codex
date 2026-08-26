@@ -127,12 +127,12 @@ impl ToolOrchestrator {
         tool: &mut T,
         req: &Rq,
         tool_ctx: &ToolCtx,
-        turn_ctx: &crate::session::turn_context::TurnContext,
-        approval_policy: AskForApproval,
     ) -> Result<OrchestratorRunResult<Out>, ToolError>
     where
         T: ToolRuntime<Rq, Out>,
     {
+        let turn_ctx = tool_ctx.step_context.turn.as_ref();
+        let approval_policy = tool_ctx.step_context.settings.approval_policy();
         let otel = turn_ctx.session_telemetry.clone();
         let otel_tn = flat_tool_name(&tool_ctx.tool_name).into_owned();
         let otel_ci = &tool_ctx.call_id;
@@ -140,7 +140,7 @@ impl ToolOrchestrator {
             .session
             .active_turn_context_and_strict_auto_review()
             .await
-            .is_some_and(|(_, strict_auto_review)| strict_auto_review);
+            .is_some_and(|(_, _, strict_auto_review)| strict_auto_review);
         // 1) Approval
         let mut already_approved = false;
 

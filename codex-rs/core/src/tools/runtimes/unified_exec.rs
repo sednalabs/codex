@@ -8,7 +8,7 @@ use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecExpiration;
 use crate::guardian::GUARDIAN_REVIEW_TIMEOUT;
 use crate::guardian::GuardianNetworkAccessTrigger;
-use crate::guardian::routes_approval_to_guardian;
+use crate::guardian::routes_approval_policy_to_guardian;
 use crate::plugins::metrics::sidecar_for_command;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecServerEnvConfig;
@@ -289,8 +289,10 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                 let mut launch = network.remote_launch_config().await.map_err(|err| {
                     ToolError::Codex(CodexErr::Io(io::Error::other(err.to_string())))
                 })?;
-                if routes_approval_to_guardian(&ctx.step_context.turn)
-                    && network.remote_policy_decider().is_some()
+                if routes_approval_policy_to_guardian(
+                    ctx.step_context.settings.approval_policy(),
+                    ctx.step_context.settings.approvals_reviewer(),
+                ) && network.remote_policy_decider().is_some()
                 {
                     let timeout = ctx
                         .session

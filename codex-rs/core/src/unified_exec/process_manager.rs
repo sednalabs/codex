@@ -1266,7 +1266,7 @@ impl UnifiedExecProcessManager {
             .create_exec_approval_requirement_for_shell(
                 ExecApprovalRequest {
                     command: &request.command,
-                    approval_policy: turn.approval_policy(),
+                    approval_policy: context.step_context.settings.approval_policy(),
                     permission_profile: request.turn_environment.permission_profile().clone(),
                     environment_policy: request.turn_environment.config().exec_policy.as_ref(),
                     windows_sandbox_level: request.turn_environment.config().windows_sandbox_level,
@@ -1311,7 +1311,7 @@ impl UnifiedExecProcessManager {
             tool_name: ToolName::plain("exec_command"),
         };
         orchestrator
-            .run(&mut runtime, &req, &tool_ctx, turn, turn.approval_policy())
+            .run(&mut runtime, &req, &tool_ctx)
             .await
             .map(|result| (result.output, result.deferred_network_approval))
             .map_err(|err| match err {

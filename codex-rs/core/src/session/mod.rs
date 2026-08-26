@@ -41,6 +41,7 @@ use crate::image_preparation::unified_image_budget_enabled;
 use crate::parse_turn_item;
 use crate::realtime_conversation::RealtimeConversationManager;
 use crate::session::step_context::StepContext;
+use crate::session::step_settings::ResolvedStepSettings;
 use crate::session::step_settings::StepSettings;
 use crate::session::turn_context::TurnEnvironment;
 use crate::session_prefix::format_inter_agent_completion_message;
@@ -2604,15 +2605,16 @@ impl Session {
     )]
     pub(crate) async fn request_permissions_for_environment(
         self: &Arc<Self>,
-        review_context: impl Into<crate::guardian::GuardianReviewContext>,
+        step_context: &Arc<StepContext>,
         call_id: String,
         args: RequestPermissionsArgs,
         environment: TurnEnvironmentSelection,
         cancellation_token: CancellationToken,
     ) -> Option<RequestPermissionsResponse> {
-        let review_context = review_context.into();
-        let turn_context = review_context.turn();
-        match turn_context.as_ref().approval_policy() {
+        let turn_context = &step_context.turn;
+        let approval_policy = step_context.settings.approval_policy();
+        let approvals_reviewer = step_context.settings.approvals_reviewer();
+        match approval_policy {
             AskForApproval::Never => {
                 return Some(RequestPermissionsResponse {
                     permissions: RequestPermissionProfile::default(),
@@ -2648,7 +2650,8 @@ impl Session {
             });
         };
 
-        if crate::guardian::routes_approval_to_guardian(turn_context.as_ref()) {
+        if crate::guardian::routes_approval_policy_to_guardian(approval_policy, approvals_reviewer)
+        {
             let originating_turn_state = {
                 let active = self.active_turn.lock().await;
                 active.as_ref().map(|active| Arc::clone(&active.turn_state))
@@ -2660,7 +2663,7 @@ impl Session {
                 permissions: requested_permissions.clone(),
             };
             let approval_context = ApprovalContext {
-                review_context: review_context.clone(),
+                review_context: crate::guardian::GuardianReviewContext::from(step_context),
                 cancellation_token: Some(cancellation_token.clone()),
                 call_id,
                 tool_name: ToolName::plain("request_permissions"),
@@ -2982,12 +2985,14 @@ impl Session {
     )]
     pub(crate) async fn active_turn_context_and_strict_auto_review(
         &self,
-    ) -> Option<(Arc<TurnContext>, bool)> {
+    ) -> Option<(Arc<TurnContext>, Arc<ResolvedStepSettings>, bool)> {
         let active = self.active_turn.lock().await;
         let active = active.as_ref()?;
-        let turn_context = Arc::clone(&active.task.as_ref()?.turn_context);
+        let task = active.task.as_ref()?;
+        let turn_context = Arc::clone(&task.turn_context);
+        let step_settings = turn_context.current_settings.load_full();
         let ts = active.turn_state.lock().await;
-        Some((turn_context, ts.strict_auto_review_enabled()))
+        Some((turn_context, step_settings, ts.strict_auto_review_enabled()))
     }
 
     pub(crate) async fn granted_session_permissions(

@@ -564,7 +564,7 @@ async fn execute_verified_patch(
             .await
             .unwrap_or_else(|_| patch_permissions_without_path_matching(&action));
     let apply = apply_patch::prepare_apply_patch(
-        tool_ctx.step_context.turn.as_ref(),
+        &tool_ctx.step_context,
         &turn_environment,
         &file_system_sandbox_policy,
         action,
@@ -595,13 +595,7 @@ async fn execute_verified_patch(
     let mut orchestrator = ToolOrchestrator::new();
     let mut runtime = ApplyPatchRuntime::new();
     let result = orchestrator
-        .run(
-            &mut runtime,
-            &request,
-            &tool_ctx,
-            tool_ctx.step_context.turn.as_ref(),
-            tool_ctx.step_context.turn.approval_policy(),
-        )
+        .run(&mut runtime, &request, &tool_ctx)
         .await
         .map(|result| result.output);
     let (result, delta) = match result {

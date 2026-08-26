@@ -150,7 +150,7 @@ pub(crate) async fn prepare_unified_exec_zsh_fork(
         environment_id: req.turn_environment.selection.environment_id.clone(),
         source: GuardianCommandSource::UnifiedExec,
         tool_name: ctx.tool_name.clone(),
-        approval_policy: ctx.step_context.turn.approval_policy(),
+        approval_policy: ctx.step_context.settings.approval_policy(),
         permission_profile: exec_request.permission_profile.clone(),
         sandbox_permissions: req.sandbox_permissions,
         approval_sandbox_permissions: approval_sandbox_permissions(
@@ -280,7 +280,7 @@ impl CoreShellActionProvider {
         };
         match stopwatch
             .pause_for(async {
-                let (turn_context, strict_auto_review) = self
+                let (turn_context, step_settings, strict_auto_review) = self
                     .session
                     .active_turn_context_and_strict_auto_review()
                     .await
@@ -291,7 +291,10 @@ impl CoreShellActionProvider {
                         )
                     })?;
                 let approval_ctx = ApprovalContext {
-                    review_context: GuardianReviewContext::from(turn_context),
+                    review_context: GuardianReviewContext::from_resolved_settings(
+                        turn_context,
+                        &step_settings,
+                    ),
                     // The running process can outlive its launching tool or code-mode cell.
                     cancellation_token: None,
                     call_id: self.call_id.clone(),
