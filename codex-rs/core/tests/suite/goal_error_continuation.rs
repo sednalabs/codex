@@ -217,14 +217,17 @@ impl Match for LimitPromptMatcher {
 
 #[derive(Debug)]
 struct LimitSequenceResponder {
-    calls: AtomicUsize,
+    calls: Arc<AtomicUsize>,
+    request_attempt_tx: tokio::sync::mpsc::UnboundedSender<usize>,
     limit_response: ResponseTemplate,
     continuation_response: ResponseTemplate,
 }
 
 impl Respond for LimitSequenceResponder {
     fn respond(&self, _request: &Request) -> ResponseTemplate {
-        match self.calls.fetch_add(1, Ordering::SeqCst) {
+        let attempt = self.calls.fetch_add(1, Ordering::SeqCst);
+        let _ = self.request_attempt_tx.send(attempt);
+        match attempt {
             0 => self.limit_response.clone(),
             1 => self.continuation_response.clone(),
             call => panic!("unexpected provider-limit request {call}"),
@@ -365,11 +368,14 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         ev_assistant_message("orchestrator-resumed", "owner resumed"),
         ev_completed("orchestrator-continuation"),
     ]));
+    let (limit_request_tx, mut limit_request_rx) = tokio::sync::mpsc::unbounded_channel();
+    let limit_request_calls = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
         .and(path_regex(".*/responses$"))
         .and(LimitPromptMatcher)
         .respond_with(LimitSequenceResponder {
-            calls: AtomicUsize::new(0),
+            calls: Arc::clone(&limit_request_calls),
+            request_attempt_tx: limit_request_tx,
             limit_response,
             continuation_response,
         })
@@ -458,12 +464,37 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
     )
     .await
     .map_err(|_| anyhow::anyhow!("timed out waiting for nested sidecar stream"))?;
+    let child_stream_requests = child_stream_server.requests().await;
+    assert_eq!(
+        1,
+        child_stream_requests.len(),
+        "one child physical stream request"
+    );
+    let child_stream_body: Value = serde_json::from_slice(&child_stream_requests[0])
+        .expect("child stream request should contain JSON");
+    assert!(child_stream_body["input"].as_array().is_some_and(|items| {
+        items.iter().any(|item| {
+            item["type"] == "agent_message" && item.to_string().contains(SUB_ORCHESTRATOR_TASK)
+        })
+    }));
+    let expected_child_thread_id = sub_thread_id.to_string();
+    assert_eq!(
+        child_stream_body
+            .pointer("/client_metadata/thread_id")
+            .and_then(Value::as_str),
+        Some(expected_child_thread_id.as_str())
+    );
     assert_eq!(
         1,
         sub_request.requests().len(),
         "one child initial delivery"
     );
     orchestrator.submit(submit_user_turn(LIMIT_PROMPT)).await?;
+    let limit_attempt = tokio::time::timeout(Duration::from_secs(5), limit_request_rx.recv())
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for limit request"))?
+        .expect("limit request signal channel should remain open");
+    assert_eq!(limit_attempt, 0, "limit request is the first owner request");
     let limit_turn_id = loop {
         let event = wait_for_event(&orchestrator, |event| {
             matches!(event, EventMsg::TurnStarted(_))
@@ -529,6 +560,38 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
     })
     .await
     .map_err(|_| anyhow::anyhow!("timed out waiting for owner continuation"))?;
+    let continuation_attempt =
+        tokio::time::timeout(Duration::from_secs(5), limit_request_rx.recv())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for continuation request"))?
+            .expect("continuation request signal channel should remain open");
+    assert_eq!(
+        continuation_attempt, 1,
+        "continuation is the second owner request"
+    );
+    let continuation_turn_id = loop {
+        let event = wait_for_event(&orchestrator, |event| {
+            matches!(event, EventMsg::TurnStarted(_))
+        })
+        .await;
+        if let EventMsg::TurnStarted(started) = event {
+            break started.turn_id;
+        }
+    };
+    let continuation_turn_complete = loop {
+        let event = wait_for_event(&orchestrator, |event| {
+            matches!(event, EventMsg::TurnComplete(complete) if complete.turn_id == continuation_turn_id)
+        })
+        .await;
+        if let EventMsg::TurnComplete(complete) = event {
+            break complete;
+        }
+    };
+    assert!(continuation_turn_complete.error.is_none());
+    assert_eq!(
+        orchestrator.agent_status().await,
+        AgentStatus::Completed(Some("owner resumed".to_string()))
+    );
     assert!(
         test.thread_manager
             .list_thread_ids()
@@ -537,7 +600,6 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         "owner thread identity must remain stable"
     );
     let child_body = sub_request.requests()[0].body_json();
-    let expected_child_thread_id = sub_thread_id.to_string();
     assert_eq!(
         child_body
             .pointer("/client_metadata/thread_id")
@@ -550,6 +612,7 @@ async fn usage_limit_defers_v2_owner_and_preserves_nested_descendant_identity() 
         "nested child must not replay"
     );
     assert_eq!(1, child_stream_server.requests().await.len());
+    assert_eq!(2, limit_request_calls.load(Ordering::SeqCst));
     child_stream_server.shutdown().await;
     Ok(())
 }
