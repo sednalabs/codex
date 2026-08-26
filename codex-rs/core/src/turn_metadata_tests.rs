@@ -45,6 +45,7 @@ fn test_mcp_turn_metadata_context() -> McpTurnMetadataContext<'static> {
     McpTurnMetadataContext {
         model: "gpt-5.4",
         reasoning_effort: Some(ReasoningEffortConfig::High),
+        node_repl_disabled: false,
     }
 }
 
@@ -501,6 +502,7 @@ fn turn_metadata_state_includes_model_and_reasoning_effort_only_in_request_meta(
         .current_meta_value_for_mcp_request(McpTurnMetadataContext {
             model: "gpt-5.4",
             reasoning_effort: None,
+            node_repl_disabled: false,
         })
         .expect("turn metadata should be present");
     assert_eq!(

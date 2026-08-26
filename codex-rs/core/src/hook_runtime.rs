@@ -367,7 +367,8 @@ pub(crate) async fn run_turn_stop_hooks(
         .turn_metadata_state
         .current_meta_value_for_mcp_request(McpTurnMetadataContext {
             model: step_context.settings.model_info.slug.as_str(),
-            reasoning_effort: step_context.settings.reasoning_effort().cloned(),
+            reasoning_effort: step_context.settings.effective_reasoning_effort(),
+            node_repl_disabled: step_context.settings.model_info.node_repl_disabled,
         })
         .map(|turn_metadata| {
             serde_json::Map::from_iter([(

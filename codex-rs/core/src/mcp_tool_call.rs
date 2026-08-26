@@ -466,7 +466,7 @@ async fn handle_approved_mcp_tool_call(
                         tool_input = rewritten_arguments.clone();
                     }
                     let request_meta = build_mcp_tool_call_request_meta(
-                        turn_context,
+                        step_context,
                         &server,
                         call_id,
                         Some(&metadata),
@@ -1180,7 +1180,7 @@ async fn custom_mcp_tool_approval_mode(
 }
 
 fn build_mcp_tool_call_request_meta(
-    turn_context: &TurnContext,
+    step_context: &StepContext,
     server: &str,
     call_id: &str,
     metadata: Option<&McpToolApprovalMetadata>,
@@ -1191,11 +1191,13 @@ fn build_mcp_tool_call_request_meta(
         serde_json::Value::String(call_id.to_string()),
     );
 
-    if let Some(turn_metadata) = turn_context
+    if let Some(turn_metadata) = step_context
+        .turn
         .turn_metadata_state
         .current_meta_value_for_mcp_request(McpTurnMetadataContext {
-            model: turn_context.model_info().slug.as_str(),
-            reasoning_effort: turn_context.effective_reasoning_effort(),
+            model: step_context.settings.model_info.slug.as_str(),
+            reasoning_effort: step_context.settings.effective_reasoning_effort(),
+            node_repl_disabled: step_context.settings.model_info.node_repl_disabled,
         })
     {
         request_meta.insert(

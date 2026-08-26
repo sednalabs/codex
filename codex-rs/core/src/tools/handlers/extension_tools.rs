@@ -164,6 +164,7 @@ async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
         .current_meta_value_for_mcp_request(McpTurnMetadataContext {
             model: invocation.turn.model_info().slug.as_str(),
             reasoning_effort: invocation.turn.effective_reasoning_effort(),
+            node_repl_disabled: invocation.turn.model_info().node_repl_disabled,
         })
         .and_then(|metadata| to_ascii_json_string(&metadata).ok());
     let mut environments = Vec::new();

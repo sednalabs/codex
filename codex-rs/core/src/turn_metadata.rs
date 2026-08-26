@@ -48,6 +48,7 @@ const WORKSPACE_KIND_KEY: &str = "workspace_kind";
 pub(crate) struct McpTurnMetadataContext<'a> {
     pub(crate) model: &'a str,
     pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
+    pub(crate) node_repl_disabled: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -210,6 +211,8 @@ impl TurnMetadataState {
         context: McpTurnMetadataContext<'_>,
     ) -> Option<serde_json::Value> {
         let mut responses_metadata = self.mcp_metadata_template();
+        // Use the issuing step's Node REPL restriction.
+        responses_metadata.node_repl_disabled = Some(context.node_repl_disabled);
         // Never serialize harness-owned tool inventory for external MCP servers.
         responses_metadata.tool_namespaces_info = None;
         let Value::Object(mut metadata) = responses_metadata.turn_metadata_value()? else {

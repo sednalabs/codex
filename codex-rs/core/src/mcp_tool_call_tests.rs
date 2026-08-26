@@ -7,6 +7,7 @@ use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::tests::make_session_and_context_with_rx;
 use crate::session::tests::mcp_config_for_test;
+use crate::session::tests::update_selected_settings_for_test;
 use crate::session::turn_context::TurnEnvironment;
 use crate::state::ActiveTurn;
 use crate::test_support::models_manager_with_provider;
@@ -25,6 +26,7 @@ use codex_features::Features;
 use codex_hooks::HooksConfig;
 use codex_model_provider::create_model_provider;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
@@ -95,6 +97,7 @@ fn mcp_turn_metadata_context(turn_context: &TurnContext) -> McpTurnMetadataConte
     McpTurnMetadataContext {
         model: turn_context.model_info().slug.as_str(),
         reasoning_effort: turn_context.effective_reasoning_effort(),
+        node_repl_disabled: turn_context.model_info().node_repl_disabled,
     }
 }
 
@@ -1012,6 +1015,8 @@ fn truncate_mcp_tool_result_for_event_bounds_large_error() {
 #[tokio::test]
 async fn mcp_tool_call_request_meta_includes_turn_metadata_for_custom_server() {
     let (_, turn_context) = make_session_and_context().await;
+    let turn_context = Arc::new(turn_context);
+    let step_context = StepContext::for_test(Arc::clone(&turn_context));
     turn_context
         .turn_metadata_state
         .set_responsesapi_client_metadata(HashMap::from([
@@ -1024,7 +1029,7 @@ async fn mcp_tool_call_request_meta_includes_turn_metadata_for_custom_server() {
     let expected_turn_metadata = expected_mcp_turn_metadata(&turn_context);
 
     let meta = build_mcp_tool_call_request_meta(
-        &turn_context,
+        &step_context,
         "custom_server",
         "call-custom",
         /*metadata*/ None,
@@ -1067,15 +1072,75 @@ async fn mcp_tool_call_request_meta_includes_turn_metadata_for_custom_server() {
     );
 }
 
+#[test_case::test_case(Some(ReasoningEffortConfig::Low), "low"; "configured effort")]
+#[test_case::test_case(None, "high"; "pinned model default")]
+#[tokio::test]
+async fn mcp_tool_call_request_meta_uses_the_issuing_step(
+    effort: Option<ReasoningEffortConfig>,
+    expected_effort: &str,
+) {
+    let (_, turn_context) = make_session_and_context().await;
+    let turn_context = Arc::new(turn_context);
+    let step_a = StepContext::for_test(Arc::clone(&turn_context));
+    let original_meta =
+        build_mcp_tool_call_request_meta(&step_a, "node_repl", "call-a", /*metadata*/ None);
+    let mut step_b = StepContext::for_test(Arc::clone(&turn_context));
+    let settings = Arc::make_mut(&mut Arc::get_mut(&mut step_b).expect("unique step").settings);
+    update_selected_settings_for_test(settings, |selected| {
+        selected.collaboration_mode = selected.collaboration_mode.with_updates(
+            Some("model-b".to_string()),
+            Some(effort),
+            /*developer_instructions*/ None,
+        );
+    });
+    let model = Arc::make_mut(&mut settings.model_info);
+    model.slug = "model-b".to_string();
+    model.default_reasoning_level = Some(ReasoningEffortConfig::High);
+    model.node_repl_disabled = true;
+    // This separate policy remains turn-owned in this migration.
+    model.node_repl_auto_review_required =
+        !turn_context.model_info().node_repl_auto_review_required;
+
+    let mut expected = expected_mcp_turn_metadata(&turn_context);
+    expected["model"] = serde_json::json!("model-b");
+    expected["reasoning_effort"] = serde_json::json!(expected_effort);
+    expected["node_repl_disabled"] = serde_json::json!(true);
+    assert_eq!(
+        build_mcp_tool_call_request_meta(&step_b, "node_repl", "call-b", /*metadata*/ None),
+        Some(serde_json::json!({
+            "callId": "call-b",
+            crate::X_CODEX_TURN_METADATA_HEADER: expected,
+        })),
+    );
+    assert_eq!(
+        build_mcp_tool_call_request_meta(&step_a, "node_repl", "call-a", /*metadata*/ None),
+        original_meta,
+    );
+    assert_eq!(
+        turn_context
+            .turn_metadata_state
+            .to_responses_metadata(
+                "installation".to_string(),
+                "window".to_string(),
+                crate::responses_metadata::CodexResponsesRequestKind::Turn,
+            )
+            .turn_metadata_value()
+            .expect("Responses turn metadata")["node_repl_disabled"],
+        serde_json::json!(false),
+    );
+}
+
 #[tokio::test]
 async fn mcp_tool_call_request_meta_includes_turn_started_at_unix_ms() {
     let (_, turn_context) = make_session_and_context().await;
+    let turn_context = Arc::new(turn_context);
+    let step_context = StepContext::for_test(Arc::clone(&turn_context));
     turn_context
         .turn_metadata_state
         .set_turn_started_at_unix_ms(/*turn_started_at_unix_ms*/ 1_700_000_000_123);
 
     let meta = build_mcp_tool_call_request_meta(
-        &turn_context,
+        &step_context,
         "custom_server",
         "call-custom",
         /*metadata*/ None,
@@ -1157,6 +1222,8 @@ async fn mcp_sandbox_cwd_is_none_for_unselected_server_environment() -> anyhow::
 #[tokio::test]
 async fn plugin_mcp_tool_call_request_meta_includes_plugin_id() {
     let (_, turn_context) = make_session_and_context().await;
+    let turn_context = Arc::new(turn_context);
+    let step_context = StepContext::for_test(Arc::clone(&turn_context));
     let expected_turn_metadata = expected_mcp_turn_metadata(&turn_context);
     let mut metadata = approval_metadata(
         /*connector_id*/ None, /*connector_name*/ None,
@@ -1166,7 +1233,7 @@ async fn plugin_mcp_tool_call_request_meta_includes_plugin_id() {
     metadata.plugin_id = Some("sample@test".to_string());
 
     assert_eq!(
-        build_mcp_tool_call_request_meta(&turn_context, "sample", "call-plugin", Some(&metadata),),
+        build_mcp_tool_call_request_meta(&step_context, "sample", "call-plugin", Some(&metadata),),
         Some(serde_json::json!({
             "callId": "call-plugin",
             crate::X_CODEX_TURN_METADATA_HEADER: expected_turn_metadata,
@@ -1278,6 +1345,8 @@ async fn mcp_tool_call_item_includes_app_identity() {
 #[tokio::test]
 async fn codex_apps_tool_call_request_meta_includes_turn_metadata_and_codex_apps_meta() {
     let (_, turn_context) = make_session_and_context().await;
+    let turn_context = Arc::new(turn_context);
+    let step_context = StepContext::for_test(Arc::clone(&turn_context));
     let expected_turn_metadata = expected_mcp_turn_metadata(&turn_context);
     let metadata = McpToolApprovalMetadata {
         annotations: None,
@@ -1305,7 +1374,7 @@ async fn codex_apps_tool_call_request_meta_includes_turn_metadata_and_codex_apps
 
     assert_eq!(
         build_mcp_tool_call_request_meta(
-            &turn_context,
+            &step_context,
             CODEX_APPS_MCP_SERVER_NAME,
             "call_abc123xyz789",
             Some(&metadata),
@@ -1326,11 +1395,13 @@ async fn codex_apps_tool_call_request_meta_includes_turn_metadata_and_codex_apps
 #[tokio::test]
 async fn codex_apps_tool_call_request_meta_includes_call_id_without_existing_codex_apps_meta() {
     let (_, turn_context) = make_session_and_context().await;
+    let turn_context = Arc::new(turn_context);
+    let step_context = StepContext::for_test(Arc::clone(&turn_context));
     let expected_turn_metadata = expected_mcp_turn_metadata(&turn_context);
 
     assert_eq!(
         build_mcp_tool_call_request_meta(
-            &turn_context,
+            &step_context,
             CODEX_APPS_MCP_SERVER_NAME,
             "call_abc123xyz789",
             /*metadata*/ None,

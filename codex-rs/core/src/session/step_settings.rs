@@ -80,6 +80,12 @@ impl ResolvedStepSettings {
             .as_ref()
     }
 
+    pub(crate) fn effective_reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.reasoning_effort()
+            .or(self.model_info.default_reasoning_level.as_ref())
+            .cloned()
+    }
+
     pub(crate) fn approval_policy(&self) -> AskForApproval {
         self.selected.approval_policy.value()
     }

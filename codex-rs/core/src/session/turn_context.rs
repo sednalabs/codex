@@ -410,9 +410,7 @@ impl TurnContext {
     /// Legacy: returns the frozen initial-turn reasoning effort, including the initial model default.
     /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn effective_reasoning_effort(&self) -> Option<ReasoningEffortConfig> {
-        self.reasoning_effort()
-            .or(self.model_info().default_reasoning_level.as_ref())
-            .cloned()
+        self.initial_settings.effective_reasoning_effort()
     }
 
     /// Legacy: returns the frozen initial-turn reasoning-effort label for tracing.
