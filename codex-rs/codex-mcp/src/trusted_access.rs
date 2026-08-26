@@ -1,6 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::connection_manager::McpConnectionSet;
+use crate::runtime::McpRuntimeInput;
+use crate::server::McpServerMetadata;
+use crate::server::McpServerOrigin;
+use crate::tools::ToolInfo;
 use codex_exec_server::HttpClient;
 use codex_exec_server::HttpHeader;
 use codex_exec_server::HttpRedirectPolicy;
@@ -14,9 +19,54 @@ use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 
-const ENTITLEMENT_CONTEXT_KEY: &str = "openai/entitlementContext";
+pub(crate) const ENTITLEMENT_CONTEXT_KEY: &str = "openai/entitlementContext";
 const MAX_VERIFIED_ACCESS_RESPONSE_BYTES: usize = 1024 * 1024;
+const REQUESTED_ENTITLEMENTS_KEY: &str = "openai/requestedEntitlements";
+const CYBER_TRUSTED_ACCESS_ENTITLEMENT: &str = "cyber_trusted_access";
 const TRUSTED_ACCESS_TIMEOUT: Duration = Duration::from_millis(2_500);
+
+impl McpConnectionSet {
+    /// Installed and task-selected plugins may request supported advisory entitlement metadata.
+    /// Model calls use the local, read-only, zero-argument boundary.
+    pub(crate) async fn add_trusted_access_context(
+        &self,
+        tool: &ToolInfo,
+        server: &McpServerMetadata,
+        arguments: Option<&Value>,
+        meta: Option<Value>,
+    ) -> Option<Value> {
+        if tool
+            .tool
+            .meta
+            .as_deref()
+            .and_then(|meta| meta.get(REQUESTED_ENTITLEMENTS_KEY))
+            .and_then(Value::as_array)
+            .is_some_and(|entitlements| {
+                entitlements.iter().all(Value::is_string)
+                    && entitlements.iter().any(|entitlement| {
+                        entitlement.as_str() == Some(CYBER_TRUSTED_ACCESS_ENTITLEMENT)
+                    })
+            })
+            && self
+                .plugin_id_for_mcp_server_name(&tool.server_name)
+                .is_some()
+            && arguments.is_none_or(|arguments| arguments.as_object().is_some_and(Map::is_empty))
+            && server.environment_id == codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID
+            && matches!(server.origin, Some(McpServerOrigin::Stdio))
+            && tool
+                .tool
+                .annotations
+                .as_ref()
+                .and_then(|annotations| annotations.read_only_hint)
+                == Some(true)
+            && let Some(context) = self.trusted_access.as_ref()
+        {
+            context.add_context(meta).await
+        } else {
+            meta
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct VerifiedAccessResponse {
@@ -69,6 +119,22 @@ pub struct TrustedAccessContext {
 }
 
 impl TrustedAccessContext {
+    pub(crate) fn from_runtime(input: &McpRuntimeInput) -> Option<Self> {
+        let auth = input.auth.as_ref()?;
+        if !matches!(
+            auth.api_auth_mode(),
+            AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens
+        ) {
+            return None;
+        }
+        Some(Self::new(
+            auth.clone(),
+            input.auth_manager.clone()?,
+            input.config.chatgpt_base_url.clone(),
+            input.runtime_context.local_http_client(),
+        ))
+    }
+
     pub fn new(
         auth: CodexAuth,
         auth_manager: Arc<AuthManager>,
