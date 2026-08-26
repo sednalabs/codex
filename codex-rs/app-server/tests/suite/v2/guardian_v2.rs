@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
@@ -725,6 +726,38 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             luna_request["prompt_cache_key"],
             format!("guardian-v2:{reviewed_thread_id}")
         );
+        if !lifecycle.uses_root_worker() {
+            let trusted_tool_context = luna_request["input"]
+                .as_array()
+                .expect("Luna input should be an array")
+                .iter()
+                .filter(|item| item["role"] == "developer")
+                .filter_map(|item| item["content"].as_array())
+                .flatten()
+                .filter_map(|entry| entry["text"].as_str())
+                .find(|text| text.starts_with("Codex verified that this exact MCP tool"))
+                .expect("home-configured MCP tool should receive trusted developer context");
+            let (_, trusted_metadata) = trusted_tool_context
+                .split_once('\n')
+                .expect("trusted tool context should contain JSON metadata");
+            let trusted_metadata: Value = serde_json::from_str(trusted_metadata)?;
+            let trusted_source = trusted_metadata["source"]
+                .as_str()
+                .expect("trusted tool source should be a path")
+                .to_owned();
+            assert_eq!(
+                trusted_metadata,
+                json!({
+                    "server": server_name,
+                    "connector_id": null,
+                    "source": trusted_source,
+                }),
+            );
+            assert_eq!(
+                Path::new(&trusted_source).canonicalize()?,
+                codex_home.path().join("config.toml").canonicalize()?,
+            );
+        }
         assert!(sync_review_fragments(&luna_request).is_empty());
         assert!(
             luna_request["input"]

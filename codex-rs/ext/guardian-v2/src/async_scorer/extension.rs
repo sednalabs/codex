@@ -51,6 +51,7 @@ use super::sampler::LunaSamplerError;
 use super::sampler::LunaSamplingRequest;
 use super::sampler::MODEL;
 use super::truncation::ClassificationTruncations;
+use super::trusted_tools::trusted_tool_context;
 
 struct GuardianAction {
     tool_name: ToolName,
@@ -609,6 +610,7 @@ impl GuardianV2Extension {
             return;
         }
         let call_id = input.call_id.to_owned();
+        let mcp_tool = input.mcp_tool.cloned();
         let action = GuardianAction {
             tool_name: input.tool_name.clone(),
             payload: input.payload.clone(),
@@ -637,6 +639,12 @@ impl GuardianV2Extension {
 
         tokio::spawn(async move {
             let mut truncations = ClassificationTruncations::default();
+            let trusted_tool_context = match mcp_tool.as_ref() {
+                Some(tool) => {
+                    trusted_tool_context(tool.tool_info(), tool.source(), &manager, &config).await
+                }
+                None => None,
+            };
             let root_snapshot = thread.guardian_root_snapshot().await;
             let root_authorization_version = root_snapshot
                 .as_ref()
@@ -757,6 +765,7 @@ impl GuardianV2Extension {
                     .sample(LunaSamplingRequest {
                         instructions,
                         trusted_review_evidence,
+                        trusted_tool_context,
                         input: classification_input,
                         images,
                         parent_compaction,

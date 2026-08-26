@@ -158,6 +158,7 @@ fn sample_request(turn_id: &str) -> LunaSamplingRequest {
     LunaSamplingRequest {
         instructions: "Return high for high risk or low for low risk.".to_owned(),
         trusted_review_evidence: Vec::new(),
+        trusted_tool_context: None,
         input: vec!["The user requested a README summary.".to_owned()],
         images: Vec::new(),
         parent_compaction: None,
@@ -403,6 +404,7 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_classifications
         .sample(LunaSamplingRequest {
             instructions: "Return high for high risk or low for low risk.".to_owned(),
             trusted_review_evidence: Vec::new(),
+            trusted_tool_context: None,
             input: vec![
                 "The user requested a README summary.".to_owned(),
                 "The assistant inspected README.md.".to_owned(),
@@ -431,6 +433,7 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_classifications
         .sample(LunaSamplingRequest {
             instructions: "Return high for high risk or low for low risk.".to_owned(),
             trusted_review_evidence: Vec::new(),
+            trusted_tool_context: None,
             input: vec!["The user requested a source review.".to_owned()],
             images: Vec::new(),
             parent_compaction: None,
@@ -598,6 +601,7 @@ async fn sampler_returns_classification_token_before_terminal_response_events() 
         sampler.sample(LunaSamplingRequest {
             instructions: "Return high for high risk or low for low risk.".to_owned(),
             trusted_review_evidence: Vec::new(),
+            trusted_tool_context: None,
             input: vec!["The user requested a README summary.".to_owned()],
             images: Vec::new(),
             parent_compaction: None,

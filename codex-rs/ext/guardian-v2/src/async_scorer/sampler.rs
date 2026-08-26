@@ -18,6 +18,7 @@ use codex_api::ResponsesWebsocketConnection;
 use codex_api::ResponsesWsRequest;
 use codex_api::TransportError;
 use codex_api::build_session_headers;
+use codex_extension_api::ContextualUserFragment;
 use codex_extension_api::ExtensionMetrics;
 use codex_http_client::HttpClientFactory;
 use codex_login::AgentIdentityAuthPolicy;
@@ -42,6 +43,8 @@ use thiserror::Error;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
 use tokio::sync::oneshot;
+
+use super::trusted_tools::GuardianTrustedToolFragment;
 
 pub(crate) const MODEL: &str = "gpt-5.6-luna";
 pub(crate) const CLASSIFICATION_TOKEN_USAGE_METRIC: &str =
@@ -88,6 +91,8 @@ pub struct LunaSamplingRequest {
     pub instructions: String,
     /// Host-supplied Guardian reviews isolated from untrusted transcript entries.
     pub trusted_review_evidence: Vec<String>,
+    /// Host-attested metadata for the current home-owned MCP tool or connector.
+    pub trusted_tool_context: Option<GuardianTrustedToolFragment>,
     /// Ordered untrusted input entries that the model should classify.
     pub input: Vec<String>,
     /// Optional bounded screenshots accompanying the transcript.
@@ -460,6 +465,9 @@ impl LunaSampler {
                 phase: None,
                 internal_chat_message_metadata_passthrough: None,
             });
+        }
+        if let Some(fragment) = request.trusted_tool_context {
+            input.push(ContextualUserFragment::into(fragment));
         }
         input.push(ResponseItem::Message {
             id: None,

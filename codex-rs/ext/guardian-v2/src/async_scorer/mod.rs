@@ -4,6 +4,7 @@ mod review_evidence;
 mod sampler;
 mod transcript;
 mod truncation;
+mod trusted_tools;
 
 pub(crate) use config::DEFAULT_MODEL_CONTEXT_ITEM_TOKENS;
 pub(crate) use config::GuardianV2Config;
