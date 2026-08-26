@@ -547,7 +547,7 @@ async fn owner_continuation_pending_preserves_terminal_events_without_terminal_s
         )
         .await;
 
-    let delivered = vec![
+    let delivered = [
         rx.recv().await.expect("provider error event"),
         rx.recv().await.expect("turn complete event"),
     ];
@@ -11068,7 +11068,7 @@ async fn assert_closed_synthetic<T: SessionTask>(task: T) {
 async fn closed_review_compact_and_shell_do_not_record() {
     tokio::join!(
         assert_closed_synthetic(crate::tasks::ReviewTask::new()),
-        assert_closed_synthetic(crate::tasks::CompactTask::default()),
+        assert_closed_synthetic(crate::tasks::CompactTask),
         assert_closed_synthetic(crate::tasks::UserShellCommandTask::new(
             "echo no".to_string(),
         )),
