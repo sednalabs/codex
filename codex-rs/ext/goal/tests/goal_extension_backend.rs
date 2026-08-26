@@ -1555,15 +1555,19 @@ impl GoalExtensionHarness {
                     error_kind,
                     rate_limit_retry_after: None,
                     rate_limit_domain: codex_extension_api::RateLimitDomain {
-                        thread_id: self.thread_id,
-                        provider_id: None,
-                        requested_model: None,
-                        effective_model: None,
-                        account_context_key: None,
-                        shared_quota_key: None,
-                        snapshot: None,
-                        reset_at: None,
-                        retry_after: None,
+                        local_request_identity: codex_extension_api::LocalRequestIdentity {
+                            thread_id: self.thread_id,
+                            configured_provider_key: None,
+                            requested_model: None,
+                            resolved_model: None,
+                        },
+                        provider_limit_evidence: codex_extension_api::ProviderLimitEvidence {
+                            authority:
+                                codex_extension_api::ProviderEvidenceAuthority::UnknownUnsupportedTransport,
+                            snapshot: None,
+                            reset_at: None,
+                            retry_after: None,
+                        },
                     },
                     session_store: &self.session_store,
                     thread_store: &self.thread_store,

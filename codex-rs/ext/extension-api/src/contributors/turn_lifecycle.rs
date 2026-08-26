@@ -31,21 +31,47 @@ pub struct OwnerContinuationDeferred;
 #[derive(Debug)]
 pub struct GoalContinuationHealthCheck;
 
-/// Provider-declared rate-limit evidence for one exact thread and turn.
+/// Host-local identity for the request that produced a lifecycle event.
 ///
-/// `None` means unavailable; Core must not infer account identity, shared quota, or
-/// independence from parentage when a provider does not report it.
+/// These values come from local configuration and resolution. They are not claims about
+/// provider-observed identity, account scope, quota scope, or model handling.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RateLimitDomain {
+pub struct LocalRequestIdentity {
     pub thread_id: ThreadId,
-    pub provider_id: Option<String>,
+    pub configured_provider_key: Option<String>,
     pub requested_model: Option<String>,
-    pub effective_model: Option<String>,
-    pub account_context_key: Option<String>,
-    pub shared_quota_key: Option<String>,
+    pub resolved_model: Option<String>,
+}
+
+/// Authority for rate-limit facts carried by [`ProviderLimitEvidence`].
+///
+/// `FirstPartyHttp429` is reserved for a transport-aware provider integration. Core's
+/// normalized lifecycle paths must use one of the explicit unknown variants instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderEvidenceAuthority {
+    UnknownUnsupportedTransport,
+    UnknownLostProvenance,
+    FirstPartyHttp429,
+}
+
+/// Provider-limit facts associated with one exact request.
+///
+/// Reset, snapshot, and retry-denial values are evidence only when paired with an explicit
+/// authority. They do not establish account identity, shared quota scope, or provider/model
+/// identity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProviderLimitEvidence {
+    pub authority: ProviderEvidenceAuthority,
     pub snapshot: Option<RateLimitSnapshot>,
     pub reset_at: Option<String>,
     pub retry_after: Option<Duration>,
+}
+
+/// Local request identity and separately-authorized provider-limit evidence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateLimitDomain {
+    pub local_request_identity: LocalRequestIdentity,
+    pub provider_limit_evidence: ProviderLimitEvidence,
 }
 
 /// Input supplied when the host starts a turn.

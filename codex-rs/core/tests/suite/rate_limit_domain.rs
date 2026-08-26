@@ -1,8 +1,12 @@
 //! Contract tests for exact-thread provider rate-limit evidence.
 //!
-//! These tests intentionally use explicit provider-declared keys. They do not infer shared
-//! quota or independence from parentage, model names, or process-global state.
+//! These tests intentionally keep local request identity separate from provider evidence.
+//! They do not infer account scope, shared quota, or independence from parentage, model names,
+//! or process-global state.
 
+use codex_extension_api::LocalRequestIdentity;
+use codex_extension_api::ProviderEvidenceAuthority;
+use codex_extension_api::ProviderLimitEvidence;
 use codex_extension_api::RateLimitDomain;
 use codex_protocol::ThreadId;
 use pretty_assertions::assert_eq;
@@ -10,19 +14,22 @@ use std::time::Duration;
 
 fn domain(
     thread_id: ThreadId,
-    provider_id: &str,
-    shared_quota_key: Option<&str>,
+    provider_key: &str,
+    authority: ProviderEvidenceAuthority,
 ) -> RateLimitDomain {
     RateLimitDomain {
-        thread_id,
-        provider_id: Some(provider_id.to_string()),
-        requested_model: Some("requested-model".to_string()),
-        effective_model: Some("effective-model".to_string()),
-        account_context_key: None,
-        shared_quota_key: shared_quota_key.map(str::to_string),
-        snapshot: None,
-        reset_at: None,
-        retry_after: Some(Duration::from_secs(30)),
+        local_request_identity: LocalRequestIdentity {
+            thread_id,
+            configured_provider_key: Some(provider_key.to_string()),
+            requested_model: Some("requested-model".to_string()),
+            resolved_model: Some("resolved-model".to_string()),
+        },
+        provider_limit_evidence: ProviderLimitEvidence {
+            authority,
+            snapshot: None,
+            reset_at: None,
+            retry_after: Some(Duration::from_secs(30)),
+        },
     }
 }
 
@@ -30,33 +37,70 @@ fn domain(
 fn explicit_domains_are_bound_to_their_exact_thread() {
     let thread_a = ThreadId::new();
     let thread_b = ThreadId::new();
-    let domain_a = domain(thread_a, "provider-a", Some("quota-a"));
-    let domain_b = domain(thread_b, "provider-b", Some("quota-b"));
+    let domain_a = domain(
+        thread_a,
+        "provider-a",
+        ProviderEvidenceAuthority::UnknownLostProvenance,
+    );
+    let domain_b = domain(
+        thread_b,
+        "provider-b",
+        ProviderEvidenceAuthority::UnknownLostProvenance,
+    );
 
-    assert_eq!(domain_a.thread_id, thread_a);
-    assert_eq!(domain_b.thread_id, thread_b);
+    assert_eq!(domain_a.local_request_identity.thread_id, thread_a);
+    assert_eq!(domain_b.local_request_identity.thread_id, thread_b);
     assert_ne!(domain_a, domain_b);
-    assert_ne!(domain_a.shared_quota_key, domain_b.shared_quota_key);
+    assert_ne!(
+        domain_a.local_request_identity.configured_provider_key,
+        domain_b.local_request_identity.configured_provider_key
+    );
 }
 
 #[test]
-fn only_an_explicit_shared_quota_key_can_match_another_domain() {
+fn provider_evidence_authority_is_explicit() {
     let thread_a = ThreadId::new();
     let thread_b = ThreadId::new();
-    let domain_a = domain(thread_a, "provider", Some("provider-account-window"));
-    let domain_b = domain(thread_b, "provider", Some("provider-account-window"));
+    let domain_a = domain(
+        thread_a,
+        "provider",
+        ProviderEvidenceAuthority::UnknownLostProvenance,
+    );
+    let domain_b = domain(
+        thread_b,
+        "provider",
+        ProviderEvidenceAuthority::UnknownUnsupportedTransport,
+    );
 
     assert_eq!(
-        domain_a.shared_quota_key.as_deref(),
-        domain_b.shared_quota_key.as_deref()
+        domain_a.provider_limit_evidence.authority,
+        ProviderEvidenceAuthority::UnknownLostProvenance
     );
-    assert_ne!(domain_a.thread_id, domain_b.thread_id);
+    assert_eq!(
+        domain_b.provider_limit_evidence.authority,
+        ProviderEvidenceAuthority::UnknownUnsupportedTransport
+    );
+    assert_ne!(
+        domain_a.provider_limit_evidence.authority,
+        domain_b.provider_limit_evidence.authority
+    );
+    assert_ne!(
+        domain_a.local_request_identity.thread_id,
+        domain_b.local_request_identity.thread_id
+    );
 }
 
 #[test]
-fn unknown_account_and_quota_scope_is_not_claimed_independent() {
-    let domain = domain(ThreadId::new(), "provider", /*shared_quota_key*/ None);
+fn local_identity_does_not_claim_provider_scope() {
+    let domain = domain(
+        ThreadId::new(),
+        "provider",
+        ProviderEvidenceAuthority::UnknownUnsupportedTransport,
+    );
 
-    assert_eq!(domain.account_context_key, None);
-    assert_eq!(domain.shared_quota_key, None);
+    assert_eq!(
+        domain.provider_limit_evidence.authority,
+        ProviderEvidenceAuthority::UnknownUnsupportedTransport
+    );
+    assert_eq!(domain.provider_limit_evidence.snapshot, None);
 }

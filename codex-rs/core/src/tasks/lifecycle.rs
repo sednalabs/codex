@@ -1,4 +1,7 @@
 use codex_extension_api::ExtensionData;
+use codex_extension_api::LocalRequestIdentity;
+use codex_extension_api::ProviderEvidenceAuthority;
+use codex_extension_api::ProviderLimitEvidence;
 use codex_extension_api::RateLimitDomain;
 use codex_protocol::error::CodexErrKind;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -111,18 +114,20 @@ impl Session {
             None
         }
         .unwrap_or_else(|| RateLimitDomain {
-            thread_id: self.thread_id(),
-            provider_id: Some(turn_context.config.model_provider_id.clone()),
-            requested_model: turn_context.config.model.clone(),
-            effective_model: Some(turn_context.model_info.slug.clone()),
-            // The host has no authoritative account/quota binding for this callback unless
-            // the provider supplies one. Preserve unknown as None rather than inferring it
-            // from parentage, process state, or a model name.
-            account_context_key: None,
-            shared_quota_key: None,
-            snapshot: None,
-            reset_at: None,
-            retry_after: rate_limit_retry_after,
+            local_request_identity: LocalRequestIdentity {
+                thread_id: self.thread_id(),
+                configured_provider_key: Some(turn_context.config.model_provider_id.clone()),
+                requested_model: turn_context.config.model.clone(),
+                resolved_model: Some(turn_context.model_info.slug.clone()),
+            },
+            provider_limit_evidence: ProviderLimitEvidence {
+                // This callback has no transport-bound provider evidence to authorize the
+                // denial facts; preserve the absence explicitly instead of inferring scope.
+                authority: ProviderEvidenceAuthority::UnknownUnsupportedTransport,
+                snapshot: None,
+                reset_at: None,
+                retry_after: rate_limit_retry_after,
+            },
         });
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor

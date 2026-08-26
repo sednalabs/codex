@@ -63,9 +63,12 @@ use codex_exec_server::FileSystemSandboxContext;
 use codex_execpolicy::prefix_rule_migration;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::LoadedUserInstructions;
+use codex_extension_api::LocalRequestIdentity;
 use codex_extension_api::OwnerContinuationPending;
 use codex_extension_api::PromptFragment;
 use codex_extension_api::PromptSlot;
+use codex_extension_api::ProviderEvidenceAuthority;
+use codex_extension_api::ProviderLimitEvidence;
 use codex_extension_api::RateLimitDomain;
 use codex_extension_api::TurnContextContributionInput;
 use codex_features::FEATURES;
@@ -4068,8 +4071,9 @@ impl Session {
         }
     }
 
-    /// Records provider-declared rate-limit evidence in this exact thread's extension scope.
-    /// Unknown account and shared-quota identity remain absent rather than inferred.
+    /// Records rate-limit evidence in this exact thread's extension scope.
+    /// Local request identity is kept separate from provider evidence, whose authority is
+    /// unknown after the provider denial has been normalized by Core.
     pub(crate) fn record_rate_limit_domain(
         &self,
         turn_context: &TurnContext,
@@ -4078,15 +4082,18 @@ impl Session {
         retry_after: Option<std::time::Duration>,
     ) {
         let domain = RateLimitDomain {
-            thread_id: self.thread_id,
-            provider_id: Some(turn_context.config.model_provider_id.clone()),
-            requested_model: turn_context.config.model.clone(),
-            effective_model: Some(turn_context.model_info.slug.clone()),
-            account_context_key: None,
-            shared_quota_key: None,
-            snapshot,
-            reset_at,
-            retry_after,
+            local_request_identity: LocalRequestIdentity {
+                thread_id: self.thread_id,
+                configured_provider_key: Some(turn_context.config.model_provider_id.clone()),
+                requested_model: turn_context.config.model.clone(),
+                resolved_model: Some(turn_context.model_info.slug.clone()),
+            },
+            provider_limit_evidence: ProviderLimitEvidence {
+                authority: ProviderEvidenceAuthority::UnknownLostProvenance,
+                snapshot,
+                reset_at,
+                retry_after,
+            },
         };
         let billing_surface = match self.services.auth_manager.auth_mode() {
             Some(mode) if mode.has_chatgpt_account() => "chatgpt_credits",
@@ -4094,29 +4101,15 @@ impl Session {
             Some(_) => "codex_backend_unknown",
             None => "unknown",
         };
-        let account_plan = domain
-            .snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.plan_type)
-            .or_else(|| {
-                self.services
-                    .auth_manager
-                    .auth_cached()
-                    .and_then(|auth| auth.account_plan_type())
-            })
-            .and_then(|plan| serde_json::to_value(plan).ok())
-            .and_then(|value| value.as_str().map(str::to_owned));
         info!(
-            thread_id = %domain.thread_id,
-            provider_id = ?domain.provider_id,
-            requested_model = ?domain.requested_model,
-            effective_model = ?domain.effective_model,
-            account_context_key = ?domain.account_context_key,
-            shared_quota_key = ?domain.shared_quota_key,
+            thread_id = %domain.local_request_identity.thread_id,
+            configured_provider_key = ?domain.local_request_identity.configured_provider_key,
+            requested_model = ?domain.local_request_identity.requested_model,
+            resolved_model = ?domain.local_request_identity.resolved_model,
+            provider_evidence_authority = ?domain.provider_limit_evidence.authority,
             billing_surface = %billing_surface,
-            account_plan = ?account_plan,
-            reset_at = ?domain.reset_at,
-            retry_after = ?domain.retry_after,
+            reset_at = ?domain.provider_limit_evidence.reset_at,
+            retry_after = ?domain.provider_limit_evidence.retry_after,
             "provider eligibility evidence recorded for exact thread"
         );
         self.services.thread_extension_data.insert(domain);
