@@ -44,14 +44,10 @@ pub struct LocalRequestIdentity {
 }
 
 /// Authority for rate-limit facts carried by [`ProviderLimitEvidence`].
-///
-/// `FirstPartyHttp429` is reserved for a transport-aware provider integration. Core's
-/// normalized lifecycle paths must use one of the explicit unknown variants instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderEvidenceAuthority {
     UnknownUnsupportedTransport,
     UnknownLostProvenance,
-    FirstPartyHttp429,
 }
 
 /// Provider-limit facts associated with one exact request.
@@ -125,7 +121,9 @@ pub struct TurnErrorInput<'a> {
     /// Provider-specified delay before a rate-limited request may be retried.
     /// `None` means the provider did not establish an eligible retry time.
     pub rate_limit_retry_after: Option<Duration>,
-    /// Exact-thread provider evidence associated with this error. Unknown scope remains `None`.
+    /// Local request correlation plus authority-tagged provider-limit evidence associated with
+    /// this error. Provider-limit evidence may be explicitly unknown; this is not a claim of
+    /// exact-thread provider evidence.
     pub rate_limit_domain: RateLimitDomain,
     /// Store scoped to the host session runtime.
     pub session_store: &'a ExtensionData,

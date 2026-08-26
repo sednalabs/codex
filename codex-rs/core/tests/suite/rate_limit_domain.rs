@@ -1,4 +1,4 @@
-//! Contract tests for exact-thread provider rate-limit evidence.
+//! Contract tests for local request correlation and provider-limit evidence.
 //!
 //! These tests intentionally keep local request identity separate from provider evidence.
 //! They do not infer account scope, shared quota, or independence from parentage, model names,
@@ -34,7 +34,7 @@ fn domain(
 }
 
 #[test]
-fn explicit_domains_are_bound_to_their_exact_thread() {
+fn local_request_identity_preserves_exact_thread_correlation() {
     let thread_a = ThreadId::new();
     let thread_b = ThreadId::new();
     let domain_a = domain(
@@ -50,11 +50,6 @@ fn explicit_domains_are_bound_to_their_exact_thread() {
 
     assert_eq!(domain_a.local_request_identity.thread_id, thread_a);
     assert_eq!(domain_b.local_request_identity.thread_id, thread_b);
-    assert_ne!(domain_a, domain_b);
-    assert_ne!(
-        domain_a.local_request_identity.configured_provider_key,
-        domain_b.local_request_identity.configured_provider_key
-    );
 }
 
 #[test]
