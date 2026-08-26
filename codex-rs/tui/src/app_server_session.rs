@@ -652,6 +652,10 @@ impl AppServerSession {
         self.managed_new_thread_defaults.as_ref()
     }
 
+    pub(crate) fn supports_paginated_history(&self) -> bool {
+        self.history_support == ThreadHistorySupport::Paginated
+    }
+
     /// Fetches the current account info without refreshing the auth token.
     ///
     /// Used by both `bootstrap` (to populate the initial UI) and `get_login_status`
