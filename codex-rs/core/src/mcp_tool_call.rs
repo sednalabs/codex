@@ -119,6 +119,7 @@ pub(crate) async fn handle_mcp_tool_call(
     call_id: String,
     originating_item_id: Option<ResponseItemId>,
     tool_info: &ToolInfo,
+    prepared_call: Option<PreparedMcpCall>,
     hook_tool_name: HookToolName,
     invocation_tool_name: ToolName,
     arguments: String,
@@ -149,7 +150,7 @@ pub(crate) async fn handle_mcp_tool_call(
         arguments: arguments_value.clone(),
     };
 
-    let Some(prepared_call) = sess.prepare_mcp_call(&server, &tool_name).await else {
+    let Some(prepared_call) = prepared_call else {
         let item_metadata =
             McpToolCallItemMetadata::from_tool_metadata(&server, /*metadata*/ None);
         let result = notify_mcp_tool_call_skip(
