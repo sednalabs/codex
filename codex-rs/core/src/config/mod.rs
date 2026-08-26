@@ -189,7 +189,9 @@ use permission_profile_catalog::permission_profile_is_allowed;
 use permission_profile_catalog::validate_permission_profile_for_deny_read;
 pub use permission_profile_selection::ResolvedPermissionProfileSelection;
 pub use permission_profile_selection::resolve_permission_profile_selection;
+pub use permissions::compile_permission_profile;
 pub(crate) use permissions::is_builtin_permission_profile_name;
+pub use permissions::resolve_permission_profile;
 pub(crate) use resolved_permission_profile::PermissionProfileState;
 
 const DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS: i64 = 200;
