@@ -2697,6 +2697,144 @@ async fn pre_sampling_compact_falls_back_after_previous_model_invalid_request_on
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_sampling_compact_failure_reports_previous_model_without_continuation() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+    let previous_model = "gpt-5.6";
+    let next_model = "gpt-5.5";
+    let mut previous_model_info =
+        model_info_with_context_window("gpt-5.4", /*context_window*/ 273_000);
+    previous_model_info.slug = previous_model.to_string();
+    let mut next_model_info =
+        model_info_with_context_window("gpt-5.4", /*context_window*/ 125_000);
+    next_model_info.slug = next_model.to_string();
+    let models_mock = mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![previous_model_info, next_model_info],
+        },
+    )
+    .await;
+
+    let request_log = mount_response_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("m1", "before switch"),
+                ev_completed_with_tokens("r1", /*total_tokens*/ 120_000),
+            ]),
+            invalid_request_response("previous-model compaction was rejected"),
+            invalid_request_response("current-model compaction was rejected"),
+        ],
+    )
+    .await;
+
+    struct LifecycleRecorder {
+        contexts: Arc<std::sync::Mutex<Vec<(Option<String>, Option<String>)>>>,
+    }
+
+    impl codex_extension_api::TurnLifecycleContributor for LifecycleRecorder {
+        fn on_turn_error<'a>(
+            &'a self,
+            input: codex_extension_api::TurnErrorInput<'a>,
+        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                self.contexts
+                    .lock()
+                    .expect("turn error contexts lock")
+                    .push((
+                        input
+                            .rate_limit_domain
+                            .local_request_identity
+                            .requested_model
+                            .clone(),
+                        input
+                            .rate_limit_domain
+                            .local_request_identity
+                            .resolved_model
+                            .clone(),
+                    ));
+            })
+        }
+    }
+
+    let contexts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut extensions = codex_extension_api::ExtensionRegistryBuilder::<Config>::new();
+    extensions.turn_lifecycle_contributor(Arc::new(LifecycleRecorder {
+        contexts: Arc::clone(&contexts),
+    }));
+
+    let mut model_provider = openai_model_provider(&server);
+    model_provider.stream_max_retries = Some(0);
+    let test = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model(previous_model)
+        .with_extensions(Arc::new(extensions.build()))
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+            set_test_compact_prompt(config);
+            let _ = config.features.enable(Feature::RemoteCompactionV2);
+        })
+        .build(&server)
+        .await
+        .expect("build test codex");
+
+    test.codex
+        .submit(disabled_permission_user_turn(
+            "before switch",
+            test.cwd.path().to_path_buf(),
+            previous_model.to_string(),
+        ))
+        .await
+        .expect("submit first user turn");
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    test.codex
+        .submit(disabled_permission_user_turn(
+            "after switch",
+            test.cwd.path().to_path_buf(),
+            next_model.to_string(),
+        ))
+        .await
+        .expect("submit smaller-model turn");
+    wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    assert_eq!(models_mock.requests().len(), 1);
+    let requests = request_log.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "failed pre-sampling compaction must not schedule a continuation"
+    );
+    assert_eq!(
+        requests[0].body_json()["model"].as_str(),
+        Some(previous_model)
+    );
+    assert_eq!(
+        requests[1].body_json()["model"].as_str(),
+        Some(previous_model)
+    );
+    assert_eq!(requests[2].body_json()["model"].as_str(), Some(next_model));
+
+    let contexts = contexts.lock().expect("turn error contexts lock");
+    assert_eq!(
+        contexts.as_slice(),
+        &[(
+            Some(previous_model.to_string()),
+            Some(previous_model.to_string()),
+        )]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pre_sampling_legacy_remote_compact_falls_back_after_previous_model_invalid_request() {
     skip_if_no_network!();
 
