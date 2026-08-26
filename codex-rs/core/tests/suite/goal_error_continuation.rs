@@ -392,7 +392,7 @@ mod matcher_tests {
                     "internal_chat_message_metadata_passthrough": {"turn_id": "turn"},
                 },
             ]),
-            /* subagent */ None,
+            /*subagent*/ None,
         ));
         assert!(!request_matches_current_input(
             &stale_root_request,
@@ -404,7 +404,7 @@ mod matcher_tests {
 
         let current_root_request = request_with_body(body_with_input(
             serde_json::json!([root_message, environment_context]),
-            /* subagent */ None,
+            /*subagent*/ None,
         ));
         assert!(request_matches_current_input(
             &current_root_request,
