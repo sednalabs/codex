@@ -2,10 +2,10 @@ use crate::function_tool::FunctionCallError;
 use crate::safety::SafetyCheck;
 use crate::safety::assess_patch_safety;
 use crate::session::turn_context::TurnContext;
+use crate::session::turn_context::TurnEnvironment;
 use crate::tools::sandboxing::ExecApprovalRequirement;
 use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::ApplyPatchFileChange;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
 use codex_utils_path_uri::PathUri;
@@ -21,19 +21,17 @@ pub(crate) struct ApplyPatchRuntimeInvocation {
 
 pub(crate) fn prepare_apply_patch(
     turn_context: &TurnContext,
-    permission_profile: &PermissionProfile,
+    turn_environment: &TurnEnvironment,
     file_system_sandbox_policy: &FileSystemSandboxPolicy,
     action: ApplyPatchAction,
 ) -> Result<ApplyPatchRuntimeInvocation, FunctionCallError> {
-    // TODO(anp): Reconcile patch approval with TurnEnvironment::sandbox_context
-    // so the Windows backend matches the environment that will apply the patch.
     match assess_patch_safety(
         &action,
         turn_context.approval_policy(),
-        permission_profile,
+        turn_environment.permission_profile(),
         file_system_sandbox_policy,
         &action.cwd,
-        turn_context.windows_sandbox_level,
+        turn_environment.config().windows_sandbox_level,
     ) {
         SafetyCheck::AutoApprove => Ok(ApplyPatchRuntimeInvocation {
             action,

@@ -293,13 +293,11 @@ impl SessionConfiguration {
             approvals_reviewer: Some(self.step_settings.approvals_reviewer),
             permission_profile: Some(self.permission_profile()),
             active_permission_profile: self.active_permission_profile(),
+            windows_sandbox_level: Some(self.windows_sandbox_level),
             summary: self.step_settings.reasoning_summary,
             service_tier: Some(self.step_settings.service_tier.clone()),
             collaboration_mode: Some(self.step_settings.collaboration_mode.clone()),
             personality: self.step_settings.personality,
-            // TODO(anp): Include the runtime Windows sandbox override in restored settings.
-            // This omission predates TurnEnvironment::sandbox_context; rebuilding FromThread
-            // environments falls back to Config instead of retaining that override.
             ..Default::default()
         }
     }

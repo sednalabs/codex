@@ -565,7 +565,7 @@ async fn execute_verified_patch(
             .unwrap_or_else(|_| patch_permissions_without_path_matching(&action));
     let apply = apply_patch::prepare_apply_patch(
         tool_ctx.step_context.turn.as_ref(),
-        turn_environment.permission_profile(),
+        &turn_environment,
         &file_system_sandbox_policy,
         action,
     )?;

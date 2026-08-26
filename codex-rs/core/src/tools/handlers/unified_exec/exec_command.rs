@@ -161,13 +161,11 @@ impl ExecCommandHandler {
 
         // Remote executors enforce URI-native sandbox policy themselves. Only a host-local
         // sandbox needs a native cwd for resolving paths nested in the permissions config.
-        // TODO(anp): Reconcile this backend choice with TurnEnvironment::sandbox_context
-        // so the native-cwd requirement follows the selected environment's sandbox.
         let requires_host_native_cwd = !environment.is_remote()
             && SandboxManager::new().select_initial(
                 turn_environment.permission_profile(),
                 SandboxablePreference::Auto,
-                turn.windows_sandbox_level,
+                turn_environment.config().windows_sandbox_level,
                 turn.network.is_some(),
             ) != SandboxType::None;
         // `to_abs_path()` alone cannot identify foreign drive paths: `file:///C:/repo` is

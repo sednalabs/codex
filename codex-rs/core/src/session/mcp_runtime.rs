@@ -37,14 +37,12 @@ impl Session {
         next: &SessionConfiguration,
         updates: &SessionSettingsUpdate,
     ) -> bool {
-        // TODO(anp): Reconcile invalidation with TurnEnvironment::sandbox_context.
-        // This gap predates that API: an internal Windows-level-only settings update
-        // can leave the published MCP configuration stale.
         current.cwd() != next.cwd()
             || current.step_settings.approval_policy.value()
                 != next.step_settings.approval_policy.value()
             || current.step_settings.approvals_reviewer != next.step_settings.approvals_reviewer
             || current.permission_profile() != next.permission_profile()
+            || current.windows_sandbox_level != next.windows_sandbox_level
             || updates.environments.as_ref().is_some_and(|environments| {
                 environments.environments != self.services.turn_environments.selections()
             })

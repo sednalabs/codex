@@ -140,7 +140,7 @@ pub(crate) async fn prepare_unified_exec_zsh_fork(
         sandbox_policy_cwd,
         windows_sandbox_workspace_roots: exec_request.windows_sandbox_workspace_roots.clone(),
         codex_linux_sandbox_exe: ctx.step_context.turn.config.codex_linux_sandbox_exe.clone(),
-        use_legacy_landlock: ctx.step_context.turn.config.features.use_legacy_landlock(),
+        use_legacy_landlock: req.turn_environment.config().use_legacy_landlock,
     };
     let escalation_policy = CoreShellActionProvider {
         policy: Arc::clone(&exec_policy),
