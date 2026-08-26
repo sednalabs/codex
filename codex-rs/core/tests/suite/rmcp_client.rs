@@ -1831,8 +1831,9 @@ async fn stdio_mcp_tool_call_includes_sandbox_state_meta(
 
     let final_request = final_mock.single_request();
     if attachment_owned_permissions {
-        let restricted_output = final_request
-            .function_call_output_text(restricted_call_id)
+        let restricted_output_item = final_request.function_call_output(restricted_call_id);
+        let restricted_output = restricted_output_item["output"][1]["text"]
+            .as_str()
             .expect("restricted MCP tool should produce a denied call output");
         assert!(
             restricted_output
