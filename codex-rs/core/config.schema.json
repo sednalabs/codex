@@ -1414,6 +1414,10 @@
         "enabled": {
           "type": "boolean"
         },
+        "free_guardian": {
+          "description": "Route Guardian review and classification through the unmetered Codex endpoints.",
+          "type": "boolean"
+        },
         "max_action_tokens": {
           "format": "uint",
           "maximum": 100000.0,

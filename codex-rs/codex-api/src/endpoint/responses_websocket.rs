@@ -4,6 +4,7 @@ use crate::common::ResponseStream;
 use crate::common::ResponsesWsRequest;
 use crate::common::SafetyBufferingTreatment;
 use crate::common::WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY;
+use crate::endpoint::responses::ResponsesEndpoint;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use crate::rate_limits::parse_rate_limit_event;
@@ -340,6 +341,7 @@ impl ResponsesWebsocketConnection {
 pub struct ResponsesWebsocketClient {
     provider: Provider,
     auth: SharedAuthProvider,
+    endpoint: ResponsesEndpoint,
 }
 
 /// Close frame information captured by a handshake probe.
@@ -369,7 +371,17 @@ pub struct ResponsesWebsocketProbe {
 impl ResponsesWebsocketClient {
     /// Creates a Responses WebSocket client for an already-resolved provider and auth source.
     pub fn new(provider: Provider, auth: SharedAuthProvider) -> Self {
-        Self { provider, auth }
+        Self {
+            provider,
+            auth,
+            endpoint: ResponsesEndpoint::Responses,
+        }
+    }
+
+    /// Selects a Responses-compatible backend route for subsequent connections.
+    pub fn with_endpoint(mut self, endpoint: ResponsesEndpoint) -> Self {
+        self.endpoint = endpoint;
+        self
     }
 
     #[instrument(
@@ -388,7 +400,7 @@ impl ResponsesWebsocketClient {
     ) -> Result<ResponsesWebsocketConnection, ApiError> {
         let ws_url = self
             .provider
-            .websocket_url_for_path("responses")
+            .websocket_url_for_path(self.endpoint.path())
             .map_err(|err| ApiError::Stream(format!("failed to build websocket URL: {err}")))?;
 
         let mut headers =
@@ -422,7 +434,7 @@ impl ResponsesWebsocketClient {
     ) -> Result<ResponsesWebsocketProbe, ApiError> {
         let ws_url = self
             .provider
-            .websocket_url_for_path("responses")
+            .websocket_url_for_path(self.endpoint.path())
             .map_err(|err| ApiError::Stream(format!("failed to build websocket URL: {err}")))?;
 
         let mut headers =

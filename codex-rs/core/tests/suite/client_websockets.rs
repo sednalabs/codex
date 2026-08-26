@@ -447,7 +447,11 @@ async fn responses_websocket_preconnect_does_not_replace_turn_trace_payload() {
     let mut client_session = harness.client.new_session();
     let responses_metadata = websocket_connection_metadata(&harness);
     client_session
-        .preconnect_websocket(&harness.session_telemetry, &responses_metadata)
+        .preconnect_websocket(
+            &harness.model_info,
+            &harness.session_telemetry,
+            &responses_metadata,
+        )
         .await
         .expect("websocket preconnect failed");
     let prompt = prompt_with_input(vec![message_item("hello")]);
@@ -484,7 +488,11 @@ async fn responses_websocket_preconnect_reuses_connection() {
     let mut client_session = harness.client.new_session();
     let responses_metadata = websocket_connection_metadata(&harness);
     client_session
-        .preconnect_websocket(&harness.session_telemetry, &responses_metadata)
+        .preconnect_websocket(
+            &harness.model_info,
+            &harness.session_telemetry,
+            &responses_metadata,
+        )
         .await
         .expect("websocket preconnect failed");
     let prompt = prompt_with_input(vec![message_item("hello")]);
@@ -856,7 +864,11 @@ async fn responses_websocket_preconnect_is_reused_even_with_header_changes() {
     let mut client_session = harness.client.new_session();
     let preconnect_metadata = websocket_connection_metadata(&harness);
     client_session
-        .preconnect_websocket(&harness.session_telemetry, &preconnect_metadata)
+        .preconnect_websocket(
+            &harness.model_info,
+            &harness.session_telemetry,
+            &preconnect_metadata,
+        )
         .await
         .expect("websocket preconnect failed");
     let prompt = prompt_with_input(vec![message_item("hello")]);
@@ -1080,7 +1092,11 @@ async fn responses_websocket_preconnect_runs_when_only_v2_feature_enabled() {
     let mut client_session = harness.client.new_session();
     let responses_metadata = websocket_connection_metadata(&harness);
     client_session
-        .preconnect_websocket(&harness.session_telemetry, &responses_metadata)
+        .preconnect_websocket(
+            &harness.model_info,
+            &harness.session_telemetry,
+            &responses_metadata,
+        )
         .await
         .expect("websocket preconnect failed");
 

@@ -1078,7 +1078,7 @@ where
 fn base_mock() -> (MockBuilder, ResponseMock) {
     let response_mock = ResponseMock::new();
     let mock = Mock::given(method("POST"))
-        .and(path_regex(".*/responses$"))
+        .and(path_regex(".*/(responses|guardian)$"))
         .and(response_mock.clone());
     (mock, response_mock)
 }

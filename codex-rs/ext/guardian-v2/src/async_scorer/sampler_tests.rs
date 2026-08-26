@@ -147,6 +147,7 @@ fn sampler_config(base_url: String) -> LunaSamplerConfig {
         session_id: "session-1".to_owned(),
         thread_id: "thread-1".to_owned(),
         originator: Some("guardian-v2-test".to_owned()),
+        free_guardian: false,
         service_tier: None,
         luna_compaction_hash: None,
         metrics: None,
@@ -245,6 +246,81 @@ impl ExternalAuth for RefreshableAuth {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn classifier_uses_free_endpoint_only_with_codex_backend_auth() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    for (auth, base_path, free_guardian, expected_path, expected_service_tier) in [
+        (
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            "/backend-api/codex",
+            false,
+            "/backend-api/codex/responses",
+            Some("priority"),
+        ),
+        (
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            "/backend-api/codex",
+            true,
+            "/backend-api/codex/guardian-classifier",
+            None,
+        ),
+        (
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            "/v1",
+            true,
+            "/v1/responses",
+            Some("priority"),
+        ),
+        (
+            CodexAuth::from_api_key("test-api-key"),
+            "/v1",
+            true,
+            "/v1/responses",
+            Some("priority"),
+        ),
+    ] {
+        let events = vec![
+            ev_assistant_message("classification", "low"),
+            ev_completed("response-1"),
+        ];
+        let mut connections = vec![Vec::new(); INITIAL_WEBSOCKET_CONNECTIONS - 1];
+        connections.push(vec![events]);
+        let server = responses::start_websocket_server(connections).await;
+        let base_url = format!(
+            "http://{}{base_path}",
+            server.uri().trim_start_matches("ws://")
+        );
+        let mut config = sampler_config(base_url.clone());
+        config.provider = create_model_provider(
+            ModelProviderInfo::create_openai_provider(Some(base_url)),
+            Some(AuthManager::from_auth_for_testing(auth)),
+        );
+        config.free_guardian = free_guardian;
+        config.service_tier = Some("priority".to_owned());
+        let sampler = LunaSampler::connect(config).await?;
+
+        assert_eq!(sampler.sample(sample_request("turn-1")).await?, "low");
+        for handshake in server.handshakes() {
+            assert_eq!(handshake.uri(), expected_path);
+            assert_eq!(handshake.header("x-codex-routing-hint"), None);
+        }
+        let request = server
+            .wait_for_request(
+                /*connection_index*/ INITIAL_WEBSOCKET_CONNECTIONS - 1,
+                /*request_index*/ 0,
+            )
+            .await
+            .body_json();
+        assert_eq!(request["service_tier"].as_str(), expected_service_tier);
+
+        drop(sampler);
+        server.shutdown().await;
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn preconnected_sampler_reuses_authenticated_websocket_for_classifications() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -290,6 +366,7 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_classifications
         session_id: "session-1".to_owned(),
         thread_id: "thread-1".to_owned(),
         originator: Some("guardian-v2-test".to_owned()),
+        free_guardian: false,
         service_tier: None,
         luna_compaction_hash: None,
         metrics: None,
@@ -509,6 +586,7 @@ async fn sampler_returns_classification_token_before_terminal_response_events() 
         session_id: "session-1".to_owned(),
         thread_id: "thread-1".to_owned(),
         originator: None,
+        free_guardian: false,
         service_tier: None,
         luna_compaction_hash: None,
         metrics: None,
