@@ -2572,6 +2572,7 @@ dependencies = [
  "codex-code-mode-protocol",
  "codex-http-client",
  "codex-install-context",
+ "codex-otel",
  "codex-protocol",
  "futures",
  "http-body-util",

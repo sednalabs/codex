@@ -14,6 +14,7 @@ use serde_json::Value as JsonValue;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use super::ExecContext;
 use super::PUBLIC_TOOL_NAME;
@@ -133,6 +134,7 @@ impl CodeModeDispatchBroker {
                         invocation,
                         cancellation_token,
                         response_tx,
+                        span,
                     } => {
                         let cell_id = invocation.cell_id.clone();
                         if !wait_until_cell_ready_for_dispatch(
@@ -147,8 +149,9 @@ impl CodeModeDispatchBroker {
                         }
                         let host = Arc::clone(&host);
                         tokio::spawn(async move {
-                            let invocation =
-                                host.invoke_tool(invocation, cancellation_token.clone());
+                            let invocation = host
+                                .invoke_tool(invocation, cancellation_token.clone())
+                                .instrument(span);
                             tokio::pin!(invocation);
                             let response = tokio::select! {
                                 biased;
@@ -236,6 +239,7 @@ impl CodeModeSessionDelegate for CodeModeDispatchBroker {
                     invocation,
                     cancellation_token: cancellation_token.clone(),
                     response_tx,
+                    span: tracing::Span::current(),
                 })
                 .await
                 .map_err(|_| "code mode nested tool dispatcher is unavailable".to_string())?;
@@ -291,6 +295,7 @@ enum DispatchMessage {
         invocation: CodeModeNestedToolCall,
         cancellation_token: CancellationToken,
         response_tx: oneshot::Sender<Result<JsonValue, String>>,
+        span: tracing::Span,
     },
     Notify {
         call_id: String,
