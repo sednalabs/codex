@@ -6364,25 +6364,39 @@ enabled = true
 "#,
     );
     let config = load_plugins_config_input(codex_home.path(), &marketplace_root).await;
-    let roots = [AbsolutePathBuf::try_from(marketplace_root.clone()).unwrap()];
+    let context = PluginMarketplaceContext {
+        global_config: config.clone(),
+        scopes: vec![PluginMarketplaceScope {
+            cwd: Some(AbsolutePathBuf::try_from(marketplace_root.clone()).unwrap()),
+            config,
+        }],
+        load_errors: Vec::new(),
+    };
     let manager = Arc::new(test_plugins_manager(codex_home.path().to_path_buf()));
     manager
         .non_curated_cache_refresh_state
         .write()
         .expect("refresh state lock")
         .in_flight = true;
+    let marketplaces = manager
+        .list_marketplaces_for_context(&context, /*include_openai_curated*/ false)
+        .unwrap()
+        .marketplaces;
 
     for git_mode in [
         PluginGitMode::Automatic,
         PluginGitMode::Manual,
         PluginGitMode::Automatic,
     ] {
-        manager.schedule_non_curated_plugin_cache_refresh(
-            &config,
-            &roots,
-            NonCuratedCacheRefreshMode::IfVersionChanged,
-            git_mode,
-        );
+        let request = context
+            .non_curated_cache_refresh_request(
+                &manager,
+                &marketplaces,
+                NonCuratedCacheRefreshMode::IfVersionChanged,
+                git_mode,
+            )
+            .expect("refresh request");
+        manager.schedule_non_curated_plugin_cache_refresh(request);
     }
 
     {
@@ -6398,7 +6412,7 @@ enabled = true
         state.in_flight = false;
     }
 
-    manager.maybe_start_non_curated_plugin_cache_refresh(&config, &roots);
+    manager.maybe_start_non_curated_plugin_cache_refresh(&context, &marketplaces);
 
     {
         let mut state = manager
@@ -6417,7 +6431,11 @@ enabled = true
         "sample-plugin",
         Some("2.0.0"),
     );
-    manager.maybe_start_non_curated_plugin_cache_refresh(&config, &roots);
+    let marketplaces = manager
+        .list_marketplaces_for_context(&context, /*include_openai_curated*/ false)
+        .unwrap()
+        .marketplaces;
+    manager.maybe_start_non_curated_plugin_cache_refresh(&context, &marketplaces);
 
     let state = manager
         .non_curated_cache_refresh_state

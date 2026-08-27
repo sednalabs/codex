@@ -307,8 +307,15 @@ Plugin activation and MCP settings use the existing merged configuration, includ
 system settings and trusted project overrides. `skills/list` resolves plugin skills
 independently for each requested working directory.
 
-Omitted or empty catalog `cwds` exclude project configuration, including the
-app-server process's project.
+For local `plugin/list` and `plugin/installed` results, each requested cwd supplies
+its effective plugin state and plugin feature flag. When a plugin appears in multiple
+contexts, the first source wins and installed/enabled state is merged across contexts.
+Invalid project configurations are reported in `marketplaceLoadErrors` without hiding
+other projects or remote plugins. Omitted or empty `cwds` exclude project
+configuration, including the app-server process's project. `forceRefetch` refreshes the selected local plugin
+sources before returning; ordinary listing schedules the same work in the background.
+Remote catalog settings and feature gating remain request-wide rather than being
+selected from the requested repos. Search continues to report `enabled: false`.
 
 Marketplace definitions can come from system configuration, but configured Git
 marketplaces currently require an existing downloaded snapshot.
