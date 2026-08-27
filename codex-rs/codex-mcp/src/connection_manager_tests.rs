@@ -2563,7 +2563,7 @@ async fn capture_binding_exposes_cached_tools_before_startup() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn capture_binding_skips_pending_optional_servers_after_one_shared_startup_grace() {
+async fn capture_binding_skips_pending_optional_servers_after_configured_shared_startup_grace() {
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
     let mut manager = McpConnectionSet::new_uninitialized(
@@ -2581,6 +2581,7 @@ async fn capture_binding_skips_pending_optional_servers_after_one_shared_startup
             .expect("optional plugin MCP config"),
     ));
     plugin_config.mcp_server_catalog = catalog.build();
+    plugin_config.optional_mcp_startup_grace = Duration::from_millis(250);
     manager.tool_plugin_provenance = Arc::new(crate::tool_plugin_provenance(&plugin_config));
     for server_name in ["pending-one", "pending-two"] {
         manager.insert_test_client(
@@ -2602,9 +2603,16 @@ async fn capture_binding_skips_pending_optional_servers_after_one_shared_startup
 
     let manager = Arc::new(manager);
     assert_eq!(manager.stable_catalog_revision().await, None);
-    let binding = tokio::time::timeout(Duration::from_millis(1500), capture_binding(&manager))
-        .await
-        .expect("all optional servers should share a single startup grace");
+    let binding = tokio::time::timeout(
+        Duration::from_millis(500),
+        manager.capture_binding_with_metadata(
+            Arc::new(plugin_config),
+            /*plugins_available*/ false,
+            /*required_servers*/ &[],
+        ),
+    )
+    .await
+    .expect("all optional servers should share the configured startup grace");
     assert!(binding.tools().is_empty());
 
     let binding = tokio::time::timeout(Duration::from_millis(1), capture_binding(&manager))
@@ -2642,6 +2650,49 @@ async fn capture_binding_skips_pending_optional_servers_after_one_shared_startup
     )
     .await;
     assert!(binding.is_err(), "explicitly requested servers must wait");
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_binding_waits_for_optional_startup_when_shared_grace_is_disabled() {
+    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let mut manager = McpConnectionSet::new_uninitialized(
+        &approval_policy,
+        &permission_profile,
+        /*prefix_mcp_tool_names*/ true,
+    );
+    let (client, startup_started, release_startup) = create_gated_async_managed_client(
+        create_test_managed_client(vec![create_test_tool("optional", "echo")]).await,
+    );
+    manager.insert_test_client("optional", client);
+
+    let mut config = crate::mcp::tests::test_mcp_config(std::env::temp_dir());
+    config.optional_mcp_startup_grace = Duration::ZERO;
+    config
+        .server_permission_profiles
+        .insert("optional".to_string(), PermissionProfile::default());
+    let manager = Arc::new(manager);
+    let mut capture = tokio::spawn(async move {
+        manager
+            .capture_binding_with_metadata(
+                Arc::new(config),
+                /*plugins_available*/ false,
+                /*required_servers*/ &[],
+            )
+            .await
+    });
+
+    startup_started.await.expect("client startup should begin");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1), &mut capture)
+            .await
+            .is_err(),
+        "disabled shared grace should keep waiting for optional startup"
+    );
+    release_startup.send(()).expect("release client startup");
+
+    let binding = capture.await.expect("capture binding task");
+    assert!(binding.prepare_call("optional", "echo").is_some());
 }
 
 #[tokio::test]
@@ -2745,13 +2796,57 @@ async fn capture_binding_shares_optional_startup_grace_across_connection_sets() 
     .expect("the next thread must not restart the same server's startup grace");
     assert!(second.tools().is_empty());
 
+    let mut disabled_config = crate::mcp::tests::test_mcp_config(std::env::temp_dir());
+    disabled_config.optional_mcp_startup_grace = Duration::ZERO;
+    let disabled_manager = create_connection_set();
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(1),
+            disabled_manager.capture_binding_with_metadata(
+                Arc::new(disabled_config),
+                /*plugins_available*/ false,
+                /*required_servers*/ &[],
+            ),
+        )
+        .await
+        .is_err(),
+        "disabled grace should keep waiting for the pending optional server"
+    );
+
+    let restored_started = tokio::time::Instant::now();
+    let restored = tokio::time::timeout(
+        Duration::from_millis(1500),
+        capture_binding(&create_connection_set()),
+    )
+    .await
+    .expect("restoring the startup grace should create a fresh deadline");
+    assert!(restored.tools().is_empty());
+    assert_eq!(restored_started.elapsed(), Duration::from_secs(1));
+
+    let mut updated_config = crate::mcp::tests::test_mcp_config(std::env::temp_dir());
+    updated_config.optional_mcp_startup_grace = Duration::from_millis(250);
+    let updated_manager = create_connection_set();
+    let updated_started = tokio::time::Instant::now();
+    let updated = tokio::time::timeout(
+        Duration::from_millis(500),
+        updated_manager.capture_binding_with_metadata(
+            Arc::new(updated_config),
+            /*plugins_available*/ false,
+            /*required_servers*/ &[],
+        ),
+    )
+    .await
+    .expect("a changed startup grace should receive its newly configured deadline");
+    assert!(updated.tools().is_empty());
+    assert_eq!(updated_started.elapsed(), Duration::from_millis(250));
+
     cache_context.publish_if_newest(
         cache_context.begin_fetch(),
         &[create_test_tool("pending", "cached_tool")],
     );
     let deadline_after_publication = tokio::time::Instant::now() + Duration::from_secs(1);
     assert_eq!(
-        cache_context.optional_startup_deadline(deadline_after_publication),
+        cache_context.optional_startup_deadline(deadline_after_publication, Duration::from_secs(1)),
         deadline_after_publication,
         "publishing a catalog must not install a stale startup deadline"
     );

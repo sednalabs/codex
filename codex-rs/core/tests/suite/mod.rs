@@ -93,6 +93,7 @@ mod json_result;
 mod live_cli;
 mod mcp_auth_elicitation;
 mod mcp_auth_refresh;
+mod mcp_optional_startup_grace;
 #[cfg(unix)]
 mod mcp_refresh_cleanup;
 mod mcp_startup_refresh_http_proxy;
