@@ -5151,6 +5151,8 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
 
 #[tokio::test]
 async fn emit_subagent_session_started_includes_fork_lineage_and_originator() {
+    use codex_app_server_protocol::ServerNotification;
+    use codex_app_server_protocol::ThreadArchivedNotification;
     use wiremock::Mock;
     use wiremock::MockServer;
     use wiremock::ResponseTemplate;
@@ -5225,6 +5227,59 @@ async fn emit_subagent_session_started_includes_fork_lineage_and_originator() {
     assert_eq!(
         event["event_params"]["app_server_client"]["product_client_id"],
         "test_originator"
+    );
+
+    let prewarmed_thread_id = ThreadId::new();
+    emit_subagent_session_started(
+        &analytics_events_client,
+        AppServerClientMetadata {
+            client_name: None,
+            client_version: None,
+        },
+        SessionId::from(parent_thread_id),
+        prewarmed_thread_id,
+        Some(parent_thread_id),
+        session_configuration.thread_config_snapshot(Vec::new()),
+        SubAgentSource::Other(crate::guardian::GUARDIAN_REVIEWER_NAME.to_string()),
+    );
+    // Archive analytics exposes retained lineage even before a parent connection exists.
+    analytics_events_client.track_notification(&ServerNotification::ThreadArchived(
+        ThreadArchivedNotification {
+            thread_id: prewarmed_thread_id.to_string(),
+        },
+    ));
+    analytics_events_client.flush().await;
+    let events = server
+        .received_requests()
+        .await
+        .expect("analytics requests")
+        .into_iter()
+        .flat_map(|request| {
+            let payload: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("valid analytics payload");
+            payload["events"]
+                .as_array()
+                .expect("analytics events")
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    let [initialization, archive] = events.as_slice() else {
+        panic!("expected one complete initialization and one archive: {events:?}");
+    };
+    assert_eq!(initialization, &event);
+    assert_eq!(
+        json!([
+            archive["event_type"],
+            archive["event_params"]["thread_id"],
+            archive["event_params"]["thread_source"],
+            archive["event_params"]["parent_thread_id"],
+        ]),
+        json!([
+            "codex_thread_archive_event",
+            prewarmed_thread_id.to_string(),
+            "guardian_review",
+            parent_thread_id.to_string(),
+        ])
     );
 }
 

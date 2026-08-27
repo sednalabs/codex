@@ -145,10 +145,11 @@ async fn guardian_session_inherits_parent_http_fallback(
     );
 
     let server = start_mock_server().await;
-    Mock::given(method("GET"))
+    let websocket_fallback = Mock::given(method("GET"))
         .and(path_regex(".*/responses$"))
         .respond_with(ResponseTemplate::new(426))
-        .mount(&server)
+        .expect(1)
+        .mount_as_scoped(&server)
         .await;
 
     let responses = mount_sse_sequence(
@@ -188,6 +189,13 @@ async fn guardian_session_inherits_parent_http_fallback(
             config.approvals_reviewer = ApprovalsReviewer::User;
         });
     let test = builder.build_with_auto_env(&server).await?;
+
+    // Let startup prewarm observe the initial reviewer before enabling Guardian.
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        websocket_fallback.wait_until_satisfied(),
+    )
+    .await?;
 
     test.codex
         .start_or_steer_turn(
