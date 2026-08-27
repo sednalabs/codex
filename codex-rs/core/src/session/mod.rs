@@ -3319,6 +3319,11 @@ impl Session {
         // Capture once before asynchronous planning; all request consumers
         // retain this immutable settings version even if the turn is updated.
         let settings = turn_context.current_settings.load_full();
+        let token_budget = token_budget::resolve_token_budget(
+            turn_context.configured_token_budget.as_ref(),
+            turn_context.use_model_token_budget_defaults,
+            settings.model_info.as_ref(),
+        );
         let session_telemetry = settings.telemetry(&turn_context.session_telemetry);
         // Keep selections fixed for the turn while allowing their startup work to finish.
         let environments = turn_context.environments.refresh_readiness();
@@ -3402,6 +3407,7 @@ impl Session {
         .await??;
         Ok(Arc::new(StepContext {
             settings,
+            token_budget,
             session_telemetry,
             turn: turn_context,
             environments,
