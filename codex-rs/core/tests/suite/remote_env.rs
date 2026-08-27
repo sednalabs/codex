@@ -97,6 +97,7 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_no_remote_env;
 use core_test_support::skip_if_target_windows;
+use core_test_support::startup::expect_startup;
 use core_test_support::submit_thread_settings;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::TestCodexBuilder;
@@ -2133,9 +2134,7 @@ async fn deferred_executor_stays_pending_after_materialization() -> Result<()> {
     let mut builder = test_codex_with_wait_for_environment().with_config(|config| {
         assert!(config.features.enable(Feature::DeferredExecutor).is_ok());
     });
-    let test = timeout(Duration::from_secs(5), builder.build(&server))
-        .await
-        .context("thread startup should not wait for the remote environment")??;
+    let test = expect_startup(builder.build(&server)).await;
     let environment_manager = test.thread_manager.environment_manager();
     let provider = Arc::new(FailingNoiseConnectProvider::default());
     environment_manager.materialize_pending_noise_environment(
@@ -2275,12 +2274,7 @@ async fn deferred_executor_spawn_agent_inherits_ready_step_environments(
         attach_rx,
         shutdown_rx,
     ));
-    let test = timeout(
-        Duration::from_secs(5),
-        builder.build_with_remote_and_local_env(&server),
-    )
-    .await
-    .context("thread startup should not wait for the remote environment")??;
+    let test = expect_startup(builder.build_with_remote_and_local_env(&server)).await;
     let owner_active_profile = ActivePermissionProfile::new("owner-read-only");
     let owner_profile_workspace_root = test.config.cwd.join("owner-profile-root");
     let remote_selection = TurnEnvironmentSelection {
@@ -2440,12 +2434,7 @@ async fn deferred_executor_guardian_uses_newly_ready_step_environment() -> Resul
         attach_rx,
         shutdown_rx,
     ));
-    let test = timeout(
-        Duration::from_secs(5),
-        builder.build_with_remote_and_local_env(&server),
-    )
-    .await
-    .context("thread startup should not wait for the remote environment")??;
+    let test = expect_startup(builder.build_with_remote_and_local_env(&server)).await;
     let remote_cwd = test.cwd.path().join("guardian-remote").abs();
     let local_cwd = test.cwd.path().abs();
     fs::create_dir_all(remote_cwd.as_path())?;
@@ -2591,9 +2580,7 @@ async fn deferred_executor_loads_agents_md_when_environment_becomes_ready() -> R
         attach_rx,
         shutdown_rx,
     ));
-    let test = timeout(Duration::from_secs(5), builder.build(&server))
-        .await
-        .context("thread startup should not wait for the remote environment")??;
+    let test = expect_startup(builder.build(&server)).await;
 
     test.codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2699,9 +2686,7 @@ async fn deferred_executor_compaction_preserves_then_updates_environment_once() 
             config.model_context_window = Some(100);
             config.model_auto_compact_token_limit = Some(90);
         });
-    let test = timeout(Duration::from_secs(5), builder.build(&server))
-        .await
-        .context("thread startup should not wait for the remote environment")??;
+    let test = expect_startup(builder.build(&server)).await;
 
     test.codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
