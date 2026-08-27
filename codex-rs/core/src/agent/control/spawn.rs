@@ -9,6 +9,7 @@ use crate::context::DeveloperInstructions;
 use crate::context::ManagedDeveloperInstructions;
 use crate::context::MultiAgentModeInstructions;
 use crate::context::MultiAgentRoleInstructions;
+use crate::context::world_state::PersistentModeState;
 use crate::session::multi_agents::resolve_usage_hints;
 use crate::tools::handlers::multi_agents_common::build_agent_resume_config;
 use codex_context_fragments::set_annotated_content;
@@ -928,9 +929,12 @@ impl AgentControl {
                     let ContentItem::InputText { text } = content_item.content_mut() else {
                         return true;
                     };
-                    if ManagedDeveloperInstructions::matches_text(text) {
+                    if ManagedDeveloperInstructions::matches_text(text)
+                        || PersistentModeState::matches_text(text)
+                    {
                         // If the child will rebuild its initial context, drop the inherited
-                        // managed instructions; startup will add the current requirements once.
+                        // instructions; startup will add the current requirements and effort
+                        // instructions once.
                         return preserve_reference_context_item;
                     }
                     let (
