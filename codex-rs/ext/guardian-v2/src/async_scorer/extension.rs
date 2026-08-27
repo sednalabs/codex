@@ -258,6 +258,11 @@ pub enum StrictReviewReason {
 
 struct GuardianV2Enabled;
 
+enum ClassificationOutcome {
+    Scored,
+    Superseded,
+}
+
 #[derive(Default)]
 struct GuardianV2ScoreProgress {
     latest_tool_call: AtomicUsize,
@@ -772,7 +777,7 @@ impl GuardianV2Extension {
                 ">>> APPROVAL REQUEST END\n".to_owned(),
             ]);
             let mut classification_finished_at = None;
-            let result: Result<&str, String> = async {
+            let result: Result<ClassificationOutcome, String> = async {
                 let review_model_messages = if config.guardian_policy_config.is_none() {
                     let review_model_id = review_model_override.as_deref().unwrap_or_else(|| {
                         create_model_provider(
@@ -814,7 +819,9 @@ impl GuardianV2Extension {
                     .await
                 {
                     Ok(output) => output,
-                    Err(LunaSamplerError::Superseded) => return Ok("superseded"),
+                    Err(LunaSamplerError::Superseded) => {
+                        return Ok(ClassificationOutcome::Superseded);
+                    }
                     Err(error) => return Err(error.to_string()),
                 };
                 let action_risk = match output.as_str() {
@@ -848,7 +855,7 @@ impl GuardianV2Extension {
                     "Guardian V2 classification result"
                 );
                 if !accepted {
-                    return Ok("superseded");
+                    return Ok(ClassificationOutcome::Superseded);
                 }
                 score_progress
                     .latest_scored_tool_call
@@ -869,7 +876,7 @@ impl GuardianV2Extension {
                         "failed to persist Guardian V2 classification result"
                     );
                 }
-                Ok("success")
+                Ok(ClassificationOutcome::Scored)
             }
             .await;
             if result.is_err() {
@@ -882,9 +889,13 @@ impl GuardianV2Extension {
                         finished_at.duration_since(classification_started_at)
                     })
                     .unwrap_or_else(|| classification_started_at.elapsed()),
-                result.as_deref().unwrap_or("failure"),
+                match &result {
+                    Ok(ClassificationOutcome::Scored) => "success",
+                    Ok(ClassificationOutcome::Superseded) => "superseded",
+                    Err(_) => "failure",
+                },
             );
-            if matches!(result.as_deref(), Ok("success")) {
+            if matches!(result, Ok(ClassificationOutcome::Scored)) {
                 truncations.emit(metrics.as_deref());
             }
             if let Err(error) = result {
