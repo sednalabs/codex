@@ -1067,7 +1067,7 @@ pub(crate) async fn load_plugin_skill_inventory(
     }
 }
 
-fn plugin_skill_roots(
+pub(crate) fn plugin_skill_roots(
     plugin_root: &AbsolutePathBuf,
     manifest_paths: &PluginManifestPaths,
     manifest_format: PluginManifestFormat,

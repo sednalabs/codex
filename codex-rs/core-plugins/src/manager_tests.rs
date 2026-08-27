@@ -6962,6 +6962,7 @@ fn remote_installed_plugins_cache_refresh_coalesces_materializations() {
         scope: crate::remote::RemotePluginScope::Workspace,
         discoverability: Some(crate::remote::RemotePluginShareDiscoverability::Listed),
         authenticated_account_id: Some("account-123".to_string()),
+        capabilities: Default::default(),
     };
     let change = |name: &str| EffectivePluginsChange {
         materialized_remote_plugins: vec![materialization(name)],

@@ -1471,7 +1471,7 @@ impl PluginsManager {
                 Ok((outcome, effective_plugins_changed)) => {
                     tracing::info!(
                         materialized_remote_plugins = ?outcome.materialized_remote_plugins,
-                        removed_cache_plugin_ids = ?outcome.removed_cache_plugin_ids,
+                        removed_plugins = ?outcome.removed_plugins,
                         failed_remote_plugin_ids = ?outcome.failed_remote_plugin_ids,
                         failed_materialization_remote_plugin_ids = ?outcome.failed_materialization_remote_plugin_ids,
                         "completed remote installed plugin bundle sync"
