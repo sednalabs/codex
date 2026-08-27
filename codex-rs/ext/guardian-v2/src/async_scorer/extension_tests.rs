@@ -1252,7 +1252,7 @@ max_classifier_instruction_tokens = 256
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn contributor_uses_configured_prompt_effort_threshold_and_transcript() -> Result<()> {
+async fn contributor_uses_configured_prompt_and_expires_scores_at_default_lag() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let configuration = r#"
@@ -1260,7 +1260,6 @@ async fn contributor_uses_configured_prompt_effort_threshold_and_transcript() ->
 enabled = true
 classifier_instructions = "Use the experimental security classification prompt."
 review_threshold = 0.60
-max_tool_call_lag = 2
 reasoning_effort = "minimal"
 max_action_tokens = 128
 max_classifier_instruction_tokens = 100000
