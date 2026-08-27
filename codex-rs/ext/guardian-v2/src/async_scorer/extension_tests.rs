@@ -57,6 +57,7 @@ use serde_json::json;
 
 use super::GuardianV2Extension;
 use super::GuardianV2ScoreProgress;
+use super::ParentCompactionError;
 use super::StrictReviewReason;
 use super::encrypted_parent_compaction;
 use super::should_classify_tool;
@@ -645,14 +646,14 @@ fn encrypted_parent_compaction_preserves_the_latest_valid_item() {
             [&older, &latest].into_iter(),
             DEFAULT_PARENT_COMPACTION_TOKENS,
         ),
-        Some(latest.clone())
+        Ok(Some(latest.clone()))
     );
     assert_eq!(
         encrypted_parent_compaction(
             [&latest, &older].into_iter(),
             DEFAULT_PARENT_COMPACTION_TOKENS,
         ),
-        Some(older)
+        Ok(Some(older))
     );
 }
 
@@ -697,7 +698,7 @@ fn encrypted_parent_compaction_rejects_invalid_latest_item() {
                 [&older, latest].into_iter(),
                 DEFAULT_PARENT_COMPACTION_TOKENS,
             ),
-            None,
+            Ok(None),
             "an unusable latest summary must not resurrect older context"
         );
     }
@@ -736,7 +737,7 @@ fn encrypted_parent_compaction_rejects_oversized_latest_item() -> Result<()> {
         assert_eq!(serde_json::to_vec(&*item)?.len(), max_compaction_bytes);
         assert_eq!(
             encrypted_parent_compaction(std::iter::once(&*item), DEFAULT_PARENT_COMPACTION_TOKENS,),
-            Some(item.clone())
+            Ok(Some(item.clone()))
         );
 
         let mut oversized = item.clone();
@@ -759,7 +760,7 @@ fn encrypted_parent_compaction_rejects_oversized_latest_item() -> Result<()> {
                 [&*item, &oversized].into_iter(),
                 DEFAULT_PARENT_COMPACTION_TOKENS,
             ),
-            None,
+            Err(ParentCompactionError::Oversized),
             "an oversized latest summary must not resurrect older context"
         );
     }
@@ -780,7 +781,7 @@ fn encrypted_parent_compaction_rejects_oversized_latest_item() -> Result<()> {
             [&bounded[0], &oversized_metadata].into_iter(),
             DEFAULT_PARENT_COMPACTION_TOKENS,
         ),
-        None,
+        Err(ParentCompactionError::Oversized),
         "oversized passthrough metadata must not bypass the complete-item limit"
     );
 

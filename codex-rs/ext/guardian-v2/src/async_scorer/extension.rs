@@ -442,49 +442,25 @@ impl GuardianV2Extension {
                 .enable_image_capture();
         }
         input.thread_store.insert(guardian_config.clone());
-        let latest_parent_compaction = if guardian_config.reuse_parent_compaction {
-            input
-                .conversation_history
-                .items()
-                .filter(|item| {
-                    matches!(
-                        item,
-                        ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
-                    )
-                })
-                .last()
+        let parent_compaction = if guardian_config.reuse_parent_compaction {
+            match encrypted_parent_compaction(
+                input.conversation_history.items(),
+                guardian_config.max_parent_compaction_tokens,
+            ) {
+                Ok(compaction) => compaction,
+                Err(_) => {
+                    Self::record_fail_closed_score(input.thread_store, sampled_at);
+                    record_classification(
+                        metrics.as_deref(),
+                        classification_started_at.elapsed(),
+                        "failure",
+                    );
+                    return;
+                }
+            }
         } else {
             None
         };
-        let parent_compaction = latest_parent_compaction.and_then(|item| {
-            encrypted_parent_compaction(
-                std::iter::once(item),
-                guardian_config.max_parent_compaction_tokens,
-            )
-        });
-        if parent_compaction.is_none()
-            && latest_parent_compaction.is_some_and(|item| match item {
-                ResponseItem::Compaction {
-                    id: Some(_),
-                    encrypted_content,
-                    ..
-                }
-                | ResponseItem::ContextCompaction {
-                    id: Some(_),
-                    encrypted_content: Some(encrypted_content),
-                    ..
-                } => !encrypted_content.is_empty(),
-                _ => false,
-            })
-        {
-            Self::record_fail_closed_score(input.thread_store, sampled_at);
-            record_classification(
-                metrics.as_deref(),
-                classification_started_at.elapsed(),
-                "failure",
-            );
-            return;
-        }
         let call_id = input.call_id.to_owned();
         let mcp_tool = input.mcp_tool.cloned();
         let action = GuardianAction {
@@ -754,21 +730,32 @@ impl GuardianV2Extension {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum ParentCompactionError {
+    Serialization,
+    Oversized,
+}
+
+// An unusable latest compaction must never fall back to an older one. Missing
+// encrypted content can be omitted; content that cannot be bounded rejects the sample.
 fn encrypted_parent_compaction<'a>(
     items: impl Iterator<Item = &'a ResponseItem>,
     max_parent_compaction_tokens: usize,
-) -> Option<ResponseItem> {
+) -> Result<Option<ResponseItem>, ParentCompactionError> {
     let max_compaction_bytes = TruncationPolicy::Tokens(max_parent_compaction_tokens).byte_budget();
-    let item = items
+    let Some(item) = items
         .filter(|item| {
             matches!(
                 item,
                 ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
             )
         })
-        .last()?;
+        .last()
+    else {
+        return Ok(None);
+    };
 
-    match item {
+    let encrypted_content = match item {
         ResponseItem::Compaction {
             id: Some(_),
             encrypted_content,
@@ -778,14 +765,18 @@ fn encrypted_parent_compaction<'a>(
             id: Some(_),
             encrypted_content: Some(encrypted_content),
             ..
-        } if !encrypted_content.is_empty()
-            && serde_json::to_vec(item)
-                .is_ok_and(|serialized| serialized.len() <= max_compaction_bytes) =>
-        {
-            Some(item.clone())
-        }
-        _ => None,
+        } => encrypted_content,
+        _ => return Ok(None),
+    };
+    if encrypted_content.is_empty() {
+        return Ok(None);
     }
+    let serialized = serde_json::to_vec(item).map_err(|_| ParentCompactionError::Serialization)?;
+    if serialized.len() > max_compaction_bytes {
+        return Err(ParentCompactionError::Oversized);
+    }
+
+    Ok(Some(item.clone()))
 }
 
 /// Installs feature-gated Guardian V2 tool classification for each thread.
