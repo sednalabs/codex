@@ -20,9 +20,9 @@ use crate::tools::network_approval::NetworkApprovalSpec;
 use crate::tools::runtimes::RuntimePathPrepends;
 #[cfg(unix)]
 use crate::tools::runtimes::apply_zsh_fork_path_prepend;
-use crate::tools::runtimes::disable_powershell_profile_for_elevated_windows_sandbox;
 use crate::tools::runtimes::exec_env_for_sandbox_permissions;
 use crate::tools::runtimes::maybe_wrap_shell_lc_with_snapshot;
+use crate::tools::runtimes::prepare_powershell_command_for_elevated_windows_sandbox;
 use crate::tools::runtimes::zsh_fork;
 use crate::tools::sandboxing::Approvable;
 use crate::tools::sandboxing::ApprovalAction;
@@ -399,11 +399,12 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                 *script = format!("{exports}\n{script}");
             }
         }
-        let command = disable_powershell_profile_for_elevated_windows_sandbox(
+        let command = prepare_powershell_command_for_elevated_windows_sandbox(
             &command,
             Some(&req.shell_type),
             attempt.sandbox_requested,
             attempt.windows_sandbox_level,
+            environment_is_remote,
         );
         let command = if matches!(req.shell_type, ShellType::PowerShell) {
             prefix_powershell_script_with_utf8(&command)
