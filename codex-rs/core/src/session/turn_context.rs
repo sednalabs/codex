@@ -53,6 +53,8 @@ pub(crate) struct TurnEnvironment {
     /// Cached from the selected executor; `None` means it did not report them.
     pub(crate) temporary_directories: Option<Vec<PathUri>>,
     pub(crate) shell: Option<shell::Shell>,
+    /// OS reported by the selected executor; `None` for legacy executors.
+    pub(crate) executor_platform_os: Option<String>,
     pub(crate) shell_snapshot: ShellSnapshotTask,
     pub(crate) shell_snapshot_v2_supported: bool,
 }
@@ -72,6 +74,7 @@ impl TurnEnvironment {
             user_home_dir: None,
             temporary_directories: None,
             shell,
+            executor_platform_os: None,
             shell_snapshot: futures::future::ready(None).boxed().shared(),
             shell_snapshot_v2_supported: false,
         }
@@ -172,6 +175,7 @@ impl std::fmt::Debug for TurnEnvironment {
             .field("user_home_dir", &self.user_home_dir)
             .field("temporary_directories", &self.temporary_directories)
             .field("shell", &self.shell)
+            .field("executor_platform_os", &self.executor_platform_os)
             .field("config", self.config())
             .field("config_origin", &self.config_origin)
             .finish_non_exhaustive()

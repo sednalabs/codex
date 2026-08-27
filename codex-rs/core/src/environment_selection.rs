@@ -138,6 +138,7 @@ struct ResolvedEnvironment {
     environment: Arc<Environment>,
     shell: Option<Shell>,
     user_home_dir: Option<PathUri>,
+    executor_platform_os: Option<String>,
     temporary_directories: Option<Vec<PathUri>>,
     shell_snapshot: ShellSnapshotTask,
     shell_snapshot_v2_supported: bool,
@@ -259,6 +260,7 @@ impl ThreadEnvironments {
                         environment: environment.environment,
                         shell: environment.shell,
                         user_home_dir: environment.user_home_dir,
+                        executor_platform_os: environment.executor_platform_os,
                         temporary_directories: environment.temporary_directories,
                         shell_snapshot: environment.shell_snapshot,
                         shell_snapshot_v2_supported: environment.shell_snapshot_v2_supported,
@@ -625,9 +627,11 @@ impl ThreadEnvironments {
         };
         // Resolve the attachment only after both prerequisites are ready.
         let ((), installed_config) = tokio::try_join!(connection_ready, configuration_ready)?;
+        let executor_platform_os;
         let (shell, user_home_dir, temporary_dirs, snapshot_v2) = if environment.is_remote() {
             match environment.info().await {
                 Ok(info) => {
+                    executor_platform_os = info.platform_os;
                     let user_home_dir = info.user_home_dir;
                     let temporary_directories = info.temporary_directories;
                     let shell_snapshot_v2_supported = info.capabilities.shell_snapshot_v2;
@@ -648,11 +652,13 @@ impl ThreadEnvironments {
                     )
                 }
                 Err(err) => {
+                    executor_platform_os = None;
                     tracing::warn!("failed to get info for environment `{environment_id}`: {err}");
                     (None, None, None, false)
                 }
             }
         } else {
+            executor_platform_os = Some(std::env::consts::OS.to_string());
             (
                 Some(local_shell),
                 PathUri::from_host_native_path("~").ok(),
@@ -671,6 +677,7 @@ impl ThreadEnvironments {
             environment,
             shell,
             user_home_dir,
+            executor_platform_os,
             temporary_directories: temporary_dirs,
             shell_snapshot: task,
             shell_snapshot_v2_supported: snapshot_v2,
@@ -748,6 +755,7 @@ impl TurnEnvironmentState {
                     environment.environment,
                     environment.shell,
                 );
+                turn_environment.executor_platform_os = environment.executor_platform_os;
                 turn_environment.shell_snapshot = environment.shell_snapshot;
                 turn_environment.shell_snapshot_v2_supported =
                     environment.shell_snapshot_v2_supported;
@@ -1029,6 +1037,7 @@ mod tests {
                     "result": {
                         "shell": { "name": "zsh", "path": "/bin/zsh" },
                         "userHomeDir": "file:///home/remote",
+                        "platformOs": "windows",
                         "temporaryDirectories": ["file:///tmp/remote"],
                     }
                 })
@@ -1482,6 +1491,13 @@ url = "ws://127.0.0.1:8765"
                 .map(|environment| environment.config().clone())
                 .collect::<Vec<_>>(),
             vec![expected_config.clone(), expected_config]
+        );
+        assert_eq!(
+            attached
+                .turn_environments()
+                .map(|environment| environment.executor_platform_os.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("windows"), Some(std::env::consts::OS)]
         );
         assert_eq!(attached.to_selections(), vec![remote, local]);
         let environment = attached.primary().expect("remote environment");
