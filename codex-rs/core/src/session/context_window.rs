@@ -37,10 +37,15 @@ pub(crate) async fn context_window_token_status(
 pub(crate) async fn context_window_token_status_for_model(
     sess: &Session,
     config: &Config,
+    turn_context: &TurnContext,
     model_info: &ModelInfo,
 ) -> ContextWindowTokenStatus {
     let mut config = config.clone();
-    super::token_budget::apply_model_defaults(&mut config, model_info);
+    config.token_budget = super::token_budget::resolve_token_budget(
+        turn_context.configured_token_budget.as_ref(),
+        turn_context.use_model_token_budget_defaults,
+        model_info,
+    );
     context_window_token_status_with_config(sess, &config, model_info).await
 }
 

@@ -956,6 +956,7 @@ async fn run_review_on_session(
         && crate::session::context_window::context_window_token_status_for_model(
             review_session.session.as_ref(),
             &params.spawn_config,
+            params.parent_context.turn(),
             &model_info,
         )
         .await
