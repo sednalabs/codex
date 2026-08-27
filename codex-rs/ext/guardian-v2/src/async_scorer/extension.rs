@@ -374,10 +374,10 @@ impl SkillInvocationContributor for GuardianV2Extension {
             let Some(skill_path) = roots.trusted_skill_path(input.skill_resource) else {
                 return;
             };
-            input
-                .turn_store
-                .get_or_init(TrustedSkillInvocations::default)
-                .record(skill_path);
+            let Some(evidence) = input.thread_store.get::<GuardianReviewEvidence>() else {
+                return;
+            };
+            evidence.record_trusted_skill(input.turn_id, skill_path);
         })
     }
 }
@@ -637,11 +637,6 @@ impl GuardianV2Extension {
         }
         let call_id = input.call_id.to_owned();
         let mcp_tool = input.mcp_tool.cloned();
-        let trusted_skill_paths = input
-            .turn_store
-            .get::<TrustedSkillInvocations>()
-            .map(|skills| skills.snapshot())
-            .unwrap_or_default();
         let action = GuardianAction {
             tool_name: input.tool_name.clone(),
             payload: input.payload.clone(),
@@ -658,6 +653,7 @@ impl GuardianV2Extension {
             .thread_store
             .get_or_init(GuardianReviewEvidence::default);
         let sync_reviews = guardian_evidence.snapshot();
+        let local_trusted_skill_paths = guardian_evidence.trusted_skill_paths(input.turn_id);
         let node_repl_images = if guardian_config.transcript.include_images {
             input
                 .thread_store
@@ -677,6 +673,16 @@ impl GuardianV2Extension {
                 None => None,
             };
             let root_snapshot = thread.guardian_root_snapshot().await;
+            let trusted_skills = TrustedSkillInvocations::default();
+            for path in local_trusted_skill_paths.iter().chain(
+                root_snapshot
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|snapshot| snapshot.trusted_skill_paths.iter()),
+            ) {
+                trusted_skills.record(path.clone());
+            }
+            let trusted_skill_paths = trusted_skills.snapshot();
             let root_authorization_version = root_snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.authorization_version);
