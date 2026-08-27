@@ -137,6 +137,7 @@ type PendingConfigurationResult = Result<EnvironmentConfig, String>;
 struct ResolvedEnvironment {
     environment: Arc<Environment>,
     shell: Option<Shell>,
+    user_home_dir: Option<PathUri>,
     temporary_directories: Option<Vec<PathUri>>,
     shell_snapshot: ShellSnapshotTask,
     shell_snapshot_v2_supported: bool,
@@ -257,6 +258,7 @@ impl ThreadEnvironments {
                     futures::future::ready(Ok(ResolvedEnvironment {
                         environment: environment.environment,
                         shell: environment.shell,
+                        user_home_dir: environment.user_home_dir,
                         temporary_directories: environment.temporary_directories,
                         shell_snapshot: environment.shell_snapshot,
                         shell_snapshot_v2_supported: environment.shell_snapshot_v2_supported,
@@ -623,10 +625,10 @@ impl ThreadEnvironments {
         };
         // Resolve the attachment only after both prerequisites are ready.
         let ((), installed_config) = tokio::try_join!(connection_ready, configuration_ready)?;
-        let (shell, temporary_directories, shell_snapshot_v2_supported) = if environment.is_remote()
-        {
+        let (shell, user_home_dir, temporary_dirs, snapshot_v2) = if environment.is_remote() {
             match environment.info().await {
                 Ok(info) => {
+                    let user_home_dir = info.user_home_dir;
                     let temporary_directories = info.temporary_directories;
                     let shell_snapshot_v2_supported = info.capabilities.shell_snapshot_v2;
                     let shell = match Shell::from_environment_shell_info(info.shell) {
@@ -638,16 +640,22 @@ impl ThreadEnvironments {
                             None
                         }
                     };
-                    (shell, temporary_directories, shell_snapshot_v2_supported)
+                    (
+                        shell,
+                        user_home_dir,
+                        temporary_directories,
+                        shell_snapshot_v2_supported,
+                    )
                 }
                 Err(err) => {
                     tracing::warn!("failed to get info for environment `{environment_id}`: {err}");
-                    (None, None, false)
+                    (None, None, None, false)
                 }
             }
         } else {
             (
                 Some(local_shell),
+                PathUri::from_host_native_path("~").ok(),
                 Some(EnvironmentInfo::local_temporary_directories()),
                 cfg!(unix),
             )
@@ -662,9 +670,10 @@ impl ThreadEnvironments {
         Ok(ResolvedEnvironment {
             environment,
             shell,
-            temporary_directories,
+            user_home_dir,
+            temporary_directories: temporary_dirs,
             shell_snapshot: task,
-            shell_snapshot_v2_supported,
+            shell_snapshot_v2_supported: snapshot_v2,
             installed_config,
         })
     }
@@ -742,6 +751,7 @@ impl TurnEnvironmentState {
                 turn_environment.shell_snapshot = environment.shell_snapshot;
                 turn_environment.shell_snapshot_v2_supported =
                     environment.shell_snapshot_v2_supported;
+                turn_environment.user_home_dir = environment.user_home_dir;
                 turn_environment.temporary_directories = environment.temporary_directories;
                 Some(Self::Ready(turn_environment))
             }
@@ -1018,6 +1028,7 @@ mod tests {
                     "id": info["id"],
                     "result": {
                         "shell": { "name": "zsh", "path": "/bin/zsh" },
+                        "userHomeDir": "file:///home/remote",
                         "temporaryDirectories": ["file:///tmp/remote"],
                     }
                 })
@@ -1145,6 +1156,7 @@ url = "ws://127.0.0.1:8765"
 
         let snapshot = turn_environments.snapshot().await;
         let environment = snapshot.primary().expect("local environment");
+        let expected_user_home_dir = PathUri::from_host_native_path("~").ok();
         let expected_temporary_directories = EnvironmentInfo::local_temporary_directories();
 
         assert_eq!(environment.shell.as_ref(), Some(&local_shell));
@@ -1157,6 +1169,7 @@ url = "ws://127.0.0.1:8765"
             FileSystemSandboxPolicyContext {
                 cwd: environment.cwd(),
                 workspace_roots: &[],
+                user_home_dir: expected_user_home_dir.as_ref(),
                 temporary_directories: Some(expected_temporary_directories.as_slice()),
             }
         );
@@ -1472,6 +1485,7 @@ url = "ws://127.0.0.1:8765"
         );
         assert_eq!(attached.to_selections(), vec![remote, local]);
         let environment = attached.primary().expect("remote environment");
+        let expected_user_home_dir = PathUri::parse("file:///home/remote").expect("remote home");
         let expected_temporary_directories =
             [PathUri::parse("file:///tmp/remote").expect("remote temporary directory")];
         assert_eq!(
@@ -1482,6 +1496,7 @@ url = "ws://127.0.0.1:8765"
             FileSystemSandboxPolicyContext {
                 cwd: environment.cwd(),
                 workspace_roots: &[],
+                user_home_dir: Some(&expected_user_home_dir),
                 temporary_directories: Some(expected_temporary_directories.as_slice()),
             }
         );
@@ -1707,6 +1722,8 @@ url = "ws://127.0.0.1:8765"
             Arc::clone(&inherited_environment),
             /*shell*/ None,
         );
+        inherited.user_home_dir =
+            Some(PathUri::parse("file:///home/inherited").expect("home directory"));
         inherited.temporary_directories = Some(vec![
             PathUri::parse("file:///tmp/inherited").expect("temporary directory"),
         ]);
@@ -1752,6 +1769,12 @@ url = "ws://127.0.0.1:8765"
         let inherited = snapshot.primary().expect("inherited environment");
         assert!(Arc::ptr_eq(&inherited.environment, &inherited_environment));
         assert_eq!(inherited.config(), &child_config);
+        assert_eq!(
+            inherited
+                .sandbox_context(/*additional_permissions*/ None)
+                .user_home_dir,
+            Some(PathUri::parse("file:///home/inherited").expect("home directory")),
+        );
         assert_eq!(
             inherited
                 .sandbox_context(/*additional_permissions*/ None)

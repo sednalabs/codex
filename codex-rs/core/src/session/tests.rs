@@ -9297,6 +9297,7 @@ async fn capability_discovery_uses_environment_permission_profile() {
         permissions: environment.permission_profile().clone().into(),
         cwd: Some(environment.cwd().clone()),
         workspace_roots: environment.workspace_roots().to_vec(),
+        user_home_dir: environment.user_home_dir.clone(),
         temporary_directories: environment.temporary_directories.clone(),
         windows_sandbox_level: WindowsSandboxLevel::Elevated,
         windows_sandbox_private_desktop: false,

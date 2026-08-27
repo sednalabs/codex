@@ -97,6 +97,9 @@ pub struct EnvironmentInfo {
     /// Working directory inherited by the exec-server process.
     #[serde(default)]
     pub cwd: Option<PathUri>,
+    /// Executor user home used to expand `~` in path-bearing values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_home_dir: Option<PathUri>,
     /// Executor-local default directories for resolving `:tmpdir`, when reported.
     /// On Windows, a command's `TEMP` or `TMP` overrides take precedence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -209,6 +212,7 @@ impl EnvironmentInfo {
         Self {
             shell: codex_shell_command::shell_detect::default_user_shell().into(),
             cwd: cwd.and_then(|cwd| PathUri::from_host_native_path(cwd).ok()),
+            user_home_dir: PathUri::from_host_native_path("~").ok(),
             temporary_directories: Some(temporary_directories),
             temp_dir,
             capabilities: EnvironmentCapabilities {
@@ -973,6 +977,7 @@ mod tests {
                     path: "/bin/zsh".to_string(),
                 },
                 cwd: None,
+                user_home_dir: None,
                 temporary_directories: None,
                 temp_dir: None,
                 capabilities: EnvironmentCapabilities::default(),
@@ -1006,6 +1011,7 @@ mod tests {
         let expected = serde_json::json!({
             "shell": { "name": "powershell", "path": "powershell.exe" },
             "cwd": null,
+            "userHomeDir": "file:///C:/Users/remote",
             "temporaryDirectories": ["file:///C:/Temp", "file:///D:/Temp"],
             "capabilities": {
                 "networkProxyLaunch": false,
@@ -1050,10 +1056,9 @@ mod tests {
             .collect::<Vec<_>>();
         expected.dedup();
 
-        assert_eq!(
-            EnvironmentInfo::local().temporary_directories,
-            Some(expected)
-        );
+        let info = EnvironmentInfo::local();
+        assert_eq!(info.temporary_directories, Some(expected));
+        assert_eq!(info.user_home_dir, PathUri::from_host_native_path("~").ok());
     }
 
     #[cfg(unix)]
@@ -1147,11 +1152,16 @@ mod tests {
             file_system,
             network: NetworkSandboxPolicy::Restricted,
         };
-        let sandbox =
+        let mut sandbox =
             FileSystemSandboxContext::from_permission_profile_with_cwd(permissions, cwd.clone());
+        sandbox.user_home_dir = Some(cwd.clone());
 
         let serialized = serde_json::to_value(&sandbox).expect("serialize sandbox");
 
+        assert_eq!(
+            serialized["userHomeDir"],
+            serde_json::json!(cwd.to_string())
+        );
         assert_eq!(
             serialized["permissions"]["file_system"]["entries"][0]["path"]["path"],
             serde_json::json!(cwd.to_string())
