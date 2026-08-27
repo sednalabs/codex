@@ -222,7 +222,15 @@ fn native_walk_preserves_canonical_matches_through_directory_links_and_cycles() 
     let matcher = ReadDenyMatcher::try_new(&policy, cwd.as_path())
         .expect("valid matcher")
         .expect("deny restriction");
-    assert!(matcher.is_read_denied(&alias.join("secret.env")));
+    assert!(
+        matcher.is_read_denied_with_canonical_path(
+            &alias.join("secret.env"),
+            &target
+                .canonicalize()
+                .expect("canonical target")
+                .join("secret.env"),
+        )
+    );
     let mut paths = Vec::new();
     collect_existing_glob_directory_matches(
         &walk,

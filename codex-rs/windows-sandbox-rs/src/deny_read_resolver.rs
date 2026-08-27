@@ -103,6 +103,7 @@ fn ripgrep_files(scan_plan: &GlobScanPlan) -> Result<Option<Vec<PathBuf>>, Strin
         .arg("--files")
         .arg("--hidden")
         .arg("--no-ignore")
+        .arg("--glob-case-insensitive")
         .arg("--null");
     if let Some(max_depth) = scan_plan.max_depth {
         command.arg("--max-depth").arg(max_depth.to_string());
@@ -541,22 +542,36 @@ mod tests {
         let cwd = AbsolutePathBuf::from_absolute_path(tmp.path()).expect("absolute cwd");
         let root_env = tmp.path().join(".env");
         let nested_env = tmp.path().join("app").join(".env");
+        let uppercase_env = tmp.path().join("app").join("SECRET.ENV");
         let notes = tmp.path().join("app").join("notes.txt");
         std::fs::create_dir_all(notes.parent().expect("parent")).expect("create parent");
         std::fs::write(&root_env, "secret").expect("write root env");
         std::fs::write(&nested_env, "secret").expect("write nested env");
+        std::fs::write(&uppercase_env, "secret").expect("write uppercase env");
         std::fs::write(&notes, "notes").expect("write notes");
         let policy = FileSystemSandboxPolicy::restricted(vec![unreadable_glob_entry(format!(
             "{}/**/*.env",
             tmp.path().display()
         ))]);
 
+        if let Some(paths) = super::ripgrep_files(&GlobScanPlan {
+            root: tmp.path().to_path_buf(),
+            max_depth: None,
+            globs: vec!["**/*.env".to_string()],
+        })
+        .expect("case-insensitive ripgrep scan")
+        {
+            assert!(paths.contains(&uppercase_env));
+        }
         let actual: HashSet<PathBuf> = resolve_windows_deny_read_paths(&policy, &cwd)
             .expect("resolve")
             .into_iter()
             .map(AbsolutePathBuf::into_path_buf)
             .collect();
-        let expected = [root_env, nested_env].into_iter().collect();
+        let mut expected = [root_env, nested_env].into_iter().collect::<HashSet<_>>();
+        if cfg!(windows) {
+            expected.insert(uppercase_env);
+        }
 
         assert_eq!(actual, expected);
     }
