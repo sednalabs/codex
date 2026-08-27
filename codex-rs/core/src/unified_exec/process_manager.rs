@@ -807,9 +807,25 @@ impl UnifiedExecProcessManager {
             .map_err(|err| UnifiedExecError::StdinApproval(ToolError::Rejected(err.to_string())))?;
             // Bound the entire serialized action plus its reason, including JSON
             // escaping. Reject, never execute an unreviewed tail.
-            if reviewed.truncated
-                || reviewed.text.len().saturating_add(approval_reason.len()) > 8_000
-            {
+            let oversized = reviewed.text.len().saturating_add(approval_reason.len()) > 8_000;
+            let size_check_result = if reviewed.truncated {
+                "formatter_truncated"
+            } else if oversized {
+                "over_limit"
+            } else {
+                "within_limit"
+            };
+            let input_kind = if request.input.chars().all(char::is_control) {
+                "control"
+            } else {
+                "text"
+            };
+            context.step_context.session_telemetry.counter(
+                "codex.unified_exec.stdin_review.size_check",
+                /*inc*/ 1,
+                &[("result", size_check_result), ("input_kind", input_kind)],
+            );
+            if reviewed.truncated || oversized {
                 return Err(UnifiedExecError::StdinApproval(ToolError::Rejected(
                     "terminal input and permission details are too large to review safely; use a smaller input or start a new terminal with fewer grants".to_string(),
                 )));
