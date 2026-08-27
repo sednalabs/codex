@@ -1509,13 +1509,14 @@ pub(crate) async fn prepare_tool_recommendations(
     skip_all,
     fields(
         turn_id = %turn_context.sub_id,
-        model = %turn_context.model_info().slug,
+        model = %model_info.slug,
         apps_enabled = turn_context.apps_enabled()
     )
 )]
 pub(crate) async fn built_tools(
     sess: &Session,
     turn_context: &TurnContext,
+    model_info: &codex_protocol::openai_models::ModelInfo,
     environments: &TurnEnvironmentSnapshot,
     mcp: &Arc<codex_mcp::McpBinding>,
     step_store: &ExtensionData,
@@ -1584,6 +1585,7 @@ pub(crate) async fn built_tools(
     Ok(Arc::new(build_tool_router(
         sess,
         turn_context,
+        model_info,
         environments,
         mcp,
         apps_enabled,

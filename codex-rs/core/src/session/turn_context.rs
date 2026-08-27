@@ -1046,14 +1046,14 @@ impl Session {
 
         if !tc.code_mode_available
             && matches!(
-                crate::tools::requested_tool_mode(tc),
+                crate::tools::requested_tool_mode(tc, tc.model_info()),
                 codex_protocol::openai_models::ToolMode::CodeMode
                     | codex_protocol::openai_models::ToolMode::CodeModeOnly
             )
             && let Some(message) = self
                 .services
                 .code_mode_service
-                .take_unavailable_warning(crate::tools::effective_tool_mode(tc))
+                .take_unavailable_warning(crate::tools::effective_tool_mode(tc, tc.model_info()))
         {
             self.send_event(tc, EventMsg::Warning(WarningEvent { message }))
                 .await;
