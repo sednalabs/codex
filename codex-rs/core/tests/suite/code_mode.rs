@@ -4748,7 +4748,7 @@ impl ToolContributor for NamespacedCustomTool {
         &self,
         _session_store: &ExtensionData,
         _thread_store: &ExtensionData,
-    ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
+    ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         Vec::new()
     }
 
@@ -4757,7 +4757,7 @@ impl ToolContributor for NamespacedCustomTool {
         _session_store: &ExtensionData,
         _thread_store: &ExtensionData,
         _step_store: &ExtensionData,
-    ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
+    ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         vec![Arc::new(Self {
             generation: self.generations.fetch_add(1, Ordering::Relaxed) + 1,
             generations: Arc::clone(&self.generations),
@@ -4765,7 +4765,7 @@ impl ToolContributor for NamespacedCustomTool {
     }
 }
 
-impl ToolExecutor<ToolCall> for NamespacedCustomTool {
+impl<'call> ToolExecutor<ToolCall<'call>> for NamespacedCustomTool {
     fn tool_name(&self) -> ToolName {
         ToolName::namespaced("editor", "apply_patch")
     }
@@ -4787,7 +4787,10 @@ impl ToolExecutor<ToolCall> for NamespacedCustomTool {
         })
     }
 
-    fn handle(&self, call: ToolCall) -> ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, call: ToolCall<'call>) -> ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(async move {
             let ToolPayload::Custom { input } = call.payload else {
                 return Err(FunctionCallError::Fatal(

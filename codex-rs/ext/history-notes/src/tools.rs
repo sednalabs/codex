@@ -260,7 +260,10 @@ impl HistoryNotesTool {
         }
     }
 
-    async fn handle_call(&self, call: ToolCall) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let arguments = if arguments.trim().is_empty() {
             json!({})
@@ -286,7 +289,7 @@ impl HistoryNotesTool {
     }
 }
 
-impl ToolExecutor<ToolCall> for HistoryNotesTool {
+impl<'call> ToolExecutor<ToolCall<'call>> for HistoryNotesTool {
     fn tool_name(&self) -> ToolName {
         ToolName::namespaced(self.action.namespace(), self.action.name())
     }
@@ -316,7 +319,10 @@ impl ToolExecutor<ToolCall> for HistoryNotesTool {
         self.action.supports_parallel_tool_calls()
     }
 
-    fn handle(&self, call: ToolCall) -> ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, call: ToolCall<'call>) -> ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(self.handle_call(call))
     }
 }

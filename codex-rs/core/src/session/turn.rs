@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -931,6 +932,7 @@ async fn build_extension_turn_input_items(
         .turn_environments()
         .enumerate()
         .map(|(index, environment)| TurnInputEnvironment {
+            _lifetime: PhantomData,
             environment_id: environment.selection.environment_id.clone(),
             cwd: environment.cwd().clone(),
             is_primary: index == 0,

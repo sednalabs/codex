@@ -134,7 +134,10 @@ impl SkillProvider for StaticSkillProvider {
         Box::pin(async move { Ok(catalog) })
     }
 
-    fn read(&self, request: SkillReadRequest) -> SkillProviderFuture<'_, SkillReadResult> {
+    fn read<'a>(
+        &'a self,
+        request: SkillReadRequest<'a>,
+    ) -> SkillProviderFuture<'a, SkillReadResult> {
         let result = self
             .main_prompt_contents
             .clone()
@@ -158,7 +161,10 @@ impl SkillProvider for CatalogSkillProvider {
         Box::pin(async { Ok(self.catalog.clone()) })
     }
 
-    fn read(&self, _request: SkillReadRequest) -> SkillProviderFuture<'_, SkillReadResult> {
+    fn read<'a>(
+        &'a self,
+        _request: SkillReadRequest<'a>,
+    ) -> SkillProviderFuture<'a, SkillReadResult> {
         Box::pin(async {
             Err(SkillProviderError::new(
                 "production-flow catalog test does not read skills",

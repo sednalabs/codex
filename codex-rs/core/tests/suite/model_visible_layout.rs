@@ -16,7 +16,6 @@ use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputContributor;
-use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
@@ -53,25 +52,36 @@ use serde_json::json;
 
 const PRETURN_CONTEXT_DIFF_CWD: &str = "PRETURN_CONTEXT_DIFF_CWD";
 
-struct RecordingTurnInputContributor(Arc<Mutex<Vec<TurnInputEnvironment>>>);
+struct RecordingTurnInputContributor(Arc<Mutex<Vec<RecordedTurnInputEnvironment>>>);
 
 impl TurnInputContributor for RecordingTurnInputContributor {
     fn contribute<'a>(
         &'a self,
-        input: TurnInputContext,
+        input: TurnInputContext<'a>,
         _extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
         _session_store: &'a ExtensionData,
         _thread_store: &'a ExtensionData,
         _turn_store: &'a ExtensionData,
     ) -> ExtensionFuture<'a, Vec<Box<dyn ContextualUserFragment + Send>>> {
         Box::pin(async move {
-            self.0
-                .lock()
-                .expect("recorded environments lock")
-                .extend(input.environments);
+            let mut recorded_environments = self.0.lock().expect("recorded environments lock");
+            for environment in input.environments {
+                recorded_environments.push(RecordedTurnInputEnvironment {
+                    environment_id: environment.environment_id,
+                    cwd: environment.cwd,
+                    is_primary: environment.is_primary,
+                });
+            }
             Vec::new()
         })
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RecordedTurnInputEnvironment {
+    environment_id: String,
+    cwd: PathUri,
+    is_primary: bool,
 }
 
 fn skills_extensions() -> Arc<ExtensionRegistry<Config>> {
@@ -175,16 +185,15 @@ async fn turn_input_contributors_receive_foreign_environment_cwds() -> Result<()
     let recorded_environments = recorded_environments
         .lock()
         .expect("recorded environments lock")
-        .iter()
-        .map(|environment| {
-            (
-                environment.environment_id.clone(),
-                environment.cwd.clone(),
-                environment.is_primary,
-            )
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(recorded_environments, vec![(environment_id, cwd, true)]);
+        .clone();
+    assert_eq!(
+        recorded_environments,
+        vec![RecordedTurnInputEnvironment {
+            environment_id,
+            cwd,
+            is_primary: true,
+        }]
+    );
 
     Ok(())
 }
