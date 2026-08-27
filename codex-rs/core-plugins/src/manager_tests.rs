@@ -4127,6 +4127,20 @@ plugins = true
         vec!["other-mcp".to_string(), "sample-mcp".to_string()]
     );
     assert!(api_key_outcome.plugin.apps.is_empty());
+
+    let no_auth_outcome = test_plugins_manager_with_options(
+        tmp.path().to_path_buf(),
+        Some(Product::Codex),
+        /*auth_mode*/ None,
+    )
+    .read_plugin_for_config(&config, &request)
+    .await
+    .unwrap();
+    assert_eq!(
+        no_auth_outcome.plugin.mcp_server_names,
+        vec!["other-mcp".to_string(), "sample-mcp".to_string()]
+    );
+    assert!(no_auth_outcome.plugin.apps.is_empty());
 }
 
 #[tokio::test]
@@ -4166,7 +4180,11 @@ plugins = true
     );
 
     let config = load_config(tmp.path(), &repo_root).await;
-    let manager = test_plugins_manager(tmp.path().to_path_buf());
+    let manager = test_plugins_manager_with_options(
+        tmp.path().to_path_buf(),
+        Some(Product::Codex),
+        Some(AuthMode::Chatgpt),
+    );
     let outcome = manager
         .read_plugin_for_config(
             &config,
@@ -4606,19 +4624,23 @@ enabled = false
     );
 
     let config = load_config(tmp.path(), &repo_root).await;
-    let outcome = test_plugins_manager(tmp.path().to_path_buf())
-        .read_plugin_for_config(
-            &config,
-            &PluginReadRequest {
-                plugin_name: "toolkit".to_string(),
-                marketplace_path: AbsolutePathBuf::try_from(
-                    repo_root.join(".agents/plugins/marketplace.json"),
-                )
-                .unwrap(),
-            },
-        )
-        .await
-        .unwrap();
+    let outcome = test_plugins_manager_with_options(
+        tmp.path().to_path_buf(),
+        Some(Product::Codex),
+        Some(AuthMode::Chatgpt),
+    )
+    .read_plugin_for_config(
+        &config,
+        &PluginReadRequest {
+            plugin_name: "toolkit".to_string(),
+            marketplace_path: AbsolutePathBuf::try_from(
+                repo_root.join(".agents/plugins/marketplace.json"),
+            )
+            .unwrap(),
+        },
+    )
+    .await
+    .unwrap();
 
     assert_eq!(outcome.plugin.details_unavailable_reason, None);
     assert_eq!(

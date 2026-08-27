@@ -2543,7 +2543,7 @@ impl PluginsManager {
             manifest_format,
         )
         .await;
-        if manifest_format == PluginManifestFormat::Legacy && auth_mode.is_some() {
+        if manifest_format == PluginManifestFormat::Legacy {
             apply_app_mcp_routing_policy(
                 &mut app_declarations,
                 &mut mcp_servers,
