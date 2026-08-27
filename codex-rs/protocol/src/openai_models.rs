@@ -479,6 +479,9 @@ pub struct ModelInfo {
         deserialize_with = "deserialize_optional_model_selector"
     )]
     pub multi_agent_version: Option<MultiAgentVersion>,
+    /// Reasoning effort used for multi-agent work when the user selects Ultra.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multi_agent_reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl ModelInfo {
@@ -973,6 +976,7 @@ mod tests {
             model_specialty: None,
             tool_mode: None,
             multi_agent_version: None,
+            multi_agent_reasoning_effort: None,
         }
     }
 
@@ -1654,6 +1658,28 @@ mod tests {
         assert_eq!(model.comp_hash, None);
         assert_eq!(model.auto_review_model_override, None);
         assert_eq!(model.tool_mode, None);
+        assert_eq!(model.multi_agent_reasoning_effort, None);
+    }
+
+    #[test]
+    fn model_info_deserializes_multi_agent_reasoning_effort() {
+        let mut value =
+            serde_json::to_value(test_model(/*spec*/ None)).expect("serialize test model");
+        value
+            .as_object_mut()
+            .expect("model info should be an object")
+            .insert(
+                "multi_agent_reasoning_effort".to_string(),
+                serde_json::Value::String("high".to_string()),
+            );
+
+        let model = serde_json::from_value::<ModelInfo>(value)
+            .expect("deserialize multi-agent reasoning effort");
+
+        assert_eq!(
+            model.multi_agent_reasoning_effort,
+            Some(ReasoningEffort::High)
+        );
     }
 
     #[test]
