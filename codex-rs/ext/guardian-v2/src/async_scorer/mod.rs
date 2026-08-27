@@ -1,4 +1,5 @@
 mod action;
+mod authorization;
 mod config;
 mod extension;
 mod metrics;

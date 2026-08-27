@@ -937,6 +937,13 @@ async fn sample_configured_conversation_history_with_source(
     let tool_payload = ToolPayload::Function {
         arguments: arguments.to_owned(),
     };
+    if !conversation_history.is_empty() {
+        Box::pin(
+            test.codex
+                .inject_response_items(conversation_history.clone()),
+        )
+        .await?;
+    }
     let conversation_history = TestConversationHistory(conversation_history);
 
     registry.tool_lifecycle_contributors()[0]
@@ -2153,6 +2160,11 @@ async fn contributor_skips_required_models_in_standard_scope() -> Result<()> {
         .await;
     model_info.slug = "protected-model".to_owned();
     thread_store.insert(model_info);
+    let authorization = super::ScoreAuthorization::current(&test.codex).await;
+    let progress = thread_store
+        .get::<GuardianV2ScoreProgress>()
+        .expect("Guardian v2 should track score progress per thread");
+    *progress.authorization.lock().unwrap() = Some(authorization);
     thread_store.insert(SecurityRiskScore {
         scores: BTreeMap::from([("action_risk".to_owned(), 0.25)]),
         call_id: None,
@@ -2597,7 +2609,6 @@ async fn contributor_reuses_the_latest_compatible_parent_compaction() -> Result<
     let session_store = ExtensionData::new("session-1");
     let thread_store = test.codex.thread_extension_data();
     let metrics = Arc::new(RecordingMetrics::default());
-    thread_store.insert(parent_model);
     registry.thread_lifecycle_contributors()[0]
         .on_thread_start(ThreadStartInput {
             config: &config,
@@ -2642,6 +2653,13 @@ async fn contributor_reuses_the_latest_compatible_parent_compaction() -> Result<
             internal_chat_message_metadata_passthrough: None,
         },
     ]);
+
+    Box::pin(
+        test.codex
+            .inject_response_items(conversation_history.0.clone()),
+    )
+    .await?;
+    thread_store.insert(parent_model);
 
     registry.tool_lifecycle_contributors()[0]
         .on_tool_start(ToolStartInput {

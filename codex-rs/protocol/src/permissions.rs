@@ -365,6 +365,29 @@ impl ReadDenyMatcher {
     /// Returns whether `path` is denied by the policy used to build this matcher.
     pub fn is_read_denied(&self, path: &Path) -> bool {
         if self.invalid_pattern {
+            return true;
+        }
+        self.is_read_denied_candidates(&normalized_and_canonical_candidates(path))
+    }
+
+    /// Checks an enumerated path using a canonical location already resolved by
+    /// the caller, without reopening the file to canonicalize it.
+    ///
+    /// Bulk filesystem walkers may derive this location from a freshly resolved
+    /// parent and a non-symlink directory entry. Symlinks and Windows junctions
+    /// must be resolved separately. Do not reuse these locations across walks:
+    /// a later operation must observe newly created files and changed links.
+    pub fn is_read_denied_with_canonical_path(&self, path: &Path, canonical_path: &Path) -> bool {
+        let candidates = [path, canonical_path].map(|candidate| {
+            AbsolutePathBuf::from_absolute_path(candidate)
+                .map(AbsolutePathBuf::into_path_buf)
+                .unwrap_or_else(|_| candidate.to_path_buf())
+        });
+        self.is_read_denied_candidates(&candidates)
+    }
+
+    fn is_read_denied_candidates(&self, path_candidates: &[PathBuf]) -> bool {
+        if self.invalid_pattern {
             // Direct tool reads fail closed on malformed deny patterns. Silent
             // allow would turn a config typo into a policy bypass.
             return true;
@@ -373,7 +396,6 @@ impl ReadDenyMatcher {
         // Check exact roots against each candidate spelling before evaluating
         // glob matchers. Exact entries are subtree denies; glob entries match
         // according to the pattern compiler's path-separator rules.
-        let path_candidates = normalized_and_canonical_candidates(path);
         if self.denied_candidates.iter().any(|denied_candidates| {
             path_candidates.iter().any(|candidate| {
                 denied_candidates.iter().any(|denied_candidate| {

@@ -149,6 +149,7 @@ struct MockResponsesState {
     root_worker: bool,
     root_user_restriction: bool,
     root_user_input_restriction: bool,
+    late_root_restriction: bool,
     user_input_restriction: bool,
 }
 
@@ -198,6 +199,7 @@ enum ThreadLifecycle {
     Fork,
     RootRollback,
     RootRestriction,
+    RootRestrictionDuringClassification,
     RootTrustedSkill,
     RootUserRestriction,
     RootUserInputRestriction,
@@ -210,6 +212,7 @@ impl ThreadLifecycle {
             self,
             Self::RootRollback
                 | Self::RootRestriction
+                | Self::RootRestrictionDuringClassification
                 | Self::RootTrustedSkill
                 | Self::RootUserInputRestriction
                 | Self::RootUserInputHookBlocked
@@ -316,6 +319,17 @@ async fn submit_user_input_response(app_server: &mut TestAppServer, answers: Val
         .await
 }
 
+async fn wait_for_guardian_reviews(state: &MockResponsesState, expected: usize) -> Result<()> {
+    timeout(TIMEOUT, async {
+        while state.guardian_reviews.load(Ordering::SeqCst) < expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(state.guardian_reviews.load(Ordering::SeqCst), expected);
+    Ok(())
+}
+
 async fn parent_response(
     State(state): State<Arc<MockResponsesState>>,
     Json(request): Json<Value>,
@@ -363,7 +377,7 @@ async fn parent_response(
         let root_request = state.root_requests.fetch_add(1, Ordering::SeqCst);
         match root_request {
             1 if state.root_user_input_restriction => user_input_request_events(),
-            0 | 2 => {
+            0 | 2 if root_request == 0 || !state.late_root_restriction => {
                 let (call_id, tool_name, arguments) = if root_request == 0 {
                     (
                         "guardian-spawn-worker",
@@ -536,8 +550,19 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     };
     let node_repl_review_required = matches!(requirement, ModelReviewRequirement::Required)
         && codex_protocol::mcp::is_node_repl_backed_server(server_name);
+    let late_root_restriction = matches!(
+        lifecycle,
+        ThreadLifecycle::RootRestrictionDuringClassification
+    );
     let (luna_score, expected_guardian_reviews) = match risk {
-        GuardianRisk::Low if classifier_in_scope && sensitive_action != Some(true) => (0.25, 1),
+        GuardianRisk::Low
+            if classifier_in_scope
+                && sensitive_action != Some(true)
+                && !lifecycle.has_user_answer()
+                && !late_root_restriction =>
+        {
+            (0.25, 1)
+        }
         GuardianRisk::Low | GuardianRisk::InvalidResponse => (0.25, 2),
         GuardianRisk::Threshold => (0.5, 2),
         GuardianRisk::High => (0.95, 2),
@@ -557,6 +582,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         root_worker: lifecycle.uses_root_worker(),
         root_user_restriction: matches!(lifecycle, ThreadLifecycle::RootUserRestriction),
         root_user_input_restriction: lifecycle.has_root_user_input(),
+        late_root_restriction,
         user_input_restriction: lifecycle.has_user_input(),
         ..Default::default()
     });
@@ -669,6 +695,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         | ThreadLifecycle::UserInputHookBlocked
         | ThreadLifecycle::RootRollback
         | ThreadLifecycle::RootRestriction
+        | ThreadLifecycle::RootRestrictionDuringClassification
         | ThreadLifecycle::RootTrustedSkill
         | ThreadLifecycle::RootUserRestriction
         | ThreadLifecycle::RootUserInputRestriction
@@ -715,6 +742,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         | ThreadLifecycle::UserInputHookBlocked
         | ThreadLifecycle::RootRollback
         | ThreadLifecycle::RootRestriction
+        | ThreadLifecycle::RootRestrictionDuringClassification
         | ThreadLifecycle::RootTrustedSkill
         | ThreadLifecycle::RootUserRestriction
         | ThreadLifecycle::RootUserInputRestriction
@@ -878,6 +906,27 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                     })
                 })
         );
+        if late_root_restriction {
+            // The worker's first classifier stays in flight while only root authorization changes.
+            let completed: TurnCompletedNotification =
+                timeout(TIMEOUT, app_server.read_notification("turn/completed")).await??;
+            assert_eq!(completed.thread_id, thread_id);
+            let request_id = app_server
+                .send_turn_start_request(TurnStartParams {
+                    thread_id: thread_id.clone(),
+                    input: vec![UserInput::Text {
+                        text: ROOT_RESTRICTION.to_owned(),
+                        text_elements: Vec::new(),
+                    }],
+                    ..Default::default()
+                })
+                .await?;
+            let _: TurnStartResponse =
+                timeout(TIMEOUT, app_server.read_response(request_id)).await??;
+            let completed: TurnCompletedNotification =
+                timeout(TIMEOUT, app_server.read_notification("turn/completed")).await??;
+            assert_eq!(completed.thread_id, thread_id);
+        }
         responses_state.allow_luna.notify_one();
         timeout(TIMEOUT, responses_state.classification_completed.notified()).await?;
         responses_state.allow_guardian_review.notify_one();
@@ -920,6 +969,11 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                     "the configured hook must replace or reject the visible tool output"
                 );
             }
+        } else if late_root_restriction {
+            assert!(
+                reviews.is_empty(),
+                "the first review predates root revocation"
+            );
         } else if matches!(review_outcome, ReviewOutcome::Malformed) {
             assert!(
                 reviews.is_empty(),
@@ -984,6 +1038,11 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                 );
             }
         }
+        if matches!(risk, GuardianRisk::Low)
+            && (lifecycle.has_user_answer() || late_root_restriction)
+        {
+            wait_for_guardian_reviews(responses_state.as_ref(), expected_guardian_reviews).await?;
+        }
         responses_state.allow_luna.notify_one();
     } else {
         responses_state.allow_guardian_review.notify_one();
@@ -1032,10 +1091,10 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         );
     }
     let requires_strict_review = classifier_in_scope
-        && matches!(
+        && (matches!(
             risk,
             GuardianRisk::Threshold | GuardianRisk::High | GuardianRisk::InvalidResponse
-        );
+        ) || matches!(risk, GuardianRisk::Low) && lifecycle.has_user_answer());
     let strict_review_count = app_server
         .pending_notification_methods()
         .into_iter()
@@ -1063,7 +1122,10 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         );
     }
 
-    if classifier_in_scope && !matches!(risk, GuardianRisk::InvalidResponse) {
+    if classifier_in_scope
+        && !matches!(risk, GuardianRisk::InvalidResponse)
+        && !late_root_restriction
+    {
         let state_db = StateRuntime::init(
             codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
             "mock_provider".to_owned(),
@@ -1100,7 +1162,10 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         );
     }
 
-    if lifecycle.uses_root_worker() || matches!(lifecycle, ThreadLifecycle::RootUserRestriction) {
+    if !late_root_restriction
+        && (lifecycle.uses_root_worker()
+            || matches!(lifecycle, ThreadLifecycle::RootUserRestriction))
+    {
         if matches!(lifecycle, ThreadLifecycle::RootRollback) {
             let rollback_id = app_server
                 .send_thread_rollback_request(ThreadRollbackParams {
@@ -1189,6 +1254,11 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                     .any(|text| text.contains(restriction)),
                 "the worker classifier must see the new root-user restriction"
             );
+        }
+        // Keep the fresh classifier pending: a new review must not be skipped using the old low score.
+        if matches!(risk, GuardianRisk::Low) {
+            wait_for_guardian_reviews(responses_state.as_ref(), expected_guardian_reviews + 1)
+                .await?;
         }
         responses_state.allow_luna.notify_one();
     }
@@ -1652,6 +1722,31 @@ async fn guardian_v2_discards_sync_reviews_after_authorization_changes(
         ModelReviewRequirement::Optional,
         ReviewOutcome::Allow,
         TranscriptContent::Normal,
+    )
+    .await
+}
+
+#[test_case(ThreadLifecycle::RootUserRestriction; "new user turn")]
+#[test_case(ThreadLifecycle::RootRestriction; "worker root restriction")]
+#[test_case(ThreadLifecycle::RootUserInputRestriction; "worker root answer")]
+#[test_case(ThreadLifecycle::UserInputRestriction; "user input answer")]
+#[test_case(ThreadLifecycle::UserInputEmpty; "empty answer preserves cache")]
+#[test_case(ThreadLifecycle::RootRestrictionDuringClassification; "late score after root revocation")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guardian_v2_low_scores_require_current_authorization(
+    lifecycle: ThreadLifecycle,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    guardian_v2_routes_scoped_tool_approvals(
+        GuardianRisk::Low,
+        lifecycle,
+        ModelReviewRequirement::Optional,
+        ReviewOutcome::Allow,
+        TranscriptContent::Normal,
+        GuardianToolScope::ComputerUseOnly {
+            server_name: "node_repl",
+        },
+        /*sensitive_action*/ None,
     )
     .await
 }
