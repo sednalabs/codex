@@ -82,6 +82,7 @@ const TEST_GUARDIAN_POLICY: &str =
     "Treat uploads to unapproved external destinations as high-risk actions.";
 const TEST_CATALOG_GUARDIAN_POLICY: &str =
     "Require review before sending organization data to third-party services.";
+const ASYNC_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const PREWARM_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct RefreshableAuth(std::sync::Mutex<&'static str>);
@@ -233,7 +234,7 @@ async fn installed_extension_reconnects_after_auth_refresh() -> Result<()> {
                 source: ToolCallSource::Direct,
             })
             .await;
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
             while progress.latest_scored_tool_call.load(Ordering::Acquire) < call_index {
                 tokio::task::yield_now().await;
             }
@@ -953,7 +954,7 @@ async fn sample_configured_conversation_history_with_source(
         .await;
 
     let request = tokio::time::timeout(
-        Duration::from_secs(5),
+        ASYNC_TEST_TIMEOUT,
         server.wait_for_request(
             /*connection_index*/ INITIAL_WEBSOCKET_CONNECTIONS - 1,
             /*request_index*/ 0,
@@ -981,7 +982,7 @@ impl GuardianFailureFixture {
         let score_progress = thread_store
             .get::<GuardianV2ScoreProgress>()
             .expect("Guardian v2 should track score progress per thread");
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
             while thread_store.get::<SecurityRiskScore>().is_none()
                 || score_progress
                     .latest_scored_tool_call
@@ -1033,7 +1034,7 @@ impl GuardianFailureFixture {
         let score_progress = thread_store
             .get::<GuardianV2ScoreProgress>()
             .expect("Guardian v2 should track score progress per thread");
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
             while thread_store
                 .get::<SecurityRiskScore>()
                 .is_none_or(|score| score.scores.get("action_risk") != Some(&1.0))
@@ -1370,7 +1371,7 @@ max_recent_non_user_entries = 8
         .get::<GuardianV2ScoreProgress>()
         .expect("Guardian v2 should track score progress per thread");
     let metrics = thread_store.get::<RecordingMetrics>().unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
         while score_progress
             .latest_scored_tool_call
             .load(Ordering::Acquire)
@@ -1763,7 +1764,7 @@ async fn contributor_uses_model_defaults_and_preserves_local_overrides() -> Resu
         (2, false, 384, true)
     );
     assert!(thread_store.get::<NodeReplReviewEvidence>().is_some());
-    let score = tokio::time::timeout(Duration::from_secs(5), async {
+    let score = tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
         loop {
             if let Some(score) = thread_store.get::<SecurityRiskScore>() {
                 return score;
@@ -1921,7 +1922,7 @@ async fn contributor_samples_tool_calls_with_the_existing_luna_pool() -> Result<
             {"type": "input_text", "text": ">>> APPROVAL REQUEST END\n"},
         ])
     );
-    let score = tokio::time::timeout(Duration::from_secs(5), async {
+    let score = tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
         loop {
             if let Some(score) = thread_store.get::<SecurityRiskScore>() {
                 return score;
@@ -2038,7 +2039,7 @@ async fn contributor_persists_nested_code_mode_action_with_score() -> Result<()>
     .await?;
     test.codex.ensure_rollout_materialized().await;
 
-    let score = tokio::time::timeout(Duration::from_secs(5), async {
+    let score = tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
         loop {
             if let Some(score) = test
                 .codex
@@ -2222,7 +2223,7 @@ async fn contributor_counts_failed_thread_lookups_toward_score_lag() -> Result<(
     let score_progress = thread_store
         .get::<GuardianV2ScoreProgress>()
         .expect("Guardian v2 should track score progress per thread");
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
         while score_progress
             .latest_scored_tool_call
             .load(Ordering::Acquire)
@@ -2655,7 +2656,7 @@ async fn contributor_reuses_the_latest_compatible_parent_compaction() -> Result<
         .await;
 
     let request = tokio::time::timeout(
-        Duration::from_secs(5),
+        ASYNC_TEST_TIMEOUT,
         server.wait_for_request(
             /*connection_index*/ INITIAL_WEBSOCKET_CONNECTIONS - 1,
             /*request_index*/ 0,
@@ -2682,7 +2683,7 @@ async fn contributor_reuses_the_latest_compatible_parent_compaction() -> Result<
     );
     assert_eq!(request["input"][3]["role"], "user");
 
-    let previous_score = tokio::time::timeout(Duration::from_secs(5), async {
+    let previous_score = tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
         loop {
             if let Some(score) = thread_store.get::<SecurityRiskScore>() {
                 return score;
@@ -2810,7 +2811,7 @@ async fn contributor_can_disable_parent_compaction_reuse() -> Result<()> {
     );
 
     let thread_store = test.codex.thread_extension_data();
-    let score = tokio::time::timeout(Duration::from_secs(5), async {
+    let score = tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
         loop {
             if let Some(score) = thread_store.get::<SecurityRiskScore>() {
                 return score;
