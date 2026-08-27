@@ -454,6 +454,28 @@ To branch from a stored session, call `thread/fork` with the `thread.id`. This c
 
 Like `thread/resume`, full-history hydration is deprecated for paginated `thread/fork` and emits `deprecationNotice`. Clients should pass `excludeTurns: true` to return only thread metadata in `thread.turns` and page history with `thread/turns/list` and `thread/items/list`. Metadata-only forks do not replay restored `thread/tokenUsage/updated`. Ephemeral forks of paginated threads require `excludeTurns: true`.
 
+### Listing projects
+
+`project/list` accepts optional `sortKey` (`position` or `recencyAt`) and
+`sortDirection` (`asc` or `desc`), alongside `limit` and the opaque `cursor`.
+Omitting `sortKey` preserves manual position order. A non-null `sortDirection`
+requires an explicit key; it defaults to `asc` for `position` and `desc` for `recencyAt`.
+
+```json
+{ "sortKey": "recencyAt", "sortDirection": "desc", "limit": 50, "cursor": null }
+```
+
+Every project response includes `recencyAt`: the newest non-archived, explicitly
+assigned thread's recency in Unix seconds, across all sources, or `null` when none
+exist. Like `thread/list`, thread recency starts at creation and advances at turn
+start, not for background output. Removing or archiving members can lower project
+recency. Task activity does not change project `updatedAt` or emit `project/changed`.
+
+Nulls sort last in either direction; project IDs break ties in the same direction.
+Cursor anchors retain millisecond precision. Continue with the same sort options;
+existing position cursors remain supported. Pagination is a live view, so concurrent
+activity can move projects across a cursor.
+
 ### Example: List threads (with pagination & filters)
 
 `thread/list` lets you render a history UI. Results default to `createdAt` (newest first) descending.

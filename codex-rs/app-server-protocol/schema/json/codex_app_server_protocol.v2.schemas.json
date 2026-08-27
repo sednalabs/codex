@@ -13078,6 +13078,14 @@
           "format": "int64",
           "type": "integer"
         },
+        "recencyAt": {
+          "description": "Newest non-archived member thread's recency, in Unix seconds; null when none exist.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "roots": {
           "items": {
             "$ref": "#/definitions/ProjectRoot"
@@ -13135,6 +13143,13 @@
         "path"
       ],
       "type": "object"
+    },
+    "ProjectSortKey": {
+      "enum": [
+        "position",
+        "recencyAt"
+      ],
+      "type": "string"
     },
     "QueuedSubmission": {
       "properties": {

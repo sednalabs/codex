@@ -388,6 +388,7 @@ export type { Project } from "./Project";
 export type { ProjectChangeType } from "./ProjectChangeType";
 export type { ProjectChangedNotification } from "./ProjectChangedNotification";
 export type { ProjectRoot } from "./ProjectRoot";
+export type { ProjectSortKey } from "./ProjectSortKey";
 export type { QueuedSubmission } from "./QueuedSubmission";
 export type { RateLimitReachedType } from "./RateLimitReachedType";
 export type { RateLimitResetCredit } from "./RateLimitResetCredit";

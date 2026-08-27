@@ -1500,7 +1500,7 @@ pub enum ThreadSearchSortKey {
     RecencyAt,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export_to = "v2/")]
 pub enum SortDirection {
