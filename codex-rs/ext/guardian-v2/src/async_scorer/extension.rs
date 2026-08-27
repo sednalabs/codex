@@ -678,7 +678,7 @@ impl GuardianV2Extension {
                 None => None,
             };
             let root_snapshot = thread.guardian_root_snapshot().await;
-            let trusted_skills = TrustedSkillInvocations::default();
+            let mut trusted_skills = TrustedSkillInvocations::default();
             for path in local_trusted_skill_paths.iter().chain(
                 root_snapshot
                     .as_ref()
@@ -687,7 +687,7 @@ impl GuardianV2Extension {
             ) {
                 trusted_skills.record(path.clone());
             }
-            let trusted_skill_paths = trusted_skills.snapshot();
+            let trusted_skill_paths = trusted_skills.into_paths();
             let root_authorization_version = root_snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.authorization_version);
