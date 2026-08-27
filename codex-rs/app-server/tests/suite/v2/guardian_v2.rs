@@ -508,6 +508,7 @@ async fn guardian_v2_routes_tool_approvals(
         review_outcome,
         transcript_content,
         GuardianToolScope::AllTools,
+        /*sensitive_action*/ None,
     )
     .await
 }
@@ -519,6 +520,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     review_outcome: ReviewOutcome,
     transcript_content: TranscriptContent,
     scope: GuardianToolScope,
+    sensitive_action: Option<bool>,
 ) -> Result<()> {
     let server_name = match scope {
         GuardianToolScope::AllTools => TEST_SERVER_NAME,
@@ -533,7 +535,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     let node_repl_review_required = matches!(requirement, ModelReviewRequirement::Required)
         && codex_protocol::mcp::is_node_repl_backed_server(server_name);
     let (luna_score, expected_guardian_reviews) = match risk {
-        GuardianRisk::Low if classifier_in_scope => (0.25, 1),
+        GuardianRisk::Low if classifier_in_scope && sensitive_action != Some(true) => (0.25, 1),
         GuardianRisk::Low | GuardianRisk::InvalidResponse => (0.25, 2),
         GuardianRisk::Threshold => (0.5, 2),
         GuardianRisk::High => (0.95, 2),
@@ -579,7 +581,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     let responses_server = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    let (mcp_server_url, mcp_server_handle) = start_mcp_server().await?;
+    let (mcp_server_url, mcp_server_handle) = start_mcp_server(sensitive_action).await?;
 
     let codex_home = TempDir::new()?;
     if lifecycle.has_post_tool_hook() {
@@ -1258,7 +1260,7 @@ async fn guardian_v2_trusts_invoked_user_skills_but_rejects_repository_forgery()
     let responses_server = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    let (mcp_server_url, mcp_server_handle) = start_mcp_server().await?;
+    let (mcp_server_url, mcp_server_handle) = start_mcp_server(/*sensitive_action*/ None).await?;
 
     MockResponsesConfig::new(&responses_url)
         .with_model(MODEL)
@@ -1393,21 +1395,27 @@ async fn guardian_v2_computer_use_only_scopes_classification_and_fast_reviews(
         ReviewOutcome::Allow,
         TranscriptContent::Normal,
         GuardianToolScope::ComputerUseOnly { server_name },
+        /*sensitive_action*/ None,
     )
     .await
 }
 
-#[test_case("node_repl", GuardianRisk::Low; "browser low risk")]
-#[test_case("cua_repl", GuardianRisk::Low; "computer use low risk")]
-#[test_case("node_repl", GuardianRisk::High; "browser high risk")]
-#[test_case("cua_repl", GuardianRisk::High; "computer use high risk")]
-#[test_case("node_repl", GuardianRisk::InvalidResponse; "browser classifier failure")]
-#[test_case("cua_repl", GuardianRisk::InvalidResponse; "computer use classifier failure")]
-#[test_case(TEST_SERVER_NAME, GuardianRisk::Low; "other tools retain full review")]
+#[test_case("node_repl", GuardianRisk::Low, None; "browser low risk")]
+#[test_case("cua_repl", GuardianRisk::Low, None; "computer use low risk")]
+#[test_case("node_repl", GuardianRisk::Low, Some(false); "browser low risk sensitive action false")]
+#[test_case("cua_repl", GuardianRisk::Low, Some(false); "computer use low risk sensitive action false")]
+#[test_case("node_repl", GuardianRisk::Low, Some(true); "browser low risk sensitive action true")]
+#[test_case("cua_repl", GuardianRisk::Low, Some(true); "computer use low risk sensitive action true")]
+#[test_case("node_repl", GuardianRisk::High, None; "browser high risk")]
+#[test_case("cua_repl", GuardianRisk::High, None; "computer use high risk")]
+#[test_case("node_repl", GuardianRisk::InvalidResponse, None; "browser classifier failure")]
+#[test_case("cua_repl", GuardianRisk::InvalidResponse, None; "computer use classifier failure")]
+#[test_case(TEST_SERVER_NAME, GuardianRisk::Low, None; "other tools retain full review")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guardian_v2_required_model_computer_use_preserves_strict_approval(
     server_name: &'static str,
     risk: GuardianRisk,
+    sensitive_action: Option<bool>,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     guardian_v2_routes_scoped_tool_approvals(
@@ -1417,6 +1425,7 @@ async fn guardian_v2_required_model_computer_use_preserves_strict_approval(
         ReviewOutcome::Allow,
         TranscriptContent::Normal,
         GuardianToolScope::ComputerUseOnly { server_name },
+        sensitive_action,
     )
     .await
 }
@@ -1437,6 +1446,7 @@ async fn guardian_v2_discards_sync_reviews_after_user_input_answer(
         GuardianToolScope::ComputerUseOnly {
             server_name: "node_repl",
         },
+        /*sensitive_action*/ None,
     )
     .await
 }
@@ -1458,6 +1468,7 @@ async fn guardian_v2_validates_user_input_before_history_truncation(
         GuardianToolScope::ComputerUseOnly {
             server_name: "node_repl",
         },
+        /*sensitive_action*/ None,
     )
     .await
 }
@@ -1478,6 +1489,7 @@ async fn guardian_v2_propagates_root_user_input_to_worker_reviews(
         GuardianToolScope::ComputerUseOnly {
             server_name: "node_repl",
         },
+        /*sensitive_action*/ None,
     )
     .await
 }
