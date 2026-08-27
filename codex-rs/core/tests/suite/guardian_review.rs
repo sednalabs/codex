@@ -52,6 +52,7 @@ use core_test_support::responses::assert_parent_turn;
 use core_test_support::responses::assert_root_turn;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
@@ -230,6 +231,117 @@ async fn guardian_session_inherits_parent_http_fallback(
         })
         .expect("Guardian reviewer inference request");
     assert_eq!(guardian_request.path(), expected_guardian_path);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[test_case(60_000; "reviewer_window_is_already_exhausted")]
+#[test_case(49_990; "followup_reminder_exhausts_reviewer_window")]
+async fn guardian_review_resends_full_transcript_after_reviewer_context_rollover(
+    first_review_total_tokens: i64,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "Guardian approval actions require host-native paths"
+    );
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.5", |model| {
+            model.auto_review_model_override = Some(model.slug.clone());
+        })
+        .with_config(|config| {
+            config.model_context_window = Some(100_000);
+            config.model_auto_compact_token_limit = Some(50_000);
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+            config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+            config
+                .features
+                .enable(Feature::TokenBudget)
+                .expect("test config should allow token budget");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    let command = json!({
+        "cmd": "true",
+        "sandbox_permissions": "require_escalated",
+        "justification": "Read the internal samples the user authorized.",
+    })
+    .to_string();
+    let approval = r#"{"risk_level":"low","user_authorization":"high","outcome":"allow"}"#;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-parent-first"),
+                ev_function_call("exec-first", "exec_command", &command),
+                ev_completed("resp-parent-first"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-guardian-first"),
+                ev_assistant_message("guardian-first", approval),
+                ev_completed_with_tokens("resp-guardian-first", first_review_total_tokens),
+            ]),
+            sse(vec![
+                ev_response_created("resp-parent-second"),
+                ev_function_call("exec-second", "exec_command", &command),
+                ev_completed("resp-parent-second"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-guardian-second"),
+                ev_assistant_message("guardian-second", approval),
+                ev_completed("resp-guardian-second"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-parent-done"),
+                ev_assistant_message("parent-done", "done"),
+                ev_completed("resp-parent-done"),
+            ]),
+        ],
+    )
+    .await;
+
+    let user_authorization = "Read the internal evaluation samples I have authorized.";
+    test.submit_text_turn(user_authorization).await?;
+
+    let requests = responses.requests();
+    let guardian_requests = requests
+        .iter()
+        .filter(|request| {
+            request.body_json()["client_metadata"]["x-openai-subagent"].as_str() == Some("guardian")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(guardian_requests.len(), 2);
+    assert_eq!(
+        guardian_requests[0].body_json()["client_metadata"]["thread_id"],
+        guardian_requests[1].body_json()["client_metadata"]["thread_id"],
+        "the same Guardian reviewer should survive the context-window rollover"
+    );
+
+    let second_request = guardian_requests[1];
+    let second_prompt = second_request
+        .message_input_text_groups("user")
+        .last()
+        .expect("post-rollover Guardian review prompt")
+        .join("");
+    assert!(
+        second_request
+            .message_input_texts("developer")
+            .iter()
+            .any(|text| text.contains("Previous context window id:")),
+        "Guardian should have rolled into a new context window"
+    );
+    assert!(second_prompt.contains(">>> TRANSCRIPT START\n"));
+    assert!(!second_prompt.contains(">>> TRANSCRIPT DELTA START\n"));
+    assert!(second_prompt.contains(user_authorization));
+    assert!(
+        second_request
+            .message_input_texts("developer")
+            .iter()
+            .any(|text| text.contains("Use prior reviews as context, not binding precedent.")),
+        "the follow-up policy reminder should survive reviewer context rollover"
+    );
 
     Ok(())
 }

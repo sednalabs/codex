@@ -82,6 +82,7 @@ use super::GuardianReviewContext;
 #[cfg(test)]
 use super::prompt::BUNDLED_GUARDIAN_POLICY;
 use super::prompt::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
+use super::prompt::GUARDIAN_TRANSCRIPT_START;
 use super::prompt::GuardianPromptMode;
 use super::prompt::GuardianTranscriptCursor;
 use super::prompt::build_guardian_prompt_items_with_parent_turn;
@@ -893,25 +894,6 @@ async fn run_review_on_session(
     bool,
     GuardianReviewAnalyticsResult,
 ) {
-    let (send_followup_reminder, prompt_mode, last_admitted_node_repl_response_sequence) = {
-        let mut state = review_session.state.lock().await;
-        state.pending_node_repl_evidence_admission = None;
-
-        let send_followup_reminder = state.prior_review_count == 1;
-        let prompt_mode = if state.prior_review_count == 0 {
-            GuardianPromptMode::Full
-        } else if let Some(cursor) = state.last_reviewed_transcript_cursor {
-            GuardianPromptMode::Delta { cursor }
-        } else {
-            GuardianPromptMode::Full
-        };
-
-        (
-            send_followup_reminder,
-            prompt_mode,
-            state.last_admitted_node_repl_response_sequence,
-        )
-    };
     let model_info = params
         .parent_session
         .services
@@ -925,6 +907,13 @@ async fn run_review_on_session(
         .reasoning_effort
         .clone()
         .or_else(|| model_info.default_reasoning_level.clone());
+    let (prior_review_count, had_prior_context) = {
+        let state = review_session.state.lock().await;
+        (
+            state.prior_review_count,
+            state.last_reviewed_transcript_cursor.is_some(),
+        )
+    };
     let mut analytics_result =
         GuardianReviewAnalyticsResult::from_session(GuardianReviewSessionAnalyticsParams {
             guardian_thread_id: review_session.session.thread_id().to_string(),
@@ -936,11 +925,108 @@ async fn run_review_on_session(
             guardian_review_model_overridden: params.guardian_review_model_overridden,
             guardian_review_model_override: params.guardian_review_model_override.clone(),
             guardian_model_provider_id: params.spawn_config.model_provider_id.clone(),
-            had_prior_review_context: had_prior_review_context(&prompt_mode),
+            had_prior_review_context: had_prior_context,
         });
-    if send_followup_reminder {
-        append_guardian_followup_reminder(review_session).await;
+    if prior_review_count > 0 {
+        ensure_guardian_followup_reminder(review_session).await;
     }
+
+    match run_before_review_deadline(
+        deadline,
+        params.external_cancel.as_ref(),
+        Box::pin(ensure_guardian_node_repl_policy(review_session, params)),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            return (
+                GuardianReviewSessionOutcome::SessionFailed {
+                    error,
+                    error_info: None,
+                },
+                false,
+                analytics_result,
+            );
+        }
+        Err(outcome) => return (outcome, false, analytics_result),
+    }
+
+    if params.spawn_config.features.enabled(Feature::TokenBudget)
+        && crate::session::context_window::context_window_token_status_for_model(
+            review_session.session.as_ref(),
+            &params.spawn_config,
+            &model_info,
+        )
+        .await
+        .token_limit_reached
+    {
+        let compact_submission = run_before_review_deadline(
+            deadline,
+            params.external_cancel.as_ref(),
+            review_session.io.submit(Op::Compact),
+        )
+        .await;
+        let compact_turn_id = match compact_submission {
+            Ok(Ok(turn_id)) => turn_id,
+            Ok(Err(error)) => {
+                return (
+                    GuardianReviewSessionOutcome::SessionFailed {
+                        error: error.into(),
+                        error_info: None,
+                    },
+                    false,
+                    analytics_result,
+                );
+            }
+            Err(outcome) => return (outcome, false, analytics_result),
+        };
+        let (outcome, keep_review_session, _) = wait_for_guardian_review(
+            review_session,
+            &compact_turn_id,
+            deadline,
+            params.external_cancel.as_ref(),
+            &mut analytics_result,
+        )
+        .await;
+        if !matches!(outcome, GuardianReviewSessionOutcome::Completed(Ok(_))) {
+            return (outcome, keep_review_session, analytics_result);
+        }
+
+        if prior_review_count > 0 {
+            ensure_guardian_followup_reminder(review_session).await;
+        }
+    }
+
+    let reviewer_has_full_transcript = review_session
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .any(|item| {
+            matches!(item, ResponseItem::Message { role, content, .. }
+            if role == "user" && content.iter().any(|content| {
+                matches!(content, ContentItem::InputText { text }
+                    if text == GUARDIAN_TRANSCRIPT_START)
+            }))
+        });
+    let (prompt_mode, last_admitted_node_repl_response_sequence) = {
+        let mut state = review_session.state.lock().await;
+        state.pending_node_repl_evidence_admission = None;
+        if !reviewer_has_full_transcript {
+            state.last_reviewed_transcript_cursor = None;
+            state.last_admitted_node_repl_response_sequence = 0;
+        }
+
+        let prompt_mode = state
+            .last_reviewed_transcript_cursor
+            .map_or(GuardianPromptMode::Full, |cursor| {
+                GuardianPromptMode::Delta { cursor }
+            });
+        (prompt_mode, state.last_admitted_node_repl_response_sequence)
+    };
+    analytics_result.had_prior_review_context = Some(had_prior_review_context(&prompt_mode));
+
     let prompt_items = run_before_review_deadline(
         deadline,
         params.external_cancel.as_ref(),
@@ -951,58 +1037,6 @@ async fn run_review_on_session(
                 .network_approval
                 .sync_session_approved_hosts_to(&review_session.session.services.network_approval)
                 .await;
-
-            if params.parent_context.turn().model_info().node_repl_auto_review_required
-                && matches!(
-                    &params.request,
-                    GuardianApprovalRequest::McpToolCall { server, tool_name, .. }
-                        if is_node_repl_backed_server(server) && tool_name == "js"
-                )
-            {
-                let policy = GuardianNodeReplPolicy;
-                let policy_body = policy.body();
-                let already_injected = review_session
-                    .session
-                    .clone_history()
-                    .await
-                    .raw_items()
-                    .any(|item| {
-                        matches!(item, ResponseItem::Message { role, content, .. }
-                            if role == "developer"
-                                && content.iter().any(|content| {
-                                    matches!(content, ContentItem::InputText { text } if text == &policy_body)
-                                }))
-                    });
-                if !already_injected {
-                    let turn_context = review_session.session.new_default_turn().await;
-                    if review_session.session.reference_context_item().await.is_none() {
-                        let initialize_context: BoxFuture<'_, anyhow::Result<()>> =
-                            Box::pin(async {
-                                let step_context = review_session
-                                    .session
-                                    .capture_step_context(
-                                        Arc::clone(&turn_context),
-                                        &review_session.cancel_token,
-                                    )
-                                    .await?;
-                                review_session
-                                    .session
-                                    .record_context_updates_and_set_reference_context_item(
-                                        step_context.as_ref(),
-                                    )
-                                    .await?;
-                                Ok(())
-                            });
-                        initialize_context.await?;
-                    }
-
-                    let item: ResponseItem = ContextualUserFragment::into(policy);
-                    review_session
-                        .session
-                        .inject_client_response_items(vec![item], turn_context.as_ref())
-                        .await;
-                }
-            }
 
             let mut prompt_items = build_guardian_prompt_items_with_parent_turn(
                 params.parent_session.as_ref(),
@@ -1249,12 +1283,96 @@ async fn run_review_on_session(
     (outcome.0, outcome.1, analytics_result)
 }
 
-async fn append_guardian_followup_reminder(review_session: &GuardianReviewSession) {
+async fn ensure_guardian_followup_reminder(review_session: &GuardianReviewSession) {
+    let followup_reminder = GuardianFollowupReviewReminder.body();
+    let already_injected = review_session
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .any(|item| {
+            matches!(item, ResponseItem::Message { role, content, .. }
+            if role == "developer"
+                && content.iter().any(|content| {
+                    matches!(content, ContentItem::InputText { text }
+                        if text == &followup_reminder)
+                }))
+        });
+    if already_injected {
+        return;
+    }
+
     let reminder: ResponseItem = ContextualUserFragment::into(GuardianFollowupReviewReminder);
     review_session
         .session
         .inject_no_new_turn(vec![reminder], /*current_turn_context*/ None)
         .await;
+}
+
+async fn ensure_guardian_node_repl_policy(
+    review_session: &GuardianReviewSession,
+    params: &GuardianReviewSessionParams,
+) -> anyhow::Result<()> {
+    if !params
+        .parent_context
+        .turn()
+        .model_info()
+        .node_repl_auto_review_required
+        || !matches!(
+            &params.request,
+            GuardianApprovalRequest::McpToolCall { server, tool_name, .. }
+                if is_node_repl_backed_server(server) && tool_name == "js"
+        )
+    {
+        return Ok(());
+    }
+
+    let policy = GuardianNodeReplPolicy;
+    let policy_body = policy.body();
+    let already_injected = review_session
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .any(|item| {
+            matches!(item, ResponseItem::Message { role, content, .. }
+            if role == "developer"
+                && content.iter().any(|content| {
+                    matches!(content, ContentItem::InputText { text } if text == &policy_body)
+                }))
+        });
+    if already_injected {
+        return Ok(());
+    }
+
+    let turn_context = review_session.session.new_default_turn().await;
+    if review_session
+        .session
+        .reference_context_item()
+        .await
+        .is_none()
+    {
+        let initialize_context: BoxFuture<'_, anyhow::Result<()>> = Box::pin(async {
+            let step_context = review_session
+                .session
+                .capture_step_context(Arc::clone(&turn_context), &review_session.cancel_token)
+                .await?;
+            review_session
+                .session
+                .record_context_updates_and_set_reference_context_item(step_context.as_ref())
+                .await?;
+            Ok(())
+        });
+        initialize_context.await?;
+    }
+
+    let item: ResponseItem = ContextualUserFragment::into(policy);
+    review_session
+        .session
+        .inject_client_response_items(vec![item], turn_context.as_ref())
+        .await;
+
+    Ok(())
 }
 
 async fn load_rollout_items_for_fork(
