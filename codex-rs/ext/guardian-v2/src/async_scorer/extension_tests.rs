@@ -148,11 +148,11 @@ async fn installed_extension_warms_connections_without_blocking_thread_start() -
 
     assert!(server.handshakes().is_empty());
     assert!(thread_store.get::<LunaSampler>().is_some());
-    assert!(
-        server
-            .wait_for_handshakes(INITIAL_WEBSOCKET_CONNECTIONS, PREWARM_TIMEOUT)
-            .await
-    );
+    thread_store
+        .get::<LunaSampler>()
+        .expect("Guardian v2 should initialize")
+        .wait_for_prewarm(PREWARM_TIMEOUT)
+        .await?;
     Ok(())
 }
 
@@ -203,11 +203,11 @@ async fn installed_extension_reconnects_after_auth_refresh() -> Result<()> {
             thread_store,
         })
         .await;
-    assert!(
-        server
-            .wait_for_handshakes(INITIAL_WEBSOCKET_CONNECTIONS, PREWARM_TIMEOUT)
-            .await
-    );
+    thread_store
+        .get::<LunaSampler>()
+        .expect("Guardian v2 should initialize")
+        .wait_for_prewarm(PREWARM_TIMEOUT)
+        .await?;
     let progress = thread_store
         .get::<GuardianV2ScoreProgress>()
         .expect("Guardian v2 should initialize");
@@ -927,11 +927,11 @@ async fn sample_configured_conversation_history_with_source(
             thread_store,
         })
         .await;
-    assert!(
-        server
-            .wait_for_handshakes(INITIAL_WEBSOCKET_CONNECTIONS, PREWARM_TIMEOUT)
-            .await
-    );
+    thread_store
+        .get::<LunaSampler>()
+        .expect("Guardian v2 should initialize")
+        .wait_for_prewarm(PREWARM_TIMEOUT)
+        .await?;
     let turn_store = ExtensionData::new("turn-1");
     let tool_name = ToolName::plain("read_file");
     let tool_payload = ToolPayload::Function {
@@ -1166,11 +1166,14 @@ async fn contributor_fails_closed_when_luna_classification_fails() -> Result<()>
             thread_store: fixture.test.codex.thread_extension_data(),
         })
         .await;
-    assert!(
-        server
-            .wait_for_handshakes(INITIAL_WEBSOCKET_CONNECTIONS, PREWARM_TIMEOUT)
-            .await
-    );
+    fixture
+        .test
+        .codex
+        .thread_extension_data()
+        .get::<LunaSampler>()
+        .expect("Guardian v2 should initialize")
+        .wait_for_prewarm(PREWARM_TIMEOUT)
+        .await?;
 
     fixture.score_tool(ToolName::plain("read_file")).await;
     fixture.assert_fails_closed("elevated_risk").await
@@ -2607,11 +2610,11 @@ async fn contributor_reuses_the_latest_compatible_parent_compaction() -> Result<
             thread_store,
         })
         .await;
-    assert!(
-        server
-            .wait_for_handshakes(INITIAL_WEBSOCKET_CONNECTIONS, PREWARM_TIMEOUT)
-            .await
-    );
+    thread_store
+        .get::<LunaSampler>()
+        .expect("Guardian v2 should initialize")
+        .wait_for_prewarm(PREWARM_TIMEOUT)
+        .await?;
     let turn_store = ExtensionData::new("turn-1");
     let tool_name = ToolName::plain("read_file");
     let tool_payload = ToolPayload::Function {

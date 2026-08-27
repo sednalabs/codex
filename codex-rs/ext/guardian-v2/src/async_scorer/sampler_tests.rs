@@ -42,6 +42,19 @@ use super::LunaSamplingRequest;
 use super::MAX_SAMPLING_RETRIES;
 use super::MAX_WEBSOCKET_CONNECTIONS;
 
+impl LunaSampler {
+    /// Waits for warm sockets to enter the client pool, beyond the server handshake.
+    pub(in crate::async_scorer) async fn wait_for_prewarm(&self, timeout: Duration) -> Result<()> {
+        tokio::time::timeout(timeout, async {
+            while self.idle_connections.lock().unwrap().len() < INITIAL_WEBSOCKET_CONNECTIONS {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        Ok(())
+    }
+}
+
 fn assert_connection_metadata(server: &responses::WebSocketTestServer) -> Result<String> {
     let handshake = server.single_handshake();
     let thread_id = handshake.header("thread-id").expect("classifier thread ID");
@@ -112,6 +125,7 @@ async fn proxy_websocket_servers_with_prewarm_limit(
     tokio::spawn(async move {
         for (index, target) in targets.into_iter().enumerate() {
             if let ProxyPrewarmLimit::StopAfter { ready_connections } = prewarm_limit
+                && ready_connections < INITIAL_WEBSOCKET_CONNECTIONS
                 && index == ready_connections
             {
                 let Ok((connection, _)) = listener.accept().await else {
