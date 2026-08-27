@@ -170,6 +170,7 @@ mod turn_input_submission;
 mod turn_state;
 mod unified_exec;
 mod unified_exec_process_events;
+mod unified_exec_stdin_review_size;
 #[cfg(unix)]
 mod unified_exec_zsh_fork_approvals;
 mod unstable_features_warning;

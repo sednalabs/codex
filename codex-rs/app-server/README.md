@@ -1842,6 +1842,8 @@ Order of messages:
 
 When stdin approvals are enabled, a `write_stdin` approval sets `kind: "writeStdin"`, references the original terminal command's `itemId`, and has its own `approvalId`. The request belongs to the current turn, which may differ from the turn that opened the terminal. With `approvalsReviewer: "auto_review"`, the `item/autoApprovalReview/*` notifications likewise target the original command item and carry an action of type `writeStdin` with `approvalId`, `processId`, `stdin`, and `cwd`. For stdin approvals, `cwd` is the terminal’s launch directory, not its current working directory. Approving or denying a stdin write does not start, complete, or change the status of the parent command-execution item.
 
+For reviewed stdin, the complete formatted action and approval reason must fit within 8,000 bytes. Oversized or truncated actions are rejected before any bytes reach the terminal, rather than reviewing a shortened input and executing the full input.
+
 ### File change approvals
 
 Order of messages:

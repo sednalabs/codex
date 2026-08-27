@@ -266,7 +266,9 @@ impl ApprovalAction {
         }
     }
 
-    fn into_guardian_request(self) -> std::io::Result<crate::guardian::GuardianApprovalRequest> {
+    pub(crate) fn into_guardian_request(
+        self,
+    ) -> std::io::Result<crate::guardian::GuardianApprovalRequest> {
         Ok(match self {
             Self::ExecCommand {
                 id,
