@@ -3,6 +3,7 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::UserInput;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseItem;
 
@@ -108,6 +109,8 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::ContextCompacted(_)
         | ServerNotification::ModelRerouted(_)
         | ServerNotification::ModelVerification(_)
+        | ServerNotification::AuthRecoveryStarted(_)
+        | ServerNotification::AuthRecoveryCompleted(_)
         | ServerNotification::TurnModerationMetadata(_)
         | ServerNotification::ModelSafetyBufferingUpdated(_)
         | ServerNotification::Warning(_)
@@ -155,6 +158,17 @@ fn without_thread_item_media(mut item: ThreadItem) -> ThreadItem {
                 DynamicToolCallOutputContentItem::InputText { .. } => true,
             });
         }
+        ThreadItem::FunctionCallOutput {
+            output: FunctionCallOutputBody::ContentItems(items),
+            ..
+        } => {
+            items.retain(|item| match item {
+                FunctionCallOutputContentItem::InputImage { .. }
+                | FunctionCallOutputContentItem::InputAudio { .. } => false,
+                FunctionCallOutputContentItem::InputText { .. }
+                | FunctionCallOutputContentItem::EncryptedContent { .. } => true,
+            });
+        }
         ThreadItem::McpToolCall {
             result: Some(result),
             ..
@@ -176,6 +190,10 @@ fn without_thread_item_media(mut item: ThreadItem) -> ThreadItem {
         | ThreadItem::AgentMessage { .. }
         | ThreadItem::Plan { .. }
         | ThreadItem::Reasoning { .. }
+        | ThreadItem::FunctionCallOutput {
+            output: FunctionCallOutputBody::Text(_),
+            ..
+        }
         | ThreadItem::CommandExecution { .. }
         | ThreadItem::FileChange { .. }
         | ThreadItem::McpToolCall { result: None, .. }
