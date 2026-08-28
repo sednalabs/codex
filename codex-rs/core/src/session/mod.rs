@@ -486,7 +486,7 @@ pub(crate) struct SessionSpawnArgs {
 /// Polls a future under the dispatcher captured for its owning session.
 ///
 /// Tokio workers are not required to preserve thread-local dispatchers when a task is moved
-/// between workers. Keeping the dispatcher with the future makes the session loop's spans
+/// between workers. Keeping the dispatcher with each session-owned future makes lifecycle spans
 /// deterministic without changing the process-wide dispatcher or relying on test-only hooks.
 pub(crate) struct ScopedDispatcherFuture<F> {
     dispatcher: Dispatch,
@@ -813,6 +813,7 @@ impl Session {
 
         let session = Box::pin(Session::new(
             session_configuration,
+            dispatcher.clone(),
             config.clone(),
             user_instructions,
             installation_id,

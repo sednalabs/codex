@@ -5735,6 +5735,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
     ));
     let result = Session::new(
         session_configuration,
+        tracing::dispatcher::get_default(Clone::clone),
         Arc::clone(&config),
         /*user_instructions*/ None,
         "11111111-1111-4111-8111-111111111111".to_string(),
@@ -6019,6 +6020,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     );
     let session = Session {
         thread_id,
+        dispatcher: tracing::dispatcher::get_default(Clone::clone),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
@@ -6136,6 +6138,7 @@ async fn make_session_with_config_and_rx(
 
     let session = Session::new(
         session_configuration,
+        tracing::dispatcher::get_default(Clone::clone),
         Arc::clone(&config),
         /*user_instructions*/ None,
         "11111111-1111-4111-8111-111111111111".to_string(),
@@ -6245,6 +6248,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
 
     let session = Session::new(
         session_configuration,
+        tracing::dispatcher::get_default(Clone::clone),
         Arc::clone(&config),
         /*user_instructions*/ None,
         "11111111-1111-4111-8111-111111111111".to_string(),
@@ -8257,6 +8261,7 @@ where
     ));
     let session = Arc::new(Session {
         thread_id,
+        dispatcher: tracing::dispatcher::get_default(Clone::clone),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
