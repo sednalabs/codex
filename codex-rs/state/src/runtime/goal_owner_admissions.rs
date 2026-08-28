@@ -270,10 +270,10 @@ impl GoalOwnerAdmissionStore {
     pub(crate) fn new(pool: Arc<SqlitePool>) -> Self {
         Self {
             pool,
-            // Direct stores are used by the state tests and by the single
-            // runtime owner bootstrap. StateRuntime uses `read_only` for a
-            // process that failed to acquire the kernel lock.
-            write_capability: Some(RuntimeOwnerCapability::new()),
+            // A store constructed without the StateRuntime owner lease is
+            // read-only. The runtime bootstrap supplies the sole capability
+            // explicitly after acquiring the process-lifetime lock.
+            write_capability: None,
         }
     }
 
@@ -724,6 +724,24 @@ WHERE thread_id = ?
         let record = fetch_record_for_authority(&mut *transaction, authority)
             .await?
             .ok_or_else(|| anyhow::anyhow!("retired admission is missing"))?;
+        // Retire and stale-deferral cleanup share the same transaction. A
+        // crash cannot leave a retired generation's thread gate able to block
+        // a later successor, while a replacement generation preserves its own
+        // deferral marker.
+        sqlx::query(
+            r#"
+DELETE FROM thread_goal_continuation_deferrals
+WHERE thread_id = ?
+  AND NOT EXISTS (
+      SELECT 1 FROM goal_owner_admissions
+      WHERE thread_id = ? AND retired_at_ms IS NULL
+  )
+            "#,
+        )
+        .bind(authority.thread_id.to_string())
+        .bind(authority.thread_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
         transaction.commit().await?;
         Ok(Some(record))
     }

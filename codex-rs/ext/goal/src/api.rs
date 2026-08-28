@@ -109,6 +109,45 @@ impl GoalService {
             .map_err(GoalServiceError::Internal)
     }
 
+    /// Applies an explicit user recovery action to an exhausted continuation.
+    pub async fn recover_exhausted_thread_runtime(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<bool, GoalServiceError> {
+        let runtime = self.runtime_for_thread(thread_id).ok_or_else(|| {
+            GoalServiceError::Internal(format!(
+                "goal runtime is unavailable for thread {thread_id}"
+            ))
+        })?;
+        runtime
+            .recover_exhausted_for_user()
+            .await
+            .map_err(GoalServiceError::Internal)
+    }
+
+    /// Resolves one exact uncertain generation using explicit provider
+    /// evidence supplied by the runtime owner.
+    pub async fn resolve_uncertain_thread_runtime(
+        &self,
+        authority: codex_state::GoalOwnerAdmissionAuthority,
+        outcome: codex_state::GoalOwnerAdmissionTerminalOutcome,
+        disposition: codex_state::GoalOwnerAdmissionTerminalDisposition,
+        resolution_evidence: String,
+    ) -> Result<bool, GoalServiceError> {
+        let runtime = self
+            .runtime_for_thread(authority.thread_id)
+            .ok_or_else(|| {
+                GoalServiceError::Internal(format!(
+                    "goal runtime is unavailable for thread {}",
+                    authority.thread_id
+                ))
+            })?;
+        runtime
+            .resolve_uncertain_for_owner(authority, outcome, disposition, resolution_evidence)
+            .await
+            .map_err(GoalServiceError::Internal)
+    }
+
     /// Flushes any in-flight goal accounting before a fork copies the source goal snapshot.
     pub async fn flush_thread_goal_progress_for_fork(
         &self,
