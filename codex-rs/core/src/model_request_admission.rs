@@ -9,6 +9,10 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::sync::Condvar;
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering as AtomicOrdering;
 
 use chrono::Utc;
 use codex_protocol::ThreadId;
@@ -34,10 +38,88 @@ use crate::StateDbHandle;
 /// Core-owned authority for the one successor turn allowed to consume a
 /// goal-owner admission generation. The goal extension may schedule this
 /// value, but Core alone carries it into a turn and its model request.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct GoalOwnerContinuation {
     authority: GoalOwnerAdmissionContinuationAuthority,
     dispatch_claim_id: Option<Uuid>,
+    fence: Option<Arc<GoalContinuationFence>>,
+    fence_epoch: u64,
+}
+
+/// Synchronous revocation fence shared by a deferred continuation and every
+/// successor operation it publishes. Revocation advances the epoch and waits
+/// for all entered publication/admission/network operations to quiesce before
+/// returning to the caller.
+#[derive(Debug)]
+pub struct GoalContinuationFence {
+    epoch: AtomicU64,
+    active: StdMutex<usize>,
+    idle: Condvar,
+}
+
+/// Active-operation token held across publication and physical request opening.
+pub struct GoalContinuationFenceGuard {
+    fence: Arc<GoalContinuationFence>,
+}
+
+impl GoalContinuationFence {
+    pub fn new() -> Self {
+        Self {
+            epoch: AtomicU64::new(0),
+            active: StdMutex::new(0),
+            idle: Condvar::new(),
+        }
+    }
+
+    pub fn current_epoch(&self) -> u64 {
+        self.epoch.load(AtomicOrdering::Acquire)
+    }
+
+    pub fn revoke(&self) {
+        self.epoch.fetch_add(1, AtomicOrdering::AcqRel);
+    }
+
+    pub fn revoke_and_wait(&self) {
+        self.revoke();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *active != 0 {
+            active = self
+                .idle
+                .wait(active)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn enter(self: &Arc<Self>, epoch: u64) -> Option<GoalContinuationFenceGuard> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.epoch.load(AtomicOrdering::Acquire) != epoch {
+            return None;
+        }
+        *active += 1;
+        Some(GoalContinuationFenceGuard {
+            fence: Arc::clone(self),
+        })
+    }
+}
+
+impl Drop for GoalContinuationFenceGuard {
+    fn drop(&mut self) {
+        let mut active = self
+            .fence
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *active = active.saturating_sub(1);
+        if *active == 0 {
+            self.fence.idle.notify_all();
+        }
+    }
 }
 
 impl GoalOwnerContinuation {
@@ -45,6 +127,8 @@ impl GoalOwnerContinuation {
         Self {
             authority,
             dispatch_claim_id: None,
+            fence: Some(Arc::new(GoalContinuationFence::new())),
+            fence_epoch: 0,
         }
     }
 
@@ -55,7 +139,23 @@ impl GoalOwnerContinuation {
         Self {
             authority,
             dispatch_claim_id: Some(dispatch_claim_id),
+            fence: Some(Arc::new(GoalContinuationFence::new())),
+            fence_epoch: 0,
         }
+    }
+
+    pub fn with_fence(mut self, fence: Arc<GoalContinuationFence>, fence_epoch: u64) -> Self {
+        self.fence = Some(fence);
+        self.fence_epoch = fence_epoch;
+        self
+    }
+
+    pub fn enter_fence(&self) -> Option<GoalContinuationFenceGuard> {
+        self.fence.as_ref()?.enter(self.fence_epoch)
+    }
+
+    pub(crate) fn has_fence(&self) -> bool {
+        self.fence.is_some()
     }
 
     pub(crate) fn authority(&self) -> &GoalOwnerAdmissionContinuationAuthority {
@@ -237,6 +337,15 @@ impl ModelRequestAdmissionDecision {
         match self {
             Self::Unrestricted => Ok(ModelRequestLeaseGuard::unrestricted()),
             Self::Admitted(admitted) => {
+                let fence_guard = admitted
+                    .fence
+                    .as_ref()
+                    .and_then(|fence| fence.enter(admitted.fence_epoch))
+                    .ok_or_else(|| {
+                        CodexErr::Fatal(
+                            "goal-owner continuation was revoked before request open".to_string(),
+                        )
+                    })?;
                 {
                     let mut lifecycle = admitted.lifecycle.lock().await;
                     if lifecycle.opening || lifecycle.request_opened {
@@ -275,7 +384,10 @@ impl ModelRequestAdmissionDecision {
                 }
                 lifecycle.request_opened = true;
                 lifecycle.stage = LeaseStage::RequestOpened;
-                Ok(ModelRequestLeaseGuard::admitted(Arc::clone(admitted)))
+                Ok(ModelRequestLeaseGuard::admitted(
+                    Arc::clone(admitted),
+                    fence_guard,
+                ))
             }
             decision => Err(decision.blocked_error()),
         }
@@ -374,6 +486,17 @@ impl ModelRequestAdmissionBroker {
         identity: &ModelRequestIdentity,
         continuation: Option<&GoalOwnerContinuation>,
     ) -> Result<ModelRequestAdmissionDecision> {
+        let _fence_guard = if let Some(continuation) = continuation {
+            if !continuation.has_fence() {
+                return Ok(ModelRequestAdmissionDecision::Dormant);
+            }
+            let Some(guard) = continuation.enter_fence() else {
+                return Ok(ModelRequestAdmissionDecision::Cancelled);
+            };
+            Some(guard)
+        } else {
+            None
+        };
         let continuation_authority = continuation.map(GoalOwnerContinuation::authority);
         debug!(
             thread_id = %identity.thread_id,
@@ -473,7 +596,7 @@ impl ModelRequestAdmissionBroker {
         match acquire_result {
             GoalOwnerAdmissionAcquireResult::Acquired(lease) => {
                 Ok(ModelRequestAdmissionDecision::Admitted(Arc::new(
-                    AdmittedModelRequest::new(store.clone(), *lease),
+                    AdmittedModelRequest::new(store.clone(), *lease, continuation),
                 )))
             }
             GoalOwnerAdmissionAcquireResult::Exhausted(_) => {
@@ -618,14 +741,22 @@ pub(crate) struct AdmittedModelRequest {
     store: GoalOwnerAdmissionStore,
     lease: GoalOwnerAdmissionLease,
     lifecycle: Mutex<LeaseLifecycle>,
+    fence: Option<Arc<GoalContinuationFence>>,
+    fence_epoch: u64,
 }
 
 impl AdmittedModelRequest {
-    fn new(store: GoalOwnerAdmissionStore, lease: GoalOwnerAdmissionLease) -> Self {
+    fn new(
+        store: GoalOwnerAdmissionStore,
+        lease: GoalOwnerAdmissionLease,
+        continuation: Option<&GoalOwnerContinuation>,
+    ) -> Self {
         Self {
             store,
             lease,
             lifecycle: Mutex::new(LeaseLifecycle::default()),
+            fence: continuation.and_then(|continuation| continuation.fence.clone()),
+            fence_epoch: continuation.map_or(0, |continuation| continuation.fence_epoch),
         }
     }
 
@@ -744,16 +875,24 @@ impl Default for LeaseLifecycle {
 /// reusable automatically.
 pub(crate) struct ModelRequestLeaseGuard {
     admitted: Option<Arc<AdmittedModelRequest>>,
+    _fence_guard: Option<GoalContinuationFenceGuard>,
 }
 
 impl ModelRequestLeaseGuard {
     fn unrestricted() -> Self {
-        Self { admitted: None }
+        Self {
+            admitted: None,
+            _fence_guard: None,
+        }
     }
 
-    fn admitted(admitted: Arc<AdmittedModelRequest>) -> Self {
+    fn admitted(
+        admitted: Arc<AdmittedModelRequest>,
+        fence_guard: GoalContinuationFenceGuard,
+    ) -> Self {
         Self {
             admitted: Some(admitted),
+            _fence_guard: Some(fence_guard),
         }
     }
 

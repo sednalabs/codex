@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use chrono::Utc;
+use codex_core::GoalContinuationFence;
 use codex_core::GoalOwnerContinuation;
 use codex_core::ThreadManager;
 use codex_extension_api::ProviderEvidenceAuthority;
@@ -67,6 +68,7 @@ struct GoalRuntimeInner {
 struct GoalContinuationCoordinator {
     enabled: AtomicBool,
     enablement_epoch: AtomicU64,
+    fence: Arc<GoalContinuationFence>,
     state: Mutex<ProviderContinuationState>,
     lifecycle: Semaphore,
 }
@@ -196,6 +198,7 @@ impl GoalRuntimeHandle {
                 continuation: GoalContinuationCoordinator {
                     enabled: AtomicBool::new(config.enabled),
                     enablement_epoch: AtomicU64::new(0),
+                    fence: Arc::new(GoalContinuationFence::new()),
                     state: Mutex::new(ProviderContinuationState::default()),
                     lifecycle: Semaphore::new(/*permits*/ 1),
                 },
@@ -218,6 +221,14 @@ impl GoalRuntimeHandle {
             .enablement_epoch
             .fetch_add(1, Ordering::Relaxed)
             + 1;
+        let fence = Arc::clone(&self.inner.continuation.fence);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| fence.revoke_and_wait());
+            }
+            Ok(_) => fence.revoke(),
+            Err(_) => fence.revoke_and_wait(),
+        }
         if enabled {
             let authority = self
                 .inner
@@ -638,6 +649,10 @@ impl GoalRuntimeHandle {
         retry_after: Duration,
         continuation: GoalOwnerContinuation,
     ) -> Result<bool, String> {
+        let continuation = continuation.with_fence(
+            Arc::clone(&self.inner.continuation.fence),
+            self.inner.continuation.fence.current_epoch(),
+        );
         enum ProviderContinuationAction {
             Blocked,
             Dormant,
@@ -848,21 +863,12 @@ impl GoalRuntimeHandle {
         &self,
         authority: &codex_state::GoalOwnerAdmissionAuthority,
     ) -> Result<(), String> {
-        let current = self
-            .inner
-            .state_dbs
-            .goal_owner_admissions()
-            .get(authority.thread_id)
-            .await
-            .map_err(|err| err.to_string())?;
-        if current.is_some() {
-            return Ok(());
-        }
         self.inner
             .state_dbs
-            .thread_goals()
-            .clear_thread_goal_continuation_deferral(self.thread_id())
+            .goal_owner_admissions()
+            .clear_deferral_if_retired(authority)
             .await
+            .map(|_| ())
             .map_err(|err| err.to_string())
     }
 
@@ -1141,7 +1147,10 @@ impl GoalRuntimeHandle {
             );
             return Ok(());
         }
-        let continuation = GoalOwnerContinuation::new(record.continuation_authority());
+        let continuation = GoalOwnerContinuation::new(record.continuation_authority()).with_fence(
+            Arc::clone(&self.inner.continuation.fence),
+            self.inner.continuation.fence.current_epoch(),
+        );
         let cancellation = CancellationToken::new();
         let eligible_at = Instant::now().checked_add(retry_after);
         {
@@ -1343,9 +1352,19 @@ impl GoalRuntimeHandle {
             .await;
             return Ok(());
         }
-        let start_result = thread
-            .try_start_goal_continuation_if_idle(Vec::new(), claimed_continuation)
-            .await;
+        let start_result = {
+            let Some(_publication_guard) = claimed_continuation.enter_fence() else {
+                self.release_dispatch_claim_best_effort(
+                    &continuation_authority.authority,
+                    dispatch_claim_id,
+                )
+                .await;
+                return Ok(());
+            };
+            thread
+                .try_start_goal_continuation_if_idle(Vec::new(), claimed_continuation)
+                .await
+        };
         if start_result.is_err() {
             self.release_dispatch_claim_best_effort(
                 &continuation_authority.authority,

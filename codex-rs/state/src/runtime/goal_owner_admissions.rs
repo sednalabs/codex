@@ -264,23 +264,27 @@ impl GoalOwnerAdmissionStore {
         Self { pool }
     }
 
-    /// Acquire the single durable runtime owner slot for destructive admission recovery.
+    /// Record the process that holds the OS-backed runtime ownership lock.
     ///
-    /// The owner row is intentionally not reclaimed by age: an existing row is
-    /// proof that ownership is unresolved, not proof that its process died.
-    pub async fn try_acquire_runtime_owner(&self, owner_id: Uuid) -> anyhow::Result<bool> {
+    /// The caller must acquire the process-lifetime lock before invoking this
+    /// method. Replacing an old row is safe only under that lock: the kernel
+    /// has already proved that the previous holder exited.
+    pub async fn claim_runtime_owner(&self, owner_id: Uuid) -> anyhow::Result<()> {
         let result = sqlx::query(
             r#"
 INSERT INTO goal_owner_runtime_owners (owner_key, owner_id, acquired_at_ms)
 VALUES (1, ?, ?)
-ON CONFLICT(owner_key) DO NOTHING
+ON CONFLICT(owner_key) DO UPDATE SET
+    owner_id = excluded.owner_id,
+    acquired_at_ms = excluded.acquired_at_ms
             "#,
         )
         .bind(owner_id.to_string())
         .bind(admission_datetime_to_epoch_millis(Utc::now()))
         .execute(self.pool.as_ref())
         .await?;
-        Ok(result.rows_affected() == 1)
+        debug_assert_eq!(result.rows_affected(), 1);
+        Ok(())
     }
 
     /// Release only the exact durable runtime owner acquired by this process.
@@ -300,7 +304,28 @@ ON CONFLICT(owner_key) DO NOTHING
     /// generation and chain counters are returned exactly once. In-flight work
     /// retains its lease and becomes uncertain because the physical effect may
     /// already exist.
+    pub(crate) async fn recover_in_flight_on_open_as_owner(
+        &self,
+        owner_id: Uuid,
+    ) -> anyhow::Result<()> {
+        let registered_owner = sqlx::query_scalar::<_, String>(
+            "SELECT owner_id FROM goal_owner_runtime_owners WHERE owner_key = 1",
+        )
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        let expected_owner = owner_id.to_string();
+        if registered_owner.as_deref() != Some(expected_owner.as_str()) {
+            bail!("goal-owner admission recovery requires the exact runtime owner")
+        }
+        Self::recover_in_flight_on_open_impl(self.pool.as_ref()).await
+    }
+
+    #[cfg(test)]
     pub(crate) async fn recover_in_flight_on_open(pool: &SqlitePool) -> anyhow::Result<()> {
+        Self::recover_in_flight_on_open_impl(pool).await
+    }
+
+    async fn recover_in_flight_on_open_impl(pool: &SqlitePool) -> anyhow::Result<()> {
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
         let rows = recoverable_admissions_query()
@@ -481,6 +506,36 @@ WHERE thread_id = ?
         .bind(dispatch_claim_id.to_string())
         .execute(self.pool.as_ref())
         .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Atomically clear the thread deferral only after the exact generation
+    /// has retired and no replacement admission is active.
+    pub async fn clear_deferral_if_retired(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+    ) -> anyhow::Result<bool> {
+        validate_authority(authority)?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let Some(record) = fetch_record_for_authority(&mut *transaction, authority).await? else {
+            transaction.commit().await?;
+            return Ok(false);
+        };
+        if record.retired_at.is_none() {
+            transaction.commit().await?;
+            return Ok(false);
+        }
+        let active = fetch_active_record(&mut *transaction, authority.thread_id).await?;
+        if active.is_some() {
+            transaction.commit().await?;
+            return Ok(false);
+        }
+        let result =
+            sqlx::query("DELETE FROM thread_goal_continuation_deferrals WHERE thread_id = ?")
+                .bind(authority.thread_id.to_string())
+                .execute(&mut *transaction)
+                .await?;
+        transaction.commit().await?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -960,8 +1015,8 @@ WHERE thread_id = ?
     }
 
     /// Finish only the exact in-flight lease. An exact terminal replay is idempotent.
-    /// A late definitive outcome may refine the same cancelled in-flight lease's
-    /// terminal uncertainty, but cannot turn that uncertainty into cancellation.
+    /// Once a terminal outcome is recorded, its provenance is immutable; a late
+    /// contradictory provider result is rejected rather than rewriting history.
     pub async fn finish(
         &self,
         lease: &GoalOwnerAdmissionLease,
@@ -1020,42 +1075,6 @@ WHERE thread_id = ?
             return Ok(Some(record));
         }
 
-        if can_refine_uncertainty(&current, lease, outcome, disposition) {
-            let refined = sqlx::query(
-                r#"
-UPDATE goal_owner_admissions
-SET terminal_outcome = ?,
-    deferred_terminal_disposition = ?,
-    updated_at_ms = ?
-WHERE thread_id = ?
-  AND goal_id = ?
-  AND generation = ?
-  AND phase = 'terminal'
-  AND terminal_outcome = 'uncertain'
-  AND deferred_terminal_disposition = 'manual_review'
-  AND lease_id = ?
-  AND lease_cancellation_epoch = ?
-                "#,
-            )
-            .bind(outcome.as_str())
-            .bind(disposition.as_str())
-            .bind(now_ms)
-            .bind(lease.authority.thread_id.to_string())
-            .bind(&lease.authority.goal_id)
-            .bind(lease.authority.generation)
-            .bind(lease.lease_id.to_string())
-            .bind(lease.authority.cancellation_epoch)
-            .execute(&mut *transaction)
-            .await?;
-            if refined.rows_affected() != 1 {
-                bail!("uncertain goal-owner admission refinement lost its exact lease")
-            }
-            let record = fetch_record_for_authority(&mut *transaction, &lease.authority)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("refined admission is missing"))?;
-            transaction.commit().await?;
-            return Ok(Some(record));
-        }
         if exact_terminal_replay(&current, lease, outcome, disposition) {
             transaction.commit().await?;
             return Ok(Some(current));
@@ -2081,7 +2100,8 @@ fn observation_matches_origin(
         && observation.denial_class == origin.denial_class
         && observation.configured_provider_key == origin.configured_provider_key
         && observation.requested_model == origin.requested_model
-        && observation.effective_provider_id == origin.effective_provider_id
+        && canonical_optional_provider_id(observation.effective_provider_id.as_deref())
+            == canonical_optional_provider_id(origin.effective_provider_id.as_deref())
         && observation.effective_model == origin.effective_model
         && observation.intended_request_kind == origin.intended_request_kind
         && observation.successor_turn_id == origin.successor_turn_id
@@ -2091,6 +2111,10 @@ fn observation_matches_origin(
         && admission_datetime_to_epoch_millis(observation.deadline_at) == origin.deadline_at_ms
         && observation.max_attempts == origin.max_attempts
         && observation.requested_phase == origin.requested_phase
+}
+
+fn canonical_optional_provider_id(value: Option<&str>) -> Option<String> {
+    value.map(canonical_provider_id)
 }
 
 fn same_lease(record: &GoalOwnerAdmissionRecord, lease: &GoalOwnerAdmissionLease) -> bool {
@@ -2111,25 +2135,6 @@ fn exact_terminal_replay(
         && record.phase == GoalOwnerAdmissionPhase::Terminal
         && record.terminal_outcome == outcome
         && record.deferred_terminal_disposition == disposition
-}
-
-fn can_refine_uncertainty(
-    record: &GoalOwnerAdmissionRecord,
-    lease: &GoalOwnerAdmissionLease,
-    outcome: GoalOwnerAdmissionTerminalOutcome,
-    disposition: GoalOwnerAdmissionTerminalDisposition,
-) -> bool {
-    same_lease(record, lease)
-        && record.phase == GoalOwnerAdmissionPhase::Terminal
-        && record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Uncertain
-        && record.deferred_terminal_disposition
-            == GoalOwnerAdmissionTerminalDisposition::ManualReview
-        && matches!(
-            outcome,
-            GoalOwnerAdmissionTerminalOutcome::Succeeded
-                | GoalOwnerAdmissionTerminalOutcome::Rejected
-        )
-        && disposition == GoalOwnerAdmissionTerminalDisposition::None
 }
 
 fn exact_cancellation_replay(
