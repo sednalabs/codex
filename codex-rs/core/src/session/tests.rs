@@ -6028,6 +6028,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         windows_sandbox_proxy_settings_mode:
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
+        continuity_health_check: std::sync::atomic::AtomicBool::new(false),
         mcp_refresh: McpRefresh::new(),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
         mcp_elicitation_lifecycle_handle: OnceLock::new(),
@@ -8266,6 +8267,7 @@ where
         windows_sandbox_proxy_settings_mode:
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
+        continuity_health_check: std::sync::atomic::AtomicBool::new(false),
         mcp_refresh: McpRefresh::new(),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
         mcp_elicitation_lifecycle_handle: OnceLock::new(),

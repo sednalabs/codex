@@ -703,6 +703,7 @@ impl AgentControl {
                     inheritance.environments,
                     inheritance.exec_policy,
                     options.environments.clone(),
+                    continuity_health_check,
                 ))
                 .await?
             }
@@ -1479,6 +1480,7 @@ impl AgentControl {
                 inherited_exec_policy,
                 options.environments.clone(),
                 thread_extension_init,
+                continuity_health_check,
             )
             .await
     }

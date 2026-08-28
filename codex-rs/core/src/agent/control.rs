@@ -1263,7 +1263,14 @@ impl AgentControl {
                 // termination. Delivery is awaited first so the parent cannot observe a result
                 // after the child has been removed from manager and residency ownership.
                 drop(_terminal_finalizer);
-                if hold_terminal_finalizer && delivery_succeeded {
+                if hold_terminal_finalizer {
+                    if !delivery_succeeded {
+                        warn!(
+                            %child_thread_id,
+                            %parent_thread_id,
+                            "continuity result delivery failed; closing child with delivery uncertainty"
+                        );
+                    }
                     if let Err(err) = control.close_agent(child_thread_id).await {
                         warn!(
                             %child_thread_id,
