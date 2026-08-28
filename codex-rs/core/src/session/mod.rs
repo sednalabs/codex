@@ -3305,12 +3305,28 @@ impl Session {
         Ok(world_state)
     }
 
-    /// Captures one request-scoped view of dynamic state.
+    /// Retains the step captured for execution.
+    pub(crate) async fn set_last_known_step_context(&self, step_context: &Arc<StepContext>) {
+        let turn_state = {
+            let active_turn = self.active_turn.lock().await;
+            active_turn.as_ref().and_then(|active_turn| {
+                active_turn
+                    .task
+                    .as_ref()
+                    .filter(|task| task.turn_context.sub_id == step_context.turn.sub_id)
+                    .map(|_| Arc::clone(&active_turn.turn_state))
+            })
+        };
+        if let Some(turn_state) = turn_state {
+            turn_state.lock().await.last_known_step_context = Some(Arc::clone(step_context));
+        }
+    }
+
+    /// Captures one request-scoped view of dynamic state and retains it for the active turn.
     ///
     /// This may refresh filesystem-derived state. Normal turns should call it only from
     /// `run_turn` and pass the result down; standalone request or history boundaries may capture
-    /// their own step.
-    #[tracing::instrument(name = "step_context.capture", level = "info", skip_all)]
+    /// their own step. Use speculative capture for a step that may not execute.
     pub(crate) async fn capture_step_context(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
@@ -3325,6 +3341,35 @@ impl Session {
     }
 
     pub(crate) async fn capture_step_context_with_required_mcp_servers(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        cancellation_token: &CancellationToken,
+        required_servers: &[String],
+    ) -> CodexResult<Arc<StepContext>> {
+        let step_context = self
+            .capture_step_context_inner(turn_context, cancellation_token, required_servers)
+            .await?;
+        self.set_last_known_step_context(&step_context).await;
+        Ok(step_context)
+    }
+
+    /// Prepares a candidate step without replacing the active turn's retained context.
+    /// The caller must retain it explicitly if it is selected for execution.
+    async fn capture_speculative_step_context(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        cancellation_token: &CancellationToken,
+    ) -> CodexResult<Arc<StepContext>> {
+        self.capture_step_context_inner(
+            turn_context,
+            cancellation_token,
+            /*required_servers*/ &[],
+        )
+        .await
+    }
+
+    #[tracing::instrument(name = "step_context.capture", level = "info", skip_all)]
+    async fn capture_step_context_inner(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
         cancellation_token: &CancellationToken,

@@ -1088,7 +1088,7 @@ async fn capture_current_model_fallback_step_context(
     {
         return Ok(None);
     }
-    sess.capture_step_context(Arc::clone(turn_context), cancellation_token)
+    sess.capture_speculative_step_context(Arc::clone(turn_context), cancellation_token)
         .await
         .map(Some)
 }
