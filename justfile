@@ -122,6 +122,7 @@ core-turn-admission-custody-targeted:
     cargo test -p codex-core session::tests::reserved_task_stages_automatic_input_with_empty_direct_input --lib -- --exact --test-threads=1
     cargo test -p codex-core session::tests::stale_reserved_start_preserves_replacement_and_input --lib -- --exact --test-threads=1
     cargo test -p codex-core session::tests::pending_wake_stale_reservation_preserves_replacement_and_sources --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::pre_turn_steer suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::pre_turn_mail suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::pre_turn_triggering_mail suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::mid_turn_steer suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::mid_turn_mail suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::mid_turn_triggering_mail --exact
 
 # Carry-only downstream behavior smoke checks (core-only seam).
 core-carry-core-smoke:
