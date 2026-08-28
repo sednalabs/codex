@@ -57,6 +57,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::thread::ThreadId;
+use std::time::Duration;
 use test_case::test_case;
 use tokio::sync::oneshot;
 use tracing::Subscriber;
@@ -65,6 +66,9 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
+
+const BOUNDARY_CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+const TURN_EVENT_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn ev_message_item_done(id: &str, text: &str) -> Value {
     serde_json::json!({
@@ -242,14 +246,28 @@ where
         }
 
         self.observed.fetch_add(1, Ordering::SeqCst);
-        self.reached
-            .send(())
-            .expect("boundary worker should wait for task-run close");
-        self.release
+        match self.reached.send_timeout((), BOUNDARY_CONTROL_TIMEOUT) {
+            Ok(()) => {}
+            Err(mpsc::SendTimeoutError::Timeout(_)) => panic!(
+                "regular task-run boundary observer timed out after {BOUNDARY_CONTROL_TIMEOUT:?} notifying control thread"
+            ),
+            Err(mpsc::SendTimeoutError::Disconnected(_)) => panic!(
+                "regular task-run boundary observer control thread disconnected before boundary notification"
+            ),
+        }
+        let release = self
+            .release
             .lock()
-            .expect("boundary release mutex should not be poisoned")
-            .recv()
-            .expect("boundary worker should release finalization");
+            .expect("regular task-run boundary release mutex should not be poisoned");
+        match release.recv_timeout(BOUNDARY_CONTROL_TIMEOUT) {
+            Ok(()) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                "regular task-run boundary observer timed out after {BOUNDARY_CONTROL_TIMEOUT:?} waiting for finalization release"
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!(
+                "regular task-run boundary observer control thread disconnected before finalization release"
+            ),
+        }
     }
 }
 
@@ -263,16 +281,50 @@ impl RegularTaskRunBoundaryControl {
 
     fn spawn_releaser(self, after_boundary: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
         std::thread::spawn(move || {
-            self.reached
-                .recv()
-                .expect("task-run close should reach boundary worker");
+            match self.reached.recv_timeout(BOUNDARY_CONTROL_TIMEOUT) {
+                Ok(()) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                    "regular task-run boundary control timed out after {BOUNDARY_CONTROL_TIMEOUT:?} waiting for task-run close"
+                ),
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!(
+                    "regular task-run boundary control disconnected before task-run close"
+                ),
+            }
             let result = std::panic::catch_unwind(AssertUnwindSafe(after_boundary));
-            self.release
-                .send(())
-                .expect("task-run close should still be waiting for release");
+            let release_result = self.release.send_timeout((), BOUNDARY_CONTROL_TIMEOUT);
             if let Err(payload) = result {
+                // Always release the observer before propagating a callback panic. If the
+                // observer has already failed, preserve the original callback panic rather than
+                // replacing it with a second synchronization failure.
+                std::mem::drop(release_result);
                 std::panic::resume_unwind(payload);
             }
+            match release_result {
+                Ok(()) => {}
+                Err(mpsc::SendTimeoutError::Timeout(_)) => panic!(
+                    "regular task-run boundary control timed out after {BOUNDARY_CONTROL_TIMEOUT:?} releasing finalization"
+                ),
+                Err(mpsc::SendTimeoutError::Disconnected(_)) => panic!(
+                    "regular task-run boundary observer disconnected before finalization release"
+                ),
+            }
+        })
+    }
+}
+
+struct ThreadIdleCounter {
+    tx: tokio::sync::watch::Sender<usize>,
+}
+
+impl codex_extension_api::ThreadLifecycleContributor<codex_core::config::Config>
+    for ThreadIdleCounter
+{
+    fn on_thread_idle<'a>(
+        &'a self,
+        _input: codex_extension_api::ThreadIdleInput<'a>,
+    ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            self.tx.send_modify(|count| *count += 1);
         })
     }
 }
@@ -293,10 +345,24 @@ async fn observe_turn_completion(
         matching_user_messages: 0,
     };
     loop {
-        let event = codex
-            .next_event()
+        let event = tokio::time::timeout(TURN_EVENT_TIMEOUT, codex.next_event())
             .await
-            .expect("event stream should remain open");
+            .unwrap_or_else(|_| {
+                panic!(
+                    "timed out after {TURN_EVENT_TIMEOUT:?} waiting for TurnComplete; observed turn_started={}, turn_complete={}, matching_user_messages={}, expected_user_message={matching_user_message:?}",
+                    observation.turn_started,
+                    observation.turn_complete,
+                    observation.matching_user_messages,
+                )
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "event stream closed before TurnComplete; observed turn_started={}, turn_complete={}, matching_user_messages={}, expected_user_message={matching_user_message:?}",
+                    observation.turn_started,
+                    observation.turn_complete,
+                    observation.matching_user_messages,
+                )
+            });
         match event.msg {
             EventMsg::TurnStarted(_) => observation.turn_started += 1,
             EventMsg::UserMessage(message)
@@ -312,6 +378,29 @@ async fn observe_turn_completion(
         }
     }
     observation
+}
+
+async fn wait_for_thread_idle_after(
+    idle_rx: &mut tokio::sync::watch::Receiver<usize>,
+    previous_count: usize,
+) {
+    tokio::time::timeout(TURN_EVENT_TIMEOUT, async {
+        loop {
+            if *idle_rx.borrow_and_update() > previous_count {
+                return;
+            }
+            idle_rx
+                .changed()
+                .await
+                .expect("thread idle counter sender should remain available");
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "timed out after {TURN_EVENT_TIMEOUT:?} waiting for thread idle after turn finalization; previous_idle_count={previous_count}"
+        )
+    });
 }
 
 #[test]
@@ -367,7 +456,18 @@ async fn base_turn_does_not_reopen_after_boundary_steer() {
         response_completed_chunks("resp-2"),
     ])
     .await;
-    let codex = build_codex(&server).await;
+    let (thread_idle_tx, mut thread_idle_rx) = tokio::sync::watch::channel(0_usize);
+    let mut extensions =
+        codex_extension_api::ExtensionRegistryBuilder::<codex_core::config::Config>::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdleCounter { tx: thread_idle_tx }));
+    let codex = test_codex()
+        .with_model("gpt-5.4")
+        .with_extensions(Arc::new(extensions.build()))
+        .build_with_streaming_server(&server)
+        .await
+        .expect("build streaming Codex test session")
+        .codex;
+    let idle_count_before = *thread_idle_rx.borrow();
     let (observer, control) = RegularTaskRunBoundaryObserver::new();
     let observed = Arc::clone(&observer.observed);
     let subscriber = tracing_subscriber::registry().with(observer);
@@ -407,6 +507,10 @@ async fn base_turn_does_not_reopen_after_boundary_steer() {
     assert_eq!(lifecycle.turn_started, 1);
     assert_eq!(lifecycle.turn_complete, 1);
     assert_eq!(lifecycle.matching_user_messages, 1);
+    // TurnComplete is emitted before task finalization clears the active turn. The thread-idle
+    // callback is the natural post-finalization boundary; with no mailbox work queued, the
+    // subsequent pending-work admission must not produce a delayed second provider request.
+    wait_for_thread_idle_after(&mut thread_idle_rx, idle_count_before).await;
     assert_eq!(server.requests().await.len(), 1);
     server.shutdown().await;
 }
