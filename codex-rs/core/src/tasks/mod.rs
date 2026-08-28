@@ -521,8 +521,14 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) -> Result<(), TaskStartRejection> {
-        self.start_task_impl(turn_context, input, task, /*reservation*/ None)
-            .await
+        self.start_task_impl(
+            turn_context,
+            input,
+            task,
+            /*reservation*/ None,
+            /*enforce_current_plan*/ false,
+        )
+        .await
     }
 
     pub(crate) async fn try_start_reserved_task<T: SessionTask>(
@@ -532,8 +538,49 @@ impl Session {
         input: Vec<ResponseItem>,
         task: T,
     ) -> Result<(), TaskStartRejection> {
-        self.start_task_impl(turn_context, Vec::new(), task, Some((turn_state, input)))
-            .await
+        self.try_start_reserved_task_with_policy(
+            turn_context,
+            turn_state,
+            input,
+            task,
+            /*enforce_current_plan*/ false,
+        )
+        .await
+    }
+
+    pub(crate) async fn try_start_reserved_task_if_idle<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        turn_state: Arc<tokio::sync::Mutex<TurnState>>,
+        input: Vec<ResponseItem>,
+        task: T,
+    ) -> Result<(), TaskStartRejection> {
+        self.try_start_reserved_task_with_policy(
+            turn_context,
+            turn_state,
+            input,
+            task,
+            /*enforce_current_plan*/ true,
+        )
+        .await
+    }
+
+    async fn try_start_reserved_task_with_policy<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        turn_state: Arc<tokio::sync::Mutex<TurnState>>,
+        input: Vec<ResponseItem>,
+        task: T,
+        enforce_current_plan: bool,
+    ) -> Result<(), TaskStartRejection> {
+        self.start_task_impl(
+            turn_context,
+            Vec::new(),
+            task,
+            Some((turn_state, input)),
+            enforce_current_plan,
+        )
+        .await
     }
 
     pub(crate) async fn handle_task_start_rejection(
@@ -560,6 +607,7 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
         reservation: Option<(Arc<tokio::sync::Mutex<TurnState>>, Vec<ResponseItem>)>,
+        enforce_current_plan: bool,
     ) -> Result<(), TaskStartRejection> {
         let rejected_initial_input_disposition = task.rejected_initial_input_disposition();
         let (reserved_turn_state, reserved_input) = match reservation {
@@ -762,7 +810,7 @@ impl Session {
                 debug_assert!(turn.task.is_none());
                 Arc::clone(&turn.turn_state)
             };
-            if reserved_turn_state.is_some() {
+            if enforce_current_plan {
                 let state = self.state.lock().await;
                 if state.session_configuration.collaboration_mode.mode == ModeKind::Plan {
                     return Err(reject(TryStartTurnIfIdleRejectionReason::PlanMode));

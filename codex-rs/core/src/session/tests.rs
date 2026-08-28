@@ -11476,6 +11476,33 @@ async fn try_start_turn_if_idle_rejects_plan_mode_committed_during_publication()
 }
 
 #[tokio::test]
+async fn generic_reserved_start_remains_available_in_plan_mode() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let mut collaboration_mode = sess.collaboration_mode().await;
+    collaboration_mode.mode = ModeKind::Plan;
+    sess.update_settings(SessionSettingsUpdate {
+        collaboration_mode: Some(collaboration_mode),
+        ..Default::default()
+    })
+    .await
+    .expect("Plan settings update should commit");
+
+    let turn_state = reserve_test_turn(&sess).await;
+    let (input_tx, input_rx) = async_channel::bounded(1);
+    sess.start_reserved_task(
+        Arc::clone(&tc),
+        turn_state,
+        Vec::new(),
+        CompletingTask(Some(input_tx)),
+    )
+    .await
+    .expect("generic reserved starts must not inherit the automatic Plan gate");
+    assert!(input_rx.recv().await.expect("task should start").is_empty());
+
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
+#[tokio::test]
 async fn try_start_turn_if_idle_rejects_pending_trigger_turn_without_injecting() {
     let (sess, _tc, _rx) = make_session_and_context_with_rx().await;
     sess.input_queue
