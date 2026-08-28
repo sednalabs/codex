@@ -7,13 +7,16 @@ use pretty_assertions::assert_eq;
 
 use super::ContextSection;
 use super::ContextTarget;
+use super::ConversationTranscriptConfig;
 use super::ConversationTranscriptEntry;
 use super::ConversationTranscriptEntryKind;
+use super::ConversationTranscriptOptions;
 use super::SectionContributor;
 use super::SectionError;
 use super::SectionInput;
 use super::SectionRegistry;
 use super::SectionScope;
+use super::TranscriptEntryLimits;
 
 struct TestContributor {
     outcome: Result<Option<&'static str>, SectionError>,
@@ -28,7 +31,7 @@ impl SectionContributor for TestContributor {
 
     fn contribute(&self, input: &SectionInput<'_>) -> Result<Option<ContextSection>, SectionError> {
         self.invocations.fetch_add(/*val*/ 1, Ordering::Relaxed);
-        let history_len = input.history.len();
+        let history_len = input.history.items().count();
         Ok(self
             .outcome
             .clone()?
@@ -44,6 +47,17 @@ fn section(label: &str, history_len: usize) -> ContextSection {
             original_bytes: text.len(),
             text,
         }],
+    }
+}
+
+fn transcript_config() -> ConversationTranscriptConfig {
+    ConversationTranscriptConfig {
+        options: ConversationTranscriptOptions::default(),
+        entry_limits: TranscriptEntryLimits {
+            message_tokens: 2_000,
+            tool_tokens: 1_000,
+            node_repl_output_tokens: 2_000,
+        },
     }
 }
 
@@ -66,14 +80,17 @@ fn registry_collects_target_specific_sections_in_registration_order() {
         invocations.push(calls);
     }
     let history = [ResponseItem::Other];
+    let transcript = transcript_config();
 
     let sync_sections = registry.collect(&SectionInput {
         target: ContextTarget::Sync,
         history: &history,
+        transcript: &transcript,
     });
     let async_sections = registry.collect(&SectionInput {
         target: ContextTarget::Async,
         history: &history,
+        transcript: &transcript,
     });
 
     assert_eq!(
@@ -107,6 +124,7 @@ fn registry_skips_optional_sections_and_stops_on_missing_required_evidence() {
         section: "permissions",
     };
     for target in [ContextTarget::Sync, ContextTarget::Async] {
+        let transcript = transcript_config();
         let mut registry = SectionRegistry::default();
         let mut invocations = Vec::new();
         for outcome in [
@@ -128,6 +146,7 @@ fn registry_skips_optional_sections_and_stops_on_missing_required_evidence() {
             registry.collect(&SectionInput {
                 target,
                 history: &[ResponseItem::Other],
+                transcript: &transcript,
             }),
             Err(error.clone())
         );

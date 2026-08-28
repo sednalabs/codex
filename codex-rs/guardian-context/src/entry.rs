@@ -17,7 +17,7 @@ pub enum ConversationTranscriptEntryKind {
     ProtectedAssistant,
     /// Named tool invocation, including shell and web-search calls.
     ToolCall(String),
-    /// Named or unnamed tool result.
+    /// Tool result with a call-derived, explicit, or generic fallback label.
     ToolOutput(String),
     /// Result from a Node REPL-backed tool that may receive a larger sync cap.
     NodeReplToolOutput(String),

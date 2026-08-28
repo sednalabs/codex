@@ -1,20 +1,32 @@
 //! Shared context sections for synchronous Guardian review and asynchronous scoring.
 //!
+//! Transcript collection is also available directly, without section composition.
 //! Contributor failures abort collection without returning partial context.
 //! Sections carry structured transcript evidence without depending on either
 //! consumer's rendering, retention, compaction, or request lifecycle.
 //! Registered contributors declare their scope once and are collected only for
-//! matching context consumers.
+//! matching context consumers. History and collection settings are borrowed for
+//! each request so the default registry can be reused without retaining state.
 
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 use codex_protocol::models::ResponseItem;
 
+use transcript::ConversationTranscriptSection;
+
 pub use entry::ConversationTranscriptEntry;
 pub use entry::ConversationTranscriptEntryKind;
+pub use transcript::ConversationTranscriptConfig;
+pub use transcript::ConversationTranscriptOptions;
+pub use transcript::MANUAL_APPROVAL_DEVELOPER_PREFIX;
+pub use transcript::TranscriptEntryLimits;
+pub use transcript::TranscriptRetentionConfig;
+pub use transcript::collect_transcript;
 pub use truncation::truncate_text;
 
 mod entry;
+mod transcript;
 mod truncation;
 
 /// Consumer for which a Guardian context is composed.
@@ -49,12 +61,36 @@ impl SectionScope {
 }
 
 /// Borrowed host inputs available while one Guardian context section is built.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct SectionInput<'a> {
     /// Consumer for which the host is collecting context sections.
     pub target: ContextTarget,
     /// Parent conversation history available to this contribution.
-    pub history: &'a [ResponseItem],
+    pub history: &'a dyn SectionHistory,
+    /// Evidence sources and per-entry limits for this collection.
+    pub transcript: &'a ConversationTranscriptConfig,
+}
+
+/// Supplies repeatable, zero-copy access to a host-owned conversation snapshot.
+///
+/// Implementations return a fresh iterator for every call so independently
+/// registered contributors can inspect the same history without cloning its
+/// response items or taking ownership away from the host.
+pub trait SectionHistory: Send + Sync {
+    /// Returns borrowed response items in their original conversation order.
+    fn items(&self) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_>;
+}
+
+impl SectionHistory for Vec<ResponseItem> {
+    fn items(&self) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_> {
+        Box::new(self.iter())
+    }
+}
+
+impl<const LENGTH: usize> SectionHistory for [ResponseItem; LENGTH] {
+    fn items(&self) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_> {
+        Box::new(self.iter())
+    }
 }
 
 /// Supplies one independently scoped section to Guardian context assembly.
@@ -63,6 +99,8 @@ pub struct SectionInput<'a> {
 /// asynchronous scoring, or both. The registry filters contributors by scope
 /// before invoking them. Contributors distinguish sections that do not apply
 /// from required evidence that could not be collected.
+/// Keep request-specific settings and history in [`SectionInput`] so the same
+/// contributor can serve concurrent reviews without retaining stale state.
 pub trait SectionContributor: Send + Sync {
     /// Guardian consumers that should receive this contribution.
     fn scope(&self) -> SectionScope;
@@ -98,6 +136,20 @@ impl std::error::Error for SectionError {}
 #[derive(Clone, Default)]
 pub struct SectionRegistry {
     contributors: Vec<Arc<dyn SectionContributor>>,
+}
+
+/// Shared, process-lifetime registry of built-in Guardian sections.
+///
+/// Contributors store no conversation or configuration state. Each collection
+/// borrows the current history and settings from [`SectionInput`], so callers
+/// can reuse this registry across threads, model changes, and review targets.
+pub fn default_registry() -> &'static SectionRegistry {
+    static REGISTRY: LazyLock<SectionRegistry> = LazyLock::new(|| {
+        let mut registry = SectionRegistry::default();
+        registry.register(ConversationTranscriptSection);
+        registry
+    });
+    &REGISTRY
 }
 
 impl SectionRegistry {
