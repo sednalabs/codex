@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -8,7 +9,6 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex as TokioMutex;
-use tokio::sync::Notify;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 
@@ -23,7 +23,7 @@ pub struct StreamingSseChunk {
 pub struct StreamingSseServer {
     uri: String,
     requests: Arc<TokioMutex<Vec<Vec<u8>>>>,
-    request_notify: Arc<Notify>,
+    request_count_history: Arc<StdMutex<Vec<usize>>>,
     request_count: watch::Sender<usize>,
     shutdown: oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,
@@ -38,13 +38,37 @@ impl StreamingSseServer {
         self.requests.lock().await.clone()
     }
 
+    pub async fn request_count_history(&self) -> Vec<usize> {
+        self.request_count_history
+            .lock()
+            .expect("request count history mutex should not be poisoned")
+            .clone()
+    }
+
+    /// Waits for at least `count` recorded requests without a check-to-wait race.
     pub async fn wait_for_request_count(&self, count: usize) {
-        loop {
-            if self.requests.lock().await.len() >= count {
-                return;
-            }
-            self.request_notify.notified().await;
+        const REQUEST_COUNT_TIMEOUT: Duration = Duration::from_secs(30);
+        let mut request_count = self.request_count.subscribe();
+        if *request_count.borrow_and_update() >= count {
+            return;
         }
+
+        let reached = tokio::time::timeout(REQUEST_COUNT_TIMEOUT, async {
+            loop {
+                request_count
+                    .changed()
+                    .await
+                    .expect("streaming SSE request-count watch should remain open");
+                if *request_count.borrow_and_update() >= count {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(
+            reached.is_ok(),
+            "timed out after {REQUEST_COUNT_TIMEOUT:?} waiting for {count} physical provider requests"
+        );
     }
 
     /// Fails if a request was already recorded or arrives during the bounded observation window.
@@ -74,7 +98,10 @@ impl StreamingSseServer {
 
     pub async fn shutdown(self) {
         let _ = self.shutdown.send(());
-        let _ = self.task.await;
+        let task_result = tokio::time::timeout(Duration::from_secs(5), self.task)
+            .await
+            .expect("streaming SSE accept loop should stop within the shutdown bound");
+        task_result.expect("streaming SSE accept loop should not panic");
     }
 }
 
@@ -106,10 +133,10 @@ pub async fn start_streaming_sse_server(
         completions: VecDeque::from(completion_senders),
     }));
     let requests = Arc::new(TokioMutex::new(Vec::new()));
-    let request_notify = Arc::new(Notify::new());
+    let request_count_history = Arc::new(StdMutex::new(Vec::new()));
     let (request_count, _request_count_rx) = watch::channel(0_usize);
     let requests_for_task = Arc::clone(&requests);
-    let request_notify_for_task = Arc::clone(&request_notify);
+    let request_count_history_for_task = Arc::clone(&request_count_history);
     let request_count_for_task = request_count.clone();
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
@@ -121,7 +148,7 @@ pub async fn start_streaming_sse_server(
                     let (mut stream, _) = accept_res.expect("accept streaming SSE connection");
                     let state = Arc::clone(&state);
                     let requests = Arc::clone(&requests_for_task);
-                    let request_notify = Arc::clone(&request_notify_for_task);
+                    let request_count_history = Arc::clone(&request_count_history_for_task);
                     let request_count = request_count_for_task.clone();
                     tokio::spawn(async move {
                         let (request, body_prefix) = read_http_request(&mut stream).await;
@@ -160,10 +187,17 @@ pub async fn start_streaming_sse_server(
                             let request_count_value = {
                                 let mut requests = requests.lock().await;
                                 requests.push(body);
-                                requests.len()
+                                let request_count_value = requests.len();
+                                // Publish while holding the same lock as the vector mutation so
+                                // concurrent handlers cannot publish an older length after a
+                                // newer one (for example, regress from 2 back to 1).
+                                request_count.send_replace(request_count_value);
+                                request_count_history
+                                    .lock()
+                                    .expect("request count history mutex should not be poisoned")
+                                    .push(request_count_value);
+                                request_count_value
                             };
-                            request_count.send_replace(request_count_value);
-                            request_notify.notify_one();
                             let Some((chunks, completion)) = take_next_stream(&state).await else {
                                 let _ = write_http_response(&mut stream, /*status*/ 500, "no responses queued", "text/plain").await;
                                 return;
@@ -200,7 +234,7 @@ pub async fn start_streaming_sse_server(
         StreamingSseServer {
             uri,
             requests,
-            request_notify,
+            request_count_history,
             request_count,
             shutdown: shutdown_tx,
             task,
@@ -459,6 +493,39 @@ mod tests {
         let completion = completions.pop().expect("completion receiver");
         let timestamp = completion.await.expect("completion timestamp");
         assert!(timestamp > 0);
+        server.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_response_handlers_publish_monotonic_request_counts() {
+        let complete_chunks = || {
+            vec![StreamingSseChunk {
+                gate: None,
+                body: "event: complete\n\n".to_string(),
+            }]
+        };
+        let (server, _) =
+            start_streaming_sse_server(vec![complete_chunks(), complete_chunks()]).await;
+        let first_uri = server.uri().to_string();
+        let second_uri = first_uri.clone();
+        let request = |uri: String| async move {
+            let mut stream = connect(&uri).await;
+            send_request(
+                &mut stream,
+                "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await;
+            let response = read_to_end(&mut stream).await;
+            let (_, body) = split_response(&response);
+            assert_eq!(body, "event: complete\n\n");
+        };
+        tokio::join!(request(first_uri), request(second_uri));
+
+        assert_eq!(
+            server.request_count_history().await,
+            vec![1, 2],
+            "concurrent response handlers must publish request counts in mutation order"
+        );
         server.shutdown().await;
     }
 

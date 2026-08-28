@@ -268,21 +268,25 @@ impl BoundaryWorkerAction {
 
 struct BoundaryWorkerRelease {
     sender: Mutex<Option<mpsc::Sender<()>>>,
+    armed: Arc<AtomicBool>,
 }
 
 impl BoundaryWorkerRelease {
-    fn new(sender: mpsc::Sender<()>) -> Self {
+    fn new(sender: mpsc::Sender<()>, armed: Arc<AtomicBool>) -> Self {
         Self {
             sender: Mutex::new(Some(sender)),
+            armed,
         }
     }
 
     fn finish(&self) -> Result<(), ()> {
+        self.armed.store(false, Ordering::SeqCst);
         let sender = self.sender.lock().map_err(|_| ())?.take().ok_or(())?;
         sender.send(()).map_err(|_| ())
     }
 
     fn release_best_effort(&self) {
+        self.armed.store(false, Ordering::SeqCst);
         if let Ok(mut sender) = self.sender.lock()
             && let Some(sender) = sender.take()
         {
@@ -343,17 +347,17 @@ where
         }
 
         self.observed.fetch_add(1, Ordering::SeqCst);
-        let reached = self
+        let Some(reached) = self
             .reached
             .lock()
             .expect("regular task-run boundary reached mutex should not be poisoned")
             .take()
-            .expect("regular task-run boundary reached sender should be available");
-        reached.send(()).unwrap_or_else(|_| {
-            panic!(
-                "regular task-run boundary observer control thread disconnected before boundary notification"
-            )
-        });
+        else {
+            return;
+        };
+        if reached.send(()).is_err() {
+            return;
+        }
         let release = self
             .release
             .lock()
@@ -379,8 +383,9 @@ impl RegularTaskRunBoundaryControl {
     }
 
     fn spawn_releaser(self, action: BoundaryWorkerAction) -> BoundaryWorker {
-        let release = Arc::new(BoundaryWorkerRelease::new(self.release));
+        let release = Arc::new(BoundaryWorkerRelease::new(self.release, self.armed));
         let task_release = BoundaryWorkerReleaseGuard(Arc::clone(&release));
+        let task_release_for_finish = Arc::clone(&release);
         let handle = tokio::spawn(async move {
             let _release = task_release;
             match tokio::time::timeout(BOUNDARY_CONTROL_TIMEOUT, self.reached).await {
@@ -399,7 +404,7 @@ impl RegularTaskRunBoundaryControl {
                 // replacing it with a second synchronization failure.
                 std::panic::resume_unwind(payload);
             }
-            match release.finish() {
+            match task_release_for_finish.finish() {
                 Ok(()) => {}
                 Err(_) => panic!(
                     "regular task-run boundary observer disconnected before finalization release"
@@ -613,14 +618,23 @@ async fn regular_task_run_boundary_observer_self_test() {
 #[tokio::test]
 async fn boundary_worker_drop_aborts_and_releases() {
     let (release_tx, release_rx) = mpsc::channel();
-    let release = Arc::new(BoundaryWorkerRelease::new(release_tx));
     let (completion_tx, completion_rx) = oneshot::channel();
+    let (started_tx, started_rx) = oneshot::channel();
+    let armed = Arc::new(AtomicBool::new(true));
+    let release = Arc::new(BoundaryWorkerRelease::new(release_tx, Arc::clone(&armed)));
     let task_release = BoundaryWorkerReleaseGuard(Arc::clone(&release));
     let handle = tokio::spawn(async move {
         let _completion = BoundaryWorkerCancellationCompletion(Some(completion_tx));
         let _release = task_release;
+        started_tx
+            .send(())
+            .expect("boundary worker started receiver should remain available");
         std::future::pending::<()>().await;
     });
+    tokio::time::timeout(BOUNDARY_CONTROL_TIMEOUT, started_rx)
+        .await
+        .expect("boundary worker should be polled before cancellation")
+        .expect("boundary worker started handshake should remain observable");
     let worker = BoundaryWorker {
         handle: Some(handle),
         release,
@@ -631,6 +645,7 @@ async fn boundary_worker_drop_aborts_and_releases() {
     release_rx
         .recv_timeout(BOUNDARY_CONTROL_TIMEOUT)
         .expect("boundary worker drop should release finalization");
+    assert!(!armed.load(Ordering::SeqCst));
     tokio::time::timeout(BOUNDARY_CONTROL_TIMEOUT, completion_rx)
         .await
         .expect("boundary worker abort should settle within the cleanup bound")
@@ -638,14 +653,28 @@ async fn boundary_worker_drop_aborts_and_releases() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn boundary_worker_drop_disarms_late_observer_close() {
+    let (observer, control) = RegularTaskRunBoundaryObserver::new();
+    let subscriber = tracing_subscriber::registry().with(observer);
+    let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
+    control.arm();
+    let worker = control.spawn_releaser(BoundaryWorkerAction::Noop);
+    drop(worker);
+
+    let run_span = tracing::trace_span!("session_task.run");
+    drop(run_span);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn regular_task_run_boundary_observer_known_good_turn_finalization() {
     let (server, _completions) =
         start_streaming_sse_server(vec![response_completed_chunks("resp-1")]).await;
-    let codex = build_codex(&server).await;
     let (observer, control) = RegularTaskRunBoundaryObserver::new();
     let observed = Arc::clone(&observer.observed);
     let subscriber = tracing_subscriber::registry().with(observer);
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+    let codex = build_codex(&server).await;
 
     control.arm();
     let release_task = control.spawn_releaser(BoundaryWorkerAction::Noop);
@@ -676,13 +705,6 @@ async fn base_turn_does_not_reopen_after_boundary_steer() {
     let mut extensions =
         codex_extension_api::ExtensionRegistryBuilder::<codex_core::config::Config>::new();
     extensions.thread_lifecycle_contributor(Arc::new(ThreadIdleCounter { tx: thread_idle_tx }));
-    let codex = test_codex()
-        .with_model("gpt-5.4")
-        .with_extensions(Arc::new(extensions.build()))
-        .build_with_streaming_server(&server)
-        .await
-        .expect("build streaming Codex test session")
-        .codex;
     let idle_count_before = *thread_idle_rx.borrow();
     let (observer, control) = RegularTaskRunBoundaryObserver::new();
     let admission_observer = PendingWorkAdmissionCounter { tx: admission_tx };
@@ -691,6 +713,13 @@ async fn base_turn_does_not_reopen_after_boundary_steer() {
         .with(observer)
         .with(admission_observer);
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+    let codex = test_codex()
+        .with_model("gpt-5.4")
+        .with_extensions(Arc::new(extensions.build()))
+        .build_with_streaming_server(&server)
+        .await
+        .expect("build streaming Codex test session")
+        .codex;
     let admission_count_before = *admission_rx.borrow();
 
     let codex_for_steer = Arc::clone(&codex);
