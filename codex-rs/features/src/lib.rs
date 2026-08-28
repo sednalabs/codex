@@ -173,6 +173,8 @@ pub enum Feature {
     ExternalAgentMemoryImport,
     /// Compress cold local thread-store rollout files.
     LocalThreadStoreCompression,
+    /// Allow rollout compression on homes used exclusively by compressed-lineage-aware readers.
+    LocalThreadStoreSharedCompression,
     /// Migrate legacy local rollout files to paginated history in the background.
     BackgroundPaginatedRolloutMigration,
     /// Enable the Chronicle sidecar for passive screen-context memories.
@@ -1065,6 +1067,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::LocalThreadStoreCompression,
         key: "local_thread_store_compression",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::LocalThreadStoreSharedCompression,
+        key: "local_thread_store_shared_compression",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
