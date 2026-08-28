@@ -821,6 +821,9 @@ async fn build_extension_turn_input_items(
     user_input: &[UserInput],
     cancellation_token: &CancellationToken,
 ) -> Option<Vec<ResponseItem>> {
+    if sess.is_continuity_health_check() {
+        return Some(Vec::new());
+    }
     let turn_context = step_context.turn.as_ref();
     let contributors = sess.services.extensions.turn_input_contributors().to_vec();
     if contributors.is_empty() {
