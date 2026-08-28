@@ -811,7 +811,7 @@ impl Session {
                 Arc::clone(&turn.turn_state)
             };
             if enforce_current_plan {
-                let state = self.state.lock().await;
+                let state = self.lock_state().await;
                 if state.session_configuration.collaboration_mode.mode == ModeKind::Plan {
                     return Err(reject(TryStartTurnIfIdleRejectionReason::PlanMode));
                 }
