@@ -1797,6 +1797,8 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
         }
         EventMsg::Error(_)
         | EventMsg::Warning(_)
+        | EventMsg::AuthRecoveryStarted(_)
+        | EventMsg::AuthRecoveryCompleted(_)
         | EventMsg::GuardianWarning(_)
         | EventMsg::RealtimeConversationStarted(_)
         | EventMsg::RealtimeConversationSdp(_)

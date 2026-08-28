@@ -13,6 +13,7 @@ use crate::thread_status::ThreadWatchActiveGuard;
 use crate::thread_status::ThreadWatchManager;
 use codex_app_server_protocol::AccountRateLimitsUpdatedNotification;
 use codex_app_server_protocol::AdditionalPermissionProfile as V2AdditionalPermissionProfile;
+use codex_app_server_protocol::AuthRecoveryNotification;
 use codex_app_server_protocol::CodexErrorInfo as V2CodexErrorInfo;
 use codex_app_server_protocol::CommandAction as V2ParsedCommand;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
@@ -248,6 +249,30 @@ pub(crate) async fn apply_bespoke_event_handling(
                     EnvironmentConnectionNotification {
                         thread_id: conversation_id.to_string(),
                         environment_id: event.environment_id,
+                    },
+                ))
+                .await;
+        }
+        EventMsg::AuthRecoveryStarted(event) => {
+            outgoing
+                .send_server_notification(ServerNotification::AuthRecoveryStarted(
+                    AuthRecoveryNotification {
+                        thread_id: conversation_id.to_string(),
+                        turn_id: event_turn_id,
+                        provider: event.provider,
+                        message: event.message,
+                    },
+                ))
+                .await;
+        }
+        EventMsg::AuthRecoveryCompleted(event) => {
+            outgoing
+                .send_server_notification(ServerNotification::AuthRecoveryCompleted(
+                    AuthRecoveryNotification {
+                        thread_id: conversation_id.to_string(),
+                        turn_id: event_turn_id,
+                        provider: event.provider,
+                        message: event.message,
                     },
                 ))
                 .await;
@@ -2180,6 +2205,7 @@ mod tests {
     use codex_protocol::plan_tool::StepStatus;
     use codex_protocol::protocol::AgentMessageEvent;
     use codex_protocol::protocol::AskForApproval;
+    use codex_protocol::protocol::AuthRecoveryEvent;
     use codex_protocol::protocol::CreditsSnapshot;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::GuardianAssessmentEvent;
@@ -3418,11 +3444,11 @@ mod tests {
                 }),
             },
             conversation_id,
-            conversation,
-            thread_manager,
-            outgoing,
-            thread_state,
-            thread_watch_manager,
+            Arc::clone(&conversation),
+            Arc::clone(&thread_manager),
+            outgoing.clone(),
+            Arc::clone(&thread_state),
+            thread_watch_manager.clone(),
             Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
             "test-provider".to_string(),
         )
@@ -3436,6 +3462,52 @@ mod tests {
                 assert!(n.turn.items.is_empty());
             }
             other => bail!("unexpected message: {other:?}"),
+        }
+
+        for (phase, method, event) in [
+            (
+                "started",
+                "modelProvider/authRecoveryStarted",
+                EventMsg::AuthRecoveryStarted as fn(AuthRecoveryEvent) -> EventMsg,
+            ),
+            (
+                "completed",
+                "modelProvider/authRecoveryCompleted",
+                EventMsg::AuthRecoveryCompleted,
+            ),
+        ] {
+            let message = format!("Authentication recovery {phase}.");
+            apply_bespoke_event_handling(
+                Event {
+                    id: "turn-1".to_string(),
+                    msg: event(AuthRecoveryEvent {
+                        provider: "test-provider".to_string(),
+                        message: message.clone(),
+                    }),
+                },
+                conversation_id,
+                Arc::clone(&conversation),
+                Arc::clone(&thread_manager),
+                outgoing.clone(),
+                Arc::clone(&thread_state),
+                thread_watch_manager.clone(),
+                Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
+                "test-provider".to_string(),
+            )
+            .await;
+
+            assert_eq!(
+                serde_json::to_value(recv_broadcast_notification(&mut rx).await?)?,
+                json!({
+                    "method": method,
+                    "params": {
+                        "threadId": conversation_id.to_string(),
+                        "turnId": "turn-1",
+                        "provider": "test-provider",
+                        "message": message,
+                    }
+                })
+            );
         }
         Ok(())
     }

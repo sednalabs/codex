@@ -5576,6 +5576,46 @@
           "properties": {
             "method": {
               "enum": [
+                "modelProvider/authRecoveryStarted"
+              ],
+              "title": "ModelProvider/authRecoveryStartedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AuthRecoveryNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "ModelProvider/authRecoveryStartedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "modelProvider/authRecoveryCompleted"
+              ],
+              "title": "ModelProvider/authRecoveryCompletedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/AuthRecoveryNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "ModelProvider/authRecoveryCompletedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "turn/moderationMetadata"
               ],
               "title": "Turn/moderationMetadataNotificationMethod",
@@ -7668,6 +7708,31 @@
             "type": "string"
           }
         ]
+      },
+      "AuthRecoveryNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "provider",
+          "threadId",
+          "turnId"
+        ],
+        "title": "AuthRecoveryNotification",
+        "type": "object"
       },
       "AutoCompactTokenLimitScope": {
         "description": "Selects which part of the active context is charged against `model_auto_compact_token_limit`.",

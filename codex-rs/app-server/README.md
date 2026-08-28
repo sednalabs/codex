@@ -1749,6 +1749,8 @@ The app-server streams JSON-RPC notifications while a turn is running. Each turn
 - `model/safetyBuffering/updated` — `{ threadId, turnId, model, useCases, reasons, showBufferingUi, fasterModel }` when a response enters safety buffering. `fasterModel` is nullable. This notification is transient and is not persisted in rollout history.
 - `model/rerouted` — `{ threadId, turnId, fromModel, toModel, reason }` when the backend reroutes a request to a different model (for example, due to high-risk cyber safety checks).
 - `model/verification` — `{ threadId, turnId, verifications }` when the backend flags additional account verification, such as `trustedAccessForCyber`.
+- `modelProvider/authRecoveryStarted` — `{ threadId, turnId, provider, message }` when model-provider authentication recovery begins.
+- `modelProvider/authRecoveryCompleted` — `{ threadId, turnId, provider, message }` when model-provider authentication recovery succeeds.
 - `turn/moderationMetadata` — experimental; `{ threadId, turnId, metadata }` when a first-party backend supplies turn-scoped moderation metadata for client-side presentation.
 
 `turn/started` carries no items. `turn/completed` carries only the final agent message as a summary fallback; continue consuming `item/*` notifications for the full canonical item list.
