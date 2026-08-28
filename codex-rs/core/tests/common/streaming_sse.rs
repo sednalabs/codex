@@ -608,7 +608,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_aborts_blocked_connection_handler() {
-        let (_gate_tx, gate_rx) = oneshot::channel();
+        let (gate_tx, gate_rx) = oneshot::channel();
         let chunks = vec![StreamingSseChunk {
             gate: Some(gate_rx),
             body: "event: blocked\n\n".to_string(),
@@ -638,6 +638,10 @@ mod tests {
         );
 
         server.shutdown().await;
+        assert!(
+            gate_tx.send(()).is_err(),
+            "blocked handler gate receiver should be dropped during shutdown"
+        );
     }
 
     #[tokio::test]
