@@ -297,7 +297,15 @@ impl ResponsesWebsocketConnection {
             warmup: ws_request.generate == Some(false),
             connection_reused,
         };
-        let request_text = serialize_websocket_request(&request)?;
+        let request_text = match serialize_websocket_request(&request) {
+            Ok(request_text) => request_text,
+            Err(error) => {
+                if let Some(observer) = observer_for_task.as_ref() {
+                    observer.on_request_admission_failure(&error.to_string());
+                }
+                return Err(error);
+            }
+        };
 
         let current_span = Span::current();
         tokio::spawn(

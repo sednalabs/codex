@@ -45,8 +45,8 @@ use codex_api::RealtimeCallClient as ApiRealtimeCallClient;
 use codex_api::RealtimeSessionConfig as ApiRealtimeSessionConfig;
 use codex_api::Reasoning;
 use codex_api::ReasoningContext;
-use codex_api::RequestTelemetry;
 use codex_api::RequestAttemptObserver;
+use codex_api::RequestTelemetry;
 use codex_api::ReqwestTransport;
 use codex_api::ResponseCreateWsRequest;
 use codex_api::ResponsesApiRequest;
@@ -84,13 +84,13 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
-use codex_protocol::protocol::InternalSessionSource;
+use codex_protocol::protocol::GoalOwnerAdmissionRef;
 use codex_protocol::protocol::InferenceCallTransport;
+use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout_trace::CompactionTraceContext;
-use codex_protocol::protocol::GoalOwnerAdmissionRef;
 use codex_rollout_trace::InferenceAdmission;
 use codex_rollout_trace::InferenceAttemptMetadata;
 use codex_rollout_trace::InferenceCacheState;
@@ -131,8 +131,8 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::feedback_tags;
-use crate::model_request_admission::InferenceRequestKind;
 use crate::model_request_admission::GoalOwnerContinuation;
+use crate::model_request_admission::InferenceRequestKind;
 use crate::model_request_admission::ModelRequestAdmissionBroker;
 use crate::model_request_admission::ModelRequestAdmissionDecision;
 use crate::model_request_admission::ModelRequestIdentity;
@@ -1270,34 +1270,31 @@ impl ModelClientSession {
         let session_source = self.client.state.session_source.clone();
         let (source_parent_thread_id, source) = match &session_source {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id,
-                ..
+                parent_thread_id, ..
             }) => (
                 Some(*parent_thread_id),
                 Some(InferenceObservationSource::Direct),
             ),
-            _ if self.goal_owner_continuation.is_some() => (
-                None,
-                Some(InferenceObservationSource::HostContinuityCheck),
-            ),
+            _ if self.goal_owner_continuation.is_some() => {
+                (None, Some(InferenceObservationSource::HostContinuityCheck))
+            }
             _ => (None, Some(InferenceObservationSource::Direct)),
         };
-        let parent_thread_id = responses_metadata.parent_thread_id.or(source_parent_thread_id);
-        let goal_owner_admission_ref = self
-            .goal_owner_continuation
-            .as_ref()
-            .map(|continuation| {
-                let authority = continuation.authority();
-                GoalOwnerAdmissionRef {
-                    goal_id: authority.authority.goal_id.clone(),
-                    generation: authority.authority.generation,
-                    cancellation_epoch: authority.authority.cancellation_epoch,
-                    decision_id: authority.decision_id.to_string(),
-                    intended_request_kind: authority.intended_request_kind.clone(),
-                    successor_turn_id: authority.successor_turn_id.clone(),
-                    logical_successor_request_id: authority.logical_successor_request_id.clone(),
-                }
-            });
+        let parent_thread_id = responses_metadata
+            .parent_thread_id
+            .or(source_parent_thread_id);
+        let goal_owner_admission_ref = self.goal_owner_continuation.as_ref().map(|continuation| {
+            let authority = continuation.authority();
+            GoalOwnerAdmissionRef {
+                goal_id: authority.authority.goal_id.clone(),
+                generation: authority.authority.generation,
+                cancellation_epoch: authority.authority.cancellation_epoch,
+                decision_id: authority.decision_id.to_string(),
+                intended_request_kind: authority.intended_request_kind.clone(),
+                successor_turn_id: authority.successor_turn_id.clone(),
+                logical_successor_request_id: authority.logical_successor_request_id.clone(),
+            }
+        });
         let request_started_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .ok()
@@ -1710,21 +1707,42 @@ impl ModelClientSession {
             let mut request_lease = match admission.begin_network_request().await {
                 Ok(lease) => lease,
                 Err(error) => {
+                    let policy_denial = matches!(
+                        &admission,
+                        ModelRequestAdmissionDecision::Deferred
+                            | ModelRequestAdmissionDecision::Dormant
+                            | ModelRequestAdmissionDecision::Exhausted
+                            | ModelRequestAdmissionDecision::Cancelled
+                    );
                     let metadata = self.inference_observation_metadata(
                         request_kind,
                         &request,
                         responses_metadata,
                         InferenceCallTransport::ResponsesHttp,
-                        InferenceAdmission::Denied,
+                        if policy_denial {
+                            InferenceAdmission::Denied
+                        } else {
+                            InferenceAdmission::Unknown
+                        },
                         InferenceCacheState::Unknown,
                     );
                     let recorder = inference_trace.observation_recorder(metadata);
-                    let _ = recorder.record_local_denial(error.to_string());
+                    if policy_denial {
+                        let _ = recorder.record_local_denial(error.to_string());
+                    } else {
+                        let _ = recorder.record_admission_failure(format!(
+                            "admission boundary failure: {error}"
+                        ));
+                    }
                     return Err(error);
                 }
             };
             let stream_result = client
-                .stream_request_with_observer(request, options, Arc::clone(&observer) as Arc<dyn RequestAttemptObserver>)
+                .stream_request_with_observer(
+                    request,
+                    options,
+                    Arc::clone(&observer) as Arc<dyn RequestAttemptObserver>,
+                )
                 .await;
 
             match stream_result {
@@ -1949,16 +1967,33 @@ impl ModelClientSession {
             let mut request_lease = match admission.begin_network_request().await {
                 Ok(lease) => lease,
                 Err(error) => {
+                    let policy_denial = matches!(
+                        &admission,
+                        ModelRequestAdmissionDecision::Deferred
+                            | ModelRequestAdmissionDecision::Dormant
+                            | ModelRequestAdmissionDecision::Exhausted
+                            | ModelRequestAdmissionDecision::Cancelled
+                    );
                     let metadata = self.inference_observation_metadata(
                         request_kind,
                         &request,
                         responses_metadata,
                         InferenceCallTransport::ResponsesWebsocket,
-                        InferenceAdmission::Denied,
+                        if policy_denial {
+                            InferenceAdmission::Denied
+                        } else {
+                            InferenceAdmission::Unknown
+                        },
                         InferenceCacheState::Unknown,
                     );
                     let recorder = inference_trace.observation_recorder(metadata);
-                    let _ = recorder.record_local_denial(error.to_string());
+                    if policy_denial {
+                        let _ = recorder.record_local_denial(error.to_string());
+                    } else {
+                        let _ = recorder.record_admission_failure(format!(
+                            "admission boundary failure: {error}"
+                        ));
+                    }
                     return Err(error);
                 }
             };
@@ -1993,8 +2028,9 @@ impl ModelClientSession {
             let stream_result = stream_result.map_err(|err| {
                 let response_debug_context = extract_response_debug_context_from_api_error(&err);
                 let provider_denial = api_error_is_definitive_provider_denial(&err);
+                let provider_terminal = api_error_is_provider_terminal(&err);
                 let err = self.client.state.provider.map_api_error(err);
-                (err, provider_denial)
+                (err, provider_denial || provider_terminal)
             });
             let stream_result = match stream_result {
                 Ok(stream_result) => stream_result,
@@ -2341,6 +2377,18 @@ impl RequestAttemptObserver for InferenceRequestAttemptObserver {
             let _ = recorder.record_transport_uncertain(error);
         }
     }
+
+    fn on_request_admission_failure(&self, error: &str) {
+        let Some(recorder) = self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        else {
+            return;
+        };
+        let _ = recorder.record_admission_failure(error);
+    }
 }
 
 /// Stamp a ResponsesWsRequest with the current time.
@@ -2658,24 +2706,24 @@ where
                     let provider_denial = api_error_is_definitive_provider_denial(&err);
                     let provider_terminal = api_error_is_provider_terminal(&err);
                     let mapped = provider.map_api_error(err);
-                    let terminal = if matches!(mapped.details(), CodexErrorDetails::UsageLimitReached(_)) {
-                        Some(ProviderTerminalResult::UsageLimitReached {
-                            upstream_request_id: upstream_request_id.map(str::to_string),
-                            detail: Some("usage_limit_reached".to_string()),
-                        })
-                    } else if provider_terminal {
-                        Some(ProviderTerminalResult::Failed {
-                            upstream_request_id: upstream_request_id.map(str::to_string),
-                            error: mapped.to_string(),
-                        })
-                    } else {
-                        // A timeout, network error, or closed stream cannot establish whether
-                        // the provider observed the request.
-                        let _ = inference_observation_recorder.record_transport_uncertain(
-                            mapped.to_string(),
-                        );
-                        None
-                    };
+                    let terminal =
+                        if matches!(mapped.details(), CodexErrorDetails::UsageLimitReached(_)) {
+                            Some(ProviderTerminalResult::UsageLimitReached {
+                                upstream_request_id: upstream_request_id.map(str::to_string),
+                                detail: Some("usage_limit_reached".to_string()),
+                            })
+                        } else if provider_terminal {
+                            Some(ProviderTerminalResult::Failed {
+                                upstream_request_id: upstream_request_id.map(str::to_string),
+                                error: mapped.to_string(),
+                            })
+                        } else {
+                            // A timeout, network error, or closed stream cannot establish whether
+                            // the provider observed the request.
+                            let _ = inference_observation_recorder
+                                .record_transport_uncertain(mapped.to_string());
+                            None
+                        };
                     if let Some(terminal) = terminal {
                         let _ = inference_observation_recorder.record_provider_terminal(terminal);
                     }
@@ -2684,7 +2732,7 @@ where
                         logged_error = true;
                     }
                     let delivered_error = if request_lease.is_admitted() {
-                        let finalization = if provider_denial {
+                        let finalization = if provider_denial || provider_terminal {
                             request_lease.provider_denied().await
                         } else {
                             request_lease.transport_lost().await
@@ -2702,9 +2750,8 @@ where
                 }
             }
         }
-        let _ = inference_observation_recorder.record_transport_uncertain(
-            "stream closed before response.completed",
-        );
+        let _ = inference_observation_recorder
+            .record_transport_uncertain("stream closed before response.completed");
         if request_lease.is_admitted() {
             if let Err(error) = request_lease.transport_lost().await {
                 warn!(error = %error, "failed to record admitted Responses stream closure");

@@ -134,6 +134,7 @@ pub enum InferenceCallStatus {
     Cancelled,
     UsageLimitReached,
     LocalDenied,
+    AdmissionFailed,
     TransportUncertain,
     /// A status introduced by a newer producer. Unknown statuses remain
     /// durable evidence and are never interpreted as success.
@@ -356,7 +357,7 @@ impl InferenceCallEvent {
                 InferenceCallField::ObservedServiceTier,
                 InferenceCallField::TokenUsage,
             ],
-            InferenceCallStatus::LocalDenied => &[
+            InferenceCallStatus::LocalDenied | InferenceCallStatus::AdmissionFailed => &[
                 InferenceCallField::RequestCompletedAtMs,
                 InferenceCallField::ResponseId,
                 InferenceCallField::UpstreamRequestId,

@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
@@ -57,6 +58,7 @@ struct GoalRuntimeInner {
     thread_manager: Weak<ThreadManager>,
     accounting_state: Arc<GoalAccountingState>,
     enabled: AtomicBool,
+    enablement_epoch: AtomicU64,
     provider_continuation: Mutex<ProviderContinuationState>,
     tools_available_for_thread: bool,
     goal_state_lock: Semaphore,
@@ -78,6 +80,7 @@ struct ProviderContinuationState {
     /// covers resume; this bit also covers a persistence failure or an exhausted attempt.
     blocked: bool,
     pending: Option<DeferredProviderContinuation>,
+    last_authority: Option<codex_state::GoalOwnerAdmissionAuthority>,
 }
 
 pub(crate) struct AccountedGoalProgress {
@@ -128,6 +131,7 @@ impl GoalRuntimeHandle {
                 thread_manager,
                 accounting_state,
                 enabled: AtomicBool::new(config.enabled),
+                enablement_epoch: AtomicU64::new(0),
                 provider_continuation: Mutex::new(ProviderContinuationState::default()),
                 tools_available_for_thread: config.tools_available_for_thread,
                 goal_state_lock: Semaphore::new(/*permits*/ 1),
@@ -136,8 +140,48 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) fn set_enabled(&self, enabled: bool) {
+        let enablement_epoch = self.inner.enablement_epoch.fetch_add(1, Ordering::Relaxed) + 1;
         self.inner.enabled.store(enabled, Ordering::Relaxed);
-        if !enabled {
+        if enabled {
+            let authority = self
+                .inner
+                .provider_continuation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .last_authority
+                .clone();
+            let inner = Arc::downgrade(&self.inner);
+            let reconcile = async move {
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
+                let runtime = GoalRuntimeHandle {
+                    inner: Arc::clone(&inner),
+                };
+                if let Some(authority) = authority
+                    && let Err(error) = runtime.cancel_and_retire_admission(&authority).await
+                {
+                    tracing::warn!(error = %error, "failed to reconcile goal admission while re-enabling");
+                    return;
+                }
+                if runtime.inner.enablement_epoch.load(Ordering::Relaxed) == enablement_epoch
+                    && runtime.inner.enabled.load(Ordering::Relaxed)
+                {
+                    let mut state = runtime
+                        .inner
+                        .provider_continuation
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.attempts = 0;
+                    state.blocked = false;
+                }
+            };
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(reconcile);
+            }
+            return;
+        }
+        {
             let mut state = self
                 .inner
                 .provider_continuation
@@ -146,55 +190,42 @@ impl GoalRuntimeHandle {
             if let Some(pending) = state.pending.take() {
                 pending.cancellation.cancel();
             }
+            let authority = state.last_authority.clone();
             state.attempts = MAX_PROVIDER_RATE_LIMIT_CONTINUATIONS_PER_GOAL;
             state.blocked = true;
-            let admissions = self.inner.state_dbs.goal_owner_admissions().clone();
-            let thread_id = self.thread_id();
-            let cancel = async move {
-                match admissions.get(thread_id).await {
-                    Ok(Some(record)) => {
-                        match admissions
-                            .cancel(
-                                &record.authority,
-                                codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
-                            )
-                            .await
-                        {
-                            Ok(Some(cancelled))
-                                if cancelled.phase
-                                    == codex_state::GoalOwnerAdmissionPhase::Terminal
-                                    && cancelled.terminal_outcome
-                                        == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled =>
-                            {
-                                if let Err(error) = admissions
-                                    .retire(
-                                        &cancelled.authority,
-                                        codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
-                                    )
-                                    .await
-                                {
-                                    tracing::warn!(error = %error, "failed to retire disabled goal continuation");
-                                }
-                            }
-                            Ok(_) => {}
-                            Err(error) => {
-                                tracing::warn!(error = %error, "failed to durably cancel disabled goal continuation");
+            if let Some(authority) = authority {
+                let admissions = self.inner.state_dbs.goal_owner_admissions().clone();
+                let inner = Arc::downgrade(&self.inner);
+                let cancel = async move {
+                    let Some(inner) = inner.upgrade() else {
+                        return;
+                    };
+                    if inner.enablement_epoch.load(Ordering::Relaxed) != enablement_epoch
+                        || inner.enabled.load(Ordering::Relaxed)
+                    {
+                        return;
+                    }
+                    match admissions.cancel(
+                        &authority,
+                        codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+                    ).await {
+                        Ok(Some(cancelled))
+                            if cancelled.phase == codex_state::GoalOwnerAdmissionPhase::Terminal
+                                && cancelled.terminal_outcome == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled => {
+                            if let Err(error) = admissions.retire(
+                                &cancelled.authority,
+                                codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
+                            ).await {
+                                tracing::warn!(error = %error, "failed to retire disabled goal continuation");
                             }
                         }
+                        Ok(_) => {}
+                        Err(error) => tracing::warn!(error = %error, "failed to durably cancel disabled goal continuation"),
                     }
-                    Ok(None) => {}
-                    Err(error) => {
-                        tracing::warn!(error = %error, "failed to read disabled goal continuation admission");
-                    }
+                };
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(cancel);
                 }
-            };
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(cancel);
-            } else {
-                tracing::warn!(
-                    thread_id = %self.thread_id(),
-                    "cannot durably cancel disabled goal continuation without a runtime"
-                );
             }
         }
     }
@@ -420,8 +451,14 @@ impl GoalRuntimeHandle {
                         origin_turn_id: turn_id.to_string(),
                         origin_request_id: format!("{turn_id}:model-request"),
                         denial_class: codex_state::GoalOwnerAdmissionDenialClass::RateLimited,
-                        configured_provider_key: rate_limit_domain.local_request_identity.configured_provider_key.clone(),
-                        requested_model: rate_limit_domain.local_request_identity.requested_model.clone(),
+                        configured_provider_key: rate_limit_domain
+                            .local_request_identity
+                            .configured_provider_key
+                            .clone(),
+                        requested_model: rate_limit_domain
+                            .local_request_identity
+                            .requested_model
+                            .clone(),
                         effective_provider_id: rate_limit_domain
                             .local_request_identity
                             .effective_provider_id
@@ -431,7 +468,10 @@ impl GoalRuntimeHandle {
                                 .configured_provider_key
                                 .as_deref())
                             .map(codex_state::canonical_provider_id),
-                        effective_model: rate_limit_domain.local_request_identity.resolved_model.clone(),
+                        effective_model: rate_limit_domain
+                            .local_request_identity
+                            .resolved_model
+                            .clone(),
                         intended_request_kind: "turn".to_string(),
                         successor_turn_id: Uuid::new_v4().to_string(),
                         logical_successor_request_id: Uuid::new_v4().to_string(),
@@ -501,6 +541,7 @@ impl GoalRuntimeHandle {
                 state.blocked = true;
                 let eligible_at = Instant::now().checked_add(delay);
                 let cancellation = CancellationToken::new();
+                let authority = continuation.authority().authority.clone();
                 state.pending = Some(DeferredProviderContinuation {
                     turn_id,
                     goal_id,
@@ -508,6 +549,7 @@ impl GoalRuntimeHandle {
                     eligible_at,
                     cancellation: cancellation.clone(),
                 });
+                state.last_authority = Some(authority);
                 ProviderContinuationAction::Scheduled {
                     delay,
                     cancellation,
@@ -584,6 +626,38 @@ impl GoalRuntimeHandle {
             .blocked = true;
     }
 
+    async fn cancel_and_retire_admission(
+        &self,
+        authority: &codex_state::GoalOwnerAdmissionAuthority,
+    ) -> Result<(), String> {
+        let cancelled = self
+            .inner
+            .state_dbs
+            .goal_owner_admissions()
+            .cancel(
+                authority,
+                codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        if let Some(cancelled) = cancelled
+            && cancelled.phase == codex_state::GoalOwnerAdmissionPhase::Terminal
+            && cancelled.terminal_outcome
+                == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled
+        {
+            self.inner
+                .state_dbs
+                .goal_owner_admissions()
+                .retire(
+                    &cancelled.authority,
+                    codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
+                )
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn cancel_provider_continuation(&self) {
         let pending = self
             .inner
@@ -614,46 +688,12 @@ impl GoalRuntimeHandle {
             .map(|pending| pending.continuation.authority().authority.clone())
             .or_else(|| persisted.as_ref().map(|record| record.authority.clone()));
         if let Some(authority) = authority {
-            match self
-                .inner
-                .state_dbs
-                .goal_owner_admissions()
-                .cancel(
-                    &authority,
-                    codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
-                )
-                .await
-            {
-                Ok(Some(record))
-                    if record.phase == codex_state::GoalOwnerAdmissionPhase::Terminal
-                        && record.terminal_outcome
-                            == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled =>
-                {
-                    if let Err(error) = self
-                        .inner
-                        .state_dbs
-                        .goal_owner_admissions()
-                        .retire(
-                            &record.authority,
-                            codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            thread_id = %self.thread_id(),
-                            error = %error,
-                            "failed to retire cancelled goal-owner admission"
-                        );
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(
-                        thread_id = %self.thread_id(),
-                        error = %error,
-                        "failed to durably cancel goal-owner continuation admission"
-                    );
-                }
+            if let Err(error) = self.cancel_and_retire_admission(&authority).await {
+                tracing::warn!(
+                    thread_id = %self.thread_id(),
+                    error = %error,
+                    "failed to durably cancel goal-owner continuation admission"
+                );
             }
         }
         let Some(pending) = pending else {
@@ -840,27 +880,11 @@ impl GoalRuntimeHandle {
             .as_ref()
             .filter(|goal| goal.status == codex_state::ThreadGoalStatus::Active)
         else {
-            self.inner
-                .state_dbs
-                .goal_owner_admissions()
-                .cancel(
-                    &record.authority,
-                    codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
-                )
-                .await
-                .map_err(|err| err.to_string())?;
+            self.cancel_and_retire_admission(&record.authority).await?;
             return Ok(());
         };
         if record.authority.goal_id != active_goal.goal_id {
-            self.inner
-                .state_dbs
-                .goal_owner_admissions()
-                .cancel(
-                    &record.authority,
-                    codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
-                )
-                .await
-                .map_err(|err| err.to_string())?;
+            self.cancel_and_retire_admission(&record.authority).await?;
             return Ok(());
         }
         let retry_after = record
@@ -895,6 +919,7 @@ impl GoalRuntimeHandle {
                     eligible_at,
                     cancellation: cancellation.clone(),
                 });
+                state.last_authority = Some(record.authority.clone());
             } else {
                 return Ok(());
             }
@@ -1056,15 +1081,10 @@ impl GoalRuntimeHandle {
             self.inner.accounting_state.clear_active_goal();
             return Ok(false);
         }
-        let start_result = if goal_continuation
-            && codex_core::diagnostic_flags::goal_continuation_health_check_enabled()
-        {
-            thread
-                .try_start_goal_continuation_if_idle(input_for_goal(goal))
-                .await
-        } else {
-            thread.try_start_turn_if_idle(input_for_goal(goal)).await
-        };
+        // Provider-preserved continuations carry their exact authority through
+        // `continue_provider_preserved_goal`; this ordinary idle path has no
+        // continuation token and must never synthesize one for diagnostics.
+        let start_result = thread.try_start_turn_if_idle(input_for_goal(goal)).await;
         match start_result {
             Ok(()) => {
                 return Ok(true);

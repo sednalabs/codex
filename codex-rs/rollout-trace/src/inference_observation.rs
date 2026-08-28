@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::GoalOwnerAdmissionRef;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::GoalOwnerAdmissionRef;
 use codex_protocol::protocol::InferenceCallEvent;
 use codex_protocol::protocol::InferenceCallSource;
 use codex_protocol::protocol::InferenceCallStatus;
@@ -184,6 +184,12 @@ pub enum InferenceObservationEvent {
     },
     /// Local admission or policy rejected the request before transport I/O.
     LocalDenial {
+        attempt: InferenceAttemptMetadata,
+        reason: String,
+    },
+    /// The local admission boundary failed without authorizing transport or asserting policy
+    /// denial. This includes storage and request-open fencing failures.
+    AdmissionFailure {
         attempt: InferenceAttemptMetadata,
         reason: String,
     },
@@ -360,6 +366,19 @@ fn protocol_event_for_observation(event: InferenceObservationEvent) -> Option<In
             None,
             None,
             Some("local_denied".to_string()),
+        ),
+        InferenceObservationEvent::AdmissionFailure { attempt, reason } => (
+            attempt,
+            InferenceCallStatus::AdmissionFailed,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(format!("admission_failed: {reason}")),
         ),
         InferenceObservationEvent::TransportUncertain {
             attempt,
@@ -608,6 +627,28 @@ impl InferenceObservationRecorder {
         self.record_terminal(|attempt| InferenceObservationEvent::TransportUncertain {
             attempt,
             reason: reason.into(),
+        })
+    }
+
+    /// Records a local admission-boundary failure without claiming policy denial or provider
+    /// execution. This event is valid before physical transport opens.
+    pub fn record_admission_failure(
+        &self,
+        reason: impl Into<String>,
+    ) -> Result<(), InferenceObservationError> {
+        let reason = reason.into();
+        self.record_event(|lifecycle| {
+            if lifecycle.physical_request_opened {
+                return Err(InferenceObservationError::PhysicalRequestAlreadyOpened);
+            }
+            if lifecycle.terminal_recorded {
+                return Err(InferenceObservationError::TerminalAlreadyRecorded);
+            }
+            lifecycle.terminal_recorded = true;
+            Ok(InferenceObservationEvent::AdmissionFailure {
+                attempt: self.state.attempt.clone(),
+                reason,
+            })
         })
     }
 
