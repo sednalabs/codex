@@ -135,6 +135,28 @@ impl GoalOwnerDispatchFenceCapability {
     }
 }
 
+/// Opaque proof that the caller is the owner installation that acquired the
+/// process-lifetime runtime lock.  Recovery is deliberately bound to this
+/// token instead of being authorized by a cloneable store alone.
+#[derive(Debug, Clone)]
+pub struct GoalOwnerRecoveryCapability {
+    owner_id: Uuid,
+    nonce: Arc<()>,
+}
+
+impl GoalOwnerRecoveryCapability {
+    pub(crate) fn new(owner_id: Uuid) -> Self {
+        Self {
+            owner_id,
+            nonce: Arc::new(()),
+        }
+    }
+
+    fn matches(&self, expected: &Self) -> bool {
+        self.owner_id == expected.owner_id && Arc::ptr_eq(&self.nonce, &expected.nonce)
+    }
+}
+
 /// The one scheduled successor that may consume an admission generation.
 ///
 /// This token is deliberately narrower than a thread-level authority: a
@@ -289,6 +311,7 @@ pub struct GoalOwnerAdmissionStore {
     /// carry `None`, even though they share the same SQLite pool.
     write_capability: Option<Arc<RuntimeOwnerCapability>>,
     owner_lease: Option<Arc<RuntimeOwnerLease>>,
+    recovery_capability: Option<Arc<GoalOwnerRecoveryCapability>>,
 }
 
 impl GoalOwnerAdmissionStore {
@@ -300,6 +323,7 @@ impl GoalOwnerAdmissionStore {
             // explicitly after acquiring the process-lifetime lock.
             write_capability: None,
             owner_lease: None,
+            recovery_capability: None,
         }
     }
 
@@ -308,6 +332,7 @@ impl GoalOwnerAdmissionStore {
             pool,
             write_capability: None,
             owner_lease: None,
+            recovery_capability: None,
         }
     }
 
@@ -320,6 +345,21 @@ impl GoalOwnerAdmissionStore {
             pool,
             write_capability: Some(capability),
             owner_lease,
+            recovery_capability: None,
+        }
+    }
+
+    pub(crate) fn with_recovery_capability(
+        pool: Arc<SqlitePool>,
+        capability: Arc<RuntimeOwnerCapability>,
+        owner_lease: Option<Arc<RuntimeOwnerLease>>,
+        recovery_capability: Arc<GoalOwnerRecoveryCapability>,
+    ) -> Self {
+        Self {
+            pool,
+            write_capability: Some(capability),
+            owner_lease,
+            recovery_capability: Some(recovery_capability),
         }
     }
 
@@ -623,8 +663,15 @@ WHERE thread_id = ?
         &self,
         authority: &GoalOwnerAdmissionAuthority,
         dispatch_claim_id: Uuid,
+        recovery_capability: &GoalOwnerRecoveryCapability,
     ) -> anyhow::Result<bool> {
         let _capability_guard = self.require_write_capability()?;
+        let Some(expected) = self.recovery_capability.as_ref() else {
+            bail!("goal-owner recovery requires the owning runtime installation")
+        };
+        if !recovery_capability.matches(expected) {
+            bail!("goal-owner recovery capability does not belong to this runtime")
+        }
         validate_authority(authority)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let result = sqlx::query(
