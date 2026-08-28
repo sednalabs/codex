@@ -161,6 +161,7 @@ mod step_settings_snapshots;
 mod stream_error_allows_next_turn;
 mod stream_no_completed;
 mod subagent_notifications;
+mod subagent_service_tier;
 mod token_budget;
 mod tool_harness;
 mod tool_lifecycle;
