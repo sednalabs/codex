@@ -167,11 +167,15 @@ impl GoalRuntimeHandle {
                 {
                     return;
                 }
-                if let Some(authority) = authority
-                    && let Err(error) = runtime.cancel_and_retire_admission(&authority).await
-                {
-                    tracing::warn!(error = %error, "failed to reconcile goal admission while re-enabling");
-                    return;
+                if let Some(authority) = authority {
+                    let Ok(_goal_state_permit) = runtime.goal_state_permit().await else {
+                        tracing::warn!("failed to acquire goal-state permit while re-enabling");
+                        return;
+                    };
+                    if let Err(error) = runtime.cancel_and_retire_admission(&authority).await {
+                        tracing::warn!(error = %error, "failed to reconcile goal admission while re-enabling");
+                        return;
+                    }
                 }
                 if runtime.inner.enablement_epoch.load(Ordering::Relaxed) == enablement_epoch
                     && runtime.inner.enabled.load(Ordering::Relaxed)
@@ -214,6 +218,9 @@ impl GoalRuntimeHandle {
                         return;
                     }
                     let runtime = GoalRuntimeHandle { inner };
+                    let Ok(_goal_state_permit) = runtime.goal_state_permit().await else {
+                        return;
+                    };
                     if let Err(error) = runtime.cancel_and_retire_admission(&authority).await {
                         tracing::warn!(
                             error = %error,
@@ -1092,12 +1099,11 @@ impl GoalRuntimeHandle {
             )
             .await?
         {
-            let _ = self
-                .inner
-                .state_dbs
-                .goal_owner_admissions()
-                .release_dispatch_claim(&continuation_authority.authority, dispatch_claim_id)
-                .await;
+            self.release_dispatch_claim_best_effort(
+                &continuation_authority.authority,
+                dispatch_claim_id,
+            )
+            .await;
             return Ok(());
         }
         let claimed_continuation = GoalOwnerContinuation::with_dispatch_claim(
@@ -1105,21 +1111,19 @@ impl GoalRuntimeHandle {
             dispatch_claim_id,
         );
         let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
-            let _ = self
-                .inner
-                .state_dbs
-                .goal_owner_admissions()
-                .release_dispatch_claim(&continuation_authority.authority, dispatch_claim_id)
-                .await;
+            self.release_dispatch_claim_best_effort(
+                &continuation_authority.authority,
+                dispatch_claim_id,
+            )
+            .await;
             return Ok(());
         };
         let Ok(thread) = thread_manager.get_thread(self.inner.thread_id).await else {
-            let _ = self
-                .inner
-                .state_dbs
-                .goal_owner_admissions()
-                .release_dispatch_claim(&continuation_authority.authority, dispatch_claim_id)
-                .await;
+            self.release_dispatch_claim_best_effort(
+                &continuation_authority.authority,
+                dispatch_claim_id,
+            )
+            .await;
             return Ok(());
         };
         if !self
@@ -1132,12 +1136,11 @@ impl GoalRuntimeHandle {
             )
             .await?
         {
-            let _ = self
-                .inner
-                .state_dbs
-                .goal_owner_admissions()
-                .release_dispatch_claim(&continuation_authority.authority, dispatch_claim_id)
-                .await;
+            self.release_dispatch_claim_best_effort(
+                &continuation_authority.authority,
+                dispatch_claim_id,
+            )
+            .await;
             return Ok(());
         }
         // Keep this check immediately adjacent to the start call: cancellation and replacement
@@ -1152,12 +1155,11 @@ impl GoalRuntimeHandle {
             )
             .await?
         {
-            let _ = self
-                .inner
-                .state_dbs
-                .goal_owner_admissions()
-                .release_dispatch_claim(&continuation_authority.authority, dispatch_claim_id)
-                .await;
+            self.release_dispatch_claim_best_effort(
+                &continuation_authority.authority,
+                dispatch_claim_id,
+            )
+            .await;
             return Ok(());
         }
         let start_result = thread
@@ -1173,12 +1175,11 @@ impl GoalRuntimeHandle {
             )
             .await?;
         if start_result.is_err() {
-            let _ = self
-                .inner
-                .state_dbs
-                .goal_owner_admissions()
-                .release_dispatch_claim(&continuation_authority.authority, dispatch_claim_id)
-                .await;
+            self.release_dispatch_claim_best_effort(
+                &continuation_authority.authority,
+                dispatch_claim_id,
+            )
+            .await;
             return Ok(());
         }
         if !still_current {
@@ -1295,6 +1296,28 @@ impl GoalRuntimeHandle {
             return Ok(false);
         }
         Ok(self.timer_cache_is_current(continuation_authority, cancellation, enablement_epoch))
+    }
+
+    async fn release_dispatch_claim_best_effort(
+        &self,
+        authority: &codex_state::GoalOwnerAdmissionAuthority,
+        dispatch_claim_id: Uuid,
+    ) {
+        if let Err(error) = self
+            .inner
+            .state_dbs
+            .goal_owner_admissions()
+            .release_dispatch_claim(authority, dispatch_claim_id)
+            .await
+        {
+            tracing::warn!(
+                thread_id = %authority.thread_id,
+                generation = authority.generation,
+                dispatch_claim_id = %dispatch_claim_id,
+                error = %error,
+                "failed to release goal continuation dispatch claim; resume will retry exact cleanup"
+            );
+        }
     }
 
     async fn start_if_idle(

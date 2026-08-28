@@ -898,6 +898,73 @@ async fn recovery_rejects_corrupt_in_flight_rows_before_mutating_any_affected_ro
 }
 
 #[tokio::test]
+async fn dispatch_claim_is_single_owner_and_consumed_by_acquire() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let record = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "dispatch-claim",
+            "request-dispatch-claim",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record pending admission");
+    let authority = record.continuation_authority();
+    let claim_id = store
+        .claim_dispatch(&authority, Utc::now())
+        .await
+        .expect("claim dispatch")
+        .expect("claim exact pending generation");
+    assert_eq!(
+        store
+            .claim_dispatch(&authority, Utc::now())
+            .await
+            .expect("reject second claimant"),
+        None
+    );
+    let claimed = store
+        .get_generation(&record.authority)
+        .await
+        .expect("read claimed generation")
+        .expect("claimed generation exists");
+    assert_eq!(claimed.dispatch_claim_id, Some(claim_id));
+    assert!(
+        !store
+            .release_dispatch_claim(&record.authority, Uuid::now_v7())
+            .await
+            .expect("reject stale claimant cleanup")
+    );
+    assert_eq!(
+        store
+            .get_generation(&record.authority)
+            .await
+            .expect("read claim after stale cleanup")
+            .expect("generation exists")
+            .dispatch_claim_id,
+        Some(claim_id)
+    );
+
+    let lease = match store
+        .try_acquire_claimed(&authority, claim_id, Utc::now())
+        .await
+        .expect("consume dispatch claim")
+    {
+        GoalOwnerAdmissionAcquireResult::Acquired(lease) => *lease,
+        result => panic!("expected acquired claimed admission, got {result:?}"),
+    };
+    let acquired = store
+        .get_generation(&record.authority)
+        .await
+        .expect("read acquired generation")
+        .expect("acquired generation exists");
+    assert_eq!(acquired.phase, GoalOwnerAdmissionPhase::Acquired);
+    assert_eq!(acquired.dispatch_claim_id, None);
+    assert!(store.open_lease(&lease).await.expect("open acquired lease"));
+}
+
+#[tokio::test]
 async fn cancel_acquired_definite() {
     let runtime = runtime().await;
     let store = runtime.goal_owner_admissions();
