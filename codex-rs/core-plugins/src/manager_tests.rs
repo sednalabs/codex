@@ -7090,7 +7090,6 @@ fn remote_installed_plugins_cache_refresh_coalesces_materializations() {
         scope: crate::remote::RemotePluginScope::Workspace,
         discoverability: Some(crate::remote::RemotePluginShareDiscoverability::Listed),
         authenticated_account_id: Some("account-123".to_string()),
-        capabilities: Default::default(),
     };
     let change = |name: &str| EffectivePluginsChange {
         materialized_remote_plugins: vec![materialization(name)],
@@ -7204,6 +7203,121 @@ remote_plugin = true
 
     tokio::time::sleep(Duration::from_millis(400)).await;
     server.verify().await;
+}
+
+#[tokio::test]
+async fn reconcile_remote_installed_plugins_reports_cached_state_changes() {
+    let codex_home = TempDir::new().unwrap();
+    write_file(
+        &codex_home.path().join(CONFIG_TOML_FILE),
+        "[features]\nplugins = true\n",
+    );
+    write_cached_plugin(
+        codex_home.path(),
+        REMOTE_WORKSPACE_MARKETPLACE_NAME,
+        "linear",
+    );
+    let plugin_root = codex_home
+        .path()
+        .join("plugins/cache/workspace-directory/linear/local");
+    write_file(
+        &plugin_root.join(".mcp.json"),
+        r#"{"mcpServers":{"example":{"command":"unused"}}}"#,
+    );
+    write_file(
+        &plugin_root.join("hooks/hooks.json"),
+        r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo hook"}]}]}}"#,
+    );
+    let server = MockServer::start().await;
+    let mut config = load_config(codex_home.path(), codex_home.path()).await;
+    config.chatgpt_base_url = format!("{}/backend-api", server.uri());
+    let auth_manager = test_auth_manager(Some(AuthMode::Chatgpt));
+    let auth = auth_manager.auth_cached().expect("test ChatGPT auth");
+    let manager = test_plugins_manager_with_auth_manager(
+        codex_home.path().to_path_buf(),
+        Some(Product::Codex),
+        auth_manager,
+    );
+    let change = RemotePluginChange {
+        plugin_id: "linear@workspace-directory".to_string(),
+        capabilities: RemotePluginCapabilities {
+            has_mcps: true,
+            has_hooks: true,
+            has_skills: true,
+            ..Default::default()
+        },
+    };
+    // None represents an uninstall. Reinstalling its retained bundle must report an
+    // activation even though the known previous snapshot has no entry for the plugin.
+    for (enabled, changes) in [
+        (Some(true), Vec::new()),
+        (Some(false), vec![change.clone()]),
+        (Some(false), Vec::new()),
+        (Some(true), vec![change.clone()]),
+        (None, vec![change.clone()]),
+        (Some(true), vec![change.clone()]),
+        (Some(true), Vec::new()),
+    ] {
+        if enabled.is_none() {
+            // Fail cleanup before it reaches the bundle; removal hints must survive.
+            write_file(
+                &codex_home
+                    .path()
+                    .join("plugins/cache/openai-curated-remote"),
+                "not a directory",
+            );
+        }
+        let plugins = enabled
+            .into_iter()
+            .map(|enabled| {
+                serde_json::json!({
+                    "id": "plugins~Plugin_linear",
+                    "name": "linear",
+                    "scope": "WORKSPACE",
+                    "discoverability": "LISTED",
+                    "installation_policy": "AVAILABLE",
+                    "authentication_policy": "ON_USE",
+                    "release": {
+                        "version": "local",
+                        "display_name": "Linear",
+                        "description": "Test plugin",
+                        "interface": {},
+                    },
+                    "enabled": enabled,
+                })
+            })
+            .collect::<Vec<_>>();
+        // No download URL: every installed pass must reuse the cached version.
+        Mock::given(method("GET"))
+            .and(path("/backend-api/ps/plugins/installed"))
+            .and(query_param("includeDownloadUrls", "true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "plugins": plugins,
+                "pagination": { "next_page_token": null },
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            manager
+                .reconcile_remote_installed_plugins(&config, Some(&auth))
+                .await
+                .expect("reconcile cached plugin state"),
+            RemoteInstalledPluginBundleSyncOutcome {
+                changed_plugins: changes,
+                ..Default::default()
+            }
+        );
+        assert!(plugin_root.exists());
+        if enabled.is_none() {
+            assert_eq!(
+                manager.plugins_for_config(&config).await,
+                PluginLoadOutcome::default()
+            );
+        }
+        server.verify().await;
+        server.reset().await;
+    }
 }
 
 #[tokio::test]

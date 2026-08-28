@@ -57,7 +57,9 @@ use crate::remote::RecommendedPluginsMode;
 use crate::remote::RemoteInstalledPlugin;
 use crate::remote::RemoteInstalledPluginBundleSyncError;
 use crate::remote::RemoteInstalledPluginBundleSyncOutcome;
+use crate::remote::RemotePluginCapabilities;
 use crate::remote::RemotePluginCatalogError;
+use crate::remote::RemotePluginChange;
 use crate::remote::RemotePluginMaterialization;
 use crate::remote::RemotePluginScope;
 use crate::remote::RemotePluginServiceConfig;
@@ -1502,12 +1504,12 @@ impl PluginsManager {
                 Ok((outcome, effective_plugins_changed)) => {
                     tracing::info!(
                         materialized_remote_plugins = ?outcome.materialized_remote_plugins,
-                        removed_plugins = ?outcome.removed_plugins,
+                        changed_plugins = ?outcome.changed_plugins,
                         failed_remote_plugin_ids = ?outcome.failed_remote_plugin_ids,
                         failed_materialization_remote_plugin_ids = ?outcome.failed_materialization_remote_plugin_ids,
                         "completed remote installed plugin bundle sync"
                     );
-                    if (effective_plugins_changed || outcome.changed_local_cache())
+                    if (effective_plugins_changed || !outcome.changed_plugins.is_empty())
                         && let Some(on_effective_plugins_changed) = on_effective_plugins_changed
                     {
                         on_effective_plugins_changed(EffectivePluginsChange {
@@ -1578,13 +1580,72 @@ impl PluginsManager {
             generation,
             committed: false,
         };
+        let previous_enabled = {
+            let cache = match self.remote_installed_plugins_cache.read() {
+                Ok(cache) => cache,
+                Err(err) => err.into_inner(),
+            };
+            cache.plugins.as_ref().map(|plugins| {
+                plugins
+                    .iter()
+                    .filter_map(|plugin| {
+                        PluginId::new(plugin.name.clone(), plugin.marketplace_name.clone())
+                            .ok()
+                            .map(|plugin_id| (plugin_id, plugin.enabled))
+                    })
+                    .collect::<HashMap<_, _>>()
+            })
+        };
+        let previous_plugin_ids = previous_enabled
+            .iter()
+            .flat_map(HashMap::keys)
+            .cloned()
+            .collect::<Vec<_>>();
         let result = crate::remote::sync_remote_installed_plugin_bundles_once_with_snapshot(
             self.codex_home.clone(),
             &remote_plugin_service_config(config),
             auth,
+            &previous_plugin_ids,
         )
         .await?;
-        let outcome = result.outcome;
+        let mut outcome = result.outcome;
+        // The generation fence keeps this comparison on the snapshot replaced by this pass.
+        // In a known snapshot, absence means inactive: cached reinstalls need the same hints
+        // as re-enablement, without becoming materializations or triggering hook-trust writes.
+        if let Some(previous_enabled) = previous_enabled {
+            for plugin in &result.installed_plugins {
+                let plugin_id = PluginId::new(plugin.name.clone(), plugin.marketplace_name.clone())
+                    .map_err(|err| RemotePluginCatalogError::UnexpectedResponse(err.to_string()))?;
+                if previous_enabled
+                    .get(&plugin_id)
+                    .copied()
+                    .unwrap_or_default()
+                    == plugin.enabled
+                {
+                    continue;
+                }
+                let plugin_key = plugin_id.as_key();
+                if outcome
+                    .changed_plugins
+                    .iter()
+                    .any(|change| change.plugin_id == plugin_key)
+                    || self.store.active_plugin_root(&plugin_id).is_none()
+                {
+                    continue;
+                }
+                let mut capabilities = RemotePluginCapabilities::default();
+                capabilities
+                    .include_active_bundle(&self.store, &plugin_id)
+                    .await;
+                outcome.changed_plugins.push(RemotePluginChange {
+                    plugin_id: plugin_key,
+                    capabilities,
+                });
+            }
+        }
+        outcome
+            .changed_plugins
+            .sort_unstable_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
         let Some(effective_plugins_changed) = self.write_remote_installed_plugins_cache_snapshot(
             generation,
             result.installed_plugins,
@@ -1594,7 +1655,7 @@ impl PluginsManager {
             return Err(RemoteInstalledPluginBundleSyncError::Superseded);
         };
         reconciliation.committed = true;
-        if !effective_plugins_changed && outcome.changed_local_cache() {
+        if !effective_plugins_changed && !outcome.changed_plugins.is_empty() {
             self.clear_loaded_plugins_cache();
         }
         Ok((outcome, effective_plugins_changed))
