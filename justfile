@@ -133,6 +133,7 @@ core-late-steer-observer-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::pending_input::base_turn_does_not_reopen_after_boundary_steer --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::pending_input::boundary_worker_drop_aborts_and_releases --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::pending_input::boundary_worker_drop_disarms_late_observer_close --exact
+    cargo nextest run -p core_test_support --no-fail-fast --no-tests=fail --lib -- streaming_sse::tests::shutdown_aborts_blocked_connection_handler --exact
     cargo nextest run -p core_test_support --no-fail-fast --no-tests=fail --lib -- streaming_sse::tests::concurrent_response_handlers_publish_monotonic_request_counts --exact
 
 # Carry-only downstream behavior smoke checks (core-only seam).

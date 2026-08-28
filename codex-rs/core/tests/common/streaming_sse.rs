@@ -11,6 +11,9 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
+use tokio::task::JoinSet;
+
+const STREAMING_SSE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Streaming SSE chunk payload gated by a per-chunk signal.
 #[derive(Debug)]
@@ -98,10 +101,22 @@ impl StreamingSseServer {
 
     pub async fn shutdown(self) {
         let _ = self.shutdown.send(());
-        let task_result = tokio::time::timeout(Duration::from_secs(5), self.task)
-            .await
-            .expect("streaming SSE accept loop should stop within the shutdown bound");
-        task_result.expect("streaming SSE accept loop should not panic");
+        let mut task = self.task;
+        match tokio::time::timeout(STREAMING_SSE_SHUTDOWN_TIMEOUT, &mut task).await {
+            Ok(task_result) => {
+                task_result.expect("streaming SSE accept loop should not panic");
+            }
+            Err(_) => {
+                task.abort();
+                tokio::time::timeout(STREAMING_SSE_SHUTDOWN_TIMEOUT, task)
+                    .await
+                    .expect(
+                        "streaming SSE accept loop abort should settle within the cleanup bound",
+                    )
+                    .expect("streaming SSE accept loop should not panic during abort cleanup");
+                panic!("streaming SSE accept loop did not stop within the shutdown bound");
+            }
+        }
     }
 }
 
@@ -141,90 +156,39 @@ pub async fn start_streaming_sse_server(
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
     let task = tokio::spawn(async move {
+        let mut handlers = JoinSet::new();
         loop {
+            let handlers_present = !handlers.is_empty();
             tokio::select! {
-                _ = &mut shutdown_rx => break,
+                biased;
+                _ = &mut shutdown_rx => {
+                    handlers.abort_all();
+                    let drain = async {
+                        while let Some(result) = handlers.join_next().await {
+                            inspect_handler_result(result, true);
+                        }
+                    };
+                    tokio::time::timeout(STREAMING_SSE_SHUTDOWN_TIMEOUT, drain)
+                        .await
+                        .expect("streaming SSE handlers should stop within the shutdown bound");
+                    break;
+                }
+                Some(result) = handlers.join_next(), if handlers_present => {
+                    inspect_handler_result(result, false);
+                }
                 accept_res = listener.accept() => {
-                    let (mut stream, _) = accept_res.expect("accept streaming SSE connection");
+                    let (stream, _) = accept_res.expect("accept streaming SSE connection");
                     let state = Arc::clone(&state);
                     let requests = Arc::clone(&requests_for_task);
                     let request_count_history = Arc::clone(&request_count_history_for_task);
                     let request_count = request_count_for_task.clone();
-                    tokio::spawn(async move {
-                        let (request, body_prefix) = read_http_request(&mut stream).await;
-                        let Some((method, path)) = parse_request_line(&request) else {
-                            let _ = write_http_response(&mut stream, /*status*/ 400, "bad request", "text/plain").await;
-                            return;
-                        };
-
-                        if method == "GET" && path == "/v1/models" {
-                            if read_request_body(&mut stream, &request, body_prefix)
-                                .await
-                                .is_err()
-                            {
-                                let _ = write_http_response(&mut stream, /*status*/ 400, "bad request", "text/plain").await;
-                                return;
-                            }
-                            let body = serde_json::json!({
-                                "data": [],
-                                "object": "list"
-                            })
-                            .to_string();
-                            let _ = write_http_response(&mut stream, /*status*/ 200, &body, "application/json").await;
-                            return;
-                        }
-
-                        if method == "POST" && path == "/v1/responses" {
-                            let body = match read_request_body(&mut stream, &request, body_prefix)
-                                .await
-                            {
-                                Ok(body) => body,
-                                Err(_) => {
-                                    let _ = write_http_response(&mut stream, /*status*/ 400, "bad request", "text/plain").await;
-                                    return;
-                                }
-                            };
-                            let request_count_value = {
-                                let mut requests = requests.lock().await;
-                                requests.push(body);
-                                let request_count_value = requests.len();
-                                // Publish while holding the same lock as the vector mutation so
-                                // concurrent handlers cannot publish an older length after a
-                                // newer one (for example, regress from 2 back to 1).
-                                request_count.send_replace(request_count_value);
-                                request_count_history
-                                    .lock()
-                                    .expect("request count history mutex should not be poisoned")
-                                    .push(request_count_value);
-                                request_count_value
-                            };
-                            let Some((chunks, completion)) = take_next_stream(&state).await else {
-                                let _ = write_http_response(&mut stream, /*status*/ 500, "no responses queued", "text/plain").await;
-                                return;
-                            };
-
-                            if write_sse_headers(&mut stream).await.is_err() {
-                                return;
-                            }
-
-                            for chunk in chunks {
-                                if let Some(gate) = chunk.gate
-                                    && gate.await.is_err() {
-                                        return;
-                                    }
-                                if stream.write_all(chunk.body.as_bytes()).await.is_err() {
-                                    return;
-                                }
-                                let _ = stream.flush().await;
-                            }
-
-                            let _ = completion.send(unix_ms_now());
-                            let _ = stream.shutdown().await;
-                            return;
-                        }
-
-                        let _ = write_http_response(&mut stream, /*status*/ 404, "not found", "text/plain").await;
-                    });
+                    handlers.spawn(handle_streaming_connection(
+                        stream,
+                        state,
+                        requests,
+                        request_count_history,
+                        request_count,
+                    ));
                 }
             }
         }
@@ -241,6 +205,119 @@ pub async fn start_streaming_sse_server(
         },
         completion_receivers,
     )
+}
+
+fn inspect_handler_result(result: Result<(), tokio::task::JoinError>, cancellation_expected: bool) {
+    match result {
+        Ok(()) => {}
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) if error.is_cancelled() && cancellation_expected => {}
+        Err(error) => panic!("streaming SSE connection handler failed: {error}"),
+    }
+}
+
+async fn handle_streaming_connection(
+    mut stream: tokio::net::TcpStream,
+    state: Arc<TokioMutex<StreamingSseState>>,
+    requests: Arc<TokioMutex<Vec<Vec<u8>>>>,
+    request_count_history: Arc<StdMutex<Vec<usize>>>,
+    request_count: watch::Sender<usize>,
+) {
+    let (request, body_prefix) = read_http_request(&mut stream).await;
+    let Some((method, path)) = parse_request_line(&request) else {
+        let _ = write_http_response(
+            &mut stream,
+            /*status*/ 400,
+            "bad request",
+            "text/plain",
+        )
+        .await;
+        return;
+    };
+
+    if method == "GET" && path == "/v1/models" {
+        if read_request_body(&mut stream, &request, body_prefix)
+            .await
+            .is_err()
+        {
+            let _ = write_http_response(
+                &mut stream,
+                /*status*/ 400,
+                "bad request",
+                "text/plain",
+            )
+            .await;
+            return;
+        }
+        let body = serde_json::json!({
+            "data": [],
+            "object": "list"
+        })
+        .to_string();
+        let _ = write_http_response(&mut stream, /*status*/ 200, &body, "application/json").await;
+        return;
+    }
+
+    if method == "POST" && path == "/v1/responses" {
+        let body = match read_request_body(&mut stream, &request, body_prefix).await {
+            Ok(body) => body,
+            Err(_) => {
+                let _ = write_http_response(
+                    &mut stream,
+                    /*status*/ 400,
+                    "bad request",
+                    "text/plain",
+                )
+                .await;
+                return;
+            }
+        };
+        {
+            let mut requests = requests.lock().await;
+            requests.push(body);
+            let request_count_value = requests.len();
+            // Publish while holding the same lock as the vector mutation so
+            // concurrent handlers cannot publish an older length after a
+            // newer one (for example, regress from 2 back to 1).
+            request_count.send_replace(request_count_value);
+            request_count_history
+                .lock()
+                .expect("request count history mutex should not be poisoned")
+                .push(request_count_value);
+        }
+        let Some((chunks, completion)) = take_next_stream(&state).await else {
+            let _ = write_http_response(
+                &mut stream,
+                /*status*/ 500,
+                "no responses queued",
+                "text/plain",
+            )
+            .await;
+            return;
+        };
+
+        if write_sse_headers(&mut stream).await.is_err() {
+            return;
+        }
+
+        for chunk in chunks {
+            if let Some(gate) = chunk.gate
+                && gate.await.is_err()
+            {
+                return;
+            }
+            if stream.write_all(chunk.body.as_bytes()).await.is_err() {
+                return;
+            }
+            let _ = stream.flush().await;
+        }
+
+        let _ = completion.send(unix_ms_now());
+        let _ = stream.shutdown().await;
+        return;
+    }
+
+    let _ = write_http_response(&mut stream, /*status*/ 404, "not found", "text/plain").await;
 }
 
 struct StreamingSseState {
@@ -526,6 +603,40 @@ mod tests {
             vec![1, 2],
             "concurrent response handlers must publish request counts in mutation order"
         );
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_aborts_blocked_connection_handler() {
+        let (_gate_tx, gate_rx) = oneshot::channel();
+        let chunks = vec![StreamingSseChunk {
+            gate: Some(gate_rx),
+            body: "event: blocked\n\n".to_string(),
+        }];
+        let (server, _) = start_streaming_sse_server(vec![chunks]).await;
+        let mut stream = connect(server.uri()).await;
+        send_request(
+            &mut stream,
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n",
+        )
+        .await;
+        server.wait_for_request_count(1).await;
+
+        let (headers, remainder) =
+            timeout(Duration::from_secs(5), read_until(&mut stream, "\r\n\r\n"))
+                .await
+                .expect("blocked handler should write response headers within the bound");
+        let (headers, _) = split_response(&headers);
+        assert_eq!(status_code(headers), 200);
+        assert_eq!(
+            header_value(headers, "content-type"),
+            Some("text/event-stream")
+        );
+        assert!(
+            remainder.is_empty(),
+            "blocked handler should not write a chunk before its gate: {remainder:?}"
+        );
+
         server.shutdown().await;
     }
 

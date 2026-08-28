@@ -362,7 +362,13 @@ where
             .release
             .lock()
             .expect("regular task-run boundary release mutex should not be poisoned");
-        match release.recv_timeout(BOUNDARY_CONTROL_TIMEOUT) {
+        // `on_close` runs synchronously on the task-run worker.  Move the
+        // bounded compatibility wait out of that worker so a small Tokio
+        // runtime can continue polling the task and the releaser while the
+        // observer holds the finalization boundary.
+        let release_result =
+            tokio::task::block_in_place(|| release.recv_timeout(BOUNDARY_CONTROL_TIMEOUT));
+        match release_result {
             Ok(()) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => panic!(
                 "regular task-run boundary observer timed out after {BOUNDARY_CONTROL_TIMEOUT:?} waiting for finalization release"
@@ -615,7 +621,7 @@ async fn regular_task_run_boundary_observer_self_test() {
     assert_eq!(observed.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn boundary_worker_drop_aborts_and_releases() {
     let (release_tx, release_rx) = mpsc::channel();
     let (completion_tx, completion_rx) = oneshot::channel();
@@ -642,8 +648,7 @@ async fn boundary_worker_drop_aborts_and_releases() {
 
     drop(worker);
 
-    release_rx
-        .recv_timeout(BOUNDARY_CONTROL_TIMEOUT)
+    tokio::task::block_in_place(|| release_rx.recv_timeout(BOUNDARY_CONTROL_TIMEOUT))
         .expect("boundary worker drop should release finalization");
     assert!(!armed.load(Ordering::SeqCst));
     tokio::time::timeout(BOUNDARY_CONTROL_TIMEOUT, completion_rx)
