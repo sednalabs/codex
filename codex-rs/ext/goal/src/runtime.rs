@@ -143,35 +143,58 @@ impl GoalRuntimeHandle {
                 .provider_continuation
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let pending_authority = if let Some(pending) = state.pending.take() {
+            if let Some(pending) = state.pending.take() {
                 pending.cancellation.cancel();
-                Some(pending.continuation.authority().authority.clone())
-            } else {
-                None
-            };
+            }
             state.attempts = MAX_PROVIDER_RATE_LIMIT_CONTINUATIONS_PER_GOAL;
             state.blocked = true;
-            if let Some(authority) = pending_authority {
-                let admissions = self.inner.state_dbs.goal_owner_admissions().clone();
-                let cancel = async move {
-                    if let Err(error) = admissions
-                        .cancel(
-                            &authority,
-                            codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
-                        )
-                        .await
-                    {
-                        tracing::warn!(error = %error, "failed to durably cancel disabled goal continuation");
+            let admissions = self.inner.state_dbs.goal_owner_admissions().clone();
+            let thread_id = self.thread_id();
+            let cancel = async move {
+                match admissions.get(thread_id).await {
+                    Ok(Some(record)) => {
+                        match admissions
+                            .cancel(
+                                &record.authority,
+                                codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+                            )
+                            .await
+                        {
+                            Ok(Some(cancelled))
+                                if cancelled.phase
+                                    == codex_state::GoalOwnerAdmissionPhase::Terminal
+                                    && cancelled.terminal_outcome
+                                        == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled =>
+                            {
+                                if let Err(error) = admissions
+                                    .retire(
+                                        &cancelled.authority,
+                                        codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(error = %error, "failed to retire disabled goal continuation");
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                tracing::warn!(error = %error, "failed to durably cancel disabled goal continuation");
+                            }
+                        }
                     }
-                };
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    handle.spawn(cancel);
-                } else {
-                    tracing::warn!(
-                        thread_id = %self.thread_id(),
-                        "cannot durably cancel disabled goal continuation without a runtime"
-                    );
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(error = %error, "failed to read disabled goal continuation admission");
+                    }
                 }
+            };
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(cancel);
+            } else {
+                tracing::warn!(
+                    thread_id = %self.thread_id(),
+                    "cannot durably cancel disabled goal continuation without a runtime"
+                );
             }
         }
     }
@@ -590,8 +613,8 @@ impl GoalRuntimeHandle {
             .as_ref()
             .map(|pending| pending.continuation.authority().authority.clone())
             .or_else(|| persisted.as_ref().map(|record| record.authority.clone()));
-        if let Some(authority) = authority
-            && let Err(error) = self
+        if let Some(authority) = authority {
+            match self
                 .inner
                 .state_dbs
                 .goal_owner_admissions()
@@ -600,12 +623,38 @@ impl GoalRuntimeHandle {
                     codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
                 )
                 .await
-        {
-            tracing::warn!(
-                thread_id = %self.thread_id(),
-                error = %error,
-                "failed to durably cancel goal-owner continuation admission"
-            );
+            {
+                Ok(Some(record))
+                    if record.phase == codex_state::GoalOwnerAdmissionPhase::Terminal
+                        && record.terminal_outcome
+                            == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled =>
+                {
+                    if let Err(error) = self
+                        .inner
+                        .state_dbs
+                        .goal_owner_admissions()
+                        .retire(
+                            &record.authority,
+                            codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            thread_id = %self.thread_id(),
+                            error = %error,
+                            "failed to retire cancelled goal-owner admission"
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        thread_id = %self.thread_id(),
+                        error = %error,
+                        "failed to durably cancel goal-owner continuation admission"
+                    );
+                }
+            }
         }
         let Some(pending) = pending else {
             return;
@@ -725,7 +774,8 @@ impl GoalRuntimeHandle {
                 .map_err(|err| err.to_string())?
                 && record.phase == codex_state::GoalOwnerAdmissionPhase::Pending
             {
-                self.inner
+                let cancelled = self
+                    .inner
                     .state_dbs
                     .goal_owner_admissions()
                     .cancel(
@@ -734,6 +784,21 @@ impl GoalRuntimeHandle {
                     )
                     .await
                     .map_err(|err| err.to_string())?;
+                if let Some(cancelled) = cancelled
+                    && cancelled.phase == codex_state::GoalOwnerAdmissionPhase::Terminal
+                    && cancelled.terminal_outcome
+                        == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled
+                {
+                    self.inner
+                        .state_dbs
+                        .goal_owner_admissions()
+                        .retire(
+                            &cancelled.authority,
+                            codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
+                        )
+                        .await
+                        .map_err(|err| err.to_string())?;
+                }
             }
             return Ok(());
         }

@@ -1946,7 +1946,22 @@ impl ModelClientSession {
                         "websocket connection is unavailable".to_string(),
                     ))
                 })?;
-            let mut request_lease = admission.begin_network_request().await?;
+            let mut request_lease = match admission.begin_network_request().await {
+                Ok(lease) => lease,
+                Err(error) => {
+                    let metadata = self.inference_observation_metadata(
+                        request_kind,
+                        &request,
+                        responses_metadata,
+                        InferenceCallTransport::ResponsesWebsocket,
+                        InferenceAdmission::Denied,
+                        InferenceCacheState::Unknown,
+                    );
+                    let recorder = inference_trace.observation_recorder(metadata);
+                    let _ = recorder.record_local_denial(error.to_string());
+                    return Err(error);
+                }
+            };
             let stream_result = match observer.as_ref() {
                 Some(observer) => {
                     websocket_connection
@@ -2262,7 +2277,9 @@ struct InferenceRequestAttemptObserver {
 
 impl InferenceRequestAttemptObserver {
     fn prepare(&self) {
-        let recorder = self.trace.observation_recorder(self.metadata.clone());
+        let mut metadata = self.metadata.clone();
+        metadata.request_started_at_ms = crate::turn_timing::now_unix_timestamp_ms();
+        let recorder = self.trace.observation_recorder(metadata);
         *self
             .current
             .lock()
@@ -2289,6 +2306,7 @@ impl RequestAttemptObserver for InferenceRequestAttemptObserver {
             .unwrap_or_else(|| {
                 let mut metadata = self.metadata.clone();
                 metadata.inference_call_id = uuid::Uuid::now_v7().to_string();
+                metadata.request_started_at_ms = crate::turn_timing::now_unix_timestamp_ms();
                 self.trace.observation_recorder(metadata)
             });
         let _ = recorder.record_physical_request_opened();
@@ -2298,7 +2316,7 @@ impl RequestAttemptObserver for InferenceRequestAttemptObserver {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(recorder);
     }
 
-    fn on_request_failure(&self, error: &str, provider_terminal: bool) {
+    fn on_request_failure(&self, error: &str, provider_terminal: bool, usage_limit: bool) {
         let Some(recorder) = self
             .current
             .lock()
@@ -2307,7 +2325,12 @@ impl RequestAttemptObserver for InferenceRequestAttemptObserver {
         else {
             return;
         };
-        if provider_terminal {
+        if usage_limit {
+            let _ = recorder.record_provider_terminal(ProviderTerminalResult::UsageLimitReached {
+                upstream_request_id: None,
+                detail: Some("usage_limit_reached".to_string()),
+            });
+        } else if provider_terminal {
             let _ = recorder.record_provider_terminal(ProviderTerminalResult::Failed {
                 upstream_request_id: None,
                 error: error.to_string(),
