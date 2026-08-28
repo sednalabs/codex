@@ -91,17 +91,22 @@ async fn admit(
     record: &GoalOwnerAdmissionRecord,
     identity: &ModelRequestIdentity,
 ) -> ModelRequestAdmissionDecision {
+    let coordinator = GoalContinuationFenceCoordinator::new();
     let claim_id = broker
         .state_db
         .as_ref()
         .expect("state runtime")
         .goal_owner_admissions()
-        .claim_dispatch(&record.continuation_authority(), Utc::now())
+        .claim_dispatch(
+            &record.continuation_authority(),
+            coordinator.identity(),
+            Utc::now(),
+        )
         .await
         .expect("claim exact admission")
         .expect("eligible admission claim");
-    let continuation = GoalContinuationFenceCoordinator::new()
-        .continuation_with_dispatch_claim(record.continuation_authority(), claim_id);
+    let continuation =
+        coordinator.continuation_with_dispatch_claim(record.continuation_authority(), claim_id);
     broker
         .admit(identity, Some(&continuation))
         .await
@@ -243,6 +248,48 @@ async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_reque
         .expect("exact successor is admitted");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(decision.begin_network_request().await.is_err());
+}
+
+#[tokio::test]
+async fn foreign_coordinator_token_cannot_consume_dispatch_claim() {
+    let (_home, state_db) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
+    let store = broker
+        .state_db
+        .as_ref()
+        .expect("state runtime")
+        .goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    let record = store
+        .observe_denial(&observation(
+            thread_id,
+            "foreign-fence",
+            GoalOwnerAdmissionPhase::Pending,
+            Utc::now() - Duration::seconds(1),
+            InferenceRequestKind::Turn,
+        ))
+        .await
+        .expect("record eligible admission");
+    let trusted = GoalContinuationFenceCoordinator::new();
+    let claim_id = store
+        .claim_dispatch(
+            &record.continuation_authority(),
+            trusted.identity(),
+            Utc::now(),
+        )
+        .await
+        .expect("claim exact admission")
+        .expect("eligible admission claim");
+    let forged = GoalContinuationFenceCoordinator::new()
+        .continuation_with_dispatch_claim(record.continuation_authority(), claim_id);
+    let decision = broker
+        .admit(
+            &identity(thread_id, InferenceRequestKind::Turn),
+            Some(&forged),
+        )
+        .await
+        .expect("evaluate forged continuation");
+    assert!(matches!(decision, ModelRequestAdmissionDecision::Dormant));
 }
 
 #[tokio::test]

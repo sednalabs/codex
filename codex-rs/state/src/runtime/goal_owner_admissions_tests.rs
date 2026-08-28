@@ -912,14 +912,15 @@ async fn dispatch_claim_is_single_owner_and_consumed_by_acquire() {
         .await
         .expect("record pending admission");
     let authority = record.continuation_authority();
+    let fence_identity = Uuid::now_v7();
     let claim_id = store
-        .claim_dispatch(&authority, Utc::now())
+        .claim_dispatch(&authority, fence_identity, Utc::now())
         .await
         .expect("claim dispatch")
         .expect("claim exact pending generation");
     assert_eq!(
         store
-            .claim_dispatch(&authority, Utc::now())
+            .claim_dispatch(&authority, fence_identity, Utc::now())
             .await
             .expect("reject second claimant"),
         None
@@ -930,6 +931,7 @@ async fn dispatch_claim_is_single_owner_and_consumed_by_acquire() {
         .expect("read claimed generation")
         .expect("claimed generation exists");
     assert_eq!(claimed.dispatch_claim_id, Some(claim_id));
+    assert_eq!(claimed.dispatch_fence_id, Some(fence_identity));
     assert!(
         !store
             .release_dispatch_claim(&record.authority, Uuid::now_v7())

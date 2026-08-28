@@ -1371,7 +1371,11 @@ impl GoalRuntimeHandle {
             .inner
             .state_dbs
             .goal_owner_admissions()
-            .claim_dispatch(&continuation_authority, Utc::now())
+            .claim_dispatch(
+                &continuation_authority,
+                self.inner.continuation.fence.identity(),
+                Utc::now(),
+            )
             .await
             .map_err(|err| err.to_string())?
         else {

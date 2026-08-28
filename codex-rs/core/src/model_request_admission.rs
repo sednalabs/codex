@@ -43,6 +43,7 @@ pub struct GoalOwnerContinuation {
     authority: GoalOwnerAdmissionContinuationAuthority,
     dispatch_claim_id: Option<Uuid>,
     fence: Option<Arc<GoalContinuationFence>>,
+    fence_identity: Uuid,
     fence_epoch: u64,
 }
 
@@ -125,13 +126,22 @@ impl GoalContinuationFence {
 #[derive(Clone, Debug)]
 pub struct GoalContinuationFenceCoordinator {
     fence: Arc<GoalContinuationFence>,
+    identity: Uuid,
 }
 
 impl GoalContinuationFenceCoordinator {
     pub fn new() -> Self {
         Self {
             fence: Arc::new(GoalContinuationFence::new()),
+            identity: Uuid::now_v7(),
         }
+    }
+
+    /// Identity persisted with the dispatch claim. A token from another
+    /// coordinator cannot consume that claim, even when all other authority
+    /// fields are copied exactly.
+    pub fn identity(&self) -> Uuid {
+        self.identity
     }
 
     pub fn current_epoch(&self) -> u64 {
@@ -202,6 +212,7 @@ impl GoalOwnerContinuation {
             authority,
             dispatch_claim_id,
             fence: Some(coordinator.fence()),
+            fence_identity: coordinator.identity,
             fence_epoch: coordinator.current_epoch(),
         }
     }
@@ -212,6 +223,10 @@ impl GoalOwnerContinuation {
 
     pub(crate) fn dispatch_claim_id(&self) -> Option<Uuid> {
         self.dispatch_claim_id
+    }
+
+    pub(crate) fn fence_identity(&self) -> Uuid {
+        self.fence_identity
     }
 }
 
@@ -640,6 +655,12 @@ impl ModelRequestAdmissionBroker {
             return Ok(ModelRequestAdmissionDecision::Dormant);
         };
         if record.dispatch_claim_id != Some(dispatch_claim_id) {
+            return Ok(ModelRequestAdmissionDecision::Dormant);
+        }
+        // The durable dispatch claim is bound to the exact fence that minted
+        // this token. Copying the authority and claim UUID into a token from a
+        // foreign coordinator must never authorize provider I/O.
+        if record.dispatch_fence_id != continuation.map(GoalOwnerContinuation::fence_identity) {
             return Ok(ModelRequestAdmissionDecision::Dormant);
         }
         if record.phase != GoalOwnerAdmissionPhase::Pending {

@@ -6,16 +6,19 @@ use uuid::Uuid;
 pub struct GoalStore {
     pool: Arc<SqlitePool>,
     write_capability: Option<Arc<RuntimeOwnerCapability>>,
+    owner_lease: Option<Arc<RuntimeOwnerLease>>,
 }
 
 impl GoalStore {
     pub(crate) fn with_capability(
         pool: Arc<SqlitePool>,
         write_capability: Option<Arc<RuntimeOwnerCapability>>,
+        owner_lease: Option<Arc<RuntimeOwnerLease>>,
     ) -> Self {
         Self {
             pool,
             write_capability,
+            owner_lease,
         }
     }
 
@@ -24,7 +27,7 @@ impl GoalStore {
             anyhow::bail!("goal mutation requires the runtime owner capability")
         };
         if capability.is_active() {
-            capability.enter()
+            capability.enter(self.owner_lease.clone())
         } else {
             anyhow::bail!("goal mutation requires the runtime owner capability")
         }
