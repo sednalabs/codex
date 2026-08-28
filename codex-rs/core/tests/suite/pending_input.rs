@@ -49,8 +49,22 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::from_slice;
 use serde_json::json;
+use std::panic::AssertUnwindSafe;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+use std::thread::ThreadId;
 use test_case::test_case;
 use tokio::sync::oneshot;
+use tracing::Subscriber;
+use tracing::span::Id;
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::Context;
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::registry::LookupSpan;
 
 fn ev_message_item_done(id: &str, text: &str) -> Value {
     serde_json::json!({
@@ -171,6 +185,230 @@ async fn build_codex(server: &StreamingSseServer) -> Arc<CodexThread> {
         .await
         .expect("build streaming Codex test session")
         .codex
+}
+
+/// Observes the natural close of the task-run span and holds finalization until the test releases
+/// it. The scoped subscriber is installed by each test, so this helper has no process-global state.
+struct RegularTaskRunBoundaryObserver {
+    armed: Arc<AtomicBool>,
+    observed: Arc<AtomicUsize>,
+    target_thread: ThreadId,
+    reached: mpsc::SyncSender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+struct RegularTaskRunBoundaryControl {
+    armed: Arc<AtomicBool>,
+    reached: mpsc::Receiver<()>,
+    release: mpsc::SyncSender<()>,
+}
+
+impl RegularTaskRunBoundaryObserver {
+    fn new() -> (Self, RegularTaskRunBoundaryControl) {
+        let armed = Arc::new(AtomicBool::new(false));
+        let observed = Arc::new(AtomicUsize::new(0));
+        let (reached, reached_rx) = mpsc::sync_channel(0);
+        let (release, release_rx) = mpsc::sync_channel(0);
+        (
+            Self {
+                armed: Arc::clone(&armed),
+                observed: Arc::clone(&observed),
+                target_thread: std::thread::current().id(),
+                reached,
+                release: Mutex::new(release_rx),
+            },
+            RegularTaskRunBoundaryControl {
+                armed,
+                reached: reached_rx,
+                release,
+            },
+        )
+    }
+}
+
+impl<S> Layer<S> for RegularTaskRunBoundaryObserver
+where
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    fn on_close(&self, id: Id, ctx: Context<'_, S>) {
+        let is_regular_task_run = ctx
+            .metadata(&id)
+            .is_some_and(|metadata| metadata.name() == "session_task.run");
+        if std::thread::current().id() != self.target_thread
+            || !is_regular_task_run
+            || !self.armed.swap(false, Ordering::SeqCst)
+        {
+            return;
+        }
+
+        self.observed.fetch_add(1, Ordering::SeqCst);
+        self.reached
+            .send(())
+            .expect("boundary worker should wait for task-run close");
+        self.release
+            .lock()
+            .expect("boundary release mutex should not be poisoned")
+            .recv()
+            .expect("boundary worker should release finalization");
+    }
+}
+
+impl RegularTaskRunBoundaryControl {
+    fn arm(&self) {
+        assert!(
+            !self.armed.swap(true, Ordering::SeqCst),
+            "boundary observer should be armed only once"
+        );
+    }
+
+    fn spawn_releaser(self, after_boundary: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
+        std::thread::spawn(move || {
+            self.reached
+                .recv()
+                .expect("task-run close should reach boundary worker");
+            let result = std::panic::catch_unwind(AssertUnwindSafe(after_boundary));
+            self.release
+                .send(())
+                .expect("task-run close should still be waiting for release");
+            if let Err(payload) = result {
+                std::panic::resume_unwind(payload);
+            }
+        })
+    }
+}
+
+struct TurnLifecycleObservation {
+    turn_started: usize,
+    turn_complete: usize,
+    matching_user_messages: usize,
+}
+
+async fn observe_turn_completion(
+    codex: &CodexThread,
+    matching_user_message: Option<&str>,
+) -> TurnLifecycleObservation {
+    let mut observation = TurnLifecycleObservation {
+        turn_started: 0,
+        turn_complete: 0,
+        matching_user_messages: 0,
+    };
+    loop {
+        let event = codex
+            .next_event()
+            .await
+            .expect("event stream should remain open");
+        match event.msg {
+            EventMsg::TurnStarted(_) => observation.turn_started += 1,
+            EventMsg::UserMessage(message)
+                if matching_user_message.is_some_and(|expected| message.message == expected) =>
+            {
+                observation.matching_user_messages += 1;
+            }
+            EventMsg::TurnComplete(_) => {
+                observation.turn_complete += 1;
+                break;
+            }
+            _ => {}
+        }
+    }
+    observation
+}
+
+#[test]
+fn regular_task_run_boundary_observer_self_test() {
+    let (observer, control) = RegularTaskRunBoundaryObserver::new();
+    let observed = Arc::clone(&observer.observed);
+    let subscriber = tracing_subscriber::registry().with(observer);
+    let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
+    control.arm();
+    let release_thread = control.spawn_releaser(|| {});
+    let run_span = tracing::trace_span!("session_task.run");
+    drop(run_span);
+    release_thread
+        .join()
+        .expect("boundary self-test worker should exit cleanly");
+    assert_eq!(observed.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn regular_task_run_boundary_observer_known_good_turn_finalization() {
+    let (server, _completions) =
+        start_streaming_sse_server(vec![response_completed_chunks("resp-1")]).await;
+    let codex = build_codex(&server).await;
+    let (observer, control) = RegularTaskRunBoundaryObserver::new();
+    let observed = Arc::clone(&observer.observed);
+    let subscriber = tracing_subscriber::registry().with(observer);
+    let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
+    control.arm();
+    let release_thread = control.spawn_releaser(|| {});
+    submit_user_input(&codex, "observer control").await;
+    let lifecycle = observe_turn_completion(&codex, None).await;
+    release_thread
+        .join()
+        .expect("known-good boundary worker should exit cleanly");
+
+    assert_eq!(observed.load(Ordering::SeqCst), 1);
+    assert_eq!(lifecycle.turn_started, 1);
+    assert_eq!(lifecycle.turn_complete, 1);
+    assert_eq!(server.requests().await.len(), 1);
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn base_turn_does_not_reopen_after_boundary_steer() {
+    const INITIAL_PROMPT: &str = "boundary control";
+    const STEER_PROMPT: &str = "boundary follow-up";
+    const CLIENT_ID: &str = "boundary-client-id";
+
+    let (server, _completions) = start_streaming_sse_server(vec![
+        response_completed_chunks("resp-1"),
+        response_completed_chunks("resp-2"),
+    ])
+    .await;
+    let codex = build_codex(&server).await;
+    let (observer, control) = RegularTaskRunBoundaryObserver::new();
+    let observed = Arc::clone(&observer.observed);
+    let subscriber = tracing_subscriber::registry().with(observer);
+    let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
+    let runtime_handle = tokio::runtime::Handle::current();
+    let codex_for_steer = Arc::clone(&codex);
+    control.arm();
+    let release_thread = control.spawn_releaser(move || {
+        let steer_result = runtime_handle.block_on(async {
+            codex_for_steer
+                .steer_input(
+                    vec![UserInput::Text {
+                        text: STEER_PROMPT.to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                    /*additional_context*/ Default::default(),
+                    /*expected_turn_id*/ None,
+                    /*client_user_message_id*/ Some(CLIENT_ID.to_string()),
+                    /*responsesapi_client_metadata*/ None,
+                )
+                .await
+        });
+        assert!(
+            steer_result.is_ok(),
+            "boundary steer should be accepted while the task-run span is closing: {steer_result:?}"
+        );
+    });
+
+    submit_user_input(&codex, INITIAL_PROMPT).await;
+    let lifecycle = observe_turn_completion(&codex, Some(STEER_PROMPT)).await;
+    release_thread
+        .join()
+        .expect("boundary steer worker should exit cleanly");
+
+    assert_eq!(observed.load(Ordering::SeqCst), 1);
+    assert_eq!(lifecycle.turn_started, 1);
+    assert_eq!(lifecycle.turn_complete, 1);
+    assert_eq!(lifecycle.matching_user_messages, 1);
+    assert_eq!(server.requests().await.len(), 1);
+    server.shutdown().await;
 }
 
 async fn submit_user_input(codex: &CodexThread, text: &str) {
