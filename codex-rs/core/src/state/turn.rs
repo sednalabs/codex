@@ -91,6 +91,9 @@ pub(crate) struct RunningTask {
     pub(crate) cancellation_token: CancellationToken,
     pub(crate) handle: AbortOnDropHandle<()>,
     pub(crate) turn_context: Arc<TurnContext>,
+    /// The state reserved for this task.  Keeping the exact state identity
+    /// lets finalization reject a stale task after replacement.
+    pub(crate) turn_state: Option<Arc<Mutex<TurnState>>>,
     pub(crate) turn_extension_data: Arc<ExtensionData>,
     pub(crate) _agent_execution_guard: Option<AgentExecutionGuard>,
     // Timer recorded when the task drops to capture the full turn duration.
@@ -124,6 +127,26 @@ pub(crate) struct PendingRequestPermissions {
 }
 
 impl TurnState {
+    /// Returns and clears input that can reopen a completed regular turn.
+    ///
+    /// Only explicit, non-empty user input is eligible.  Mailbox-only input is
+    /// deliberately excluded so that child work arriving after a visible
+    /// answer remains in custody for the next turn.
+    pub(crate) fn take_turn_local_continuation_input(&mut self) -> Option<Vec<TurnInput>> {
+        let has_eligible_input = self.mailbox_delivery_phase == MailboxDeliveryPhase::CurrentTurn
+            && self.pending_input.items.iter().any(|input| {
+                matches!(
+                    input,
+                    TurnInput::UserInput { content, .. } if !content.is_empty()
+                )
+            });
+        has_eligible_input.then(|| self.pending_input.items.split_off(0))
+    }
+
+    pub(crate) fn restore_turn_local_continuation_input(&mut self, input: Vec<TurnInput>) {
+        self.pending_input.items.splice(0..0, input);
+    }
+
     pub(crate) fn insert_pending_approval(
         &mut self,
         key: String,

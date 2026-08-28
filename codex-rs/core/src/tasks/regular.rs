@@ -9,6 +9,7 @@ use crate::session::turn_context::TurnContext;
 use crate::session_startup_prewarm::SessionStartupPrewarmResolution;
 use crate::state::TaskKind;
 use codex_extension_api::OwnerContinuationDeferred;
+use codex_extension_api::OwnerContinuationPending;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
 use tracing::Instrument;
@@ -25,6 +26,52 @@ impl RegularTask {
     pub(crate) fn new() -> Self {
         Self
     }
+
+    async fn run_turn_local_continuation(
+        &self,
+        sess: Arc<crate::session::session::Session>,
+        ctx: Arc<TurnContext>,
+        turn_extension_data: Arc<codex_extension_api::ExtensionData>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> SessionTaskResult {
+        let run_turn_span = trace_span!("run_turn");
+        let mut next_input = input;
+        loop {
+            let last_agent_message = run_turn(
+                Arc::clone(&sess),
+                Arc::clone(&ctx),
+                Arc::clone(&turn_extension_data),
+                next_input,
+                None,
+                cancellation_token.child_token(),
+            )
+            .instrument(run_turn_span.clone())
+            .await?;
+            // Terminal errors are already reported. Let task completion preserve pending
+            // input instead of restarting the failed turn for that same input.
+            if ctx.terminal_error.lock().await.is_some() {
+                return Ok(last_agent_message);
+            }
+            if ctx
+                .extension_data
+                .get::<OwnerContinuationDeferred>()
+                .is_some()
+                || ctx
+                    .extension_data
+                    .get::<OwnerContinuationPending>()
+                    .is_some()
+            {
+                // Keep queued steer/input work in custody, but never let the same task make a
+                // second provider request after a dormant or exhausted admission decision.
+                return Ok(last_agent_message);
+            }
+            if !sess.input_queue.has_pending_input(&sess.active_turn).await {
+                return Ok(last_agent_message);
+            }
+            next_input = Vec::new();
+        }
+    }
 }
 
 impl SessionTask for RegularTask {
@@ -38,6 +85,29 @@ impl SessionTask for RegularTask {
 
     fn span_name(&self) -> &'static str {
         "session_task.turn"
+    }
+
+    fn supports_turn_local_continuation(&self) -> bool {
+        true
+    }
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> impl std::future::Future<Output = SessionTaskResult> + Send {
+        async move {
+            self.run_turn_local_continuation(
+                session.clone_session(),
+                ctx,
+                session.turn_extension_data(),
+                input,
+                cancellation_token,
+            )
+            .await
+        }
     }
 
     async fn run(
@@ -100,6 +170,10 @@ impl SessionTask for RegularTask {
                 .extension_data
                 .get::<OwnerContinuationDeferred>()
                 .is_some()
+                || ctx
+                    .extension_data
+                    .get::<OwnerContinuationPending>()
+                    .is_some()
             {
                 // Keep queued steer/input work in custody, but never let the same task make a
                 // second provider request after a dormant or exhausted admission decision.
