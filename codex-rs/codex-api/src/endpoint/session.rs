@@ -177,14 +177,38 @@ impl<T: HttpTransport> EndpointSession<T> {
         let stream = run_with_request_telemetry_observed(
             self.provider.retry.to_policy(),
             self.request_telemetry.clone(),
-            observer,
             make_request,
             |req| {
                 let auth = self.auth.clone();
                 let transport = &self.transport;
+                let observer = Arc::clone(&observer);
                 async move {
-                    let req = auth.apply_auth(req).await.map_err(TransportError::from)?;
-                    transport.stream(req).await
+                    let req = match auth.apply_auth(req).await {
+                        Ok(req) => req,
+                        Err(error) => {
+                            let error = TransportError::from(error);
+                            observer.on_request_admission_failure(&error.to_string());
+                            return Err(error);
+                        }
+                    };
+                    observer.on_request_open();
+                    let result = transport.stream(req).await;
+                    if let Err(error) = &result {
+                        observer.on_request_failure(
+                            &error.to_string(),
+                            matches!(error, TransportError::Http { .. }),
+                            matches!(
+                                error,
+                                TransportError::Http {
+                                    status,
+                                    body: Some(body),
+                                    ..
+                                } if status.as_u16() == 429
+                                    && crate::telemetry::http_body_is_usage_limit(body)
+                            ),
+                        );
+                    }
+                    result
                 }
             },
         )

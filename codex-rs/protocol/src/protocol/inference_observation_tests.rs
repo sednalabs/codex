@@ -95,7 +95,7 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
                 InferenceCallField::TokenUsage,
             ]);
         }
-        InferenceCallStatus::LocalDenied => {
+        InferenceCallStatus::LocalDenied | InferenceCallStatus::AdmissionFailed => {
             event.request_completed_at_ms = None;
             event.response_id = None;
             event.upstream_request_id = None;
@@ -272,6 +272,7 @@ fn inference_call_event_enforces_lifecycle_shapes() {
         InferenceCallStatus::Cancelled,
         InferenceCallStatus::UsageLimitReached,
         InferenceCallStatus::LocalDenied,
+        InferenceCallStatus::AdmissionFailed,
         InferenceCallStatus::TransportUncertain,
         InferenceCallStatus::Unknown,
     ] {

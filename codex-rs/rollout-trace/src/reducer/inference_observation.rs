@@ -129,6 +129,7 @@ fn execution_status(status: InferenceCallStatus) -> ExecutionStatus {
         InferenceCallStatus::Failed
         | InferenceCallStatus::UsageLimitReached
         | InferenceCallStatus::LocalDenied
+        | InferenceCallStatus::AdmissionFailed
         | InferenceCallStatus::TransportUncertain
         | InferenceCallStatus::Unknown => ExecutionStatus::Failed,
     }

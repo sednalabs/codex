@@ -50,10 +50,25 @@ pub trait WebsocketTelemetry: Send + Sync {
 pub trait RequestAttemptObserver: Send + Sync {
     fn on_request_open(&self);
     fn on_request_failure(&self, error: &str, provider_terminal: bool, usage_limit: bool);
+
+    /// Records a failure while preparing an attempt, before the physical request can open.
+    /// Implementations that do not distinguish this boundary retain the legacy uncertain
+    /// classification through `on_request_failure`.
+    fn on_request_admission_failure(&self, error: &str) {
+        self.on_request_failure(error, false, false);
+    }
 }
 
 pub(crate) trait WithStatus {
     fn status(&self) -> StatusCode;
+}
+
+pub(crate) fn http_body_is_usage_limit(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("error").and_then(|error| error.get("type")))
+        .and_then(serde_json::Value::as_str)
+        == Some("usage_limit_reached")
 }
 
 fn http_status(err: &TransportError) -> Option<StatusCode> {
@@ -110,7 +125,6 @@ where
 pub(crate) async fn run_with_request_telemetry_observed<T, F, Fut>(
     policy: RetryPolicy,
     telemetry: Option<Arc<dyn RequestTelemetry>>,
-    observer: Arc<dyn RequestAttemptObserver>,
     make_request: impl FnMut() -> Request,
     send: F,
 ) -> Result<T, TransportError>
@@ -122,26 +136,9 @@ where
     run_with_retry(policy, make_request, move |req, attempt| {
         let telemetry = telemetry.clone();
         let send = send.clone();
-        let observer = Arc::clone(&observer);
         async move {
             let start = Instant::now();
-            observer.on_request_open();
             let result = send(req).await;
-            if let Err(error) = &result {
-                observer.on_request_failure(
-                    &error.to_string(),
-                    matches!(error, TransportError::Http { .. }),
-                    matches!(
-                        error,
-                        TransportError::Http {
-                            status,
-                            body: Some(body),
-                            ..
-                        } if *status == StatusCode::TOO_MANY_REQUESTS
-                            && body.contains("usage_limit_reached")
-                    ),
-                );
-            }
             if let Some(t) = telemetry.as_ref() {
                 let (status, err) = match &result {
                     Ok(resp) => (Some(resp.status()), None),
