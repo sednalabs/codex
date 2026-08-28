@@ -2172,6 +2172,7 @@
       ],
       "allowed_paths": [
         "codex-rs/core/tests/suite/pending_input.rs",
+        "codex-rs/core/src/tasks/mod.rs",
         "justfile",
         ".github/validation-lanes.json"
       ],
