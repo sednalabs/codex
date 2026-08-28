@@ -480,6 +480,41 @@ WHERE thread_id = ?
         Ok(Some(record))
     }
 
+    /// Retire a cancellation that committed its terminal transition before the retirement step.
+    ///
+    /// Cancellation increments the fencing epoch, so retrying [`Self::cancel`] with the old
+    /// authority is intentionally a no-op. Recovery callers use this exact generation helper to
+    /// find the post-cancellation row and retire it without changing its preserved outcome.
+    pub async fn retire_cancelled_generation(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        reason: GoalOwnerAdmissionRetirementReason,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        validate_authority(authority)?;
+        let expected_epoch = authority
+            .cancellation_epoch
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("goal-owner admission cancellation epoch overflow"))?;
+        let record = fetch_record_by_generation(
+            self.pool.as_ref(),
+            authority.thread_id,
+            authority.generation,
+        )
+        .await?;
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        if record.authority.goal_id != authority.goal_id
+            || record.phase != GoalOwnerAdmissionPhase::Terminal
+            || record.terminal_outcome != GoalOwnerAdmissionTerminalOutcome::Cancelled
+            || (record.authority != authority.clone()
+                && record.authority.cancellation_epoch != expected_epoch)
+        {
+            return Ok(None);
+        }
+        self.retire(&record.authority, reason).await
+    }
+
     /// Atomically reserve a deadline-eligible pending admission for one exact successor.
     ///
     /// The resulting `acquired` lease is not provider permission yet. Call

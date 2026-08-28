@@ -354,43 +354,63 @@ impl ModelRequestAdmissionBroker {
         // bypasses the ledger, including memory/review/child turns that are
         // represented by `Turn`.
         if !identity.kind.is_inference() {
-            return Ok(ModelRequestAdmissionDecision::Unrestricted);
+            return Ok(if continuation_authority.is_some() {
+                ModelRequestAdmissionDecision::Dormant
+            } else {
+                ModelRequestAdmissionDecision::Unrestricted
+            });
         }
         let Some(state_db) = &self.state_db else {
-            return Ok(ModelRequestAdmissionDecision::Unrestricted);
+            return Ok(if continuation_authority.is_some() {
+                ModelRequestAdmissionDecision::Dormant
+            } else {
+                ModelRequestAdmissionDecision::Unrestricted
+            });
         };
         let store = state_db.goal_owner_admissions();
         let now = Utc::now();
         let record = store.get(identity.thread_id).await.map_err(storage_error)?;
         let Some(record) = record else {
-            return Ok(ModelRequestAdmissionDecision::Unrestricted);
+            // A typed continuation is permission only when its exact durable generation is
+            // present. A missing active row is a fail-closed lifecycle failure, never a reason
+            // to fall through to ordinary unrestricted admission.
+            return Ok(if continuation_authority.is_some() {
+                ModelRequestAdmissionDecision::Dormant
+            } else {
+                ModelRequestAdmissionDecision::Unrestricted
+            });
         };
 
-        // A prior successful continuation no longer restricts the thread,
-        // regardless of later model/provider resolution.
-        if record.phase == GoalOwnerAdmissionPhase::Terminal {
-            // Cancellation is scoped to the exact continuation authority. A subsequent
-            // ordinary user request must not inherit a settled cancellation row.
-            if record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Cancelled
-                && continuation_authority.is_none()
+        if let Some(continuation_authority) = continuation_authority {
+            // A continuation token is valid only for the exact pending generation and request
+            // identity. Terminal, stale, or mismatched rows are lifecycle failures and must not
+            // become unrestricted merely because the row exists.
+            if !record_matches_identity(&record, identity)
+                || !continuation_matches_record(continuation_authority, &record)
+                || !continuation_matches_identity(continuation_authority, identity)
             {
-                return Ok(ModelRequestAdmissionDecision::Unrestricted);
+                return Ok(ModelRequestAdmissionDecision::Dormant);
             }
-            return Ok(decision_for_record(&record, now));
-        }
-        if !record_matches_identity(&record, identity) {
-            // A continuation lease is scoped to the provider/model evidence
-            // that produced the original denial. Missing or different
-            // evidence is not permission to send a different request.
-            return Ok(ModelRequestAdmissionDecision::Dormant);
-        }
-
-        let Some(continuation_authority) = continuation_authority else {
-            return Ok(ModelRequestAdmissionDecision::Dormant);
-        };
-        if !continuation_matches_record(continuation_authority, &record)
-            || !continuation_matches_identity(continuation_authority, identity)
-        {
+            if record.phase != GoalOwnerAdmissionPhase::Pending {
+                return Ok(decision_for_continuation_record(&record));
+            }
+        } else {
+            // A prior successful continuation no longer restricts the thread,
+            // regardless of later model/provider resolution.
+            if record.phase == GoalOwnerAdmissionPhase::Terminal {
+                // Cancellation is scoped to the exact continuation authority. A subsequent
+                // ordinary user request must not inherit a settled cancellation row.
+                if record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Cancelled {
+                    return Ok(ModelRequestAdmissionDecision::Unrestricted);
+                }
+                return Ok(decision_for_record(&record, now));
+            }
+            if !record_matches_identity(&record, identity) {
+                // A continuation lease is scoped to the provider/model evidence
+                // that produced the original denial. Missing or different
+                // evidence is not permission to send a different request.
+                return Ok(ModelRequestAdmissionDecision::Dormant);
+            }
             return Ok(ModelRequestAdmissionDecision::Dormant);
         }
 
@@ -424,7 +444,14 @@ impl ModelRequestAdmissionBroker {
                 let current = store.get(identity.thread_id).await.map_err(storage_error)?;
                 Ok(
                     current.map_or(ModelRequestAdmissionDecision::Dormant, |record| {
-                        decision_for_record(&record, now)
+                        if continuation_matches_record(continuation_authority, &record)
+                            && continuation_matches_identity(continuation_authority, identity)
+                            && record_matches_identity(&record, identity)
+                        {
+                            decision_for_continuation_record(&record)
+                        } else {
+                            ModelRequestAdmissionDecision::Dormant
+                        }
                     }),
                 )
             }
@@ -475,14 +502,44 @@ fn decision_for_record(
     }
 }
 
+fn decision_for_continuation_record(
+    record: &GoalOwnerAdmissionRecord,
+) -> ModelRequestAdmissionDecision {
+    match record.phase {
+        GoalOwnerAdmissionPhase::Terminal => match record.terminal_outcome {
+            GoalOwnerAdmissionTerminalOutcome::Exhausted => {
+                ModelRequestAdmissionDecision::Exhausted
+            }
+            GoalOwnerAdmissionTerminalOutcome::Cancelled => {
+                ModelRequestAdmissionDecision::Cancelled
+            }
+            GoalOwnerAdmissionTerminalOutcome::None
+            | GoalOwnerAdmissionTerminalOutcome::Succeeded
+            | GoalOwnerAdmissionTerminalOutcome::Rejected
+            | GoalOwnerAdmissionTerminalOutcome::Uncertain => {
+                ModelRequestAdmissionDecision::Dormant
+            }
+        },
+        GoalOwnerAdmissionPhase::Dormant
+        | GoalOwnerAdmissionPhase::Pending
+        | GoalOwnerAdmissionPhase::Acquired
+        | GoalOwnerAdmissionPhase::InFlight => ModelRequestAdmissionDecision::Dormant,
+    }
+}
+
 fn record_matches_identity(
     record: &GoalOwnerAdmissionRecord,
     identity: &ModelRequestIdentity,
 ) -> bool {
     record.configured_provider_key.as_deref() == Some(identity.configured_provider_key.as_str())
         && record.requested_model == identity.configured_requested_model
-        && record.effective_provider_id.as_deref().map(canonical_provider_id)
-            == Some(canonical_provider_id(identity.effective_provider_id.as_str()))
+        && record
+            .effective_provider_id
+            .as_deref()
+            .map(canonical_provider_id)
+            == Some(canonical_provider_id(
+                identity.effective_provider_id.as_str(),
+            ))
         && record.effective_model.as_deref() == Some(identity.effective_model.as_str())
 }
 

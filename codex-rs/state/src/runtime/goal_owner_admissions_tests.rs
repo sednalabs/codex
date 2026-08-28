@@ -973,6 +973,66 @@ async fn cancel_acquired_definite() {
 }
 
 #[tokio::test]
+async fn cancelled_generation_retires_after_cancel_commit_without_second_cancel() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let record = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "cancel-then-reconcile",
+            "request-cancel-then-reconcile",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record admission");
+    let cancelled = store
+        .cancel(
+            &record.authority,
+            GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+        )
+        .await
+        .expect("cancel admission")
+        .expect("persist cancellation");
+
+    let retired = store
+        .retire_cancelled_generation(
+            &record.authority,
+            GoalOwnerAdmissionRetirementReason::Superseded,
+        )
+        .await
+        .expect("reconcile committed cancellation")
+        .expect("retirement persists");
+    assert_eq!(retired.authority, cancelled.authority);
+    assert_eq!(
+        retired.terminal_outcome,
+        GoalOwnerAdmissionTerminalOutcome::Cancelled
+    );
+    assert_eq!(
+        retired.retirement_reason,
+        Some(GoalOwnerAdmissionRetirementReason::Superseded)
+    );
+    assert!(retired.retired_at.is_some());
+    assert!(
+        store
+            .get(record.authority.thread_id)
+            .await
+            .expect("read active admission")
+            .is_none()
+    );
+
+    let replay = store
+        .retire_cancelled_generation(
+            &record.authority,
+            GoalOwnerAdmissionRetirementReason::Superseded,
+        )
+        .await
+        .expect("repeat reconciliation")
+        .expect("idempotent retirement replay");
+    assert_eq!(replay, retired);
+}
+
+#[tokio::test]
 async fn release_acquired_lease_decrements_generation_and_chain_once() {
     let runtime = runtime().await;
     let store = runtime.goal_owner_admissions();
