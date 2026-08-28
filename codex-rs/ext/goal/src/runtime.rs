@@ -140,8 +140,11 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) fn set_enabled(&self, enabled: bool) {
+        let was_enabled = self.inner.enabled.swap(enabled, Ordering::Relaxed);
+        if was_enabled == enabled {
+            return;
+        }
         let enablement_epoch = self.inner.enablement_epoch.fetch_add(1, Ordering::Relaxed) + 1;
-        self.inner.enabled.store(enabled, Ordering::Relaxed);
         if enabled {
             let authority = self
                 .inner

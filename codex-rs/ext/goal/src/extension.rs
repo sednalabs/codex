@@ -316,14 +316,24 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
-            if !runtime.is_enabled() {
-                return;
-            }
 
             // Ordinary steer/replacement preserves the owner and its queued work. Explicit
             // interruption, review end, or budget stop wins over any pending provider timer.
             if !matches!(input.reason, TurnAbortReason::Replaced) {
                 runtime.cancel_provider_continuation().await;
+            }
+
+            // A provider successor can settle before the host aborts the turn. Retire only the
+            // exact immutable token carried by this turn; replacement aborts must not erase a
+            // still-pending successor, and disabled runtimes still need this lifecycle cleanup.
+            if let Err(err) = runtime
+                .retire_settled_provider_continuation(input.turn_store)
+                .await
+            {
+                tracing::warn!("failed to retire settled provider continuation: {err}");
+            }
+            if !runtime.is_enabled() {
+                return;
             }
 
             let turn_id = input.turn_store.level_id();
