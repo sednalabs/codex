@@ -522,6 +522,10 @@ impl Session {
         self.thread_id
     }
 
+    pub(crate) async fn lock_state(&self) -> tokio::sync::MutexGuard<'_, SessionState> {
+        self.state.lock().await
+    }
+
     /// Returns the identity shared by the root thread and all descendant threads.
     pub(crate) fn session_id(&self) -> SessionId {
         self.services.agent_control.session_id()
