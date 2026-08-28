@@ -14,6 +14,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
+use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
@@ -138,11 +139,27 @@ impl GoalContinuationFenceCoordinator {
         }
     }
 
-    /// Identity persisted with the dispatch claim. A token from another
-    /// coordinator cannot consume that claim, even when all other authority
-    /// fields are copied exactly.
-    pub fn identity(&self) -> GoalOwnerDispatchFenceCapability {
-        self.identity
+    /// Atomically claim a pending generation using this coordinator's private
+    /// fence. Callers never receive the persisted identity or a raw issuer.
+    pub async fn claim_dispatch(
+        &self,
+        store: &GoalOwnerAdmissionStore,
+        authority: &GoalOwnerAdmissionContinuationAuthority,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Option<Uuid>> {
+        store.claim_dispatch(authority, self.identity, now).await
+    }
+
+    /// Release only a claim owned by this coordinator's private fence.
+    pub async fn release_dispatch_claim(
+        &self,
+        store: &GoalOwnerAdmissionStore,
+        authority: &codex_state::GoalOwnerAdmissionAuthority,
+        dispatch_claim_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        store
+            .release_dispatch_claim(authority, dispatch_claim_id, self.identity)
+            .await
     }
 
     pub fn current_epoch(&self) -> u64 {

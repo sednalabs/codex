@@ -92,14 +92,14 @@ async fn admit(
     identity: &ModelRequestIdentity,
 ) -> ModelRequestAdmissionDecision {
     let coordinator = GoalContinuationFenceCoordinator::new();
-    let claim_id = broker
-        .state_db
-        .as_ref()
-        .expect("state runtime")
-        .goal_owner_admissions()
+    let claim_id = coordinator
         .claim_dispatch(
+            broker
+                .state_db
+                .as_ref()
+                .expect("state runtime")
+                .goal_owner_admissions(),
             &record.continuation_authority(),
-            coordinator.identity(),
             Utc::now(),
         )
         .await
@@ -271,12 +271,8 @@ async fn foreign_coordinator_token_cannot_consume_dispatch_claim() {
         .await
         .expect("record eligible admission");
     let trusted = GoalContinuationFenceCoordinator::new();
-    let claim_id = store
-        .claim_dispatch(
-            &record.continuation_authority(),
-            trusted.identity(),
-            Utc::now(),
-        )
+    let claim_id = trusted
+        .claim_dispatch(store, &record.continuation_authority(), Utc::now())
         .await
         .expect("claim exact admission")
         .expect("eligible admission claim");
