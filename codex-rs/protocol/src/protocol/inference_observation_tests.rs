@@ -15,8 +15,11 @@ fn inference_call_event(status: InferenceCallStatus) -> InferenceCallEvent {
         spawn_request_id: Some("spawn-1".to_string()),
         status,
         transport: InferenceCallTransport::ResponsesHttp,
+        source: Some(InferenceCallSource::Direct),
         configured_provider: "configured-provider".to_string(),
         requested_model: "requested-model".to_string(),
+        effective_provider: "effective-provider".to_string(),
+        effective_model: "effective-model".to_string(),
         requested_service_tier: Some("requested-tier".to_string()),
         request_started_at_ms: 10,
         request_completed_at_ms: Some(20),
@@ -26,6 +29,7 @@ fn inference_call_event(status: InferenceCallStatus) -> InferenceCallEvent {
         observed_model: Some("observed-model".to_string()),
         observed_model_snapshot: Some("observed-snapshot".to_string()),
         observed_service_tier: Some("observed-tier".to_string()),
+        outcome_detail: Some("detail".to_string()),
         token_usage: Some(TokenUsage {
             input_tokens: 11,
             cached_input_tokens: 2,
@@ -60,9 +64,14 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
                 InferenceCallField::ObservedModelSnapshot,
                 InferenceCallField::ObservedServiceTier,
                 InferenceCallField::TokenUsage,
+                InferenceCallField::OutcomeDetail,
             ]);
         }
-        InferenceCallStatus::Failed | InferenceCallStatus::Cancelled => {
+        InferenceCallStatus::Failed
+        | InferenceCallStatus::Cancelled
+        | InferenceCallStatus::UsageLimitReached
+        | InferenceCallStatus::LocalDenied
+        | InferenceCallStatus::TransportUncertain => {
             event.response_id = None;
             event.observed_provider = None;
             event.observed_model = None;
@@ -97,8 +106,11 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
             "spawn_request_id": "spawn-1",
             "status": "completed",
             "transport": "responses_http",
+            "source": {"type": "direct"},
             "configured_provider": "configured-provider",
             "requested_model": "requested-model",
+            "effective_provider": "effective-provider",
+            "effective_model": "effective-model",
             "requested_service_tier": "requested-tier",
             "request_started_at_ms": 10,
             "request_completed_at_ms": 20,
@@ -108,6 +120,7 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
             "observed_model": "observed-model",
             "observed_model_snapshot": "observed-snapshot",
             "observed_service_tier": "observed-tier",
+            "outcome_detail": "detail",
             "token_usage": {
                 "input_tokens": 11,
                 "cached_input_tokens": 2,
@@ -127,6 +140,10 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
     let legacy_object = legacy_wire.as_object_mut().expect("object");
     legacy_object.remove("spawn_request_id");
     legacy_object.remove("observed_provider");
+    legacy_object.remove("effective_provider");
+    legacy_object.remove("effective_model");
+    legacy_object.remove("source");
+    legacy_object.remove("outcome_detail");
     legacy_object.remove("truncated_fields");
     legacy_object.remove("omitted_fields");
     assert_eq!(
@@ -134,6 +151,10 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
         InferenceCallEvent {
             spawn_request_id: None,
             observed_provider: None,
+            source: None,
+            effective_provider: "<unknown>".to_string(),
+            effective_model: "<unknown>".to_string(),
+            outcome_detail: None,
             ..event
         }
     );
@@ -218,6 +239,9 @@ fn inference_call_event_enforces_lifecycle_shapes() {
         InferenceCallStatus::Completed,
         InferenceCallStatus::Failed,
         InferenceCallStatus::Cancelled,
+        InferenceCallStatus::UsageLimitReached,
+        InferenceCallStatus::LocalDenied,
+        InferenceCallStatus::TransportUncertain,
     ] {
         assert_eq!(
             inference_call_event(status)
@@ -241,6 +265,44 @@ fn inference_call_event_never_truncates_correlation_identifiers() {
     assert!(oversized_call.into_durable().is_none());
     assert!(oversized_turn.into_durable().is_none());
     assert!(oversized_spawn.into_durable().is_none());
+
+    let mut oversized_source = inference_call_event(InferenceCallStatus::Started);
+    oversized_source.source = Some(InferenceCallSource::CodeMode {
+        cell_id: "c".repeat(INFERENCE_CALL_CORRELATION_ID_MAX_BYTES + 1),
+        runtime_tool_call_id: "runtime-1".to_string(),
+    });
+    assert!(oversized_source.into_durable().is_none());
+}
+
+#[test]
+fn inference_call_event_bounds_effective_identity_and_terminal_detail() {
+    let oversized = "🦀".repeat(INFERENCE_CALL_STRING_MAX_BYTES / 4 + 1);
+    let mut event = inference_call_event(InferenceCallStatus::Failed);
+    event.effective_provider.clone_from(&oversized);
+    event.effective_model.clone_from(&oversized);
+    event.outcome_detail = Some(oversized);
+
+    let bounded = event.into_durable().expect("bounded event");
+    assert_eq!(
+        bounded.effective_provider.len(),
+        INFERENCE_CALL_STRING_MAX_BYTES
+    );
+    assert_eq!(
+        bounded.effective_model.len(),
+        INFERENCE_CALL_STRING_MAX_BYTES
+    );
+    assert!(bounded.outcome_detail.is_none());
+    assert_eq!(
+        bounded.truncated_fields,
+        Some(vec![
+            InferenceCallField::EffectiveProvider,
+            InferenceCallField::EffectiveModel,
+        ])
+    );
+    assert_eq!(
+        bounded.omitted_fields,
+        Some(vec![InferenceCallField::OutcomeDetail])
+    );
 }
 
 #[test]

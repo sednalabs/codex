@@ -12,9 +12,19 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InferenceCallEvent;
+use codex_protocol::protocol::InferenceCallSource;
+use codex_protocol::protocol::InferenceCallStatus;
 use codex_protocol::protocol::InferenceCallTransport;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
+
+use crate::RawPayloadKind;
+use crate::RawTraceEventContext;
+use crate::RawTraceEventPayload;
+use crate::TraceWriter;
+use crate::writer::unix_time_ms;
 
 /// The source of work that caused the inference attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +37,20 @@ pub enum InferenceRequestKind {
     RemoteCompactionV2,
     /// Remote compaction through the original endpoint.
     RemoteCompact,
+}
+
+/// Protocol-neutral copy of the explicit host tool source for this attempt.
+///
+/// This keeps rollout-trace independent from Core and extension crates while
+/// ensuring a continuity check cannot be reclassified from child identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InferenceObservationSource {
+    Direct,
+    HostContinuityCheck,
+    CodeMode {
+        cell_id: String,
+        runtime_tool_call_id: String,
+    },
 }
 
 /// Whether the request used a cached transport/request state.
@@ -87,6 +111,8 @@ pub struct InferenceAttemptMetadata {
     pub parent_thread_id: Option<ThreadId>,
     /// Spawn call identity when this child was created by a spawn operation.
     pub spawn_request_id: Option<String>,
+    /// Explicit local source, when the caller has one. `None` means unknown.
+    pub source: Option<InferenceObservationSource>,
     /// Session/source provenance for the attempt.
     pub session_source: SessionSource,
     /// Kind of model work being attempted.
@@ -162,6 +188,199 @@ pub trait InferenceObservationSink: Send + Sync + 'static {
     fn record(&self, event: InferenceObservationEvent);
 }
 
+/// Durable observation sink backed by the append-only rollout trace writer.
+///
+/// The sink serializes the bounded protocol event as a protocol payload and
+/// appends it through the existing `ProtocolEventObserved` raw seam. Payload
+/// write/append failures are intentionally best-effort: tracing must not turn
+/// a provider request into a failure, and the lifecycle event has already been
+/// linearized before this callback runs.
+#[derive(Debug)]
+pub struct TraceWriterInferenceObservationSink {
+    writer: Arc<TraceWriter>,
+}
+
+impl TraceWriterInferenceObservationSink {
+    pub fn new(writer: Arc<TraceWriter>) -> Self {
+        Self { writer }
+    }
+}
+
+impl InferenceObservationSink for TraceWriterInferenceObservationSink {
+    fn record(&self, event: InferenceObservationEvent) {
+        let Some(event) = protocol_event_for_observation(event) else {
+            return;
+        };
+        let thread_id = event.thread_id.clone();
+        let turn_id = event.turn_id.clone();
+        let Ok(event_payload) = self.writer.write_json_payload(
+            RawPayloadKind::ProtocolEvent,
+            &EventMsg::InferenceCall(event),
+        ) else {
+            return;
+        };
+        let _ = self.writer.append_with_context(
+            RawTraceEventContext {
+                thread_id: Some(thread_id.to_string()),
+                codex_turn_id: Some(turn_id),
+            },
+            RawTraceEventPayload::ProtocolEventObserved {
+                event_type: "inference_call".to_string(),
+                event_payload,
+            },
+        );
+    }
+}
+
+fn protocol_event_for_observation(event: InferenceObservationEvent) -> Option<InferenceCallEvent> {
+    let (
+        attempt,
+        status,
+        request_completed_at_ms,
+        response_id,
+        upstream_request_id,
+        observed_model,
+        observed_service_tier,
+        token_usage,
+        outcome_detail,
+    ) = match event {
+        InferenceObservationEvent::PhysicalRequestOpened { attempt } => (
+            attempt,
+            InferenceCallStatus::Started,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        InferenceObservationEvent::ProviderTerminal { attempt, result } => match result {
+            ProviderTerminalResult::Completed {
+                response_id,
+                upstream_request_id,
+                observed_model,
+                observed_service_tier,
+                token_usage,
+            } => (
+                attempt,
+                InferenceCallStatus::Completed,
+                Some(unix_time_ms()),
+                response_id,
+                upstream_request_id,
+                observed_model,
+                observed_service_tier,
+                token_usage,
+                None,
+            ),
+            ProviderTerminalResult::UsageLimitReached {
+                upstream_request_id,
+                detail,
+            } => (
+                attempt,
+                InferenceCallStatus::UsageLimitReached,
+                Some(unix_time_ms()),
+                None,
+                upstream_request_id,
+                None,
+                None,
+                None,
+                detail,
+            ),
+            ProviderTerminalResult::Failed {
+                upstream_request_id,
+                error,
+            } => (
+                attempt,
+                InferenceCallStatus::Failed,
+                Some(unix_time_ms()),
+                None,
+                upstream_request_id,
+                None,
+                None,
+                None,
+                Some(error),
+            ),
+            ProviderTerminalResult::Cancelled {
+                upstream_request_id,
+                reason,
+            } => (
+                attempt,
+                InferenceCallStatus::Cancelled,
+                Some(unix_time_ms()),
+                None,
+                upstream_request_id,
+                None,
+                None,
+                None,
+                Some(reason),
+            ),
+        },
+        InferenceObservationEvent::LocalDenial { attempt, reason } => (
+            attempt,
+            InferenceCallStatus::LocalDenied,
+            Some(unix_time_ms()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(reason),
+        ),
+        InferenceObservationEvent::TransportUncertain { attempt, reason } => (
+            attempt,
+            InferenceCallStatus::TransportUncertain,
+            Some(unix_time_ms()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(reason),
+        ),
+    };
+
+    let source = attempt.source.as_ref().map(|source| match source {
+        InferenceObservationSource::Direct => InferenceCallSource::Direct,
+        InferenceObservationSource::HostContinuityCheck => InferenceCallSource::HostContinuityCheck,
+        InferenceObservationSource::CodeMode {
+            cell_id,
+            runtime_tool_call_id,
+        } => InferenceCallSource::CodeMode {
+            cell_id: cell_id.clone(),
+            runtime_tool_call_id: runtime_tool_call_id.clone(),
+        },
+    });
+
+    InferenceCallEvent {
+        inference_call_id: attempt.inference_call_id,
+        thread_id: attempt.thread_id,
+        turn_id: attempt.turn_id,
+        spawn_request_id: attempt.spawn_request_id,
+        status,
+        transport: attempt.transport,
+        source,
+        configured_provider: attempt.provider.configured_provider,
+        requested_model: attempt.provider.requested_model,
+        effective_provider: attempt.provider.effective_provider,
+        effective_model: attempt.provider.effective_model,
+        requested_service_tier: attempt.provider.requested_service_tier,
+        request_started_at_ms: attempt.request_started_at_ms,
+        request_completed_at_ms,
+        response_id,
+        upstream_request_id,
+        observed_provider: None,
+        observed_model,
+        observed_model_snapshot: None,
+        observed_service_tier,
+        outcome_detail,
+        token_usage,
+        truncated_fields: None,
+        omitted_fields: None,
+    }
+    .into_durable()
+}
+
 /// In-memory sink intended for tests and local composition probes.
 #[cfg(test)]
 #[derive(Clone, Debug, Default)]
@@ -208,6 +427,8 @@ struct RecorderState {
     attempt: InferenceAttemptMetadata,
     sink: Arc<dyn InferenceObservationSink>,
     lifecycle: Mutex<LifecycleState>,
+    /// Serializes callbacks without extending the lifecycle mutex's critical section.
+    delivery: Mutex<()>,
 }
 
 /// Linearized recorder for one physical inference attempt.
@@ -237,6 +458,7 @@ impl InferenceObservationRecorder {
                 attempt,
                 sink,
                 lifecycle: Mutex::new(LifecycleState::default()),
+                delivery: Mutex::new(()),
             }),
         }
     }
@@ -257,28 +479,21 @@ impl InferenceObservationRecorder {
     /// The API intentionally cannot infer whether a caller has crossed that
     /// boundary; it only guarantees that one recorder emits at most one open.
     pub fn record_physical_request_opened(&self) -> Result<(), InferenceObservationError> {
-        let mut lifecycle = self
-            .state
-            .lifecycle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.state.attempt.admission == InferenceAdmission::Denied {
-            return Err(InferenceObservationError::AdmissionDenied);
-        }
-        if lifecycle.physical_request_opened {
-            return Err(InferenceObservationError::PhysicalRequestAlreadyOpened);
-        }
-        if lifecycle.terminal_recorded {
-            return Err(InferenceObservationError::TerminalAlreadyRecorded);
-        }
-
-        lifecycle.physical_request_opened = true;
-        self.state
-            .sink
-            .record(InferenceObservationEvent::PhysicalRequestOpened {
+        self.record_event(|lifecycle| {
+            if self.state.attempt.admission == InferenceAdmission::Denied {
+                return Err(InferenceObservationError::AdmissionDenied);
+            }
+            if lifecycle.physical_request_opened {
+                return Err(InferenceObservationError::PhysicalRequestAlreadyOpened);
+            }
+            if lifecycle.terminal_recorded {
+                return Err(InferenceObservationError::TerminalAlreadyRecorded);
+            }
+            lifecycle.physical_request_opened = true;
+            Ok(InferenceObservationEvent::PhysicalRequestOpened {
                 attempt: self.state.attempt.clone(),
-            });
-        Ok(())
+            })
+        })
     }
 
     /// Records one explicit provider terminal result after physical open.
@@ -297,29 +512,23 @@ impl InferenceObservationRecorder {
         &self,
         reason: impl Into<String>,
     ) -> Result<(), InferenceObservationError> {
-        let mut lifecycle = self
-            .state
-            .lifecycle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if lifecycle.physical_request_opened {
-            return Err(InferenceObservationError::PhysicalRequestAlreadyOpened);
-        }
-        if lifecycle.terminal_recorded {
-            return Err(InferenceObservationError::TerminalAlreadyRecorded);
-        }
-        if self.state.attempt.admission != InferenceAdmission::Denied {
-            return Err(InferenceObservationError::AdmissionNotDenied);
-        }
-
-        lifecycle.terminal_recorded = true;
-        self.state
-            .sink
-            .record(InferenceObservationEvent::LocalDenial {
+        let reason = reason.into();
+        self.record_event(|lifecycle| {
+            if lifecycle.physical_request_opened {
+                return Err(InferenceObservationError::PhysicalRequestAlreadyOpened);
+            }
+            if lifecycle.terminal_recorded {
+                return Err(InferenceObservationError::TerminalAlreadyRecorded);
+            }
+            if self.state.attempt.admission != InferenceAdmission::Denied {
+                return Err(InferenceObservationError::AdmissionNotDenied);
+            }
+            lifecycle.terminal_recorded = true;
+            Ok(InferenceObservationEvent::LocalDenial {
                 attempt: self.state.attempt.clone(),
-                reason: reason.into(),
-            });
-        Ok(())
+                reason,
+            })
+        })
     }
 
     /// Records a transport outcome for which provider execution is uncertain.
@@ -337,20 +546,63 @@ impl InferenceObservationRecorder {
         &self,
         event: impl FnOnce(InferenceAttemptMetadata) -> InferenceObservationEvent,
     ) -> Result<(), InferenceObservationError> {
-        let mut lifecycle = self
+        self.record_event(|lifecycle| {
+            if !lifecycle.physical_request_opened {
+                return Err(InferenceObservationError::PhysicalRequestNotOpened);
+            }
+            if lifecycle.terminal_recorded {
+                return Err(InferenceObservationError::TerminalAlreadyRecorded);
+            }
+            lifecycle.terminal_recorded = true;
+            Ok(event(self.state.attempt.clone()))
+        })
+    }
+
+    fn record_event(
+        &self,
+        transition: impl FnOnce(
+            &mut LifecycleState,
+        ) -> Result<InferenceObservationEvent, InferenceObservationError>,
+    ) -> Result<(), InferenceObservationError> {
+        // Delivery serialization defines lifecycle event order. The lifecycle
+        // mutex is released before arbitrary sink code runs, so a sink cannot
+        // hold lifecycle state hostage while it blocks. Sink panics propagate
+        // after the transition is committed; the event is never rolled back.
+        let _delivery = self
             .state
-            .lifecycle
+            .delivery
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !lifecycle.physical_request_opened {
-            return Err(InferenceObservationError::PhysicalRequestNotOpened);
-        }
-        if lifecycle.terminal_recorded {
-            return Err(InferenceObservationError::TerminalAlreadyRecorded);
-        }
-        lifecycle.terminal_recorded = true;
-        self.state.sink.record(event(self.state.attempt.clone()));
+        let event = {
+            let mut lifecycle = self
+                .state
+                .lifecycle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            transition(&mut lifecycle)?
+        };
+        self.state.sink.record(event);
         Ok(())
+    }
+
+    /// Settles an opened attempt whose transport ended without provider evidence.
+    pub fn settle_abandoned(&self) -> Result<(), InferenceObservationError> {
+        self.record_transport_uncertain("observation recorder abandoned before terminal outcome")
+    }
+}
+
+impl Drop for InferenceObservationRecorder {
+    fn drop(&mut self) {
+        // Only the final handle may safely settle an abandoned attempt. Drop
+        // is best-effort and suppresses sink panics because unwinding from a
+        // destructor would otherwise abort an unrelated provider task.
+        if Arc::strong_count(&self.state) != 1 {
+            return;
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = self.settle_abandoned();
+        }));
+        drop(result);
     }
 }
 
