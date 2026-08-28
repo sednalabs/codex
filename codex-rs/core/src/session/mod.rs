@@ -835,6 +835,7 @@ impl Session {
             multi_agent_version,
             git_enrichment_policy,
             windows_sandbox_proxy_settings_mode,
+            continuity_health_check,
         ))
         .await
         .map_err(|e| {
