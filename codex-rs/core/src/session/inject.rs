@@ -118,7 +118,7 @@ impl Session {
 
         let reserved_state = Arc::clone(&turn_state);
         match self
-            .try_start_reserved_task(turn_context, turn_state, input, RegularTask::new())
+            .try_start_reserved_task_if_idle(turn_context, turn_state, input, RegularTask::new())
             .await
         {
             Ok(()) => Ok(()),
