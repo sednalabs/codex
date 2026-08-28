@@ -729,6 +729,45 @@ impl GoalRuntimeHandle {
             .await;
     }
 
+    /// Retires the exact continuation generation after its successor turn has durably settled.
+    /// The turn carries the immutable token, so a stale in-memory runtime authority can never
+    /// retire a newer generation.
+    pub(crate) async fn retire_settled_provider_continuation(
+        &self,
+        turn_store: &codex_extension_api::ExtensionData,
+    ) -> Result<(), String> {
+        let Some(continuation) = turn_store.get::<GoalOwnerContinuation>() else {
+            return Ok(());
+        };
+        let authority = continuation.authority().authority.clone();
+        let admissions = self.inner.state_dbs.goal_owner_admissions();
+        let Some(record) = admissions
+            .get_generation(&authority)
+            .await
+            .map_err(|err| err.to_string())?
+        else {
+            return Ok(());
+        };
+        if record.authority != authority
+            || record.phase != codex_state::GoalOwnerAdmissionPhase::Terminal
+            || !matches!(
+                record.terminal_outcome,
+                codex_state::GoalOwnerAdmissionTerminalOutcome::Succeeded
+                    | codex_state::GoalOwnerAdmissionTerminalOutcome::Rejected
+            )
+        {
+            return Ok(());
+        }
+        admissions
+            .retire(
+                &record.authority,
+                codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
     /// Accounts the ending turn and stops its active goal after a terminal error.
     pub(crate) async fn stop_active_goal_for_turn(
         &self,
