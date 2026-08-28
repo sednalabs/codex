@@ -65,6 +65,12 @@ struct GoalContinuationFenceGuard {
     fence: Arc<GoalContinuationFence>,
 }
 
+impl GoalContinuationFenceGuard {
+    fn is_active(&self) -> bool {
+        self.fence.is_active()
+    }
+}
+
 impl GoalContinuationFence {
     fn new() -> Self {
         Self {
@@ -1009,6 +1015,22 @@ impl ModelRequestLeaseGuard {
 
     pub(crate) fn is_admitted(&self) -> bool {
         self.admitted.is_some()
+    }
+
+    /// Recheck the continuation fence immediately before handing the request
+    /// to a transport. This closes the synchronous disable/current-thread
+    /// window where revocation cannot await an already-running future.
+    pub(crate) fn ensure_request_open_allowed(&self) -> Result<()> {
+        if self
+            ._fence_guard
+            .as_ref()
+            .is_some_and(|fence| !fence.is_active())
+        {
+            return Err(CodexErr::Fatal(
+                "goal-owner continuation was revoked before transport open".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) async fn provider_acknowledged(&mut self) -> Result<()> {
