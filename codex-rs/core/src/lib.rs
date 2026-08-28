@@ -219,6 +219,7 @@ pub use client_common::Prompt;
 pub use client_common::ResponseEvent;
 pub use client_common::ResponseStream;
 pub use codex_prompts::REVIEW_PROMPT;
+pub use codex_thread::GoalOwnerPublicationCapability;
 pub use compact::content_items_to_text;
 pub use current_time::SleepFuture;
 pub use current_time::TimeFuture;

@@ -202,6 +202,22 @@ struct RuntimeProcessLock {
     _v2_identity: File,
     _database: File,
     _adjacent: File,
+    database_dev: u64,
+    database_ino: u64,
+}
+
+impl RuntimeProcessLock {
+    #[cfg(unix)]
+    fn path_matches(&self, goals_path: &Path) -> std::io::Result<bool> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(goals_path)?;
+        Ok(metadata.dev() == self.database_dev && metadata.ino() == self.database_ino)
+    }
+
+    #[cfg(not(unix))]
+    fn path_matches(&self, _goals_path: &Path) -> std::io::Result<bool> {
+        Ok(false)
+    }
 }
 
 impl RuntimeOwnerLease {
@@ -298,6 +314,8 @@ fn try_acquire_runtime_process_lock(
         _v2_identity: v2_identity,
         _database: database,
         _adjacent: adjacent,
+        database_dev: metadata.dev(),
+        database_ino: metadata.ino(),
     }))
 }
 
@@ -424,6 +442,16 @@ impl StateRuntime {
             }
         };
         let goals_pool_result = if process_lock.is_some() {
+            if !process_lock
+                .as_ref()
+                .expect("process lock present")
+                .path_matches(&goals_path)?
+            {
+                close_sqlite_pools(&[pool.as_ref(), logs_pool.as_ref()]).await;
+                return Err(anyhow::anyhow!(
+                    "goal database pathname changed after ownership lock acquisition"
+                ));
+            }
             sqlite
                 .open_goals_db(&goals_migrator, telemetry_override)
                 .await
