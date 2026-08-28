@@ -4,8 +4,10 @@
 //! We prefer this to using a crate feature to avoid building multiple
 //! permutations of the crate.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::LoadUserInstructionsFuture;
@@ -28,6 +30,7 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::SessionSource;
 use once_cell::sync::Lazy;
+use tokio::sync::Notify;
 
 use crate::ThreadManager;
 use crate::config::Config;
@@ -37,6 +40,81 @@ use crate::responses_metadata::subagent_header_value;
 use crate::responses_metadata::subagent_metadata_kind;
 use crate::thread_manager;
 use crate::unified_exec;
+
+/// Test-only coordination point for observing a completed task before normal
+/// turn finalization claims its pending input.
+///
+/// The production path remains asynchronous; this helper is only used by
+/// integration tests to place an explicit steer at the natural handoff
+/// boundary without relying on timing.
+pub struct TurnFinalizationBarrier {
+    entered: Notify,
+    release: Notify,
+}
+
+impl TurnFinalizationBarrier {
+    pub fn new() -> Self {
+        Self {
+            entered: Notify::new(),
+            release: Notify::new(),
+        }
+    }
+
+    pub async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+static TURN_FINALIZATION_BARRIERS: Lazy<Mutex<HashMap<ThreadId, Arc<TurnFinalizationBarrier>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+pub fn set_turn_finalization_barrier(
+    thread_id: ThreadId,
+    barrier: Option<Arc<TurnFinalizationBarrier>>,
+) {
+    let mut barriers = TURN_FINALIZATION_BARRIERS
+        .lock()
+        .expect("turn finalization barrier lock");
+    match barrier {
+        Some(barrier) => {
+            barriers.insert(thread_id, barrier);
+        }
+        None => {
+            barriers.remove(&thread_id);
+        }
+    }
+}
+
+pub fn clear_turn_finalization_barrier(
+    thread_id: ThreadId,
+    expected: &Arc<TurnFinalizationBarrier>,
+) {
+    let mut barriers = TURN_FINALIZATION_BARRIERS
+        .lock()
+        .expect("turn finalization barrier lock");
+    if barriers
+        .get(&thread_id)
+        .is_some_and(|barrier| Arc::ptr_eq(barrier, expected))
+    {
+        barriers.remove(&thread_id);
+    }
+}
+
+pub(crate) async fn wait_for_turn_finalization_barrier(thread_id: ThreadId) {
+    let barrier = TURN_FINALIZATION_BARRIERS
+        .lock()
+        .expect("turn finalization barrier lock")
+        .get(&thread_id)
+        .cloned();
+    if let Some(barrier) = barrier {
+        barrier.entered.notify_one();
+        barrier.release.notified().await;
+    }
+}
 
 static TEST_MODEL_PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     let mut response = bundled_models_response()

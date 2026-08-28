@@ -1137,6 +1137,9 @@ impl Session {
         task_result: SessionTaskResult,
     ) {
         let mut task_result = task_result;
+        // Integration tests may hold this exact post-run/pre-finalization handoff so that a
+        // late steer can be submitted without depending on scheduler timing.
+        crate::test_support::wait_for_turn_finalization_barrier(self.thread_id()).await;
         loop {
             if !task_result.is_ok() {
                 break;
