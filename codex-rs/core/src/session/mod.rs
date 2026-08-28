@@ -3,14 +3,10 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
-use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use std::task::Context;
-use std::task::Poll;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -187,6 +183,7 @@ use tracing::error;
 use tracing::info;
 use tracing::info_span;
 use tracing::instrument;
+use tracing::instrument::WithSubscriber;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -481,34 +478,6 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) git_enrichment_policy: GitEnrichmentPolicy,
     pub(crate) windows_sandbox_proxy_settings_mode:
         codex_sandboxing::WindowsSandboxProxySettingsMode,
-}
-
-/// Polls a future under the dispatcher captured for its owning session.
-///
-/// Tokio workers are not required to preserve thread-local dispatchers when a task is moved
-/// between workers. Keeping the dispatcher with each session-owned future makes lifecycle spans
-/// deterministic without changing the process-wide dispatcher or relying on test-only hooks.
-pub(crate) struct ScopedDispatcherFuture<F> {
-    dispatcher: Dispatch,
-    future: Pin<Box<F>>,
-}
-
-impl<F> ScopedDispatcherFuture<F> {
-    pub(crate) fn new(dispatcher: Dispatch, future: F) -> Self {
-        Self {
-            dispatcher,
-            future: Box::pin(future),
-        }
-    }
-}
-
-impl<F: Future> Future for ScopedDispatcherFuture<F> {
-    type Output = F::Output;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        tracing::dispatcher::with_default(&this.dispatcher, || this.future.as_mut().poll(cx))
-    }
 }
 
 pub(crate) fn resolve_multi_agent_version(
@@ -866,8 +835,7 @@ impl Session {
                 .instrument(info_span!("session_loop", thread_id = %thread_id))
                 .await;
         };
-        let session_loop_handle =
-            tokio::spawn(ScopedDispatcherFuture::new(dispatcher, session_loop));
+        let session_loop_handle = tokio::spawn(session_loop.with_subscriber(dispatcher));
         let io = SessionIo {
             tx_sub,
             rx_event,

@@ -19,6 +19,7 @@ use tracing::Instrument;
 use tracing::Span;
 use tracing::field;
 use tracing::info_span;
+use tracing::instrument::WithSubscriber;
 use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
@@ -30,7 +31,6 @@ use crate::context::ContextualUserFragment;
 use crate::hook_runtime::inspect_pending_input;
 use crate::hook_runtime::record_additional_contexts;
 use crate::hook_runtime::record_pending_input;
-use crate::session::ScopedDispatcherFuture;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::turn::run_hooks_and_record_inputs;
@@ -676,7 +676,7 @@ impl Session {
             (task_span, task_run_span)
         });
         let handle = tokio::spawn(
-            ScopedDispatcherFuture::new(dispatcher, async move {
+            async move {
                 let ctx_for_finish = Arc::clone(&ctx);
                 let task_input = 'task: {
                     if tokio::select! {
@@ -770,7 +770,8 @@ impl Session {
                 }
                 done_clone.notify_waiters();
             }
-            .instrument(task_span)),
+            .instrument(task_span)
+            .with_subscriber(dispatcher),
         );
         let timer = turn_context
             .session_telemetry

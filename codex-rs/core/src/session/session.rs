@@ -33,8 +33,8 @@ use tokio::sync::Semaphore;
 /// A session has at most 1 running task at a time, and can be interrupted by user input.
 pub(crate) struct Session {
     pub(crate) thread_id: ThreadId,
-    /// Dispatcher captured when this session was created. Every session-owned task must use this
-    /// immutable identity rather than inheriting a caller's thread-local dispatcher.
+    /// Dispatcher captured when this session was created. The submission loop and regular-turn
+    /// tasks clone this identity instead of inheriting a caller's thread-local dispatcher.
     pub(crate) dispatcher: Dispatch,
     pub(crate) installation_id: String,
     pub(super) tx_event: Sender<Event>,
