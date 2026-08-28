@@ -570,6 +570,14 @@ impl Session {
             git_enrichment_policy,
             windows_sandbox_proxy_settings_mode,
         } = args;
+        let extensions = if continuity_health_check {
+            // Continuity diagnostics must not execute callbacks inherited from
+            // the parent session. This also covers extension surfaces that are
+            // invoked indirectly while constructing or advancing a turn.
+            codex_extension_api::empty_extension_registry()
+        } else {
+            extensions
+        };
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
 
@@ -582,7 +590,12 @@ impl Session {
             .startup_warnings
             .extend(user_instruction_provider_warnings);
 
-        let exec_policy = if crate::guardian::is_guardian_reviewer_source(&session_source) {
+        let exec_policy = if continuity_health_check {
+            // Do not reload user/project policy from the cloned config layer
+            // stack for a continuity child. It must not inherit policy rules
+            // that were not explicitly propagated through the child contract.
+            Arc::new(ExecPolicyManager::default())
+        } else if crate::guardian::is_guardian_reviewer_source(&session_source) {
             // Guardian review should rely on the built-in shell safety checks,
             // not on caller-provided exec-policy rules that could shape the
             // reviewer or silently auto-approve commands.
@@ -4019,15 +4032,17 @@ impl Session {
             };
             let budget_result = self.record_rollout_budget_usage(token_usage);
             if let Some(token_info) = token_info.as_ref() {
-                for contributor in self.services.extensions.token_usage_contributors() {
-                    contributor
-                        .on_token_usage(
-                            &self.services.session_extension_data,
-                            &self.services.thread_extension_data,
-                            turn_context.extension_data.as_ref(),
-                            token_info,
-                        )
-                        .await;
+                if !self.is_continuity_health_check() {
+                    for contributor in self.services.extensions.token_usage_contributors() {
+                        contributor
+                            .on_token_usage(
+                                &self.services.session_extension_data,
+                                &self.services.thread_extension_data,
+                                turn_context.extension_data.as_ref(),
+                                token_info,
+                            )
+                            .await;
+                    }
                 }
             }
             budget_result?;
