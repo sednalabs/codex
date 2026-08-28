@@ -33,6 +33,9 @@ use tokio::sync::Semaphore;
 /// A session has at most 1 running task at a time, and can be interrupted by user input.
 pub(crate) struct Session {
     pub(crate) thread_id: ThreadId,
+    /// Dispatcher captured when this session was created. Every session-owned task must use this
+    /// immutable identity rather than inheriting a caller's thread-local dispatcher.
+    pub(crate) dispatcher: Dispatch,
     pub(crate) installation_id: String,
     pub(super) tx_event: Sender<Event>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
@@ -564,6 +567,7 @@ impl Session {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn new(
         mut session_configuration: SessionConfiguration,
+        dispatcher: Dispatch,
         config: Arc<Config>,
         user_instructions: Option<codex_extension_api::UserInstructions>,
         installation_id: String,
@@ -1242,6 +1246,7 @@ impl Session {
             let (mcp_prewarm_tx, mcp_prewarm_rx) = async_channel::bounded(1);
             let sess = Arc::new(Session {
                 thread_id,
+                dispatcher,
                 installation_id,
                 tx_event: tx_event.clone(),
                 agent_status,

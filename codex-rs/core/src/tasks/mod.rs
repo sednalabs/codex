@@ -652,26 +652,29 @@ impl Session {
         // Task-owned turn spans keep a core-owned span open for the
         // full task lifecycle after the submission dispatch span ends.
         let reasoning_effort = turn_context.effective_reasoning_effort_for_tracing();
-        let task_span = info_span!(
-            "turn",
-            otel.name = span_name,
-            thread.id = %self.thread_id,
-            turn.id = %turn_context.sub_id,
-            model = %turn_context.model_info.slug,
-            codex.turn.reasoning_effort = %reasoning_effort,
-            codex.turn.token_usage.input_tokens = field::Empty,
-            codex.turn.token_usage.cached_input_tokens = field::Empty,
-            codex.turn.token_usage.cache_write_input_tokens = field::Empty,
-            codex.turn.token_usage.non_cached_input_tokens = field::Empty,
-            codex.turn.token_usage.output_tokens = field::Empty,
-            codex.turn.token_usage.reasoning_output_tokens = field::Empty,
-            codex.turn.token_usage.total_tokens = field::Empty,
-        );
-        // Create the task-run span while the owning session loop's scoped dispatcher is active.
-        // The spawned task may resume on another Tokio worker, but the span retains the
-        // session-owned dispatcher when it eventually closes.
-        let task_run_span = trace_span!("session_task.run");
-        let dispatcher = tracing::dispatcher::get_default(Clone::clone);
+        let dispatcher = self.dispatcher.clone();
+        // Span creation is also scoped: an external caller can enter a different dispatcher
+        // before starting an otherwise idle session task. The session-owned dispatcher remains
+        // authoritative for both the span identities and the future that owns their lifecycle.
+        let (task_span, task_run_span) = tracing::dispatcher::with_default(&dispatcher, || {
+            let task_span = info_span!(
+                "turn",
+                otel.name = span_name,
+                thread.id = %self.thread_id,
+                turn.id = %turn_context.sub_id,
+                model = %turn_context.model_info.slug,
+                codex.turn.reasoning_effort = %reasoning_effort,
+                codex.turn.token_usage.input_tokens = field::Empty,
+                codex.turn.token_usage.cached_input_tokens = field::Empty,
+                codex.turn.token_usage.cache_write_input_tokens = field::Empty,
+                codex.turn.token_usage.non_cached_input_tokens = field::Empty,
+                codex.turn.token_usage.output_tokens = field::Empty,
+                codex.turn.token_usage.reasoning_output_tokens = field::Empty,
+                codex.turn.token_usage.total_tokens = field::Empty,
+            );
+            let task_run_span = trace_span!("session_task.run");
+            (task_span, task_run_span)
+        });
         let handle = tokio::spawn(
             ScopedDispatcherFuture::new(dispatcher, async move {
                 let ctx_for_finish = Arc::clone(&ctx);
