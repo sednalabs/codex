@@ -33,6 +33,8 @@ use sqlx::Sqlite;
 use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
 use std::collections::BTreeSet;
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -110,6 +112,7 @@ const USAGE_DB_BASENAME: &str = "usage";
 struct RuntimeOwnerLease {
     store: GoalOwnerAdmissionStore,
     owner_id: Uuid,
+    _process_lock: File,
     released: AtomicBool,
 }
 
@@ -139,6 +142,37 @@ impl Drop for RuntimeOwnerLease {
             });
         }
     }
+}
+
+/// Acquire an OS lock whose lifetime is exactly the owning process/runtime.
+/// Unix advisory locks are released by the kernel on process death, which is
+/// the death proof required before replacing the durable owner audit row.
+#[cfg(unix)]
+fn try_acquire_runtime_process_lock(goals_path: &Path) -> anyhow::Result<Option<File>> {
+    use std::os::fd::AsRawFd;
+
+    let lock_path = goals_path.with_extension("runtime.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(Some(file));
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        return Ok(None);
+    }
+    Err(error.into())
+}
+
+#[cfg(not(unix))]
+fn try_acquire_runtime_process_lock(_goals_path: &Path) -> anyhow::Result<Option<File>> {
+    // Do not claim recovery authority without a process-lifetime lock/death
+    // proof on platforms where this implementation has not been verified.
+    Ok(None)
 }
 
 #[derive(Clone)]
@@ -342,40 +376,12 @@ impl StateRuntime {
             };
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let thread_recency_at_millis = thread_recency_at_millis.unwrap_or(0);
-        let owner_id = Uuid::now_v7();
         let goal_owner_admissions = GoalOwnerAdmissionStore::new(Arc::clone(&goals_pool));
-        let runtime_owner = match goal_owner_admissions
-            .try_acquire_runtime_owner(owner_id)
-            .await
+        let runtime_owner = if let Some(process_lock) =
+            try_acquire_runtime_process_lock(&goals_path)?
         {
-            Ok(true) => {
-                if let Err(err) =
-                    GoalOwnerAdmissionStore::recover_in_flight_on_open(goals_pool.as_ref()).await
-                {
-                    let _ = goal_owner_admissions.release_runtime_owner(owner_id).await;
-                    close_sqlite_pools(&[
-                        pool.as_ref(),
-                        logs_pool.as_ref(),
-                        goals_pool.as_ref(),
-                        usage_pool.as_ref(),
-                        memories_pool.as_ref(),
-                    ])
-                    .await;
-                    return Err(err);
-                }
-                Some(Arc::new(RuntimeOwnerLease {
-                    store: goal_owner_admissions.clone(),
-                    owner_id,
-                    released: AtomicBool::new(false),
-                }))
-            }
-            Ok(false) => {
-                warn!(
-                    "another StateRuntime owns the goals database; admission recovery is disabled"
-                );
-                None
-            }
-            Err(err) => {
+            let owner_id = Uuid::now_v7();
+            if let Err(err) = goal_owner_admissions.claim_runtime_owner(owner_id).await {
                 close_sqlite_pools(&[
                     pool.as_ref(),
                     logs_pool.as_ref(),
@@ -386,6 +392,32 @@ impl StateRuntime {
                 .await;
                 return Err(err);
             }
+            if let Err(err) = goal_owner_admissions
+                .recover_in_flight_on_open_as_owner(owner_id)
+                .await
+            {
+                let _ = goal_owner_admissions.release_runtime_owner(owner_id).await;
+                close_sqlite_pools(&[
+                    pool.as_ref(),
+                    logs_pool.as_ref(),
+                    goals_pool.as_ref(),
+                    usage_pool.as_ref(),
+                    memories_pool.as_ref(),
+                ])
+                .await;
+                return Err(err);
+            }
+            Some(Arc::new(RuntimeOwnerLease {
+                store: goal_owner_admissions.clone(),
+                owner_id,
+                _process_lock: process_lock,
+                released: AtomicBool::new(false),
+            }))
+        } else {
+            warn!(
+                "another StateRuntime owns the goals database or process lock is unavailable; admission recovery is disabled"
+            );
+            None
         };
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),

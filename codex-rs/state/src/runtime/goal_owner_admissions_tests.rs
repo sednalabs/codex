@@ -1332,7 +1332,7 @@ async fn cancel_in_flight_uncertain() {
 }
 
 #[tokio::test]
-async fn same_lease_definitive_outcome_refines_uncertainty() {
+async fn same_lease_definitive_outcome_cannot_mutate_uncertainty() {
     let runtime = runtime().await;
     let store = runtime.goal_owner_admissions();
     let record = store
@@ -1355,25 +1355,31 @@ async fn same_lease_definitive_outcome_refines_uncertainty() {
         .await
         .expect("record uncertain cancellation");
 
-    let refined = store
-        .finish(
-            &lease,
-            GoalOwnerAdmissionTerminalOutcome::Succeeded,
-            GoalOwnerAdmissionTerminalDisposition::None,
-        )
+    assert!(
+        store
+            .finish(
+                &lease,
+                GoalOwnerAdmissionTerminalOutcome::Succeeded,
+                GoalOwnerAdmissionTerminalDisposition::None,
+            )
+            .await
+            .is_err()
+    );
+    let preserved = store
+        .get_generation(&record.authority)
         .await
-        .expect("finish same late lease")
-        .expect("refine uncertainty");
-    assert_eq!(refined.phase, GoalOwnerAdmissionPhase::Terminal);
+        .expect("read exact history")
+        .expect("history persists");
+    assert_eq!(preserved.phase, GoalOwnerAdmissionPhase::Terminal);
     assert_eq!(
-        refined.terminal_outcome,
-        GoalOwnerAdmissionTerminalOutcome::Succeeded
+        preserved.terminal_outcome,
+        GoalOwnerAdmissionTerminalOutcome::Uncertain
     );
     assert_eq!(
-        refined.deferred_terminal_disposition,
-        GoalOwnerAdmissionTerminalDisposition::None
+        preserved.deferred_terminal_disposition,
+        GoalOwnerAdmissionTerminalDisposition::ManualReview
     );
-    assert_eq!(refined.lease_id, Some(lease.lease_id));
+    assert_eq!(preserved.lease_id, Some(lease.lease_id));
 }
 
 #[tokio::test]

@@ -228,6 +228,19 @@ impl InferenceCallEvent {
                         || runtime_tool_call_id.len() > INFERENCE_CALL_CORRELATION_ID_MAX_BYTES
                 )
             })
+            || self
+                .goal_owner_admission_ref
+                .as_ref()
+                .is_some_and(|reference| {
+                    reference.goal_id.len() > INFERENCE_CALL_STRING_MAX_BYTES
+                        || reference.decision_id.len() > INFERENCE_CALL_ID_MAX_BYTES
+                        || reference.intended_request_kind.len()
+                            > INFERENCE_CALL_CORRELATION_ID_MAX_BYTES
+                        || reference.successor_turn_id.len()
+                            > INFERENCE_CALL_CORRELATION_ID_MAX_BYTES
+                        || reference.logical_successor_request_id.len()
+                            > INFERENCE_CALL_CORRELATION_ID_MAX_BYTES
+                })
         {
             return None;
         }
