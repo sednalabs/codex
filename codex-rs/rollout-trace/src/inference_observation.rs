@@ -213,7 +213,7 @@ impl InferenceObservationSink for TraceWriterInferenceObservationSink {
         };
         let thread_id = event.thread_id.clone();
         let turn_id = event.turn_id.clone();
-        let Ok(event_payload) = self.writer.write_json_payload(
+        let Ok(event_payload) = self.writer.write_json_payload_compact(
             RawPayloadKind::ProtocolEvent,
             &EventMsg::InferenceCall(event),
         ) else {
@@ -319,7 +319,7 @@ fn protocol_event_for_observation(event: InferenceObservationEvent) -> Option<In
         InferenceObservationEvent::LocalDenial { attempt, reason } => (
             attempt,
             InferenceCallStatus::LocalDenied,
-            Some(unix_time_ms()),
+            None,
             None,
             None,
             None,
@@ -361,6 +361,7 @@ fn protocol_event_for_observation(event: InferenceObservationEvent) -> Option<In
         transport: attempt.transport,
         source,
         configured_provider: attempt.provider.configured_provider,
+        configured_model: attempt.provider.configured_model,
         requested_model: attempt.provider.requested_model,
         effective_provider: attempt.provider.effective_provider,
         effective_model: attempt.provider.effective_model,

@@ -357,10 +357,7 @@ fn collab_tools_enabled(turn_context: &TurnContext) -> bool {
     // on the authoritative runtime capability as well as the resolved version; V2 is otherwise
     // inherited from the parent and would re-add collaboration tools after config sanitization.
     let features = turn_context.config.features.get();
-    if !turn_context.config.agents_enabled
-        || !features.enabled(Feature::MultiAgentV2)
-        || !features.enabled(Feature::Collab)
-    {
+    if !turn_context.config.agents_enabled || !features.enabled(Feature::Collab) {
         return false;
     }
     match turn_context.multi_agent_version {

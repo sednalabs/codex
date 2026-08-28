@@ -40,6 +40,10 @@ pub struct InferenceCallEvent {
     pub source: Option<InferenceCallSource>,
     /// Provider selected by local configuration.
     pub configured_provider: String,
+    /// Model setting selected by local configuration, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub configured_model: Option<String>,
     /// Model placed on this concrete provider request.
     pub requested_model: String,
     /// Provider that owns the request after local routing/admission resolution.
@@ -123,6 +127,7 @@ pub enum InferenceCallField {
     TurnId,
     SpawnRequestId,
     ConfiguredProvider,
+    ConfiguredModel,
     RequestedModel,
     EffectiveProvider,
     EffectiveModel,
@@ -195,6 +200,7 @@ impl InferenceCallEvent {
         );
 
         for field in [
+            InferenceCallField::ConfiguredModel,
             InferenceCallField::RequestedServiceTier,
             InferenceCallField::ResponseId,
             InferenceCallField::UpstreamRequestId,
@@ -214,6 +220,7 @@ impl InferenceCallEvent {
 
         for field in [
             InferenceCallField::OutcomeDetail,
+            InferenceCallField::ConfiguredModel,
             InferenceCallField::RequestedServiceTier,
             InferenceCallField::ObservedModelSnapshot,
             InferenceCallField::ObservedServiceTier,
@@ -300,6 +307,7 @@ impl InferenceCallEvent {
             InferenceCallField::ObservedModelSnapshot => self.observed_model_snapshot.as_deref(),
             InferenceCallField::ObservedServiceTier => self.observed_service_tier.as_deref(),
             InferenceCallField::OutcomeDetail => self.outcome_detail.as_deref(),
+            InferenceCallField::ConfiguredModel => self.configured_model.as_deref(),
             InferenceCallField::TurnId
             | InferenceCallField::SpawnRequestId
             | InferenceCallField::ConfiguredProvider
@@ -329,6 +337,7 @@ impl InferenceCallEvent {
             InferenceCallField::ObservedServiceTier => self.observed_service_tier.take().is_some(),
             InferenceCallField::TokenUsage => self.token_usage.take().is_some(),
             InferenceCallField::OutcomeDetail => self.outcome_detail.take().is_some(),
+            InferenceCallField::ConfiguredModel => self.configured_model.take().is_some(),
             InferenceCallField::TurnId
             | InferenceCallField::SpawnRequestId
             | InferenceCallField::ConfiguredProvider

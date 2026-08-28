@@ -17,6 +17,7 @@ fn inference_call_event(status: InferenceCallStatus) -> InferenceCallEvent {
         transport: InferenceCallTransport::ResponsesHttp,
         source: Some(InferenceCallSource::Direct),
         configured_provider: "configured-provider".to_string(),
+        configured_model: Some("configured-model".to_string()),
         requested_model: "requested-model".to_string(),
         effective_provider: "effective-provider".to_string(),
         effective_model: "effective-model".to_string(),
@@ -108,6 +109,7 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
             "transport": "responses_http",
             "source": {"type": "direct"},
             "configured_provider": "configured-provider",
+            "configured_model": "configured-model",
             "requested_model": "requested-model",
             "effective_provider": "effective-provider",
             "effective_model": "effective-model",
@@ -142,6 +144,7 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
     legacy_object.remove("observed_provider");
     legacy_object.remove("effective_provider");
     legacy_object.remove("effective_model");
+    legacy_object.remove("configured_model");
     legacy_object.remove("source");
     legacy_object.remove("outcome_detail");
     legacy_object.remove("truncated_fields");
@@ -154,6 +157,7 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
             source: None,
             effective_provider: "<unknown>".to_string(),
             effective_model: "<unknown>".to_string(),
+            configured_model: None,
             outcome_detail: None,
             ..event
         }
