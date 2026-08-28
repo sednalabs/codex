@@ -542,7 +542,7 @@ impl ModelClient {
                     kind,
                     self.state.configured_provider_key.clone(),
                     self.state.configured_requested_model.clone(),
-                    self.state.provider.info().name.clone(),
+                    codex_state::canonical_provider_id(self.state.provider.info().name.as_str()),
                     model_info.slug.clone(),
                     service_tier,
                     self.state.session_source.clone(),
@@ -569,7 +569,7 @@ impl ModelClient {
                     responses_metadata.turn_id.clone(),
                     self.state.configured_provider_key.clone(),
                     self.state.configured_requested_model.clone(),
-                    self.state.provider.info().name.clone(),
+                    codex_state::canonical_provider_id(self.state.provider.info().name.as_str()),
                     model_info.slug.clone(),
                     service_tier,
                     self.state.session_source.clone(),
@@ -1324,7 +1324,9 @@ impl ModelClientSession {
                 configured_provider: self.client.state.configured_provider_key.clone(),
                 configured_model: self.client.state.configured_requested_model.clone(),
                 requested_model: request.model.clone(),
-                effective_provider: self.client.state.provider.info().name.clone(),
+                effective_provider: codex_state::canonical_provider_id(
+                    self.client.state.provider.info().name.as_str(),
+                ),
                 effective_model: request.model.clone(),
                 requested_service_tier: request.service_tier.clone(),
             },
@@ -2304,10 +2306,10 @@ impl RequestAttemptObserver for InferenceRequestAttemptObserver {
         else {
             return;
         };
-        let _ = recorder.record_provider_terminal(ProviderTerminalResult::Failed {
-            upstream_request_id: None,
-            error: error.to_string(),
-        });
+        // The transport callback runs before a provider terminal event exists. A send,
+        // timeout, or connection failure therefore cannot establish whether the provider
+        // observed the request; reserve `Failed` for an explicit provider terminal event.
+        let _ = recorder.record_transport_uncertain(error);
     }
 }
 
@@ -2610,17 +2612,21 @@ where
                     let provider_denial = api_error_is_definitive_provider_denial(&err);
                     let mapped = provider.map_api_error(err);
                     let terminal = if matches!(mapped.details(), CodexErrorDetails::UsageLimitReached(_)) {
-                        ProviderTerminalResult::UsageLimitReached {
+                        Some(ProviderTerminalResult::UsageLimitReached {
                             upstream_request_id: upstream_request_id.map(str::to_string),
                             detail: Some("usage_limit_reached".to_string()),
-                        }
+                        })
                     } else {
-                        ProviderTerminalResult::Failed {
-                            upstream_request_id: upstream_request_id.map(str::to_string),
-                            error: mapped.to_string(),
-                        }
+                        // An API/stream error is not itself a provider terminal response. Keep
+                        // the outcome uncertain until an explicit terminal event is observed.
+                        let _ = inference_observation_recorder.record_transport_uncertain(
+                            mapped.to_string(),
+                        );
+                        None
                     };
-                    let _ = inference_observation_recorder.record_provider_terminal(terminal);
+                    if let Some(terminal) = terminal {
+                        let _ = inference_observation_recorder.record_provider_terminal(terminal);
+                    }
                     if !logged_error {
                         session_telemetry.see_event_completed_failed(&mapped);
                         logged_error = true;

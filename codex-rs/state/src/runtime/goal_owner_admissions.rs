@@ -11,6 +11,11 @@ const MAX_EVIDENCE_LENGTH: usize = 512;
 const MAX_SUCCESSOR_ID_LENGTH: usize = 512;
 const ACCOUNT_CONTEXT_FINGERPRINT_LENGTH: usize = 64;
 
+/// Stable provider identifier shared by persistence, admission, and observation joins.
+pub fn canonical_provider_id(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
 macro_rules! admission_enum {
     ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1500,7 +1505,10 @@ fn origin_from_observation(
         denial_class: observation.denial_class,
         configured_provider_key: observation.configured_provider_key.clone(),
         requested_model: observation.requested_model.clone(),
-        effective_provider_id: observation.effective_provider_id.clone(),
+        effective_provider_id: observation
+            .effective_provider_id
+            .as_deref()
+            .map(canonical_provider_id),
         effective_model: observation.effective_model.clone(),
         intended_request_kind: observation.intended_request_kind.clone(),
         successor_turn_id: observation.successor_turn_id.clone(),

@@ -143,11 +143,36 @@ impl GoalRuntimeHandle {
                 .provider_continuation
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(pending) = state.pending.take() {
+            let pending_authority = if let Some(pending) = state.pending.take() {
                 pending.cancellation.cancel();
-            }
+                Some(pending.continuation.authority().authority.clone())
+            } else {
+                None
+            };
             state.attempts = MAX_PROVIDER_RATE_LIMIT_CONTINUATIONS_PER_GOAL;
             state.blocked = true;
+            if let Some(authority) = pending_authority {
+                let admissions = self.inner.state_dbs.goal_owner_admissions().clone();
+                let cancel = async move {
+                    if let Err(error) = admissions
+                        .cancel(
+                            &authority,
+                            codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+                        )
+                        .await
+                    {
+                        tracing::warn!(error = %error, "failed to durably cancel disabled goal continuation");
+                    }
+                };
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(cancel);
+                } else {
+                    tracing::warn!(
+                        thread_id = %self.thread_id(),
+                        "cannot durably cancel disabled goal continuation without a runtime"
+                    );
+                }
+            }
         }
     }
 
@@ -231,6 +256,7 @@ impl GoalRuntimeHandle {
             .analytics
             .status_changed(&goal, previous_status, GoalEventAttribution::NoTurn);
         if replaced_existing_goal {
+            self.cancel_provider_continuation().await;
             let pending = {
                 let mut state = self
                     .inner
@@ -373,7 +399,15 @@ impl GoalRuntimeHandle {
                         denial_class: codex_state::GoalOwnerAdmissionDenialClass::RateLimited,
                         configured_provider_key: rate_limit_domain.local_request_identity.configured_provider_key.clone(),
                         requested_model: rate_limit_domain.local_request_identity.requested_model.clone(),
-                        effective_provider_id: rate_limit_domain.local_request_identity.configured_provider_key.clone(),
+                        effective_provider_id: rate_limit_domain
+                            .local_request_identity
+                            .effective_provider_id
+                            .as_deref()
+                            .or(rate_limit_domain
+                                .local_request_identity
+                                .configured_provider_key
+                                .as_deref())
+                            .map(codex_state::canonical_provider_id),
                         effective_model: rate_limit_domain.local_request_identity.resolved_model.clone(),
                         intended_request_kind: "turn".to_string(),
                         successor_turn_id: Uuid::new_v4().to_string(),
@@ -535,6 +569,44 @@ impl GoalRuntimeHandle {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pending
             .take();
+        let persisted = match self
+            .inner
+            .state_dbs
+            .goal_owner_admissions()
+            .get(self.thread_id())
+            .await
+        {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                tracing::warn!(
+                    thread_id = %self.thread_id(),
+                    error = %error,
+                    "failed to read goal-owner continuation admission before cancellation"
+                );
+                None
+            }
+        };
+        let authority = pending
+            .as_ref()
+            .map(|pending| pending.continuation.authority().authority.clone())
+            .or_else(|| persisted.as_ref().map(|record| record.authority.clone()));
+        if let Some(authority) = authority
+            && let Err(error) = self
+                .inner
+                .state_dbs
+                .goal_owner_admissions()
+                .cancel(
+                    &authority,
+                    codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+                )
+                .await
+        {
+            tracing::warn!(
+                thread_id = %self.thread_id(),
+                error = %error,
+                "failed to durably cancel goal-owner continuation admission"
+            );
+        }
         let Some(pending) = pending else {
             return;
         };
@@ -654,15 +726,113 @@ impl GoalRuntimeHandle {
             .get_thread_goal(self.thread_id())
             .await
             .map_err(|err| err.to_string())?;
-        match goal {
+        match goal.as_ref() {
             Some(goal) if goal.status == codex_state::ThreadGoalStatus::Active => {
                 self.inner
                     .accounting_state
-                    .mark_idle_goal_active(goal.goal_id);
+                    .mark_idle_goal_active(goal.goal_id.clone());
                 self.inner.metrics.record_resumed();
             }
             Some(_) | None => self.inner.accounting_state.clear_active_goal(),
         }
+
+        // Rehydrate only the exact persisted pending generation. The continuation token,
+        // successor IDs, and deadline all come from the durable record; no authority is
+        // synthesized from the resumed thread or current configuration.
+        let Some(record) = self
+            .inner
+            .state_dbs
+            .goal_owner_admissions()
+            .get(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?
+        else {
+            return Ok(());
+        };
+        if record.phase != codex_state::GoalOwnerAdmissionPhase::Pending {
+            return Ok(());
+        }
+        let Some(active_goal) = goal
+            .as_ref()
+            .filter(|goal| goal.status == codex_state::ThreadGoalStatus::Active)
+        else {
+            self.inner
+                .state_dbs
+                .goal_owner_admissions()
+                .cancel(
+                    &record.authority,
+                    codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+                )
+                .await
+                .map_err(|err| err.to_string())?;
+            return Ok(());
+        };
+        if record.authority.goal_id != active_goal.goal_id {
+            self.inner
+                .state_dbs
+                .goal_owner_admissions()
+                .cancel(
+                    &record.authority,
+                    codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+                )
+                .await
+                .map_err(|err| err.to_string())?;
+            return Ok(());
+        }
+        let retry_after = record
+            .deadline_at
+            .signed_duration_since(Utc::now())
+            .to_std()
+            .unwrap_or_default();
+        if retry_after > MAX_PROVIDER_RATE_LIMIT_CONTINUATION_DELAY {
+            tracing::warn!(
+                thread_id = %self.thread_id(),
+                "ignoring goal-owner admission with an unbounded persisted deadline"
+            );
+            return Ok(());
+        }
+        let continuation = GoalOwnerContinuation::new(record.continuation_authority());
+        let cancellation = CancellationToken::new();
+        let eligible_at = Instant::now().checked_add(retry_after);
+        {
+            let mut state = self
+                .inner
+                .provider_continuation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.pending.is_none() {
+                state.goal_id = Some(active_goal.goal_id.clone());
+                state.attempts = u8::try_from(record.attempts_started).unwrap_or(u8::MAX);
+                state.blocked = true;
+                state.pending = Some(DeferredProviderContinuation {
+                    turn_id: record.origin_turn_id.clone(),
+                    goal_id: active_goal.goal_id.clone(),
+                    continuation,
+                    eligible_at,
+                    cancellation: cancellation.clone(),
+                });
+            } else {
+                return Ok(());
+            }
+        }
+        self.mark_provider_continuation_deferred().await?;
+        let runtime = Arc::downgrade(&self.inner);
+        drop(tokio::spawn(async move {
+            tokio::select! {
+                _ = cancellation.cancelled() => return,
+                _ = tokio::time::sleep(retry_after) => {}
+            }
+            let Some(inner) = runtime.upgrade() else {
+                return;
+            };
+            let runtime = GoalRuntimeHandle { inner };
+            if let Err(err) = runtime.continue_provider_preserved_goal().await {
+                tracing::warn!(
+                    thread_id = %runtime.thread_id(),
+                    "failed to resume persisted provider continuation: {err}"
+                );
+            }
+        }));
         Ok(())
     }
 

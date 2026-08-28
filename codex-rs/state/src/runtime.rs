@@ -75,6 +75,7 @@ pub use goal_owner_admissions::GoalOwnerAdmissionRecord;
 pub use goal_owner_admissions::GoalOwnerAdmissionStore;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalDisposition;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalOutcome;
+pub use goal_owner_admissions::canonical_provider_id;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;

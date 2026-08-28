@@ -3022,6 +3022,7 @@ async fn turn_error_lifecycle_exposes_error_and_stores() {
             local_request_identity: codex_extension_api::LocalRequestIdentity {
                 thread_id: session.thread_id,
                 configured_provider_key: Some("forged-provider".to_string()),
+                effective_provider_id: Some("forged-provider".to_string()),
                 requested_model: Some("forged-model".to_string()),
                 resolved_model: Some("forged-resolved-model".to_string()),
             },
