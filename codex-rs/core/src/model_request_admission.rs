@@ -27,6 +27,7 @@ use codex_state::GoalOwnerAdmissionRecord;
 use codex_state::GoalOwnerAdmissionStore;
 use codex_state::GoalOwnerAdmissionTerminalDisposition;
 use codex_state::GoalOwnerAdmissionTerminalOutcome;
+use codex_state::GoalOwnerDispatchFenceCapability;
 use codex_state::canonical_provider_id;
 use tokio::sync::Mutex;
 use tracing::debug;
@@ -43,7 +44,7 @@ pub struct GoalOwnerContinuation {
     authority: GoalOwnerAdmissionContinuationAuthority,
     dispatch_claim_id: Option<Uuid>,
     fence: Option<Arc<GoalContinuationFence>>,
-    fence_identity: Uuid,
+    fence_identity: GoalOwnerDispatchFenceCapability,
     fence_epoch: u64,
 }
 
@@ -126,21 +127,21 @@ impl GoalContinuationFence {
 #[derive(Clone, Debug)]
 pub struct GoalContinuationFenceCoordinator {
     fence: Arc<GoalContinuationFence>,
-    identity: Uuid,
+    identity: GoalOwnerDispatchFenceCapability,
 }
 
 impl GoalContinuationFenceCoordinator {
     pub fn new() -> Self {
         Self {
             fence: Arc::new(GoalContinuationFence::new()),
-            identity: Uuid::now_v7(),
+            identity: GoalOwnerDispatchFenceCapability::fresh(),
         }
     }
 
     /// Identity persisted with the dispatch claim. A token from another
     /// coordinator cannot consume that claim, even when all other authority
     /// fields are copied exactly.
-    pub fn identity(&self) -> Uuid {
+    pub fn identity(&self) -> GoalOwnerDispatchFenceCapability {
         self.identity
     }
 
@@ -225,7 +226,7 @@ impl GoalOwnerContinuation {
         self.dispatch_claim_id
     }
 
-    pub(crate) fn fence_identity(&self) -> Uuid {
+    pub(crate) fn fence_identity(&self) -> GoalOwnerDispatchFenceCapability {
         self.fence_identity
     }
 }
@@ -676,7 +677,14 @@ impl ModelRequestAdmissionBroker {
         }
 
         let acquire_result = store
-            .try_acquire_claimed(continuation_authority, dispatch_claim_id, now)
+            .try_acquire_claimed(
+                continuation_authority,
+                dispatch_claim_id,
+                continuation
+                    .map(GoalOwnerContinuation::fence_identity)
+                    .expect("claimed continuation must carry its fence capability"),
+                now,
+            )
             .await
             .map_err(storage_error)?;
         match acquire_result {

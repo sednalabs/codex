@@ -912,7 +912,7 @@ async fn dispatch_claim_is_single_owner_and_consumed_by_acquire() {
         .await
         .expect("record pending admission");
     let authority = record.continuation_authority();
-    let fence_identity = Uuid::now_v7();
+    let fence_identity = GoalOwnerDispatchFenceCapability::fresh();
     let claim_id = store
         .claim_dispatch(&authority, fence_identity, Utc::now())
         .await
@@ -934,7 +934,11 @@ async fn dispatch_claim_is_single_owner_and_consumed_by_acquire() {
     assert_eq!(claimed.dispatch_fence_id, Some(fence_identity));
     assert!(
         !store
-            .release_dispatch_claim(&record.authority, claim_id, Uuid::now_v7())
+            .release_dispatch_claim(
+                &record.authority,
+                claim_id,
+                GoalOwnerDispatchFenceCapability::fresh(),
+            )
             .await
             .expect("reject foreign fence cleanup"),
         "a foreign fence must not release a valid dispatch claim"
@@ -955,8 +959,21 @@ async fn dispatch_claim_is_single_owner_and_consumed_by_acquire() {
         Some(claim_id)
     );
 
+    assert!(matches!(
+        store
+            .try_acquire_claimed(
+                &authority,
+                claim_id,
+                GoalOwnerDispatchFenceCapability::fresh(),
+                Utc::now(),
+            )
+            .await
+            .expect("reject foreign fence acquisition"),
+        GoalOwnerAdmissionAcquireResult::NotCurrent
+    ));
+
     let lease = match store
-        .try_acquire_claimed(&authority, claim_id, Utc::now())
+        .try_acquire_claimed(&authority, claim_id, fence_identity, Utc::now())
         .await
         .expect("consume dispatch claim")
     {
