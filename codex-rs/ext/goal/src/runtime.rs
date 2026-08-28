@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use chrono::Utc;
-use codex_core::GoalContinuationFence;
+use codex_core::GoalContinuationFenceCoordinator;
 use codex_core::GoalOwnerContinuation;
 use codex_core::ThreadManager;
 use codex_extension_api::ProviderEvidenceAuthority;
@@ -68,7 +68,7 @@ struct GoalRuntimeInner {
 struct GoalContinuationCoordinator {
     enabled: AtomicBool,
     enablement_epoch: AtomicU64,
-    fence: Arc<GoalContinuationFence>,
+    fence: GoalContinuationFenceCoordinator,
     state: Mutex<ProviderContinuationState>,
     lifecycle: Semaphore,
 }
@@ -198,7 +198,7 @@ impl GoalRuntimeHandle {
                 continuation: GoalContinuationCoordinator {
                     enabled: AtomicBool::new(config.enabled),
                     enablement_epoch: AtomicU64::new(0),
-                    fence: Arc::new(GoalContinuationFence::new()),
+                    fence: GoalContinuationFenceCoordinator::new(),
                     state: Mutex::new(ProviderContinuationState::default()),
                     lifecycle: Semaphore::new(/*permits*/ 1),
                 },
@@ -221,7 +221,7 @@ impl GoalRuntimeHandle {
             .enablement_epoch
             .fetch_add(1, Ordering::Relaxed)
             + 1;
-        let fence = Arc::clone(&self.inner.continuation.fence);
+        let fence = self.inner.continuation.fence.clone();
         let cooperative_quiescence = match tokio::runtime::Handle::try_current() {
             Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
                 tokio::task::block_in_place(|| fence.revoke_and_wait());
@@ -246,7 +246,7 @@ impl GoalRuntimeHandle {
                 .last_authority
                 .clone();
             let inner = Arc::downgrade(&self.inner);
-            let quiescence_fence = Arc::clone(&fence);
+            let quiescence_fence = fence.clone();
             let reconcile = async move {
                 if cooperative_quiescence {
                     while !quiescence_fence.is_quiescent() {
@@ -652,7 +652,10 @@ impl GoalRuntimeHandle {
                         turn_id.to_string(),
                         goal.goal_id,
                         retry_after.expect("pending admission has provider retry delay"),
-                        GoalOwnerContinuation::new(record.continuation_authority()),
+                        self.inner
+                            .continuation
+                            .fence
+                            .continuation(record.continuation_authority()),
                     )
                     .await;
             }
@@ -668,10 +671,6 @@ impl GoalRuntimeHandle {
         retry_after: Duration,
         continuation: GoalOwnerContinuation,
     ) -> Result<bool, String> {
-        let continuation = continuation.with_fence(
-            Arc::clone(&self.inner.continuation.fence),
-            self.inner.continuation.fence.current_epoch(),
-        );
         enum ProviderContinuationAction {
             Blocked,
             Dormant,
@@ -1095,16 +1094,9 @@ impl GoalRuntimeHandle {
                         .map_err(|err| err.to_string())?;
                 }
                 self.inner.accounting_state.clear_active_goal();
-                // Exhaustion is a definite pre-provider terminal outcome. Once
-                // the goal has been durably blocked, retire the exhausted
-                // generation and atomically clear only its stale deferral;
-                // the immutable row remains available in history.
-                self.retire_safe_terminal_admission(
-                    &record.authority,
-                    /*clear_deferral*/ true,
-                    /*allow_exhausted*/ true,
-                )
-                .await?;
+                // Preserve the durable await-user disposition and terminal
+                // row. Automatic retirement would erase the gate and allow a
+                // resume path to silently re-arm an exhausted generation.
                 return Ok(());
             }
             self.retire_safe_terminal_admission(
@@ -1186,10 +1178,11 @@ impl GoalRuntimeHandle {
             );
             return Ok(());
         }
-        let continuation = GoalOwnerContinuation::new(record.continuation_authority()).with_fence(
-            Arc::clone(&self.inner.continuation.fence),
-            self.inner.continuation.fence.current_epoch(),
-        );
+        let continuation = self
+            .inner
+            .continuation
+            .fence
+            .continuation(record.continuation_authority());
         let cancellation = CancellationToken::new();
         let eligible_at = Instant::now().checked_add(retry_after);
         {
@@ -1335,14 +1328,11 @@ impl GoalRuntimeHandle {
             .await;
             return Ok(());
         }
-        let claimed_continuation = GoalOwnerContinuation::with_dispatch_claim(
-            continuation_authority.clone(),
-            dispatch_claim_id,
-        )
-        .with_fence(
-            Arc::clone(&self.inner.continuation.fence),
-            self.inner.continuation.fence.current_epoch(),
-        );
+        let claimed_continuation = self
+            .inner
+            .continuation
+            .fence
+            .continuation_with_dispatch_claim(continuation_authority.clone(), dispatch_claim_id);
         let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
             self.release_dispatch_claim_best_effort(
                 &continuation_authority.authority,
@@ -1841,7 +1831,7 @@ mod tests {
         DeferredProviderContinuation {
             turn_id: "turn".to_string(),
             goal_id: authority.goal_id.clone(),
-            continuation: GoalOwnerContinuation::new(
+            continuation: GoalContinuationFenceCoordinator::new().continuation(
                 codex_state::GoalOwnerAdmissionContinuationAuthority {
                     authority,
                     intended_request_kind: "turn".to_string(),

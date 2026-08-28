@@ -89,6 +89,12 @@ impl TraceReducer {
                     inference_call_id
                 );
             }
+            if event.status == InferenceCallStatus::AdmissionFailed {
+                bail!(
+                    "inference observation admission failure followed physical open for {}",
+                    inference_call_id
+                );
+            }
             ensure_same_attempt_identity(&observation.started_event, &event)?;
             observation.execution.ended_at_unix_ms = Some(wall_time_unix_ms);
             observation.execution.ended_seq = Some(seq);
@@ -145,6 +151,12 @@ fn ensure_same_attempt_identity(
         && started.thread_id == terminal.thread_id
         && started.turn_id == terminal.turn_id
         && started.spawn_request_id == terminal.spawn_request_id
+        && started.session_source == terminal.session_source
+        && started.parent_thread_id == terminal.parent_thread_id
+        && started.request_kind == terminal.request_kind
+        && started.cache_state == terminal.cache_state
+        && started.admission == terminal.admission
+        && started.goal_owner_admission_ref == terminal.goal_owner_admission_ref
         && started.transport == terminal.transport
         && started.source == terminal.source
         && started.configured_provider == terminal.configured_provider

@@ -260,7 +260,7 @@ pub struct GoalOwnerAdmissionStore {
     /// Presence of this opaque capability is the only authority to perform
     /// destructive admission transitions. Read-only runtimes deliberately
     /// carry `None`, even though they share the same SQLite pool.
-    write_capability: Option<Arc<()>>,
+    write_capability: Option<Arc<RuntimeOwnerCapability>>,
 }
 
 impl GoalOwnerAdmissionStore {
@@ -270,7 +270,7 @@ impl GoalOwnerAdmissionStore {
             // Direct stores are used by the state tests and by the single
             // runtime owner bootstrap. StateRuntime uses `read_only` for a
             // process that failed to acquire the kernel lock.
-            write_capability: Some(Arc::new(())),
+            write_capability: Some(RuntimeOwnerCapability::new()),
         }
     }
 
@@ -281,8 +281,22 @@ impl GoalOwnerAdmissionStore {
         }
     }
 
+    pub(crate) fn with_capability(
+        pool: Arc<SqlitePool>,
+        capability: Arc<RuntimeOwnerCapability>,
+    ) -> Self {
+        Self {
+            pool,
+            write_capability: Some(capability),
+        }
+    }
+
     fn require_write_capability(&self) -> anyhow::Result<()> {
-        if self.write_capability.is_some() {
+        if self
+            .write_capability
+            .as_ref()
+            .is_some_and(|capability| capability.is_active())
+        {
             Ok(())
         } else {
             bail!("goal-owner admission mutation requires the runtime owner capability")
@@ -1130,6 +1144,72 @@ WHERE thread_id = ?
             bail!("conflicting replay for goal-owner admission lease outcome")
         }
         Ok(None)
+    }
+
+    /// Resolve a recovered uncertain effect only through an explicit owner
+    /// decision. Uncertain rows are never eligible for automatic replay or
+    /// retirement; this path requires the exact generation and a definitive
+    /// provider result supplied by the runtime owner.
+    pub async fn resolve_uncertain(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        outcome: GoalOwnerAdmissionTerminalOutcome,
+        disposition: GoalOwnerAdmissionTerminalDisposition,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.require_write_capability()?;
+        validate_authority(authority)?;
+        if !matches!(
+            outcome,
+            GoalOwnerAdmissionTerminalOutcome::Succeeded
+                | GoalOwnerAdmissionTerminalOutcome::Rejected
+        ) {
+            bail!("uncertain resolution requires a definitive success or rejection")
+        }
+        validate_terminal_transition(outcome, disposition)?;
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let Some(current) = fetch_record_for_authority(&mut *transaction, authority).await? else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        if current.phase != GoalOwnerAdmissionPhase::Terminal
+            || current.terminal_outcome != GoalOwnerAdmissionTerminalOutcome::Uncertain
+            || current.retired_at.is_some()
+        {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        let resolved = sqlx::query(
+            r#"
+UPDATE goal_owner_admissions
+SET terminal_outcome = ?,
+    deferred_terminal_disposition = ?,
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND goal_id = ?
+  AND generation = ?
+  AND cancellation_epoch = ?
+  AND phase = 'terminal'
+  AND terminal_outcome = 'uncertain'
+  AND retired_at_ms IS NULL
+            "#,
+        )
+        .bind(outcome.as_str())
+        .bind(disposition.as_str())
+        .bind(now_ms)
+        .bind(authority.thread_id.to_string())
+        .bind(&authority.goal_id)
+        .bind(authority.generation)
+        .bind(authority.cancellation_epoch)
+        .execute(&mut *transaction)
+        .await?;
+        if resolved.rows_affected() != 1 {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        let record = fetch_record_for_authority(&mut *transaction, authority).await?;
+        transaction.commit().await?;
+        Ok(record)
     }
 
     /// Increment the cancellation epoch and terminalize the exact durable generation.

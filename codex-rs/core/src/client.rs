@@ -2492,19 +2492,22 @@ fn api_error_is_definitive_provider_denial(error: &ApiError) -> bool {
 }
 
 fn api_error_is_provider_terminal(error: &ApiError) -> bool {
-    matches!(
-        error,
-        ApiError::Transport(TransportError::Http { .. })
-            | ApiError::Api { .. }
-            | ApiError::ContextWindowExceeded
-            | ApiError::QuotaExceeded
-            | ApiError::UsageNotIncluded
-            | ApiError::Retryable { .. }
-            | ApiError::RateLimit(_)
-            | ApiError::InvalidRequest { .. }
-            | ApiError::CyberPolicy { .. }
-            | ApiError::ServerOverloaded
-    ) || matches!(error, ApiError::Stream(message) if message.contains("response.failed"))
+    // A 5xx response is ambiguous at this boundary: the server may have
+    // accepted the request before failing. Keep it transport-uncertain so an
+    // admitted continuation is never retried as a definitive denial.
+    matches!(error, ApiError::Transport(TransportError::Http { status, .. }) if status.is_client_error())
+        || matches!(
+            error,
+            ApiError::Api { .. }
+                | ApiError::ContextWindowExceeded
+                | ApiError::QuotaExceeded
+                | ApiError::UsageNotIncluded
+                | ApiError::RateLimit(_)
+                | ApiError::InvalidRequest { .. }
+                | ApiError::CyberPolicy { .. }
+                | ApiError::ServerOverloaded
+        )
+        || matches!(error, ApiError::Stream(message) if message.contains("response.failed"))
 }
 
 /// A terminalized admission still permits the normal compaction rate-limit path
