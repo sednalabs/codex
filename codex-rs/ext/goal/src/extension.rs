@@ -282,6 +282,12 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
+            if let Err(err) = runtime
+                .retire_settled_provider_continuation(input.turn_store)
+                .await
+            {
+                tracing::warn!("failed to retire settled provider continuation: {err}");
+            }
             if !runtime.is_enabled() {
                 return;
             }

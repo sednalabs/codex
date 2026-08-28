@@ -381,20 +381,7 @@ impl ModelRequestAdmissionBroker {
             });
         };
 
-        if let Some(continuation_authority) = continuation_authority {
-            // A continuation token is valid only for the exact pending generation and request
-            // identity. Terminal, stale, or mismatched rows are lifecycle failures and must not
-            // become unrestricted merely because the row exists.
-            if !record_matches_identity(&record, identity)
-                || !continuation_matches_record(continuation_authority, &record)
-                || !continuation_matches_identity(continuation_authority, identity)
-            {
-                return Ok(ModelRequestAdmissionDecision::Dormant);
-            }
-            if record.phase != GoalOwnerAdmissionPhase::Pending {
-                return Ok(decision_for_continuation_record(&record));
-            }
-        } else {
+        let Some(continuation_authority) = continuation_authority else {
             // A prior successful continuation no longer restricts the thread,
             // regardless of later model/provider resolution.
             if record.phase == GoalOwnerAdmissionPhase::Terminal {
@@ -412,11 +399,21 @@ impl ModelRequestAdmissionBroker {
                 return Ok(ModelRequestAdmissionDecision::Dormant);
             }
             return Ok(ModelRequestAdmissionDecision::Dormant);
+        };
+
+        // A continuation token is valid only for the exact pending generation and request
+        // identity. Terminal, stale, or mismatched rows are lifecycle failures and must not
+        // become unrestricted merely because the row exists.
+        if !record_matches_identity(&record, identity)
+            || !continuation_matches_record(continuation_authority, &record)
+            || !continuation_matches_identity(continuation_authority, identity)
+        {
+            return Ok(ModelRequestAdmissionDecision::Dormant);
+        }
+        if record.phase != GoalOwnerAdmissionPhase::Pending {
+            return Ok(decision_for_continuation_record(&record));
         }
 
-        if record.phase != GoalOwnerAdmissionPhase::Pending {
-            return Ok(decision_for_record(&record, now));
-        }
         if record.deadline_at > now {
             return Ok(ModelRequestAdmissionDecision::Deferred);
         }
