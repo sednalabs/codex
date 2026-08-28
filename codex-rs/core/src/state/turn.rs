@@ -134,17 +134,12 @@ impl TurnState {
     /// answer remains in custody for the next turn.
     pub(crate) fn take_turn_local_continuation_input(&mut self) -> Option<Vec<TurnInput>> {
         let has_eligible_input = self.mailbox_delivery_phase == MailboxDeliveryPhase::CurrentTurn
-            && self.pending_input.items.iter().any(|input| {
-                matches!(
-                    input,
-                    TurnInput::UserInput { content, .. } if !content.is_empty()
-                )
-            });
-        has_eligible_input.then(|| self.pending_input.items.split_off(0))
+            && self.pending_input.has_non_empty_user_input();
+        has_eligible_input.then(|| self.pending_input.take_for_turn_local_continuation())
     }
 
     pub(crate) fn restore_turn_local_continuation_input(&mut self, input: Vec<TurnInput>) {
-        self.pending_input.items.splice(0..0, input);
+        self.pending_input.restore_turn_local_continuation(input);
     }
 
     pub(crate) fn insert_pending_approval(

@@ -546,6 +546,20 @@ impl TurnInputQueue {
             .iter()
             .any(|input| matches!(input, TurnInput::UserInput { .. }))
     }
+
+    pub(crate) fn has_non_empty_user_input(&self) -> bool {
+        self.items.iter().any(
+            |input| matches!(input, TurnInput::UserInput { content, .. } if !content.is_empty()),
+        )
+    }
+
+    pub(crate) fn take_for_turn_local_continuation(&mut self) -> Vec<TurnInput> {
+        self.items.split_off(0)
+    }
+
+    pub(crate) fn restore_turn_local_continuation(&mut self, input: Vec<TurnInput>) {
+        self.items.splice(0..0, input);
+    }
 }
 
 #[cfg(test)]
