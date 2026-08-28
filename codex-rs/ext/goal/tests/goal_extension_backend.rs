@@ -932,6 +932,58 @@ async fn same_state_config_change_preserves_pending_provider_continuation() -> a
 }
 
 #[tokio::test]
+async fn same_installation_resume_cannot_clear_a_live_dispatch_claim() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "preserve a live dispatch claim across same-installation resume" }),
+        ))
+        .await?;
+    assert!(
+        harness
+            .runtime_handle()
+            .preserve_active_goal_after_provider_limit(
+                "turn-1",
+                &provider_limit_domain(harness.thread_id, Some(Duration::from_secs(60))),
+            )
+            .await
+            .map_err(anyhow::Error::msg)?
+    );
+    let admissions = runtime.goal_owner_admissions();
+    let before = admissions
+        .get(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("pending continuation admission should exist"))?;
+    let claim_id = admissions
+        .claim_dispatch(
+            &before.continuation_authority(),
+            codex_state::GoalOwnerDispatchFenceCapability::fresh(),
+            chrono::Utc::now(),
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("pending continuation should be claimable"))?;
+
+    let resume = harness.runtime_handle().restore_after_resume().await;
+    assert!(
+        resume.is_err(),
+        "same-installation resume must fail closed when a live scheduler claim exists"
+    );
+    let after = admissions
+        .get_generation(&before.authority)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("claimed continuation history should remain"))?;
+    assert_eq!(after.dispatch_claim_id, Some(claim_id));
+    Ok(())
+}
+
+#[tokio::test]
 async fn resume_preserves_exhausted_generation_and_blocks_goal() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;

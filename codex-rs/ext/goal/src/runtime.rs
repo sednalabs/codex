@@ -1183,24 +1183,14 @@ impl GoalRuntimeHandle {
             self.clear_deferral_if_retired(&record.authority).await?;
             return Ok(());
         }
-        if let Some(dispatch_claim_id) = record.dispatch_claim_id {
-            // A claim cannot survive a process restart as an owner. Reopen the
-            // exact pending generation for a fresh timer claim.
-            let recovery_capability = self
-                .inner
-                .state_dbs
-                .goal_owner_recovery_capability()
-                .ok_or_else(|| {
-                    "goal-owner recovery capability missing for owning runtime".to_string()
-                })?;
-            admissions
-                .release_dispatch_claim_after_owner_recovery(
-                    &record.authority,
-                    dispatch_claim_id,
-                    &recovery_capability,
-                )
-                .await
-                .map_err(|err| err.to_string())?;
+        if record.dispatch_claim_id.is_some() {
+            // A live claim is scheduler ownership, not resume input. Only the
+            // startup takeover path has process-death evidence strong enough
+            // to clear it; same-installation resume must leave it untouched.
+            return Err(
+                "goal-owner resume encountered a live dispatch claim; startup recovery required"
+                    .to_string(),
+            );
         }
         let retry_after = record
             .deadline_at
