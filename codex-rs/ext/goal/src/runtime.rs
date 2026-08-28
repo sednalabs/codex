@@ -250,8 +250,22 @@ impl GoalRuntimeHandle {
                         tracing::warn!("failed to acquire goal-state permit while re-enabling");
                         return;
                     };
+                    if runtime
+                        .inner
+                        .continuation
+                        .enablement_epoch
+                        .load(Ordering::Relaxed)
+                        != enablement_epoch
+                        || !runtime.inner.continuation.enabled.load(Ordering::Relaxed)
+                    {
+                        return;
+                    }
                     if let Err(error) = runtime.cancel_and_retire_admission(&authority).await {
                         tracing::warn!(error = %error, "failed to reconcile goal admission while re-enabling");
+                        return;
+                    }
+                    if let Err(error) = runtime.clear_deferral_if_retired(&authority).await {
+                        tracing::warn!(error = %error, "failed to clear retired goal continuation deferral while re-enabling");
                         return;
                     }
                 }
@@ -307,6 +321,12 @@ impl GoalRuntimeHandle {
                     let Ok(_goal_state_permit) = runtime.goal_state_permit().await else {
                         return;
                     };
+                    if inner.continuation.enablement_epoch.load(Ordering::Relaxed)
+                        != enablement_epoch
+                        || inner.continuation.enabled.load(Ordering::Relaxed)
+                    {
+                        return;
+                    }
                     if let Err(error) = runtime.cancel_and_retire_admission(&authority).await {
                         tracing::warn!(
                             error = %error,
@@ -835,10 +855,7 @@ impl GoalRuntimeHandle {
             .get(authority.thread_id)
             .await
             .map_err(|err| err.to_string())?;
-        if current
-            .as_ref()
-            .is_some_and(|current| current.authority == *authority)
-        {
+        if current.is_some() {
             return Ok(());
         }
         self.inner
@@ -1329,8 +1346,18 @@ impl GoalRuntimeHandle {
         let start_result = thread
             .try_start_goal_continuation_if_idle(Vec::new(), claimed_continuation)
             .await;
+        if start_result.is_err() {
+            self.release_dispatch_claim_best_effort(
+                &continuation_authority.authority,
+                dispatch_claim_id,
+            )
+            .await;
+            return Ok(());
+        }
         // The claim is now carried by the published turn token. Its abort
         // path owns exact cancellation; the wake-task guard must not race it.
+        // Keep the guard armed until this publication call has definitely
+        // succeeded so an aborted wake task cannot strand a pending claim.
         dispatch_claim_guard.disarm();
         let still_current = self
             .timer_is_current(
@@ -1341,14 +1368,6 @@ impl GoalRuntimeHandle {
                 /*require_pending*/ false,
             )
             .await?;
-        if start_result.is_err() {
-            self.release_dispatch_claim_best_effort(
-                &continuation_authority.authority,
-                dispatch_claim_id,
-            )
-            .await;
-            return Ok(());
-        }
         if !still_current {
             self.mark_provider_continuation_deferred().await?;
             let _ = self

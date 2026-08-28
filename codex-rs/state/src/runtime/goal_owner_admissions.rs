@@ -264,6 +264,36 @@ impl GoalOwnerAdmissionStore {
         Self { pool }
     }
 
+    /// Acquire the single durable runtime owner slot for destructive admission recovery.
+    ///
+    /// The owner row is intentionally not reclaimed by age: an existing row is
+    /// proof that ownership is unresolved, not proof that its process died.
+    pub async fn try_acquire_runtime_owner(&self, owner_id: Uuid) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"
+INSERT INTO goal_owner_runtime_owners (owner_key, owner_id, acquired_at_ms)
+VALUES (1, ?, ?)
+ON CONFLICT(owner_key) DO NOTHING
+            "#,
+        )
+        .bind(owner_id.to_string())
+        .bind(admission_datetime_to_epoch_millis(Utc::now()))
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Release only the exact durable runtime owner acquired by this process.
+    pub async fn release_runtime_owner(&self, owner_id: Uuid) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM goal_owner_runtime_owners WHERE owner_key = 1 AND owner_id = ?",
+        )
+        .bind(owner_id.to_string())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Recovers durable work after a process restart.
     ///
     /// Acquired leases have not crossed the provider boundary, so their

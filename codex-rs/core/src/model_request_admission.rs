@@ -348,6 +348,27 @@ impl ModelRequestAdmissionBroker {
         Self { state_db }
     }
 
+    /// Release a scheduler dispatch claim when a published continuation cannot
+    /// reach its first model request. The exact pending-generation CAS makes
+    /// this harmless after the claim has already been consumed by admission.
+    pub(crate) async fn release_dispatch_claim(
+        &self,
+        continuation: &GoalOwnerContinuation,
+    ) -> Result<()> {
+        let Some(dispatch_claim_id) = continuation.dispatch_claim_id() else {
+            return Ok(());
+        };
+        let Some(state_db) = &self.state_db else {
+            return Ok(());
+        };
+        state_db
+            .goal_owner_admissions()
+            .release_dispatch_claim(&continuation.authority().authority, dispatch_claim_id)
+            .await
+            .map(|_| ())
+            .map_err(storage_error)
+    }
+
     pub(crate) async fn admit(
         &self,
         identity: &ModelRequestIdentity,
