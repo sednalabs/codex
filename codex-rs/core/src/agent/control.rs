@@ -136,6 +136,17 @@ pub(crate) struct ListedAgent {
     pub(crate) active_subagent_count: usize,
 }
 
+/// Keeps a continuity child's terminal result in-flight while its runtime is being torn down.
+/// V2 residency eviction and explicit close both consult this marker before releasing the
+/// runtime's slot, so the result cannot be stranded by a terminal unload race.
+struct TerminalCompletionFinalizer(Arc<crate::session::session::Session>);
+
+impl Drop for TerminalCompletionFinalizer {
+    fn drop(&mut self) {
+        self.0.input_queue.finish_terminal_finalizer();
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentTreeScope {
@@ -1164,9 +1175,11 @@ impl AgentControl {
     fn maybe_start_completion_watcher(
         &self,
         child_thread_id: ThreadId,
+        child_thread: Option<Arc<CodexThread>>,
         session_source: Option<SessionSource>,
         child_reference: String,
         child_agent_path: Option<AgentPath>,
+        hold_terminal_finalizer: bool,
     ) {
         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
@@ -1174,8 +1187,19 @@ impl AgentControl {
         else {
             return;
         };
+        let terminal_finalizer = hold_terminal_finalizer
+            .then(|| child_thread.as_ref())
+            .flatten()
+            .map(|child_thread| {
+                child_thread
+                    .session
+                    .input_queue
+                    .register_terminal_finalizer();
+                TerminalCompletionFinalizer(Arc::clone(&child_thread.session))
+            });
         let control = self.clone();
         tokio::spawn(async move {
+            let _terminal_finalizer = terminal_finalizer;
             let status = match control.subscribe_status(child_thread_id).await {
                 Ok(mut status_rx) => {
                     let mut status = status_rx.borrow().clone();
@@ -1337,7 +1361,11 @@ impl AgentControl {
         state: &Arc<ThreadManagerState>,
         session_source: Option<&SessionSource>,
         child_config: &Config,
+        suppress_inherited_capabilities: bool,
     ) -> Option<Arc<crate::exec_policy::ExecPolicyManager>> {
+        if suppress_inherited_capabilities {
+            return None;
+        }
         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
         })) = session_source

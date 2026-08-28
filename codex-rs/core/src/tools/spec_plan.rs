@@ -352,6 +352,13 @@ fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
 }
 
 fn collab_tools_enabled(turn_context: &TurnContext) -> bool {
+    // A host continuity child keeps the inherited V2 lifecycle for residency accounting, but
+    // marks collaboration capabilities unavailable before its first turn.  Gate the tool plan
+    // on the authoritative runtime capability as well as the resolved version; V2 is otherwise
+    // inherited from the parent and would re-add collaboration tools after config sanitization.
+    if !turn_context.config.agents_enabled {
+        return false;
+    }
     match turn_context.multi_agent_version {
         MultiAgentVersion::Disabled => false,
         MultiAgentVersion::V1 => !exceeds_thread_spawn_depth_limit(

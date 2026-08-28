@@ -3406,6 +3406,7 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
     let tester_path = worker_path.join("tester").expect("tester path");
     harness.control.maybe_start_completion_watcher(
         tester_thread_id,
+        Some(Arc::clone(&tester_thread)),
         Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: worker_thread_id,
             depth: 2,
@@ -3415,6 +3416,13 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
         })),
         tester_path.to_string(),
         Some(tester_path.clone()),
+        /*hold_terminal_finalizer*/ true,
+    );
+    assert!(
+        tester_thread
+            .session
+            .input_queue
+            .has_pending_terminal_finalizers()
     );
     let tester_turn = tester_thread.session.new_default_turn().await;
     tester_thread
@@ -3471,6 +3479,20 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
     })
     .await
     .expect("completion watcher should queue a direct-parent message");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if !tester_thread
+                .session
+                .input_queue
+                .has_pending_terminal_finalizers()
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("completion watcher should release its terminal finalizer");
 
     let root_history_items = root_thread
         .session
@@ -3498,6 +3520,7 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
 
     harness.control.maybe_start_completion_watcher(
         child_thread_id,
+        None,
         Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
@@ -3507,6 +3530,7 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
         })),
         child_thread_id.to_string(),
         /*child_agent_path*/ None,
+        /*hold_terminal_finalizer*/ false,
     );
 
     assert_eq!(wait_for_subagent_notification(&parent_thread).await, true);

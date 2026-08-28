@@ -510,7 +510,12 @@ impl AgentControl {
             .inherited_environments_for_source(state, Some(&session_source))
             .await;
         let inherited_exec_policy = self
-            .inherited_exec_policy_for_source(state, Some(&session_source), &config)
+            .inherited_exec_policy_for_source(
+                state,
+                Some(&session_source),
+                &config,
+                /*suppress_inherited_capabilities*/ false,
+            )
             .await;
 
         match state
@@ -576,15 +581,23 @@ impl AgentControl {
         if spawn_cancellation_owns_child(self, publication_key.as_ref()) {
             return Err(CodexErr::TurnAborted);
         }
-        let multi_agent_version = state
-            .effective_multi_agent_version_for_spawn(
-                &InitialHistory::New,
-                session_source.as_ref(),
-                options.parent_thread_id,
-                /*forked_from_thread_id*/ None,
-                &config,
-            )
-            .await;
+        // Continuity config is deliberately capability-sanitized (including the feature flag),
+        // but its runtime still belongs to the parent's V2 residency pool. Preserve that
+        // lifecycle identity explicitly; otherwise `agents_enabled = false` resolves Disabled
+        // and the child escapes residency accounting.
+        let multi_agent_version = if continuity_health_check {
+            MultiAgentVersion::V2
+        } else {
+            state
+                .effective_multi_agent_version_for_spawn(
+                    &InitialHistory::New,
+                    session_source.as_ref(),
+                    options.parent_thread_id,
+                    /*forked_from_thread_id*/ None,
+                    &config,
+                )
+                .await
+        };
         if let Some(session_source) = session_source.as_ref() {
             self.ensure_execution_capacity(multi_agent_version, session_source)?;
         }
@@ -613,7 +626,12 @@ impl AgentControl {
                 .inherited_environments_for_source(&state, session_source.as_ref())
                 .await,
             exec_policy: self
-                .inherited_exec_policy_for_source(&state, session_source.as_ref(), &config)
+                .inherited_exec_policy_for_source(
+                    &state,
+                    session_source.as_ref(),
+                    &config,
+                    /*suppress_inherited_capabilities*/ continuity_health_check,
+                )
                 .await,
         };
         let (session_source, mut agent_metadata) = match session_source {
@@ -654,6 +672,7 @@ impl AgentControl {
                     &options,
                     inheritance,
                     multi_agent_version,
+                    /*suppress_inherited_capabilities*/ continuity_health_check,
                 ))
                 .await?
             }
@@ -960,7 +979,7 @@ impl AgentControl {
         )
         .await;
 
-        if multi_agent_version != MultiAgentVersion::V2 {
+        if multi_agent_version != MultiAgentVersion::V2 || continuity_health_check {
             let child_reference = agent_metadata
                 .agent_path
                 .as_ref()
@@ -968,9 +987,11 @@ impl AgentControl {
                 .unwrap_or_else(|| new_thread.thread_id.to_string());
             self.maybe_start_completion_watcher(
                 new_thread.thread_id,
+                Some(Arc::clone(&new_thread.thread)),
                 notification_source,
                 child_reference,
                 agent_metadata.agent_path.clone(),
+                /*hold_terminal_finalizer*/ continuity_health_check,
             );
         }
 
@@ -1306,6 +1327,7 @@ impl AgentControl {
         options: &SpawnAgentOptions,
         inheritance: SpawnAgentThreadInheritance,
         multi_agent_version: MultiAgentVersion,
+        suppress_inherited_capabilities: bool,
     ) -> CodexResult<crate::thread_manager::NewThread> {
         let SpawnAgentThreadInheritance {
             environments: inherited_environments,
@@ -1349,15 +1371,19 @@ impl AgentControl {
                     ))
                 })?;
 
-        let selected_capability_roots = forked_rollout_items
-            .iter()
-            .find_map(|item| {
-                let RolloutItem::SessionMeta(meta_line) = item else {
-                    return None;
-                };
-                Some(meta_line.meta.selected_capability_roots.clone())
-            })
-            .unwrap_or_default();
+        let selected_capability_roots = if suppress_inherited_capabilities {
+            Vec::new()
+        } else {
+            forked_rollout_items
+                .iter()
+                .find_map(|item| {
+                    let RolloutItem::SessionMeta(meta_line) = item else {
+                        return None;
+                    };
+                    Some(meta_line.meta.selected_capability_roots.clone())
+                })
+                .unwrap_or_default()
+        };
         if let SpawnAgentForkMode::LastNTurns(last_n_turns) = fork_mode {
             forked_rollout_items =
                 truncate_rollout_to_last_n_fork_turns(&forked_rollout_items, *last_n_turns);
@@ -1615,7 +1641,12 @@ impl AgentControl {
             .inherited_environments_for_source(&state, Some(&session_source))
             .await;
         let inherited_exec_policy = self
-            .inherited_exec_policy_for_source(&state, Some(&session_source), &config)
+            .inherited_exec_policy_for_source(
+                &state,
+                Some(&session_source),
+                &config,
+                /*suppress_inherited_capabilities*/ false,
+            )
             .await;
 
         let resumed_thread = state
@@ -1652,9 +1683,11 @@ impl AgentControl {
                 .unwrap_or_else(|| resumed_thread.thread_id.to_string());
             self.maybe_start_completion_watcher(
                 resumed_thread.thread_id,
+                Some(Arc::clone(&resumed_thread.thread)),
                 Some(notification_source.clone()),
                 child_reference,
                 agent_metadata.agent_path.clone(),
+                /*hold_terminal_finalizer*/ false,
             );
         }
         self.persist_thread_spawn_edge_for_source(
