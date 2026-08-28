@@ -107,8 +107,8 @@ pub enum InferenceCallSource {
     Direct,
     HostContinuityCheck,
     CodeMode {
-        cell_id: String,
-        runtime_tool_call_id: String,
+        pub cell_id: String,
+        pub runtime_tool_call_id: String,
     },
 }
 

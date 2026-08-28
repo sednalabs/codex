@@ -53,6 +53,16 @@ pub enum InferenceObservationSource {
     },
 }
 
+impl InferenceObservationSource {
+    /// Constructs explicit Code Mode provenance for a runtime tool call.
+    pub fn code_mode(cell_id: String, runtime_tool_call_id: String) -> Self {
+        Self::CodeMode {
+            cell_id,
+            runtime_tool_call_id,
+        }
+    }
+}
+
 /// Whether the request used a cached transport/request state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InferenceCacheState {
