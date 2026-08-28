@@ -578,6 +578,19 @@ impl Session {
         } else {
             extensions
         };
+        let mcp_manager = if continuity_health_check {
+            // Session construction resolves MCP configuration before the
+            // continuity marker is installed. Rebuild the manager with the
+            // isolated extension registry so inherited MCP contributors cannot
+            // run during that pre-marker startup path.
+            Arc::new(McpManager::new_with_extensions(
+                Arc::clone(&plugins_manager),
+                Arc::clone(&extensions),
+                mcp_manager.codex_apps_tools_cache(),
+            ))
+        } else {
+            mcp_manager
+        };
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
 
