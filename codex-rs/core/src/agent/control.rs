@@ -1255,9 +1255,23 @@ impl AgentControl {
                 );
                 let context =
                     AgentCommunicationContext::new(AgentCommunicationKind::Result, child_thread_id);
-                let _ = control
+                let delivery_succeeded = control
                     .send_inter_agent_communication(parent_thread_id, communication, context)
-                    .await;
+                    .await
+                    .is_ok();
+                // The finalizer must no longer guard the child before close/unload waits for
+                // termination. Delivery is awaited first so the parent cannot observe a result
+                // after the child has been removed from manager and residency ownership.
+                drop(_terminal_finalizer);
+                if hold_terminal_finalizer && delivery_succeeded {
+                    if let Err(err) = control.close_agent(child_thread_id).await {
+                        warn!(
+                            %child_thread_id,
+                            %err,
+                            "failed to close continuity child after completion delivery"
+                        );
+                    }
+                }
                 return;
             }
             let message = format_subagent_notification_message(child_reference.as_str(), &status);

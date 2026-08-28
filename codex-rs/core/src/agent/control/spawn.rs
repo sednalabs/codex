@@ -622,9 +622,12 @@ impl AgentControl {
         };
         let mut reservation = Some(self.state.reserve_spawn_slot(reservation_max_threads)?);
         let inheritance = SpawnAgentThreadInheritance {
-            environments: self
-                .inherited_environments_for_source(&state, session_source.as_ref())
-                .await,
+            environments: if continuity_health_check {
+                None
+            } else {
+                self.inherited_environments_for_source(&state, session_source.as_ref())
+                    .await
+            },
             exec_policy: self
                 .inherited_exec_policy_for_source(
                     &state,
