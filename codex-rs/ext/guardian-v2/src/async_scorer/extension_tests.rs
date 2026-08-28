@@ -2180,7 +2180,7 @@ async fn contributor_skips_required_models_in_standard_scope() -> Result<()> {
                 /*extension_metrics*/ None,
             )
             .await,
-        Some(ReviewDecision::Approved)
+        None
     );
 
     let turn_store = ExtensionData::new("turn-1");

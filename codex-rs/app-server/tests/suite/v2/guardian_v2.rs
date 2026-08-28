@@ -62,6 +62,7 @@ use super::mcp_tool::start_mcp_server;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 const MODEL: &str = "mock-model";
+const REQUIRED_MODEL: &str = "protected-model";
 const USER_CONTEXT: &str = "The user authorized reading the existing project files.";
 const ROOT_RESTRICTION: &str =
     "I revoke authorization for the MCP tool. Tell the worker to reassess its previous action.";
@@ -191,6 +192,7 @@ enum GuardianToolScope {
 #[derive(Clone, Copy)]
 enum ThreadLifecycle {
     New,
+    RequiredModelSwitch,
     UserInputRestriction,
     UserInputEmpty,
     UserInputHookFeedback,
@@ -415,7 +417,17 @@ async fn parent_response(
                 .contains("Completed synchronous Guardian review.")
         );
         let request_number = state.parent_requests.fetch_add(1, Ordering::SeqCst);
-        if state.user_input_restriction && request_number == 1 {
+        if request["model"] == REQUIRED_MODEL && request_number == 3 {
+            vec![
+                responses::ev_response_created("required-model-command"),
+                responses::ev_function_call(
+                    "required-model-command",
+                    "exec_command",
+                    r#"{"cmd":"echo required-model","login":false}"#,
+                ),
+                responses::ev_completed("required-model-command"),
+            ]
+        } else if state.user_input_restriction && request_number == 1 {
             user_input_request_events()
         } else if request_number < 2
             || state.user_input_restriction && request_number == 2
@@ -639,6 +651,18 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             ),
         )?;
     }
+    if matches!(lifecycle, ThreadLifecycle::RequiredModelSwitch) {
+        let rules_dir = codex_home.path().join("rules");
+        std::fs::create_dir_all(&rules_dir)?;
+        std::fs::write(
+            rules_dir.join("default.rules"),
+            r#"prefix_rule(pattern=["echo"], decision="prompt")"#,
+        )?;
+        std::fs::write(
+            codex_home.path().join("requirements.toml"),
+            format!("[auto_review]\nrequired_on_models = [\"{REQUIRED_MODEL}\"]\n"),
+        )?;
+    }
     let (reviewer_config, requested_reviewer) = match requirement {
         ModelReviewRequirement::Optional => (
             "approvals_reviewer = \"auto_review\"",
@@ -689,6 +713,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     }
     let original_thread_id = match lifecycle {
         ThreadLifecycle::New
+        | ThreadLifecycle::RequiredModelSwitch
         | ThreadLifecycle::UserInputRestriction
         | ThreadLifecycle::UserInputEmpty
         | ThreadLifecycle::UserInputHookFeedback
@@ -736,6 +761,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         .await?;
     let thread = match lifecycle {
         ThreadLifecycle::New
+        | ThreadLifecycle::RequiredModelSwitch
         | ThreadLifecycle::UserInputRestriction
         | ThreadLifecycle::UserInputEmpty
         | ThreadLifecycle::UserInputHookFeedback
@@ -1159,6 +1185,45 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             logs.lines()
                 .any(|line| expected.iter().all(|field| line.contains(field))),
             "missing feedback log with fields: {expected:?}"
+        );
+    }
+
+    if matches!(lifecycle, ThreadLifecycle::RequiredModelSwitch) {
+        // Both MCP actions have low scores; the sandboxed exec must still receive full review.
+        timeout(TIMEOUT, responses_state.classification_completed.notified()).await?;
+        let request_id = app_server
+            .send_turn_start_request(TurnStartParams {
+                thread_id: thread_id.clone(),
+                model: Some(REQUIRED_MODEL.to_owned()),
+                input: vec![UserInput::Text {
+                    text: "Run the requested command.".to_owned(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            })
+            .await?;
+        let _: TurnStartResponse = timeout(TIMEOUT, app_server.read_response(request_id)).await??;
+        let review_started: ItemGuardianApprovalReviewStartedNotification = timeout(
+            TIMEOUT,
+            app_server.read_notification("item/autoApprovalReview/started"),
+        )
+        .await??;
+        assert_eq!(review_started.thread_id, thread_id);
+        let completed: TurnCompletedNotification =
+            timeout(TIMEOUT, app_server.read_notification("turn/completed")).await??;
+        assert_eq!(completed.thread_id, thread_id);
+        assert_eq!(
+            responses_state.guardian_reviews.load(Ordering::SeqCst),
+            expected_guardian_reviews + 1,
+        );
+        assert_eq!(
+            responses_state
+                .luna_requests
+                .lock()
+                .expect("Luna request lock should not be poisoned")
+                .len(),
+            2,
+            "the sandboxed command must skip classification",
         );
     }
 
@@ -1676,6 +1741,23 @@ async fn guardian_v2_required_model_bypasses_scoring_and_runs_full_reviews() -> 
         GuardianRisk::Low,
         ThreadLifecycle::New,
         ModelReviewRequirement::Required,
+        ReviewOutcome::Allow,
+        TranscriptContent::Normal,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guardian_v2_required_model_cannot_reuse_a_cached_score_for_skipped_exec() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "the echo prompt rule requires host-native shell command parsing"
+    );
+    guardian_v2_routes_tool_approvals(
+        GuardianRisk::Low,
+        ThreadLifecycle::RequiredModelSwitch,
+        ModelReviewRequirement::Optional,
         ReviewOutcome::Allow,
         TranscriptContent::Normal,
     )

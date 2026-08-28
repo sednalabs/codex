@@ -261,6 +261,24 @@ impl ApprovalReviewContributor for GuardianV2Extension {
                     record_fast_decision(extension_metrics.as_deref(), "deferred", "out_of_scope");
                     return None;
                 }
+            } else if thread_store.get::<ModelInfo>().is_some() {
+                let manager = self.thread_manager.upgrade()?;
+                let thread_id = ThreadId::from_string(thread_store.level_id()).ok()?;
+                let thread = manager.get_thread(thread_id).await.ok()?;
+                let config = thread.config().await;
+                let model = thread_store.get::<ModelInfo>()?;
+                if config
+                    .config_layer_stack
+                    .requirements()
+                    .auto_review_required_for_model(&model.slug)
+                {
+                    record_fast_decision(
+                        extension_metrics.as_deref(),
+                        "deferred",
+                        "required_model",
+                    );
+                    return None;
+                }
             }
             let Some(score_progress) = thread_store.get::<GuardianV2ScoreProgress>() else {
                 record_fast_decision(extension_metrics.as_deref(), "deferred", "missing_score");
