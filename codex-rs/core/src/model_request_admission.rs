@@ -1024,12 +1024,22 @@ impl ModelRequestLeaseGuard {
     /// Recheck the continuation fence immediately before handing the request
     /// to a transport. This closes the synchronous disable/current-thread
     /// window where revocation cannot await an already-running future.
-    pub(crate) fn ensure_request_open_allowed(&self) -> Result<()> {
+    pub(crate) async fn ensure_request_open_allowed(&mut self) -> Result<()> {
         if self
             ._fence_guard
             .as_ref()
             .is_some_and(|fence| !fence.is_current_epoch())
         {
+            if let Some(admitted) = self.admitted.take() {
+                admitted
+                    .finish_if_unfinished(
+                        LeaseStage::CancelledBeforeAcknowledgement,
+                        GoalOwnerAdmissionTerminalOutcome::Cancelled,
+                        GoalOwnerAdmissionTerminalDisposition::None,
+                    )
+                    .await?;
+            }
+            self._fence_guard = None;
             return Err(CodexErr::Fatal(
                 "goal-owner continuation was revoked before transport open".to_string(),
             ));
