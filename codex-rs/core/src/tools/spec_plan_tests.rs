@@ -1606,6 +1606,36 @@ async fn multi_agent_v2_can_disable_wait_agent() {
 }
 
 #[tokio::test]
+async fn inherited_v2_without_agent_capability_has_no_collaboration_tools() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        update_config(turn, |config| config.agents_enabled = false);
+        // The child keeps the parent's resolved V2 lifecycle for residency, while the
+        // capability gate above must still suppress the collaboration surface.
+        turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
+    })
+    .await;
+
+    plan.assert_visible_lacks(&[
+        MULTI_AGENT_V2_NAMESPACE,
+        "spawn_agent",
+        "send_message",
+        "followup_task",
+        "wait_agent",
+        "interrupt_agent",
+        "list_agents",
+    ]);
+    plan.assert_registered_lacks(&[
+        "collaboration.spawn_agent",
+        "collaboration.send_message",
+        "collaboration.followup_task",
+        "collaboration.wait_agent",
+        "collaboration.interrupt_agent",
+        "collaboration.list_agents",
+    ]);
+}
+
+#[tokio::test]
 async fn tool_mode_selector_overrides_feature_flags() {
     let direct = probe(|turn| {
         set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);

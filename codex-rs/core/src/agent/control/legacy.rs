@@ -34,6 +34,13 @@ impl AgentControl {
                 state.send_op(agent_id, Op::Shutdown {}).await
             };
             thread.wait_until_terminated().await;
+            // A host-continuity child owns a terminal-result finalizer while its completion
+            // watcher delivers the result to the parent. Keep the runtime present until that
+            // delivery finishes; otherwise close would release its registry/residency slot while
+            // the result is still in flight.
+            while thread.session.input_queue.has_pending_terminal_finalizers() {
+                tokio::task::yield_now().await;
+            }
             result
         } else {
             state.send_op(agent_id, Op::Shutdown {}).await
