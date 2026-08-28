@@ -1305,7 +1305,7 @@ async fn run_goal_continuation_child_check(
         ToolName::plain("spawn_agent")
     };
     let arguments = serde_json::json!({
-        "message": "Run one bounded continuity child check: use an available tool to perform one concrete step, then report one concise evidence-backed fact to the parent.",
+        "message": "Run one bounded continuity child check: use an available read-only tool to inspect the current state, then report one concise evidence-backed fact to the parent. Do not modify files, invoke mutation tools, or change external state.",
         "task_name": task_name,
         "fork_turns": "none"
     })
