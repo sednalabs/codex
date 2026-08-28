@@ -1333,6 +1333,7 @@ async fn spawn_v2_subagent(
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            /*continuity_health_check*/ false,
         )
         .await
         .expect("spawn v2 subagent")

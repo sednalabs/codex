@@ -1152,16 +1152,18 @@ impl Session {
             let session_extension_data =
                 codex_extension_api::ExtensionData::new(session_id.to_string());
             let mcp_resource_client = Arc::new(McpResourceClient::new(Arc::clone(&mcp_runtime)));
-            for contributor in extensions.thread_lifecycle_contributors() {
-                contributor.on_thread_start(codex_extension_api::ThreadStartInput {
-                    config: config.as_ref(),
-                    session_source: &session_configuration.session_source,
-                    persistent_thread_state_available: state_db_ctx.is_some(),
-                    environments: session_configuration.environment_selections(),
-                    mcp_resource_client: Some(Arc::clone(&mcp_resource_client)),
-                    session_store: &session_extension_data,
-                    thread_store: &thread_extension_data,
-                }).await;
+            if !continuity_health_check {
+                for contributor in extensions.thread_lifecycle_contributors() {
+                    contributor.on_thread_start(codex_extension_api::ThreadStartInput {
+                        config: config.as_ref(),
+                        session_source: &session_configuration.session_source,
+                        persistent_thread_state_available: state_db_ctx.is_some(),
+                        environments: session_configuration.environment_selections(),
+                        mcp_resource_client: Some(Arc::clone(&mcp_resource_client)),
+                        session_store: &session_extension_data,
+                        thread_store: &thread_extension_data,
+                    }).await;
+                }
             }
 
             let services = SessionServices {
