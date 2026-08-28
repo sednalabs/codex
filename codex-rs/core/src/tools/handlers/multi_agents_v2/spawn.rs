@@ -300,11 +300,11 @@ fn apply_continuity_health_check_restrictions(
             ))
         })?;
     }
-    // A child spawned from a V2 parent inherits that runtime version even when
-    // the child config disables the feature flags. Explicitly disable agent
-    // support so the child cannot regain the collaboration tool surface from
-    // the inherited version during session startup.
-    config.agents_enabled = false;
+    // Keep the general agent setting enabled so a child spawned from a V2 parent
+    // inherits the V2 runtime version for residency accounting. The explicit
+    // MultiAgentV2/Collab feature gates above, and the tool-plan guard below,
+    // suppress the collaboration surface independently of that lifecycle bit.
+    config.agents_enabled = true;
     config
         .permissions
         .set_permission_profile(PermissionProfile::read_only())
@@ -349,7 +349,7 @@ mod tests {
         ] {
             assert!(!config.features.enabled(feature));
         }
-        assert!(!config.agents_enabled);
+        assert!(config.agents_enabled);
         assert_eq!(
             config.permissions.permission_profile(),
             &PermissionProfile::read_only()
