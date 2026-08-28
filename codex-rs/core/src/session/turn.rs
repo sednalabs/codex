@@ -211,6 +211,16 @@ pub(crate) async fn run_turn(
             error,
             issuing_turn_context,
         } = failure;
+        // The continuation claim is transferred to this turn before
+        // pre-sampling compaction. If compaction aborts or fails before the
+        // first model request consumes it, reopen the exact pending row so a
+        // later wake can retry instead of leaving a durable claim stranded.
+        if let Err(release_error) = client_session.release_goal_owner_dispatch_claim().await {
+            tracing::warn!(
+                error = %release_error,
+                "failed to release goal-owner dispatch claim after pre-sampling compaction failure"
+            );
+        }
         if matches!(error.details(), CodexErrorDetails::TurnAborted) {
             run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
             return Err(error);

@@ -1247,6 +1247,16 @@ impl ModelClient {
 
 impl Drop for ModelClientSession {
     fn drop(&mut self) {
+        if let Some(continuation) = self.goal_owner_continuation.take() {
+            let broker = self.client.state.request_admission_broker.clone();
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    if let Err(error) = broker.release_dispatch_claim(&continuation).await {
+                        tracing::warn!(%error, "failed to release goal-owner dispatch claim while dropping turn session");
+                    }
+                });
+            }
+        }
         let websocket_session = std::mem::take(&mut self.websocket_session);
         self.client
             .store_cached_websocket_session(websocket_session);
@@ -1256,6 +1266,17 @@ impl Drop for ModelClientSession {
 impl ModelClientSession {
     pub(crate) fn set_goal_owner_continuation(&mut self, continuation: GoalOwnerContinuation) {
         self.goal_owner_continuation = Some(continuation);
+    }
+
+    pub(crate) async fn release_goal_owner_dispatch_claim(&self) -> Result<()> {
+        let Some(continuation) = self.goal_owner_continuation.as_ref() else {
+            return Ok(());
+        };
+        self.client
+            .state
+            .request_admission_broker
+            .release_dispatch_claim(continuation)
+            .await
     }
 
     fn inference_observation_metadata(
