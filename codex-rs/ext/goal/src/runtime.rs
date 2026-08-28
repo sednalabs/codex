@@ -222,13 +222,20 @@ impl GoalRuntimeHandle {
             .fetch_add(1, Ordering::Relaxed)
             + 1;
         let fence = Arc::clone(&self.inner.continuation.fence);
-        match tokio::runtime::Handle::try_current() {
+        let cooperative_quiescence = match tokio::runtime::Handle::try_current() {
             Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
                 tokio::task::block_in_place(|| fence.revoke_and_wait());
+                false
             }
-            Ok(_) => fence.revoke(),
-            Err(_) => fence.revoke_and_wait(),
-        }
+            Ok(_) => {
+                fence.revoke();
+                true
+            }
+            Err(_) => {
+                fence.revoke_and_wait();
+                false
+            }
+        };
         if enabled {
             let authority = self
                 .inner
@@ -239,7 +246,13 @@ impl GoalRuntimeHandle {
                 .last_authority
                 .clone();
             let inner = Arc::downgrade(&self.inner);
+            let quiescence_fence = Arc::clone(&fence);
             let reconcile = async move {
+                if cooperative_quiescence {
+                    while !quiescence_fence.is_quiescent() {
+                        tokio::task::yield_now().await;
+                    }
+                }
                 let Some(inner) = inner.upgrade() else {
                     return;
                 };
@@ -318,7 +331,13 @@ impl GoalRuntimeHandle {
             state.blocked = true;
             if let Some(authority) = authority {
                 let inner = Arc::downgrade(&self.inner);
+                let quiescence_fence = Arc::clone(&fence);
                 let cancel = async move {
+                    if cooperative_quiescence {
+                        while !quiescence_fence.is_quiescent() {
+                            tokio::task::yield_now().await;
+                        }
+                    }
                     let Some(inner) = inner.upgrade() else {
                         return;
                     };
@@ -1031,6 +1050,16 @@ impl GoalRuntimeHandle {
 
     pub async fn restore_after_resume(&self) -> Result<(), String> {
         let _goal_state_permit = self.goal_state_permit().await?;
+        // Resume is a recovery boundary, not a read-only observation. A
+        // runtime that failed the kernel ownership lock must leave the live
+        // owner's claims, deferrals, and goal state untouched.
+        if !self.inner.state_dbs.owns_goal_runtime() {
+            tracing::debug!(
+                thread_id = %self.thread_id(),
+                "skipping goal continuation recovery without runtime ownership"
+            );
+            return Ok(());
+        }
         let admissions = self.inner.state_dbs.goal_owner_admissions();
         let persisted = admissions
             .get(self.thread_id())
@@ -1066,6 +1095,16 @@ impl GoalRuntimeHandle {
                         .map_err(|err| err.to_string())?;
                 }
                 self.inner.accounting_state.clear_active_goal();
+                // Exhaustion is a definite pre-provider terminal outcome. Once
+                // the goal has been durably blocked, retire the exhausted
+                // generation and atomically clear only its stale deferral;
+                // the immutable row remains available in history.
+                self.retire_safe_terminal_admission(
+                    &record.authority,
+                    /*clear_deferral*/ true,
+                    /*allow_exhausted*/ true,
+                )
+                .await?;
                 return Ok(());
             }
             self.retire_safe_terminal_admission(
@@ -1299,6 +1338,10 @@ impl GoalRuntimeHandle {
         let claimed_continuation = GoalOwnerContinuation::with_dispatch_claim(
             continuation_authority.clone(),
             dispatch_claim_id,
+        )
+        .with_fence(
+            Arc::clone(&self.inner.continuation.fence),
+            self.inner.continuation.fence.current_epoch(),
         );
         let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
             self.release_dispatch_claim_best_effort(

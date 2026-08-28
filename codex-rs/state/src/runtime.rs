@@ -376,12 +376,15 @@ impl StateRuntime {
             };
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let thread_recency_at_millis = thread_recency_at_millis.unwrap_or(0);
-        let goal_owner_admissions = GoalOwnerAdmissionStore::new(Arc::clone(&goals_pool));
+        let bootstrap_goal_owner_admissions = GoalOwnerAdmissionStore::new(Arc::clone(&goals_pool));
         let runtime_owner = if let Some(process_lock) =
             try_acquire_runtime_process_lock(&goals_path)?
         {
             let owner_id = Uuid::now_v7();
-            if let Err(err) = goal_owner_admissions.claim_runtime_owner(owner_id).await {
+            if let Err(err) = bootstrap_goal_owner_admissions
+                .claim_runtime_owner(owner_id)
+                .await
+            {
                 close_sqlite_pools(&[
                     pool.as_ref(),
                     logs_pool.as_ref(),
@@ -392,7 +395,7 @@ impl StateRuntime {
                 .await;
                 return Err(err);
             }
-            if let Err(err) = goal_owner_admissions
+            if let Err(err) = bootstrap_goal_owner_admissions
                 .recover_in_flight_on_open_as_owner(owner_id)
                 .await
             {
@@ -408,7 +411,7 @@ impl StateRuntime {
                 return Err(err);
             }
             Some(Arc::new(RuntimeOwnerLease {
-                store: goal_owner_admissions.clone(),
+                store: bootstrap_goal_owner_admissions.clone(),
                 owner_id,
                 _process_lock: process_lock,
                 released: AtomicBool::new(false),
@@ -418,6 +421,11 @@ impl StateRuntime {
                 "another StateRuntime owns the goals database or process lock is unavailable; admission recovery is disabled"
             );
             None
+        };
+        let goal_owner_admissions = if runtime_owner.is_some() {
+            GoalOwnerAdmissionStore::new(Arc::clone(&goals_pool))
+        } else {
+            GoalOwnerAdmissionStore::read_only(Arc::clone(&goals_pool))
         };
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
@@ -477,6 +485,13 @@ impl StateRuntime {
     /// Durable authority ledger for one exact goal-owner admission per thread.
     pub fn goal_owner_admissions(&self) -> &GoalOwnerAdmissionStore {
         &self.goal_owner_admissions
+    }
+
+    /// Whether this runtime holds the process-lifetime goal database lease.
+    /// Callers must gate recovery and admission mutations on this capability;
+    /// a read-only runtime may still inspect durable state for diagnostics.
+    pub fn owns_goal_runtime(&self) -> bool {
+        self.runtime_owner.is_some()
     }
 
     pub fn memories(&self) -> &MemoryStore {
