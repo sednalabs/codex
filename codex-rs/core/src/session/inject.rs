@@ -116,15 +116,18 @@ impl Session {
             ));
         }
 
+        let reserved_state = Arc::clone(&turn_state);
         match self
-            .start_reserved_task(turn_context, turn_state, input, RegularTask::new())
+            .try_start_reserved_task(turn_context, turn_state, input, RegularTask::new())
             .await
         {
             Ok(()) => Ok(()),
-            Err(input) => Err(TryStartTurnIfIdleError::new(
-                TryStartTurnIfIdleRejectionReason::Busy,
-                input,
-            )),
+            Err(rejection) => {
+                self.clear_reserved_idle_turn(&reserved_state).await;
+                let reason = rejection.reason;
+                let input = self.handle_task_start_rejection(rejection).await;
+                Err(TryStartTurnIfIdleError::new(reason, input))
+            }
         }
     }
 
