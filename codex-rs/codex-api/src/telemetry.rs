@@ -49,7 +49,7 @@ pub trait WebsocketTelemetry: Send + Sync {
 /// opportunity rather than sharing a pre-retry observation.
 pub trait RequestAttemptObserver: Send + Sync {
     fn on_request_open(&self);
-    fn on_request_failure(&self, error: &str, provider_terminal: bool);
+    fn on_request_failure(&self, error: &str, provider_terminal: bool, usage_limit: bool);
 }
 
 pub(crate) trait WithStatus {
@@ -131,6 +131,15 @@ where
                 observer.on_request_failure(
                     &error.to_string(),
                     matches!(error, TransportError::Http { .. }),
+                    matches!(
+                        error,
+                        TransportError::Http {
+                            status,
+                            body: Some(body),
+                            ..
+                        } if *status == StatusCode::TOO_MANY_REQUESTS
+                            && body.contains("usage_limit_reached")
+                    ),
                 );
             }
             if let Some(t) = telemetry.as_ref() {

@@ -72,6 +72,7 @@ pub use goal_owner_admissions::GoalOwnerAdmissionLease;
 pub use goal_owner_admissions::GoalOwnerAdmissionObservation;
 pub use goal_owner_admissions::GoalOwnerAdmissionPhase;
 pub use goal_owner_admissions::GoalOwnerAdmissionRecord;
+pub use goal_owner_admissions::GoalOwnerAdmissionRetirementReason;
 pub use goal_owner_admissions::GoalOwnerAdmissionStore;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalDisposition;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalOutcome;

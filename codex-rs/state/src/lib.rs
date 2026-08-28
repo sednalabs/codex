@@ -69,6 +69,7 @@ pub use runtime::GoalOwnerAdmissionLease;
 pub use runtime::GoalOwnerAdmissionObservation;
 pub use runtime::GoalOwnerAdmissionPhase;
 pub use runtime::GoalOwnerAdmissionRecord;
+pub use runtime::GoalOwnerAdmissionRetirementReason;
 pub use runtime::GoalOwnerAdmissionStore;
 pub use runtime::GoalOwnerAdmissionTerminalDisposition;
 pub use runtime::GoalOwnerAdmissionTerminalOutcome;
