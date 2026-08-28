@@ -17,6 +17,8 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
+use crate::InferenceObservationSink;
+use crate::TraceWriterInferenceObservationSink;
 use crate::model::AgentThreadId;
 use crate::model::CodexTurnId;
 use crate::model::InferenceCallId;
@@ -131,6 +133,21 @@ impl InferenceTraceContext {
                 terminal_recorded: AtomicBool::new(false),
             }),
         }
+    }
+
+    /// Returns the durable typed-observation sink for this trace, when enabled.
+    ///
+    /// Core/admission code remains responsible for constructing exact
+    /// `InferenceAttemptMetadata` from its resolved request state; this method
+    /// only supplies the existing trace writer seam and never builds or mutates
+    /// a provider request.
+    pub fn observation_sink(&self) -> Option<Arc<dyn InferenceObservationSink>> {
+        let InferenceTraceContextState::Enabled(context) = &self.state else {
+            return None;
+        };
+        Some(Arc::new(TraceWriterInferenceObservationSink::new(
+            Arc::clone(&context.writer),
+        )))
     }
 }
 

@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::InferenceCallStatus;
 use codex_protocol::protocol::InferenceCallTransport;
 use codex_protocol::protocol::SessionSource;
+use tempfile::TempDir;
 
 use super::InMemoryInferenceObservationSink;
 use super::InferenceAdmission;
@@ -12,9 +14,12 @@ use super::InferenceObservationError;
 use super::InferenceObservationEvent;
 use super::InferenceObservationRecorder;
 use super::InferenceObservationSink;
+use super::InferenceObservationSource;
 use super::InferenceProviderIdentity;
 use super::InferenceRequestKind;
 use super::ProviderTerminalResult;
+use super::TraceWriterInferenceObservationSink;
+use super::protocol_event_for_observation;
 
 fn metadata(admission: InferenceAdmission) -> InferenceAttemptMetadata {
     InferenceAttemptMetadata {
@@ -23,6 +28,7 @@ fn metadata(admission: InferenceAdmission) -> InferenceAttemptMetadata {
         turn_id: "turn-1".to_string(),
         parent_thread_id: Some(ThreadId::new()),
         spawn_request_id: Some("spawn-1".to_string()),
+        source: Some(InferenceObservationSource::Direct),
         session_source: SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::Other(
             "test".to_string(),
         )),
@@ -221,4 +227,105 @@ fn sink_trait_is_synchronous_and_receives_owned_events() {
         .record_transport_uncertain("unknown")
         .expect("uncertain terminal");
     assert_eq!(*sink.0.lock().expect("counter lock"), 2);
+}
+
+#[test]
+fn durable_adapter_preserves_effective_identity_source_and_usage_limit() {
+    let attempt = metadata(InferenceAdmission::Admitted);
+    let event = protocol_event_for_observation(InferenceObservationEvent::ProviderTerminal {
+        attempt,
+        result: ProviderTerminalResult::UsageLimitReached {
+            upstream_request_id: Some("request-1".to_string()),
+            detail: Some("provider limit".to_string()),
+        },
+    })
+    .expect("bounded protocol event");
+
+    assert_eq!(event.status, InferenceCallStatus::UsageLimitReached);
+    assert_eq!(
+        event.source,
+        Some(codex_protocol::protocol::InferenceCallSource::Direct)
+    );
+    assert_eq!(event.configured_provider, "configured-provider");
+    assert_eq!(event.effective_provider, "resolved-provider");
+    assert_eq!(event.requested_model, "requested-model");
+    assert_eq!(event.effective_model, "resolved-model");
+    assert_eq!(event.outcome_detail.as_deref(), Some("provider limit"));
+    assert!(event.observed_provider.is_none());
+    assert!(event.observed_model.is_none());
+}
+
+#[test]
+fn trace_writer_sink_persists_bounded_protocol_event() -> anyhow::Result<()> {
+    let temp = TempDir::new()?;
+    let thread_id = ThreadId::new();
+    let writer = Arc::new(crate::TraceWriter::create(
+        temp.path(),
+        "trace-1".to_string(),
+        "rollout-1".to_string(),
+        thread_id.to_string(),
+    )?);
+    let sink = TraceWriterInferenceObservationSink::new(writer);
+    let mut attempt = metadata(InferenceAdmission::Admitted);
+    attempt.thread_id = thread_id;
+
+    sink.record(InferenceObservationEvent::TransportUncertain {
+        attempt,
+        reason: "transport ended without provider evidence".to_string(),
+    });
+
+    let trace_log = std::fs::read_to_string(temp.path().join("trace.jsonl"))?;
+    assert!(trace_log.contains("\"event_type\":\"inference_call\""));
+    assert!(temp.path().join("payloads/1.json").exists());
+    let payload = std::fs::read_to_string(temp.path().join("payloads/1.json"))?;
+    assert!(payload.contains("\"status\": \"transport_uncertain\""));
+    assert!(!payload.contains("provider_executed"));
+    Ok(())
+}
+
+#[test]
+fn abandoned_open_is_settled_as_transport_uncertain() {
+    let sink = InMemoryInferenceObservationSink::default();
+    {
+        let recorder = InferenceObservationRecorder::new(
+            metadata(InferenceAdmission::Admitted),
+            Arc::new(sink.clone()),
+        );
+        recorder
+            .record_physical_request_opened()
+            .expect("request opens");
+    }
+    assert!(matches!(
+        sink.events().as_slice(),
+        [
+            InferenceObservationEvent::PhysicalRequestOpened { .. },
+            InferenceObservationEvent::TransportUncertain { .. }
+        ]
+    ));
+}
+
+#[test]
+fn sink_panic_does_not_roll_back_lifecycle_transition() {
+    struct PanicSink;
+    impl InferenceObservationSink for PanicSink {
+        fn record(&self, _event: InferenceObservationEvent) {
+            panic!("test sink panic");
+        }
+    }
+
+    let recorder = InferenceObservationRecorder::new(
+        metadata(InferenceAdmission::Admitted),
+        Arc::new(PanicSink),
+    );
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        recorder.record_physical_request_opened().unwrap();
+    }));
+    assert!(panic.is_err());
+    assert_eq!(
+        recorder.record_provider_terminal(ProviderTerminalResult::Failed {
+            upstream_request_id: None,
+            error: "late".to_string(),
+        }),
+        Err(InferenceObservationError::TerminalAlreadyRecorded)
+    );
 }

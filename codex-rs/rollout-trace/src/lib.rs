@@ -52,12 +52,16 @@ pub use inference_observation::InferenceObservationEvent;
 pub use inference_observation::InferenceObservationRecorder;
 /// Synchronous sink for inference lifecycle observations.
 pub use inference_observation::InferenceObservationSink;
+/// Protocol-neutral explicit source for one inference attempt.
+pub use inference_observation::InferenceObservationSource;
 /// Exact configured/requested/effective provider and model identity.
 pub use inference_observation::InferenceProviderIdentity;
 /// Request kind that caused one exact inference attempt.
 pub use inference_observation::InferenceRequestKind;
 /// Provider terminal result captured by the observation seam.
 pub use inference_observation::ProviderTerminalResult;
+/// Durable sink that writes bounded inference observations to a trace bundle.
+pub use inference_observation::TraceWriterInferenceObservationSink;
 /// Trace-owned MCP execution correlation propagated to bridge request metadata.
 pub use mcp::McpCallTraceContext;
 /// Public reduced trace model returned by replay.
