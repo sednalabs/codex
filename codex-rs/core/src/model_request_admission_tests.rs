@@ -322,6 +322,89 @@ async fn terminal_success_is_unrestricted_before_identity_matching() {
         .await
         .expect("unrestricted successor can call provider");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let continuation_decision = broker
+        .admit(
+            &identity(thread_id, InferenceRequestKind::Turn),
+            Some(&record.continuation_authority()),
+        )
+        .await
+        .expect("evaluate settled continuation");
+    assert!(matches!(
+        continuation_decision,
+        ModelRequestAdmissionDecision::Dormant
+    ));
+}
+
+#[tokio::test]
+async fn continuation_token_without_active_record_fails_closed() {
+    let (_home, state_db) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
+    let store = broker
+        .state_db
+        .as_ref()
+        .expect("state runtime")
+        .goal_owner_admissions();
+    let thread_id = ThreadId::new();
+    let record = store
+        .observe_denial(&observation(
+            thread_id,
+            "retired-before-continuation",
+            GoalOwnerAdmissionPhase::Pending,
+            Utc::now() - Duration::seconds(1),
+            InferenceRequestKind::Turn,
+        ))
+        .await
+        .expect("record eligible admission");
+    let lease = match store
+        .try_acquire(&record.continuation_authority(), Utc::now())
+        .await
+        .expect("acquire admission")
+    {
+        GoalOwnerAdmissionAcquireResult::Acquired(lease) => *lease,
+        result => panic!("expected eligible lease, got {result:?}"),
+    };
+    store
+        .finish(
+            &lease,
+            GoalOwnerAdmissionTerminalOutcome::Succeeded,
+            GoalOwnerAdmissionTerminalDisposition::None,
+        )
+        .await
+        .expect("finish admission");
+    store
+        .retire(
+            &record.authority,
+            codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
+        )
+        .await
+        .expect("retire admission")
+        .expect("retirement persists");
+
+    let decision = broker
+        .admit(
+            &identity(thread_id, InferenceRequestKind::Turn),
+            Some(&record.continuation_authority()),
+        )
+        .await
+        .expect("evaluate missing active generation");
+    assert!(matches!(decision, ModelRequestAdmissionDecision::Dormant));
+    let calls = AtomicUsize::new(0);
+    assert!(fake_stream_request(&decision, &calls).await.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let no_state_broker = ModelRequestAdmissionBroker::new(None);
+    let no_state_decision = no_state_broker
+        .admit(
+            &identity(thread_id, InferenceRequestKind::Turn),
+            Some(&record.continuation_authority()),
+        )
+        .await
+        .expect("evaluate continuation without state runtime");
+    assert!(matches!(
+        no_state_decision,
+        ModelRequestAdmissionDecision::Dormant
+    ));
 }
 
 #[test]

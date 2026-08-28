@@ -158,6 +158,11 @@ impl GoalRuntimeHandle {
                 let runtime = GoalRuntimeHandle {
                     inner: Arc::clone(&inner),
                 };
+                if runtime.inner.enablement_epoch.load(Ordering::Relaxed) != enablement_epoch
+                    || !runtime.inner.enabled.load(Ordering::Relaxed)
+                {
+                    return;
+                }
                 if let Some(authority) = authority
                     && let Err(error) = runtime.cancel_and_retire_admission(&authority).await
                 {
@@ -221,6 +226,15 @@ impl GoalRuntimeHandle {
                         }
                         Ok(_) => {}
                         Err(error) => tracing::warn!(error = %error, "failed to durably cancel disabled goal continuation"),
+                    }
+                    if let Err(error) = admissions
+                        .retire_cancelled_generation(
+                            &authority,
+                            codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
+                        )
+                        .await
+                    {
+                        tracing::warn!(error = %error, "failed to reconcile disabled goal continuation retirement");
                     }
                 };
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -630,10 +644,8 @@ impl GoalRuntimeHandle {
         &self,
         authority: &codex_state::GoalOwnerAdmissionAuthority,
     ) -> Result<(), String> {
-        let cancelled = self
-            .inner
-            .state_dbs
-            .goal_owner_admissions()
+        let admissions = self.inner.state_dbs.goal_owner_admissions();
+        let cancelled = admissions
             .cancel(
                 authority,
                 codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
@@ -645,11 +657,17 @@ impl GoalRuntimeHandle {
             && cancelled.terminal_outcome
                 == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled
         {
-            self.inner
-                .state_dbs
-                .goal_owner_admissions()
+            admissions
                 .retire(
                     &cancelled.authority,
+                    codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
+                )
+                .await
+                .map_err(|err| err.to_string())?;
+        } else {
+            admissions
+                .retire_cancelled_generation(
+                    authority,
                     codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
                 )
                 .await
@@ -812,33 +830,12 @@ impl GoalRuntimeHandle {
                 .get(self.thread_id())
                 .await
                 .map_err(|err| err.to_string())?
-                && record.phase == codex_state::GoalOwnerAdmissionPhase::Pending
+                && (record.phase == codex_state::GoalOwnerAdmissionPhase::Pending
+                    || (record.phase == codex_state::GoalOwnerAdmissionPhase::Terminal
+                        && record.terminal_outcome
+                            == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled))
             {
-                let cancelled = self
-                    .inner
-                    .state_dbs
-                    .goal_owner_admissions()
-                    .cancel(
-                        &record.authority,
-                        codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
-                    )
-                    .await
-                    .map_err(|err| err.to_string())?;
-                if let Some(cancelled) = cancelled
-                    && cancelled.phase == codex_state::GoalOwnerAdmissionPhase::Terminal
-                    && cancelled.terminal_outcome
-                        == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled
-                {
-                    self.inner
-                        .state_dbs
-                        .goal_owner_admissions()
-                        .retire(
-                            &cancelled.authority,
-                            codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
-                        )
-                        .await
-                        .map_err(|err| err.to_string())?;
-                }
+                self.cancel_and_retire_admission(&record.authority).await?;
             }
             return Ok(());
         }
@@ -873,6 +870,12 @@ impl GoalRuntimeHandle {
         else {
             return Ok(());
         };
+        if record.phase == codex_state::GoalOwnerAdmissionPhase::Terminal
+            && record.terminal_outcome == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled
+        {
+            self.cancel_and_retire_admission(&record.authority).await?;
+            return Ok(());
+        }
         if record.phase != codex_state::GoalOwnerAdmissionPhase::Pending {
             return Ok(());
         }
