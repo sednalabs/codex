@@ -928,6 +928,7 @@ impl Session {
 
         let mut mcp_auth_changes = auth_manager.auth_change_receiver();
         let auth_manager_clone = Arc::clone(&auth_manager);
+        let plugins_manager_for_prewarm = Arc::clone(&plugins_manager);
         let config_for_mcp = Arc::clone(&config);
         let mcp_manager_for_mcp = Arc::clone(&mcp_manager);
         let mcp_thread_init_for_startup = &mcp_thread_init;
@@ -941,6 +942,20 @@ impl Session {
             .unwrap_or_else(|| session_configuration.cwd().to_path_buf());
         let auth_and_mcp_fut = async move {
             let auth = auth_manager_clone.auth().await;
+            if config_for_mcp.features.plugin_recommendations_enabled() {
+                let plugins_config = config_for_mcp.plugins_config_input();
+                let auth_for_prewarm = auth.clone();
+                // Fetch the catalog while MCP and plugin/skill initialization continue.
+                // Context construction still handles filtering and prompt insertion.
+                tokio::spawn(async move {
+                    plugins_manager_for_prewarm
+                        .recommended_plugins_mode_for_config(
+                            &plugins_config,
+                            auth_for_prewarm.as_ref(),
+                        )
+                        .await;
+                });
+            }
             let mcp_projection = mcp_manager_for_mcp
                 .runtime_config_for_step(
                     &config_for_mcp,

@@ -1764,11 +1764,22 @@ impl PluginsManager {
                 .await
                 {
                     Ok(mode) => {
-                        let mut cache = match self.recommended_plugins_cache.write() {
-                            Ok(cache) => cache,
+                        let refreshes = match self.recommended_plugins_refreshes.read() {
+                            Ok(refreshes) => refreshes,
                             Err(err) => err.into_inner(),
                         };
-                        cache.insert(cache_key.clone(), mode.clone());
+                        // Hold the refresh lock through publication, matching cache-clear lock
+                        // order. An invalidated initializer must not repopulate the cache.
+                        if refreshes
+                            .get(&cache_key)
+                            .is_some_and(|current| Arc::ptr_eq(current, &refresh))
+                        {
+                            let mut cache = match self.recommended_plugins_cache.write() {
+                                Ok(cache) => cache,
+                                Err(err) => err.into_inner(),
+                            };
+                            cache.insert(cache_key.clone(), mode.clone());
+                        }
                         mode
                     }
                     Err(err) => {

@@ -5897,6 +5897,94 @@ plugins = true
 }
 
 #[tokio::test]
+async fn recommended_plugins_cache_clear_rejects_stale_fetch_completion() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_file(
+        &tmp.path().join(CONFIG_TOML_FILE),
+        "[features]\nplugins = true\n",
+    );
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let server = MockServer::start().await;
+    let request_started = Arc::new(tokio::sync::Notify::new());
+    let started = Arc::clone(&request_started);
+    let (release_response, released) = std::sync::mpsc::channel();
+    let released = std::sync::Mutex::new(released);
+    let old_response = ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "enabled": true,
+        "plugins": [{"id": "plugin_old", "name": "old", "display_name": "Old"}]
+    }));
+    Mock::given(method("GET"))
+        .and(path("/ps/plugins/suggested/codex"))
+        .respond_with(move |_: &wiremock::Request| {
+            started.notify_one();
+            // Wiremock runs its own server thread. Dropping the sender also releases it.
+            let _ = released.lock().unwrap().recv();
+            old_response.clone()
+        })
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/ps/plugins/suggested/codex"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "enabled": true,
+            "plugins": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut config = load_config(tmp.path(), tmp.path()).await;
+    config.chatgpt_base_url = server.uri();
+    let manager = test_plugins_manager(tmp.path().to_path_buf());
+    let old_lookup = manager.recommended_plugins_mode_for_config(&config, Some(&auth));
+    tokio::pin!(old_lookup);
+    tokio::select! {
+        biased;
+        _ = request_started.notified() => {}
+        mode = old_lookup.as_mut() => panic!("old fetch finished before release: {mode:?}"),
+    }
+
+    manager.clear_recommended_plugins_cache();
+    release_response
+        .send(())
+        .expect("release old HTTP response");
+
+    // Keep the old initializer unpolled until the new fetch publishes. An invalidated
+    // fetch must not overwrite the fresh result.
+    let new_mode = tokio::time::timeout(
+        Duration::from_secs(10),
+        manager.recommended_plugins_mode_for_config(&config, Some(&auth)),
+    )
+    .await
+    .expect("new lookup should finish independently of the invalidated fetch");
+    assert_eq!(
+        new_mode,
+        RecommendedPluginsMode::Endpoint {
+            plugins: Vec::new()
+        }
+    );
+    assert_eq!(
+        old_lookup.await,
+        RecommendedPluginsMode::Endpoint {
+            plugins: vec![RecommendedPlugin {
+                config_id: "old@openai-curated-remote".to_string(),
+                remote_plugin_id: "plugin_old".to_string(),
+                display_name: "Old".to_string(),
+            }]
+        }
+    );
+    assert_eq!(
+        manager
+            .recommended_plugins_mode_for_config(&config, Some(&auth))
+            .await,
+        new_mode
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn recommended_plugin_candidates_filter_installed_and_disabled_plugins() {
     let tmp = tempfile::tempdir().unwrap();
     write_file(

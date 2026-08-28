@@ -3731,11 +3731,10 @@ impl Session {
             .plugins_manager
             .plugins_for_config(&turn_context.config.plugins_config_input())
             .await;
-        let features = turn_context.config.features.get();
-        let recommended_plugin_candidates = if features.enabled(Feature::Apps)
-            && features.enabled(Feature::Plugins)
-            && (features.enabled(Feature::ToolSuggest)
-                || features.enabled(Feature::RecommendedPlugins))
+        let recommended_plugin_candidates = if turn_context
+            .config
+            .features
+            .plugin_recommendations_enabled()
         {
             let auth = self.services.auth_manager.auth().await;
             let plugins_config = turn_context.config.plugins_config_input();
