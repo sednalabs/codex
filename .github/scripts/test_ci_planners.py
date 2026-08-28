@@ -1130,6 +1130,67 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_late_steer_observer_route_excludes_production_candidate(self) -> None:
+        production_bearing_paths = [
+            "codex-rs/core/tests/common/streaming_sse.rs",
+            "codex-rs/core/tests/suite/pending_input.rs",
+            "codex-rs/core/src/session/mod.rs",
+            "codex-rs/core/src/session/session.rs",
+            "codex-rs/core/src/session/tests.rs",
+            "codex-rs/core/src/tasks/mod.rs",
+            "justfile",
+            ".github/validation-lanes.json",
+        ]
+        observer_lane = "codex.core-late-steer-observer-targeted"
+
+        for resolver in (RESOLVE_VALIDATION_PLAN, RESOLVE_RUST_CI_MODE):
+            with self.subTest(resolver=resolver.__name__, paths=production_bearing_paths):
+                self.assertEqual(
+                    resolver.select_followup_lanes(production_bearing_paths, self.routes),
+                    [],
+                )
+        heavy_plan = run_script(
+            SCRIPTS_DIR / "resolve_validation_plan.py",
+            "heavy",
+            "--event-name",
+            "pull_request",
+            "--requested-lane",
+            "",
+            "--run-all-lanes",
+            "false",
+            "--run-core-family",
+            "true",
+            "--run-attestation-family",
+            "false",
+            "--run-workflow-family",
+            "false",
+            "--run-ui-protocol-family",
+            "false",
+            "--run-docs-family",
+            "false",
+            "--changed-files-json",
+            json.dumps(production_bearing_paths),
+        )
+        self.assertNotIn(observer_lane, heavy_plan["selected_lane_ids"])
+        self.assertEqual(heavy_plan["run_smoke_gate"], "true")
+
+        safe_observer_paths = [
+            "codex-rs/core/tests/common/streaming_sse.rs",
+            "codex-rs/core/tests/suite/pending_input.rs",
+            "justfile",
+            ".github/validation-lanes.json",
+        ]
+        for resolver in (RESOLVE_VALIDATION_PLAN, RESOLVE_RUST_CI_MODE):
+            with self.subTest(resolver=resolver.__name__, paths=safe_observer_paths):
+                self.assertEqual(
+                    resolver.select_followup_lanes(safe_observer_paths, self.routes),
+                    [observer_lane],
+                )
+        lane = next(
+            lane for lane in self.catalog["lanes"] if lane["lane_id"] == observer_lane
+        )
+        self.assertTrue(lane["explicit_only"])
+
     def test_native_computer_use_code_mode_route_covers_wrapper_and_provider_lanes(
         self,
     ) -> None:
