@@ -72,6 +72,9 @@ pub struct RolloutTrace {
     pub codex_turns: BTreeMap<CodexTurnId, CodexTurn>,
     pub conversation_items: BTreeMap<ConversationItemId, ConversationItem>,
     pub inference_calls: BTreeMap<InferenceCallId, InferenceCall>,
+    /// Payload-free lifecycle/provenance observations for physical attempts.
+    #[serde(default)]
+    pub inference_observations: BTreeMap<InferenceCallId, InferenceCallObservation>,
     /// Model-authored `exec` JavaScript cells keyed by reducer-owned cell ID.
     pub code_cells: BTreeMap<CodeCellId, CodeCell>,
     pub tool_calls: BTreeMap<ToolCallId, ToolCall>,
@@ -110,6 +113,7 @@ impl RolloutTrace {
             codex_turns: BTreeMap::new(),
             conversation_items: BTreeMap::new(),
             inference_calls: BTreeMap::new(),
+            inference_observations: BTreeMap::new(),
             code_cells: BTreeMap::new(),
             tool_calls: BTreeMap::new(),
             terminal_sessions: BTreeMap::new(),

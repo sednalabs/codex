@@ -26,6 +26,7 @@ mod code_cell;
 mod compaction;
 mod conversation;
 mod inference;
+mod inference_observation;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod thread;
@@ -231,10 +232,16 @@ impl TraceReducer {
             | RawTraceEventPayload::InferenceCancelled { .. }) => {
                 self.complete_inference_call(event.seq, event.wall_time_unix_ms, payload)?;
             }
-            RawTraceEventPayload::ProtocolEventObserved { .. } => {
-                // Protocol wrappers are raw debug breadcrumbs. Typed hooks own
-                // the reduced graph, so these payload refs are retained without
-                // creating semantic objects.
+            RawTraceEventPayload::ProtocolEventObserved {
+                event_type,
+                event_payload,
+            } => {
+                self.reduce_inference_observation(
+                    event.seq,
+                    event.wall_time_unix_ms,
+                    event_type,
+                    event_payload,
+                )?;
             }
             RawTraceEventPayload::ToolCallStarted {
                 tool_call_id,

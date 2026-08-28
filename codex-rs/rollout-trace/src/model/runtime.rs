@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use codex_protocol::protocol::InferenceCallEvent;
+
 use crate::payload::RawPayloadId;
 use crate::raw_event::RawEventSeq;
 
@@ -19,6 +21,19 @@ use super::TerminalId;
 use super::TerminalOperationId;
 use super::ToolCallId;
 use super::session::ExecutionWindow;
+
+/// Reduced semantic view of one payload-free inference observation.
+///
+/// The protocol event remains intact so newer status/source/transport values
+/// survive replay. `execution` supplies the reducer's causal lifecycle window,
+/// while the raw payload IDs preserve custody of each observation envelope.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InferenceCallObservation {
+    pub inference_call_id: String,
+    pub event: InferenceCallEvent,
+    pub execution: ExecutionWindow,
+    pub raw_event_payload_ids: Vec<RawPayloadId>,
+}
 
 /// Runtime/debug object for one model-authored `exec` cell.
 ///
