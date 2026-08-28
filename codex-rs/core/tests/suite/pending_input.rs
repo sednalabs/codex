@@ -197,22 +197,22 @@ struct RegularTaskRunBoundaryObserver {
     armed: Arc<AtomicBool>,
     observed: Arc<AtomicUsize>,
     target_thread: ThreadId,
-    reached: mpsc::SyncSender<()>,
+    reached: mpsc::Sender<()>,
     release: Mutex<mpsc::Receiver<()>>,
 }
 
 struct RegularTaskRunBoundaryControl {
     armed: Arc<AtomicBool>,
     reached: mpsc::Receiver<()>,
-    release: mpsc::SyncSender<()>,
+    release: mpsc::Sender<()>,
 }
 
 impl RegularTaskRunBoundaryObserver {
     fn new() -> (Self, RegularTaskRunBoundaryControl) {
         let armed = Arc::new(AtomicBool::new(false));
         let observed = Arc::new(AtomicUsize::new(0));
-        let (reached, reached_rx) = mpsc::sync_channel(0);
-        let (release, release_rx) = mpsc::sync_channel(0);
+        let (reached, reached_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
         (
             Self {
                 armed: Arc::clone(&armed),
@@ -246,15 +246,11 @@ where
         }
 
         self.observed.fetch_add(1, Ordering::SeqCst);
-        match self.reached.send_timeout((), BOUNDARY_CONTROL_TIMEOUT) {
-            Ok(()) => {}
-            Err(mpsc::SendTimeoutError::Timeout(_)) => panic!(
-                "regular task-run boundary observer timed out after {BOUNDARY_CONTROL_TIMEOUT:?} notifying control thread"
-            ),
-            Err(mpsc::SendTimeoutError::Disconnected(_)) => panic!(
+        self.reached.send(()).unwrap_or_else(|_| {
+            panic!(
                 "regular task-run boundary observer control thread disconnected before boundary notification"
-            ),
-        }
+            )
+        });
         let release = self
             .release
             .lock()
@@ -291,7 +287,7 @@ impl RegularTaskRunBoundaryControl {
                 ),
             }
             let result = std::panic::catch_unwind(AssertUnwindSafe(after_boundary));
-            let release_result = self.release.send_timeout((), BOUNDARY_CONTROL_TIMEOUT);
+            let release_result = self.release.send(());
             if let Err(payload) = result {
                 // Always release the observer before propagating a callback panic. If the
                 // observer has already failed, preserve the original callback panic rather than
@@ -301,10 +297,7 @@ impl RegularTaskRunBoundaryControl {
             }
             match release_result {
                 Ok(()) => {}
-                Err(mpsc::SendTimeoutError::Timeout(_)) => panic!(
-                    "regular task-run boundary control timed out after {BOUNDARY_CONTROL_TIMEOUT:?} releasing finalization"
-                ),
-                Err(mpsc::SendTimeoutError::Disconnected(_)) => panic!(
+                Err(_) => panic!(
                     "regular task-run boundary observer disconnected before finalization release"
                 ),
             }
