@@ -31,6 +31,12 @@ const ALLOWLISTED_EXECUTOR_PLUGIN_HOOKS: &[AllowlistedExecutorPluginHook] = &[
         tool: "turn_ended",
     },
     AllowlistedExecutorPluginHook {
+        plugin_id: "browser@openai-bundled",
+        event: HookEventName::SubagentStop,
+        server: "node_repl",
+        tool: "turn_ended",
+    },
+    AllowlistedExecutorPluginHook {
         plugin_id: "chrome@openai-bundled",
         event: HookEventName::Stop,
         server: "node_repl",
@@ -39,6 +45,12 @@ const ALLOWLISTED_EXECUTOR_PLUGIN_HOOKS: &[AllowlistedExecutorPluginHook] = &[
     AllowlistedExecutorPluginHook {
         plugin_id: "chrome@openai-bundled",
         event: HookEventName::Interrupt,
+        server: "node_repl",
+        tool: "turn_ended",
+    },
+    AllowlistedExecutorPluginHook {
+        plugin_id: "chrome@openai-bundled",
+        event: HookEventName::SubagentStop,
         server: "node_repl",
         tool: "turn_ended",
     },
@@ -55,6 +67,12 @@ const ALLOWLISTED_EXECUTOR_PLUGIN_HOOKS: &[AllowlistedExecutorPluginHook] = &[
         tool: "turn_ended",
     },
     AllowlistedExecutorPluginHook {
+        plugin_id: "chrome-dev@openai-bundled",
+        event: HookEventName::SubagentStop,
+        server: "node_repl",
+        tool: "turn_ended",
+    },
+    AllowlistedExecutorPluginHook {
         plugin_id: "chrome-internal@openai-bundled",
         event: HookEventName::Stop,
         server: "node_repl",
@@ -67,6 +85,12 @@ const ALLOWLISTED_EXECUTOR_PLUGIN_HOOKS: &[AllowlistedExecutorPluginHook] = &[
         tool: "turn_ended",
     },
     AllowlistedExecutorPluginHook {
+        plugin_id: "chrome-internal@openai-bundled",
+        event: HookEventName::SubagentStop,
+        server: "node_repl",
+        tool: "turn_ended",
+    },
+    AllowlistedExecutorPluginHook {
         plugin_id: "computer-use@openai-bundled",
         event: HookEventName::Stop,
         server: "node_repl",
@@ -75,6 +99,12 @@ const ALLOWLISTED_EXECUTOR_PLUGIN_HOOKS: &[AllowlistedExecutorPluginHook] = &[
     AllowlistedExecutorPluginHook {
         plugin_id: "computer-use@openai-bundled",
         event: HookEventName::Interrupt,
+        server: "node_repl",
+        tool: "turn_ended",
+    },
+    AllowlistedExecutorPluginHook {
+        plugin_id: "computer-use@openai-bundled",
+        event: HookEventName::SubagentStop,
         server: "node_repl",
         tool: "turn_ended",
     },
