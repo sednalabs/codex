@@ -3018,6 +3018,62 @@ async fn capture_binding_retains_cached_tools_that_expire_while_waiting_for_anot
 }
 
 #[tokio::test]
+async fn capture_binding_omits_cache_disabled_while_waiting_for_another_server() {
+    let runtime_context = McpRuntimeContext::new(
+        Arc::new(environment_manager_without_environments()),
+        std::env::temp_dir(),
+    );
+    let server_config: McpServerConfig =
+        serde_json::from_value(serde_json::json!({ "command": "cached-mcp" }))
+            .expect("server configuration");
+    let cache_context = McpToolCatalogCache::default()
+        .context(
+            "cached",
+            &server_config,
+            &runtime_context,
+            /*resolved_environment*/ None,
+            (
+                &ElicitationCapability::default(),
+                &ClientMcpExtensions::default(),
+            ),
+            /*connection_identity*/ None,
+        )
+        .expect("shared catalog");
+    cache_context.publish_if_newest(
+        cache_context.begin_fetch(),
+        &[create_test_tool("cached", "cached_tool")],
+    );
+    let (mut cached, _started, _release) = create_gated_async_managed_client(
+        create_test_managed_client(vec![create_test_tool("cached", "live_tool")]).await,
+    );
+    cached.tool_catalog_cache_context = Some(cache_context.clone());
+    let (waiting, started, release) = create_gated_async_managed_client(
+        create_test_managed_client(vec![create_test_tool("waiting", "ready_tool")]).await,
+    );
+    let mut manager = McpConnectionSet::new_uninitialized(
+        &Constrained::allow_any(AskForApproval::OnRequest),
+        &Constrained::allow_any(PermissionProfile::default()),
+        /*prefix_mcp_tool_names*/ true,
+    );
+    manager.insert_test_client("cached", cached);
+    manager.insert_test_client("waiting", waiting);
+    manager.required_servers = vec!["waiting".to_string()];
+    let manager = Arc::new(manager);
+
+    let binding = capture_binding(&manager);
+    tokio::pin!(binding);
+    assert!(futures::poll!(&mut binding).is_pending());
+    started.await.expect("required server startup began");
+    cache_context.disable();
+    release.send(()).expect("release required server startup");
+
+    assert_eq!(
+        model_tool_names(binding.await.tools()),
+        HashSet::from([ToolName::namespaced("mcp__waiting", "ready_tool")]),
+    );
+}
+
+#[tokio::test]
 async fn capture_binding_resolves_concurrently_and_rechecks_cached_clients() {
     let codex_home = tempdir().expect("tempdir");
     let cache_context = create_codex_apps_tools_cache_context(

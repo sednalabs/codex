@@ -248,7 +248,7 @@ impl McpConnectionSet {
                 .startup_complete
                 .load(Ordering::Acquire)
             {
-                (None, cached_tools.or_else(|| view.connection.client.cached_tools())?)
+                (None, view.connection.client.cached_tools_or(cached_tools)?)
             } else {
                 view.connection.client.reconnect_failed_startup().await;
                 let Ok(mut client) = view.connection.client().await else {

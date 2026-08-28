@@ -553,13 +553,17 @@ impl AsyncManagedClient {
     }
 
     pub(crate) fn cached_tools(&self) -> Option<Vec<ToolInfo>> {
+        self.cached_tools_or(/*fallback*/ None)
+    }
+
+    pub(crate) fn cached_tools_or(&self, fallback: Option<Vec<ToolInfo>>) -> Option<Vec<ToolInfo>> {
         self.codex_apps_tools_cache_context
             .as_ref()
             .and_then(ConnectorRuntimeContext::current_tools)
             .or_else(|| {
                 self.tool_catalog_cache_context
                     .as_ref()
-                    .and_then(McpToolCatalogCacheContext::current_tools)
+                    .and_then(|cache| cache.current_tools_or(fallback))
             })
     }
 
