@@ -7,6 +7,7 @@ use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::config::Config;
+use crate::tools::context::ToolCallSource;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
@@ -46,9 +47,11 @@ async fn handle_spawn_agent(
         turn,
         payload,
         call_id,
+        source,
         ..
     } = invocation;
-    if crate::diagnostic_flags::goal_continuation_health_check_enabled() {
+    let is_continuity_health_check = matches!(&source, ToolCallSource::HostContinuityCheck);
+    if is_continuity_health_check {
         turn.session_telemetry.counter(
             "codex.diagnostic.goal_continuation_health_check",
             /*inc*/ 1,
@@ -58,6 +61,9 @@ async fn handle_spawn_agent(
             parent_thread_id = %session.thread_id,
             turn_id = %turn.sub_id,
             call_id = %call_id,
+            source = "host_continuity_check",
+            admission = "attempted",
+            provider_outcome = "unknown",
             "continuation health check entered V2 spawn handler"
         );
     }
@@ -136,7 +142,7 @@ async fn handle_spawn_agent(
         .unwrap_or_else(AgentPath::root);
     let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
-    if crate::diagnostic_flags::goal_continuation_health_check_enabled() {
+    if is_continuity_health_check {
         turn.session_telemetry.counter(
             "codex.diagnostic.goal_continuation_health_check",
             /*inc*/ 1,
@@ -147,6 +153,9 @@ async fn handle_spawn_agent(
             turn_id = %turn.sub_id,
             call_id = %call_id,
             task_name = %args.task_name,
+            source = "host_continuity_check",
+            admission = "attempted",
+            provider_outcome = "unknown",
             "continuation health check calling V2 spawn control"
         );
     }
@@ -166,6 +175,7 @@ async fn handle_spawn_agent(
                     environments: Some(turn.environments.to_selections()),
                     spawn_call_id: Some(call_id.clone()),
                 },
+                /*continuity_health_check*/ is_continuity_health_check,
             ),
     )
     .await
@@ -209,7 +219,7 @@ async fn handle_spawn_agent(
         /*inc*/ 1,
         &[("role", role_tag), ("version", "v2")],
     );
-    if crate::diagnostic_flags::goal_continuation_health_check_enabled() {
+    if is_continuity_health_check {
         turn.session_telemetry.counter(
             "codex.diagnostic.goal_continuation_health_check",
             /*inc*/ 1,

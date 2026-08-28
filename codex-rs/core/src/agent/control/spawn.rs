@@ -356,6 +356,7 @@ impl AgentControl {
             SpawnInitialInput::UserInput(initial_input),
             session_source,
             SpawnAgentOptions::default(),
+            /*continuity_health_check*/ false,
         ))
         .await?;
         Ok(spawned_agent.thread_id)
@@ -374,6 +375,7 @@ impl AgentControl {
             SpawnInitialInput::UserInput(initial_input),
             session_source,
             options,
+            /*continuity_health_check*/ false,
         ))
         .await
     }
@@ -385,12 +387,14 @@ impl AgentControl {
         context: AgentCommunicationContext,
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
+        continuity_health_check: bool,
     ) -> CodexResult<LiveAgent> {
         Box::pin(self.spawn_agent_internal(
             config,
             SpawnInitialInput::InterAgentCommunication(communication, context),
             session_source,
             options,
+            continuity_health_check,
         ))
         .await
     }
@@ -562,6 +566,7 @@ impl AgentControl {
         initial_input: SpawnInitialInput,
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
+        continuity_health_check: bool,
     ) -> CodexResult<LiveAgent> {
         let publication_key = spawn_publication_key(&options);
         if spawn_cancellation_owns_child(self, publication_key.as_ref()) {
@@ -816,9 +821,7 @@ impl AgentControl {
             return Err(error);
         }
 
-        if multi_agent_version == MultiAgentVersion::V2
-            && crate::diagnostic_flags::goal_continuation_health_check_enabled()
-        {
+        if multi_agent_version == MultiAgentVersion::V2 && continuity_health_check {
             new_thread.thread.session_telemetry().counter(
                 "codex.diagnostic.goal_continuation_health_check",
                 /*inc*/ 1,
@@ -826,6 +829,9 @@ impl AgentControl {
             );
             tracing::info!(
                 child_thread_id = %new_thread.thread_id,
+                source = "host_continuity_check",
+                admission = "submitted",
+                provider_outcome = "unknown",
                 "continuation health check submitted V2 child initial work"
             );
         }
