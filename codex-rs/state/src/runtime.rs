@@ -38,6 +38,8 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Condvar;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
@@ -115,12 +117,20 @@ const USAGE_DB_BASENAME: &str = "usage";
 #[derive(Debug)]
 pub(crate) struct RuntimeOwnerCapability {
     revoked: AtomicBool,
+    active: StdMutex<usize>,
+    idle: Condvar,
+}
+
+pub(crate) struct RuntimeOwnerCapabilityGuard {
+    capability: Arc<RuntimeOwnerCapability>,
 }
 
 impl RuntimeOwnerCapability {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             revoked: AtomicBool::new(false),
+            active: StdMutex::new(0),
+            idle: Condvar::new(),
         })
     }
 
@@ -128,8 +138,50 @@ impl RuntimeOwnerCapability {
         self.revoked.store(true, Ordering::Release);
     }
 
+    fn revoke_and_wait(&self) {
+        self.revoke();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *active != 0 {
+            active = self
+                .idle
+                .wait(active)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn enter(self: &Arc<Self>) -> anyhow::Result<RuntimeOwnerCapabilityGuard> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.revoked.load(Ordering::Acquire) {
+            anyhow::bail!("runtime owner capability has been revoked")
+        }
+        *active += 1;
+        Ok(RuntimeOwnerCapabilityGuard {
+            capability: Arc::clone(self),
+        })
+    }
+
     fn is_active(&self) -> bool {
         !self.revoked.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for RuntimeOwnerCapabilityGuard {
+    fn drop(&mut self) {
+        let mut active = self
+            .capability
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *active = active.saturating_sub(1);
+        if *active == 0 {
+            self.capability.idle.notify_all();
+        }
     }
 }
 
@@ -146,10 +198,10 @@ impl RuntimeOwnerLease {
         if self.released.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.capability.revoke_and_wait();
         if let Err(error) = self.store.release_runtime_owner(self.owner_id).await {
             warn!(%error, "failed to release durable runtime owner");
         }
-        self.capability.revoke();
     }
 }
 
@@ -158,19 +210,11 @@ impl Drop for RuntimeOwnerLease {
         if self.released.swap(true, Ordering::AcqRel) {
             return;
         }
-        let store = self.store.clone();
-        let owner_id = self.owner_id;
-        let capability = Arc::clone(&self.capability);
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                if let Err(error) = store.release_runtime_owner(owner_id).await {
-                    warn!(%error, "failed to release durable runtime owner during runtime drop");
-                }
-                capability.revoke();
-            });
-        } else {
-            self.capability.revoke();
-        }
+        // Drop is synchronous and must not schedule a stale asynchronous
+        // owner-row write after pools or a replacement runtime are live. The
+        // kernel releases the process lock; the next owner replaces the stale
+        // durable row only after acquiring that lock.
+        self.capability.revoke_and_wait();
     }
 }
 

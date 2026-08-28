@@ -1,0 +1,2 @@
+ALTER TABLE goal_owner_admissions ADD COLUMN uncertainty_resolution_evidence TEXT;
+ALTER TABLE goal_owner_admissions ADD COLUMN uncertainty_resolved_at_ms INTEGER;

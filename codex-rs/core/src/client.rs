@@ -2756,7 +2756,11 @@ where
                         logged_error = true;
                     }
                     let delivered_error = if request_lease.is_admitted() {
-                        let finalization = if provider_denial || provider_terminal {
+                        // `provider_terminal` also includes non-denial semantic
+                        // failures such as an SSE `response.failed`; only an
+                        // explicitly classified denial may settle as denied.
+                        // HTTP 5xx remains transport-uncertain.
+                        let finalization = if provider_denial {
                             request_lease.provider_denied().await
                         } else {
                             request_lease.transport_lost().await

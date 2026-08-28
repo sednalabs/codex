@@ -601,6 +601,24 @@ impl GoalRuntimeHandle {
                 } else {
                     codex_state::GoalOwnerAdmissionPhase::Dormant
                 };
+                // A new provider denial advances the same goal chain. Retire
+                // only a settled, definitive prior generation first; an
+                // uncertain generation remains an explicit recovery gate.
+                if let Some(previous) = self
+                    .inner
+                    .state_dbs
+                    .goal_owner_admissions()
+                    .get(self.thread_id())
+                    .await
+                    .map_err(|err| err.to_string())?
+                {
+                    self.retire_safe_terminal_admission(
+                        &previous.authority,
+                        /*clear_deferral*/ true,
+                        /*allow_exhausted*/ true,
+                    )
+                    .await?;
+                }
                 let record = self
                     .inner
                     .state_dbs

@@ -10,6 +10,7 @@ const MAX_ORIGIN_ID_LENGTH: usize = 512;
 const MAX_EVIDENCE_LENGTH: usize = 512;
 const MAX_SUCCESSOR_ID_LENGTH: usize = 512;
 const ACCOUNT_CONTEXT_FINGERPRINT_LENGTH: usize = 64;
+const MAX_UNCERTAINTY_RESOLUTION_EVIDENCE_LENGTH: usize = 512;
 
 /// Stable provider identifier shared by persistence, admission, and observation joins.
 pub fn canonical_provider_id(value: &str) -> String {
@@ -216,6 +217,8 @@ pub struct GoalOwnerAdmissionRecord {
     pub dispatch_claim_id: Option<Uuid>,
     pub dispatch_claimed_at: Option<DateTime<Utc>>,
     pub deferred_terminal_disposition: GoalOwnerAdmissionTerminalDisposition,
+    pub uncertainty_resolution_evidence: Option<String>,
+    pub uncertainty_resolved_at: Option<DateTime<Utc>>,
     pub retired_at: Option<DateTime<Utc>>,
     pub retirement_reason: Option<GoalOwnerAdmissionRetirementReason>,
     pub created_at: DateTime<Utc>,
@@ -291,13 +294,12 @@ impl GoalOwnerAdmissionStore {
         }
     }
 
-    fn require_write_capability(&self) -> anyhow::Result<()> {
-        if self
-            .write_capability
-            .as_ref()
-            .is_some_and(|capability| capability.is_active())
-        {
-            Ok(())
+    fn require_write_capability(&self) -> anyhow::Result<RuntimeOwnerCapabilityGuard> {
+        let Some(capability) = self.write_capability.as_ref() else {
+            bail!("goal-owner admission mutation requires the runtime owner capability")
+        };
+        if capability.is_active() {
+            capability.enter()
         } else {
             bail!("goal-owner admission mutation requires the runtime owner capability")
         }
@@ -308,8 +310,8 @@ impl GoalOwnerAdmissionStore {
     /// The caller must acquire the process-lifetime lock before invoking this
     /// method. Replacing an old row is safe only under that lock: the kernel
     /// has already proved that the previous holder exited.
-    pub async fn claim_runtime_owner(&self, owner_id: Uuid) -> anyhow::Result<()> {
-        self.require_write_capability()?;
+    pub(crate) async fn claim_runtime_owner(&self, owner_id: Uuid) -> anyhow::Result<()> {
+        let _capability_guard = self.require_write_capability()?;
         let result = sqlx::query(
             r#"
 INSERT INTO goal_owner_runtime_owners (owner_key, owner_id, acquired_at_ms)
@@ -336,8 +338,7 @@ ON CONFLICT(owner_key) DO UPDATE SET
     }
 
     /// Release only the exact durable runtime owner acquired by this process.
-    pub async fn release_runtime_owner(&self, owner_id: Uuid) -> anyhow::Result<bool> {
-        self.require_write_capability()?;
+    pub(crate) async fn release_runtime_owner(&self, owner_id: Uuid) -> anyhow::Result<bool> {
         let result = sqlx::query(
             "DELETE FROM goal_owner_runtime_owners WHERE owner_key = 1 AND owner_id = ?",
         )
@@ -357,7 +358,7 @@ ON CONFLICT(owner_key) DO UPDATE SET
         &self,
         owner_id: Uuid,
     ) -> anyhow::Result<()> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         let registered_owner = sqlx::query_scalar::<_, String>(
             "SELECT owner_id FROM goal_owner_runtime_owners WHERE owner_key = 1",
         )
@@ -468,7 +469,7 @@ WHERE phase = 'in_flight'
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         now: DateTime<Utc>,
     ) -> anyhow::Result<Option<Uuid>> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         validate_continuation_authority(continuation_authority)?;
         let authority = &continuation_authority.authority;
         let now_ms = admission_datetime_to_epoch_millis(now);
@@ -532,7 +533,7 @@ WHERE thread_id = ?
         authority: &GoalOwnerAdmissionAuthority,
         dispatch_claim_id: Uuid,
     ) -> anyhow::Result<bool> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         validate_authority(authority)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let result = sqlx::query(
@@ -567,7 +568,7 @@ WHERE thread_id = ?
         &self,
         authority: &GoalOwnerAdmissionAuthority,
     ) -> anyhow::Result<bool> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         validate_authority(authority)?;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let Some(record) = fetch_record_for_authority(&mut *transaction, authority).await? else {
@@ -602,7 +603,7 @@ WHERE thread_id = ?
         &self,
         observation: &GoalOwnerAdmissionObservation,
     ) -> anyhow::Result<GoalOwnerAdmissionRecord> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         validate_observation(observation)?;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let origin = fetch_origin(
@@ -674,7 +675,7 @@ WHERE thread_id = ?
         authority: &GoalOwnerAdmissionAuthority,
         reason: GoalOwnerAdmissionRetirementReason,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         validate_authority(authority)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -737,7 +738,7 @@ WHERE thread_id = ?
         authority: &GoalOwnerAdmissionAuthority,
         reason: GoalOwnerAdmissionRetirementReason,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         validate_authority(authority)?;
         let expected_epoch = authority
             .cancellation_epoch
@@ -761,6 +762,58 @@ WHERE thread_id = ?
             return Ok(None);
         }
         self.retire(&record.authority, reason).await
+    }
+
+    /// Explicit user-authorized recovery for a durable exhausted gate. The
+    /// await-user disposition is compared in the same transaction before the
+    /// row is retired, so a stale UI action cannot re-arm a newer generation.
+    pub async fn recover_exhausted_for_user(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        let _capability_guard = self.require_write_capability()?;
+        validate_authority(authority)?;
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let Some(record) = fetch_record_for_authority(&mut *transaction, authority).await? else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        if record.phase != GoalOwnerAdmissionPhase::Terminal
+            || record.terminal_outcome != GoalOwnerAdmissionTerminalOutcome::Exhausted
+            || record.deferred_terminal_disposition
+                != GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn
+            || record.retired_at.is_some()
+        {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        let retired = sqlx::query(
+            r#"
+UPDATE goal_owner_admissions
+SET retired_at_ms = ?, retirement_reason = 'user_recovery', updated_at_ms = ?
+WHERE thread_id = ? AND goal_id = ? AND generation = ?
+  AND cancellation_epoch = ? AND phase = 'terminal'
+  AND terminal_outcome = 'exhausted'
+  AND deferred_terminal_disposition = 'await_user_turn'
+  AND retired_at_ms IS NULL
+            "#,
+        )
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(authority.thread_id.to_string())
+        .bind(&authority.goal_id)
+        .bind(authority.generation)
+        .bind(authority.cancellation_epoch)
+        .execute(&mut *transaction)
+        .await?;
+        if retired.rows_affected() != 1 {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        let retired = fetch_record_for_authority(&mut *transaction, authority).await?;
+        transaction.commit().await?;
+        Ok(retired)
     }
 
     /// Atomically reserve a deadline-eligible pending admission for one exact successor.
@@ -796,7 +849,7 @@ WHERE thread_id = ?
         dispatch_claim_id: Option<Uuid>,
         now: DateTime<Utc>,
     ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         let authority = &continuation_authority.authority;
         validate_authority(authority)?;
         validate_continuation_authority(continuation_authority)?;
@@ -945,7 +998,7 @@ WHERE thread_id = ?
     /// before network I/O. A cancellation or retirement that commits first
     /// leaves this method with no row, which prohibits the physical request.
     pub async fn open_lease(&self, lease: &GoalOwnerAdmissionLease) -> anyhow::Result<bool> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         validate_lease(lease)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -1003,7 +1056,7 @@ WHERE thread_id = ?
         &self,
         lease: &GoalOwnerAdmissionLease,
     ) -> anyhow::Result<bool> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         validate_lease(lease)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -1082,7 +1135,7 @@ WHERE thread_id = ?
         outcome: GoalOwnerAdmissionTerminalOutcome,
         disposition: GoalOwnerAdmissionTerminalDisposition,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         validate_lease(lease)?;
         if matches!(
             outcome,
@@ -1155,8 +1208,9 @@ WHERE thread_id = ?
         authority: &GoalOwnerAdmissionAuthority,
         outcome: GoalOwnerAdmissionTerminalOutcome,
         disposition: GoalOwnerAdmissionTerminalDisposition,
+        resolution_evidence: &str,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         validate_authority(authority)?;
         if !matches!(
             outcome,
@@ -1164,6 +1218,11 @@ WHERE thread_id = ?
                 | GoalOwnerAdmissionTerminalOutcome::Rejected
         ) {
             bail!("uncertain resolution requires a definitive success or rejection")
+        }
+        if resolution_evidence.is_empty()
+            || resolution_evidence.len() > MAX_UNCERTAINTY_RESOLUTION_EVIDENCE_LENGTH
+        {
+            bail!("uncertain resolution requires bounded evidence")
         }
         validate_terminal_transition(outcome, disposition)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
@@ -1184,6 +1243,8 @@ WHERE thread_id = ?
 UPDATE goal_owner_admissions
 SET terminal_outcome = ?,
     deferred_terminal_disposition = ?,
+    uncertainty_resolution_evidence = ?,
+    uncertainty_resolved_at_ms = ?,
     updated_at_ms = ?
 WHERE thread_id = ?
   AND goal_id = ?
@@ -1196,6 +1257,8 @@ WHERE thread_id = ?
         )
         .bind(outcome.as_str())
         .bind(disposition.as_str())
+        .bind(resolution_evidence)
+        .bind(now_ms)
         .bind(now_ms)
         .bind(authority.thread_id.to_string())
         .bind(&authority.goal_id)
@@ -1222,7 +1285,7 @@ WHERE thread_id = ?
         authority: &GoalOwnerAdmissionAuthority,
         disposition: GoalOwnerAdmissionTerminalDisposition,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         validate_authority(authority)?;
         if disposition == GoalOwnerAdmissionTerminalDisposition::None {
             bail!("goal-owner cancellation requires an operator disposition")
@@ -1361,6 +1424,8 @@ SELECT
     admission.dispatch_claim_id AS admission_dispatch_claim_id,
     admission.dispatch_claimed_at_ms AS admission_dispatch_claimed_at_ms,
     admission.deferred_terminal_disposition AS admission_deferred_terminal_disposition,
+    admission.uncertainty_resolution_evidence AS admission_uncertainty_resolution_evidence,
+    admission.uncertainty_resolved_at_ms AS admission_uncertainty_resolved_at_ms,
     admission.retired_at_ms AS admission_retired_at_ms,
     admission.retirement_reason AS admission_retirement_reason,
     admission.created_at_ms AS admission_created_at_ms,
@@ -1701,6 +1766,10 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
             row.try_get("admission_dispatch_claimed_at_ms")?;
         let retired_at_ms: Option<i64> = row.try_get("admission_retired_at_ms")?;
         let retirement_reason: Option<String> = row.try_get("admission_retirement_reason")?;
+        let uncertainty_resolution_evidence: Option<String> =
+            row.try_get("admission_uncertainty_resolution_evidence")?;
+        let uncertainty_resolved_at_ms: Option<i64> =
+            row.try_get("admission_uncertainty_resolved_at_ms")?;
         let record = GoalOwnerAdmissionRecord {
             authority: GoalOwnerAdmissionAuthority {
                 thread_id: ThreadId::try_from(row.try_get::<String, _>("admission_thread_id")?)?,
@@ -1758,6 +1827,10 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
                 row.try_get::<String, _>("admission_deferred_terminal_disposition")?
                     .as_str(),
             )?,
+            uncertainty_resolution_evidence,
+            uncertainty_resolved_at: uncertainty_resolved_at_ms
+                .map(admission_epoch_millis_to_datetime)
+                .transpose()?,
             retired_at: retired_at_ms
                 .map(admission_epoch_millis_to_datetime)
                 .transpose()?,
