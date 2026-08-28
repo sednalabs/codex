@@ -85,8 +85,19 @@ async fn admit(
     record: &GoalOwnerAdmissionRecord,
     identity: &ModelRequestIdentity,
 ) -> ModelRequestAdmissionDecision {
+    let claim_id = broker
+        .state_db
+        .as_ref()
+        .expect("state runtime")
+        .goal_owner_admissions()
+        .claim_dispatch(&record.continuation_authority(), Utc::now())
+        .await
+        .expect("claim exact admission")
+        .expect("eligible admission claim");
+    let continuation =
+        GoalOwnerContinuation::with_dispatch_claim(record.continuation_authority(), claim_id);
     broker
-        .admit(identity, Some(&record.continuation_authority()))
+        .admit(identity, Some(&continuation))
         .await
         .expect("evaluate exact admission")
 }
@@ -143,7 +154,7 @@ async fn nonterminal_records_require_exact_authority_before_any_provider_call() 
         let decision = broker
             .admit(
                 &identity(thread_id, InferenceRequestKind::Turn),
-                /*continuation_authority*/ None,
+                /*continuation*/ None,
             )
             .await
             .expect("evaluate blocked admission");
@@ -174,7 +185,7 @@ async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_reque
         ))
         .await
         .expect("record eligible admission");
-    let authority = record.continuation_authority();
+    let authority = GoalOwnerContinuation::new(record.continuation_authority());
 
     let wrong_kind = identity(thread_id, InferenceRequestKind::RemoteCompact);
     let wrong_turn = identity_with(
@@ -191,7 +202,7 @@ async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_reque
     );
     let mut wrong_effective_provider = identity(thread_id, InferenceRequestKind::Turn);
     wrong_effective_provider.effective_provider_id = "unrelated-fallback-provider".to_string();
-    let mut wrong_authority = authority.clone();
+    let mut wrong_authority = authority.authority().clone();
     wrong_authority.decision_id = Uuid::now_v7();
 
     for (identity, authority) in [
@@ -202,7 +213,7 @@ async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_reque
         (wrong_effective_provider, Some(authority.clone())),
         (
             identity(thread_id, InferenceRequestKind::Turn),
-            Some(wrong_authority),
+            Some(GoalOwnerContinuation::new(wrong_authority)),
         ),
     ] {
         let decision = broker
@@ -326,7 +337,7 @@ async fn terminal_success_is_unrestricted_before_identity_matching() {
     let continuation_decision = broker
         .admit(
             &identity(thread_id, InferenceRequestKind::Turn),
-            Some(&record.continuation_authority()),
+            Some(&GoalOwnerContinuation::new(record.continuation_authority())),
         )
         .await
         .expect("evaluate settled continuation");
@@ -384,7 +395,7 @@ async fn continuation_token_without_active_record_fails_closed() {
     let decision = broker
         .admit(
             &identity(thread_id, InferenceRequestKind::Turn),
-            Some(&record.continuation_authority()),
+            Some(&GoalOwnerContinuation::new(record.continuation_authority())),
         )
         .await
         .expect("evaluate missing active generation");
@@ -397,7 +408,7 @@ async fn continuation_token_without_active_record_fails_closed() {
     let no_state_decision = no_state_broker
         .admit(
             &identity(thread_id, InferenceRequestKind::Turn),
-            Some(&record.continuation_authority()),
+            Some(&GoalOwnerContinuation::new(record.continuation_authority())),
         )
         .await
         .expect("evaluate continuation without state runtime");

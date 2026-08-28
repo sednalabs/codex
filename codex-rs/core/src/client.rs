@@ -550,7 +550,7 @@ impl ModelClient {
                     continuation_authority
                         .map(|authority| authority.logical_successor_request_id.clone()),
                 ),
-                continuation_authority,
+                goal_owner_continuation,
             )
             .await
     }

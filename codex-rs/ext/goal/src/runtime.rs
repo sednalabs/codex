@@ -945,6 +945,14 @@ impl GoalRuntimeHandle {
             self.clear_deferral_if_retired(&record.authority).await?;
             return Ok(());
         }
+        if let Some(dispatch_claim_id) = record.dispatch_claim_id {
+            // A claim cannot survive a process restart as an owner. Reopen the
+            // exact pending generation for a fresh timer claim.
+            admissions
+                .release_dispatch_claim(&record.authority, dispatch_claim_id)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
         let retry_after = record
             .deadline_at
             .signed_duration_since(Utc::now())
@@ -1030,7 +1038,7 @@ impl GoalRuntimeHandle {
         // Cancellation/takeover paths acquire the same gate. Holding it through the idle-start
         // reservation serializes the final authority check with the awaited start operation.
         let _goal_state_permit = self.goal_state_permit().await?;
-        let (continuation_authority, continuation, cancellation, enablement_epoch) = {
+        let (continuation_authority, cancellation, enablement_epoch) = {
             let state = self
                 .inner
                 .provider_continuation
@@ -1047,7 +1055,6 @@ impl GoalRuntimeHandle {
             }
             (
                 pending.continuation.authority().clone(),
-                pending.continuation.clone(),
                 pending.cancellation.clone(),
                 pending.enablement_epoch,
             )
@@ -1057,6 +1064,7 @@ impl GoalRuntimeHandle {
                 &continuation_authority,
                 &cancellation,
                 enablement_epoch,
+                None,
                 /*require_pending*/ true,
             )
             .await?
@@ -1064,10 +1072,14 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
 
-        let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
-            return Ok(());
-        };
-        let Ok(thread) = thread_manager.get_thread(self.inner.thread_id).await else {
+        let Some(dispatch_claim_id) = self
+            .inner
+            .state_dbs
+            .goal_owner_admissions()
+            .claim_dispatch(&continuation_authority, Utc::now())
+            .await
+            .map_err(|err| err.to_string())?
+        else {
             return Ok(());
         };
         if !self
@@ -1075,10 +1087,57 @@ impl GoalRuntimeHandle {
                 &continuation_authority,
                 &cancellation,
                 enablement_epoch,
+                Some(dispatch_claim_id),
                 /*require_pending*/ true,
             )
             .await?
         {
+            let _ = self
+                .inner
+                .state_dbs
+                .goal_owner_admissions()
+                .release_dispatch_claim(&continuation_authority.authority, dispatch_claim_id)
+                .await;
+            return Ok(());
+        }
+        let claimed_continuation = GoalOwnerContinuation::with_dispatch_claim(
+            continuation_authority.clone(),
+            dispatch_claim_id,
+        );
+        let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
+            let _ = self
+                .inner
+                .state_dbs
+                .goal_owner_admissions()
+                .release_dispatch_claim(&continuation_authority.authority, dispatch_claim_id)
+                .await;
+            return Ok(());
+        };
+        let Ok(thread) = thread_manager.get_thread(self.inner.thread_id).await else {
+            let _ = self
+                .inner
+                .state_dbs
+                .goal_owner_admissions()
+                .release_dispatch_claim(&continuation_authority.authority, dispatch_claim_id)
+                .await;
+            return Ok(());
+        };
+        if !self
+            .timer_is_current(
+                &continuation_authority,
+                &cancellation,
+                enablement_epoch,
+                Some(dispatch_claim_id),
+                /*require_pending*/ true,
+            )
+            .await?
+        {
+            let _ = self
+                .inner
+                .state_dbs
+                .goal_owner_admissions()
+                .release_dispatch_claim(&continuation_authority.authority, dispatch_claim_id)
+                .await;
             return Ok(());
         }
         // Keep this check immediately adjacent to the start call: cancellation and replacement
@@ -1088,24 +1147,38 @@ impl GoalRuntimeHandle {
                 &continuation_authority,
                 &cancellation,
                 enablement_epoch,
+                Some(dispatch_claim_id),
                 /*require_pending*/ true,
             )
             .await?
         {
+            let _ = self
+                .inner
+                .state_dbs
+                .goal_owner_admissions()
+                .release_dispatch_claim(&continuation_authority.authority, dispatch_claim_id)
+                .await;
             return Ok(());
         }
         let start_result = thread
-            .try_start_goal_continuation_if_idle(Vec::new(), continuation)
+            .try_start_goal_continuation_if_idle(Vec::new(), claimed_continuation)
             .await;
         let still_current = self
             .timer_is_current(
                 &continuation_authority,
                 &cancellation,
                 enablement_epoch,
+                Some(dispatch_claim_id),
                 /*require_pending*/ false,
             )
             .await?;
         if start_result.is_err() {
+            let _ = self
+                .inner
+                .state_dbs
+                .goal_owner_admissions()
+                .release_dispatch_claim(&continuation_authority.authority, dispatch_claim_id)
+                .await;
             return Ok(());
         }
         if !still_current {
@@ -1115,6 +1188,7 @@ impl GoalRuntimeHandle {
                     &continuation_authority,
                     &cancellation,
                     enablement_epoch,
+                    Some(dispatch_claim_id),
                     /*require_pending*/ false,
                 )
                 .await?;
@@ -1131,6 +1205,7 @@ impl GoalRuntimeHandle {
                 &continuation_authority,
                 &cancellation,
                 enablement_epoch,
+                Some(dispatch_claim_id),
                 /*require_pending*/ false,
             )
             .await?
@@ -1143,6 +1218,7 @@ impl GoalRuntimeHandle {
                     &continuation_authority,
                     &cancellation,
                     enablement_epoch,
+                    Some(dispatch_claim_id),
                     /*require_pending*/ false,
                 )
                 .await?;
@@ -1190,6 +1266,7 @@ impl GoalRuntimeHandle {
         continuation_authority: &codex_state::GoalOwnerAdmissionContinuationAuthority,
         cancellation: &CancellationToken,
         enablement_epoch: u64,
+        dispatch_claim_id: Option<Uuid>,
         require_pending: bool,
     ) -> Result<bool, String> {
         if !self.timer_cache_is_current(continuation_authority, cancellation, enablement_epoch) {
@@ -1208,7 +1285,12 @@ impl GoalRuntimeHandle {
         if record.authority != continuation_authority.authority
             || record.continuation_authority() != *continuation_authority
             || record.retired_at.is_some()
-            || (require_pending && record.phase != codex_state::GoalOwnerAdmissionPhase::Pending)
+            || (require_pending
+                && (record.phase != codex_state::GoalOwnerAdmissionPhase::Pending
+                    || record.dispatch_claim_id != dispatch_claim_id))
+            || (!require_pending
+                && record.phase == codex_state::GoalOwnerAdmissionPhase::Pending
+                && record.dispatch_claim_id != dispatch_claim_id)
         {
             return Ok(false);
         }
