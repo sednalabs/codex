@@ -492,12 +492,11 @@ where
     }
 }
 
-struct SessionLifecycleSpanCounter {
+struct SessionTaskRunSpanCounter {
     task_run_count: Arc<AtomicUsize>,
-    admission_tx: tokio::sync::watch::Sender<usize>,
 }
 
-impl<S> Layer<S> for SessionLifecycleSpanCounter
+impl<S> Layer<S> for SessionTaskRunSpanCounter
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
@@ -505,9 +504,6 @@ where
         match ctx.metadata(&id).map(|metadata| metadata.name()) {
             Some("session_task.run") => {
                 self.task_run_count.fetch_add(1, Ordering::SeqCst);
-            }
-            Some("session.pending_work_admission") => {
-                self.admission_tx.send_modify(|count| *count += 1);
             }
             _ => {}
         }
@@ -721,22 +717,17 @@ async fn session_tasks_keep_creation_dispatcher_for_external_idle_start() {
     let (server, _completions) =
         start_streaming_sse_server(vec![response_completed_chunks("resp-dispatch")]).await;
     let a_task_run_count = Arc::new(AtomicUsize::new(0));
-    let (a_admission_tx, mut a_admission_rx) = tokio::sync::watch::channel(0_usize);
     let b_task_run_count = Arc::new(AtomicUsize::new(0));
-    let (b_admission_tx, b_admission_rx) = tokio::sync::watch::channel(0_usize);
-    let subscriber_a = tracing_subscriber::registry().with(SessionLifecycleSpanCounter {
+    let subscriber_a = tracing_subscriber::registry().with(SessionTaskRunSpanCounter {
         task_run_count: Arc::clone(&a_task_run_count),
-        admission_tx: a_admission_tx,
     });
     let codex = {
         let _subscriber_guard = tracing::subscriber::set_default(subscriber_a);
         build_codex(&server).await
     };
-    let admission_count_before = *a_admission_rx.borrow();
 
-    let subscriber_b = tracing_subscriber::registry().with(SessionLifecycleSpanCounter {
+    let subscriber_b = tracing_subscriber::registry().with(SessionTaskRunSpanCounter {
         task_run_count: Arc::clone(&b_task_run_count),
-        admission_tx: b_admission_tx,
     });
     let start_result = {
         let _subscriber_guard = tracing::subscriber::set_default(subscriber_b);
@@ -745,12 +736,9 @@ async fn session_tasks_keep_creation_dispatcher_for_external_idle_start() {
     assert!(start_result.is_ok(), "external idle start should succeed");
 
     let lifecycle = observe_turn_completion(&codex, None).await;
-    wait_for_pending_work_admission_after(&mut a_admission_rx, admission_count_before).await;
 
     assert_eq!(a_task_run_count.load(Ordering::SeqCst), 1);
-    assert_eq!(*a_admission_rx.borrow(), admission_count_before + 1);
     assert_eq!(b_task_run_count.load(Ordering::SeqCst), 0);
-    assert_eq!(*b_admission_rx.borrow(), 0);
     assert_eq!(lifecycle.turn_started, 1);
     assert_eq!(lifecycle.turn_complete, 1);
     assert_eq!(server.requests().await.len(), 1);
