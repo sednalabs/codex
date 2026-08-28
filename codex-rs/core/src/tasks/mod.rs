@@ -857,6 +857,7 @@ impl Session {
         Box::pin(async move {
             session
                 .maybe_start_turn_for_pending_work_with_sub_id(uuid::Uuid::new_v4().to_string())
+                .instrument(trace_span!("session.pending_work_admission"))
                 .await;
         })
     }

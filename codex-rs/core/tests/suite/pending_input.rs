@@ -207,6 +207,19 @@ struct RegularTaskRunBoundaryControl {
     release: mpsc::Sender<()>,
 }
 
+struct BoundaryWorker {
+    handle: JoinHandle<()>,
+    completed: mpsc::Receiver<()>,
+}
+
+struct BoundaryWorkerCompletion(mpsc::Sender<()>);
+
+impl Drop for BoundaryWorkerCompletion {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
 impl RegularTaskRunBoundaryObserver {
     fn new() -> (Self, RegularTaskRunBoundaryControl) {
         let armed = Arc::new(AtomicBool::new(false));
@@ -275,8 +288,10 @@ impl RegularTaskRunBoundaryControl {
         );
     }
 
-    fn spawn_releaser(self, after_boundary: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
-        std::thread::spawn(move || {
+    fn spawn_releaser(self, after_boundary: impl FnOnce() + Send + 'static) -> BoundaryWorker {
+        let (completed, completed_rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let _completion = BoundaryWorkerCompletion(completed);
             match self.reached.recv_timeout(BOUNDARY_CONTROL_TIMEOUT) {
                 Ok(()) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => panic!(
@@ -301,7 +316,60 @@ impl RegularTaskRunBoundaryControl {
                     "regular task-run boundary observer disconnected before finalization release"
                 ),
             }
-        })
+        });
+        BoundaryWorker {
+            handle,
+            completed: completed_rx,
+        }
+    }
+}
+
+fn join_boundary_worker(worker: BoundaryWorker, label: &str) {
+    let completion = worker.completed.recv_timeout(BOUNDARY_CONTROL_TIMEOUT);
+    match completion {
+        Ok(()) => {}
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let result = worker.handle.join();
+            if let Err(payload) = result {
+                std::panic::resume_unwind(payload);
+            }
+            panic!("{label} worker disconnected before completion");
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // Every worker wait and callback is bounded. Keep ownership and join even on this
+            // diagnostic path so a failed test never detaches a potentially blocked thread.
+            let result = worker.handle.join();
+            if let Err(payload) = result {
+                std::panic::resume_unwind(payload);
+            }
+            panic!(
+                "{label} worker timed out after {BOUNDARY_CONTROL_TIMEOUT:?} waiting for completion"
+            );
+        }
+    }
+    if let Err(payload) = worker.handle.join() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+struct PendingWorkAdmissionCounter {
+    tx: tokio::sync::watch::Sender<usize>,
+    target_thread: ThreadId,
+}
+
+impl<S> Layer<S> for PendingWorkAdmissionCounter
+where
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    fn on_close(&self, id: Id, ctx: Context<'_, S>) {
+        if std::thread::current().id() != self.target_thread
+            || !ctx
+                .metadata(&id)
+                .is_some_and(|metadata| metadata.name() == "session.pending_work_admission")
+        {
+            return;
+        }
+        self.tx.send_modify(|count| *count += 1);
     }
 }
 
@@ -396,6 +464,29 @@ async fn wait_for_thread_idle_after(
     });
 }
 
+async fn wait_for_pending_work_admission_after(
+    admission_rx: &mut tokio::sync::watch::Receiver<usize>,
+    previous_count: usize,
+) {
+    tokio::time::timeout(BOUNDARY_CONTROL_TIMEOUT, async {
+        loop {
+            if *admission_rx.borrow_and_update() > previous_count {
+                return;
+            }
+            admission_rx
+                .changed()
+                .await
+                .expect("pending-work admission counter sender should remain available");
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "timed out after {BOUNDARY_CONTROL_TIMEOUT:?} waiting for pending-work admission completion; previous_admission_count={previous_count}"
+        )
+    });
+}
+
 #[test]
 fn regular_task_run_boundary_observer_self_test() {
     let (observer, control) = RegularTaskRunBoundaryObserver::new();
@@ -407,9 +498,7 @@ fn regular_task_run_boundary_observer_self_test() {
     let release_thread = control.spawn_releaser(|| {});
     let run_span = tracing::trace_span!("session_task.run");
     drop(run_span);
-    release_thread
-        .join()
-        .expect("boundary self-test worker should exit cleanly");
+    join_boundary_worker(release_thread, "boundary self-test");
     assert_eq!(observed.load(Ordering::SeqCst), 1);
 }
 
@@ -427,9 +516,7 @@ async fn regular_task_run_boundary_observer_known_good_turn_finalization() {
     let release_thread = control.spawn_releaser(|| {});
     submit_user_input(&codex, "observer control").await;
     let lifecycle = observe_turn_completion(&codex, None).await;
-    release_thread
-        .join()
-        .expect("known-good boundary worker should exit cleanly");
+    join_boundary_worker(release_thread, "known-good boundary");
 
     assert_eq!(observed.load(Ordering::SeqCst), 1);
     assert_eq!(lifecycle.turn_started, 1);
@@ -450,6 +537,7 @@ async fn base_turn_does_not_reopen_after_boundary_steer() {
     ])
     .await;
     let (thread_idle_tx, mut thread_idle_rx) = tokio::sync::watch::channel(0_usize);
+    let (admission_tx, mut admission_rx) = tokio::sync::watch::channel(0_usize);
     let mut extensions =
         codex_extension_api::ExtensionRegistryBuilder::<codex_core::config::Config>::new();
     extensions.thread_lifecycle_contributor(Arc::new(ThreadIdleCounter { tx: thread_idle_tx }));
@@ -462,17 +550,25 @@ async fn base_turn_does_not_reopen_after_boundary_steer() {
         .codex;
     let idle_count_before = *thread_idle_rx.borrow();
     let (observer, control) = RegularTaskRunBoundaryObserver::new();
+    let admission_observer = PendingWorkAdmissionCounter {
+        tx: admission_tx,
+        target_thread: std::thread::current().id(),
+    };
     let observed = Arc::clone(&observer.observed);
-    let subscriber = tracing_subscriber::registry().with(observer);
+    let subscriber = tracing_subscriber::registry()
+        .with(observer)
+        .with(admission_observer);
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+    let admission_count_before = *admission_rx.borrow();
 
     let runtime_handle = tokio::runtime::Handle::current();
     let codex_for_steer = Arc::clone(&codex);
     control.arm();
     let release_thread = control.spawn_releaser(move || {
         let steer_result = runtime_handle.block_on(async {
-            codex_for_steer
-                .steer_input(
+            tokio::time::timeout(
+                BOUNDARY_CONTROL_TIMEOUT,
+                codex_for_steer.steer_input(
                     vec![UserInput::Text {
                         text: STEER_PROMPT.to_string(),
                         text_elements: Vec::new(),
@@ -481,29 +577,35 @@ async fn base_turn_does_not_reopen_after_boundary_steer() {
                     /*expected_turn_id*/ None,
                     /*client_user_message_id*/ Some(CLIENT_ID.to_string()),
                     /*responsesapi_client_metadata*/ None,
-                )
-                .await
+                ),
+            )
+            .await
         });
-        assert!(
-            steer_result.is_ok(),
-            "boundary steer should be accepted while the task-run span is closing: {steer_result:?}"
-        );
+        match steer_result {
+            Ok(steer_result) => assert!(
+                steer_result.is_ok(),
+                "boundary steer should be accepted while the task-run span is closing: {steer_result:?}"
+            ),
+            Err(_) => panic!(
+                "boundary steer timed out after {BOUNDARY_CONTROL_TIMEOUT:?} while the task-run span was closing"
+            ),
+        }
     });
 
     submit_user_input(&codex, INITIAL_PROMPT).await;
     let lifecycle = observe_turn_completion(&codex, Some(STEER_PROMPT)).await;
-    release_thread
-        .join()
-        .expect("boundary steer worker should exit cleanly");
+    join_boundary_worker(release_thread, "boundary steer");
 
     assert_eq!(observed.load(Ordering::SeqCst), 1);
     assert_eq!(lifecycle.turn_started, 1);
     assert_eq!(lifecycle.turn_complete, 1);
     assert_eq!(lifecycle.matching_user_messages, 1);
     // TurnComplete is emitted before task finalization clears the active turn. The thread-idle
-    // callback is the natural post-finalization boundary; with no mailbox work queued, the
-    // subsequent pending-work admission must not produce a delayed second provider request.
+    // callback confirms the active turn has been cleared. The traced pending-work admission span
+    // then closes after that gate completes; only after that exact boundary do we assert that no
+    // delayed second provider request was made.
     wait_for_thread_idle_after(&mut thread_idle_rx, idle_count_before).await;
+    wait_for_pending_work_admission_after(&mut admission_rx, admission_count_before).await;
     assert_eq!(server.requests().await.len(), 1);
     server.shutdown().await;
 }
