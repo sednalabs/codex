@@ -217,6 +217,12 @@ impl ProcessEntry {
         if sandbox_permissions == SandboxPermissions::UseDefault && !strict_auto_review {
             return Ok(None);
         }
+        // Manual approvals shell-quote the input, which cannot preserve NUL bytes.
+        if input.contains('\0') {
+            return Err(approval_error(
+                "terminal input contains a NUL byte and cannot be reviewed safely",
+            ));
+        }
         let reason = permissions
             .approval_reason(sandbox_permissions)
             .map_err(approval_error)?;
