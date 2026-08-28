@@ -24,6 +24,7 @@ use tracing::trace_span;
 use tracing::warn;
 
 use crate::codex_thread::BackgroundTerminalInfo;
+use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
 use crate::config::Config;
 use crate::context::ContextualUserFragment;
 use crate::hook_runtime::inspect_pending_input;
@@ -49,6 +50,7 @@ use codex_otel::TURN_MEMORY_METRIC;
 use codex_otel::TURN_NETWORK_PROXY_METRIC;
 use codex_otel::TURN_TOKEN_USAGE_METRIC;
 use codex_otel::TURN_TOOL_CALL_METRIC;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -90,6 +92,7 @@ pub(crate) struct TaskStartRejection {
     pub(crate) turn_context: Arc<TurnContext>,
     pub(crate) input: TaskStartInput,
     pub(crate) rejected_initial_input_disposition: RejectedInitialInputDisposition,
+    pub(crate) reason: TryStartTurnIfIdleRejectionReason,
 }
 
 #[cfg(test)]
@@ -127,6 +130,86 @@ pub(crate) fn clear_pending_wake_reservation_hook(thread_id: ThreadId, expected:
         .is_some_and(|hook| Arc::ptr_eq(hook, expected))
     {
         hooks.remove(&thread_id);
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TaskPublicationBarrier {
+    entered: Notify,
+    release: Notify,
+}
+
+#[cfg(test)]
+impl TaskPublicationBarrier {
+    pub(crate) fn new() -> Self {
+        Self {
+            entered: Notify::new(),
+            release: Notify::new(),
+        }
+    }
+
+    pub(crate) async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+#[cfg(test)]
+static TASK_PUBLICATION_BARRIERS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<ThreadId, Arc<TaskPublicationBarrier>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn set_task_publication_barrier(
+    thread_id: ThreadId,
+    barrier: Option<Arc<TaskPublicationBarrier>>,
+) {
+    let mut barriers = TASK_PUBLICATION_BARRIERS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .expect("task publication barrier lock");
+    match barrier {
+        Some(barrier) => {
+            barriers.insert(thread_id, barrier);
+        }
+        None => {
+            barriers.remove(&thread_id);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_task_publication_barrier(
+    thread_id: ThreadId,
+    expected: &Arc<TaskPublicationBarrier>,
+) {
+    let mut barriers = TASK_PUBLICATION_BARRIERS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .expect("task publication barrier lock");
+    if barriers
+        .get(&thread_id)
+        .is_some_and(|barrier| Arc::ptr_eq(barrier, expected))
+    {
+        barriers.remove(&thread_id);
+    }
+}
+
+#[cfg(test)]
+async fn wait_for_task_publication_barrier(session: &Session) {
+    let barrier = {
+        let barriers = TASK_PUBLICATION_BARRIERS
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+            .lock()
+            .expect("task publication barrier lock");
+        barriers.get(&session.thread_id).cloned()
+    };
+    if let Some(barrier) = barrier {
+        barrier.entered.notify_one();
+        barrier.release.notified().await;
     }
 }
 
@@ -453,7 +536,7 @@ impl Session {
             .await
     }
 
-    async fn handle_task_start_rejection(
+    pub(crate) async fn handle_task_start_rejection(
         self: &Arc<Self>,
         rejection: TaskStartRejection,
     ) -> Vec<ResponseItem> {
@@ -490,7 +573,7 @@ impl Session {
             Some(input) => TaskStartInput::ReservedPending(input.clone()),
             None => TaskStartInput::Initial(input.clone()),
         };
-        let reject = || {
+        let reject = |reason| {
             turn_context
                 .turn_metadata_state
                 .cancel_git_enrichment_task();
@@ -498,6 +581,7 @@ impl Session {
                 turn_context: Arc::clone(&turn_context),
                 input: rejected_input.clone(),
                 rejected_initial_input_disposition,
+                reason,
             }
         };
         let task_identity = TaskIdentity(uuid::Uuid::new_v4());
@@ -650,11 +734,15 @@ impl Session {
             _agent_execution_guard: agent_execution_guard,
             _timer: timer,
         };
+
+        #[cfg(test)]
+        wait_for_task_publication_barrier(self).await;
+
         {
             let _transition = self.input_queue.lock_task_transition().await;
             let mut active = self.active_turn.lock().await;
             if !self.task_admission_open.load(Ordering::Acquire) {
-                return Err(reject());
+                return Err(reject(TryStartTurnIfIdleRejectionReason::Busy));
             }
             let turn_state = if let Some(expected) = reserved_turn_state.as_ref() {
                 match active.as_ref() {
@@ -664,16 +752,31 @@ impl Session {
                     {
                         Arc::clone(expected)
                     }
-                    _ => return Err(reject()),
+                    _ => return Err(reject(TryStartTurnIfIdleRejectionReason::Busy)),
                 }
             } else {
                 if active.is_some() {
-                    return Err(reject());
+                    return Err(reject(TryStartTurnIfIdleRejectionReason::Busy));
                 }
                 let turn = active.get_or_insert_with(ActiveTurn::default);
                 debug_assert!(turn.task.is_none());
                 Arc::clone(&turn.turn_state)
             };
+            if reserved_turn_state.is_some() {
+                let state = self.state.lock().await;
+                if state.session_configuration.collaboration_mode.mode == ModeKind::Plan {
+                    return Err(reject(TryStartTurnIfIdleRejectionReason::PlanMode));
+                }
+                let Some(turn) = active.as_mut() else {
+                    return Err(reject(TryStartTurnIfIdleRejectionReason::Busy));
+                };
+                turn.task = Some(running_task);
+            } else {
+                let Some(turn) = active.as_mut() else {
+                    return Err(reject(TryStartTurnIfIdleRejectionReason::Busy));
+                };
+                turn.task = Some(running_task);
+            }
             if let Some(input) = reserved_input.as_ref() {
                 self.input_queue
                     .extend_pending_input_for_turn_state(
@@ -682,10 +785,6 @@ impl Session {
                     )
                     .await;
             }
-            let Some(turn) = active.as_mut() else {
-                return Err(reject());
-            };
-            turn.task = Some(running_task);
         }
         let _ = published_tx.send(());
         Ok(())

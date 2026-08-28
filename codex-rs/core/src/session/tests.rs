@@ -11317,6 +11317,14 @@ impl Drop for PendingWakeHookReset {
     }
 }
 
+struct TaskPublicationBarrierReset(ThreadId, Arc<crate::tasks::TaskPublicationBarrier>);
+
+impl Drop for TaskPublicationBarrierReset {
+    fn drop(&mut self) {
+        crate::tasks::clear_task_publication_barrier(self.0, &self.1);
+    }
+}
+
 #[tokio::test]
 #[expect(
     clippy::await_holding_invalid_type,
@@ -11402,6 +11410,69 @@ async fn try_start_turn_if_idle_rejects_plan_mode_without_injecting() {
         Vec::<TurnInput>::new(),
         sess.input_queue.get_pending_input(&sess.active_turn).await
     );
+}
+
+#[tokio::test]
+async fn try_start_turn_if_idle_rejects_plan_mode_committed_during_publication() {
+    let (sess, _tc, rx) = make_session_and_context_with_rx().await;
+    while rx.try_recv().is_ok() {}
+
+    let barrier = Arc::new(crate::tasks::TaskPublicationBarrier::new());
+    let thread_id = sess.thread_id;
+    crate::tasks::set_task_publication_barrier(thread_id, Some(Arc::clone(&barrier)));
+    let _barrier_reset = TaskPublicationBarrierReset(thread_id, Arc::clone(&barrier));
+
+    let item = user_message("automatic input during settings race");
+    let start = tokio::spawn({
+        let sess = Arc::clone(&sess);
+        let item = item.clone();
+        async move { sess.try_start_turn_if_idle(vec![item]).await }
+    });
+
+    barrier.wait_until_entered().await;
+    let mut collaboration_mode = sess.collaboration_mode().await;
+    collaboration_mode.mode = ModeKind::Plan;
+    sess.update_settings(SessionSettingsUpdate {
+        collaboration_mode: Some(collaboration_mode),
+        ..Default::default()
+    })
+    .await
+    .expect("Plan settings update should commit before publication");
+    barrier.release();
+
+    let err = start
+        .await
+        .expect("automatic admission task should finish")
+        .expect_err("publication should reject the now-current Plan mode");
+    assert_eq!(TryStartTurnIfIdleRejectionReason::PlanMode, err.reason());
+    assert_eq!(vec![item], err.into_input());
+    assert!(sess.active_turn.lock().await.is_none());
+    assert_eq!(
+        Vec::<TurnInput>::new(),
+        sess.input_queue.get_pending_input(&sess.active_turn).await
+    );
+    let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(
+        events.iter().all(|event| !matches!(
+            &event.msg,
+            EventMsg::TurnStarted(_) | EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+        )),
+        "Plan-mode publication rejection must not start task lifecycle: {events:?}"
+    );
+    crate::tasks::clear_task_publication_barrier(thread_id, &barrier);
+
+    let mut collaboration_mode = sess.collaboration_mode().await;
+    collaboration_mode.mode = ModeKind::Default;
+    sess.update_settings(SessionSettingsUpdate {
+        collaboration_mode: Some(collaboration_mode),
+        ..Default::default()
+    })
+    .await
+    .expect("Default settings update should commit");
+    sess.try_start_turn_if_idle(vec![user_message("automatic input after cleanup")])
+        .await
+        .expect("automatic admission should be reusable after cleanup");
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
 #[tokio::test]
