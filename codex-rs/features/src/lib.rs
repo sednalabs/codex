@@ -269,6 +269,8 @@ pub enum Feature {
     ExternalMigration,
     /// Enable extension-backed image generation.
     ImageGeneration,
+    /// Omit inline image and audio content from app-server item notifications.
+    OmitAppServerNotificationMedia,
     /// Tell the model when a prompt image was resized and include its dimensions.
     ImageResizeNotice,
     /// Apply one shared pixel and token budget to every image, regardless of legacy detail hints.
@@ -1397,6 +1399,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "image_generation",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::OmitAppServerNotificationMedia,
+        key: "omit_app_server_notification_media",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::ImageResizeNotice,

@@ -1,5 +1,6 @@
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
+use crate::notification_media::without_notification_media;
 use crate::outgoing_message::ClientRequestResult;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
 use crate::request_processors::populate_thread_turns_from_history;
@@ -91,6 +92,7 @@ use codex_app_server_protocol::guardian_auto_approval_review_notification;
 use codex_app_server_protocol::item_event_to_server_notification;
 use codex_core::CodexThread;
 use codex_core::ThreadManager;
+use codex_features::Feature;
 use codex_guardian_v2::StrictReviewReason;
 use codex_protocol::ThreadId;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
@@ -1068,11 +1070,14 @@ pub(crate) async fn apply_bespoke_event_handling(
                 _ => None,
             };
             if should_emit {
-                let notification = item_event_to_server_notification(
+                let mut notification = item_event_to_server_notification(
                     EventMsg::ItemStarted(event),
                     &conversation_id.to_string(),
                     &event_turn_id,
                 );
+                if conversation.enabled(Feature::OmitAppServerNotificationMedia) {
+                    notification = without_notification_media(notification);
+                }
                 outgoing.send_server_notification(notification).await;
             }
             if let Some(params) = dynamic_tool_call_params {
@@ -1093,11 +1098,14 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &event.item,
             )
             .await;
-            let notification = item_event_to_server_notification(
+            let mut notification = item_event_to_server_notification(
                 EventMsg::ItemCompleted(event),
                 &conversation_id.to_string(),
                 &event_turn_id,
             );
+            if conversation.enabled(Feature::OmitAppServerNotificationMedia) {
+                notification = without_notification_media(notification);
+            }
             outgoing.send_server_notification(notification).await;
         }
         msg @ (EventMsg::PatchApplyUpdated(_) | EventMsg::TerminalInteraction(_)) => {
@@ -1129,13 +1137,17 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::RawResponseItem(raw_response_item_event) => {
-            maybe_emit_raw_response_item_completed(
-                conversation_id,
-                &event_turn_id,
-                raw_response_item_event.item,
-                &outgoing,
-            )
-            .await;
+            let mut notification = ServerNotification::RawResponseItemCompleted(
+                RawResponseItemCompletedNotification {
+                    thread_id: conversation_id.to_string(),
+                    turn_id: event_turn_id,
+                    item: raw_response_item_event.item,
+                },
+            );
+            if conversation.enabled(Feature::OmitAppServerNotificationMedia) {
+                notification = without_notification_media(notification);
+            }
+            outgoing.send_server_notification(notification).await;
         }
         EventMsg::RawResponseCompleted(raw_response_completed_event) => {
             let notification = RawResponseCompletedNotification {
@@ -1509,22 +1521,6 @@ async fn complete_command_execution_item(
     };
     outgoing
         .send_server_notification(ServerNotification::ItemCompleted(notification))
-        .await;
-}
-
-async fn maybe_emit_raw_response_item_completed(
-    conversation_id: ThreadId,
-    turn_id: &str,
-    item: codex_protocol::models::ResponseItem,
-    outgoing: &ThreadScopedOutgoingMessageSender,
-) {
-    let notification = RawResponseItemCompletedNotification {
-        thread_id: conversation_id.to_string(),
-        turn_id: turn_id.to_string(),
-        item,
-    };
-    outgoing
-        .send_server_notification(ServerNotification::RawResponseItemCompleted(notification))
         .await;
 }
 
