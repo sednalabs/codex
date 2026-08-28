@@ -51,19 +51,19 @@ pub struct GoalOwnerContinuation {
 /// for all entered publication/admission/network operations to quiesce before
 /// returning to the caller.
 #[derive(Debug)]
-pub struct GoalContinuationFence {
+struct GoalContinuationFence {
     epoch: AtomicU64,
     active: StdMutex<usize>,
     idle: Condvar,
 }
 
 /// Active-operation token held across publication and physical request opening.
-pub struct GoalContinuationFenceGuard {
+struct GoalContinuationFenceGuard {
     fence: Arc<GoalContinuationFence>,
 }
 
 impl GoalContinuationFence {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             epoch: AtomicU64::new(0),
             active: StdMutex::new(0),
@@ -71,14 +71,14 @@ impl GoalContinuationFence {
         }
     }
 
-    pub fn current_epoch(&self) -> u64 {
+    fn current_epoch(&self) -> u64 {
         self.epoch.load(AtomicOrdering::Acquire)
     }
 
     /// Non-blocking quiescence probe for a current-thread executor. The
     /// executor cannot synchronously wait on a guard held by a future running
     /// on that same thread; callers must await this condition cooperatively.
-    pub fn is_quiescent(&self) -> bool {
+    fn is_quiescent(&self) -> bool {
         *self
             .active
             .lock()
@@ -86,11 +86,11 @@ impl GoalContinuationFence {
             == 0
     }
 
-    pub fn revoke(&self) {
+    fn revoke(&self) {
         self.epoch.fetch_add(1, AtomicOrdering::AcqRel);
     }
 
-    pub fn revoke_and_wait(&self) {
+    fn revoke_and_wait(&self) {
         self.revoke();
         let mut active = self
             .active
@@ -119,6 +119,57 @@ impl GoalContinuationFence {
     }
 }
 
+/// Owner-side factory for continuations. The fence is intentionally opaque:
+/// callers can mint a token only from the coordinator that owns its epoch and
+/// cannot attach an unrelated fence to an existing token.
+#[derive(Clone, Debug)]
+pub struct GoalContinuationFenceCoordinator {
+    fence: Arc<GoalContinuationFence>,
+}
+
+impl GoalContinuationFenceCoordinator {
+    pub fn new() -> Self {
+        Self {
+            fence: Arc::new(GoalContinuationFence::new()),
+        }
+    }
+
+    pub fn current_epoch(&self) -> u64 {
+        self.fence.current_epoch()
+    }
+
+    pub fn revoke(&self) {
+        self.fence.revoke();
+    }
+
+    pub fn revoke_and_wait(&self) {
+        self.fence.revoke_and_wait();
+    }
+
+    pub fn is_quiescent(&self) -> bool {
+        self.fence.is_quiescent()
+    }
+
+    pub fn continuation(
+        &self,
+        authority: GoalOwnerAdmissionContinuationAuthority,
+    ) -> GoalOwnerContinuation {
+        GoalOwnerContinuation::from_coordinator(authority, None, self)
+    }
+
+    pub fn continuation_with_dispatch_claim(
+        &self,
+        authority: GoalOwnerAdmissionContinuationAuthority,
+        dispatch_claim_id: Uuid,
+    ) -> GoalOwnerContinuation {
+        GoalOwnerContinuation::from_coordinator(authority, Some(dispatch_claim_id), self)
+    }
+
+    fn fence(&self) -> Arc<GoalContinuationFence> {
+        Arc::clone(&self.fence)
+    }
+}
+
 impl Drop for GoalContinuationFenceGuard {
     fn drop(&mut self) {
         let mut active = self
@@ -134,42 +185,25 @@ impl Drop for GoalContinuationFenceGuard {
 }
 
 impl GoalOwnerContinuation {
-    pub fn new(authority: GoalOwnerAdmissionContinuationAuthority) -> Self {
-        Self {
-            authority,
-            dispatch_claim_id: None,
-            // A continuation becomes usable only after its owner attaches the
-            // coordinator's shared fence. Keeping this unset prevents a
-            // reconstructed, private fence from crossing the handoff.
-            fence: None,
-            fence_epoch: 0,
-        }
-    }
-
-    pub fn with_dispatch_claim(
-        authority: GoalOwnerAdmissionContinuationAuthority,
-        dispatch_claim_id: Uuid,
-    ) -> Self {
-        Self {
-            authority,
-            dispatch_claim_id: Some(dispatch_claim_id),
-            fence: None,
-            fence_epoch: 0,
-        }
-    }
-
-    pub fn with_fence(mut self, fence: Arc<GoalContinuationFence>, fence_epoch: u64) -> Self {
-        self.fence = Some(fence);
-        self.fence_epoch = fence_epoch;
-        self
-    }
-
-    pub fn enter_fence(&self) -> Option<GoalContinuationFenceGuard> {
+    fn enter_fence(&self) -> Option<GoalContinuationFenceGuard> {
         self.fence.as_ref()?.enter(self.fence_epoch)
     }
 
     pub(crate) fn has_fence(&self) -> bool {
         self.fence.is_some()
+    }
+
+    fn from_coordinator(
+        authority: GoalOwnerAdmissionContinuationAuthority,
+        dispatch_claim_id: Option<Uuid>,
+        coordinator: &GoalContinuationFenceCoordinator,
+    ) -> Self {
+        Self {
+            authority,
+            dispatch_claim_id,
+            fence: Some(coordinator.fence()),
+            fence_epoch: coordinator.current_epoch(),
+        }
     }
 
     pub(crate) fn authority(&self) -> &GoalOwnerAdmissionContinuationAuthority {

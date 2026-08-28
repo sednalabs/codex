@@ -865,8 +865,8 @@ async fn replaced_abort_retires_exact_settled_provider_continuation() -> anyhow:
 
     let turn_store = ExtensionData::new(settled.successor_turn_id.clone());
     turn_store.insert(
-        codex_core::GoalOwnerContinuation::new(settled.continuation_authority())
-            .with_fence(Arc::new(codex_core::GoalContinuationFence::new()), 0),
+        codex_core::GoalContinuationFenceCoordinator::new()
+            .continuation(settled.continuation_authority()),
     );
     harness
         .abort_turn_with_store(&turn_store, TurnAbortReason::Replaced)

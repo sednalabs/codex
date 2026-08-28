@@ -109,9 +109,34 @@ const STATE_DB_BASENAME: &str = "state";
 const LOGS_DB_BASENAME: &str = "logs";
 const USAGE_DB_BASENAME: &str = "usage";
 
+/// One opaque, revocable capability shared by coupled goal/admission stores.
+/// A lock loser receives no capability and is therefore unable to mutate
+/// either side of the continuation protocol.
+#[derive(Debug)]
+pub(crate) struct RuntimeOwnerCapability {
+    revoked: AtomicBool,
+}
+
+impl RuntimeOwnerCapability {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            revoked: AtomicBool::new(false),
+        })
+    }
+
+    fn revoke(&self) {
+        self.revoked.store(true, Ordering::Release);
+    }
+
+    fn is_active(&self) -> bool {
+        !self.revoked.load(Ordering::Acquire)
+    }
+}
+
 struct RuntimeOwnerLease {
     store: GoalOwnerAdmissionStore,
     owner_id: Uuid,
+    capability: Arc<RuntimeOwnerCapability>,
     _process_lock: File,
     released: AtomicBool,
 }
@@ -124,6 +149,7 @@ impl RuntimeOwnerLease {
         if let Err(error) = self.store.release_runtime_owner(self.owner_id).await {
             warn!(%error, "failed to release durable runtime owner");
         }
+        self.capability.revoke();
     }
 }
 
@@ -134,12 +160,16 @@ impl Drop for RuntimeOwnerLease {
         }
         let store = self.store.clone();
         let owner_id = self.owner_id;
+        let capability = Arc::clone(&self.capability);
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 if let Err(error) = store.release_runtime_owner(owner_id).await {
                     warn!(%error, "failed to release durable runtime owner during runtime drop");
                 }
+                capability.revoke();
             });
+        } else {
+            self.capability.revoke();
         }
     }
 }
@@ -150,8 +180,19 @@ impl Drop for RuntimeOwnerLease {
 #[cfg(unix)]
 fn try_acquire_runtime_process_lock(goals_path: &Path) -> anyhow::Result<Option<File>> {
     use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
 
-    let lock_path = goals_path.with_extension("runtime.lock");
+    let canonical_goals_path = std::fs::canonicalize(goals_path)?;
+    let metadata = std::fs::metadata(&canonical_goals_path)?;
+    let lock_name = format!(
+        ".codex-goals-runtime-{:x}-{:x}.lock",
+        metadata.dev(),
+        metadata.ino()
+    );
+    let lock_path = canonical_goals_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("goal database has no lock-file parent"))?
+        .join(lock_name);
     let file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -376,7 +417,11 @@ impl StateRuntime {
             };
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let thread_recency_at_millis = thread_recency_at_millis.unwrap_or(0);
-        let bootstrap_goal_owner_admissions = GoalOwnerAdmissionStore::new(Arc::clone(&goals_pool));
+        let owner_capability = RuntimeOwnerCapability::new();
+        let bootstrap_goal_owner_admissions = GoalOwnerAdmissionStore::with_capability(
+            Arc::clone(&goals_pool),
+            Arc::clone(&owner_capability),
+        );
         let runtime_owner = if let Some(process_lock) =
             try_acquire_runtime_process_lock(&goals_path)?
         {
@@ -399,7 +444,9 @@ impl StateRuntime {
                 .recover_in_flight_on_open_as_owner(owner_id)
                 .await
             {
-                let _ = goal_owner_admissions.release_runtime_owner(owner_id).await;
+                let _ = bootstrap_goal_owner_admissions
+                    .release_runtime_owner(owner_id)
+                    .await;
                 close_sqlite_pools(&[
                     pool.as_ref(),
                     logs_pool.as_ref(),
@@ -413,22 +460,27 @@ impl StateRuntime {
             Some(Arc::new(RuntimeOwnerLease {
                 store: bootstrap_goal_owner_admissions.clone(),
                 owner_id,
+                capability: Arc::clone(&owner_capability),
                 _process_lock: process_lock,
                 released: AtomicBool::new(false),
             }))
         } else {
+            owner_capability.revoke();
             warn!(
                 "another StateRuntime owns the goals database or process lock is unavailable; admission recovery is disabled"
             );
             None
         };
-        let goal_owner_admissions = if runtime_owner.is_some() {
-            GoalOwnerAdmissionStore::new(Arc::clone(&goals_pool))
+        let capability = runtime_owner
+            .as_ref()
+            .map(|owner| Arc::clone(&owner.capability));
+        let goal_owner_admissions = if let Some(capability) = capability.clone() {
+            GoalOwnerAdmissionStore::with_capability(Arc::clone(&goals_pool), capability)
         } else {
             GoalOwnerAdmissionStore::read_only(Arc::clone(&goals_pool))
         };
         let runtime = Arc::new(Self {
-            thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
+            thread_goals: GoalStore::with_capability(Arc::clone(&goals_pool), capability),
             goal_owner_admissions,
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
