@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::INFERENCE_CALL_EVENT_MAX_BYTES;
 use codex_protocol::protocol::InferenceCallStatus;
 use codex_protocol::protocol::InferenceCallTransport;
 use codex_protocol::protocol::SessionSource;
@@ -247,12 +248,26 @@ fn durable_adapter_preserves_effective_identity_source_and_usage_limit() {
         Some(codex_protocol::protocol::InferenceCallSource::Direct)
     );
     assert_eq!(event.configured_provider, "configured-provider");
+    assert_eq!(event.configured_model.as_deref(), Some("configured-model"));
     assert_eq!(event.effective_provider, "resolved-provider");
     assert_eq!(event.requested_model, "requested-model");
     assert_eq!(event.effective_model, "resolved-model");
     assert_eq!(event.outcome_detail.as_deref(), Some("provider limit"));
     assert!(event.observed_provider.is_none());
     assert!(event.observed_model.is_none());
+}
+
+#[test]
+fn durable_adapter_does_not_mark_local_denial_as_transport_completion() {
+    let event = protocol_event_for_observation(InferenceObservationEvent::LocalDenial {
+        attempt: metadata(InferenceAdmission::Denied),
+        reason: "admission rejected".to_string(),
+    })
+    .expect("bounded protocol event");
+
+    assert_eq!(event.status, InferenceCallStatus::LocalDenied);
+    assert!(event.request_completed_at_ms.is_none());
+    assert_eq!(event.outcome_detail.as_deref(), Some("admission rejected"));
 }
 
 #[test]
@@ -277,9 +292,11 @@ fn trace_writer_sink_persists_bounded_protocol_event() -> anyhow::Result<()> {
     let trace_log = std::fs::read_to_string(temp.path().join("trace.jsonl"))?;
     assert!(trace_log.contains("\"event_type\":\"inference_call\""));
     assert!(temp.path().join("payloads/1.json").exists());
-    let payload = std::fs::read_to_string(temp.path().join("payloads/1.json"))?;
-    assert!(payload.contains("\"status\": \"transport_uncertain\""));
-    assert!(!payload.contains("provider_executed"));
+    let payload = std::fs::read(temp.path().join("payloads/1.json"))?;
+    assert!(payload.len() <= INFERENCE_CALL_EVENT_MAX_BYTES);
+    let payload: serde_json::Value = serde_json::from_slice(&payload)?;
+    assert_eq!(payload["status"], "transport_uncertain");
+    assert!(payload.get("provider_executed").is_none());
     Ok(())
 }
 

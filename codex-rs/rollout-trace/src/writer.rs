@@ -105,6 +105,30 @@ impl TraceWriter {
         })
     }
 
+    /// Writes a compact JSON payload and returns its reduced-state reference.
+    ///
+    /// Compact encoding is useful for payloads whose protocol contract bounds
+    /// the serialized byte representation. The ordinary payload path remains
+    /// pretty-printed for human inspection.
+    pub fn write_json_payload_compact(
+        &self,
+        kind: RawPayloadKind,
+        value: &impl Serialize,
+    ) -> Result<RawPayloadRef> {
+        let mut inner = self.lock_inner();
+        let ordinal = inner.next_payload_ordinal;
+        inner.next_payload_ordinal += 1;
+        let raw_payload_id = format!("raw_payload:{ordinal}");
+        let relative_path = format!("{PAYLOADS_DIR_NAME}/{ordinal}.json");
+        let absolute_path = inner.payloads_dir.join(format!("{ordinal}.json"));
+        write_json_file_compact(&absolute_path, value)?;
+        Ok(RawPayloadRef {
+            raw_payload_id,
+            kind,
+            path: relative_path,
+        })
+    }
+
     /// Appends one raw event with no extra envelope context.
     pub fn append(&self, payload: RawTraceEventPayload) -> Result<RawTraceEvent> {
         self.append_with_context(RawTraceEventContext::default(), payload)
@@ -145,6 +169,11 @@ fn write_json_file(path: &Path, value: &impl Serialize) -> Result<()> {
     let file = File::create(path).with_context(|| format!("create {}", path.display()))?;
     serde_json::to_writer_pretty(file, value)
         .with_context(|| format!("write JSON {}", path.display()))
+}
+
+fn write_json_file_compact(path: &Path, value: &impl Serialize) -> Result<()> {
+    let file = File::create(path).with_context(|| format!("create {}", path.display()))?;
+    serde_json::to_writer(file, value).with_context(|| format!("write JSON {}", path.display()))
 }
 
 pub(crate) fn unix_time_ms() -> i64 {
