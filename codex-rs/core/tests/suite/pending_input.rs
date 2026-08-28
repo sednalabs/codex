@@ -50,6 +50,7 @@ use serde_json::Value;
 use serde_json::from_slice;
 use serde_json::json;
 use test_case::test_case;
+use tokio::sync::Notify;
 use tokio::sync::oneshot;
 
 fn ev_message_item_done(id: &str, text: &str) -> Value {
@@ -222,6 +223,14 @@ async fn submit_danger_full_access_user_turn(test: &TestCodex, text: &str) {
 }
 
 async fn steer_user_input(codex: &CodexThread, text: &str) {
+    steer_user_input_with_client_id(codex, text, /*client_user_message_id*/ None).await;
+}
+
+async fn steer_user_input_with_client_id(
+    codex: &CodexThread,
+    text: &str,
+    client_user_message_id: Option<&str>,
+) {
     codex
         .steer_input(
             vec![UserInput::Text {
@@ -230,7 +239,7 @@ async fn steer_user_input(codex: &CodexThread, text: &str) {
             }],
             /*additional_context*/ Default::default(),
             /*expected_turn_id*/ None,
-            /*client_user_message_id*/ None,
+            client_user_message_id.map(str::to_string),
             /*responsesapi_client_metadata*/ None,
         )
         .await
@@ -458,6 +467,176 @@ async fn steer_interrupts_wait_agent_and_is_sent_in_follow_up_request() {
     assert_eq!(
         wait_output.get("message"),
         Some(&json!("Wait woke due to mailbox activity."))
+    );
+
+    server.shutdown().await;
+}
+
+struct TurnFinalizationBarrierReset {
+    thread_id: codex_protocol::ThreadId,
+    barrier: Arc<codex_core::test_support::TurnFinalizationBarrier>,
+}
+
+struct ThreadIdleSignal(Arc<Notify>);
+
+impl codex_extension_api::ThreadLifecycleContributor<codex_core::config::Config>
+    for ThreadIdleSignal
+{
+    fn on_thread_idle<'a>(
+        &'a self,
+        _input: codex_extension_api::ThreadIdleInput<'a>,
+    ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            self.0.notify_one();
+        })
+    }
+}
+
+impl Drop for TurnFinalizationBarrierReset {
+    fn drop(&mut self) {
+        codex_core::test_support::clear_turn_finalization_barrier(self.thread_id, &self.barrier);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn late_steer_reopens_regular_turn_at_finalization_boundary() {
+    const INITIAL_PROMPT: &str = "initial prompt";
+    const LATE_STEER: &str = "late steer";
+    const LATE_CLIENT_ID: &str = "late-client-id";
+
+    let first_chunks = vec![
+        chunk(ev_response_created("resp-1")),
+        chunk(ev_message_item_added("msg-1", "")),
+        chunk(ev_output_text_delta("first answer")),
+        chunk(ev_message_item_done("msg-1", "first answer")),
+        chunk(ev_completed("resp-1")),
+    ];
+    let second_chunks = vec![
+        chunk(ev_response_created("resp-2")),
+        chunk(ev_message_item_added("msg-2", "")),
+        chunk(ev_output_text_delta("final answer")),
+        chunk(ev_message_item_done("msg-2", "final answer")),
+        chunk(ev_completed("resp-2")),
+    ];
+    let (server, _completions) =
+        start_streaming_sse_server(vec![first_chunks, second_chunks]).await;
+    let idle_signal = Arc::new(Notify::new());
+    let mut extensions =
+        codex_extension_api::ExtensionRegistryBuilder::<codex_core::config::Config>::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdleSignal(Arc::clone(&idle_signal))));
+    let test = test_codex()
+        .with_model("gpt-5.4")
+        .with_extensions(Arc::new(extensions.build()))
+        .build_with_streaming_server(&server)
+        .await
+        .expect("build streaming Codex test session");
+    let codex = Arc::clone(&test.codex);
+    let thread_id = test.session_configured.thread_id;
+    let barrier = Arc::new(codex_core::test_support::TurnFinalizationBarrier::new());
+    codex_core::test_support::set_turn_finalization_barrier(thread_id, Some(Arc::clone(&barrier)));
+    let _barrier_reset = TurnFinalizationBarrierReset {
+        thread_id,
+        barrier: Arc::clone(&barrier),
+    };
+
+    submit_user_input(&codex, INITIAL_PROMPT).await;
+    barrier.wait_until_entered().await;
+    steer_user_input_with_client_id(&codex, LATE_STEER, Some(LATE_CLIENT_ID)).await;
+    barrier.release();
+
+    let mut turn_started = 0;
+    let mut turn_completed = 0;
+    let mut agent_messages = Vec::new();
+    let mut matching_client_ids = 0;
+    loop {
+        let event = codex
+            .next_event()
+            .await
+            .expect("event stream should remain open");
+        match event.msg {
+            EventMsg::TurnStarted(_) => turn_started += 1,
+            EventMsg::TurnComplete(_) => {
+                turn_completed += 1;
+                break;
+            }
+            EventMsg::AgentMessage(message) => agent_messages.push(message.message),
+            EventMsg::UserMessage(message)
+                if message.client_id.as_deref() == Some(LATE_CLIENT_ID) =>
+            {
+                matching_client_ids += 1;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(
+        1, turn_started,
+        "late steer must not emit a duplicate TurnStarted"
+    );
+    assert_eq!(1, turn_completed, "late steer must emit one TurnComplete");
+    assert_eq!(
+        vec!["final answer".to_string()],
+        agent_messages
+            .into_iter()
+            .filter(|message| message == "final answer")
+            .collect::<Vec<_>>(),
+        "the continuation must produce the final agent message",
+    );
+    assert_eq!(
+        1, matching_client_ids,
+        "late steer client id must be emitted once"
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), idle_signal.notified())
+        .await
+        .expect("thread should become idle after finalization");
+
+    let requests = server.requests().await;
+    assert_eq!(2, requests.len(), "one provider request per turn execution");
+    let first: Value = from_slice(&requests[0]).expect("parse first request");
+    let second: Value = from_slice(&requests[1]).expect("parse second request");
+    assert_eq!(
+        vec![INITIAL_PROMPT.to_string()],
+        message_input_texts(&first, "user")
+            .into_iter()
+            .filter(|text| text == INITIAL_PROMPT)
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        vec![INITIAL_PROMPT.to_string(), LATE_STEER.to_string()],
+        message_input_texts(&second, "user")
+            .into_iter()
+            .filter(|text| text == INITIAL_PROMPT || text == LATE_STEER)
+            .collect::<Vec<_>>(),
+    );
+
+    let history = codex
+        .load_history(/*include_archived*/ true)
+        .await
+        .expect("load persisted thread history");
+    let persisted_target_user_texts = history
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::ResponseItem(ResponseItem::Message { role, content, .. })
+                if role == "user" =>
+            {
+                Some(content)
+            }
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|content| match content {
+            ContentItem::InputText { text } if text == INITIAL_PROMPT || text == LATE_STEER => {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        vec![INITIAL_PROMPT.to_string(), LATE_STEER.to_string()],
+        persisted_target_user_texts,
+        "each user input must be persisted once",
     );
 
     server.shutdown().await;
