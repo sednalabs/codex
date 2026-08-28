@@ -327,7 +327,7 @@ SELECT 1, ?, ?
 WHERE EXISTS (
     SELECT 1
     FROM goal_owner_runtime_protocol
-    WHERE protocol_key = 1 AND protocol_version = 2
+    WHERE protocol_key = 1 AND protocol_version = 3
 )
 ON CONFLICT(owner_key) DO UPDATE SET
     owner_id = excluded.owner_id,
@@ -429,6 +429,22 @@ SET phase = 'pending',
     dispatch_claimed_at_ms = NULL,
     updated_at_ms = ?
 WHERE phase = 'acquired' AND retired_at_ms IS NULL
+            "#,
+        )
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
+        // No scheduler survives an owner process restart. Clear publication
+        // claims before any resumed timer can dispatch; provider leases are
+        // handled separately below and retain their uncertainty boundary.
+        sqlx::query(
+            r#"
+UPDATE goal_owner_admissions
+SET dispatch_claim_id = NULL,
+    dispatch_fence_id = NULL,
+    dispatch_claimed_at_ms = NULL,
+    updated_at_ms = ?
+WHERE phase = 'pending' AND retired_at_ms IS NULL
             "#,
         )
         .bind(now_ms)
@@ -547,6 +563,7 @@ WHERE thread_id = ?
         &self,
         authority: &GoalOwnerAdmissionAuthority,
         dispatch_claim_id: Uuid,
+        fence_identity: Uuid,
     ) -> anyhow::Result<bool> {
         let _capability_guard = self.require_write_capability()?;
         validate_authority(authority)?;
@@ -564,6 +581,7 @@ WHERE thread_id = ?
   AND cancellation_epoch = ?
   AND phase = 'pending'
   AND dispatch_claim_id = ?
+  AND dispatch_fence_id = ?
   AND retired_at_ms IS NULL
             "#,
         )
@@ -573,6 +591,7 @@ WHERE thread_id = ?
         .bind(authority.generation)
         .bind(authority.cancellation_epoch)
         .bind(dispatch_claim_id.to_string())
+        .bind(fence_identity.to_string())
         .execute(self.pool.as_ref())
         .await?;
         Ok(result.rows_affected() == 1)

@@ -934,7 +934,14 @@ async fn dispatch_claim_is_single_owner_and_consumed_by_acquire() {
     assert_eq!(claimed.dispatch_fence_id, Some(fence_identity));
     assert!(
         !store
-            .release_dispatch_claim(&record.authority, Uuid::now_v7())
+            .release_dispatch_claim(&record.authority, claim_id, Uuid::now_v7())
+            .await
+            .expect("reject foreign fence cleanup"),
+        "a foreign fence must not release a valid dispatch claim"
+    );
+    assert!(
+        !store
+            .release_dispatch_claim(&record.authority, Uuid::now_v7(), fence_identity)
             .await
             .expect("reject stale claimant cleanup")
     );

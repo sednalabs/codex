@@ -81,6 +81,7 @@ struct DispatchClaimGuard {
     store: codex_state::GoalOwnerAdmissionStore,
     authority: codex_state::GoalOwnerAdmissionAuthority,
     claim_id: Uuid,
+    fence_identity: Uuid,
     armed: bool,
 }
 
@@ -89,11 +90,13 @@ impl DispatchClaimGuard {
         store: codex_state::GoalOwnerAdmissionStore,
         authority: codex_state::GoalOwnerAdmissionAuthority,
         claim_id: Uuid,
+        fence_identity: Uuid,
     ) -> Self {
         Self {
             store,
             authority,
             claim_id,
+            fence_identity,
             armed: true,
         }
     }
@@ -111,9 +114,13 @@ impl Drop for DispatchClaimGuard {
         let store = self.store.clone();
         let authority = self.authority.clone();
         let claim_id = self.claim_id;
+        let fence_identity = self.fence_identity;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                if let Err(error) = store.release_dispatch_claim(&authority, claim_id).await {
+                if let Err(error) = store
+                    .release_dispatch_claim(&authority, claim_id, fence_identity)
+                    .await
+                {
                     tracing::warn!(
                         thread_id = %authority.thread_id,
                         generation = authority.generation,
@@ -1180,7 +1187,11 @@ impl GoalRuntimeHandle {
             // A claim cannot survive a process restart as an owner. Reopen the
             // exact pending generation for a fresh timer claim.
             admissions
-                .release_dispatch_claim(&record.authority, dispatch_claim_id)
+                .release_dispatch_claim(
+                    &record.authority,
+                    dispatch_claim_id,
+                    record.dispatch_fence_id.unwrap_or(Uuid::nil()),
+                )
                 .await
                 .map_err(|err| err.to_string())?;
         }
@@ -1385,6 +1396,7 @@ impl GoalRuntimeHandle {
             self.inner.state_dbs.goal_owner_admissions().clone(),
             continuation_authority.authority.clone(),
             dispatch_claim_id,
+            self.inner.continuation.fence.identity(),
         );
         if !self
             .timer_is_current(
@@ -1399,6 +1411,7 @@ impl GoalRuntimeHandle {
             self.release_dispatch_claim_best_effort(
                 &continuation_authority.authority,
                 dispatch_claim_id,
+                self.inner.continuation.fence.identity(),
             )
             .await;
             return Ok(());
@@ -1412,6 +1425,7 @@ impl GoalRuntimeHandle {
             self.release_dispatch_claim_best_effort(
                 &continuation_authority.authority,
                 dispatch_claim_id,
+                self.inner.continuation.fence.identity(),
             )
             .await;
             return Ok(());
@@ -1420,6 +1434,7 @@ impl GoalRuntimeHandle {
             self.release_dispatch_claim_best_effort(
                 &continuation_authority.authority,
                 dispatch_claim_id,
+                self.inner.continuation.fence.identity(),
             )
             .await;
             return Ok(());
@@ -1437,6 +1452,7 @@ impl GoalRuntimeHandle {
             self.release_dispatch_claim_best_effort(
                 &continuation_authority.authority,
                 dispatch_claim_id,
+                self.inner.continuation.fence.identity(),
             )
             .await;
             return Ok(());
@@ -1456,6 +1472,7 @@ impl GoalRuntimeHandle {
             self.release_dispatch_claim_best_effort(
                 &continuation_authority.authority,
                 dispatch_claim_id,
+                self.inner.continuation.fence.identity(),
             )
             .await;
             return Ok(());
@@ -1465,6 +1482,7 @@ impl GoalRuntimeHandle {
                 self.release_dispatch_claim_best_effort(
                     &continuation_authority.authority,
                     dispatch_claim_id,
+                    self.inner.continuation.fence.identity(),
                 )
                 .await;
                 return Ok(());
@@ -1477,6 +1495,7 @@ impl GoalRuntimeHandle {
             self.release_dispatch_claim_best_effort(
                 &continuation_authority.authority,
                 dispatch_claim_id,
+                self.inner.continuation.fence.identity(),
             )
             .await;
             return Ok(());
@@ -1622,12 +1641,13 @@ impl GoalRuntimeHandle {
         &self,
         authority: &codex_state::GoalOwnerAdmissionAuthority,
         dispatch_claim_id: Uuid,
+        fence_identity: Uuid,
     ) {
         if let Err(error) = self
             .inner
             .state_dbs
             .goal_owner_admissions()
-            .release_dispatch_claim(authority, dispatch_claim_id)
+            .release_dispatch_claim(authority, dispatch_claim_id, fence_identity)
             .await
         {
             tracing::warn!(
