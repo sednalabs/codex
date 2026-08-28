@@ -1025,6 +1025,51 @@ async fn live_runtime_owner_blocks_competing_startup_recovery() {
 }
 
 #[tokio::test]
+async fn read_only_runtime_cannot_self_claim_an_unclaimed_generation() {
+    let codex_home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+    let runtime_a = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("first runtime owns admission mutations");
+    let record = runtime_a
+        .goal_owner_admissions()
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "read-only-claim",
+            "request-read-only-claim",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record unclaimed pending admission");
+
+    let runtime_b = StateRuntime::init(sqlite, "test-provider".to_string())
+        .await
+        .expect("competing runtime opens read-only");
+    assert!(!runtime_b.owns_goal_runtime());
+    let error = runtime_b
+        .goal_owner_admissions()
+        .claim_dispatch(
+            &record.continuation_authority(),
+            GoalOwnerDispatchFenceCapability::fresh(),
+            Utc::now(),
+        )
+        .await
+        .expect_err("read-only downstream runtime must not self-claim");
+    assert!(error.to_string().contains("runtime owner capability"));
+    let unchanged = runtime_a
+        .goal_owner_admissions()
+        .get_generation(&record.authority)
+        .await
+        .expect("read exact pending generation")
+        .expect("pending generation remains durable");
+    assert_eq!(unchanged.dispatch_claim_id, None);
+    runtime_b.close().await;
+    runtime_a.close().await;
+    let _ = tokio::fs::remove_dir_all(codex_home).await;
+}
+
+#[tokio::test]
 async fn cancel_acquired_definite() {
     let runtime = runtime().await;
     let store = runtime.goal_owner_admissions();
