@@ -965,6 +965,40 @@ async fn dispatch_claim_is_single_owner_and_consumed_by_acquire() {
 }
 
 #[tokio::test]
+async fn live_runtime_owner_blocks_competing_startup_recovery() {
+    let codex_home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+    let runtime_a = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("first runtime owns admission recovery");
+    let record = runtime_a
+        .goal_owner_admissions()
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "live-owner",
+            "request-live-owner",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record admission");
+    let _lease = acquire(runtime_a.goal_owner_admissions(), &record).await;
+
+    let runtime_b = StateRuntime::init(sqlite, "test-provider".to_string())
+        .await
+        .expect("competing runtime may open without recovery authority");
+    let persisted = runtime_b
+        .goal_owner_admissions()
+        .get_generation(&record.authority)
+        .await
+        .expect("read competing runtime admission")
+        .expect("admission remains durable");
+    assert_eq!(persisted.phase, GoalOwnerAdmissionPhase::Acquired);
+    runtime_b.close().await;
+    runtime_a.close().await;
+}
+
+#[tokio::test]
 async fn cancel_acquired_definite() {
     let runtime = runtime().await;
     let store = runtime.goal_owner_admissions();

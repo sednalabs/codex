@@ -931,7 +931,7 @@ async fn same_state_config_change_preserves_pending_provider_continuation() -> a
 }
 
 #[tokio::test]
-async fn resume_retires_exhausted_provider_continuation_generation() -> anyhow::Result<()> {
+async fn resume_preserves_exhausted_generation_and_blocks_goal() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
@@ -1015,19 +1015,22 @@ async fn resume_retires_exhausted_provider_continuation_generation() -> anyhow::
         exhausted.terminal_outcome
     );
 
-    // A fresh runtime models the post-crash callback path: the terminal row is safe to retire,
-    // while an uncertain or in-flight row would remain for explicit recovery review.
+    // A fresh runtime models the post-crash callback path: Exhausted remains a durable
+    // user-recovery gate and blocks the matching goal instead of reopening an unrestricted turn.
     let resumed = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
     resumed.resume_thread().await;
-    let retired = admissions
+    let preserved = admissions
         .get_generation(&exhausted.authority)
         .await?
         .ok_or_else(|| anyhow::anyhow!("exhausted history should remain"))?;
-    assert!(retired.retired_at.is_some());
-    assert_eq!(
-        Some(codex_state::GoalOwnerAdmissionRetirementReason::Superseded),
-        retired.retirement_reason
-    );
+    assert_eq!(None, preserved.retired_at);
+    assert_eq!(None, preserved.retirement_reason);
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should remain durable"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Blocked, goal.status);
     Ok(())
 }
 
