@@ -666,6 +666,10 @@ impl Session {
             codex.turn.token_usage.reasoning_output_tokens = field::Empty,
             codex.turn.token_usage.total_tokens = field::Empty,
         );
+        // Create the task-run span while the owning session loop's scoped dispatcher is active.
+        // The spawned task may resume on another Tokio worker, but the span retains the
+        // session-owned dispatcher when it eventually closes.
+        let task_run_span = trace_span!("session_task.run");
         let handle = tokio::spawn(
             async move {
                 let ctx_for_finish = Arc::clone(&ctx);
@@ -739,7 +743,7 @@ impl Session {
                         task_input,
                         task_cancellation_token.child_token(),
                     )
-                    .instrument(trace_span!("session_task.run"))
+                    .instrument(task_run_span)
                     .await;
                 let sess = session_ctx.clone_session();
                 if let Err(err) = sess.flush_rollout().await {

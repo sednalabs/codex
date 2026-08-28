@@ -3,10 +3,14 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
+use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::task::Context;
+use std::task::Poll;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -178,6 +182,7 @@ use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 use tracing::Instrument;
 use tracing::debug;
+use tracing::dispatcher::Dispatch;
 use tracing::error;
 use tracing::info;
 use tracing::info_span;
@@ -478,6 +483,34 @@ pub(crate) struct SessionSpawnArgs {
         codex_sandboxing::WindowsSandboxProxySettingsMode,
 }
 
+/// Polls a future under the dispatcher captured for its owning session.
+///
+/// Tokio workers are not required to preserve thread-local dispatchers when a task is moved
+/// between workers. Keeping the dispatcher with the future makes the session loop's spans
+/// deterministic without changing the process-wide dispatcher or relying on test-only hooks.
+struct ScopedDispatcherFuture<F> {
+    dispatcher: Dispatch,
+    future: Pin<Box<F>>,
+}
+
+impl<F> ScopedDispatcherFuture<F> {
+    fn new(dispatcher: Dispatch, future: F) -> Self {
+        Self {
+            dispatcher,
+            future: Box::pin(future),
+        }
+    }
+}
+
+impl<F: Future> Future for ScopedDispatcherFuture<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        tracing::dispatcher::with_default(&this.dispatcher, || this.future.as_mut().poll(cx))
+    }
+}
+
 pub(crate) fn resolve_multi_agent_version(
     conversation_history: &InitialHistory,
     inherited_multi_agent_version: Option<MultiAgentVersion>,
@@ -504,6 +537,7 @@ const CYBER_SAFETY_URL: &str = "https://developers.openai.com/codex/concepts/cyb
 impl Session {
     /// Spawn and initialize a new session.
     pub(crate) async fn spawn(args: SessionSpawnArgs) -> CodexResult<(Arc<Self>, SessionIo)> {
+        let dispatcher = tracing::dispatcher::get_default(Clone::clone);
         let parent_trace = match args.parent_trace {
             Some(trace) => {
                 if codex_otel::context_from_w3c_trace_context(&trace).is_some() {
@@ -519,15 +553,21 @@ impl Session {
         if let Some(trace) = parent_trace.as_ref() {
             let _ = set_parent_from_w3c_trace_context(&thread_spawn_span, trace);
         }
-        Self::spawn_internal(SessionSpawnArgs {
-            parent_trace,
-            ..args
-        })
+        Self::spawn_internal(
+            SessionSpawnArgs {
+                parent_trace,
+                ..args
+            },
+            dispatcher,
+        )
         .instrument(thread_spawn_span)
         .await
     }
 
-    async fn spawn_internal(args: SessionSpawnArgs) -> CodexResult<(Arc<Self>, SessionIo)> {
+    async fn spawn_internal(
+        args: SessionSpawnArgs,
+        dispatcher: Dispatch,
+    ) -> CodexResult<(Arc<Self>, SessionIo)> {
         let SessionSpawnArgs {
             mut config,
             allow_provider_model_fallback,
@@ -820,11 +860,13 @@ impl Session {
 
         // This task will run until Op::Shutdown is received.
         let session_for_loop = Arc::clone(&session);
-        let session_loop_handle = tokio::spawn(async move {
+        let session_loop = async move {
             submission_loop(session_for_loop, config, rx_sub)
                 .instrument(info_span!("session_loop", thread_id = %thread_id))
                 .await;
-        });
+        };
+        let session_loop_handle =
+            tokio::spawn(ScopedDispatcherFuture::new(dispatcher, session_loop));
         let io = SessionIo {
             tx_sub,
             rx_event,

@@ -2172,6 +2172,8 @@
       ],
       "allowed_paths": [
         "codex-rs/core/tests/suite/pending_input.rs",
+        "codex-rs/core/tests/common/streaming_sse.rs",
+        "codex-rs/core/src/session/mod.rs",
         "codex-rs/core/src/tasks/mod.rs",
         "justfile",
         ".github/validation-lanes.json"
