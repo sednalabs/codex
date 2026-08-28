@@ -71,7 +71,8 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
         InferenceCallStatus::Failed
         | InferenceCallStatus::Cancelled
         | InferenceCallStatus::UsageLimitReached
-        | InferenceCallStatus::TransportUncertain => {
+        | InferenceCallStatus::TransportUncertain
+        | InferenceCallStatus::Unknown => {
             event.response_id = None;
             event.observed_provider = None;
             event.observed_model = None;
@@ -265,6 +266,7 @@ fn inference_call_event_enforces_lifecycle_shapes() {
         InferenceCallStatus::UsageLimitReached,
         InferenceCallStatus::LocalDenied,
         InferenceCallStatus::TransportUncertain,
+        InferenceCallStatus::Unknown,
     ] {
         assert_eq!(
             inference_call_event(status)
@@ -273,6 +275,24 @@ fn inference_call_event_enforces_lifecycle_shapes() {
             expected_durable_event(status)
         );
     }
+}
+
+#[test]
+fn inference_call_event_preserves_unknown_nested_enums() -> Result<()> {
+    let mut wire = serde_json::to_value(EventMsg::InferenceCall(inference_call_event(
+        InferenceCallStatus::Completed,
+    )))?;
+    wire["status"] = json!("future_status");
+    wire["transport"] = json!("future_transport");
+    wire["source"] = json!({"type": "future_source"});
+
+    let EventMsg::InferenceCall(event) = serde_json::from_value(wire)? else {
+        panic!("expected inference call event");
+    };
+    assert_eq!(event.status, InferenceCallStatus::Unknown);
+    assert_eq!(event.transport, InferenceCallTransport::Unknown);
+    assert_eq!(event.source, Some(InferenceCallSource::Unknown));
+    Ok(())
 }
 
 #[test]

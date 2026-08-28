@@ -96,6 +96,10 @@ pub enum InferenceCallStatus {
     UsageLimitReached,
     LocalDenied,
     TransportUncertain,
+    /// A status introduced by a newer producer. Unknown statuses remain
+    /// durable evidence and are never interpreted as success.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Protocol-neutral provenance for the local operation that caused an attempt.
@@ -110,6 +114,9 @@ pub enum InferenceCallSource {
         cell_id: String,
         runtime_tool_call_id: String,
     },
+    /// A provenance source introduced by a newer producer.
+    #[serde(other)]
+    Unknown,
 }
 
 impl InferenceCallSource {
@@ -127,6 +134,9 @@ impl InferenceCallSource {
 pub enum InferenceCallTransport {
     ResponsesHttp,
     ResponsesWebsocket,
+    /// A transport introduced by a newer producer.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -150,6 +160,9 @@ pub enum InferenceCallField {
     ObservedServiceTier,
     TokenUsage,
     OutcomeDetail,
+    /// A metadata field introduced by a newer producer.
+    #[serde(other)]
+    Unknown,
 }
 
 impl InferenceCallEvent {
@@ -290,7 +303,8 @@ impl InferenceCallEvent {
             InferenceCallStatus::Failed
             | InferenceCallStatus::Cancelled
             | InferenceCallStatus::UsageLimitReached
-            | InferenceCallStatus::TransportUncertain => &[
+            | InferenceCallStatus::TransportUncertain
+            | InferenceCallStatus::Unknown => &[
                 InferenceCallField::ResponseId,
                 InferenceCallField::ObservedProvider,
                 InferenceCallField::ObservedModel,
@@ -333,7 +347,8 @@ impl InferenceCallEvent {
             | InferenceCallField::EffectiveProvider
             | InferenceCallField::EffectiveModel
             | InferenceCallField::RequestCompletedAtMs
-            | InferenceCallField::TokenUsage => None,
+            | InferenceCallField::TokenUsage
+            | InferenceCallField::Unknown => None,
         }
     }
 
@@ -361,7 +376,8 @@ impl InferenceCallEvent {
             | InferenceCallField::ConfiguredProvider
             | InferenceCallField::RequestedModel
             | InferenceCallField::EffectiveProvider
-            | InferenceCallField::EffectiveModel => false,
+            | InferenceCallField::EffectiveModel
+            | InferenceCallField::Unknown => false,
         };
         if present {
             record_field(&mut self.omitted_fields, field);

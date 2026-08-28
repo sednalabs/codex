@@ -200,7 +200,9 @@ fn disabled_recorder_keeps_the_same_contract_without_sink_events() {
         .record_provider_terminal(ProviderTerminalResult::Completed {
             response_id: Some("response-1".to_string()),
             upstream_request_id: None,
+            observed_provider: None,
             observed_model: None,
+            observed_model_snapshot: None,
             observed_service_tier: None,
             token_usage: None,
         })
@@ -252,7 +254,7 @@ fn durable_adapter_preserves_effective_identity_source_and_usage_limit() {
     assert_eq!(event.effective_provider, "resolved-provider");
     assert_eq!(event.requested_model, "requested-model");
     assert_eq!(event.effective_model, "resolved-model");
-    assert_eq!(event.outcome_detail.as_deref(), Some("provider limit"));
+    assert_eq!(event.outcome_detail.as_deref(), Some("usage_limit_reached"));
     assert!(event.observed_provider.is_none());
     assert!(event.observed_model.is_none());
 }
@@ -267,7 +269,7 @@ fn durable_adapter_does_not_mark_local_denial_as_transport_completion() {
 
     assert_eq!(event.status, InferenceCallStatus::LocalDenied);
     assert!(event.request_completed_at_ms.is_none());
-    assert_eq!(event.outcome_detail.as_deref(), Some("admission rejected"));
+    assert_eq!(event.outcome_detail.as_deref(), Some("local_denied"));
 }
 
 #[test]
@@ -297,6 +299,49 @@ fn trace_writer_sink_persists_bounded_protocol_event() -> anyhow::Result<()> {
     let payload: serde_json::Value = serde_json::from_slice(&payload)?;
     assert_eq!(payload["status"], "transport_uncertain");
     assert!(payload.get("provider_executed").is_none());
+    Ok(())
+}
+
+#[test]
+fn replay_reduces_inference_observation_lifecycle_and_identity() -> anyhow::Result<()> {
+    let temp = TempDir::new()?;
+    let attempt = metadata(InferenceAdmission::Admitted);
+    let thread_id = attempt.thread_id.clone();
+    let writer = Arc::new(crate::TraceWriter::create(
+        temp.path(),
+        "trace-1".to_string(),
+        "rollout-1".to_string(),
+        thread_id.to_string(),
+    )?);
+    let sink = TraceWriterInferenceObservationSink::new(Arc::clone(&writer));
+
+    sink.record(InferenceObservationEvent::PhysicalRequestOpened {
+        attempt: attempt.clone(),
+    });
+    sink.record(InferenceObservationEvent::LocalDenial {
+        attempt,
+        reason: "sensitive admission detail must not be persisted".to_string(),
+    });
+    drop(sink);
+    drop(writer);
+
+    let reduced = crate::replay_bundle(temp.path())?;
+    let observation = reduced
+        .inference_observations
+        .get("call-1")
+        .expect("reduced inference observation");
+    assert_eq!(observation.event.status, InferenceCallStatus::LocalDenied);
+    assert_eq!(
+        observation.event.source,
+        Some(codex_protocol::protocol::InferenceCallSource::Direct)
+    );
+    assert_eq!(observation.event.effective_provider, "resolved-provider");
+    assert_eq!(
+        observation.event.outcome_detail.as_deref(),
+        Some("local_denied")
+    );
+    assert_eq!(observation.raw_event_payload_ids.len(), 2);
+    assert_eq!(observation.execution.ended_seq, Some(2));
     Ok(())
 }
 
