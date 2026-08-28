@@ -55,6 +55,7 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
             event.observed_model = None;
             event.observed_model_snapshot = None;
             event.observed_service_tier = None;
+            event.outcome_detail = None;
             event.token_usage = None;
             event.omitted_fields = Some(vec![
                 InferenceCallField::RequestCompletedAtMs,
@@ -297,9 +298,12 @@ fn inference_call_event_preserves_unknown_nested_enums() -> Result<()> {
 
 #[test]
 fn inference_call_event_normalization_preserves_receipts_on_replay() {
-    let durable = inference_call_event(InferenceCallStatus::Completed)
-        .into_durable()
-        .expect("bounded event");
+    let mut event = inference_call_event(InferenceCallStatus::Completed);
+    event.configured_provider = "🦀".repeat(INFERENCE_CALL_STRING_MAX_BYTES / 4 + 1);
+    event.response_id = Some("🦀".repeat(INFERENCE_CALL_STRING_MAX_BYTES / 4 + 1));
+    let durable = event.into_durable().expect("bounded event");
+    assert!(durable.truncated_fields.is_some());
+    assert!(durable.omitted_fields.is_some());
     assert_eq!(durable.clone().into_durable(), Some(durable));
 }
 
@@ -352,7 +356,15 @@ fn inference_call_event_bounds_effective_identity_and_terminal_detail() {
     );
     assert_eq!(
         bounded.omitted_fields,
-        Some(vec![InferenceCallField::OutcomeDetail])
+        Some(vec![
+            InferenceCallField::ResponseId,
+            InferenceCallField::ObservedProvider,
+            InferenceCallField::ObservedModel,
+            InferenceCallField::ObservedModelSnapshot,
+            InferenceCallField::ObservedServiceTier,
+            InferenceCallField::TokenUsage,
+            InferenceCallField::OutcomeDetail,
+        ])
     );
 }
 
