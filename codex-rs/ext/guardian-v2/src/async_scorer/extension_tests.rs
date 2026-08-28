@@ -1208,6 +1208,7 @@ classifier_instructions = "Predict future violations.\n# Security Policy\n{{ ten
         request["input"][1],
         json!({
             "type": "message",
+            "id": request["input"][1]["id"],
             "role": "developer",
             "content": [{
                 "type": "input_text",
@@ -1246,6 +1247,7 @@ max_classifier_instruction_tokens = 256
         request["input"][1],
         json!({
             "type": "message",
+            "id": request["input"][1]["id"],
             "role": "developer",
             "content": [{
                 "type": "input_text",
@@ -1334,6 +1336,7 @@ max_recent_non_user_entries = 8
         request["input"][1],
         json!({
             "type": "message",
+            "id": request["input"][1]["id"],
             "role": "developer",
             "content": [{
                 "type": "input_text",
@@ -1735,6 +1738,7 @@ async fn contributor_uses_model_defaults_and_preserves_local_overrides() -> Resu
         request["input"][1],
         json!({
             "type": "message",
+            "id": request["input"][1]["id"],
             "role": "developer",
             "content": [{
                 "type": "input_text",
@@ -1900,6 +1904,7 @@ async fn contributor_samples_tool_calls_with_the_existing_luna_pool() -> Result<
         request["input"][1],
         json!({
             "type": "message",
+            "id": request["input"][1]["id"],
             "role": "developer",
             "content": [{
                 "type": "input_text",
@@ -2321,6 +2326,7 @@ async fn contributor_uses_catalog_policy_without_a_configured_override() -> Resu
         request["input"][1],
         json!({
             "type": "message",
+            "id": request["input"][1]["id"],
             "role": "developer",
             "content": [{
                 "type": "input_text",
@@ -2363,6 +2369,7 @@ async fn contributor_preserves_uncapped_classifier_instructions() -> Result<()> 
         request["input"][1],
         json!({
             "type": "message",
+            "id": request["input"][1]["id"],
             "role": "developer",
             "content": [{
                 "type": "input_text",

@@ -29,6 +29,7 @@ use codex_login::default_client::default_headers;
 use codex_model_provider::AgentIdentitySessionFallback;
 use codex_model_provider::ProviderAuthScope;
 use codex_model_provider::SharedModelProvider;
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ContentItem;
@@ -504,6 +505,14 @@ impl LunaSampler {
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         });
+        // Assign IDs once so retries reuse the same input item identities.
+        for item in &mut input {
+            if item.id().is_none()
+                && let Some(prefix) = item.id_prefix()
+            {
+                item.set_id(Some(ResponseItemId::new(prefix)));
+            }
+        }
         let mut request = ResponsesApiRequest {
             model: MODEL.to_owned(),
             instructions: String::new(),

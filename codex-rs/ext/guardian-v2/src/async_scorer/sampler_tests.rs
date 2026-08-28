@@ -904,7 +904,10 @@ async fn sampler_retries_expired_websockets_on_another_warm_connection() -> Resu
     ))
     .await?;
 
-    let output = sampler.sample(sample_request("turn-1")).await?;
+    let mut request = sample_request("turn-1");
+    request.trusted_review_evidence = vec!["trusted review".to_owned()];
+    request.trusted_skill_paths = vec!["/skills/review/SKILL.md".to_owned()];
+    let output = sampler.sample(request).await?;
 
     assert_eq!(output, "low");
     let expired_requests = expired.single_connection();
@@ -925,6 +928,13 @@ async fn sampler_retries_expired_websockets_on_another_warm_connection() -> Resu
             .remove("client_metadata");
     }
     assert_eq!(expired_request, healthy_request);
+    let input: Vec<ResponseItem> = serde_json::from_value(healthy_request["input"].clone())?;
+    let ids = input
+        .iter()
+        .map(|item| item.id().expect("classifier input item ID"))
+        .collect::<HashSet<_>>();
+    assert_eq!(ids.len(), input.len());
+    assert!(ids.iter().all(|id| id.is_prefixed()));
     Ok(())
 }
 
