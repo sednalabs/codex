@@ -227,6 +227,7 @@ impl Session {
                     &step_context.environments,
                     Some(current_date),
                 )
+                .await
                 .with_subagents(environment_subagents),
             );
         }

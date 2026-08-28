@@ -153,6 +153,8 @@ pub enum Feature {
     UseLegacyLandlock,
     /// Experimental shell snapshotting.
     ShellSnapshot,
+    /// Expose the selected PowerShell execution host's bounded major/minor version.
+    PowerShellShellVersion,
     /// Keep policy-filtered shell snapshots entirely in executor memory.
     ShellSnapshotV2,
     /// Allow turns to start while selected executors are still starting.
@@ -900,6 +902,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "shell_snapshot",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::PowerShellShellVersion,
+        key: "powershell_shell_version",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::ShellSnapshotV2,
