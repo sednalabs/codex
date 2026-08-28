@@ -19,13 +19,12 @@ impl GoalStore {
         }
     }
 
-    fn require_write_capability(&self) -> anyhow::Result<()> {
-        if self
-            .write_capability
-            .as_ref()
-            .is_some_and(|capability| capability.is_active())
-        {
-            Ok(())
+    fn require_write_capability(&self) -> anyhow::Result<RuntimeOwnerCapabilityGuard> {
+        let Some(capability) = self.write_capability.as_ref() else {
+            anyhow::bail!("goal mutation requires the runtime owner capability")
+        };
+        if capability.is_active() {
+            capability.enter()
         } else {
             anyhow::bail!("goal mutation requires the runtime owner capability")
         }
@@ -88,7 +87,7 @@ WHERE thread_id = ?
         &self,
         goal: &crate::ThreadGoal,
     ) -> anyhow::Result<()> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         let mut transaction = self.pool.begin().await?;
         sqlx::query(
             r#"
@@ -169,7 +168,7 @@ SELECT EXISTS(
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<()> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         sqlx::query(
             r#"
 INSERT INTO thread_goal_continuation_deferrals (thread_id)
@@ -188,7 +187,7 @@ ON CONFLICT(thread_id) DO NOTHING
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<()> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         sqlx::query("DELETE FROM thread_goal_continuation_deferrals WHERE thread_id = ?")
             .bind(thread_id.to_string())
             .execute(self.pool.as_ref())
@@ -204,7 +203,7 @@ ON CONFLICT(thread_id) DO NOTHING
         status: crate::ThreadGoalStatus,
         token_budget: Option<i64>,
     ) -> anyhow::Result<crate::ThreadGoal> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         let goal_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let status = status_after_budget_limit(status, /*tokens_used*/ 0, token_budget);
@@ -262,7 +261,7 @@ RETURNING
         status: crate::ThreadGoalStatus,
         token_budget: Option<i64>,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         let goal_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let status = status_after_budget_limit(status, /*tokens_used*/ 0, token_budget);
@@ -319,7 +318,7 @@ RETURNING
         thread_id: ThreadId,
         update: GoalUpdate,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         let GoalUpdate {
             objective,
             status,
@@ -468,7 +467,7 @@ WHERE thread_id = ?
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         self.update_active_thread_goal_status(thread_id, crate::ThreadGoalStatus::Paused)
             .await
     }
@@ -477,7 +476,7 @@ WHERE thread_id = ?
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         self.update_active_thread_goal_status(thread_id, crate::ThreadGoalStatus::UsageLimited)
             .await
     }
@@ -487,7 +486,7 @@ WHERE thread_id = ?
         thread_id: ThreadId,
         status: crate::ThreadGoalStatus,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let result = sqlx::query(
             r#"
@@ -523,7 +522,7 @@ WHERE thread_id = ?
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         let mut transaction = self.pool.begin().await?;
         sqlx::query("DELETE FROM goal_owner_admissions WHERE thread_id = ?")
             .bind(thread_id.to_string())
@@ -561,7 +560,7 @@ RETURNING
         mode: GoalAccountingMode,
         expected_goal_id: Option<&str>,
     ) -> anyhow::Result<GoalAccountingOutcome> {
-        self.require_write_capability()?;
+        let _capability_guard = self.require_write_capability()?;
         let time_delta_seconds = time_delta_seconds.max(0);
         let token_delta = token_delta.max(0);
         if time_delta_seconds == 0 && token_delta == 0 {
