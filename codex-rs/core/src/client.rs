@@ -2273,7 +2273,8 @@ impl InferenceRequestAttemptObserver {
         self.current
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+            .as_ref()
+            .cloned()
             .unwrap_or_else(|| self.trace.observation_recorder(self.metadata.clone()))
     }
 }
@@ -2297,7 +2298,7 @@ impl RequestAttemptObserver for InferenceRequestAttemptObserver {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(recorder);
     }
 
-    fn on_request_failure(&self, error: &str) {
+    fn on_request_failure(&self, error: &str, provider_terminal: bool) {
         let Some(recorder) = self
             .current
             .lock()
@@ -2306,10 +2307,16 @@ impl RequestAttemptObserver for InferenceRequestAttemptObserver {
         else {
             return;
         };
-        // The transport callback runs before a provider terminal event exists. A send,
-        // timeout, or connection failure therefore cannot establish whether the provider
-        // observed the request; reserve `Failed` for an explicit provider terminal event.
-        let _ = recorder.record_transport_uncertain(error);
+        if provider_terminal {
+            let _ = recorder.record_provider_terminal(ProviderTerminalResult::Failed {
+                upstream_request_id: None,
+                error: error.to_string(),
+            });
+        } else {
+            // A send, timeout, or connection failure cannot establish whether the provider
+            // observed the request.
+            let _ = recorder.record_transport_uncertain(error);
+        }
     }
 }
 
@@ -2390,6 +2397,22 @@ const STREAM_DROPPED_REASON: &str = "response stream dropped before provider ter
 fn api_error_is_definitive_provider_denial(error: &ApiError) -> bool {
     matches!(error, ApiError::Transport(TransportError::Http { status, .. }) if status.is_client_error())
         || matches!(error, ApiError::Stream(message) if message.contains("response.failed"))
+}
+
+fn api_error_is_provider_terminal(error: &ApiError) -> bool {
+    matches!(
+        error,
+        ApiError::Transport(TransportError::Http { .. })
+            | ApiError::Api { .. }
+            | ApiError::ContextWindowExceeded
+            | ApiError::QuotaExceeded
+            | ApiError::UsageNotIncluded
+            | ApiError::Retryable { .. }
+            | ApiError::RateLimit(_)
+            | ApiError::InvalidRequest { .. }
+            | ApiError::CyberPolicy { .. }
+            | ApiError::ServerOverloaded
+    ) || matches!(error, ApiError::Stream(message) if message.contains("response.failed"))
 }
 
 /// A terminalized admission still permits the normal compaction rate-limit path
@@ -2610,15 +2633,21 @@ where
                         feedback_tags!(last_model_request_id = upstream_request_id);
                     }
                     let provider_denial = api_error_is_definitive_provider_denial(&err);
+                    let provider_terminal = api_error_is_provider_terminal(&err);
                     let mapped = provider.map_api_error(err);
                     let terminal = if matches!(mapped.details(), CodexErrorDetails::UsageLimitReached(_)) {
                         Some(ProviderTerminalResult::UsageLimitReached {
                             upstream_request_id: upstream_request_id.map(str::to_string),
                             detail: Some("usage_limit_reached".to_string()),
                         })
+                    } else if provider_terminal {
+                        Some(ProviderTerminalResult::Failed {
+                            upstream_request_id: upstream_request_id.map(str::to_string),
+                            error: mapped.to_string(),
+                        })
                     } else {
-                        // An API/stream error is not itself a provider terminal response. Keep
-                        // the outcome uncertain until an explicit terminal event is observed.
+                        // A timeout, network error, or closed stream cannot establish whether
+                        // the provider observed the request.
                         let _ = inference_observation_recorder.record_transport_uncertain(
                             mapped.to_string(),
                         );

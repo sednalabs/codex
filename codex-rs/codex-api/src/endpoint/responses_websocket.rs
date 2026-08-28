@@ -348,7 +348,7 @@ impl ResponsesWebsocketConnection {
                     drop(guard);
                     drop(failed_stream);
                     if let Some(observer) = observer_for_task.as_ref() {
-                        observer.on_request_failure(&err.to_string());
+                        observer.on_request_failure(&err.to_string(), false);
                     }
                     let _ = tx_event.send(Err(err)).await;
                 }
