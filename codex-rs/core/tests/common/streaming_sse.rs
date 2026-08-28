@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -9,6 +10,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::Notify;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 
 /// Streaming SSE chunk payload gated by a per-chunk signal.
 #[derive(Debug)]
@@ -22,6 +24,7 @@ pub struct StreamingSseServer {
     uri: String,
     requests: Arc<TokioMutex<Vec<Vec<u8>>>>,
     request_notify: Arc<Notify>,
+    request_count: watch::Sender<usize>,
     shutdown: oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -41,6 +44,31 @@ impl StreamingSseServer {
                 return;
             }
             self.request_notify.notified().await;
+        }
+    }
+
+    /// Fails if a request was already recorded or arrives during the bounded observation window.
+    /// The watch receiver closes the check-to-wait race: a request recorded between the initial
+    /// count read and `changed()` remains visible as an unread version rather than being lost.
+    pub async fn assert_no_request_after(&self, expected_count: usize, timeout: Duration) {
+        let mut request_count = self.request_count.subscribe();
+        let observed_count = *request_count.borrow_and_update();
+        assert_eq!(
+            observed_count, expected_count,
+            "unexpected physical provider request was already recorded after the boundary"
+        );
+
+        match tokio::time::timeout(timeout, request_count.changed()).await {
+            Ok(Ok(())) => {
+                let observed_count = *request_count.borrow_and_update();
+                panic!(
+                    "unexpected physical provider request arrived during the {timeout:?} post-boundary observation window; expected {expected_count}, observed {observed_count}"
+                );
+            }
+            Ok(Err(_)) => panic!(
+                "streaming SSE request-count watch closed during the {timeout:?} post-boundary observation window"
+            ),
+            Err(_) => {}
         }
     }
 
@@ -79,8 +107,10 @@ pub async fn start_streaming_sse_server(
     }));
     let requests = Arc::new(TokioMutex::new(Vec::new()));
     let request_notify = Arc::new(Notify::new());
+    let (request_count, _request_count_rx) = watch::channel(0_usize);
     let requests_for_task = Arc::clone(&requests);
     let request_notify_for_task = Arc::clone(&request_notify);
+    let request_count_for_task = request_count.clone();
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
     let task = tokio::spawn(async move {
@@ -92,6 +122,7 @@ pub async fn start_streaming_sse_server(
                     let state = Arc::clone(&state);
                     let requests = Arc::clone(&requests_for_task);
                     let request_notify = Arc::clone(&request_notify_for_task);
+                    let request_count = request_count_for_task.clone();
                     tokio::spawn(async move {
                         let (request, body_prefix) = read_http_request(&mut stream).await;
                         let Some((method, path)) = parse_request_line(&request) else {
@@ -126,7 +157,12 @@ pub async fn start_streaming_sse_server(
                                     return;
                                 }
                             };
-                            requests.lock().await.push(body);
+                            let request_count_value = {
+                                let mut requests = requests.lock().await;
+                                requests.push(body);
+                                requests.len()
+                            };
+                            request_count.send_replace(request_count_value);
                             request_notify.notify_one();
                             let Some((chunks, completion)) = take_next_stream(&state).await else {
                                 let _ = write_http_response(&mut stream, /*status*/ 500, "no responses queued", "text/plain").await;
@@ -165,6 +201,7 @@ pub async fn start_streaming_sse_server(
             uri,
             requests,
             request_notify,
+            request_count,
             shutdown: shutdown_tx,
             task,
         },
