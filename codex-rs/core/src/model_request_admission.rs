@@ -410,11 +410,16 @@ impl ModelRequestAdmissionDecision {
                     lifecycle.opening = true;
                 }
 
-                let opened = admitted
-                    .store
-                    .open_lease(&admitted.lease)
-                    .await
-                    .map_err(storage_error)?;
+                let opened = match admitted.store.open_lease(&admitted.lease).await {
+                    Ok(opened) => opened,
+                    Err(error) => {
+                        let mut lifecycle = admitted.lifecycle.lock().await;
+                        lifecycle.opening = false;
+                        drop(lifecycle);
+                        let _ = admitted.store.release_acquired_lease(&admitted.lease).await;
+                        return Err(storage_error(error));
+                    }
+                };
                 let mut lifecycle = admitted.lifecycle.lock().await;
                 lifecycle.opening = false;
                 if !opened {
@@ -426,6 +431,14 @@ impl ModelRequestAdmissionDecision {
                     ));
                 }
                 if lifecycle.terminalized {
+                    drop(lifecycle);
+                    let _ = admitted
+                        .finish_if_unfinished(
+                            LeaseStage::CancelledBeforeAcknowledgement,
+                            GoalOwnerAdmissionTerminalOutcome::Uncertain,
+                            GoalOwnerAdmissionTerminalDisposition::ManualReview,
+                        )
+                        .await;
                     return Err(CodexErr::Fatal(
                         "goal-owner admission lease was terminalized while opening".to_string(),
                     ));

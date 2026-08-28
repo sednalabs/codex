@@ -38,10 +38,9 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Condvar;
-use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
@@ -117,8 +116,8 @@ const USAGE_DB_BASENAME: &str = "usage";
 #[derive(Debug)]
 pub(crate) struct RuntimeOwnerCapability {
     revoked: AtomicBool,
-    active: StdMutex<usize>,
-    idle: Condvar,
+    active: AtomicUsize,
+    idle: tokio::sync::Notify,
 }
 
 pub(crate) struct RuntimeOwnerCapabilityGuard {
@@ -129,8 +128,8 @@ impl RuntimeOwnerCapability {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             revoked: AtomicBool::new(false),
-            active: StdMutex::new(0),
-            idle: Condvar::new(),
+            active: AtomicUsize::new(0),
+            idle: tokio::sync::Notify::new(),
         })
     }
 
@@ -138,29 +137,29 @@ impl RuntimeOwnerCapability {
         self.revoked.store(true, Ordering::Release);
     }
 
-    fn revoke_and_wait(&self) {
-        self.revoke();
-        let mut active = self
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while *active != 0 {
-            active = self
-                .idle
-                .wait(active)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+    async fn wait_quiescent(&self) {
+        loop {
+            // Register the notification before sampling the counter so a
+            // final guard release cannot race the waiter and leave it asleep
+            // after the capability has become quiescent.
+            let notified = self.idle.notified();
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
         }
     }
 
     fn enter(self: &Arc<Self>) -> anyhow::Result<RuntimeOwnerCapabilityGuard> {
-        let mut active = self
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.revoked.load(Ordering::Acquire) {
             anyhow::bail!("runtime owner capability has been revoked")
         }
-        *active += 1;
+        self.active.fetch_add(1, Ordering::AcqRel);
+        if self.revoked.load(Ordering::Acquire) {
+            self.active.fetch_sub(1, Ordering::AcqRel);
+            self.idle.notify_waiters();
+            anyhow::bail!("runtime owner capability has been revoked")
+        }
         Ok(RuntimeOwnerCapabilityGuard {
             capability: Arc::clone(self),
         })
@@ -173,14 +172,8 @@ impl RuntimeOwnerCapability {
 
 impl Drop for RuntimeOwnerCapabilityGuard {
     fn drop(&mut self) {
-        let mut active = self
-            .capability
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *active = active.saturating_sub(1);
-        if *active == 0 {
-            self.capability.idle.notify_all();
+        if self.capability.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.capability.idle.notify_waiters();
         }
     }
 }
@@ -198,7 +191,8 @@ impl RuntimeOwnerLease {
         if self.released.swap(true, Ordering::AcqRel) {
             return;
         }
-        self.capability.revoke_and_wait();
+        self.capability.revoke();
+        self.capability.wait_quiescent().await;
         if let Err(error) = self.store.release_runtime_owner(self.owner_id).await {
             warn!(%error, "failed to release durable runtime owner");
         }
@@ -214,7 +208,7 @@ impl Drop for RuntimeOwnerLease {
         // owner-row write after pools or a replacement runtime are live. The
         // kernel releases the process lock; the next owner replaces the stale
         // durable row only after acquiring that lock.
-        self.capability.revoke_and_wait();
+        self.capability.revoke();
     }
 }
 

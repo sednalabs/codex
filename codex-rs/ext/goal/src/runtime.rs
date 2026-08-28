@@ -1252,6 +1252,59 @@ impl GoalRuntimeHandle {
         Ok(())
     }
 
+    /// Explicitly retire an exhausted admission only after a user recovery
+    /// action. The terminal await-user gate remains intact until this exact
+    /// generation CAS succeeds.
+    pub async fn recover_exhausted_for_user(&self) -> Result<bool, String> {
+        let _goal_state_permit = self.goal_state_permit().await?;
+        if !self.inner.state_dbs.owns_goal_runtime() {
+            return Ok(false);
+        }
+        let admissions = self.inner.state_dbs.goal_owner_admissions();
+        let Some(record) = admissions
+            .get(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?
+        else {
+            return Ok(false);
+        };
+        if record.terminal_outcome != codex_state::GoalOwnerAdmissionTerminalOutcome::Exhausted {
+            return Ok(false);
+        }
+        let retired = admissions
+            .recover_exhausted_for_user(&record.authority)
+            .await
+            .map_err(|err| err.to_string())?;
+        if retired.is_some() {
+            self.clear_deferral_if_retired(&record.authority).await?;
+        }
+        Ok(retired.is_some())
+    }
+
+    /// Resolve one exact uncertain generation from an owner-supplied,
+    /// bounded provider evidence record. Uncertainty is never auto-retired;
+    /// this explicit path is the production recovery boundary.
+    pub async fn resolve_uncertain_for_owner(
+        &self,
+        authority: codex_state::GoalOwnerAdmissionAuthority,
+        outcome: codex_state::GoalOwnerAdmissionTerminalOutcome,
+        disposition: codex_state::GoalOwnerAdmissionTerminalDisposition,
+        resolution_evidence: String,
+    ) -> Result<bool, String> {
+        let _goal_state_permit = self.goal_state_permit().await?;
+        if authority.thread_id != self.thread_id() || !self.inner.state_dbs.owns_goal_runtime() {
+            return Ok(false);
+        }
+        let resolved = self
+            .inner
+            .state_dbs
+            .goal_owner_admissions()
+            .resolve_uncertain(&authority, outcome, disposition, &resolution_evidence)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(resolved.is_some())
+    }
+
     pub(crate) async fn continue_if_idle(&self) -> Result<(), String> {
         if self.provider_continuation_pending() {
             self.continue_provider_preserved_goal().await?;
