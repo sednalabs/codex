@@ -35,6 +35,8 @@ use crate::tools::sandboxing::ToolRuntime;
 use crate::tools::sandboxing::managed_network_for_sandbox_permissions;
 use crate::tools::sandboxing::sandbox_permissions_preserving_denied_reads;
 use crate::unified_exec::NoopSpawnLifecycle;
+use crate::unified_exec::TerminalPermissions;
+use crate::unified_exec::TerminalSandboxSource;
 use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcess;
 use crate::unified_exec::UnifiedExecProcessManager;
@@ -106,7 +108,7 @@ pub struct UnifiedExecRuntime<'a> {
 pub(crate) struct UnifiedExecAttempt {
     pub(crate) process: UnifiedExecProcess,
     pub(crate) metrics_sidecar: Option<PluginMetricsSidecar>,
-    pub(crate) escalated: bool,
+    pub(crate) permissions: TerminalPermissions,
 }
 
 fn unified_exec_options(
@@ -418,6 +420,22 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
             req.additional_permissions.as_ref(),
             sidecar_permissions.as_ref(),
         );
+        let permissions = TerminalPermissions::for_launch(
+            &req.turn_environment,
+            &ctx.step_context.turn,
+            if self.uses_executor_managed_process_sandbox(req) {
+                TerminalSandboxSource::Executor
+            } else {
+                TerminalSandboxSource::Native
+            },
+            if attempt.is_escalated() {
+                SandboxPermissions::RequireEscalated
+            } else {
+                SandboxPermissions::UseDefault
+            },
+            req.additional_permissions.as_ref(),
+            sidecar_permissions.as_ref(),
+        );
 
         if let UnifiedExecShellMode::ZshFork(zsh_fork_config) = &self.shell_mode {
             let command = build_unified_exec_sandbox_command(
@@ -477,7 +495,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                     return Ok(UnifiedExecAttempt {
                         process,
                         metrics_sidecar,
-                        escalated: attempt.is_escalated(),
+                        permissions,
                     });
                 }
                 None => {
@@ -522,7 +540,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
         Ok(UnifiedExecAttempt {
             process,
             metrics_sidecar,
-            escalated: attempt.is_escalated(),
+            permissions,
         })
     }
 }

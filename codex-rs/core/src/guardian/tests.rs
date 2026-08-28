@@ -45,6 +45,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::SandboxPermissions;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::FileSystemAccessMode;
@@ -1364,10 +1365,22 @@ async fn build_guardian_prompt_items_explains_network_access_review_scope() -> a
     Ok(())
 }
 
-#[test]
-fn guardian_write_stdin_preserves_input_and_foreign_cwd() -> serde_json::Result<()> {
+#[test_case::test_case(SandboxPermissions::UseDefault)]
+#[test_case::test_case(SandboxPermissions::RequireEscalated)]
+#[test_case::test_case(SandboxPermissions::WithAdditionalPermissions)]
+fn guardian_write_stdin_preserves_input_and_foreign_cwd(
+    sandbox_permissions: SandboxPermissions,
+) -> serde_json::Result<()> {
     let cwd = PathUri::parse("file:///C:/workspace").expect("valid executor cwd");
     let input = "confirm\n";
+    let additional_permissions =
+        if sandbox_permissions == SandboxPermissions::WithAdditionalPermissions {
+            Some(serde_json::from_value(
+                serde_json::json!({"network":{"enabled":true}}),
+            )?)
+        } else {
+            None
+        };
     let action = GuardianApprovalRequest::WriteStdin {
         id: "terminal-open".to_string(),
         approval_id: "terminal-write".to_string(),
@@ -1376,20 +1389,23 @@ fn guardian_write_stdin_preserves_input_and_foreign_cwd() -> serde_json::Result<
         input: input.to_string(),
         cwd: cwd.clone(),
         tty: true,
+        sandbox_permissions,
+        additional_permissions: additional_permissions.clone(),
     };
 
-    assert_eq!(
-        guardian_approval_request_to_json(&action)?,
-        serde_json::json!({
-            "tool": "write_stdin",
-            "environment_id": "windows-executor",
-            "session_id": 1000,
-            "chars": input,
-            "cwd": r"C:\workspace",
-            "sandbox_permissions": "require_escalated",
-            "tty": true,
-        }),
-    );
+    let mut expected = serde_json::json!({
+        "tool": "write_stdin",
+        "environment_id": "windows-executor",
+        "session_id": 1000,
+        "chars": input,
+        "cwd": r"C:\workspace",
+        "sandbox_permissions": sandbox_permissions,
+        "tty": true,
+    });
+    if let Some(permissions) = additional_permissions {
+        expected["additional_permissions"] = serde_json::to_value(permissions)?;
+    }
+    assert_eq!(guardian_approval_request_to_json(&action)?, expected);
     assert_eq!(
         guardian_assessment_action(&action),
         GuardianAssessmentAction::WriteStdin {
