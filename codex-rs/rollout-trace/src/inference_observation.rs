@@ -356,10 +356,7 @@ fn protocol_event_for_observation(event: InferenceObservationEvent) -> Option<In
         InferenceObservationSource::CodeMode {
             cell_id,
             runtime_tool_call_id,
-        } => InferenceCallSource::CodeMode {
-            cell_id: cell_id.clone(),
-            runtime_tool_call_id: runtime_tool_call_id.clone(),
-        },
+        } => InferenceCallSource::code_mode(cell_id.clone(), runtime_tool_call_id.clone()),
     });
 
     InferenceCallEvent {

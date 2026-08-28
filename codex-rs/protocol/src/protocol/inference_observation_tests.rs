@@ -71,7 +71,6 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
         InferenceCallStatus::Failed
         | InferenceCallStatus::Cancelled
         | InferenceCallStatus::UsageLimitReached
-        | InferenceCallStatus::LocalDenied
         | InferenceCallStatus::TransportUncertain => {
             event.response_id = None;
             event.observed_provider = None;
@@ -81,6 +80,26 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
             event.token_usage = None;
             event.omitted_fields = Some(vec![
                 InferenceCallField::ResponseId,
+                InferenceCallField::ObservedProvider,
+                InferenceCallField::ObservedModel,
+                InferenceCallField::ObservedModelSnapshot,
+                InferenceCallField::ObservedServiceTier,
+                InferenceCallField::TokenUsage,
+            ]);
+        }
+        InferenceCallStatus::LocalDenied => {
+            event.request_completed_at_ms = None;
+            event.response_id = None;
+            event.upstream_request_id = None;
+            event.observed_provider = None;
+            event.observed_model = None;
+            event.observed_model_snapshot = None;
+            event.observed_service_tier = None;
+            event.token_usage = None;
+            event.omitted_fields = Some(vec![
+                InferenceCallField::RequestCompletedAtMs,
+                InferenceCallField::ResponseId,
+                InferenceCallField::UpstreamRequestId,
                 InferenceCallField::ObservedProvider,
                 InferenceCallField::ObservedModel,
                 InferenceCallField::ObservedModelSnapshot,

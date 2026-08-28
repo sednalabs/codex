@@ -25,6 +25,7 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use tokio::sync::Semaphore;
 
@@ -46,6 +47,7 @@ pub(crate) struct Session {
     pub(crate) windows_sandbox_proxy_settings_mode:
         codex_sandboxing::WindowsSandboxProxySettingsMode,
     pub(super) multi_agent_version: OnceLock<MultiAgentVersion>,
+    pub(crate) continuity_health_check: AtomicBool,
     /// Owns invalidation and serializes refreshes without blocking captured calls.
     pub(super) mcp_refresh: McpRefresh,
     pub(super) mcp_elicitation_reviewer_handle: OnceLock<codex_mcp::ElicitationReviewerHandle>,
@@ -533,6 +535,14 @@ async fn maybe_create_usage_logger(
 }
 
 impl Session {
+    pub(crate) fn mark_continuity_health_check(&self) {
+        self.continuity_health_check.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_continuity_health_check(&self) -> bool {
+        self.continuity_health_check.load(Ordering::Acquire)
+    }
+
     /// Returns the concrete identity for this thread.
     pub(crate) fn thread_id(&self) -> ThreadId {
         self.thread_id
@@ -1250,6 +1260,7 @@ impl Session {
                 features: config.features.clone(),
                 windows_sandbox_proxy_settings_mode,
                 multi_agent_version,
+                continuity_health_check: AtomicBool::new(false),
                 mcp_refresh: McpRefresh::new(),
                 mcp_elicitation_reviewer_handle: OnceLock::new(),
                 mcp_elicitation_lifecycle_handle: OnceLock::new(),

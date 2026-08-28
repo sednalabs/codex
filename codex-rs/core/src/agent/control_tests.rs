@@ -3402,6 +3402,7 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
         .get_thread(tester_thread_id)
         .await
         .expect("tester thread should exist");
+    tester_thread.session.mark_continuity_health_check();
     let worker_path = AgentPath::root().join("worker_a").expect("worker path");
     let tester_path = worker_path.join("tester").expect("tester path");
     harness.control.maybe_start_completion_watcher(
@@ -3479,6 +3480,16 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
     })
     .await
     .expect("completion watcher should queue a direct-parent message");
+    let matching_results = harness
+        .manager
+        .captured_ops()
+        .into_iter()
+        .filter(|entry| *entry == expected)
+        .count();
+    assert_eq!(
+        matching_results, 1,
+        "continuity result must be delivered exactly once"
+    );
     timeout(Duration::from_secs(5), async {
         loop {
             if !tester_thread

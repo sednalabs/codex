@@ -107,9 +107,18 @@ pub enum InferenceCallSource {
     Direct,
     HostContinuityCheck,
     CodeMode {
-        pub cell_id: String,
-        pub runtime_tool_call_id: String,
+        cell_id: String,
+        runtime_tool_call_id: String,
     },
+}
+
+impl InferenceCallSource {
+    pub fn code_mode(cell_id: String, runtime_tool_call_id: String) -> Self {
+        Self::CodeMode {
+            cell_id,
+            runtime_tool_call_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -281,9 +290,18 @@ impl InferenceCallEvent {
             InferenceCallStatus::Failed
             | InferenceCallStatus::Cancelled
             | InferenceCallStatus::UsageLimitReached
-            | InferenceCallStatus::LocalDenied
             | InferenceCallStatus::TransportUncertain => &[
                 InferenceCallField::ResponseId,
+                InferenceCallField::ObservedProvider,
+                InferenceCallField::ObservedModel,
+                InferenceCallField::ObservedModelSnapshot,
+                InferenceCallField::ObservedServiceTier,
+                InferenceCallField::TokenUsage,
+            ],
+            InferenceCallStatus::LocalDenied => &[
+                InferenceCallField::RequestCompletedAtMs,
+                InferenceCallField::ResponseId,
+                InferenceCallField::UpstreamRequestId,
                 InferenceCallField::ObservedProvider,
                 InferenceCallField::ObservedModel,
                 InferenceCallField::ObservedModelSnapshot,

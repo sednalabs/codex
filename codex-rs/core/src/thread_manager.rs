@@ -836,6 +836,7 @@ impl ThreadManager {
             options.thread_extension_init,
             options.supports_openai_form_elicitation,
             /*user_shell_override*/ None,
+            /*continuity_health_check*/ false,
         ))
         .await
     }
@@ -963,6 +964,7 @@ impl ThreadManager {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             supports_openai_form_elicitation,
             /*user_shell_override*/ None,
+            /*continuity_health_check*/ false,
         ))
         .await
     }
@@ -995,6 +997,7 @@ impl ThreadManager {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             supports_openai_form_elicitation,
             /*user_shell_override*/ Some(user_shell_override),
+            /*continuity_health_check*/ false,
         ))
         .await
     }
@@ -1038,6 +1041,7 @@ impl ThreadManager {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             supports_openai_form_elicitation,
             /*user_shell_override*/ Some(user_shell_override),
+            /*continuity_health_check*/ false,
         ))
         .await
     }
@@ -1735,6 +1739,7 @@ impl ThreadManagerState {
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            /*continuity_health_check*/ false,
         ))
         .await
     }
@@ -1753,6 +1758,7 @@ impl ThreadManagerState {
         inherited_environments: Option<TurnEnvironmentSnapshot>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
+        continuity_health_check: bool,
     ) -> CodexResult<NewThread> {
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(
@@ -1782,6 +1788,7 @@ impl ThreadManagerState {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
+            continuity_health_check,
         ))
         .await
     }
@@ -1826,6 +1833,7 @@ impl ThreadManagerState {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
+            /*continuity_health_check*/ false,
         ))
         .await
     }
@@ -1845,6 +1853,7 @@ impl ThreadManagerState {
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
         thread_extension_init: ExtensionDataInit,
+        continuity_health_check: bool,
     ) -> CodexResult<NewThread> {
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(
@@ -1874,6 +1883,7 @@ impl ThreadManagerState {
             thread_extension_init,
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
+            continuity_health_check,
         ))
         .await
     }
@@ -1919,6 +1929,7 @@ impl ThreadManagerState {
             thread_extension_init,
             supports_openai_form_elicitation,
             user_shell_override,
+            /*continuity_health_check*/ false,
         ))
         .await
     }
@@ -1946,6 +1957,7 @@ impl ThreadManagerState {
         thread_extension_init: ExtensionDataInit,
         supports_openai_form_elicitation: bool,
         user_shell_override: Option<crate::shell::Shell>,
+        continuity_health_check: bool,
     ) -> CodexResult<NewThread> {
         let source_changed_during_startup = Arc::new(AtomicBool::new(false));
         {
@@ -2048,6 +2060,7 @@ impl ThreadManagerState {
             attestation_provider: self.attestation_provider.clone(),
             external_time_provider: self.external_time_provider.clone(),
             inherited_multi_agent_version: multi_agent_version,
+            continuity_health_check,
             git_enrichment_policy: GitEnrichmentPolicy::Fresh,
             windows_sandbox_proxy_settings_mode:
                 codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,

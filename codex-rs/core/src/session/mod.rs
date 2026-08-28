@@ -473,6 +473,7 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
     pub(crate) external_time_provider: Option<Arc<dyn TimeProvider>>,
     pub(crate) inherited_multi_agent_version: Option<MultiAgentVersion>,
+    pub(crate) continuity_health_check: bool,
     pub(crate) git_enrichment_policy: GitEnrichmentPolicy,
     pub(crate) windows_sandbox_proxy_settings_mode:
         codex_sandboxing::WindowsSandboxProxySettingsMode,
@@ -565,6 +566,7 @@ impl Session {
             attestation_provider,
             external_time_provider,
             inherited_multi_agent_version,
+            continuity_health_check,
             git_enrichment_policy,
             windows_sandbox_proxy_settings_mode,
         } = args;
@@ -808,6 +810,12 @@ impl Session {
             error!("Failed to create session: {e:#}");
             map_session_init_error(&e, &config.codex_home)
         })?;
+        if continuity_health_check {
+            // This marker comes from the explicit host-continuity tool-call source. Set it
+            // before the session loop starts so tool planning does not infer provenance from
+            // mutable feature state or an ordinary V2 child configuration.
+            session.mark_continuity_health_check();
+        }
         if let Some(message) = initial_service_tier_warning {
             session
                 .send_event_raw(Event {
@@ -2037,6 +2045,12 @@ impl Session {
         turn_context: &TurnContext,
         msg: &EventMsg,
     ) {
+        // Continuity children use the detached completion watcher as their sole parent-result
+        // authority. Their forced V2 identity is retained for residency accounting, but must not
+        // also trigger the ordinary session-owned V2 forwarding path.
+        if self.is_continuity_health_check() {
+            return;
+        }
         if turn_context.multi_agent_version != MultiAgentVersion::V2 {
             return;
         }

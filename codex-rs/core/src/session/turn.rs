@@ -65,7 +65,6 @@ use crate::tools::router::ToolRouterParams;
 use crate::tools::router::ToolSuggestCandidates;
 use crate::tools::router::ToolSuggestPresentation;
 use crate::tools::router::extension_tool_executors;
-use crate::tools::spec_plan::is_restricted_continuity_child;
 use crate::tools::spec_plan::search_tool_enabled;
 use crate::tools::spec_plan::tool_suggest_enabled;
 use crate::turn_diff_tracker::TurnDiffTracker;
@@ -1678,7 +1677,7 @@ pub(crate) async fn built_tools(
         ToolRouterParams {
             tool_runtimes: mcp_tool_runtimes,
             tool_suggest_candidates,
-            extension_tool_executors: if is_restricted_continuity_child(turn_context) {
+            extension_tool_executors: if sess.is_continuity_health_check() {
                 Vec::new()
             } else {
                 extension_tool_executors(sess, step_store)

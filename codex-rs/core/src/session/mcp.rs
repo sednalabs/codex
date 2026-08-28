@@ -261,6 +261,13 @@ impl Session {
         turn_context: &TurnContext,
         selected_capability_roots: &[ResolvedSelectedCapabilityRoot],
     ) -> Arc<codex_mcp::McpBinding> {
+        if self.is_continuity_health_check() {
+            // Continuity diagnostics have no model-visible MCP surface, including servers
+            // contributed by extensions. Build only the immutable config needed by the empty
+            // binding; do not publish or reuse the normal connection set.
+            let config = Arc::new(self.runtime_mcp_config(&turn_context.config).await);
+            return Arc::new(codex_mcp::McpBinding::empty(config));
+        }
         let ready_selected_capability_roots =
             Self::ready_selected_capability_roots(selected_capability_roots);
         if self

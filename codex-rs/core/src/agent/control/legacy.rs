@@ -38,8 +38,21 @@ impl AgentControl {
             // watcher delivers the result to the parent. Keep the runtime present until that
             // delivery finishes; otherwise close would release its registry/residency slot while
             // the result is still in flight.
-            while thread.session.input_queue.has_pending_terminal_finalizers() {
-                tokio::task::yield_now().await;
+            let finalizer_released = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                async {
+                    while thread.session.input_queue.has_pending_terminal_finalizers() {
+                        tokio::task::yield_now().await;
+                    }
+                },
+            )
+            .await
+            .is_ok();
+            if !finalizer_released {
+                warn!(
+                    %agent_id,
+                    "terminal result delivery remained pending during close; releasing child with delivery uncertainty"
+                );
             }
             result
         } else {
