@@ -923,7 +923,14 @@ Use `thread/shellCommand` for the TUI `!` workflow. The request returns immediat
 This API runs unsandboxed with full access; it does not inherit the thread
 sandbox policy.
 
-If the thread already has an active turn, the command runs as an auxiliary action on that turn. In that case, progress is emitted as standard `item/*` notifications on the existing turn and the formatted output is injected into the turn’s message stream:
+Set `timeoutMs` to a non-negative integer to control command execution time.
+Omitting it or setting it to `null` preserves the one-hour default (3,600,000 ms).
+Values above one hour are supported; `0` requests an immediate timeout, not
+unlimited execution. Invalid values are rejected before execution. This deadline
+does not change the immediate RPC acknowledgement, and `turn/interrupt` can still
+cancel execution before the deadline.
+
+If the thread already has an active turn, the command runs as an auxiliary action on that turn. A timeout ends only the shell command, not the active turn. Progress is emitted as standard `item/*` notifications on the existing turn and the formatted output is injected into the turn’s message stream:
 
 - `item/started` with `item: { "type": "commandExecution", "source": "userShell", ... }`
 - zero or more `item/commandExecution/outputDelta`
@@ -940,6 +947,13 @@ If the thread does not already have an active turn, the server starts a standalo
 ```json
 { "method": "thread/shellCommand", "id": 26, "params": { "threadId": "thr_b", "command": "git status --short" } }
 { "id": 26, "result": {} }
+```
+
+For example, allow up to eight hours for a workflow command:
+
+```json
+{ "method": "thread/shellCommand", "id": 27, "params": { "threadId": "thr_b", "command": "./workflow.sh", "timeoutMs": 28800000 } }
+{ "id": 27, "result": {} }
 ```
 
 ### Example: Start a turn (send user input)

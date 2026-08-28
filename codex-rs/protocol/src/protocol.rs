@@ -739,6 +739,8 @@ pub enum Op {
     RunUserShellCommand {
         /// The raw command string after '!'
         command: String,
+        /// Maximum execution time in milliseconds. Defaults to one hour.
+        timeout_ms: Option<u64>,
     },
 }
 

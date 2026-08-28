@@ -4380,6 +4380,7 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
         .send_thread_shell_command_request(ThreadShellCommandParams {
             thread_id: child_thread_id.clone(),
             command: "echo blocked".to_string(),
+            timeout_ms: None,
         })
         .await?;
     let direct_shell_error: JSONRPCError = timeout(
