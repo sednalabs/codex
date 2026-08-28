@@ -57,11 +57,72 @@ struct GoalRuntimeInner {
     metrics: GoalMetrics,
     thread_manager: Weak<ThreadManager>,
     accounting_state: Arc<GoalAccountingState>,
+    tools_available_for_thread: bool,
+    continuation: GoalContinuationCoordinator,
+}
+
+/// Per-thread lifecycle owner for the durable goal continuation. Runtime
+/// callers retain only a wake handle and consult this coordinator for every
+/// authority, epoch, claim, and lifecycle transition.
+struct GoalContinuationCoordinator {
     enabled: AtomicBool,
     enablement_epoch: AtomicU64,
-    provider_continuation: Mutex<ProviderContinuationState>,
-    tools_available_for_thread: bool,
-    goal_state_lock: Semaphore,
+    state: Mutex<ProviderContinuationState>,
+    lifecycle: Semaphore,
+}
+
+/// Owner-aware cleanup for the narrow window between durable claim and turn
+/// publication. If the wake task is aborted at an await, Drop schedules the
+/// same exact CAS release; after publication ownership transfers to the turn
+/// token and the guard is disarmed.
+struct DispatchClaimGuard {
+    store: codex_state::GoalOwnerAdmissionStore,
+    authority: codex_state::GoalOwnerAdmissionAuthority,
+    claim_id: Uuid,
+    armed: bool,
+}
+
+impl DispatchClaimGuard {
+    fn new(
+        store: codex_state::GoalOwnerAdmissionStore,
+        authority: codex_state::GoalOwnerAdmissionAuthority,
+        claim_id: Uuid,
+    ) -> Self {
+        Self {
+            store,
+            authority,
+            claim_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DispatchClaimGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let store = self.store.clone();
+        let authority = self.authority.clone();
+        let claim_id = self.claim_id;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Err(error) = store.release_dispatch_claim(&authority, claim_id).await {
+                    tracing::warn!(
+                        thread_id = %authority.thread_id,
+                        generation = authority.generation,
+                        dispatch_claim_id = %claim_id,
+                        error = %error,
+                        "aborted goal continuation wake could not release its exact dispatch claim"
+                    );
+                }
+            });
+        }
+    }
 }
 
 struct DeferredProviderContinuation {
@@ -131,25 +192,37 @@ impl GoalRuntimeHandle {
                 metrics,
                 thread_manager,
                 accounting_state,
-                enabled: AtomicBool::new(config.enabled),
-                enablement_epoch: AtomicU64::new(0),
-                provider_continuation: Mutex::new(ProviderContinuationState::default()),
                 tools_available_for_thread: config.tools_available_for_thread,
-                goal_state_lock: Semaphore::new(/*permits*/ 1),
+                continuation: GoalContinuationCoordinator {
+                    enabled: AtomicBool::new(config.enabled),
+                    enablement_epoch: AtomicU64::new(0),
+                    state: Mutex::new(ProviderContinuationState::default()),
+                    lifecycle: Semaphore::new(/*permits*/ 1),
+                },
             }),
         }
     }
 
     pub(crate) fn set_enabled(&self, enabled: bool) {
-        let was_enabled = self.inner.enabled.swap(enabled, Ordering::Relaxed);
+        let was_enabled = self
+            .inner
+            .continuation
+            .enabled
+            .swap(enabled, Ordering::Relaxed);
         if was_enabled == enabled {
             return;
         }
-        let enablement_epoch = self.inner.enablement_epoch.fetch_add(1, Ordering::Relaxed) + 1;
+        let enablement_epoch = self
+            .inner
+            .continuation
+            .enablement_epoch
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
         if enabled {
             let authority = self
                 .inner
-                .provider_continuation
+                .continuation
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .last_authority
@@ -162,8 +235,13 @@ impl GoalRuntimeHandle {
                 let runtime = GoalRuntimeHandle {
                     inner: Arc::clone(&inner),
                 };
-                if runtime.inner.enablement_epoch.load(Ordering::Relaxed) != enablement_epoch
-                    || !runtime.inner.enabled.load(Ordering::Relaxed)
+                if runtime
+                    .inner
+                    .continuation
+                    .enablement_epoch
+                    .load(Ordering::Relaxed)
+                    != enablement_epoch
+                    || !runtime.inner.continuation.enabled.load(Ordering::Relaxed)
                 {
                     return;
                 }
@@ -177,12 +255,18 @@ impl GoalRuntimeHandle {
                         return;
                     }
                 }
-                if runtime.inner.enablement_epoch.load(Ordering::Relaxed) == enablement_epoch
-                    && runtime.inner.enabled.load(Ordering::Relaxed)
+                if runtime
+                    .inner
+                    .continuation
+                    .enablement_epoch
+                    .load(Ordering::Relaxed)
+                    == enablement_epoch
+                    && runtime.inner.continuation.enabled.load(Ordering::Relaxed)
                 {
                     let mut state = runtime
                         .inner
-                        .provider_continuation
+                        .continuation
+                        .state
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     state.attempts = 0;
@@ -197,7 +281,8 @@ impl GoalRuntimeHandle {
         {
             let mut state = self
                 .inner
-                .provider_continuation
+                .continuation
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(pending) = state.pending.take() {
@@ -212,8 +297,9 @@ impl GoalRuntimeHandle {
                     let Some(inner) = inner.upgrade() else {
                         return;
                     };
-                    if inner.enablement_epoch.load(Ordering::Relaxed) != enablement_epoch
-                        || inner.enabled.load(Ordering::Relaxed)
+                    if inner.continuation.enablement_epoch.load(Ordering::Relaxed)
+                        != enablement_epoch
+                        || inner.continuation.enabled.load(Ordering::Relaxed)
                     {
                         return;
                     }
@@ -236,7 +322,7 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
-        self.inner.enabled.load(Ordering::Relaxed)
+        self.inner.continuation.enabled.load(Ordering::Relaxed)
     }
 
     pub(crate) fn tools_visible(&self) -> bool {
@@ -253,7 +339,8 @@ impl GoalRuntimeHandle {
 
     pub(crate) async fn goal_state_permit(&self) -> Result<SemaphorePermit<'_>, String> {
         self.inner
-            .goal_state_lock
+            .continuation
+            .lifecycle
             .acquire()
             .await
             .map_err(|err| err.to_string())
@@ -316,11 +403,28 @@ impl GoalRuntimeHandle {
             .status_changed(&goal, previous_status, GoalEventAttribution::NoTurn);
         if replaced_existing_goal {
             let _goal_state_permit = self.goal_state_permit().await?;
+            let previous_authority = self
+                .inner
+                .continuation
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .last_authority
+                .clone();
             self.cancel_provider_continuation_locked().await;
+            if let Some(previous_authority) = previous_authority {
+                self.retire_safe_terminal_admission(
+                    &previous_authority,
+                    /*clear_deferral*/ false,
+                    /*allow_exhausted*/ true,
+                )
+                .await?;
+            }
             let pending = {
                 let mut state = self
                     .inner
-                    .provider_continuation
+                    .continuation
+                    .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let pending = state.pending.take();
@@ -526,7 +630,8 @@ impl GoalRuntimeHandle {
         let action = {
             let mut state = self
                 .inner
-                .provider_continuation
+                .continuation
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.goal_id.as_deref() != Some(goal_id.as_str()) {
@@ -554,7 +659,11 @@ impl GoalRuntimeHandle {
                     continuation,
                     eligible_at,
                     cancellation: cancellation.clone(),
-                    enablement_epoch: self.inner.enablement_epoch.load(Ordering::Relaxed),
+                    enablement_epoch: self
+                        .inner
+                        .continuation
+                        .enablement_epoch
+                        .load(Ordering::Relaxed),
                 });
                 state.last_authority = Some(authority);
                 ProviderContinuationAction::Scheduled {
@@ -588,7 +697,8 @@ impl GoalRuntimeHandle {
         if let Err(err) = self.mark_provider_continuation_deferred().await {
             let mut state = self
                 .inner
-                .provider_continuation
+                .continuation
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.pending = None;
@@ -627,7 +737,8 @@ impl GoalRuntimeHandle {
 
     fn block_provider_continuation(&self) {
         self.inner
-            .provider_continuation
+            .continuation
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .blocked = true;
@@ -653,6 +764,7 @@ impl GoalRuntimeHandle {
             self.retire_safe_terminal_admission(
                 &cancelled.authority,
                 /*clear_deferral*/ false,
+                /*allow_exhausted*/ false,
             )
             .await?;
         } else {
@@ -674,6 +786,7 @@ impl GoalRuntimeHandle {
         &self,
         authority: &codex_state::GoalOwnerAdmissionAuthority,
         clear_deferral: bool,
+        allow_exhausted: bool,
     ) -> Result<bool, String> {
         let admissions = self.inner.state_dbs.goal_owner_admissions();
         let Some(record) = admissions
@@ -692,6 +805,9 @@ impl GoalRuntimeHandle {
                     | codex_state::GoalOwnerAdmissionTerminalOutcome::Rejected
                     | codex_state::GoalOwnerAdmissionTerminalOutcome::Exhausted
             )
+            || (record.terminal_outcome
+                == codex_state::GoalOwnerAdmissionTerminalOutcome::Exhausted
+                && !allow_exhausted)
         {
             return Ok(false);
         }
@@ -744,7 +860,8 @@ impl GoalRuntimeHandle {
         let (pending, authority) = {
             let mut state = self
                 .inner
-                .provider_continuation
+                .continuation
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let pending = state.pending.take();
@@ -790,8 +907,10 @@ impl GoalRuntimeHandle {
             return Ok(());
         };
         let authority = continuation.authority().authority.clone();
-        self.retire_safe_terminal_admission(&authority, /*clear_deferral*/ true)
-            .await?;
+        self.retire_safe_terminal_admission(
+            &authority, /*clear_deferral*/ true, /*allow_exhausted*/ false,
+        )
+        .await?;
         Ok(())
     }
 
@@ -897,8 +1016,41 @@ impl GoalRuntimeHandle {
         if let Some(record) = persisted.as_ref()
             && record.phase == codex_state::GoalOwnerAdmissionPhase::Terminal
         {
-            self.retire_safe_terminal_admission(&record.authority, /*clear_deferral*/ true)
-                .await?;
+            if record.terminal_outcome == codex_state::GoalOwnerAdmissionTerminalOutcome::Exhausted
+            {
+                if let Some(goal) = self
+                    .inner
+                    .state_dbs
+                    .thread_goals()
+                    .get_thread_goal(self.thread_id())
+                    .await
+                    .map_err(|err| err.to_string())?
+                    .filter(|goal| goal.goal_id == record.authority.goal_id)
+                {
+                    self.inner
+                        .state_dbs
+                        .thread_goals()
+                        .update_thread_goal(
+                            self.thread_id(),
+                            codex_state::GoalUpdate {
+                                objective: None,
+                                status: Some(codex_state::ThreadGoalStatus::Blocked),
+                                token_budget: None,
+                                expected_goal_id: Some(goal.goal_id),
+                            },
+                        )
+                        .await
+                        .map_err(|err| err.to_string())?;
+                }
+                self.inner.accounting_state.clear_active_goal();
+                return Ok(());
+            }
+            self.retire_safe_terminal_admission(
+                &record.authority,
+                /*clear_deferral*/ true,
+                /*allow_exhausted*/ false,
+            )
+            .await?;
             // Uncertain terminal rows remain durable recovery evidence. They must not be
             // silently retired during resume because provider outcome is not knowable.
             return Ok(());
@@ -978,7 +1130,8 @@ impl GoalRuntimeHandle {
         {
             let mut state = self
                 .inner
-                .provider_continuation
+                .continuation
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.pending.is_none() {
@@ -991,7 +1144,11 @@ impl GoalRuntimeHandle {
                     continuation,
                     eligible_at,
                     cancellation: cancellation.clone(),
-                    enablement_epoch: self.inner.enablement_epoch.load(Ordering::Relaxed),
+                    enablement_epoch: self
+                        .inner
+                        .continuation
+                        .enablement_epoch
+                        .load(Ordering::Relaxed),
                 });
                 state.last_authority = Some(record.authority.clone());
             } else {
@@ -1034,7 +1191,8 @@ impl GoalRuntimeHandle {
 
     fn provider_continuation_pending(&self) -> bool {
         self.inner
-            .provider_continuation
+            .continuation
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pending
@@ -1048,7 +1206,8 @@ impl GoalRuntimeHandle {
         let (continuation_authority, cancellation, enablement_epoch) = {
             let state = self
                 .inner
-                .provider_continuation
+                .continuation
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(pending) = state.pending.as_ref() else {
@@ -1089,6 +1248,11 @@ impl GoalRuntimeHandle {
         else {
             return Ok(());
         };
+        let mut dispatch_claim_guard = DispatchClaimGuard::new(
+            self.inner.state_dbs.goal_owner_admissions().clone(),
+            continuation_authority.authority.clone(),
+            dispatch_claim_id,
+        );
         if !self
             .timer_is_current(
                 &continuation_authority,
@@ -1165,6 +1329,9 @@ impl GoalRuntimeHandle {
         let start_result = thread
             .try_start_goal_continuation_if_idle(Vec::new(), claimed_continuation)
             .await;
+        // The claim is now carried by the published turn token. Its abort
+        // path owns exact cancellation; the wake-task guard must not race it.
+        dispatch_claim_guard.disarm();
         let still_current = self
             .timer_is_current(
                 &continuation_authority,
@@ -1227,7 +1394,8 @@ impl GoalRuntimeHandle {
         }
         let mut state = self
             .inner
-            .provider_continuation
+            .continuation
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.pending.as_ref().is_some_and(|pending| {
@@ -1247,11 +1415,17 @@ impl GoalRuntimeHandle {
         enablement_epoch: u64,
     ) -> bool {
         !cancellation.is_cancelled()
-            && self.inner.enabled.load(Ordering::Relaxed)
-            && self.inner.enablement_epoch.load(Ordering::Relaxed) == enablement_epoch
+            && self.inner.continuation.enabled.load(Ordering::Relaxed)
             && self
                 .inner
-                .provider_continuation
+                .continuation
+                .enablement_epoch
+                .load(Ordering::Relaxed)
+                == enablement_epoch
+            && self
+                .inner
+                .continuation
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .pending
@@ -1336,7 +1510,8 @@ impl GoalRuntimeHandle {
         if !goal_continuation
             && self
                 .inner
-                .provider_continuation
+                .continuation
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .blocked

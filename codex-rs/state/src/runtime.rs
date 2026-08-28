@@ -33,9 +33,13 @@ use sqlx::Sqlite;
 use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
 use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::time::Duration;
 use std::time::Instant;
@@ -103,6 +107,53 @@ const LOG_PARTITION_ROW_LIMIT: i64 = 1_000;
 const STATE_DB_BASENAME: &str = "state";
 const LOGS_DB_BASENAME: &str = "logs";
 const USAGE_DB_BASENAME: &str = "usage";
+
+static ACTIVE_RUNTIME_OWNERS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+/// Process-local owner proof for destructive admission recovery. A second
+/// live StateRuntime for the same goals database fails closed instead of
+/// rewriting another runtime's Acquired/InFlight rows.
+struct RuntimeOwnerGuard {
+    goals_path: PathBuf,
+    released: AtomicBool,
+}
+
+impl RuntimeOwnerGuard {
+    fn try_acquire(goals_path: PathBuf) -> anyhow::Result<Option<Arc<Self>>> {
+        let owners = ACTIVE_RUNTIME_OWNERS.get_or_init(|| Mutex::new(HashSet::new()));
+        let mut owners = owners
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime owner registry is poisoned"))?;
+        if !owners.insert(goals_path.clone()) {
+            return Ok(None);
+        }
+        Ok(Some(Arc::new(Self {
+            goals_path,
+            released: AtomicBool::new(false),
+        })))
+    }
+
+    fn release(&self) {
+        if self
+            .released
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        if let Some(owners) = ACTIVE_RUNTIME_OWNERS.get()
+            && let Ok(mut owners) = owners.lock()
+        {
+            owners.remove(&self.goals_path);
+        }
+    }
+}
+
+impl Drop for RuntimeOwnerGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 #[derive(Clone)]
 pub struct StateRuntime {
     sqlite: SqliteConfig,
@@ -115,6 +166,7 @@ pub struct StateRuntime {
     memories: MemoryStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
+    runtime_owner: Option<Arc<RuntimeOwnerGuard>>,
 }
 
 impl StateRuntime {
@@ -148,6 +200,7 @@ impl StateRuntime {
         let goals_path = sqlite.goals_db_path();
         let memories_path = sqlite.memories_db_path();
         let usage_path = sqlite.usage_db_path();
+        let runtime_owner = RuntimeOwnerGuard::try_acquire(goals_path.clone())?;
         remove_legacy_db_files(
             sqlite.home(),
             database_filename(&state_path)?,
@@ -220,11 +273,15 @@ impl StateRuntime {
                 return Err(err);
             }
         };
-        if let Err(err) =
-            GoalOwnerAdmissionStore::recover_in_flight_on_open(goals_pool.as_ref()).await
-        {
-            close_sqlite_pools(&[pool.as_ref(), logs_pool.as_ref(), goals_pool.as_ref()]).await;
-            return Err(err);
+        if runtime_owner.is_some() {
+            if let Err(err) =
+                GoalOwnerAdmissionStore::recover_in_flight_on_open(goals_pool.as_ref()).await
+            {
+                close_sqlite_pools(&[pool.as_ref(), logs_pool.as_ref(), goals_pool.as_ref()]).await;
+                return Err(err);
+            }
+        } else {
+            warn!("another StateRuntime owns the goals database; admission recovery is disabled");
         }
         let memories_pool = match sqlite
             .open_memories_db(&memories_migrator, telemetry_override)
@@ -320,6 +377,7 @@ impl StateRuntime {
             default_provider,
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
             thread_recency_at_millis: Arc::new(AtomicI64::new(thread_recency_at_millis)),
+            runtime_owner,
         });
         if let Err(err) = runtime.run_logs_startup_maintenance().await {
             warn!("logs startup maintenance failed; continuing runtime initialization: {err}");
@@ -379,6 +437,9 @@ impl StateRuntime {
         self.usage_pool.close().await;
         self.logs_pool.close().await;
         self.pool.close().await;
+        if let Some(runtime_owner) = &self.runtime_owner {
+            runtime_owner.release();
+        }
     }
 
     pub async fn clear_memory_data_in_sqlite_home(sqlite: &SqliteConfig) -> anyhow::Result<bool> {
