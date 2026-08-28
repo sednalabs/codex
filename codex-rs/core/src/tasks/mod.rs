@@ -50,7 +50,6 @@ use codex_otel::TURN_MEMORY_METRIC;
 use codex_otel::TURN_NETWORK_PROXY_METRIC;
 use codex_otel::TURN_TOKEN_USAGE_METRIC;
 use codex_otel::TURN_TOOL_CALL_METRIC;
-use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -811,8 +810,8 @@ impl Session {
                 Arc::clone(&turn.turn_state)
             };
             if enforce_current_plan {
-                let state = self.lock_state().await;
-                if state.session_configuration.collaboration_mode.mode == ModeKind::Plan {
+                let state = self.lock_task_admission_state().await;
+                if state.is_plan_mode() {
                     return Err(reject(TryStartTurnIfIdleRejectionReason::PlanMode));
                 }
                 let Some(turn) = active.as_mut() else {

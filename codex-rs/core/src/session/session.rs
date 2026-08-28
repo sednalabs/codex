@@ -14,6 +14,7 @@ use codex_extension_api::ExtensionDataInit;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_protocol::SessionId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::permissions::FileSystemPath;
@@ -69,6 +70,21 @@ pub(super) struct PendingOwnerContinuation {
     pub(super) session_source: SessionSource,
     pub(super) multi_agent_version: MultiAgentVersion,
     pub(super) terminal_status: Option<AgentStatus>,
+}
+
+/// State custody held while an automatic task admission is linearized.
+///
+/// The underlying session-state mutex guard remains private so callers can
+/// observe only the admission predicate without gaining access to mutable
+/// history, configuration, or rate-limit state.
+pub(crate) struct TaskAdmissionStateGuard<'a> {
+    state: tokio::sync::MutexGuard<'a, SessionState>,
+}
+
+impl TaskAdmissionStateGuard<'_> {
+    pub(crate) fn is_plan_mode(&self) -> bool {
+        self.state.session_configuration.collaboration_mode.mode == ModeKind::Plan
+    }
 }
 
 #[derive(Clone)]
@@ -522,8 +538,10 @@ impl Session {
         self.thread_id
     }
 
-    pub(crate) async fn lock_state(&self) -> tokio::sync::MutexGuard<'_, SessionState> {
-        self.state.lock().await
+    pub(crate) async fn lock_task_admission_state(&self) -> TaskAdmissionStateGuard<'_> {
+        TaskAdmissionStateGuard {
+            state: self.state.lock().await,
+        }
     }
 
     /// Returns the identity shared by the root thread and all descendant threads.
