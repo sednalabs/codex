@@ -75,6 +75,17 @@ impl GoalContinuationFence {
         self.epoch.load(AtomicOrdering::Acquire)
     }
 
+    /// Non-blocking quiescence probe for a current-thread executor. The
+    /// executor cannot synchronously wait on a guard held by a future running
+    /// on that same thread; callers must await this condition cooperatively.
+    pub fn is_quiescent(&self) -> bool {
+        *self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            == 0
+    }
+
     pub fn revoke(&self) {
         self.epoch.fetch_add(1, AtomicOrdering::AcqRel);
     }
@@ -127,7 +138,10 @@ impl GoalOwnerContinuation {
         Self {
             authority,
             dispatch_claim_id: None,
-            fence: Some(Arc::new(GoalContinuationFence::new())),
+            // A continuation becomes usable only after its owner attaches the
+            // coordinator's shared fence. Keeping this unset prevents a
+            // reconstructed, private fence from crossing the handoff.
+            fence: None,
             fence_epoch: 0,
         }
     }
@@ -139,7 +153,7 @@ impl GoalOwnerContinuation {
         Self {
             authority,
             dispatch_claim_id: Some(dispatch_claim_id),
-            fence: Some(Arc::new(GoalContinuationFence::new())),
+            fence: None,
             fence_epoch: 0,
         }
     }

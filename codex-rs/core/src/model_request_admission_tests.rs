@@ -8,12 +8,17 @@ use codex_state::GoalOwnerAdmissionPhase;
 use codex_state::GoalOwnerAdmissionRecord;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use tempfile::TempDir;
 
 const SUCCESSOR_TURN_ID: &str = "turn-successor";
 const SUCCESSOR_REQUEST_ID: &str = "successor-request";
+
+fn fenced(continuation: GoalOwnerContinuation) -> GoalOwnerContinuation {
+    continuation.with_fence(Arc::new(GoalContinuationFence::new()), 0)
+}
 
 fn identity(thread_id: ThreadId, kind: InferenceRequestKind) -> ModelRequestIdentity {
     identity_with(thread_id, kind, SUCCESSOR_TURN_ID, SUCCESSOR_REQUEST_ID)
@@ -94,8 +99,10 @@ async fn admit(
         .await
         .expect("claim exact admission")
         .expect("eligible admission claim");
-    let continuation =
-        GoalOwnerContinuation::with_dispatch_claim(record.continuation_authority(), claim_id);
+    let continuation = fenced(GoalOwnerContinuation::with_dispatch_claim(
+        record.continuation_authority(),
+        claim_id,
+    ));
     broker
         .admit(identity, Some(&continuation))
         .await
@@ -185,7 +192,7 @@ async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_reque
         ))
         .await
         .expect("record eligible admission");
-    let authority = GoalOwnerContinuation::new(record.continuation_authority());
+    let authority = fenced(GoalOwnerContinuation::new(record.continuation_authority()));
 
     let wrong_kind = identity(thread_id, InferenceRequestKind::RemoteCompact);
     let wrong_turn = identity_with(
@@ -213,7 +220,7 @@ async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_reque
         (wrong_effective_provider, Some(authority.clone())),
         (
             identity(thread_id, InferenceRequestKind::Turn),
-            Some(GoalOwnerContinuation::new(wrong_authority)),
+            Some(fenced(GoalOwnerContinuation::new(wrong_authority))),
         ),
     ] {
         let decision = broker
@@ -337,7 +344,9 @@ async fn terminal_success_is_unrestricted_before_identity_matching() {
     let continuation_decision = broker
         .admit(
             &identity(thread_id, InferenceRequestKind::Turn),
-            Some(&GoalOwnerContinuation::new(record.continuation_authority())),
+            Some(&fenced(GoalOwnerContinuation::new(
+                record.continuation_authority(),
+            ))),
         )
         .await
         .expect("evaluate settled continuation");
@@ -395,7 +404,9 @@ async fn continuation_token_without_active_record_fails_closed() {
     let decision = broker
         .admit(
             &identity(thread_id, InferenceRequestKind::Turn),
-            Some(&GoalOwnerContinuation::new(record.continuation_authority())),
+            Some(&fenced(GoalOwnerContinuation::new(
+                record.continuation_authority(),
+            ))),
         )
         .await
         .expect("evaluate missing active generation");
@@ -408,7 +419,9 @@ async fn continuation_token_without_active_record_fails_closed() {
     let no_state_decision = no_state_broker
         .admit(
             &identity(thread_id, InferenceRequestKind::Turn),
-            Some(&GoalOwnerContinuation::new(record.continuation_authority())),
+            Some(&fenced(GoalOwnerContinuation::new(
+                record.continuation_authority(),
+            ))),
         )
         .await
         .expect("evaluate continuation without state runtime");

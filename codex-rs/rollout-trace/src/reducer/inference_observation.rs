@@ -56,6 +56,7 @@ impl TraceReducer {
                 inference_call_id.clone(),
                 InferenceCallObservation {
                     inference_call_id,
+                    started_event: event.clone(),
                     execution: ExecutionWindow {
                         started_at_unix_ms: wall_time_unix_ms,
                         started_seq: seq,
@@ -88,7 +89,7 @@ impl TraceReducer {
                     inference_call_id
                 );
             }
-            ensure_same_attempt_identity(&observation.event, &event)?;
+            ensure_same_attempt_identity(&observation.started_event, &event)?;
             observation.execution.ended_at_unix_ms = Some(wall_time_unix_ms);
             observation.execution.ended_seq = Some(seq);
             observation.execution.status = execution_status(event.status);
@@ -105,6 +106,7 @@ impl TraceReducer {
                 inference_call_id.clone(),
                 InferenceCallObservation {
                     inference_call_id,
+                    started_event: event.clone(),
                     execution: ExecutionWindow {
                         started_at_unix_ms: wall_time_unix_ms,
                         started_seq: seq,

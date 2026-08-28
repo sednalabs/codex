@@ -30,6 +30,9 @@ use super::session::ExecutionWindow;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InferenceCallObservation {
     pub inference_call_id: String,
+    /// Immutable identity/provenance captured by the first lifecycle event.
+    /// Terminal updates may add status/outcome evidence but never replace it.
+    pub started_event: InferenceCallEvent,
     pub event: InferenceCallEvent,
     pub execution: ExecutionWindow,
     pub raw_event_payload_ids: Vec<RawPayloadId>,

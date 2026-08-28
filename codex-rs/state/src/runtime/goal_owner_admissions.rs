@@ -257,11 +257,36 @@ struct GoalOwnerAdmissionGoalChain {
 #[derive(Clone)]
 pub struct GoalOwnerAdmissionStore {
     pool: Arc<SqlitePool>,
+    /// Presence of this opaque capability is the only authority to perform
+    /// destructive admission transitions. Read-only runtimes deliberately
+    /// carry `None`, even though they share the same SQLite pool.
+    write_capability: Option<Arc<()>>,
 }
 
 impl GoalOwnerAdmissionStore {
     pub(crate) fn new(pool: Arc<SqlitePool>) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            // Direct stores are used by the state tests and by the single
+            // runtime owner bootstrap. StateRuntime uses `read_only` for a
+            // process that failed to acquire the kernel lock.
+            write_capability: Some(Arc::new(())),
+        }
+    }
+
+    pub(crate) fn read_only(pool: Arc<SqlitePool>) -> Self {
+        Self {
+            pool,
+            write_capability: None,
+        }
+    }
+
+    fn require_write_capability(&self) -> anyhow::Result<()> {
+        if self.write_capability.is_some() {
+            Ok(())
+        } else {
+            bail!("goal-owner admission mutation requires the runtime owner capability")
+        }
     }
 
     /// Record the process that holds the OS-backed runtime ownership lock.
@@ -270,10 +295,16 @@ impl GoalOwnerAdmissionStore {
     /// method. Replacing an old row is safe only under that lock: the kernel
     /// has already proved that the previous holder exited.
     pub async fn claim_runtime_owner(&self, owner_id: Uuid) -> anyhow::Result<()> {
+        self.require_write_capability()?;
         let result = sqlx::query(
             r#"
 INSERT INTO goal_owner_runtime_owners (owner_key, owner_id, acquired_at_ms)
-VALUES (1, ?, ?)
+SELECT 1, ?, ?
+WHERE EXISTS (
+    SELECT 1
+    FROM goal_owner_runtime_protocol
+    WHERE protocol_key = 1 AND protocol_version = 2
+)
 ON CONFLICT(owner_key) DO UPDATE SET
     owner_id = excluded.owner_id,
     acquired_at_ms = excluded.acquired_at_ms
@@ -283,12 +314,16 @@ ON CONFLICT(owner_key) DO UPDATE SET
         .bind(admission_datetime_to_epoch_millis(Utc::now()))
         .execute(self.pool.as_ref())
         .await?;
+        if result.rows_affected() != 1 {
+            bail!("goal-owner runtime protocol is legacy or mixed-version; recovery is disabled")
+        }
         debug_assert_eq!(result.rows_affected(), 1);
         Ok(())
     }
 
     /// Release only the exact durable runtime owner acquired by this process.
     pub async fn release_runtime_owner(&self, owner_id: Uuid) -> anyhow::Result<bool> {
+        self.require_write_capability()?;
         let result = sqlx::query(
             "DELETE FROM goal_owner_runtime_owners WHERE owner_key = 1 AND owner_id = ?",
         )
@@ -308,6 +343,7 @@ ON CONFLICT(owner_key) DO UPDATE SET
         &self,
         owner_id: Uuid,
     ) -> anyhow::Result<()> {
+        self.require_write_capability()?;
         let registered_owner = sqlx::query_scalar::<_, String>(
             "SELECT owner_id FROM goal_owner_runtime_owners WHERE owner_key = 1",
         )
@@ -418,6 +454,7 @@ WHERE phase = 'in_flight'
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         now: DateTime<Utc>,
     ) -> anyhow::Result<Option<Uuid>> {
+        self.require_write_capability()?;
         validate_continuation_authority(continuation_authority)?;
         let authority = &continuation_authority.authority;
         let now_ms = admission_datetime_to_epoch_millis(now);
@@ -481,6 +518,7 @@ WHERE thread_id = ?
         authority: &GoalOwnerAdmissionAuthority,
         dispatch_claim_id: Uuid,
     ) -> anyhow::Result<bool> {
+        self.require_write_capability()?;
         validate_authority(authority)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let result = sqlx::query(
@@ -515,6 +553,7 @@ WHERE thread_id = ?
         &self,
         authority: &GoalOwnerAdmissionAuthority,
     ) -> anyhow::Result<bool> {
+        self.require_write_capability()?;
         validate_authority(authority)?;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let Some(record) = fetch_record_for_authority(&mut *transaction, authority).await? else {
@@ -549,6 +588,7 @@ WHERE thread_id = ?
         &self,
         observation: &GoalOwnerAdmissionObservation,
     ) -> anyhow::Result<GoalOwnerAdmissionRecord> {
+        self.require_write_capability()?;
         validate_observation(observation)?;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let origin = fetch_origin(
@@ -620,6 +660,7 @@ WHERE thread_id = ?
         authority: &GoalOwnerAdmissionAuthority,
         reason: GoalOwnerAdmissionRetirementReason,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.require_write_capability()?;
         validate_authority(authority)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -682,6 +723,7 @@ WHERE thread_id = ?
         authority: &GoalOwnerAdmissionAuthority,
         reason: GoalOwnerAdmissionRetirementReason,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.require_write_capability()?;
         validate_authority(authority)?;
         let expected_epoch = authority
             .cancellation_epoch
@@ -740,6 +782,7 @@ WHERE thread_id = ?
         dispatch_claim_id: Option<Uuid>,
         now: DateTime<Utc>,
     ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
+        self.require_write_capability()?;
         let authority = &continuation_authority.authority;
         validate_authority(authority)?;
         validate_continuation_authority(continuation_authority)?;
@@ -888,6 +931,7 @@ WHERE thread_id = ?
     /// before network I/O. A cancellation or retirement that commits first
     /// leaves this method with no row, which prohibits the physical request.
     pub async fn open_lease(&self, lease: &GoalOwnerAdmissionLease) -> anyhow::Result<bool> {
+        self.require_write_capability()?;
         validate_lease(lease)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -945,6 +989,7 @@ WHERE thread_id = ?
         &self,
         lease: &GoalOwnerAdmissionLease,
     ) -> anyhow::Result<bool> {
+        self.require_write_capability()?;
         validate_lease(lease)?;
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -1023,6 +1068,7 @@ WHERE thread_id = ?
         outcome: GoalOwnerAdmissionTerminalOutcome,
         disposition: GoalOwnerAdmissionTerminalDisposition,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.require_write_capability()?;
         validate_lease(lease)?;
         if matches!(
             outcome,
@@ -1096,6 +1142,7 @@ WHERE thread_id = ?
         authority: &GoalOwnerAdmissionAuthority,
         disposition: GoalOwnerAdmissionTerminalDisposition,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.require_write_capability()?;
         validate_authority(authority)?;
         if disposition == GoalOwnerAdmissionTerminalDisposition::None {
             bail!("goal-owner cancellation requires an operator disposition")
