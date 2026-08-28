@@ -45,6 +45,7 @@ fn metadata(admission: InferenceAdmission) -> InferenceAttemptMetadata {
         },
         cache_state: InferenceCacheState::Miss,
         admission,
+        goal_owner_admission_ref: None,
         request_started_at_ms: 123,
     }
 }

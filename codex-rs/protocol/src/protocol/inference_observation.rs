@@ -32,6 +32,30 @@ pub struct InferenceCallEvent {
     pub turn_id: String,
     /// Spawn tool-call identifier for a spawned thread, when known.
     pub spawn_request_id: Option<String>,
+    /// Session source selected by the local caller, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub session_source: Option<String>,
+    /// Parent thread for a spawned request, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parent_thread_id: Option<ThreadId>,
+    /// Protocol-neutral kind of request represented by this observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub request_kind: Option<String>,
+    /// Whether request/session cache state was reused for this attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cache_state: Option<String>,
+    /// Local admission result attached to this exact attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub admission: Option<String>,
+    /// Durable authority carried by a goal-owner continuation, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub goal_owner_admission_ref: Option<GoalOwnerAdmissionRef>,
     pub status: InferenceCallStatus,
     pub transport: InferenceCallTransport,
     /// Explicit local provenance for the operation that caused this attempt.
@@ -83,6 +107,21 @@ pub struct InferenceCallEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub omitted_fields: Option<Vec<InferenceCallField>>,
+}
+
+/// Bounded, replayable authority for one scheduled goal-owner successor.
+///
+/// This is deliberately protocol-neutral: the core admission broker validates
+/// it against its state-store record before opening a physical request.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+pub struct GoalOwnerAdmissionRef {
+    pub goal_id: String,
+    pub generation: i64,
+    pub cancellation_epoch: i64,
+    pub decision_id: String,
+    pub intended_request_kind: String,
+    pub successor_turn_id: String,
+    pub logical_successor_request_id: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]

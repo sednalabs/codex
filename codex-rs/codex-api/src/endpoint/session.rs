@@ -1,7 +1,9 @@
 use crate::auth::SharedAuthProvider;
 use crate::error::ApiError;
 use crate::provider::Provider;
+use crate::telemetry::RequestAttemptObserver;
 use crate::telemetry::run_with_request_telemetry;
+use crate::telemetry::run_with_request_telemetry_observed;
 use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
 use codex_client::Request;
@@ -139,6 +141,43 @@ impl<T: HttpTransport> EndpointSession<T> {
         let stream = run_with_request_telemetry(
             self.provider.retry.to_policy(),
             self.request_telemetry.clone(),
+            make_request,
+            |req| {
+                let auth = self.auth.clone();
+                let transport = &self.transport;
+                async move {
+                    let req = auth.apply_auth(req).await.map_err(TransportError::from)?;
+                    transport.stream(req).await
+                }
+            },
+        )
+        .await?;
+
+        Ok(stream)
+    }
+
+    pub(crate) async fn stream_encoded_json_with_observer<C>(
+        &self,
+        method: Method,
+        path: &str,
+        extra_headers: HeaderMap,
+        body: Option<EncodedJsonBody>,
+        configure: C,
+        observer: Arc<dyn RequestAttemptObserver>,
+    ) -> Result<StreamResponse, ApiError>
+    where
+        C: Fn(&mut Request),
+    {
+        let body = body.map(RequestBody::EncodedJson);
+        let mut request = self.make_request(&method, path, &extra_headers, body.as_ref());
+        configure(&mut request);
+        let request = request.into_prepared().map_err(TransportError::Build)?;
+        let make_request = || request.clone();
+
+        let stream = run_with_request_telemetry_observed(
+            self.provider.retry.to_policy(),
+            self.request_telemetry.clone(),
+            observer,
             make_request,
             |req| {
                 let auth = self.auth.clone();

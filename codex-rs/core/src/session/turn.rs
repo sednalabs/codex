@@ -189,6 +189,12 @@ pub(crate) async fn run_turn(
     turn_context.reset_terminal_response_model_identity().await;
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
+    if let Some(continuation) = turn_context
+        .extension_data
+        .get::<crate::GoalOwnerContinuation>()
+    {
+        client_session.set_goal_owner_continuation((*continuation).clone());
+    }
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively

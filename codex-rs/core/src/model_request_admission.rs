@@ -30,6 +30,24 @@ use uuid::Uuid;
 
 use crate::StateDbHandle;
 
+/// Core-owned authority for the one successor turn allowed to consume a
+/// goal-owner admission generation. The goal extension may schedule this
+/// value, but Core alone carries it into a turn and its model request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GoalOwnerContinuation {
+    authority: GoalOwnerAdmissionContinuationAuthority,
+}
+
+impl GoalOwnerContinuation {
+    pub fn new(authority: GoalOwnerAdmissionContinuationAuthority) -> Self {
+        Self { authority }
+    }
+
+    pub(crate) fn authority(&self) -> &GoalOwnerAdmissionContinuationAuthority {
+        &self.authority
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InferenceRequestKind {
     Turn,

@@ -17,6 +17,8 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
+use crate::InferenceAttemptMetadata;
+use crate::InferenceObservationRecorder;
 use crate::InferenceObservationSink;
 use crate::TraceWriterInferenceObservationSink;
 use crate::model::AgentThreadId;
@@ -148,6 +150,20 @@ impl InferenceTraceContext {
         Some(Arc::new(TraceWriterInferenceObservationSink::new(
             Arc::clone(&context.writer),
         )))
+    }
+
+    /// Creates the typed lifecycle recorder for one exact request attempt.
+    ///
+    /// Disabled trace contexts still return a no-op recorder so callers can
+    /// keep the same transport-boundary lifecycle without branching.
+    pub fn observation_recorder(
+        &self,
+        metadata: InferenceAttemptMetadata,
+    ) -> InferenceObservationRecorder {
+        match self.observation_sink() {
+            Some(sink) => InferenceObservationRecorder::new(metadata, sink),
+            None => InferenceObservationRecorder::disabled(metadata),
+        }
     }
 }
 

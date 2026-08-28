@@ -343,7 +343,7 @@ where
                 match runtime
                     .preserve_active_goal_after_provider_limit(
                         input.turn_id,
-                        input.rate_limit_retry_after,
+                        &input.rate_limit_domain,
                     )
                     .await
                 {
