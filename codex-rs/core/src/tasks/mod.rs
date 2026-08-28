@@ -10,6 +10,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use codex_extension_api::ExtensionData;
+use codex_extension_api::OwnerContinuationDeferred;
+use codex_extension_api::OwnerContinuationPending;
 use futures::future::BoxFuture;
 use tokio::select;
 use tokio::sync::Notify;
@@ -92,6 +94,13 @@ pub(crate) struct TaskStartRejection {
     pub(crate) input: TaskStartInput,
     pub(crate) rejected_initial_input_disposition: RejectedInitialInputDisposition,
     pub(crate) reason: TryStartTurnIfIdleRejectionReason,
+}
+
+struct LateSteerContinuation {
+    task: Arc<dyn AnySessionTask>,
+    turn_extension_data: Arc<ExtensionData>,
+    cancellation_token: CancellationToken,
+    input: Vec<TurnInput>,
 }
 
 #[cfg(test)]
@@ -204,6 +213,86 @@ async fn wait_for_task_publication_barrier(session: &Session) {
             .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
             .lock()
             .expect("task publication barrier lock");
+        barriers.get(&session.thread_id).cloned()
+    };
+    if let Some(barrier) = barrier {
+        barrier.entered.notify_one();
+        barrier.release.notified().await;
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TurnLocalContinuationBarrier {
+    entered: Notify,
+    release: Notify,
+}
+
+#[cfg(test)]
+impl TurnLocalContinuationBarrier {
+    pub(crate) fn new() -> Self {
+        Self {
+            entered: Notify::new(),
+            release: Notify::new(),
+        }
+    }
+
+    pub(crate) async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+#[cfg(test)]
+static TURN_LOCAL_CONTINUATION_BARRIERS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<ThreadId, Arc<TurnLocalContinuationBarrier>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn set_turn_local_continuation_barrier(
+    thread_id: ThreadId,
+    barrier: Option<Arc<TurnLocalContinuationBarrier>>,
+) {
+    let mut barriers = TURN_LOCAL_CONTINUATION_BARRIERS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .expect("turn-local continuation barrier lock");
+    match barrier {
+        Some(barrier) => {
+            barriers.insert(thread_id, barrier);
+        }
+        None => {
+            barriers.remove(&thread_id);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_turn_local_continuation_barrier(
+    thread_id: ThreadId,
+    expected: &Arc<TurnLocalContinuationBarrier>,
+) {
+    let mut barriers = TURN_LOCAL_CONTINUATION_BARRIERS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .expect("turn-local continuation barrier lock");
+    if barriers
+        .get(&thread_id)
+        .is_some_and(|barrier| Arc::ptr_eq(barrier, expected))
+    {
+        barriers.remove(&thread_id);
+    }
+}
+
+#[cfg(test)]
+async fn wait_for_turn_local_continuation_barrier(session: &Session) {
+    let barrier = {
+        let barriers = TURN_LOCAL_CONTINUATION_BARRIERS
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+            .lock()
+            .expect("turn-local continuation barrier lock");
         barriers.get(&session.thread_id).cloned()
     };
     if let Some(barrier) = barrier {
@@ -380,6 +469,30 @@ pub(crate) trait SessionTask: Send + Sync + 'static {
         RejectedInitialInputDisposition::Discard
     }
 
+    /// Whether this task can consume explicit turn-local input after its
+    /// successful run has returned but before the turn is finalized.
+    ///
+    /// Tasks opt in explicitly because continuation must never be inferred
+    /// from a task kind alone.
+    fn supports_turn_local_continuation(&self) -> bool {
+        false
+    }
+
+    /// Runs one turn-local continuation without task-start lifecycle setup.
+    /// The default is inert for tasks that do not opt in.
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> impl std::future::Future<Output = SessionTaskResult> + Send {
+        async move {
+            let _ = (self, session, ctx, input, cancellation_token);
+            Ok(None)
+        }
+    }
+
     /// Executes the task until completion or cancellation.
     ///
     /// Implementations typically stream protocol events using `session` and
@@ -419,6 +532,8 @@ pub(crate) trait AnySessionTask: Send + Sync + 'static {
 
     fn span_name(&self) -> &'static str;
 
+    fn supports_turn_local_continuation(&self) -> bool;
+
     fn run(
         self: Arc<Self>,
         session: Arc<SessionTaskContext>,
@@ -432,6 +547,14 @@ pub(crate) trait AnySessionTask: Send + Sync + 'static {
         session: Arc<SessionTaskContext>,
         ctx: Arc<TurnContext>,
     ) -> BoxFuture<'a, ()>;
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> BoxFuture<'static, SessionTaskResult>;
 }
 
 impl<T> AnySessionTask for T
@@ -444,6 +567,10 @@ where
 
     fn span_name(&self) -> &'static str {
         SessionTask::span_name(self)
+    }
+
+    fn supports_turn_local_continuation(&self) -> bool {
+        SessionTask::supports_turn_local_continuation(self)
     }
 
     fn run(
@@ -468,6 +595,22 @@ where
         ctx: Arc<TurnContext>,
     ) -> BoxFuture<'a, ()> {
         Box::pin(SessionTask::abort(self, session, ctx))
+    }
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> BoxFuture<'static, SessionTaskResult> {
+        Box::pin(SessionTask::run_pending_input_continuation(
+            self,
+            session,
+            ctx,
+            input,
+            cancellation_token,
+        ))
     }
 }
 
@@ -767,7 +910,7 @@ impl Session {
             .session_telemetry
             .start_timer(TURN_E2E_DURATION_METRIC, &[])
             .ok();
-        let running_task = RunningTask {
+        let mut running_task = RunningTask {
             done,
             identity: task_identity,
             phase: RunningTaskPhase::Preparing,
@@ -780,6 +923,7 @@ impl Session {
             turn_extension_data,
             _agent_execution_guard: agent_execution_guard,
             _timer: timer,
+            turn_state: None,
         };
 
         #[cfg(test)]
@@ -809,6 +953,7 @@ impl Session {
                 debug_assert!(turn.task.is_none());
                 Arc::clone(&turn.turn_state)
             };
+            running_task.turn_state = Some(Arc::clone(&turn_state));
             if enforce_current_plan {
                 let state = self.lock_task_admission_state().await;
                 if state.is_plan_mode() {
@@ -991,6 +1136,60 @@ impl Session {
         turn_context: Arc<TurnContext>,
         task_result: SessionTaskResult,
     ) {
+        let mut task_result = task_result;
+        loop {
+            if !task_result.is_ok() {
+                break;
+            }
+            let Some(continuation) = self
+                .prepare_turn_local_continuation(task_identity, &turn_context)
+                .await
+            else {
+                break;
+            };
+
+            // The decision above is the only operation performed while the
+            // task-transition/active-turn/turn-state/terminal-error locks are
+            // held.  Run the continuation after all of them have been
+            // released, preserving the original task and cancellation line.
+            #[cfg(test)]
+            wait_for_turn_local_continuation_barrier(self).await;
+            let continuation_context = Arc::new(SessionTaskContext::new(
+                Arc::clone(self),
+                Arc::clone(&continuation.turn_extension_data),
+            ));
+            if continuation.cancellation_token.is_cancelled()
+                || continuation
+                    .turn_extension_data
+                    .get::<OwnerContinuationPending>()
+                    .is_some()
+                || continuation
+                    .turn_extension_data
+                    .get::<OwnerContinuationDeferred>()
+                    .is_some()
+            {
+                self.restore_turn_local_continuation_input(
+                    task_identity,
+                    &turn_context,
+                    continuation.input,
+                )
+                .await;
+                break;
+            }
+            task_result = continuation
+                .task
+                .run_pending_input_continuation(
+                    continuation_context,
+                    Arc::clone(&turn_context),
+                    continuation.input,
+                    continuation.cancellation_token.child_token(),
+                )
+                .await;
+            if continuation.cancellation_token.is_cancelled() {
+                break;
+            }
+        }
+
         let (last_agent_message, abort_reason) = match task_result {
             Ok(last_agent_message) => (last_agent_message, None),
             Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
@@ -1007,8 +1206,16 @@ impl Session {
             let Some(active_turn) = active.as_mut() else {
                 return;
             };
+            let current_turn_state = Arc::clone(&active_turn.turn_state);
             let task = active_turn.task.take_if(|task| {
-                task.identity == task_identity && task.phase == RunningTaskPhase::Running
+                task.identity == task_identity
+                    && task.phase == RunningTaskPhase::Running
+                    && Arc::ptr_eq(&task.turn_context, &turn_context)
+                    && task.turn_context.sub_id == turn_context.sub_id
+                    && task
+                        .turn_state
+                        .as_ref()
+                        .is_some_and(|task_state| Arc::ptr_eq(task_state, &current_turn_state))
             });
             let Some(task) = task else {
                 return;
@@ -1275,6 +1482,94 @@ impl Session {
         }
         if cleared_active_turn {
             self.maybe_start_turn_for_pending_work().await;
+        }
+    }
+
+    /// Atomically claims explicit turn-local input for a same-task
+    /// continuation, or leaves all state untouched when the task is stale or
+    /// the input is not eligible.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "continuation decision observes one exact task state atomically"
+    )]
+    async fn prepare_turn_local_continuation(
+        &self,
+        task_identity: TaskIdentity,
+        turn_context: &Arc<TurnContext>,
+    ) -> Option<LateSteerContinuation> {
+        let _transition = self.input_queue.lock_task_transition().await;
+        let mut active = self.active_turn.lock().await;
+        let active_turn = active.as_mut()?;
+        let task = active_turn.task.as_ref()?;
+        let turn_state = Arc::clone(&active_turn.turn_state);
+        let mut turn_state_guard = turn_state.lock().await;
+        let terminal_error = turn_context.terminal_error.lock().await;
+
+        let exact_context = Arc::ptr_eq(&task.turn_context, turn_context)
+            && task.turn_context.sub_id == turn_context.sub_id;
+        let exact_turn_state = task
+            .turn_state
+            .as_ref()
+            .is_some_and(|task_state| Arc::ptr_eq(task_state, &turn_state));
+        let eligible = task.identity == task_identity
+            && task.phase == RunningTaskPhase::Running
+            && exact_context
+            && exact_turn_state
+            && task.turn_state.is_some()
+            && !task.cancellation_token.is_cancelled()
+            && task.task.supports_turn_local_continuation()
+            && terminal_error.is_none()
+            && task
+                .turn_extension_data
+                .get::<OwnerContinuationPending>()
+                .is_none()
+            && task
+                .turn_extension_data
+                .get::<OwnerContinuationDeferred>()
+                .is_none();
+        if !eligible {
+            return None;
+        }
+        let input = turn_state_guard.take_turn_local_continuation_input()?;
+        Some(LateSteerContinuation {
+            task: Arc::clone(&task.task),
+            turn_extension_data: Arc::clone(&task.turn_extension_data),
+            cancellation_token: task.cancellation_token.clone(),
+            input,
+        })
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "continuation custody is restored for the exact active task"
+    )]
+    async fn restore_turn_local_continuation_input(
+        &self,
+        task_identity: TaskIdentity,
+        turn_context: &Arc<TurnContext>,
+        input: Vec<TurnInput>,
+    ) {
+        let _transition = self.input_queue.lock_task_transition().await;
+        let mut active = self.active_turn.lock().await;
+        let Some(active_turn) = active.as_mut() else {
+            return;
+        };
+        let exact_task = active_turn.task.as_ref().is_some_and(|task| {
+            task.identity == task_identity
+                && task.phase == RunningTaskPhase::Running
+                && Arc::ptr_eq(&task.turn_context, turn_context)
+                && task.turn_context.sub_id == turn_context.sub_id
+                && task
+                    .turn_state
+                    .as_ref()
+                    .is_some_and(|task_state| Arc::ptr_eq(task_state, &active_turn.turn_state))
+        });
+        if exact_task {
+            active_turn
+                .turn_state
+                .lock()
+                .await
+                .restore_turn_local_continuation_input(input);
         }
     }
 
