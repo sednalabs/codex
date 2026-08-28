@@ -224,6 +224,17 @@ where
                 return;
             }
 
+            // A user-owned turn takes over the thread and invalidates any queued provider
+            // continuation. The automatic continuation carries its exact durable token in the
+            // turn extension data and must retain that admission for Core to acquire.
+            if input
+                .turn_store
+                .get::<codex_core::GoalOwnerContinuation>()
+                .is_none()
+            {
+                runtime.cancel_provider_continuation().await;
+            }
+
             if let Err(err) = self
                 .state_dbs
                 .thread_goals()

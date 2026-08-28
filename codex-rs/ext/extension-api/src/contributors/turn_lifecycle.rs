@@ -39,6 +39,8 @@ pub struct GoalContinuationHealthCheck;
 pub struct LocalRequestIdentity {
     pub thread_id: ThreadId,
     pub configured_provider_key: Option<String>,
+    /// Canonical provider implementation selected for the request, when available.
+    pub effective_provider_id: Option<String>,
     pub requested_model: Option<String>,
     pub resolved_model: Option<String>,
 }

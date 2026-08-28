@@ -4,6 +4,12 @@ use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
+#[test]
+fn canonical_provider_id_normalizes_provider_spelling() {
+    assert_eq!(canonical_provider_id("  OpenAI  "), "openai");
+    assert_eq!(canonical_provider_id("openai"), "openai");
+}
+
 fn fingerprint() -> GoalOwnerAdmissionAccountContextFingerprint {
     GoalOwnerAdmissionAccountContextFingerprint::try_from("a".repeat(64))
         .expect("canonical fingerprint")

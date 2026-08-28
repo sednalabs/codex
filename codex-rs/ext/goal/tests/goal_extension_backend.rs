@@ -1558,6 +1558,7 @@ impl GoalExtensionHarness {
                         local_request_identity: codex_extension_api::LocalRequestIdentity {
                             thread_id: self.thread_id,
                             configured_provider_key: None,
+                            effective_provider_id: None,
                             requested_model: None,
                             resolved_model: None,
                         },

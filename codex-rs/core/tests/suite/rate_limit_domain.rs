@@ -21,6 +21,7 @@ fn domain(
         local_request_identity: LocalRequestIdentity {
             thread_id,
             configured_provider_key: Some(provider_key.to_string()),
+            effective_provider_id: Some(provider_key.to_string()),
             requested_model: Some("requested-model".to_string()),
             resolved_model: Some("resolved-model".to_string()),
         },

@@ -4,6 +4,7 @@ use codex_extension_api::LocalRequestIdentity;
 use codex_extension_api::ProviderEvidenceAuthority;
 use codex_extension_api::ProviderLimitEvidence;
 use codex_extension_api::RateLimitDomain;
+use codex_model_provider::ModelProvider;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrKind;
 use codex_protocol::error::CodexErrSource;
@@ -133,6 +134,9 @@ impl Session {
                 local_request_identity: LocalRequestIdentity {
                     thread_id: self.thread_id(),
                     configured_provider_key: Some(turn_context.config.model_provider_id.clone()),
+                    effective_provider_id: Some(codex_state::canonical_provider_id(
+                        turn_context.provider.info().name.as_str(),
+                    )),
                     requested_model: turn_context.config.model.clone(),
                     resolved_model: Some(turn_context.model_info.slug.clone()),
                 },
@@ -165,6 +169,9 @@ impl Session {
             local_request_identity: LocalRequestIdentity {
                 thread_id: self.thread_id(),
                 configured_provider_key: Some(turn_context.config.model_provider_id.clone()),
+                effective_provider_id: Some(codex_state::canonical_provider_id(
+                    turn_context.provider.info().name.as_str(),
+                )),
                 requested_model: turn_context.config.model.clone(),
                 resolved_model: Some(turn_context.model_info.slug.clone()),
             },

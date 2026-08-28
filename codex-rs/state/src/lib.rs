@@ -72,6 +72,7 @@ pub use runtime::GoalOwnerAdmissionRecord;
 pub use runtime::GoalOwnerAdmissionStore;
 pub use runtime::GoalOwnerAdmissionTerminalDisposition;
 pub use runtime::GoalOwnerAdmissionTerminalOutcome;
+pub use runtime::canonical_provider_id;
 pub use runtime::GoalStore;
 pub use runtime::GoalUpdate;
 pub use runtime::MemoryStore;
