@@ -282,14 +282,11 @@ async fn handle_spawn_agent(
 fn apply_continuity_health_check_restrictions(
     config: &mut Config,
 ) -> Result<(), FunctionCallError> {
-    config
-        .mcp_servers
-        .set(HashMap::new())
-        .map_err(|error| {
-            FunctionCallError::RespondToModel(format!(
-                "continuity diagnostic child requires no configured MCP servers: {error}"
-            ))
-        })?;
+    config.mcp_servers.set(HashMap::new()).map_err(|error| {
+        FunctionCallError::RespondToModel(format!(
+            "continuity diagnostic child requires no configured MCP servers: {error}"
+        ))
+    })?;
     for feature in [
         Feature::MultiAgentV2,
         Feature::Collab,
@@ -303,6 +300,11 @@ fn apply_continuity_health_check_restrictions(
             ))
         })?;
     }
+    // A child spawned from a V2 parent inherits that runtime version even when
+    // the child config disables the feature flags. Explicitly disable agent
+    // support so the child cannot regain the collaboration tool surface from
+    // the inherited version during session startup.
+    config.agents_enabled = false;
     config
         .permissions
         .set_permission_profile(PermissionProfile::read_only())
@@ -347,6 +349,7 @@ mod tests {
         ] {
             assert!(!config.features.enabled(feature));
         }
+        assert!(!config.agents_enabled);
         assert_eq!(
             config.permissions.permission_profile(),
             &PermissionProfile::read_only()

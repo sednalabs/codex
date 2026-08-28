@@ -4,6 +4,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::InferenceCallTransport;
 use codex_protocol::protocol::SessionSource;
 
+use super::InMemoryInferenceObservationSink;
 use super::InferenceAdmission;
 use super::InferenceAttemptMetadata;
 use super::InferenceCacheState;
@@ -13,7 +14,6 @@ use super::InferenceObservationRecorder;
 use super::InferenceObservationSink;
 use super::InferenceProviderIdentity;
 use super::InferenceRequestKind;
-use super::InMemoryInferenceObservationSink;
 use super::ProviderTerminalResult;
 
 fn metadata(admission: InferenceAdmission) -> InferenceAttemptMetadata {
@@ -23,9 +23,9 @@ fn metadata(admission: InferenceAdmission) -> InferenceAttemptMetadata {
         turn_id: "turn-1".to_string(),
         parent_thread_id: Some(ThreadId::new()),
         spawn_request_id: Some("spawn-1".to_string()),
-        session_source: SessionSource::SubAgent(
-            codex_protocol::protocol::SubAgentSource::Other("test".to_string()),
-        ),
+        session_source: SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::Other(
+            "test".to_string(),
+        )),
         request_kind: InferenceRequestKind::Turn,
         transport: InferenceCallTransport::ResponsesHttp,
         provider: InferenceProviderIdentity {
@@ -44,7 +44,10 @@ fn metadata(admission: InferenceAdmission) -> InferenceAttemptMetadata {
 
 fn recorder(
     admission: InferenceAdmission,
-) -> (InferenceObservationRecorder, InMemoryInferenceObservationSink) {
+) -> (
+    InferenceObservationRecorder,
+    InMemoryInferenceObservationSink,
+) {
     let sink = InMemoryInferenceObservationSink::default();
     let recorder = InferenceObservationRecorder::new(metadata(admission), Arc::new(sink.clone()));
     (recorder, sink)
@@ -65,9 +68,13 @@ fn physical_open_and_provider_terminal_preserve_exact_identity() {
 
     let events = sink.events();
     assert_eq!(events.len(), 2);
-    let (InferenceObservationEvent::PhysicalRequestOpened { attempt },
-        InferenceObservationEvent::ProviderTerminal { attempt: terminal, result }) =
-        (&events[0], &events[1])
+    let (
+        InferenceObservationEvent::PhysicalRequestOpened { attempt },
+        InferenceObservationEvent::ProviderTerminal {
+            attempt: terminal,
+            result,
+        },
+    ) = (&events[0], &events[1])
     else {
         panic!("expected opened then provider terminal events");
     };
@@ -85,7 +92,10 @@ fn physical_open_and_provider_terminal_preserve_exact_identity() {
     assert_eq!(attempt.provider.effective_provider, "resolved-provider");
     assert_eq!(attempt.provider.requested_model, "requested-model");
     assert_eq!(attempt.provider.effective_model, "resolved-model");
-    assert_eq!(attempt.parent_thread_id, recorder.attempt().parent_thread_id);
+    assert_eq!(
+        attempt.parent_thread_id,
+        recorder.attempt().parent_thread_id
+    );
     assert_eq!(attempt.spawn_request_id.as_deref(), Some("spawn-1"));
     assert_eq!(attempt.cache_state, InferenceCacheState::Miss);
 }
@@ -129,8 +139,10 @@ fn transport_uncertainty_requires_open_and_is_terminal() {
     );
     assert!(matches!(
         sink.events().as_slice(),
-        [InferenceObservationEvent::PhysicalRequestOpened { .. },
-            InferenceObservationEvent::TransportUncertain { .. }]
+        [
+            InferenceObservationEvent::PhysicalRequestOpened { .. },
+            InferenceObservationEvent::TransportUncertain { .. }
+        ]
     ));
 }
 
@@ -200,10 +212,8 @@ fn sink_trait_is_synchronous_and_receives_owned_events() {
     }
 
     let sink = Arc::new(CountingSink::default());
-    let recorder = InferenceObservationRecorder::new(
-        metadata(InferenceAdmission::Admitted),
-        sink.clone(),
-    );
+    let recorder =
+        InferenceObservationRecorder::new(metadata(InferenceAdmission::Admitted), sink.clone());
     recorder
         .record_physical_request_opened()
         .expect("request opens");
