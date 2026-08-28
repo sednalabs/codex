@@ -552,7 +552,7 @@ impl AsyncManagedClient {
                 .is_some_and(McpToolCatalogCacheContext::has_tools)
     }
 
-    fn cached_tools(&self) -> Option<Vec<ToolInfo>> {
+    pub(crate) fn cached_tools(&self) -> Option<Vec<ToolInfo>> {
         self.codex_apps_tools_cache_context
             .as_ref()
             .and_then(ConnectorRuntimeContext::current_tools)
