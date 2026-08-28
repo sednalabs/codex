@@ -1191,24 +1191,17 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     if matches!(lifecycle, ThreadLifecycle::RequiredModelSwitch) {
         // Both MCP actions have low scores; the sandboxed exec must still receive full review.
         timeout(TIMEOUT, responses_state.classification_completed.notified()).await?;
+        // Continue without new user input so authorization changes cannot invalidate the score.
+        // Only the required-model check should prevent cached approval of the sandboxed command.
         let request_id = app_server
             .send_turn_start_request(TurnStartParams {
                 thread_id: thread_id.clone(),
                 model: Some(REQUIRED_MODEL.to_owned()),
-                input: vec![UserInput::Text {
-                    text: "Run the requested command.".to_owned(),
-                    text_elements: Vec::new(),
-                }],
+                input: Vec::new(),
                 ..Default::default()
             })
             .await?;
         let _: TurnStartResponse = timeout(TIMEOUT, app_server.read_response(request_id)).await??;
-        let review_started: ItemGuardianApprovalReviewStartedNotification = timeout(
-            TIMEOUT,
-            app_server.read_notification("item/autoApprovalReview/started"),
-        )
-        .await??;
-        assert_eq!(review_started.thread_id, thread_id);
         let completed: TurnCompletedNotification =
             timeout(TIMEOUT, app_server.read_notification("turn/completed")).await??;
         assert_eq!(completed.thread_id, thread_id);
@@ -1216,6 +1209,12 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             responses_state.guardian_reviews.load(Ordering::SeqCst),
             expected_guardian_reviews + 1,
         );
+        let review_started: ItemGuardianApprovalReviewStartedNotification = timeout(
+            TIMEOUT,
+            app_server.read_notification("item/autoApprovalReview/started"),
+        )
+        .await??;
+        assert_eq!(review_started.thread_id, thread_id);
         assert_eq!(
             responses_state
                 .luna_requests
