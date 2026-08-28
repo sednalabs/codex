@@ -70,6 +70,7 @@ struct DeferredProviderContinuation {
     continuation: GoalOwnerContinuation,
     eligible_at: Option<Instant>,
     cancellation: CancellationToken,
+    enablement_epoch: u64,
 }
 
 #[derive(Default)]
@@ -202,7 +203,6 @@ impl GoalRuntimeHandle {
             state.attempts = MAX_PROVIDER_RATE_LIMIT_CONTINUATIONS_PER_GOAL;
             state.blocked = true;
             if let Some(authority) = authority {
-                let admissions = self.inner.state_dbs.goal_owner_admissions().clone();
                 let inner = Arc::downgrade(&self.inner);
                 let cancel = async move {
                     let Some(inner) = inner.upgrade() else {
@@ -213,31 +213,12 @@ impl GoalRuntimeHandle {
                     {
                         return;
                     }
-                    match admissions.cancel(
-                        &authority,
-                        codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
-                    ).await {
-                        Ok(Some(cancelled))
-                            if cancelled.phase == codex_state::GoalOwnerAdmissionPhase::Terminal
-                                && cancelled.terminal_outcome == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled => {
-                            if let Err(error) = admissions.retire(
-                                &cancelled.authority,
-                                codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
-                            ).await {
-                                tracing::warn!(error = %error, "failed to retire disabled goal continuation");
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(error) => tracing::warn!(error = %error, "failed to durably cancel disabled goal continuation"),
-                    }
-                    if let Err(error) = admissions
-                        .retire_cancelled_generation(
-                            &authority,
-                            codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
-                        )
-                        .await
-                    {
-                        tracing::warn!(error = %error, "failed to reconcile disabled goal continuation retirement");
+                    let runtime = GoalRuntimeHandle { inner };
+                    if let Err(error) = runtime.cancel_and_retire_admission(&authority).await {
+                        tracing::warn!(
+                            error = %error,
+                            "failed to durably cancel disabled goal continuation"
+                        );
                     }
                 };
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -327,7 +308,8 @@ impl GoalRuntimeHandle {
             .analytics
             .status_changed(&goal, previous_status, GoalEventAttribution::NoTurn);
         if replaced_existing_goal {
-            self.cancel_provider_continuation().await;
+            let _goal_state_permit = self.goal_state_permit().await?;
+            self.cancel_provider_continuation_locked().await;
             let pending = {
                 let mut state = self
                     .inner
@@ -565,6 +547,7 @@ impl GoalRuntimeHandle {
                     continuation,
                     eligible_at,
                     cancellation: cancellation.clone(),
+                    enablement_epoch: self.inner.enablement_epoch.load(Ordering::Relaxed),
                 });
                 state.last_authority = Some(authority);
                 ProviderContinuationAction::Scheduled {
@@ -660,13 +643,11 @@ impl GoalRuntimeHandle {
             && cancelled.terminal_outcome
                 == codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled
         {
-            admissions
-                .retire(
-                    &cancelled.authority,
-                    codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
-                )
-                .await
-                .map_err(|err| err.to_string())?;
+            self.retire_safe_terminal_admission(
+                &cancelled.authority,
+                /*clear_deferral*/ false,
+            )
+            .await?;
         } else {
             admissions
                 .retire_cancelled_generation(
@@ -679,35 +660,93 @@ impl GoalRuntimeHandle {
         Ok(())
     }
 
-    pub(crate) async fn cancel_provider_continuation(&self) {
-        let pending = self
-            .inner
-            .provider_continuation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pending
-            .take();
-        let persisted = match self
+    /// Retire one exact terminal generation while preserving its provider outcome and history.
+    /// Only definite pre-provider outcomes are safe to retire; uncertain and in-flight rows stay
+    /// available for explicit recovery review.
+    async fn retire_safe_terminal_admission(
+        &self,
+        authority: &codex_state::GoalOwnerAdmissionAuthority,
+        clear_deferral: bool,
+    ) -> Result<bool, String> {
+        let admissions = self.inner.state_dbs.goal_owner_admissions();
+        let Some(record) = admissions
+            .get_generation(authority)
+            .await
+            .map_err(|err| err.to_string())?
+        else {
+            return Ok(false);
+        };
+        if record.authority != *authority
+            || record.phase != codex_state::GoalOwnerAdmissionPhase::Terminal
+            || !matches!(
+                record.terminal_outcome,
+                codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled
+                    | codex_state::GoalOwnerAdmissionTerminalOutcome::Succeeded
+                    | codex_state::GoalOwnerAdmissionTerminalOutcome::Rejected
+                    | codex_state::GoalOwnerAdmissionTerminalOutcome::Exhausted
+            )
+        {
+            return Ok(false);
+        }
+        admissions
+            .retire(
+                &record.authority,
+                codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        if clear_deferral {
+            self.clear_deferral_if_retired(authority).await?;
+        }
+        Ok(true)
+    }
+
+    async fn clear_deferral_if_retired(
+        &self,
+        authority: &codex_state::GoalOwnerAdmissionAuthority,
+    ) -> Result<(), String> {
+        let current = self
             .inner
             .state_dbs
             .goal_owner_admissions()
-            .get(self.thread_id())
+            .get(authority.thread_id)
             .await
-        {
-            Ok(persisted) => persisted,
-            Err(error) => {
-                tracing::warn!(
-                    thread_id = %self.thread_id(),
-                    error = %error,
-                    "failed to read goal-owner continuation admission before cancellation"
-                );
-                None
-            }
-        };
-        let authority = pending
+            .map_err(|err| err.to_string())?;
+        if current
             .as_ref()
-            .map(|pending| pending.continuation.authority().authority.clone())
-            .or_else(|| persisted.as_ref().map(|record| record.authority.clone()));
+            .is_some_and(|current| current.authority == *authority)
+        {
+            return Ok(());
+        }
+        self.inner
+            .state_dbs
+            .thread_goals()
+            .clear_thread_goal_continuation_deferral(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    pub(crate) async fn cancel_provider_continuation(&self) {
+        let Ok(_goal_state_permit) = self.goal_state_permit().await else {
+            return;
+        };
+        self.cancel_provider_continuation_locked().await;
+    }
+
+    async fn cancel_provider_continuation_locked(&self) {
+        let (pending, authority) = {
+            let mut state = self
+                .inner
+                .provider_continuation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let pending = state.pending.take();
+            let authority = pending
+                .as_ref()
+                .map(|pending| pending.continuation.authority().authority.clone())
+                .or_else(|| state.last_authority.clone());
+            (pending, authority)
+        };
         if let Some(authority) = authority {
             if let Err(error) = self.cancel_and_retire_admission(&authority).await {
                 tracing::warn!(
@@ -739,36 +778,13 @@ impl GoalRuntimeHandle {
         &self,
         turn_store: &codex_extension_api::ExtensionData,
     ) -> Result<(), String> {
+        let _goal_state_permit = self.goal_state_permit().await?;
         let Some(continuation) = turn_store.get::<GoalOwnerContinuation>() else {
             return Ok(());
         };
         let authority = continuation.authority().authority.clone();
-        let admissions = self.inner.state_dbs.goal_owner_admissions();
-        let Some(record) = admissions
-            .get_generation(&authority)
-            .await
-            .map_err(|err| err.to_string())?
-        else {
-            return Ok(());
-        };
-        if record.authority != authority
-            || record.phase != codex_state::GoalOwnerAdmissionPhase::Terminal
-            || !matches!(
-                record.terminal_outcome,
-                codex_state::GoalOwnerAdmissionTerminalOutcome::Succeeded
-                    | codex_state::GoalOwnerAdmissionTerminalOutcome::Rejected
-                    | codex_state::GoalOwnerAdmissionTerminalOutcome::Exhausted
-            )
-        {
-            return Ok(());
-        }
-        admissions
-            .retire(
-                &record.authority,
-                codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
-            )
-            .await
-            .map_err(|err| err.to_string())?;
+        self.retire_safe_terminal_admission(&authority, /*clear_deferral*/ true)
+            .await?;
         Ok(())
     }
 
@@ -865,6 +881,7 @@ impl GoalRuntimeHandle {
     }
 
     pub async fn restore_after_resume(&self) -> Result<(), String> {
+        let _goal_state_permit = self.goal_state_permit().await?;
         let admissions = self.inner.state_dbs.goal_owner_admissions();
         let persisted = admissions
             .get(self.thread_id())
@@ -873,21 +890,8 @@ impl GoalRuntimeHandle {
         if let Some(record) = persisted.as_ref()
             && record.phase == codex_state::GoalOwnerAdmissionPhase::Terminal
         {
-            if matches!(
-                record.terminal_outcome,
-                codex_state::GoalOwnerAdmissionTerminalOutcome::Succeeded
-                    | codex_state::GoalOwnerAdmissionTerminalOutcome::Rejected
-                    | codex_state::GoalOwnerAdmissionTerminalOutcome::Exhausted
-                    | codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled
-            ) {
-                admissions
-                    .retire(
-                        &record.authority,
-                        codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
-                    )
-                    .await
-                    .map_err(|err| err.to_string())?;
-            }
+            self.retire_safe_terminal_admission(&record.authority, /*clear_deferral*/ true)
+                .await?;
             // Uncertain terminal rows remain durable recovery evidence. They must not be
             // silently retired during resume because provider outcome is not knowable.
             return Ok(());
@@ -897,6 +901,7 @@ impl GoalRuntimeHandle {
                 && record.phase == codex_state::GoalOwnerAdmissionPhase::Pending
             {
                 self.cancel_and_retire_admission(&record.authority).await?;
+                self.clear_deferral_if_retired(&record.authority).await?;
             }
             return Ok(());
         }
@@ -932,10 +937,12 @@ impl GoalRuntimeHandle {
             .filter(|goal| goal.status == codex_state::ThreadGoalStatus::Active)
         else {
             self.cancel_and_retire_admission(&record.authority).await?;
+            self.clear_deferral_if_retired(&record.authority).await?;
             return Ok(());
         };
         if record.authority.goal_id != active_goal.goal_id {
             self.cancel_and_retire_admission(&record.authority).await?;
+            self.clear_deferral_if_retired(&record.authority).await?;
             return Ok(());
         }
         let retry_after = record
@@ -969,6 +976,7 @@ impl GoalRuntimeHandle {
                     continuation,
                     eligible_at,
                     cancellation: cancellation.clone(),
+                    enablement_epoch: self.inner.enablement_epoch.load(Ordering::Relaxed),
                 });
                 state.last_authority = Some(record.authority.clone());
             } else {
@@ -1019,7 +1027,10 @@ impl GoalRuntimeHandle {
     }
 
     async fn continue_provider_preserved_goal(&self) -> Result<(), String> {
-        let (authority, continuation, cancellation) = {
+        // Cancellation/takeover paths acquire the same gate. Holding it through the idle-start
+        // reservation serializes the final authority check with the awaited start operation.
+        let _goal_state_permit = self.goal_state_permit().await?;
+        let (continuation_authority, continuation, cancellation, enablement_epoch) = {
             let state = self
                 .inner
                 .provider_continuation
@@ -1035,12 +1046,21 @@ impl GoalRuntimeHandle {
                 return Ok(());
             }
             (
-                pending.continuation.authority().authority.clone(),
+                pending.continuation.authority().clone(),
                 pending.continuation.clone(),
                 pending.cancellation.clone(),
+                pending.enablement_epoch,
             )
         };
-        if cancellation.is_cancelled() {
+        if !self
+            .timer_is_current(
+                &continuation_authority,
+                &cancellation,
+                enablement_epoch,
+                /*require_pending*/ true,
+            )
+            .await?
+        {
             return Ok(());
         }
 
@@ -1050,25 +1070,54 @@ impl GoalRuntimeHandle {
         let Ok(thread) = thread_manager.get_thread(self.inner.thread_id).await else {
             return Ok(());
         };
-        if cancellation.is_cancelled() || !self.pending_continuation_matches(&authority) {
+        if !self
+            .timer_is_current(
+                &continuation_authority,
+                &cancellation,
+                enablement_epoch,
+                /*require_pending*/ true,
+            )
+            .await?
+        {
             return Ok(());
         }
         // Keep this check immediately adjacent to the start call: cancellation and replacement
         // may retire this exact generation while the thread lookup is in flight.
-        if cancellation.is_cancelled() || !self.pending_continuation_matches(&authority) {
+        if !self
+            .timer_is_current(
+                &continuation_authority,
+                &cancellation,
+                enablement_epoch,
+                /*require_pending*/ true,
+            )
+            .await?
+        {
             return Ok(());
         }
         let start_result = thread
             .try_start_goal_continuation_if_idle(Vec::new(), continuation)
             .await;
+        let still_current = self
+            .timer_is_current(
+                &continuation_authority,
+                &cancellation,
+                enablement_epoch,
+                /*require_pending*/ false,
+            )
+            .await?;
         if start_result.is_err() {
             return Ok(());
         }
-        if cancellation.is_cancelled() || !self.pending_continuation_matches(&authority) {
+        if !still_current {
             self.mark_provider_continuation_deferred().await?;
-            if cancellation.is_cancelled() || !self.pending_continuation_matches(&authority) {
-                return Ok(());
-            }
+            let _ = self
+                .timer_is_current(
+                    &continuation_authority,
+                    &cancellation,
+                    enablement_epoch,
+                    /*require_pending*/ false,
+                )
+                .await?;
             return Ok(());
         }
         self.inner
@@ -1077,13 +1126,26 @@ impl GoalRuntimeHandle {
             .clear_thread_goal_continuation_deferral(self.thread_id())
             .await
             .map_err(|err| err.to_string())?;
-        if cancellation.is_cancelled() || !self.pending_continuation_matches(&authority) {
+        if !self
+            .timer_is_current(
+                &continuation_authority,
+                &cancellation,
+                enablement_epoch,
+                /*require_pending*/ false,
+            )
+            .await?
+        {
             // A newer generation may have been installed while the thread-scoped gate was being
             // cleared. Restore the conservative gate rather than clearing the newer generation.
             self.mark_provider_continuation_deferred().await?;
-            if cancellation.is_cancelled() || !self.pending_continuation_matches(&authority) {
-                return Ok(());
-            }
+            let _ = self
+                .timer_is_current(
+                    &continuation_authority,
+                    &cancellation,
+                    enablement_epoch,
+                    /*require_pending*/ false,
+                )
+                .await?;
             return Ok(());
         }
         let mut state = self
@@ -1092,8 +1154,8 @@ impl GoalRuntimeHandle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.pending.as_ref().is_some_and(|pending| {
-            !pending.cancellation.is_cancelled()
-                && pending.continuation.authority().authority == authority
+            pending.enablement_epoch == enablement_epoch
+                && pending_continuation_is_current(pending, &continuation_authority)
         }) {
             state.pending = None;
             state.blocked = false;
@@ -1101,17 +1163,56 @@ impl GoalRuntimeHandle {
         Ok(())
     }
 
-    fn pending_continuation_matches(
+    fn timer_cache_is_current(
         &self,
-        authority: &codex_state::GoalOwnerAdmissionAuthority,
+        continuation_authority: &codex_state::GoalOwnerAdmissionContinuationAuthority,
+        cancellation: &CancellationToken,
+        enablement_epoch: u64,
     ) -> bool {
-        self.inner
-            .provider_continuation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending_continuation_is_current(pending, authority))
+        !cancellation.is_cancelled()
+            && self.inner.enabled.load(Ordering::Relaxed)
+            && self.inner.enablement_epoch.load(Ordering::Relaxed) == enablement_epoch
+            && self
+                .inner
+                .provider_continuation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pending
+                .as_ref()
+                .is_some_and(|pending| {
+                    pending.enablement_epoch == enablement_epoch
+                        && pending_continuation_is_current(pending, continuation_authority)
+                })
+    }
+
+    async fn timer_is_current(
+        &self,
+        continuation_authority: &codex_state::GoalOwnerAdmissionContinuationAuthority,
+        cancellation: &CancellationToken,
+        enablement_epoch: u64,
+        require_pending: bool,
+    ) -> Result<bool, String> {
+        if !self.timer_cache_is_current(continuation_authority, cancellation, enablement_epoch) {
+            return Ok(false);
+        }
+        let Some(record) = self
+            .inner
+            .state_dbs
+            .goal_owner_admissions()
+            .get_generation(&continuation_authority.authority)
+            .await
+            .map_err(|err| err.to_string())?
+        else {
+            return Ok(false);
+        };
+        if record.authority != continuation_authority.authority
+            || record.continuation_authority() != *continuation_authority
+            || record.retired_at.is_some()
+            || (require_pending && record.phase != codex_state::GoalOwnerAdmissionPhase::Pending)
+        {
+            return Ok(false);
+        }
+        Ok(self.timer_cache_is_current(continuation_authority, cancellation, enablement_epoch))
     }
 
     async fn start_if_idle(
@@ -1354,9 +1455,10 @@ impl GoalRuntimeHandle {
 
 fn pending_continuation_is_current(
     pending: &DeferredProviderContinuation,
-    authority: &codex_state::GoalOwnerAdmissionAuthority,
+    continuation_authority: &codex_state::GoalOwnerAdmissionContinuationAuthority,
 ) -> bool {
-    !pending.cancellation.is_cancelled() && pending.continuation.authority().authority == *authority
+    !pending.cancellation.is_cancelled()
+        && pending.continuation.authority() == continuation_authority
 }
 
 #[cfg(test)]
@@ -1389,6 +1491,7 @@ mod tests {
             ),
             eligible_at: None,
             cancellation: CancellationToken::new(),
+            enablement_epoch: 0,
         }
     }
 
@@ -1396,15 +1499,29 @@ mod tests {
     fn pending_continuation_match_requires_exact_live_authority() {
         let first_authority = authority(1);
         let mut first = pending(first_authority.clone());
-        assert!(pending_continuation_is_current(&first, &first_authority));
+        let first_continuation_authority = first.continuation.authority().clone();
+        assert!(pending_continuation_is_current(
+            &first,
+            &first_continuation_authority,
+        ));
 
         let newer_same_goal = codex_state::GoalOwnerAdmissionAuthority {
             generation: 2,
             ..first_authority.clone()
         };
-        assert!(!pending_continuation_is_current(&first, &newer_same_goal));
+        let newer_continuation_authority = codex_state::GoalOwnerAdmissionContinuationAuthority {
+            authority: newer_same_goal,
+            ..first_continuation_authority.clone()
+        };
+        assert!(!pending_continuation_is_current(
+            &first,
+            &newer_continuation_authority,
+        ));
 
         first.cancellation.cancel();
-        assert!(!pending_continuation_is_current(&first, &first_authority));
+        assert!(!pending_continuation_is_current(
+            &first,
+            &first_continuation_authority,
+        ));
     }
 }
