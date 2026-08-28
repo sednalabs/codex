@@ -44,9 +44,11 @@ pub type SharedTurnDiffTracker = Arc<Mutex<TurnDiffTracker>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolCallSource {
+    /// The model invoked the tool directly during an ordinary turn.
     Direct,
     /// The host issued a bounded continuity check; this is not a provider call.
     HostContinuityCheck,
+    /// Code mode invoked the tool while executing a runtime cell.
     CodeMode {
         /// Runtime cell that issued the nested tool request.
         cell_id: String,
@@ -55,6 +57,37 @@ pub enum ToolCallSource {
         /// because the runtime id only needs to be unique within one cell.
         runtime_tool_call_id: String,
     },
+}
+
+/// Coarse requester identity for a [`ToolCallSource`].
+///
+/// This projection is deliberately about local call provenance only. It does
+/// not describe handler success, provider acceptance, or whether a provider
+/// request occurred; those outcomes must remain independently observed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ToolCallSourceKind {
+    Direct,
+    HostContinuityCheck,
+    CodeMode,
+}
+
+impl ToolCallSource {
+    /// Returns the explicit requester category without inspecting child or
+    /// turn identity. In particular, a Code Mode cell remains Code Mode even
+    /// when its cell id names a child agent.
+    pub(crate) const fn kind(&self) -> ToolCallSourceKind {
+        match self {
+            Self::Direct => ToolCallSourceKind::Direct,
+            Self::HostContinuityCheck => ToolCallSourceKind::HostContinuityCheck,
+            Self::CodeMode { .. } => ToolCallSourceKind::CodeMode,
+        }
+    }
+
+    /// Whether this call was explicitly issued by the host as a bounded
+    /// continuity check.
+    pub(crate) const fn is_host_continuity_check(&self) -> bool {
+        matches!(self, Self::HostContinuityCheck)
+    }
 }
 
 #[derive(Clone)]
@@ -541,3 +574,7 @@ fn telemetry_preview(content: &str) -> String {
 #[cfg(test)]
 #[path = "context_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "context_source_tests.rs"]
+mod source_tests;
