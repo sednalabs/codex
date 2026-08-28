@@ -122,6 +122,9 @@ pub(crate) struct RuntimeOwnerCapability {
 
 pub(crate) struct RuntimeOwnerCapabilityGuard {
     capability: Arc<RuntimeOwnerCapability>,
+    // Keep the process-lifetime lock alive for the full mutation guard, even
+    // if the StateRuntime handle itself is dropped while the mutation waits.
+    _owner_lease: Option<Arc<RuntimeOwnerLease>>,
 }
 
 impl RuntimeOwnerCapability {
@@ -150,7 +153,10 @@ impl RuntimeOwnerCapability {
         }
     }
 
-    fn enter(self: &Arc<Self>) -> anyhow::Result<RuntimeOwnerCapabilityGuard> {
+    fn enter(
+        self: &Arc<Self>,
+        owner_lease: Option<Arc<RuntimeOwnerLease>>,
+    ) -> anyhow::Result<RuntimeOwnerCapabilityGuard> {
         if self.revoked.load(Ordering::Acquire) {
             anyhow::bail!("runtime owner capability has been revoked")
         }
@@ -162,6 +168,7 @@ impl RuntimeOwnerCapability {
         }
         Ok(RuntimeOwnerCapabilityGuard {
             capability: Arc::clone(self),
+            _owner_lease: owner_lease,
         })
     }
 
@@ -227,10 +234,12 @@ fn try_acquire_runtime_process_lock(goals_path: &Path) -> anyhow::Result<Option<
         metadata.dev(),
         metadata.ino()
     );
-    let lock_path = canonical_goals_path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("goal database has no lock-file parent"))?
-        .join(lock_name);
+    // Hardlinks can have different parent directories, so placing this next
+    // to the path would let two aliases acquire independent locks. Device
+    // and inode identify the database independent of whichever alias was
+    // supplied by the caller; the system temporary directory gives that
+    // identity one shared namespace.
+    let lock_path = std::env::temp_dir().join(lock_name);
     let file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -459,6 +468,7 @@ impl StateRuntime {
         let bootstrap_goal_owner_admissions = GoalOwnerAdmissionStore::with_capability(
             Arc::clone(&goals_pool),
             Arc::clone(&owner_capability),
+            None,
         );
         let runtime_owner = if let Some(process_lock) =
             try_acquire_runtime_process_lock(&goals_path)?
@@ -513,12 +523,20 @@ impl StateRuntime {
             .as_ref()
             .map(|owner| Arc::clone(&owner.capability));
         let goal_owner_admissions = if let Some(capability) = capability.clone() {
-            GoalOwnerAdmissionStore::with_capability(Arc::clone(&goals_pool), capability)
+            GoalOwnerAdmissionStore::with_capability(
+                Arc::clone(&goals_pool),
+                capability,
+                runtime_owner.clone(),
+            )
         } else {
             GoalOwnerAdmissionStore::read_only(Arc::clone(&goals_pool))
         };
         let runtime = Arc::new(Self {
-            thread_goals: GoalStore::with_capability(Arc::clone(&goals_pool), capability),
+            thread_goals: GoalStore::with_capability(
+                Arc::clone(&goals_pool),
+                capability,
+                runtime_owner.clone(),
+            ),
             goal_owner_admissions,
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
@@ -766,6 +784,8 @@ mod tests {
     use super::runtime_state_migrator;
     use super::sqlite_integrity_check;
     use super::test_support::unique_temp_dir;
+    #[cfg(unix)]
+    use super::try_acquire_runtime_process_lock;
     use crate::DB_INIT_METRIC;
     use crate::DbTelemetry;
     use crate::migrations::STATE_MIGRATOR;
@@ -777,6 +797,8 @@ mod tests {
     use std::borrow::Cow;
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
+    #[cfg(unix)]
+    use std::fs;
     use std::io;
     use std::path::Path;
     use std::sync::Mutex;
@@ -833,6 +855,38 @@ mod tests {
             .collect()
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn runtime_process_lock_is_alias_stable_across_hardlinks() {
+        let root = unique_temp_dir();
+        let first_parent = root.join("first");
+        let second_parent = root.join("second");
+        fs::create_dir_all(&first_parent).expect("create first lock-test directory");
+        fs::create_dir_all(&second_parent).expect("create second lock-test directory");
+        let first = first_parent.join("goals.sqlite");
+        let alias = second_parent.join("goals-alias.sqlite");
+        fs::File::create(&first).expect("create goals database fixture");
+        fs::hard_link(&first, &alias).expect("create hardlink alias");
+
+        let lock = try_acquire_runtime_process_lock(&first)
+            .expect("acquire first database alias")
+            .expect("first alias should own the process lock");
+        assert!(
+            try_acquire_runtime_process_lock(&alias)
+                .expect("probe hardlink alias")
+                .is_none(),
+            "a hardlink alias must resolve to the same process lock"
+        );
+        drop(lock);
+        assert!(
+            try_acquire_runtime_process_lock(&alias)
+                .expect("reacquire hardlink alias")
+                .is_some(),
+            "the alias should acquire only after the first lock is released"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     async fn open_db_pool(path: &Path) -> SqlitePool {
         crate::SqliteConfig::new_for_testing(path.parent().unwrap_or(path).abs())
             .open_read_write_pool(path)
@@ -863,6 +917,35 @@ mod tests {
             .expect("integrity check should run");
 
         assert_eq!(result, vec!["ok".to_string()]);
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn cloned_store_keeps_runtime_owner_lock_until_it_is_dropped() {
+        let codex_home = unique_temp_dir();
+        let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize owning runtime");
+        assert!(runtime.owns_goal_runtime());
+        let cloned_store = runtime.goal_owner_admissions().clone();
+        drop(runtime);
+
+        let blocked_runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize read-only successor while clone is live");
+        assert!(
+            !blocked_runtime.owns_goal_runtime(),
+            "a cloned store must retain the process lock after its runtime is dropped"
+        );
+        blocked_runtime.close().await;
+        drop(cloned_store);
+
+        let successor = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize successor after cloned store drops");
+        assert!(successor.owns_goal_runtime());
+        successor.close().await;
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 

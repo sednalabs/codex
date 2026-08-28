@@ -215,6 +215,9 @@ pub struct GoalOwnerAdmissionRecord {
     /// The single scheduler owner that has claimed this pending generation for
     /// dispatch. A claim is consumed when the provider lease is acquired.
     pub dispatch_claim_id: Option<Uuid>,
+    /// Exact in-memory continuation fence bound to the dispatch claim. A
+    /// missing value on a legacy row is intentionally not provider permission.
+    pub dispatch_fence_id: Option<Uuid>,
     pub dispatch_claimed_at: Option<DateTime<Utc>>,
     pub deferred_terminal_disposition: GoalOwnerAdmissionTerminalDisposition,
     pub uncertainty_resolution_evidence: Option<String>,
@@ -264,6 +267,7 @@ pub struct GoalOwnerAdmissionStore {
     /// destructive admission transitions. Read-only runtimes deliberately
     /// carry `None`, even though they share the same SQLite pool.
     write_capability: Option<Arc<RuntimeOwnerCapability>>,
+    owner_lease: Option<Arc<RuntimeOwnerLease>>,
 }
 
 impl GoalOwnerAdmissionStore {
@@ -274,6 +278,7 @@ impl GoalOwnerAdmissionStore {
             // read-only. The runtime bootstrap supplies the sole capability
             // explicitly after acquiring the process-lifetime lock.
             write_capability: None,
+            owner_lease: None,
         }
     }
 
@@ -281,16 +286,19 @@ impl GoalOwnerAdmissionStore {
         Self {
             pool,
             write_capability: None,
+            owner_lease: None,
         }
     }
 
     pub(crate) fn with_capability(
         pool: Arc<SqlitePool>,
         capability: Arc<RuntimeOwnerCapability>,
+        owner_lease: Option<Arc<RuntimeOwnerLease>>,
     ) -> Self {
         Self {
             pool,
             write_capability: Some(capability),
+            owner_lease,
         }
     }
 
@@ -299,7 +307,7 @@ impl GoalOwnerAdmissionStore {
             bail!("goal-owner admission mutation requires the runtime owner capability")
         };
         if capability.is_active() {
-            capability.enter()
+            capability.enter(self.owner_lease.clone())
         } else {
             bail!("goal-owner admission mutation requires the runtime owner capability")
         }
@@ -417,6 +425,7 @@ SET phase = 'pending',
     lease_acquired_at_ms = NULL,
     lease_cancellation_epoch = NULL,
     dispatch_claim_id = NULL,
+    dispatch_fence_id = NULL,
     dispatch_claimed_at_ms = NULL,
     updated_at_ms = ?
 WHERE phase = 'acquired' AND retired_at_ms IS NULL
@@ -467,10 +476,14 @@ WHERE phase = 'in_flight'
     pub async fn claim_dispatch(
         &self,
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
+        fence_identity: Uuid,
         now: DateTime<Utc>,
     ) -> anyhow::Result<Option<Uuid>> {
         let _capability_guard = self.require_write_capability()?;
         validate_continuation_authority(continuation_authority)?;
+        if fence_identity.is_nil() {
+            bail!("goal-owner dispatch claim requires a non-empty fence identity")
+        }
         let authority = &continuation_authority.authority;
         let now_ms = admission_datetime_to_epoch_millis(now);
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -492,6 +505,7 @@ WHERE phase = 'in_flight'
             r#"
 UPDATE goal_owner_admissions
 SET dispatch_claim_id = ?,
+    dispatch_fence_id = ?,
     dispatch_claimed_at_ms = ?,
     updated_at_ms = ?
 WHERE thread_id = ?
@@ -509,6 +523,7 @@ WHERE thread_id = ?
             "#,
         )
         .bind(claim_id.to_string())
+        .bind(fence_identity.to_string())
         .bind(now_ms)
         .bind(now_ms)
         .bind(authority.thread_id.to_string())
@@ -540,6 +555,7 @@ WHERE thread_id = ?
             r#"
 UPDATE goal_owner_admissions
 SET dispatch_claim_id = NULL,
+    dispatch_fence_id = NULL,
     dispatch_claimed_at_ms = NULL,
     updated_at_ms = ?
 WHERE thread_id = ?
@@ -932,6 +948,7 @@ SET phase = 'terminal',
     terminal_outcome = 'exhausted',
     deferred_terminal_disposition = 'await_user_turn',
     dispatch_claim_id = NULL,
+    dispatch_fence_id = NULL,
     dispatch_claimed_at_ms = NULL,
     updated_at_ms = ?
 WHERE thread_id = ?
@@ -971,6 +988,7 @@ SET phase = 'acquired',
     lease_acquired_at_ms = ?,
     lease_cancellation_epoch = cancellation_epoch,
     dispatch_claim_id = NULL,
+    dispatch_fence_id = NULL,
     dispatch_claimed_at_ms = NULL,
     updated_at_ms = ?
 WHERE thread_id = ?
@@ -1343,6 +1361,7 @@ SET phase = 'terminal',
     lease_acquired_at_ms = NULL,
     lease_cancellation_epoch = NULL,
     dispatch_claim_id = NULL,
+    dispatch_fence_id = NULL,
     dispatch_claimed_at_ms = NULL,
     deferred_terminal_disposition = 'await_user_turn',
     updated_at_ms = ?
@@ -1440,6 +1459,7 @@ SELECT
     admission.lease_acquired_at_ms AS admission_lease_acquired_at_ms,
     admission.lease_cancellation_epoch AS admission_lease_cancellation_epoch,
     admission.dispatch_claim_id AS admission_dispatch_claim_id,
+    admission.dispatch_fence_id AS admission_dispatch_fence_id,
     admission.dispatch_claimed_at_ms AS admission_dispatch_claimed_at_ms,
     admission.deferred_terminal_disposition AS admission_deferred_terminal_disposition,
     admission.uncertainty_resolution_evidence AS admission_uncertainty_resolution_evidence,
@@ -1780,6 +1800,7 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
         let lease_id: Option<String> = row.try_get("admission_lease_id")?;
         let lease_acquired_at_ms: Option<i64> = row.try_get("admission_lease_acquired_at_ms")?;
         let dispatch_claim_id: Option<String> = row.try_get("admission_dispatch_claim_id")?;
+        let dispatch_fence_id: Option<String> = row.try_get("admission_dispatch_fence_id")?;
         let dispatch_claimed_at_ms: Option<i64> =
             row.try_get("admission_dispatch_claimed_at_ms")?;
         let retired_at_ms: Option<i64> = row.try_get("admission_retired_at_ms")?;
@@ -1836,6 +1857,9 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
                 .transpose()?,
             lease_cancellation_epoch: row.try_get("admission_lease_cancellation_epoch")?,
             dispatch_claim_id: dispatch_claim_id
+                .map(|value| Uuid::parse_str(&value))
+                .transpose()?,
+            dispatch_fence_id: dispatch_fence_id
                 .map(|value| Uuid::parse_str(&value))
                 .transpose()?,
             dispatch_claimed_at: dispatch_claimed_at_ms
@@ -2225,6 +2249,7 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
     if has_lease != record.lease_acquired_at.is_some()
         || has_lease != record.lease_cancellation_epoch.is_some()
         || has_dispatch_claim != record.dispatch_claimed_at.is_some()
+        || has_dispatch_claim != record.dispatch_fence_id.is_some()
         || record.retired_at.is_some() != record.retirement_reason.is_some()
     {
         bail!("contradictory goal-owner admission durable state")
