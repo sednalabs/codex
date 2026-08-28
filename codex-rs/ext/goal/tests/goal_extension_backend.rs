@@ -29,6 +29,10 @@ use codex_extension_api::TurnAbortInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
+use codex_extension_api::LocalRequestIdentity;
+use codex_extension_api::ProviderEvidenceAuthority;
+use codex_extension_api::ProviderLimitEvidence;
+use codex_extension_api::RateLimitDomain;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalRuntimeHandle;
 use codex_goal_extension::GoalService;
@@ -53,6 +57,28 @@ use codex_protocol::protocol::TurnAbortReason;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
+
+fn provider_limit_domain(thread_id: ThreadId, retry_after: Option<Duration>) -> RateLimitDomain {
+    RateLimitDomain {
+        local_request_identity: LocalRequestIdentity {
+            thread_id,
+            configured_provider_key: Some("openai".to_string()),
+            effective_provider_id: Some("openai".to_string()),
+            requested_model: Some("test-model".to_string()),
+            resolved_model: Some("test-model".to_string()),
+        },
+        provider_limit_evidence: ProviderLimitEvidence {
+            authority: if retry_after.is_some() {
+                ProviderEvidenceAuthority::RecognizedHttpUsageLimit
+            } else {
+                ProviderEvidenceAuthority::UnknownUnsupportedTransport
+            },
+            snapshot: None,
+            reset_at: None,
+            retry_after,
+        },
+    }
+}
 
 #[tokio::test]
 async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Result<()> {
@@ -648,7 +674,10 @@ async fn provider_limit_owner_preservation_keeps_active_goal_dormant_without_eli
 
     let admitted = harness
         .runtime_handle()
-        .preserve_active_goal_after_provider_limit("turn-1", /*retry_after*/ None)
+        .preserve_active_goal_after_provider_limit(
+            "turn-1",
+            &provider_limit_domain(harness.thread_id, /*retry_after*/ None),
+        )
         .await
         .map_err(anyhow::Error::msg)?;
     assert!(
@@ -703,7 +732,10 @@ async fn provider_limit_continuation_admits_one_bounded_attempt_and_blocks_retri
     assert!(
         harness
             .runtime_handle()
-            .preserve_active_goal_after_provider_limit("turn-1", Some(Duration::from_secs(1)))
+            .preserve_active_goal_after_provider_limit(
+                "turn-1",
+                &provider_limit_domain(harness.thread_id, Some(Duration::from_secs(1))),
+            )
             .await
             .map_err(anyhow::Error::msg)?
     );
@@ -713,7 +745,10 @@ async fn provider_limit_continuation_admits_one_bounded_attempt_and_blocks_retri
     assert!(
         !harness
             .runtime_handle()
-            .preserve_active_goal_after_provider_limit("turn-1", Some(Duration::from_secs(1)))
+            .preserve_active_goal_after_provider_limit(
+                "turn-1",
+                &provider_limit_domain(harness.thread_id, Some(Duration::from_secs(1))),
+            )
             .await
             .map_err(anyhow::Error::msg)?
     );
@@ -754,7 +789,10 @@ async fn explicit_abort_cancels_provider_continuation_without_clearing_work_gate
     assert!(
         harness
             .runtime_handle()
-            .preserve_active_goal_after_provider_limit("turn-1", Some(Duration::from_secs(60)))
+            .preserve_active_goal_after_provider_limit(
+                "turn-1",
+                &provider_limit_domain(harness.thread_id, Some(Duration::from_secs(60))),
+            )
             .await
             .map_err(anyhow::Error::msg)?
     );
