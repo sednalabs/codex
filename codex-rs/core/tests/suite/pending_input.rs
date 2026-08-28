@@ -416,9 +416,9 @@ async fn observe_turn_completion(
                     observation.matching_user_messages,
                 )
             })
-            .unwrap_or_else(|| {
+            .unwrap_or_else(|error| {
                 panic!(
-                    "event stream closed before TurnComplete; observed turn_started={}, turn_complete={}, matching_user_messages={}, expected_user_message={matching_user_message:?}",
+                    "event stream returned {error:?} before TurnComplete; observed turn_started={}, turn_complete={}, matching_user_messages={}, expected_user_message={matching_user_message:?}",
                     observation.turn_started,
                     observation.turn_complete,
                     observation.matching_user_messages,
