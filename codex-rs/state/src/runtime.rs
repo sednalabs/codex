@@ -83,6 +83,7 @@ pub use goal_owner_admissions::GoalOwnerAdmissionStore;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalDisposition;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalOutcome;
 pub use goal_owner_admissions::GoalOwnerDispatchFenceCapability;
+pub use goal_owner_admissions::GoalOwnerRecoveryCapability;
 pub use goal_owner_admissions::canonical_provider_id;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
@@ -341,6 +342,7 @@ pub struct StateRuntime {
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
     runtime_owner: Option<Arc<RuntimeOwnerLease>>,
+    owner_recovery_capability: Option<Arc<GoalOwnerRecoveryCapability>>,
 }
 
 impl StateRuntime {
@@ -561,6 +563,7 @@ impl StateRuntime {
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let thread_recency_at_millis = thread_recency_at_millis.unwrap_or(0);
         let owner_capability = RuntimeOwnerCapability::new();
+        let mut owner_recovery_capability = None;
         let bootstrap_goal_owner_admissions = GoalOwnerAdmissionStore::with_capability(
             Arc::clone(&goals_pool),
             Arc::clone(&owner_capability),
@@ -568,6 +571,8 @@ impl StateRuntime {
         );
         let runtime_owner = if let Some(process_lock) = process_lock {
             let owner_id = Uuid::now_v7();
+            let recovery_capability = Arc::new(GoalOwnerRecoveryCapability::new(owner_id));
+            owner_recovery_capability = Some(Arc::clone(&recovery_capability));
             if let Err(err) = bootstrap_goal_owner_admissions
                 .claim_runtime_owner(owner_id)
                 .await
@@ -617,10 +622,14 @@ impl StateRuntime {
             .as_ref()
             .map(|owner| Arc::clone(&owner.capability));
         let goal_owner_admissions = if let Some(capability) = capability.clone() {
-            GoalOwnerAdmissionStore::with_capability(
+            GoalOwnerAdmissionStore::with_recovery_capability(
                 Arc::clone(&goals_pool),
                 capability,
                 runtime_owner.clone(),
+                owner_recovery_capability
+                    .as_ref()
+                    .expect("owner recovery capability for owning runtime")
+                    .clone(),
             )
         } else {
             GoalOwnerAdmissionStore::read_only(Arc::clone(&goals_pool))
@@ -641,6 +650,7 @@ impl StateRuntime {
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
             thread_recency_at_millis: Arc::new(AtomicI64::new(thread_recency_at_millis)),
             runtime_owner,
+            owner_recovery_capability,
         });
         if let Err(err) = runtime.run_logs_startup_maintenance().await {
             warn!("logs startup maintenance failed; continuing runtime initialization: {err}");
@@ -694,6 +704,12 @@ impl StateRuntime {
     /// a read-only runtime may still inspect durable state for diagnostics.
     pub fn owns_goal_runtime(&self) -> bool {
         self.runtime_owner.is_some()
+    }
+
+    /// Return the opaque recovery authority for this owning installation.
+    /// Read-only runtimes never receive a capability.
+    pub fn goal_owner_recovery_capability(&self) -> Option<Arc<GoalOwnerRecoveryCapability>> {
+        self.owner_recovery_capability.clone()
     }
 
     pub fn memories(&self) -> &MemoryStore {

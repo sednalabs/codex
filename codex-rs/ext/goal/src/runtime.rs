@@ -1186,8 +1186,19 @@ impl GoalRuntimeHandle {
         if let Some(dispatch_claim_id) = record.dispatch_claim_id {
             // A claim cannot survive a process restart as an owner. Reopen the
             // exact pending generation for a fresh timer claim.
+            let recovery_capability = self
+                .inner
+                .state_dbs
+                .goal_owner_recovery_capability()
+                .ok_or_else(|| {
+                    "goal-owner recovery capability missing for owning runtime".to_string()
+                })?;
             admissions
-                .release_dispatch_claim_after_owner_recovery(&record.authority, dispatch_claim_id)
+                .release_dispatch_claim_after_owner_recovery(
+                    &record.authority,
+                    dispatch_claim_id,
+                    &recovery_capability,
+                )
                 .await
                 .map_err(|err| err.to_string())?;
         }
