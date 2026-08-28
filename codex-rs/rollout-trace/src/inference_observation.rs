@@ -135,9 +135,7 @@ pub enum ProviderTerminalResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InferenceObservationEvent {
     /// The caller reached the exact pre-I/O physical request boundary.
-    PhysicalRequestOpened {
-        attempt: InferenceAttemptMetadata,
-    },
+    PhysicalRequestOpened { attempt: InferenceAttemptMetadata },
     /// The provider supplied a terminal result for an opened request.
     ProviderTerminal {
         attempt: InferenceAttemptMetadata,
@@ -165,17 +163,19 @@ pub trait InferenceObservationSink: Send + Sync + 'static {
 }
 
 /// In-memory sink intended for tests and local composition probes.
+#[cfg(test)]
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryInferenceObservationSink {
     events: Arc<Mutex<Vec<InferenceObservationEvent>>>,
 }
 
+#[cfg(test)]
 impl InMemoryInferenceObservationSink {
     /// Returns a point-in-time copy of all events in delivery order.
     pub fn events(&self) -> Vec<InferenceObservationEvent> {
         self.events
             .lock()
-            .expect("inference observation sink lock is not poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -183,16 +183,17 @@ impl InMemoryInferenceObservationSink {
     pub fn clear(&self) {
         self.events
             .lock()
-            .expect("inference observation sink lock is not poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
     }
 }
 
+#[cfg(test)]
 impl InferenceObservationSink for InMemoryInferenceObservationSink {
     fn record(&self, event: InferenceObservationEvent) {
         self.events
             .lock()
-            .expect("inference observation sink lock is not poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(event);
     }
 }
@@ -230,10 +231,7 @@ impl fmt::Debug for InferenceObservationRecorder {
 
 impl InferenceObservationRecorder {
     /// Creates a recorder backed by the supplied synchronous sink.
-    pub fn new(
-        attempt: InferenceAttemptMetadata,
-        sink: Arc<dyn InferenceObservationSink>,
-    ) -> Self {
+    pub fn new(attempt: InferenceAttemptMetadata, sink: Arc<dyn InferenceObservationSink>) -> Self {
         Self {
             state: Arc::new(RecorderState {
                 attempt,
@@ -263,7 +261,7 @@ impl InferenceObservationRecorder {
             .state
             .lifecycle
             .lock()
-            .expect("inference observation lifecycle lock is not poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.state.attempt.admission == InferenceAdmission::Denied {
             return Err(InferenceObservationError::AdmissionDenied);
         }
@@ -303,7 +301,7 @@ impl InferenceObservationRecorder {
             .state
             .lifecycle
             .lock()
-            .expect("inference observation lifecycle lock is not poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if lifecycle.physical_request_opened {
             return Err(InferenceObservationError::PhysicalRequestAlreadyOpened);
         }
@@ -343,7 +341,7 @@ impl InferenceObservationRecorder {
             .state
             .lifecycle
             .lock()
-            .expect("inference observation lifecycle lock is not poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !lifecycle.physical_request_opened {
             return Err(InferenceObservationError::PhysicalRequestNotOpened);
         }

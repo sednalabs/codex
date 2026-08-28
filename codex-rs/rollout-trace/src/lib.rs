@@ -35,6 +35,9 @@ pub use compaction::CompactionTraceContext;
 pub use inference::InferenceTraceAttempt;
 /// Shared recorder context for inference attempts within one Codex turn.
 pub use inference::InferenceTraceContext;
+#[cfg(test)]
+/// In-memory sink for tests and local composition probes.
+pub use inference_observation::InMemoryInferenceObservationSink;
 /// Admission state captured for one exact inference attempt.
 pub use inference_observation::InferenceAdmission;
 /// Immutable identity and provenance for one exact inference attempt.
@@ -45,18 +48,16 @@ pub use inference_observation::InferenceCacheState;
 pub use inference_observation::InferenceObservationError;
 /// One ordered inference lifecycle observation.
 pub use inference_observation::InferenceObservationEvent;
-/// Synchronous sink for inference lifecycle observations.
-pub use inference_observation::InferenceObservationSink;
 /// Linearized recorder for one exact physical inference attempt.
 pub use inference_observation::InferenceObservationRecorder;
-/// Request kind that caused one exact inference attempt.
-pub use inference_observation::InferenceRequestKind;
+/// Synchronous sink for inference lifecycle observations.
+pub use inference_observation::InferenceObservationSink;
 /// Exact configured/requested/effective provider and model identity.
 pub use inference_observation::InferenceProviderIdentity;
+/// Request kind that caused one exact inference attempt.
+pub use inference_observation::InferenceRequestKind;
 /// Provider terminal result captured by the observation seam.
 pub use inference_observation::ProviderTerminalResult;
-/// In-memory sink for tests and local composition probes.
-pub use inference_observation::InMemoryInferenceObservationSink;
 /// Trace-owned MCP execution correlation propagated to bridge request metadata.
 pub use mcp::McpCallTraceContext;
 /// Public reduced trace model returned by replay.
