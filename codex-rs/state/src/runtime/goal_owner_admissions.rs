@@ -654,11 +654,6 @@ WHERE thread_id = ?
         Ok(result.rows_affected() == 1)
     }
 
-    /// Test whether a durable claim carries this exact opaque fence.
-    pub fn dispatch_fence_matches(&self, fence: GoalOwnerDispatchFenceCapability) -> bool {
-        self.dispatch_fence_id == Some(fence)
-    }
-
     /// Atomically clear the thread deferral only after the exact generation
     /// has retired and no replacement admission is active.
     pub async fn clear_deferral_if_retired(
@@ -2046,6 +2041,11 @@ impl GoalOwnerAdmissionRecord {
             logical_successor_request_id: self.logical_successor_request_id.clone(),
             decision_id: self.decision_id,
         }
+    }
+
+    /// Test whether this durable generation carries the exact opaque fence.
+    pub fn dispatch_fence_matches(&self, fence: GoalOwnerDispatchFenceCapability) -> bool {
+        self.dispatch_fence_id == Some(fence)
     }
 }
 
