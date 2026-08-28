@@ -3966,6 +3966,7 @@ fn server_metadata_preserves_tool_approval_policy() {
         "search".to_string(),
         McpServerToolConfig {
             approval_mode: Some(AppToolApproval::Approve),
+            ..Default::default()
         },
     );
     let metadata = McpServerMetadata::from(&EffectiveMcpServer::configured(config));

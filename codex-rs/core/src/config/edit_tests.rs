@@ -1161,8 +1161,9 @@ B = \"2\"
     assert_eq!(raw, expected);
 }
 
-#[test]
-fn blocking_replace_mcp_servers_serializes_tool_approval_overrides() {
+#[test_case::test_case(30_000; "positive limit")]
+#[test_case::test_case(usize::MAX; "largest native limit")]
+fn blocking_replace_mcp_servers_serializes_tool_approval_overrides(output_token_limit: usize) {
     let tmp = tempdir().expect("tmpdir");
     let codex_home = tmp.path();
 
@@ -1196,22 +1197,36 @@ fn blocking_replace_mcp_servers_serializes_tool_approval_overrides() {
                 "search".to_string(),
                 McpServerToolConfig {
                     approval_mode: Some(AppToolApproval::Approve),
+                    output_token_limit: std::num::NonZeroUsize::new(output_token_limit),
                 },
             )]),
         },
     );
 
-    apply_blocking(codex_home, &[ConfigEdit::ReplaceMcpServers(servers)]).expect("persist");
+    let result = apply_blocking(codex_home, &[ConfigEdit::ReplaceMcpServers(servers)]);
+    if i64::try_from(output_token_limit).is_err() {
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("output_token_limit exceeds the TOML integer range")
+        );
+        return;
+    }
+    result.expect("persist");
 
     let raw = std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
-    let expected = "\
+    let expected = format!(
+        "\
 [mcp_servers.docs]
 command = \"docs-server\"
 default_tools_approval_mode = \"prompt\"
 
 [mcp_servers.docs.tools.search]
 approval_mode = \"approve\"
-";
+output_token_limit = {output_token_limit}
+"
+    );
     assert_eq!(raw, expected);
 }
 

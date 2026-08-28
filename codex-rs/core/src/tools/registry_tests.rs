@@ -2,6 +2,8 @@ use super::*;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
+use codex_protocol::models::ResponseItem;
+use codex_utils_output_truncation::TruncationPolicy;
 use futures::future::BoxFuture;
 use pretty_assertions::assert_eq;
 use std::sync::atomic::AtomicUsize;
@@ -587,6 +589,53 @@ async fn write_stdin_does_not_expose_default_pre_tool_use_payload() {
     assert_eq!(write_stdin.pre_tool_use_payload(&invocation), None);
 }
 
+#[test_case::test_case(TruncationPolicy::Tokens(1), 2; "token budget")]
+#[test_case::test_case(TruncationPolicy::Bytes(401), 121; "scale bytes before converting to tokens")]
+fn post_tool_use_feedback_output_preserves_fallback_token_limit_override(
+    truncation_policy: TruncationPolicy,
+    expected_token_limit: usize,
+) {
+    let result = AnyToolResult {
+        call_id: "call-1".to_string(),
+        payload: ToolPayload::Function {
+            arguments: "{}".to_string(),
+        },
+        result: Box::new(PostToolUseFeedbackOutput {
+            original: Box::new(crate::tools::context::McpToolOutput {
+                result: codex_protocol::mcp::CallToolResult {
+                    content: Vec::new(),
+                    structured_content: None,
+                    is_error: None,
+                    meta: None,
+                },
+                tool_input: serde_json::json!({}),
+                wall_time: Duration::ZERO,
+                original_image_detail_supported: false,
+                truncation_policy,
+            }),
+            model_visible: crate::tools::context::FunctionToolOutput::from_text(
+                "hook feedback".to_string(),
+                /*success*/ None,
+            ),
+        }),
+        post_tool_use_payload: None,
+    };
+
+    assert_eq!(
+        result.into_response(),
+        ResponseItemEnvelope {
+            item: ResponseItem::from(ResponseInputItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: FunctionCallOutputPayload::from_text("hook feedback".to_string()),
+            }),
+            metadata: Some(CodexHarnessMetadata {
+                fallback_token_limit_override: Some(expected_token_limit),
+                ..Default::default()
+            }),
+        }
+    );
+}
+
 #[test]
 fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
     let result = AnyToolResult {
@@ -608,12 +657,15 @@ fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
 
     assert_eq!(
         result.into_response(),
-        ResponseInputItem::FunctionCallOutput {
-            call_id: "call-1".to_string(),
-            output: codex_protocol::models::FunctionCallOutputPayload::from_text(
-                "hook feedback".to_string()
-            ),
-        }
+        ResponseItemEnvelope::new(
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: codex_protocol::models::FunctionCallOutputPayload::from_text(
+                    "hook feedback".to_string()
+                ),
+            }
+            .into()
+        )
     );
 
     let result = AnyToolResult {
