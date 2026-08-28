@@ -997,7 +997,6 @@ impl ThreadManager {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             supports_openai_form_elicitation,
             /*user_shell_override*/ Some(user_shell_override),
-            /*continuity_health_check*/ false,
         ))
         .await
     }
