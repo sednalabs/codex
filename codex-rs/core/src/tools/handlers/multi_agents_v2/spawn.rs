@@ -11,8 +11,11 @@ use crate::tools::context::ToolCallSource;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
+use codex_features::Feature;
 use codex_protocol::AgentPath;
+use codex_protocol::models::PermissionProfile;
 use codex_tools::ToolSpec;
+use std::collections::HashMap;
 
 #[derive(Default)]
 pub(crate) struct Handler {
@@ -123,6 +126,9 @@ async fn handle_spawn_agent(
         args.reasoning_effort.as_ref(),
         args.expected_reasoning_effort.as_ref(),
     )?;
+    if is_continuity_health_check {
+        apply_continuity_health_check_restrictions(&mut config)?;
+    }
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -270,6 +276,81 @@ async fn handle_spawn_agent(
                 .map(|(requested_model, effective_model)| requested_model == effective_model),
             effective_reasoning_effort,
         })
+    }
+}
+
+fn apply_continuity_health_check_restrictions(
+    config: &mut Config,
+) -> Result<(), FunctionCallError> {
+    config
+        .mcp_servers
+        .set(HashMap::new())
+        .map_err(|error| {
+            FunctionCallError::RespondToModel(format!(
+                "continuity diagnostic child requires no configured MCP servers: {error}"
+            ))
+        })?;
+    for feature in [
+        Feature::MultiAgentV2,
+        Feature::Collab,
+        Feature::Apps,
+        Feature::Plugins,
+    ] {
+        config.features.disable(feature).map_err(|error| {
+            FunctionCallError::RespondToModel(format!(
+                "continuity diagnostic child requires `{}` disabled: {error}",
+                feature.key()
+            ))
+        })?;
+    }
+    config
+        .permissions
+        .set_permission_profile(PermissionProfile::read_only())
+        .map_err(|error| {
+            FunctionCallError::RespondToModel(format!(
+                "continuity diagnostic child requires read-only permissions: {error}"
+            ))
+        })?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_config::CONFIG_TOML_FILE;
+
+    #[tokio::test]
+    async fn continuity_health_check_restrictions_remove_inherited_surfaces() {
+        let codex_home = tempfile::tempdir().expect("create test Codex home");
+        std::fs::write(
+            codex_home.path().join(CONFIG_TOML_FILE),
+            "[mcp_servers.docs]\ncommand = \"echo\"\n",
+        )
+        .expect("write test MCP configuration");
+        let mut config = crate::config::ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .build()
+            .await
+            .expect("load test configuration");
+
+        assert!(!config.mcp_servers.get().is_empty());
+        apply_continuity_health_check_restrictions(&mut config)
+            .expect("continuity restrictions should be supported by test config");
+
+        assert!(config.mcp_servers.get().is_empty());
+        for feature in [
+            Feature::MultiAgentV2,
+            Feature::Collab,
+            Feature::Apps,
+            Feature::Plugins,
+        ] {
+            assert!(!config.features.enabled(feature));
+        }
+        assert_eq!(
+            config.permissions.permission_profile(),
+            &PermissionProfile::read_only()
+        );
     }
 }
 
