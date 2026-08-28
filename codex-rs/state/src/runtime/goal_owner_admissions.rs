@@ -211,6 +211,10 @@ pub struct GoalOwnerAdmissionRecord {
     pub lease_acquired_at: Option<DateTime<Utc>>,
     /// The cancellation epoch at which the persisted lease was created.
     pub lease_cancellation_epoch: Option<i64>,
+    /// The single scheduler owner that has claimed this pending generation for
+    /// dispatch. A claim is consumed when the provider lease is acquired.
+    pub dispatch_claim_id: Option<Uuid>,
+    pub dispatch_claimed_at: Option<DateTime<Utc>>,
     pub deferred_terminal_disposition: GoalOwnerAdmissionTerminalDisposition,
     pub retired_at: Option<DateTime<Utc>>,
     pub retirement_reason: Option<GoalOwnerAdmissionRetirementReason>,
@@ -306,6 +310,8 @@ SET phase = 'pending',
     lease_id = NULL,
     lease_acquired_at_ms = NULL,
     lease_cancellation_epoch = NULL,
+    dispatch_claim_id = NULL,
+    dispatch_claimed_at_ms = NULL,
     updated_at_ms = ?
 WHERE phase = 'acquired' AND retired_at_ms IS NULL
             "#,
@@ -345,6 +351,107 @@ WHERE phase = 'in_flight'
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
         validate_authority(authority)?;
         fetch_record_for_authority(self.pool.as_ref(), authority).await
+    }
+
+    /// Claim one exact, deadline-eligible pending generation for dispatch.
+    ///
+    /// The claim is the durable owner fence between timer eligibility and
+    /// publishing a successor turn. It is intentionally separate from the
+    /// provider-attempt lease and can be released only by the exact claimant.
+    pub async fn claim_dispatch(
+        &self,
+        continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Option<Uuid>> {
+        validate_continuation_authority(continuation_authority)?;
+        let authority = &continuation_authority.authority;
+        let now_ms = admission_datetime_to_epoch_millis(now);
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let Some(current) = fetch_active_record(&mut *transaction, authority.thread_id).await?
+        else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        if current.continuation_authority() != continuation_authority.clone()
+            || current.phase != GoalOwnerAdmissionPhase::Pending
+            || current.deadline_at > now
+            || current.dispatch_claim_id.is_some()
+        {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        let claim_id = Uuid::now_v7();
+        let claimed = sqlx::query(
+            r#"
+UPDATE goal_owner_admissions
+SET dispatch_claim_id = ?,
+    dispatch_claimed_at_ms = ?,
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND goal_id = ?
+  AND generation = ?
+  AND cancellation_epoch = ?
+  AND intended_request_kind = ?
+  AND successor_turn_id = ?
+  AND logical_successor_request_id = ?
+  AND decision_id = ?
+  AND phase = 'pending'
+  AND deadline_at_ms <= ?
+  AND dispatch_claim_id IS NULL
+  AND retired_at_ms IS NULL
+            "#,
+        )
+        .bind(claim_id.to_string())
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(authority.thread_id.to_string())
+        .bind(&authority.goal_id)
+        .bind(authority.generation)
+        .bind(authority.cancellation_epoch)
+        .bind(&continuation_authority.intended_request_kind)
+        .bind(&continuation_authority.successor_turn_id)
+        .bind(&continuation_authority.logical_successor_request_id)
+        .bind(continuation_authority.decision_id.to_string())
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok((claimed.rows_affected() == 1).then_some(claim_id))
+    }
+
+    /// Release only an exact pending dispatch claim. A stale claimant is a
+    /// no-op, so cleanup cannot clear a replacement generation's owner fence.
+    pub async fn release_dispatch_claim(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        dispatch_claim_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        validate_authority(authority)?;
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let result = sqlx::query(
+            r#"
+UPDATE goal_owner_admissions
+SET dispatch_claim_id = NULL,
+    dispatch_claimed_at_ms = NULL,
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND goal_id = ?
+  AND generation = ?
+  AND cancellation_epoch = ?
+  AND phase = 'pending'
+  AND dispatch_claim_id = ?
+  AND retired_at_ms IS NULL
+            "#,
+        )
+        .bind(now_ms)
+        .bind(authority.thread_id.to_string())
+        .bind(&authority.goal_id)
+        .bind(authority.generation)
+        .bind(authority.cancellation_epoch)
+        .bind(dispatch_claim_id.to_string())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     /// Insert a denial, or return the recorded generation for an exact origin replay.
@@ -525,6 +632,29 @@ WHERE thread_id = ?
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         now: DateTime<Utc>,
     ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
+        self.try_acquire_inner(continuation_authority, None, now)
+            .await
+    }
+
+    /// Atomically consume an exact scheduler dispatch claim while reserving
+    /// the provider attempt. An unclaimed or differently claimed generation
+    /// cannot be acquired through this path.
+    pub async fn try_acquire_claimed(
+        &self,
+        continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
+        dispatch_claim_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
+        self.try_acquire_inner(continuation_authority, Some(dispatch_claim_id), now)
+            .await
+    }
+
+    async fn try_acquire_inner(
+        &self,
+        continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
+        dispatch_claim_id: Option<Uuid>,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
         let authority = &continuation_authority.authority;
         validate_authority(authority)?;
         validate_continuation_authority(continuation_authority)?;
@@ -536,6 +666,10 @@ WHERE thread_id = ?
             return Ok(GoalOwnerAdmissionAcquireResult::NotCurrent);
         };
         if current.continuation_authority() != continuation_authority.clone() {
+            transaction.commit().await?;
+            return Ok(GoalOwnerAdmissionAcquireResult::NotCurrent);
+        }
+        if current.dispatch_claim_id != dispatch_claim_id {
             transaction.commit().await?;
             return Ok(GoalOwnerAdmissionAcquireResult::NotCurrent);
         }
@@ -584,6 +718,8 @@ UPDATE goal_owner_admissions
 SET phase = 'terminal',
     terminal_outcome = 'exhausted',
     deferred_terminal_disposition = 'await_user_turn',
+    dispatch_claim_id = NULL,
+    dispatch_claimed_at_ms = NULL,
     updated_at_ms = ?
 WHERE thread_id = ?
   AND goal_id = ?
@@ -630,7 +766,8 @@ WHERE thread_id = ?
   AND successor_turn_id = ?
   AND logical_successor_request_id = ?
   AND decision_id = ?
-  AND phase = 'pending'
+    AND phase = 'pending'
+  AND dispatch_claim_id IS ?
   AND attempts_started < max_attempts
   AND retired_at_ms IS NULL
             "#,
@@ -646,6 +783,7 @@ WHERE thread_id = ?
         .bind(&continuation_authority.successor_turn_id)
         .bind(&continuation_authority.logical_successor_request_id)
         .bind(continuation_authority.decision_id.to_string())
+        .bind(dispatch_claim_id.map(|claim| claim.to_string()))
         .execute(&mut *transaction)
         .await?;
         if acquired.rows_affected() != 1 {
@@ -945,6 +1083,8 @@ SET phase = 'terminal',
     lease_id = NULL,
     lease_acquired_at_ms = NULL,
     lease_cancellation_epoch = NULL,
+    dispatch_claim_id = NULL,
+    dispatch_claimed_at_ms = NULL,
     deferred_terminal_disposition = 'await_user_turn',
     updated_at_ms = ?
 WHERE thread_id = ?
@@ -1040,6 +1180,8 @@ SELECT
     admission.lease_id AS admission_lease_id,
     admission.lease_acquired_at_ms AS admission_lease_acquired_at_ms,
     admission.lease_cancellation_epoch AS admission_lease_cancellation_epoch,
+    admission.dispatch_claim_id AS admission_dispatch_claim_id,
+    admission.dispatch_claimed_at_ms AS admission_dispatch_claimed_at_ms,
     admission.deferred_terminal_disposition AS admission_deferred_terminal_disposition,
     admission.retired_at_ms AS admission_retired_at_ms,
     admission.retirement_reason AS admission_retirement_reason,
@@ -1376,6 +1518,9 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
         };
         let lease_id: Option<String> = row.try_get("admission_lease_id")?;
         let lease_acquired_at_ms: Option<i64> = row.try_get("admission_lease_acquired_at_ms")?;
+        let dispatch_claim_id: Option<String> = row.try_get("admission_dispatch_claim_id")?;
+        let dispatch_claimed_at_ms: Option<i64> =
+            row.try_get("admission_dispatch_claimed_at_ms")?;
         let retired_at_ms: Option<i64> = row.try_get("admission_retired_at_ms")?;
         let retirement_reason: Option<String> = row.try_get("admission_retirement_reason")?;
         let record = GoalOwnerAdmissionRecord {
@@ -1425,6 +1570,12 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
                 .map(admission_epoch_millis_to_datetime)
                 .transpose()?,
             lease_cancellation_epoch: row.try_get("admission_lease_cancellation_epoch")?,
+            dispatch_claim_id: dispatch_claim_id
+                .map(|value| Uuid::parse_str(&value))
+                .transpose()?,
+            dispatch_claimed_at: dispatch_claimed_at_ms
+                .map(admission_epoch_millis_to_datetime)
+                .transpose()?,
             deferred_terminal_disposition: GoalOwnerAdmissionTerminalDisposition::try_from(
                 row.try_get::<String, _>("admission_deferred_terminal_disposition")?
                     .as_str(),
@@ -1801,8 +1952,10 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
         bail!("invalid goal-owner admission attempt counters")
     }
     let has_lease = record.lease_id.is_some();
+    let has_dispatch_claim = record.dispatch_claim_id.is_some();
     if has_lease != record.lease_acquired_at.is_some()
         || has_lease != record.lease_cancellation_epoch.is_some()
+        || has_dispatch_claim != record.dispatch_claimed_at.is_some()
         || record.retired_at.is_some() != record.retirement_reason.is_some()
     {
         bail!("contradictory goal-owner admission durable state")
@@ -1820,10 +1973,14 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
             {
                 bail!("contradictory non-terminal goal-owner admission state")
             }
+            if record.phase == GoalOwnerAdmissionPhase::Dormant && has_dispatch_claim {
+                bail!("dormant goal-owner admission cannot have a dispatch claim")
+            }
         }
         GoalOwnerAdmissionPhase::Acquired | GoalOwnerAdmissionPhase::InFlight => {
             if record.terminal_outcome != GoalOwnerAdmissionTerminalOutcome::None
                 || !has_lease
+                || has_dispatch_claim
                 || record.attempts_started == 0
                 || record.lease_cancellation_epoch != Some(record.authority.cancellation_epoch)
                 || record.deferred_terminal_disposition
@@ -1833,6 +1990,9 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
             }
         }
         GoalOwnerAdmissionPhase::Terminal => {
+            if has_dispatch_claim {
+                bail!("terminal goal-owner admission cannot have a dispatch claim")
+            }
             if record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::None
                 || !terminal_state_is_coherent(record, has_lease)
             {

@@ -37,15 +37,33 @@ use crate::StateDbHandle;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GoalOwnerContinuation {
     authority: GoalOwnerAdmissionContinuationAuthority,
+    dispatch_claim_id: Option<Uuid>,
 }
 
 impl GoalOwnerContinuation {
     pub fn new(authority: GoalOwnerAdmissionContinuationAuthority) -> Self {
-        Self { authority }
+        Self {
+            authority,
+            dispatch_claim_id: None,
+        }
+    }
+
+    pub fn with_dispatch_claim(
+        authority: GoalOwnerAdmissionContinuationAuthority,
+        dispatch_claim_id: Uuid,
+    ) -> Self {
+        Self {
+            authority,
+            dispatch_claim_id: Some(dispatch_claim_id),
+        }
     }
 
     pub(crate) fn authority(&self) -> &GoalOwnerAdmissionContinuationAuthority {
         &self.authority
+    }
+
+    pub(crate) fn dispatch_claim_id(&self) -> Option<Uuid> {
+        self.dispatch_claim_id
     }
 }
 
@@ -333,8 +351,9 @@ impl ModelRequestAdmissionBroker {
     pub(crate) async fn admit(
         &self,
         identity: &ModelRequestIdentity,
-        continuation_authority: Option<&GoalOwnerAdmissionContinuationAuthority>,
+        continuation: Option<&GoalOwnerContinuation>,
     ) -> Result<ModelRequestAdmissionDecision> {
+        let continuation_authority = continuation.map(GoalOwnerContinuation::authority);
         debug!(
             thread_id = %identity.thread_id,
             turn_id = ?identity.turn_id,
@@ -410,6 +429,14 @@ impl ModelRequestAdmissionBroker {
         {
             return Ok(ModelRequestAdmissionDecision::Dormant);
         }
+        let Some(dispatch_claim_id) =
+            continuation.and_then(GoalOwnerContinuation::dispatch_claim_id)
+        else {
+            return Ok(ModelRequestAdmissionDecision::Dormant);
+        };
+        if record.dispatch_claim_id != Some(dispatch_claim_id) {
+            return Ok(ModelRequestAdmissionDecision::Dormant);
+        }
         if record.phase != GoalOwnerAdmissionPhase::Pending {
             return Ok(decision_for_continuation_record(&record));
         }
@@ -419,7 +446,7 @@ impl ModelRequestAdmissionBroker {
         }
 
         let acquire_result = store
-            .try_acquire(continuation_authority, now)
+            .try_acquire_claimed(continuation_authority, dispatch_claim_id, now)
             .await
             .map_err(storage_error)?;
         match acquire_result {
@@ -444,6 +471,8 @@ impl ModelRequestAdmissionBroker {
                         if continuation_matches_record(continuation_authority, &record)
                             && continuation_matches_identity(continuation_authority, identity)
                             && record_matches_identity(&record, identity)
+                            && record.dispatch_claim_id
+                                == continuation.and_then(GoalOwnerContinuation::dispatch_claim_id)
                         {
                             decision_for_continuation_record(&record)
                         } else {
