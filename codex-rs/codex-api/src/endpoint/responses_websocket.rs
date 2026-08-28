@@ -11,6 +11,7 @@ use crate::rate_limits::parse_rate_limit_event;
 use crate::safety_buffering::treatment_from_headers;
 use crate::sse::ResponsesStreamEvent;
 use crate::sse::process_responses_event;
+use crate::telemetry::RequestAttemptObserver;
 use crate::telemetry::WebsocketTelemetry;
 use codex_client::TransportError;
 use codex_http_client::HttpClientFactory;
@@ -238,6 +239,30 @@ impl ResponsesWebsocketConnection {
         connection_reused: bool,
         turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
+        self.stream_request_observed(request, connection_reused, turn_state, None)
+            .await
+    }
+
+    /// Streams a request while invoking `observer` immediately before the
+    /// serialized request is sent on the websocket.
+    pub async fn stream_request_with_observer(
+        &self,
+        request: ResponsesWsRequest<'_>,
+        connection_reused: bool,
+        turn_state: Option<Arc<OnceLock<String>>>,
+        observer: Arc<dyn RequestAttemptObserver>,
+    ) -> Result<ResponseStream, ApiError> {
+        self.stream_request_observed(request, connection_reused, turn_state, Some(observer))
+            .await
+    }
+
+    async fn stream_request_observed(
+        &self,
+        request: ResponsesWsRequest<'_>,
+        connection_reused: bool,
+        turn_state: Option<Arc<OnceLock<String>>>,
+        observer: Option<Arc<dyn RequestAttemptObserver>>,
+    ) -> Result<ResponseStream, ApiError> {
         let (tx_event, rx_event) =
             mpsc::channel::<std::result::Result<ResponseEvent, ApiError>>(1600);
         let stream = Arc::clone(&self.stream);
@@ -246,6 +271,7 @@ impl ResponsesWebsocketConnection {
         let models_etag = self.models_etag.clone();
         let server_model = self.server_model.clone();
         let telemetry = self.telemetry.clone();
+        let observer_for_task = observer;
         let ResponsesWsRequest::ResponseCreate(ws_request) = &request;
         let client_metadata = ws_request.client_metadata.as_ref();
         let timing_log_context = ResponsesWebsocketTimingLogContext {
@@ -310,6 +336,7 @@ impl ResponsesWebsocketConnection {
                         telemetry,
                         turn_state.as_deref(),
                         &timing_log_context,
+                        observer_for_task.as_ref(),
                     )
                     .await
                 };
@@ -320,6 +347,9 @@ impl ResponsesWebsocketConnection {
                     let failed_stream = guard.take();
                     drop(guard);
                     drop(failed_stream);
+                    if let Some(observer) = observer_for_task.as_ref() {
+                        observer.on_request_failure(&err.to_string());
+                    }
                     let _ = tx_event.send(Err(err)).await;
                 }
             }
@@ -681,6 +711,7 @@ async fn run_websocket_response_stream(
     telemetry: Option<Arc<dyn WebsocketTelemetry>>,
     turn_state: Option<&OnceLock<String>>,
     timing_log_context: &ResponsesWebsocketTimingLogContext,
+    observer: Option<&Arc<dyn RequestAttemptObserver>>,
 ) -> Result<(), ApiError> {
     let mut last_server_model: Option<String> = None;
     let mut last_server_model_identity: Option<ResponseModelIdentity> = None;
@@ -691,6 +722,7 @@ async fn run_websocket_response_stream(
         idle_timeout,
         telemetry.as_ref(),
         timing_log_context.connection_reused,
+        observer,
     )
     .await?;
 
@@ -882,8 +914,12 @@ async fn send_websocket_request(
     idle_timeout: Duration,
     telemetry: Option<&Arc<dyn WebsocketTelemetry>>,
     connection_reused: bool,
+    observer: Option<&Arc<dyn RequestAttemptObserver>>,
 ) -> Result<(), ApiError> {
     let request_start = Instant::now();
+    if let Some(observer) = observer {
+        observer.on_request_open();
+    }
     let result = tokio::time::timeout(
         idle_timeout,
         ws_stream.send(Message::Text(request_text.into())),

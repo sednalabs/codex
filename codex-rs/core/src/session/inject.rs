@@ -3,6 +3,7 @@ use super::session::Session;
 use super::turn_context::TurnContext;
 use crate::codex_thread::TryStartTurnIfIdleError;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
+use crate::GoalOwnerContinuation;
 use crate::state::ActiveTurn;
 use crate::state::TurnState;
 use crate::tasks::RegularTask;
@@ -46,6 +47,15 @@ impl Session {
         self: &Arc<Self>,
         input: Vec<ResponseItem>,
     ) -> Result<(), TryStartTurnIfIdleError> {
+        self.try_start_turn_if_idle_with_goal_owner_continuation(input, None)
+            .await
+    }
+
+    pub(crate) async fn try_start_turn_if_idle_with_goal_owner_continuation(
+        self: &Arc<Self>,
+        input: Vec<ResponseItem>,
+        goal_owner_continuation: Option<GoalOwnerContinuation>,
+    ) -> Result<(), TryStartTurnIfIdleError> {
         if self.input_queue.has_trigger_turn_mailbox_items().await {
             return Err(TryStartTurnIfIdleError::new(
                 TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
@@ -81,9 +91,14 @@ impl Session {
             ));
         }
 
-        let turn_context = self
-            .new_default_turn_with_sub_id(uuid::Uuid::new_v4().to_string())
-            .await;
+        let sub_id = goal_owner_continuation
+            .as_ref()
+            .map(|continuation| continuation.authority().successor_turn_id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let turn_context = self.new_default_turn_with_sub_id(sub_id).await;
+        if let Some(continuation) = goal_owner_continuation {
+            turn_context.extension_data.insert(continuation);
+        }
         if turn_context.mode == ModeKind::Plan {
             self.clear_reserved_idle_turn(&turn_state).await;
             self.maybe_start_turn_for_pending_work().await;

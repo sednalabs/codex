@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::GoalOwnerAdmissionRef;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InferenceCallEvent;
 use codex_protocol::protocol::InferenceCallSource;
@@ -135,6 +136,8 @@ pub struct InferenceAttemptMetadata {
     pub cache_state: InferenceCacheState,
     /// Admission state observed for this attempt.
     pub admission: InferenceAdmission,
+    /// Protocol-neutral durable authority for a scheduled goal-owner successor.
+    pub goal_owner_admission_ref: Option<GoalOwnerAdmissionRef>,
     /// Caller-provided start timestamp. This is captured at the pre-I/O seam.
     pub request_started_at_ms: i64,
 }
@@ -393,6 +396,12 @@ fn protocol_event_for_observation(event: InferenceObservationEvent) -> Option<In
         status,
         transport: attempt.transport,
         source,
+        session_source: Some(attempt.session_source.to_string()),
+        parent_thread_id: attempt.parent_thread_id,
+        request_kind: Some(request_kind_name(attempt.request_kind).to_string()),
+        cache_state: Some(cache_state_name(attempt.cache_state).to_string()),
+        admission: Some(admission_name(attempt.admission).to_string()),
+        goal_owner_admission_ref: attempt.goal_owner_admission_ref,
         configured_provider: attempt.provider.configured_provider,
         configured_model: attempt.provider.configured_model,
         requested_model: attempt.provider.requested_model,
@@ -413,6 +422,32 @@ fn protocol_event_for_observation(event: InferenceObservationEvent) -> Option<In
         omitted_fields: None,
     }
     .into_durable()
+}
+
+const fn request_kind_name(kind: InferenceRequestKind) -> &'static str {
+    match kind {
+        InferenceRequestKind::Turn => "turn",
+        InferenceRequestKind::LocalCompaction => "local_compaction",
+        InferenceRequestKind::RemoteCompactionV2 => "remote_compaction_v2",
+        InferenceRequestKind::RemoteCompact => "remote_compact",
+    }
+}
+
+const fn cache_state_name(state: InferenceCacheState) -> &'static str {
+    match state {
+        InferenceCacheState::Unknown => "unknown",
+        InferenceCacheState::Hit => "hit",
+        InferenceCacheState::Miss => "miss",
+        InferenceCacheState::NotApplicable => "not_applicable",
+    }
+}
+
+const fn admission_name(admission: InferenceAdmission) -> &'static str {
+    match admission {
+        InferenceAdmission::Unknown => "unknown",
+        InferenceAdmission::Admitted => "admitted",
+        InferenceAdmission::Denied => "denied",
+    }
 }
 
 /// In-memory sink intended for tests and local composition probes.

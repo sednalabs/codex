@@ -449,12 +449,21 @@ impl CodexThread {
     pub async fn try_start_goal_continuation_if_idle(
         &self,
         items: Vec<ResponseItem>,
+        goal_owner_continuation: crate::GoalOwnerContinuation,
     ) -> Result<(), TryStartTurnIfIdleError> {
         self.session
             .services
             .thread_extension_data
             .insert(codex_extension_api::GoalContinuationHealthCheck);
-        match self.try_start_turn_if_idle(items).await {
+        let _residency_transition = self.session.input_queue.begin_residency_activity().await;
+        match self
+            .session
+            .try_start_turn_if_idle_with_goal_owner_continuation(
+                items,
+                Some(goal_owner_continuation),
+            )
+            .await
+        {
             Ok(()) => Ok(()),
             Err(err) => {
                 self.session

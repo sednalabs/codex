@@ -46,6 +46,7 @@ use codex_api::RealtimeSessionConfig as ApiRealtimeSessionConfig;
 use codex_api::Reasoning;
 use codex_api::ReasoningContext;
 use codex_api::RequestTelemetry;
+use codex_api::RequestAttemptObserver;
 use codex_api::ReqwestTransport;
 use codex_api::ResponseCreateWsRequest;
 use codex_api::ResponsesApiRequest;
@@ -84,12 +85,21 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::InternalSessionSource;
+use codex_protocol::protocol::InferenceCallTransport;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout_trace::CompactionTraceContext;
-use codex_rollout_trace::InferenceTraceAttempt;
+use codex_protocol::protocol::GoalOwnerAdmissionRef;
+use codex_rollout_trace::InferenceAdmission;
+use codex_rollout_trace::InferenceAttemptMetadata;
+use codex_rollout_trace::InferenceCacheState;
+use codex_rollout_trace::InferenceObservationRecorder;
+use codex_rollout_trace::InferenceObservationSource;
+use codex_rollout_trace::InferenceProviderIdentity;
+use codex_rollout_trace::InferenceRequestKind as TraceInferenceRequestKind;
 use codex_rollout_trace::InferenceTraceContext;
+use codex_rollout_trace::ProviderTerminalResult;
 use codex_tools::create_tools_json_for_responses_api;
 use codex_tools::create_tools_raw_json_for_responses_api;
 use eventsource_stream::Event;
@@ -101,6 +111,8 @@ use http::StatusCode as HttpStatusCode;
 use reqwest::StatusCode;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::error::TryRecvError;
@@ -120,6 +132,7 @@ use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::feedback_tags;
 use crate::model_request_admission::InferenceRequestKind;
+use crate::model_request_admission::GoalOwnerContinuation;
 use crate::model_request_admission::ModelRequestAdmissionBroker;
 use crate::model_request_admission::ModelRequestAdmissionDecision;
 use crate::model_request_admission::ModelRequestIdentity;
@@ -286,6 +299,8 @@ pub struct ModelClient {
 pub struct ModelClientSession {
     client: ModelClient,
     websocket_session: WebsocketSession,
+    /// Exact durable authority for an admitted goal-owner successor turn.
+    goal_owner_continuation: Option<GoalOwnerContinuation>,
     /// Turn state for sticky routing.
     ///
     /// This is an `OnceLock` that stores the turn state value received from the server
@@ -515,7 +530,9 @@ impl ModelClient {
         model_info: &ModelInfo,
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
+        goal_owner_continuation: Option<&GoalOwnerContinuation>,
     ) -> Result<ModelRequestAdmissionDecision> {
+        let continuation_authority = goal_owner_continuation.map(GoalOwnerContinuation::authority);
         self.state
             .request_admission_broker
             .admit(
@@ -529,10 +546,11 @@ impl ModelClient {
                     model_info.slug.clone(),
                     service_tier,
                     self.state.session_source.clone(),
-                    /*parent_continuity_decision_id*/ None,
-                    /*logical_request_id*/ None,
+                    continuation_authority.map(|authority| authority.decision_id),
+                    continuation_authority
+                        .map(|authority| authority.logical_successor_request_id.clone()),
                 ),
-                /*continuation_authority*/ None,
+                continuation_authority,
             )
             .await
     }
@@ -569,6 +587,7 @@ impl ModelClient {
         ModelClientSession {
             client: self.clone(),
             websocket_session: self.take_cached_websocket_session(),
+            goal_owner_continuation: None,
             turn_state: Arc::new(OnceLock::new()),
         }
     }
@@ -642,6 +661,7 @@ impl ModelClient {
                 model_info,
                 settings.service_tier.clone(),
                 responses_metadata,
+                None,
             )
             .await?;
         let result = async {
@@ -1234,6 +1254,111 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    pub(crate) fn set_goal_owner_continuation(&mut self, continuation: GoalOwnerContinuation) {
+        self.goal_owner_continuation = Some(continuation);
+    }
+
+    fn inference_observation_metadata(
+        &self,
+        request_kind: InferenceRequestKind,
+        request: &ResponsesApiRequest,
+        responses_metadata: &CodexResponsesMetadata,
+        transport: InferenceCallTransport,
+        admission: InferenceAdmission,
+        cache_state: InferenceCacheState,
+    ) -> InferenceAttemptMetadata {
+        let session_source = self.client.state.session_source.clone();
+        let (source_parent_thread_id, source) = match &session_source {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                ..
+            }) => (
+                Some(*parent_thread_id),
+                Some(InferenceObservationSource::Direct),
+            ),
+            _ if self.goal_owner_continuation.is_some() => (
+                None,
+                Some(InferenceObservationSource::HostContinuityCheck),
+            ),
+            _ => (None, Some(InferenceObservationSource::Direct)),
+        };
+        let parent_thread_id = responses_metadata.parent_thread_id.or(source_parent_thread_id);
+        let goal_owner_admission_ref = self
+            .goal_owner_continuation
+            .as_ref()
+            .map(|continuation| {
+                let authority = continuation.authority();
+                GoalOwnerAdmissionRef {
+                    goal_id: authority.authority.goal_id.clone(),
+                    generation: authority.authority.generation,
+                    cancellation_epoch: authority.authority.cancellation_epoch,
+                    decision_id: authority.decision_id.to_string(),
+                    intended_request_kind: authority.intended_request_kind.clone(),
+                    successor_turn_id: authority.successor_turn_id.clone(),
+                    logical_successor_request_id: authority.logical_successor_request_id.clone(),
+                }
+            });
+        let request_started_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+            .unwrap_or(i64::MAX);
+        InferenceAttemptMetadata {
+            inference_call_id: uuid::Uuid::now_v7().to_string(),
+            thread_id: self.client.state.thread_id,
+            turn_id: responses_metadata.turn_id.clone().unwrap_or_default(),
+            parent_thread_id,
+            spawn_request_id: None,
+            source,
+            session_source,
+            request_kind: match request_kind {
+                InferenceRequestKind::Turn => TraceInferenceRequestKind::Turn,
+                InferenceRequestKind::LocalCompaction => TraceInferenceRequestKind::LocalCompaction,
+                InferenceRequestKind::RemoteCompactionV2 => {
+                    TraceInferenceRequestKind::RemoteCompactionV2
+                }
+                InferenceRequestKind::RemoteCompact => TraceInferenceRequestKind::RemoteCompact,
+            },
+            transport,
+            provider: InferenceProviderIdentity {
+                configured_provider: self.client.state.configured_provider_key.clone(),
+                configured_model: self.client.state.configured_requested_model.clone(),
+                requested_model: request.model.clone(),
+                effective_provider: self.client.state.provider.info().name.clone(),
+                effective_model: request.model.clone(),
+                requested_service_tier: request.service_tier.clone(),
+            },
+            cache_state,
+            admission,
+            goal_owner_admission_ref,
+            request_started_at_ms,
+        }
+    }
+
+    fn inference_observation_observer(
+        &self,
+        inference_trace: &InferenceTraceContext,
+        request_kind: InferenceRequestKind,
+        request: &ResponsesApiRequest,
+        responses_metadata: &CodexResponsesMetadata,
+        transport: InferenceCallTransport,
+        admission: InferenceAdmission,
+        cache_state: InferenceCacheState,
+    ) -> Arc<InferenceRequestAttemptObserver> {
+        Arc::new(InferenceRequestAttemptObserver {
+            trace: inference_trace.clone(),
+            metadata: self.inference_observation_metadata(
+                request_kind,
+                request,
+                responses_metadata,
+                transport,
+                admission,
+                cache_state,
+            ),
+            current: StdMutex::new(None),
+        })
+    }
+
     pub(crate) fn turn_state(&self) -> Arc<OnceLock<String>> {
         Arc::clone(&self.turn_state)
     }
@@ -1518,6 +1643,7 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
         admission: &ModelRequestAdmissionDecision,
+        request_kind: InferenceRequestKind,
     ) -> Result<ResponseStream> {
         let auth_manager = self.client.state.provider.auth_manager();
         let mut auth_recovery = auth_manager
@@ -1564,20 +1690,48 @@ impl ModelClientSession {
                 .prepare_response_items_for_request(&mut request.input);
             let request_session_telemetry =
                 session_telemetry_for_request(session_telemetry, &request);
-            let inference_trace_attempt = inference_trace.start_attempt();
-            inference_trace_attempt.add_request_headers(&mut options.extra_headers);
-            inference_trace_attempt.record_started(&request);
             let client = ApiResponsesClient::new(transport, api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
-            let mut request_lease = admission.begin_network_request().await?;
-            let stream_result = client.stream_request(request, options).await;
+            let observer = self.inference_observation_observer(
+                inference_trace,
+                request_kind,
+                &request,
+                responses_metadata,
+                InferenceCallTransport::ResponsesHttp,
+                if admission.is_admitted() {
+                    InferenceAdmission::Admitted
+                } else {
+                    InferenceAdmission::Unknown
+                },
+                InferenceCacheState::Unknown,
+            );
+            let mut request_lease = match admission.begin_network_request().await {
+                Ok(lease) => lease,
+                Err(error) => {
+                    let metadata = self.inference_observation_metadata(
+                        request_kind,
+                        &request,
+                        responses_metadata,
+                        InferenceCallTransport::ResponsesHttp,
+                        InferenceAdmission::Denied,
+                        InferenceCacheState::Unknown,
+                    );
+                    let recorder = inference_trace.observation_recorder(metadata);
+                    let _ = recorder.record_local_denial(error.to_string());
+                    return Err(error);
+                }
+            };
+            let stream_result = client
+                .stream_request_with_observer(request, options, Arc::clone(&observer) as Arc<dyn RequestAttemptObserver>)
+                .await;
 
             match stream_result {
                 Ok(stream) => {
+                    let recorder = observer.take_current();
                     let (stream, _) = map_response_stream(
                         stream,
                         request_session_telemetry,
-                        inference_trace_attempt,
+                        recorder,
                         Arc::clone(&self.client.state.provider),
                         request_lease,
                     );
@@ -1586,13 +1740,6 @@ impl ModelClientSession {
                 Err(ApiError::Transport(
                     unauthorized_transport @ TransportError::Http { status, .. },
                 )) if status == StatusCode::UNAUTHORIZED => {
-                    let response_debug_context =
-                        extract_response_debug_context(&unauthorized_transport);
-                    inference_trace_attempt.record_failed(
-                        &unauthorized_transport,
-                        response_debug_context.request_id.as_deref(),
-                        /*output_items*/ &[],
-                    );
                     if request_lease.is_admitted() {
                         if let Err(finalization_error) = request_lease.provider_denied().await {
                             warn!(error = %finalization_error, "failed to record admitted Responses provider denial");
@@ -1613,15 +1760,8 @@ impl ModelClientSession {
                     continue;
                 }
                 Err(err) => {
-                    let response_debug_context =
-                        extract_response_debug_context_from_api_error(&err);
                     let provider_denial = api_error_is_definitive_provider_denial(&err);
                     let err = self.client.state.provider.map_api_error(err);
-                    inference_trace_attempt.record_failed(
-                        &err,
-                        response_debug_context.request_id.as_deref(),
-                        /*output_items*/ &[],
-                    );
                     if request_lease.is_admitted() {
                         let finalization = if provider_denial {
                             request_lease.provider_denied().await
@@ -1670,6 +1810,7 @@ impl ModelClientSession {
         request_trace: Option<W3cTraceContext>,
         inference_trace: &InferenceTraceContext,
         admission: &ModelRequestAdmissionDecision,
+        request_kind: InferenceRequestKind,
     ) -> Result<WebsocketStreamOutcome> {
         let auth_manager = self.client.state.provider.auth_manager();
 
@@ -1744,20 +1885,6 @@ impl ModelClientSession {
 
             let (incremental_request, previous_response_id_from_untraced_warmup) =
                 self.prepare_websocket_request(&request);
-            let inference_trace_attempt = if warmup {
-                // Prewarm sends `generate=false`; it is connection setup, not a
-                // model inference attempt that should appear in rollout traces.
-                InferenceTraceAttempt::disabled()
-            } else {
-                inference_trace.start_attempt()
-            };
-            if previous_response_id_from_untraced_warmup {
-                // The transport can reuse an untraced warmup response id and omit the
-                // already-sent input, but rollout replay needs the logical model-visible
-                // request rather than the compressed websocket delta.
-                inference_trace_attempt.record_started(&request);
-            }
-
             let (previous_response_id, mut incremental_items) = match incremental_request {
                 Some((response_id, items)) => (Some(response_id), Some(items)),
                 None => (None, None),
@@ -1788,8 +1915,27 @@ impl ModelClientSession {
             };
             let mut ws_request = ResponsesWsRequest::ResponseCreate(ws_payload);
             stamp_ws_stream_request_start_ms(&mut ws_request);
-            if !previous_response_id_from_untraced_warmup {
-                inference_trace_attempt.record_started(&ws_request);
+            let observer = (!warmup).then(|| {
+                self.inference_observation_observer(
+                    inference_trace,
+                    request_kind,
+                    &request,
+                    responses_metadata,
+                    InferenceCallTransport::ResponsesWebsocket,
+                    if admission.is_admitted() {
+                        InferenceAdmission::Admitted
+                    } else {
+                        InferenceAdmission::Unknown
+                    },
+                    if previous_response_id_from_untraced_warmup {
+                        InferenceCacheState::Hit
+                    } else {
+                        InferenceCacheState::Miss
+                    },
+                )
+            });
+            if let Some(observer) = observer.as_ref() {
+                observer.prepare();
             }
 
             let websocket_connection =
@@ -1799,13 +1945,27 @@ impl ModelClientSession {
                     ))
                 })?;
             let mut request_lease = admission.begin_network_request().await?;
-            let stream_result = websocket_connection
-                .stream_request(
-                    ws_request,
-                    self.websocket_session.connection_reused(),
-                    Some(Arc::clone(&self.turn_state)),
-                )
-                .await;
+            let stream_result = match observer.as_ref() {
+                Some(observer) => {
+                    websocket_connection
+                        .stream_request_with_observer(
+                            ws_request,
+                            self.websocket_session.connection_reused(),
+                            Some(Arc::clone(&self.turn_state)),
+                            Arc::clone(observer) as Arc<dyn RequestAttemptObserver>,
+                        )
+                        .await
+                }
+                None => {
+                    websocket_connection
+                        .stream_request(
+                            ws_request,
+                            self.websocket_session.connection_reused(),
+                            Some(Arc::clone(&self.turn_state)),
+                        )
+                        .await
+                }
+            };
             if let Some(original_item_ids) = original_item_ids {
                 for (item, original_item_id) in request.input.iter_mut().zip(original_item_ids) {
                     item.set_id(original_item_id);
@@ -1817,11 +1977,6 @@ impl ModelClientSession {
                 let response_debug_context = extract_response_debug_context_from_api_error(&err);
                 let provider_denial = api_error_is_definitive_provider_denial(&err);
                 let err = self.client.state.provider.map_api_error(err);
-                inference_trace_attempt.record_failed(
-                    &err,
-                    response_debug_context.request_id.as_deref(),
-                    /*output_items*/ &[],
-                );
                 (err, provider_denial)
             });
             let stream_result = match stream_result {
@@ -1842,10 +1997,23 @@ impl ModelClientSession {
                 }
                 Err((error, _)) => return Err(error),
             };
+            let recorder = observer
+                .as_ref()
+                .map(|observer| observer.take_current())
+                .unwrap_or_else(|| {
+                    inference_trace.observation_recorder(self.inference_observation_metadata(
+                        request_kind,
+                        &request,
+                        responses_metadata,
+                        InferenceCallTransport::ResponsesWebsocket,
+                        InferenceAdmission::Unknown,
+                        InferenceCacheState::NotApplicable,
+                    ))
+                });
             let (stream, last_request_rx) = map_response_stream(
                 stream_result,
                 request_session_telemetry,
-                inference_trace_attempt,
+                recorder,
                 Arc::clone(&self.client.state.provider),
                 request_lease,
             );
@@ -1925,6 +2093,7 @@ impl ModelClientSession {
                 current_span_w3c_trace_context(),
                 &disabled_trace,
                 &admission,
+                InferenceRequestKind::Turn,
             )
             .await
         {
@@ -1975,6 +2144,9 @@ impl ModelClientSession {
                 model_info,
                 service_tier.clone(),
                 responses_metadata,
+                (request_kind == InferenceRequestKind::Turn)
+                    .then(|| self.goal_owner_continuation.as_ref())
+                    .flatten(),
             )
             .await?;
         let wire_api = self.client.state.provider.info().wire_api;
@@ -1995,6 +2167,7 @@ impl ModelClientSession {
                             request_trace,
                             inference_trace,
                             &admission,
+                            request_kind,
                         )
                         .await;
                     match websocket_result {
@@ -2019,6 +2192,7 @@ impl ModelClientSession {
                     responses_metadata,
                     inference_trace,
                     &admission,
+                    request_kind,
                 )
                 .await
             }
@@ -2075,6 +2249,65 @@ impl ModelClientSession {
             .force_http_fallback(session_telemetry, model_info);
         self.websocket_session = WebsocketSession::default();
         activated
+    }
+}
+
+struct InferenceRequestAttemptObserver {
+    trace: InferenceTraceContext,
+    metadata: InferenceAttemptMetadata,
+    current: StdMutex<Option<InferenceObservationRecorder>>,
+}
+
+impl InferenceRequestAttemptObserver {
+    fn prepare(&self) {
+        let recorder = self.trace.observation_recorder(self.metadata.clone());
+        *self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(recorder);
+    }
+
+    fn take_current(&self) -> InferenceObservationRecorder {
+        self.current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .unwrap_or_else(|| self.trace.observation_recorder(self.metadata.clone()))
+    }
+}
+
+impl RequestAttemptObserver for InferenceRequestAttemptObserver {
+    fn on_request_open(&self) {
+        let recorder = self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .unwrap_or_else(|| {
+                let mut metadata = self.metadata.clone();
+                metadata.inference_call_id = uuid::Uuid::now_v7().to_string();
+                self.trace.observation_recorder(metadata)
+            });
+        let _ = recorder.record_physical_request_opened();
+        *self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(recorder);
+    }
+
+    fn on_request_failure(&self, error: &str) {
+        let Some(recorder) = self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        else {
+            return;
+        };
+        let _ = recorder.record_provider_terminal(ProviderTerminalResult::Failed {
+            upstream_request_id: None,
+            error: error.to_string(),
+        });
     }
 }
 
@@ -2188,7 +2421,7 @@ fn provider_for_admission(
 fn map_response_stream(
     api_stream: codex_api::ResponseStream,
     session_telemetry: SessionTelemetry,
-    inference_trace_attempt: InferenceTraceAttempt,
+    inference_observation_recorder: InferenceObservationRecorder,
     provider: SharedModelProvider,
     request_lease: ModelRequestLeaseGuard,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>) {
@@ -2204,17 +2437,36 @@ fn map_response_stream(
         upstream_request_id,
         api_stream,
         session_telemetry,
-        inference_trace_attempt,
+        inference_observation_recorder,
         provider,
         request_lease,
     )
+}
+
+fn record_stream_cancellation(
+    recorder: &InferenceObservationRecorder,
+    provider_acknowledged: bool,
+    upstream_request_id: Option<&str>,
+) {
+    let terminal = if provider_acknowledged {
+        ProviderTerminalResult::Cancelled {
+            upstream_request_id: upstream_request_id.map(str::to_string),
+            reason: STREAM_DROPPED_REASON.to_string(),
+        }
+    } else {
+        // Cancellation before the provider acknowledgement cannot establish
+        // whether the physical request took effect.
+        let _ = recorder.record_transport_uncertain(STREAM_DROPPED_REASON);
+        return;
+    };
+    let _ = recorder.record_provider_terminal(terminal);
 }
 
 fn map_response_events<S>(
     upstream_request_id: Option<String>,
     api_stream: S,
     session_telemetry: SessionTelemetry,
-    inference_trace_attempt: InferenceTraceAttempt,
+    inference_observation_recorder: InferenceObservationRecorder,
     provider: SharedModelProvider,
     mut request_lease: ModelRequestLeaseGuard,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>)
@@ -2234,6 +2486,7 @@ where
         let mut logged_error = false;
         let mut tx_last_response = Some(tx_last_response);
         let mut items_added: Vec<ResponseItem> = Vec::new();
+        let mut provider_acknowledged = false;
         let (request_start, mut ttft_ms) = (Instant::now(), None);
         let mut api_stream = api_stream;
         let upstream_request_id = upstream_request_id.as_deref();
@@ -2243,10 +2496,10 @@ where
         loop {
             let event = tokio::select! {
                 _ = consumer_dropped.cancelled() => {
-                    inference_trace_attempt.record_cancelled(
-                        STREAM_DROPPED_REASON,
+                    record_stream_cancellation(
+                        &inference_observation_recorder,
+                        provider_acknowledged,
                         upstream_request_id,
-                        &items_added,
                     );
                     if let Err(error) = request_lease.cancelled_or_dropped().await {
                         warn!(error = %error, "failed to record dropped admitted Responses stream");
@@ -2266,10 +2519,10 @@ where
                         .await
                         .is_err()
                     {
-                        inference_trace_attempt.record_cancelled(
-                            STREAM_DROPPED_REASON,
+                        record_stream_cancellation(
+                            &inference_observation_recorder,
+                            provider_acknowledged,
                             upstream_request_id,
-                            &items_added,
                         );
                         if let Err(error) = request_lease.cancelled_or_dropped().await {
                             warn!(error = %error, "failed to record dropped admitted Responses stream");
@@ -2286,11 +2539,16 @@ where
                     if let Some(usage) = &token_usage {
                         session_telemetry.sse_event_completed(usage, ttft_ms);
                     }
-                    inference_trace_attempt.record_completed(
-                        &response_id,
-                        upstream_request_id,
-                        &token_usage,
-                        &items_added,
+                    let _ = inference_observation_recorder.record_provider_terminal(
+                        ProviderTerminalResult::Completed {
+                            response_id: Some(response_id.clone()),
+                            upstream_request_id: upstream_request_id.map(str::to_string),
+                            observed_provider: None,
+                            observed_model: None,
+                            observed_model_snapshot: None,
+                            observed_service_tier: None,
+                            token_usage: token_usage.clone(),
+                        },
                     );
                     if let Err(error) = request_lease.completed().await {
                         let _ = tx_event.send(Err(error)).await;
@@ -2321,16 +2579,19 @@ where
                         let _ = tx_event.send(Err(error)).await;
                         return;
                     }
+                    if matches!(&event, ResponseEvent::Created) {
+                        provider_acknowledged = true;
+                    }
                     if matches!(&event, ResponseEvent::OutputItemAdded(_)) && ttft_ms.is_none() {
                         ttft_ms = Some(
                             i64::try_from(request_start.elapsed().as_millis()).unwrap_or(i64::MAX),
                         );
                     }
                     if tx_event.send(Ok(event)).await.is_err() {
-                        inference_trace_attempt.record_cancelled(
-                            STREAM_DROPPED_REASON,
+                        record_stream_cancellation(
+                            &inference_observation_recorder,
+                            provider_acknowledged,
                             upstream_request_id,
-                            &items_added,
                         );
                         if let Err(error) = request_lease.cancelled_or_dropped().await {
                             warn!(error = %error, "failed to record dropped admitted Responses stream");
@@ -2348,11 +2609,18 @@ where
                     }
                     let provider_denial = api_error_is_definitive_provider_denial(&err);
                     let mapped = provider.map_api_error(err);
-                    inference_trace_attempt.record_failed(
-                        &mapped,
-                        upstream_request_id,
-                        &items_added,
-                    );
+                    let terminal = if matches!(mapped.details(), CodexErrorDetails::UsageLimitReached(_)) {
+                        ProviderTerminalResult::UsageLimitReached {
+                            upstream_request_id: upstream_request_id.map(str::to_string),
+                            detail: Some("usage_limit_reached".to_string()),
+                        }
+                    } else {
+                        ProviderTerminalResult::Failed {
+                            upstream_request_id: upstream_request_id.map(str::to_string),
+                            error: mapped.to_string(),
+                        }
+                    };
+                    let _ = inference_observation_recorder.record_provider_terminal(terminal);
                     if !logged_error {
                         session_telemetry.see_event_completed_failed(&mapped);
                         logged_error = true;
@@ -2376,10 +2644,8 @@ where
                 }
             }
         }
-        inference_trace_attempt.record_failed(
+        let _ = inference_observation_recorder.record_transport_uncertain(
             "stream closed before response.completed",
-            upstream_request_id,
-            &items_added,
         );
         if request_lease.is_admitted() {
             if let Err(error) = request_lease.transport_lost().await {

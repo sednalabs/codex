@@ -98,6 +98,7 @@ pub use crate::search::OpenOperation;
 pub use crate::search::ScreenshotOperation;
 pub use crate::search::SearchCommands;
 pub use crate::search::SearchContextSize;
+pub use crate::telemetry::RequestAttemptObserver;
 pub use crate::search::SearchFilters;
 pub use crate::search::SearchImageSettings;
 pub use crate::search::SearchInput;

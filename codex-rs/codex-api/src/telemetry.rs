@@ -42,6 +42,16 @@ pub trait WebsocketTelemetry: Send + Sync {
     );
 }
 
+/// Callback invoked at the exact boundary of each physical HTTP attempt.
+///
+/// The callback runs inside the retry closure immediately before the request
+/// reaches the underlying transport, so a retry receives its own lifecycle
+/// opportunity rather than sharing a pre-retry observation.
+pub trait RequestAttemptObserver: Send + Sync {
+    fn on_request_open(&self);
+    fn on_request_failure(&self, error: &str);
+}
+
 pub(crate) trait WithStatus {
     fn status(&self) -> StatusCode;
 }
@@ -84,6 +94,42 @@ where
         async move {
             let start = Instant::now();
             let result = send(req).await;
+            if let Some(t) = telemetry.as_ref() {
+                let (status, err) = match &result {
+                    Ok(resp) => (Some(resp.status()), None),
+                    Err(err) => (http_status(err), Some(err)),
+                };
+                t.on_request(attempt, status, err, start.elapsed());
+            }
+            result
+        }
+    })
+    .await
+}
+
+pub(crate) async fn run_with_request_telemetry_observed<T, F, Fut>(
+    policy: RetryPolicy,
+    telemetry: Option<Arc<dyn RequestTelemetry>>,
+    observer: Arc<dyn RequestAttemptObserver>,
+    make_request: impl FnMut() -> Request,
+    send: F,
+) -> Result<T, TransportError>
+where
+    T: WithStatus,
+    F: Clone + Fn(Request) -> Fut,
+    Fut: Future<Output = Result<T, TransportError>>,
+{
+    run_with_retry(policy, make_request, move |req, attempt| {
+        let telemetry = telemetry.clone();
+        let send = send.clone();
+        let observer = Arc::clone(&observer);
+        async move {
+            let start = Instant::now();
+            observer.on_request_open();
+            let result = send(req).await;
+            if let Err(error) = &result {
+                observer.on_request_failure(&error.to_string());
+            }
             if let Some(t) = telemetry.as_ref() {
                 let (status, err) = match &result {
                     Ok(resp) => (Some(resp.status()), None),
