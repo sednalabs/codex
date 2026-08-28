@@ -21,6 +21,20 @@ fn fenced(
     GoalContinuationFenceCoordinator::new().continuation(authority)
 }
 
+#[test]
+fn fence_guard_rejects_revoke_and_reenable_with_stale_epoch() {
+    let fence = Arc::new(GoalContinuationFence::new());
+    let stale = fence.enter(0).expect("initial epoch should enter");
+    assert!(stale.is_current_epoch());
+
+    fence.revoke();
+    assert!(!stale.is_current_epoch());
+
+    let current = fence.enter(1).expect("new epoch should enter");
+    assert!(current.is_current_epoch());
+    assert!(!stale.is_current_epoch());
+}
+
 fn identity(thread_id: ThreadId, kind: InferenceRequestKind) -> ModelRequestIdentity {
     identity_with(thread_id, kind, SUCCESSOR_TURN_ID, SUCCESSOR_REQUEST_ID)
 }

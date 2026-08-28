@@ -238,7 +238,7 @@ pub struct GoalOwnerAdmissionRecord {
     pub dispatch_claim_id: Option<Uuid>,
     /// Exact in-memory continuation fence bound to the dispatch claim. A
     /// missing value on a legacy row is intentionally not provider permission.
-    pub dispatch_fence_id: Option<GoalOwnerDispatchFenceCapability>,
+    dispatch_fence_id: Option<GoalOwnerDispatchFenceCapability>,
     pub dispatch_claimed_at: Option<DateTime<Utc>>,
     pub deferred_terminal_disposition: GoalOwnerAdmissionTerminalDisposition,
     pub uncertainty_resolution_evidence: Option<String>,
@@ -613,6 +613,50 @@ WHERE thread_id = ?
         .execute(self.pool.as_ref())
         .await?;
         Ok(result.rows_affected() == 1)
+    }
+
+    /// Reopen a pending claim during owner recovery. This is intentionally a
+    /// separate owner-only operation: the replacement owner may clear a
+    /// deceased owner's fence, but ordinary callers must present the exact
+    /// opaque capability to release a live claim.
+    pub async fn release_dispatch_claim_after_owner_recovery(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        dispatch_claim_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let _capability_guard = self.require_write_capability()?;
+        validate_authority(authority)?;
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let result = sqlx::query(
+            r#"
+UPDATE goal_owner_admissions
+SET dispatch_claim_id = NULL,
+    dispatch_fence_id = NULL,
+    dispatch_claimed_at_ms = NULL,
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND goal_id = ?
+  AND generation = ?
+  AND cancellation_epoch = ?
+  AND phase = 'pending'
+  AND dispatch_claim_id = ?
+  AND retired_at_ms IS NULL
+            "#,
+        )
+        .bind(now_ms)
+        .bind(authority.thread_id.to_string())
+        .bind(&authority.goal_id)
+        .bind(authority.generation)
+        .bind(authority.cancellation_epoch)
+        .bind(dispatch_claim_id.to_string())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Test whether a durable claim carries this exact opaque fence.
+    pub fn dispatch_fence_matches(&self, fence: GoalOwnerDispatchFenceCapability) -> bool {
+        self.dispatch_fence_id == Some(fence)
     }
 
     /// Atomically clear the thread deferral only after the exact generation
