@@ -1183,13 +1183,11 @@ impl GoalRuntimeHandle {
             self.clear_deferral_if_retired(&record.authority).await?;
             return Ok(());
         }
-        if let (Some(dispatch_claim_id), Some(dispatch_fence_id)) =
-            (record.dispatch_claim_id, record.dispatch_fence_id)
-        {
+        if let Some(dispatch_claim_id) = record.dispatch_claim_id {
             // A claim cannot survive a process restart as an owner. Reopen the
             // exact pending generation for a fresh timer claim.
             admissions
-                .release_dispatch_claim(&record.authority, dispatch_claim_id, dispatch_fence_id)
+                .release_dispatch_claim_after_owner_recovery(&record.authority, dispatch_claim_id)
                 .await
                 .map_err(|err| err.to_string())?;
         }

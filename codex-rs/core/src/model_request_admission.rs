@@ -63,11 +63,12 @@ struct GoalContinuationFence {
 /// Active-operation token held across publication and physical request opening.
 struct GoalContinuationFenceGuard {
     fence: Arc<GoalContinuationFence>,
+    epoch: u64,
 }
 
 impl GoalContinuationFenceGuard {
-    fn is_active(&self) -> bool {
-        self.fence.is_active()
+    fn is_current_epoch(&self) -> bool {
+        self.fence.current_epoch() == self.epoch
     }
 }
 
@@ -124,6 +125,7 @@ impl GoalContinuationFence {
         *active += 1;
         Some(GoalContinuationFenceGuard {
             fence: Arc::clone(self),
+            epoch,
         })
     }
 }
@@ -688,7 +690,9 @@ impl ModelRequestAdmissionBroker {
         // The durable dispatch claim is bound to the exact fence that minted
         // this token. Copying the authority and claim UUID into a token from a
         // foreign coordinator must never authorize provider I/O.
-        if record.dispatch_fence_id != continuation.map(GoalOwnerContinuation::fence_identity) {
+        if !continuation.is_some_and(|continuation| {
+            record.dispatch_fence_matches(continuation.fence_identity())
+        }) {
             return Ok(ModelRequestAdmissionDecision::Dormant);
         }
         if record.phase != GoalOwnerAdmissionPhase::Pending {
@@ -1024,7 +1028,7 @@ impl ModelRequestLeaseGuard {
         if self
             ._fence_guard
             .as_ref()
-            .is_some_and(|fence| !fence.is_active())
+            .is_some_and(|fence| !fence.is_current_epoch())
         {
             return Err(CodexErr::Fatal(
                 "goal-owner continuation was revoked before transport open".to_string(),
