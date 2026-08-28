@@ -178,7 +178,13 @@ async fn handle_spawn_agent(
                     fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
                     fork_mode,
                     parent_thread_id: Some(session.thread_id),
-                    environments: Some(turn.environments.to_selections()),
+                    // A continuity child must not reacquire selected executor roots through the
+                    // explicit selection path after its inherited environment snapshot is cleared.
+                    environments: Some(if is_continuity_health_check {
+                        Vec::new()
+                    } else {
+                        turn.environments.to_selections()
+                    }),
                     spawn_call_id: Some(call_id.clone()),
                 },
                 /*continuity_health_check*/ is_continuity_health_check,
@@ -292,6 +298,7 @@ fn apply_continuity_health_check_restrictions(
         Feature::Collab,
         Feature::Apps,
         Feature::Plugins,
+        Feature::RequestPermissionsTool,
     ] {
         config.features.disable(feature).map_err(|error| {
             FunctionCallError::RespondToModel(format!(
@@ -346,6 +353,7 @@ mod tests {
             Feature::Collab,
             Feature::Apps,
             Feature::Plugins,
+            Feature::RequestPermissionsTool,
         ] {
             assert!(!config.features.enabled(feature));
         }

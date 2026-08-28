@@ -70,6 +70,8 @@ use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
@@ -351,13 +353,28 @@ fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
     turn_context.multi_agent_version == MultiAgentVersion::V2
 }
 
+pub(crate) fn is_restricted_continuity_child(turn_context: &TurnContext) -> bool {
+    let features = turn_context.config.features.get();
+    turn_context.multi_agent_version == MultiAgentVersion::V2
+        && !features.enabled(Feature::MultiAgentV2)
+        && !features.enabled(Feature::Collab)
+        && !features.enabled(Feature::Apps)
+        && !features.enabled(Feature::Plugins)
+        && matches!(
+            &turn_context.session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        )
+}
+
 fn collab_tools_enabled(turn_context: &TurnContext) -> bool {
     // A host continuity child keeps the inherited V2 lifecycle for residency accounting, but
     // marks collaboration capabilities unavailable before its first turn.  Gate the tool plan
     // on the authoritative runtime capability as well as the resolved version; V2 is otherwise
     // inherited from the parent and would re-add collaboration tools after config sanitization.
-    let features = turn_context.config.features.get();
-    if !turn_context.config.agents_enabled || !features.enabled(Feature::Collab) {
+    if is_restricted_continuity_child(turn_context)
+        || !turn_context.config.agents_enabled
+        || !turn_context.config.features.enabled(Feature::Collab)
+    {
         return false;
     }
     match turn_context.multi_agent_version {

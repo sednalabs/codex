@@ -927,6 +927,26 @@ impl AgentControl {
         if let Some(residency_slot) = residency_slot.take() {
             residency_slot.commit(new_thread.thread_id);
         }
+
+        // Register the completion finalizer before arming V2 terminal-idle unloading. A
+        // continuity child may already be terminal by the time publication bookkeeping finishes;
+        // the finalizer must be visible to the residency watcher before it can evict that child.
+        if multi_agent_version != MultiAgentVersion::V2 || continuity_health_check {
+            let child_reference = agent_metadata
+                .agent_path
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| new_thread.thread_id.to_string());
+            self.maybe_start_completion_watcher(
+                new_thread.thread_id,
+                Some(Arc::clone(&new_thread.thread)),
+                notification_source.clone(),
+                child_reference,
+                agent_metadata.agent_path.clone(),
+                /*hold_terminal_finalizer*/ continuity_health_check,
+            );
+        }
+
         if spawn_uses_v2_residency {
             self.start_terminal_idle_unload_watcher(
                 Arc::clone(&new_thread.thread),
@@ -981,22 +1001,6 @@ impl AgentControl {
             notification_source.as_ref(),
         )
         .await;
-
-        if multi_agent_version != MultiAgentVersion::V2 || continuity_health_check {
-            let child_reference = agent_metadata
-                .agent_path
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| new_thread.thread_id.to_string());
-            self.maybe_start_completion_watcher(
-                new_thread.thread_id,
-                Some(Arc::clone(&new_thread.thread)),
-                notification_source,
-                child_reference,
-                agent_metadata.agent_path.clone(),
-                /*hold_terminal_finalizer*/ continuity_health_check,
-            );
-        }
 
         Ok(LiveAgent {
             thread_id: new_thread.thread_id,
