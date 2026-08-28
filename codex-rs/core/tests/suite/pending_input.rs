@@ -208,7 +208,7 @@ struct RegularTaskRunBoundaryControl {
 }
 
 struct BoundaryWorker {
-    handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
     completed: mpsc::Receiver<()>,
 }
 
@@ -217,6 +217,103 @@ struct BoundaryWorkerCompletion(mpsc::Sender<()>);
 impl Drop for BoundaryWorkerCompletion {
     fn drop(&mut self) {
         let _ = self.0.send(());
+    }
+}
+
+enum BoundaryWorkerAction {
+    Noop,
+    SteerInput {
+        runtime_handle: tokio::runtime::Handle,
+        codex: Arc<CodexThread>,
+        text: String,
+        client_user_message_id: String,
+    },
+}
+
+impl BoundaryWorkerAction {
+    fn run(self) {
+        match self {
+            Self::Noop => {}
+            Self::SteerInput {
+                runtime_handle,
+                codex,
+                text,
+                client_user_message_id,
+            } => {
+                let steer_result = runtime_handle.block_on(async {
+                    tokio::time::timeout(
+                        BOUNDARY_CONTROL_TIMEOUT,
+                        codex.steer_input(
+                            vec![UserInput::Text {
+                                text,
+                                text_elements: Vec::new(),
+                            }],
+                            /*additional_context*/ Default::default(),
+                            /*expected_turn_id*/ None,
+                            /*client_user_message_id*/ Some(client_user_message_id),
+                            /*responsesapi_client_metadata*/ None,
+                        ),
+                    )
+                    .await
+                });
+                match steer_result {
+                    Ok(steer_result) => assert!(
+                        steer_result.is_ok(),
+                        "boundary steer should be accepted while the task-run span is closing: {steer_result:?}"
+                    ),
+                    Err(_) => panic!(
+                        "boundary steer timed out after {BOUNDARY_CONTROL_TIMEOUT:?} while the task-run span was closing"
+                    ),
+                }
+            }
+        }
+    }
+}
+
+struct BoundaryWorkerRelease(Option<mpsc::Sender<()>>);
+
+impl BoundaryWorkerRelease {
+    fn new(sender: mpsc::Sender<()>) -> Self {
+        Self(Some(sender))
+    }
+
+    fn finish(&mut self) -> Result<(), ()> {
+        let sender = self
+            .0
+            .take()
+            .expect("boundary worker finalization release should be sent only once");
+        sender.send(()).map_err(|_| ())
+    }
+}
+
+impl Drop for BoundaryWorkerRelease {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
+}
+
+impl Drop for BoundaryWorker {
+    fn drop(&mut self) {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+
+        if handle.is_finished() {
+            let _ = handle.join();
+            return;
+        }
+
+        // A timeout or an enclosing panic must not detach a potentially live worker. The worker's
+        // boundary wait and closed actions are each bounded, so transfer the owned handle to a
+        // reaper instead of performing an unbounded join on the failing path.
+        std::thread::Builder::new()
+            .name("boundary-worker-reaper".to_string())
+            .spawn(move || {
+                let _ = handle.join();
+            })
+            .expect("spawn boundary worker reaper");
     }
 }
 
@@ -288,29 +385,29 @@ impl RegularTaskRunBoundaryControl {
         );
     }
 
-    fn spawn_releaser(self, after_boundary: impl FnOnce() + Send + 'static) -> BoundaryWorker {
+    fn spawn_releaser(self, action: BoundaryWorkerAction) -> BoundaryWorker {
         let (completed, completed_rx) = mpsc::channel();
         let handle = std::thread::spawn(move || {
             let _completion = BoundaryWorkerCompletion(completed);
+            let mut release = BoundaryWorkerRelease::new(self.release);
             match self.reached.recv_timeout(BOUNDARY_CONTROL_TIMEOUT) {
                 Ok(()) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => panic!(
                     "regular task-run boundary control timed out after {BOUNDARY_CONTROL_TIMEOUT:?} waiting for task-run close"
                 ),
-                Err(mpsc::RecvTimeoutError::Disconnected) => panic!(
-                    "regular task-run boundary control disconnected before task-run close"
-                ),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("regular task-run boundary control disconnected before task-run close")
+                }
             }
-            let result = std::panic::catch_unwind(AssertUnwindSafe(after_boundary));
-            let release_result = self.release.send(());
-            if let Err(payload) = result {
-                // Always release the observer before propagating a callback panic. If the
-                // observer has already failed, preserve the original callback panic rather than
+            let action_result = std::panic::catch_unwind(AssertUnwindSafe(|| action.run()));
+            if let Err(payload) = action_result {
+                // Always release the observer before propagating an action panic. If the
+                // observer has already failed, preserve the original action panic rather than
                 // replacing it with a second synchronization failure.
-                std::mem::drop(release_result);
+                std::mem::drop(release);
                 std::panic::resume_unwind(payload);
             }
-            match release_result {
+            match release.finish() {
                 Ok(()) => {}
                 Err(_) => panic!(
                     "regular task-run boundary observer disconnected before finalization release"
@@ -318,36 +415,39 @@ impl RegularTaskRunBoundaryControl {
             }
         });
         BoundaryWorker {
-            handle,
+            handle: Some(handle),
             completed: completed_rx,
         }
     }
 }
 
-fn join_boundary_worker(worker: BoundaryWorker, label: &str) {
+fn join_boundary_worker(mut worker: BoundaryWorker, label: &str) {
     let completion = worker.completed.recv_timeout(BOUNDARY_CONTROL_TIMEOUT);
     match completion {
         Ok(()) => {}
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            let result = worker.handle.join();
+            let result = worker
+                .handle
+                .take()
+                .expect("boundary worker handle should remain owned until join")
+                .join();
             if let Err(payload) = result {
                 std::panic::resume_unwind(payload);
             }
             panic!("{label} worker disconnected before completion");
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            // Every worker wait and callback is bounded. Keep ownership and join even on this
-            // diagnostic path so a failed test never detaches a potentially blocked thread.
-            let result = worker.handle.join();
-            if let Err(payload) = result {
-                std::panic::resume_unwind(payload);
-            }
             panic!(
                 "{label} worker timed out after {BOUNDARY_CONTROL_TIMEOUT:?} waiting for completion"
             );
         }
     }
-    if let Err(payload) = worker.handle.join() {
+    if let Err(payload) = worker
+        .handle
+        .take()
+        .expect("boundary worker handle should remain owned until join")
+        .join()
+    {
         std::panic::resume_unwind(payload);
     }
 }
@@ -495,7 +595,7 @@ fn regular_task_run_boundary_observer_self_test() {
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
 
     control.arm();
-    let release_thread = control.spawn_releaser(|| {});
+    let release_thread = control.spawn_releaser(BoundaryWorkerAction::Noop);
     let run_span = tracing::trace_span!("session_task.run");
     drop(run_span);
     join_boundary_worker(release_thread, "boundary self-test");
@@ -513,7 +613,7 @@ async fn regular_task_run_boundary_observer_known_good_turn_finalization() {
     let _subscriber_guard = tracing::subscriber::set_default(subscriber);
 
     control.arm();
-    let release_thread = control.spawn_releaser(|| {});
+    let release_thread = control.spawn_releaser(BoundaryWorkerAction::Noop);
     submit_user_input(&codex, "observer control").await;
     let lifecycle = observe_turn_completion(&codex, None).await;
     join_boundary_worker(release_thread, "known-good boundary");
@@ -564,32 +664,11 @@ async fn base_turn_does_not_reopen_after_boundary_steer() {
     let runtime_handle = tokio::runtime::Handle::current();
     let codex_for_steer = Arc::clone(&codex);
     control.arm();
-    let release_thread = control.spawn_releaser(move || {
-        let steer_result = runtime_handle.block_on(async {
-            tokio::time::timeout(
-                BOUNDARY_CONTROL_TIMEOUT,
-                codex_for_steer.steer_input(
-                    vec![UserInput::Text {
-                        text: STEER_PROMPT.to_string(),
-                        text_elements: Vec::new(),
-                    }],
-                    /*additional_context*/ Default::default(),
-                    /*expected_turn_id*/ None,
-                    /*client_user_message_id*/ Some(CLIENT_ID.to_string()),
-                    /*responsesapi_client_metadata*/ None,
-                ),
-            )
-            .await
-        });
-        match steer_result {
-            Ok(steer_result) => assert!(
-                steer_result.is_ok(),
-                "boundary steer should be accepted while the task-run span is closing: {steer_result:?}"
-            ),
-            Err(_) => panic!(
-                "boundary steer timed out after {BOUNDARY_CONTROL_TIMEOUT:?} while the task-run span was closing"
-            ),
-        }
+    let release_thread = control.spawn_releaser(BoundaryWorkerAction::SteerInput {
+        runtime_handle,
+        codex: codex_for_steer,
+        text: STEER_PROMPT.to_string(),
+        client_user_message_id: CLIENT_ID.to_string(),
     });
 
     submit_user_input(&codex, INITIAL_PROMPT).await;
@@ -602,11 +681,14 @@ async fn base_turn_does_not_reopen_after_boundary_steer() {
     assert_eq!(lifecycle.matching_user_messages, 1);
     // TurnComplete is emitted before task finalization clears the active turn. The thread-idle
     // callback confirms the active turn has been cleared. The traced pending-work admission span
-    // then closes after that gate completes; only after that exact boundary do we assert that no
-    // delayed second provider request was made.
+    // then closes after that gate completes. The streaming fixture's request-count watch checks
+    // the current count atomically and observes any later physical provider request without
+    // polling or a fixed sleep.
     wait_for_thread_idle_after(&mut thread_idle_rx, idle_count_before).await;
     wait_for_pending_work_admission_after(&mut admission_rx, admission_count_before).await;
-    assert_eq!(server.requests().await.len(), 1);
+    server
+        .assert_no_request_after(1, BOUNDARY_CONTROL_TIMEOUT)
+        .await;
     server.shutdown().await;
 }
 
