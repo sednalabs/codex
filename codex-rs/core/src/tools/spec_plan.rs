@@ -1009,6 +1009,9 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
                         turn_context,
                         context.environments,
                     ),
+                    include_windows_shell_guidance: should_include_windows_shell_guidance(
+                        context.environments,
+                    ),
                 }));
                 registry.add(WriteStdinHandler);
             }
@@ -1055,6 +1058,25 @@ fn any_environment_allows_login_shell(environments: &TurnEnvironmentSnapshot) ->
         .any(|environment| environment.config().allow_login_shell)
 }
 
+fn should_include_windows_shell_guidance(environments: &TurnEnvironmentSnapshot) -> bool {
+    let mut environments = environments.turn_environments();
+    let Some(environment) = environments.next() else {
+        return false;
+    };
+    let executor_platform_os = if environments.next().is_none() {
+        environment.executor_platform_os.as_deref()
+    } else {
+        None
+    };
+
+    // One tool schema can target any ready environment. Multi-environment turns and legacy
+    // executors without platform OS information preserve the host-derived guidance.
+    match executor_platform_os {
+        Some(platform_os) => platform_os == "windows",
+        None => cfg!(windows),
+    }
+}
+
 #[instrument(level = "trace", skip_all)]
 fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistry) {
     let turn_context = context.turn_context;
@@ -1079,6 +1101,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
             turn_context,
             context.environments,
         ),
+        include_windows_shell_guidance: should_include_windows_shell_guidance(context.environments),
     }));
     registry.add(WriteStdinHandler);
 }

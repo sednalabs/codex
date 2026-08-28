@@ -499,6 +499,13 @@ fn has_parameter(spec: &ToolSpec, parameter_name: &str) -> bool {
         .is_some()
 }
 
+fn has_windows_shell_guidance(spec: &ToolSpec) -> bool {
+    let ToolSpec::Function(tool) = spec else {
+        return false;
+    };
+    tool.description.contains("Windows safety rules:")
+}
+
 fn apply_patch_accepts_environment_id(spec: &ToolSpec) -> bool {
     match spec {
         ToolSpec::Freeform(tool) if tool.name == "apply_patch" => {
@@ -897,6 +904,45 @@ async fn shell_family_registers_only_unified_exec_tools() {
     plan.assert_registered_contains(&["exec_command", "write_stdin"]);
     assert!(plan.has_terminal_controls);
     assert!(has_parameter(plan.visible_spec("exec_command"), "shell"));
+}
+
+#[tokio::test]
+async fn exec_command_guidance_follows_executor_platform_and_fallbacks() {
+    let opposite_host_os = if cfg!(windows) { "linux" } else { "windows" };
+    for (platform_os, multiple_environments, expect_windows_guidance) in [
+        (Some("windows"), false, true),
+        (Some("linux"), false, false),
+        (None, false, cfg!(windows)),
+        (Some(opposite_host_os), true, cfg!(windows)),
+    ] {
+        let plan = probe(|turn| {
+            set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);
+            set_feature(turn, Feature::ShellZshFork, /*enabled*/ false);
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).shell_type =
+                    ConfigShellToolType::UnifiedExec;
+            });
+            let TurnEnvironmentState::Ready(environment) = turn
+                .environments
+                .environments
+                .first_mut()
+                .expect("primary environment")
+            else {
+                panic!("primary environment should be ready");
+            };
+            environment.executor_platform_os = platform_os.map(str::to_string);
+            if multiple_environments {
+                duplicate_primary_environment(turn);
+            }
+        })
+        .await;
+
+        assert_eq!(
+            has_windows_shell_guidance(plan.visible_spec("exec_command")),
+            expect_windows_guidance,
+            "unexpected guidance for executor platform {platform_os:?} with multiple_environments={multiple_environments}"
+        );
+    }
 }
 
 #[tokio::test]
