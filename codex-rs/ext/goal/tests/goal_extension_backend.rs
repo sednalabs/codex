@@ -931,6 +931,107 @@ async fn same_state_config_change_preserves_pending_provider_continuation() -> a
 }
 
 #[tokio::test]
+async fn resume_retires_exhausted_provider_continuation_generation() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "reconcile exhausted owner continuity after resume" }),
+        ))
+        .await?;
+    assert!(
+        harness
+            .runtime_handle()
+            .preserve_active_goal_after_provider_limit(
+                "turn-1",
+                &provider_limit_domain(harness.thread_id, Some(Duration::ZERO)),
+            )
+            .await
+            .map_err(anyhow::Error::msg)?
+    );
+    let admissions = runtime.goal_owner_admissions();
+    let first = admissions
+        .get(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("first continuation admission should exist"))?;
+    let first_lease = match admissions
+        .try_acquire(&first.continuation_authority(), chrono::Utc::now())
+        .await?
+    {
+        codex_state::GoalOwnerAdmissionAcquireResult::Acquired(lease) => *lease,
+        result => return Err(anyhow::anyhow!("expected first lease, got {result:?}")),
+    };
+    assert!(admissions.open_lease(&first_lease).await?);
+    let first = admissions
+        .finish(
+            &first_lease,
+            codex_state::GoalOwnerAdmissionTerminalOutcome::Succeeded,
+            codex_state::GoalOwnerAdmissionTerminalDisposition::None,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("first terminal admission should exist"))?;
+    admissions
+        .retire(
+            &first.authority,
+            codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("first generation should retire"))?;
+    harness
+        .abort_turn("turn-1", TurnAbortReason::Interrupted)
+        .await;
+
+    harness.start_turn("turn-2", &TokenUsage::default()).await;
+    assert!(
+        harness
+            .runtime_handle()
+            .preserve_active_goal_after_provider_limit(
+                "turn-2",
+                &provider_limit_domain(harness.thread_id, Some(Duration::ZERO)),
+            )
+            .await
+            .map_err(anyhow::Error::msg)?
+    );
+    let second = admissions
+        .get(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("second continuation admission should exist"))?;
+    let exhausted = admissions
+        .try_acquire(&second.continuation_authority(), chrono::Utc::now())
+        .await?;
+    let codex_state::GoalOwnerAdmissionAcquireResult::Exhausted(exhausted) = exhausted else {
+        return Err(anyhow::anyhow!(
+            "expected exhausted continuation, got {exhausted:?}"
+        ));
+    };
+    assert_eq!(
+        codex_state::GoalOwnerAdmissionTerminalOutcome::Exhausted,
+        exhausted.terminal_outcome
+    );
+
+    // A fresh runtime models the post-crash callback path: the terminal row is safe to retire,
+    // while an uncertain or in-flight row would remain for explicit recovery review.
+    let resumed = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    resumed.resume_thread().await;
+    let retired = admissions
+        .get_generation(&exhausted.authority)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("exhausted history should remain"))?;
+    assert!(retired.retired_at.is_some());
+    assert_eq!(
+        Some(codex_state::GoalOwnerAdmissionRetirementReason::Superseded),
+        retired.retirement_reason
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn turn_error_blocks_goal() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
