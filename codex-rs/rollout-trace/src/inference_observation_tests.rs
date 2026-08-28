@@ -273,6 +273,33 @@ fn durable_adapter_does_not_mark_local_denial_as_transport_completion() {
 }
 
 #[test]
+fn durable_adapter_preserves_provider_observed_identity() {
+    let event = protocol_event_for_observation(InferenceObservationEvent::ProviderTerminal {
+        attempt: metadata(InferenceAdmission::Admitted),
+        result: ProviderTerminalResult::Completed {
+            response_id: Some("response-1".to_string()),
+            upstream_request_id: Some("request-1".to_string()),
+            observed_provider: Some("provider-observed".to_string()),
+            observed_model: Some("model-observed".to_string()),
+            observed_model_snapshot: Some("snapshot-observed".to_string()),
+            observed_service_tier: Some("tier-observed".to_string()),
+            token_usage: None,
+        },
+    })
+    .expect("bounded protocol event");
+
+    assert_eq!(
+        event.observed_provider.as_deref(),
+        Some("provider-observed")
+    );
+    assert_eq!(event.observed_model.as_deref(), Some("model-observed"));
+    assert_eq!(
+        event.observed_model_snapshot.as_deref(),
+        Some("snapshot-observed")
+    );
+}
+
+#[test]
 fn trace_writer_sink_persists_bounded_protocol_event() -> anyhow::Result<()> {
     let temp = TempDir::new()?;
     let thread_id = ThreadId::new();
@@ -318,9 +345,12 @@ fn replay_reduces_inference_observation_lifecycle_and_identity() -> anyhow::Resu
     sink.record(InferenceObservationEvent::PhysicalRequestOpened {
         attempt: attempt.clone(),
     });
-    sink.record(InferenceObservationEvent::LocalDenial {
+    sink.record(InferenceObservationEvent::ProviderTerminal {
         attempt,
-        reason: "sensitive admission detail must not be persisted".to_string(),
+        result: ProviderTerminalResult::Failed {
+            upstream_request_id: None,
+            error: "sensitive provider detail must not be persisted".to_string(),
+        },
     });
     drop(sink);
     drop(writer);
@@ -330,7 +360,7 @@ fn replay_reduces_inference_observation_lifecycle_and_identity() -> anyhow::Resu
         .inference_observations
         .get("call-1")
         .expect("reduced inference observation");
-    assert_eq!(observation.event.status, InferenceCallStatus::LocalDenied);
+    assert_eq!(observation.event.status, InferenceCallStatus::Failed);
     assert_eq!(
         observation.event.source,
         Some(codex_protocol::protocol::InferenceCallSource::Direct)
@@ -338,10 +368,50 @@ fn replay_reduces_inference_observation_lifecycle_and_identity() -> anyhow::Resu
     assert_eq!(observation.event.effective_provider, "resolved-provider");
     assert_eq!(
         observation.event.outcome_detail.as_deref(),
-        Some("local_denied")
+        Some("provider_failed")
     );
     assert_eq!(observation.raw_event_payload_ids.len(), 2);
     assert_eq!(observation.execution.ended_seq, Some(2));
+    Ok(())
+}
+
+#[test]
+fn replay_rejects_local_denial_after_physical_open() -> anyhow::Result<()> {
+    let temp = TempDir::new()?;
+    let attempt = metadata(InferenceAdmission::Admitted);
+    let writer = crate::TraceWriter::create(
+        temp.path(),
+        "trace-1".to_string(),
+        "rollout-1".to_string(),
+        attempt.thread_id.to_string(),
+    )?;
+    for event in [
+        protocol_event_for_observation(InferenceObservationEvent::PhysicalRequestOpened {
+            attempt: attempt.clone(),
+        })
+        .expect("opened event"),
+        protocol_event_for_observation(InferenceObservationEvent::LocalDenial {
+            attempt,
+            reason: "invalid after open".to_string(),
+        })
+        .expect("denial event"),
+    ] {
+        let event_payload = writer.write_json_payload_compact(
+            crate::RawPayloadKind::ProtocolEvent,
+            &codex_protocol::protocol::EventMsg::InferenceCall(event),
+        )?;
+        writer.append(crate::RawTraceEventPayload::ProtocolEventObserved {
+            event_type: "inference_call".to_string(),
+            event_payload,
+        })?;
+    }
+
+    let error = crate::replay_bundle(temp.path()).expect_err("invalid lifecycle should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("local denial followed physical open")
+    );
     Ok(())
 }
 
