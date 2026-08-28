@@ -488,13 +488,13 @@ pub(crate) struct SessionSpawnArgs {
 /// Tokio workers are not required to preserve thread-local dispatchers when a task is moved
 /// between workers. Keeping the dispatcher with the future makes the session loop's spans
 /// deterministic without changing the process-wide dispatcher or relying on test-only hooks.
-struct ScopedDispatcherFuture<F> {
+pub(crate) struct ScopedDispatcherFuture<F> {
     dispatcher: Dispatch,
     future: Pin<Box<F>>,
 }
 
 impl<F> ScopedDispatcherFuture<F> {
-    fn new(dispatcher: Dispatch, future: F) -> Self {
+    pub(crate) fn new(dispatcher: Dispatch, future: F) -> Self {
         Self {
             dispatcher,
             future: Box::pin(future),

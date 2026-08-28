@@ -30,6 +30,7 @@ use crate::context::ContextualUserFragment;
 use crate::hook_runtime::inspect_pending_input;
 use crate::hook_runtime::record_additional_contexts;
 use crate::hook_runtime::record_pending_input;
+use crate::session::ScopedDispatcherFuture;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::turn::run_hooks_and_record_inputs;
@@ -670,8 +671,9 @@ impl Session {
         // The spawned task may resume on another Tokio worker, but the span retains the
         // session-owned dispatcher when it eventually closes.
         let task_run_span = trace_span!("session_task.run");
+        let dispatcher = tracing::dispatcher::get_default(Clone::clone);
         let handle = tokio::spawn(
-            async move {
+            ScopedDispatcherFuture::new(dispatcher, async move {
                 let ctx_for_finish = Arc::clone(&ctx);
                 let task_input = 'task: {
                     if tokio::select! {
@@ -765,7 +767,7 @@ impl Session {
                 }
                 done_clone.notify_waiters();
             }
-            .instrument(task_span),
+            .instrument(task_span)),
         );
         let timer = turn_context
             .session_telemetry
