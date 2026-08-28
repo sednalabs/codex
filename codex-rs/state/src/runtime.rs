@@ -469,6 +469,14 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        if let Some(process_lock) = process_lock.as_ref() {
+            if !process_lock.path_matches(&goals_path)? {
+                close_sqlite_pools(&[pool.as_ref(), logs_pool.as_ref(), goals_pool.as_ref()]).await;
+                return Err(anyhow::anyhow!(
+                    "goal database pathname changed during ownership-bound open"
+                ));
+            }
+        }
         let memories_pool = match sqlite
             .open_memories_db(&memories_migrator, telemetry_override)
             .await

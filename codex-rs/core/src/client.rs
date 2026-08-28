@@ -740,6 +740,7 @@ impl ModelClient {
                 .with_telemetry(Some(request_telemetry));
         let trace_attempt = compaction_trace.start_attempt(&payload);
         let mut request_lease = admission.begin_network_request().await?;
+        request_lease.ensure_request_open_allowed()?;
         let result = client
             .compact_input(
                 &payload,
@@ -1758,6 +1759,7 @@ impl ModelClientSession {
                     return Err(error);
                 }
             };
+            request_lease.ensure_request_open_allowed()?;
             let stream_result = client
                 .stream_request_with_observer(
                     request,
@@ -2018,6 +2020,7 @@ impl ModelClientSession {
                     return Err(error);
                 }
             };
+            request_lease.ensure_request_open_allowed()?;
             let stream_result = match observer.as_ref() {
                 Some(observer) => {
                     websocket_connection
