@@ -14,7 +14,11 @@ use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
 use codex_extension_api::FunctionCallError;
+use codex_extension_api::LocalRequestIdentity;
 use codex_extension_api::NoopTurnItemEmitter;
+use codex_extension_api::ProviderEvidenceAuthority;
+use codex_extension_api::ProviderLimitEvidence;
+use codex_extension_api::RateLimitDomain;
 use codex_extension_api::ThreadInterruptInput;
 use codex_extension_api::ThreadResumeInput;
 use codex_extension_api::ThreadStartInput;
@@ -29,10 +33,6 @@ use codex_extension_api::TurnAbortInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
-use codex_extension_api::LocalRequestIdentity;
-use codex_extension_api::ProviderEvidenceAuthority;
-use codex_extension_api::ProviderLimitEvidence;
-use codex_extension_api::RateLimitDomain;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalRuntimeHandle;
 use codex_goal_extension::GoalService;
@@ -811,6 +811,126 @@ async fn explicit_abort_cancels_provider_continuation_without_clearing_work_gate
 }
 
 #[tokio::test]
+async fn replaced_abort_retires_exact_settled_provider_continuation() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "retire settled owner continuity on replacement" }),
+        ))
+        .await?;
+    assert!(
+        harness
+            .runtime_handle()
+            .preserve_active_goal_after_provider_limit(
+                "turn-1",
+                &provider_limit_domain(harness.thread_id, Some(Duration::ZERO)),
+            )
+            .await
+            .map_err(anyhow::Error::msg)?
+    );
+
+    let admissions = runtime.goal_owner_admissions();
+    let pending = admissions
+        .get(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("pending continuation admission should exist"))?;
+    let continuation_authority = pending.continuation_authority();
+    let lease = match admissions
+        .try_acquire(&continuation_authority, chrono::Utc::now())
+        .await?
+    {
+        codex_state::GoalOwnerAdmissionAcquireResult::Acquired(lease) => *lease,
+        result => {
+            return Err(anyhow::anyhow!(
+                "expected acquired continuation, got {result:?}"
+            ));
+        }
+    };
+    assert!(admissions.open_lease(&lease).await?);
+    let settled = admissions
+        .finish(
+            &lease,
+            codex_state::GoalOwnerAdmissionTerminalOutcome::Succeeded,
+            codex_state::GoalOwnerAdmissionTerminalDisposition::None,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("settled continuation admission should exist"))?;
+
+    let turn_store = ExtensionData::new(settled.successor_turn_id.clone());
+    turn_store.insert(codex_core::GoalOwnerContinuation::new(
+        settled.continuation_authority(),
+    ));
+    harness
+        .abort_turn_with_store(&turn_store, TurnAbortReason::Replaced)
+        .await;
+
+    let retired = admissions
+        .get_generation(&settled.authority)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("settled continuation history should remain"))?;
+    assert!(retired.retired_at.is_some());
+    assert_eq!(
+        Some(codex_state::GoalOwnerAdmissionRetirementReason::Superseded),
+        retired.retirement_reason
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn same_state_config_change_preserves_pending_provider_continuation() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "preserve pending owner continuity on unchanged config" }),
+        ))
+        .await?;
+    assert!(
+        harness
+            .runtime_handle()
+            .preserve_active_goal_after_provider_limit(
+                "turn-1",
+                &provider_limit_domain(harness.thread_id, Some(Duration::from_secs(60))),
+            )
+            .await
+            .map_err(anyhow::Error::msg)?
+    );
+    let before = runtime
+        .goal_owner_admissions()
+        .get(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("pending continuation admission should exist"))?;
+
+    harness.config_changed();
+    // Allow the pre-fix asynchronous reconciliation task to run to completion; the idempotent
+    // path under test must not schedule one at all.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let after = runtime
+        .goal_owner_admissions()
+        .get_generation(&before.authority)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("pending continuation history should remain"))?;
+    assert_eq!(before.phase, after.phase);
+    assert_eq!(codex_state::GoalOwnerAdmissionPhase::Pending, after.phase);
+    assert_eq!(None, after.retired_at);
+    Ok(())
+}
+
+#[tokio::test]
 async fn turn_error_blocks_goal() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -1450,6 +1570,12 @@ impl GoalExtensionHarness {
             .collect()
     }
 
+    fn config_changed(&self) {
+        for contributor in self.registry.config_contributors() {
+            contributor.on_config_changed(&self.session_store, &self.thread_store, &(), &());
+        }
+    }
+
     async fn start_turn(&self, turn_id: &str, usage: &TokenUsage) {
         self.start_turn_with_mode(turn_id, ModeKind::Default, usage)
             .await;
@@ -1488,13 +1614,17 @@ impl GoalExtensionHarness {
 
     async fn abort_turn(&self, turn_id: &str, reason: TurnAbortReason) {
         let turn_store = ExtensionData::new(turn_id);
+        self.abort_turn_with_store(&turn_store, reason).await;
+    }
+
+    async fn abort_turn_with_store(&self, turn_store: &ExtensionData, reason: TurnAbortReason) {
         for contributor in self.registry.turn_lifecycle_contributors() {
             contributor
                 .on_turn_abort(TurnAbortInput {
                     reason: reason.clone(),
                     session_store: &self.session_store,
                     thread_store: &self.thread_store,
-                    turn_store: &turn_store,
+                    turn_store,
                 })
                 .await;
         }
