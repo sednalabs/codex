@@ -136,6 +136,7 @@ enum RecordedToolLifecycle {
     Start {
         call_id: String,
         tool_name: codex_tools::ToolName,
+        root_turn_id: Option<String>,
     },
     Finish {
         call_id: String,
@@ -157,6 +158,7 @@ impl codex_extension_api::ToolLifecycleContributor for ToolLifecycleRecorder {
         let record = RecordedToolLifecycle::Start {
             call_id: input.call_id.to_string(),
             tool_name: input.tool_name.clone(),
+            root_turn_id: input.root_turn_id.map(str::to_owned),
         };
         Box::pin(async move {
             records
@@ -640,6 +642,8 @@ fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
 #[tokio::test]
 async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyhow::Result<()> {
     let (mut session, turn) = crate::session::tests::make_session_and_context().await;
+    turn.turn_metadata_state
+        .set_root_turn_id("root-turn".to_string());
     let records = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut builder = codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
     builder.tool_lifecycle_contributor(Arc::new(ToolLifecycleRecorder {
@@ -672,6 +676,7 @@ async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyh
             /*terminal_outcome_reached*/ None,
         )
         .await?;
+    turn.turn_metadata_state.mark_root_turn_ambiguous();
     let err = match registry
         .dispatch_any_with_terminal_outcome(
             test_invocation(
@@ -693,6 +698,7 @@ async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyh
         RecordedToolLifecycle::Start {
             call_id: "ok-call".to_string(),
             tool_name: ok_tool.clone().with_default_namespace(),
+            root_turn_id: Some("root-turn".to_string()),
         },
         RecordedToolLifecycle::Finish {
             call_id: "ok-call".to_string(),
@@ -702,6 +708,7 @@ async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyh
         RecordedToolLifecycle::Start {
             call_id: "failing-call".to_string(),
             tool_name: failing_tool.clone(),
+            root_turn_id: None,
         },
         RecordedToolLifecycle::Finish {
             call_id: "failing-call".to_string(),

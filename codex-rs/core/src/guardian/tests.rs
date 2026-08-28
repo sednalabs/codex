@@ -67,6 +67,8 @@ use core_test_support::PathBufExt;
 use core_test_support::TempDirExt;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
+use core_test_support::responses::assert_parent_turn;
+use core_test_support::responses::assert_root_turn;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
@@ -3300,6 +3302,10 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
         .await;
 
         let (session, turn) = guardian_test_session_and_turn_with_base_url(server.uri()).await;
+        turn.turn_metadata_state
+            .set_parent_turn_id("upstream-parent-turn".to_string());
+        turn.turn_metadata_state
+            .set_root_turn_id("causal-root-turn".to_string());
         seed_guardian_parent_history(&session, &turn).await;
 
         let initial_request = GuardianApprovalRequest::ExecCommand {
@@ -3418,6 +3424,8 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
             )
             .await;
 
+        // A conflicting input removes the known root while the trunk review is in flight.
+        turn.turn_metadata_state.mark_root_turn_ambiguous();
         let third_decision = review_approval_request(
             &session,
             &turn,
@@ -3432,11 +3440,27 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
         assert_eq!(third_decision, ReviewDecision::Approved);
         let requests = server.requests().await;
         assert_eq!(requests.len(), 4);
+        let first_request_body = serde_json::from_slice::<serde_json::Value>(&requests[0])?;
         let second_request_body = serde_json::from_slice::<serde_json::Value>(&requests[1])?;
         let failed_ephemeral_request_body =
             serde_json::from_slice::<serde_json::Value>(&requests[2])?;
         let retried_ephemeral_request_body =
             serde_json::from_slice::<serde_json::Value>(&requests[3])?;
+        let mut reviewer_turn_ids = std::collections::BTreeSet::new();
+        for (body, expected_root) in [
+            (&first_request_body, Some("causal-root-turn")),
+            (&second_request_body, Some("causal-root-turn")),
+            (&failed_ephemeral_request_body, None),
+            (&retried_ephemeral_request_body, None),
+        ] {
+            assert_parent_turn(body, Some(turn.sub_id.as_str()))?;
+            assert_root_turn(body, expected_root)?;
+            assert_ne!(body["client_metadata"]["turn_id"], turn.sub_id);
+            reviewer_turn_ids.insert(
+                body["client_metadata"]["turn_id"].as_str().expect("reviewer turn id")
+            );
+        }
+        assert_eq!(reviewer_turn_ids.len(), 4);
         assert_eq!(
             second_request_body["prompt_cache_key"],
             failed_ephemeral_request_body["prompt_cache_key"],

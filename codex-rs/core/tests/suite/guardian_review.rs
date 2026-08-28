@@ -911,6 +911,11 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
                 ev_completed("resp-guardian-first-assessment"),
             ]),
             sse(vec![
+                ev_response_created("resp-parent-first-done"),
+                ev_assistant_message("msg-parent-first-done", "first done"),
+                ev_completed("resp-parent-first-done"),
+            ]),
+            sse(vec![
                 ev_response_created("resp-parent-second-tool"),
                 ev_function_call(
                     "exec-call-second",
@@ -966,7 +971,7 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "run two commands that require Guardian review".into(),
+                text: "run the first command that requires Guardian review".into(),
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
@@ -981,6 +986,8 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
+    test.submit_text_turn("run the second command that requires Guardian review")
+        .await?;
     let requests = responses.requests();
     assert!(
         requests
@@ -997,6 +1004,33 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
     assert_eq!(guardian_requests.len(), 3);
     let first_guardian_request = guardian_requests[0].body_json();
     let second_guardian_request = guardian_requests[2].body_json();
+    let first_parent_request = requests[0].body_json();
+    let second_parent_request = requests[4].body_json();
+    let first_parent_turn_id = first_parent_request["client_metadata"]["turn_id"]
+        .as_str()
+        .expect("first owning turn id");
+    let second_parent_turn_id = second_parent_request["client_metadata"]["turn_id"]
+        .as_str()
+        .expect("second owning turn id");
+    assert_ne!(first_parent_turn_id, second_parent_turn_id);
+    for (request, parent_turn_id) in guardian_requests.iter().zip([
+        first_parent_turn_id,
+        first_parent_turn_id,
+        second_parent_turn_id,
+    ]) {
+        let body = request.body_json();
+        assert_parent_turn(&body, Some(parent_turn_id))?;
+        assert_root_turn(&body, Some(parent_turn_id))?;
+        assert_ne!(body["client_metadata"]["turn_id"], parent_turn_id);
+        assert_eq!(
+            body["client_metadata"]["session_id"],
+            first_parent_request["client_metadata"]["session_id"]
+        );
+    }
+    assert_ne!(
+        first_guardian_request["client_metadata"]["turn_id"],
+        second_guardian_request["client_metadata"]["turn_id"]
+    );
     let first_guardian_thread_id = first_guardian_request["client_metadata"]["thread_id"]
         .as_str()
         .expect("first Guardian review should have a thread id");

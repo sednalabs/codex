@@ -409,6 +409,7 @@ impl GuardianV2Extension {
         let event_sink = Arc::clone(&self.event_sink);
         let thread_id = input.thread_store.level_id().to_owned();
         let turn_id = input.turn_id.to_owned();
+        let root_turn_id = input.root_turn_id.map(str::to_owned);
         let thread_context: Result<_, String> = async {
             let parsed_thread_id =
                 ThreadId::from_string(&thread_id).map_err(|error| error.to_string())?;
@@ -681,7 +682,8 @@ impl GuardianV2Extension {
                         parent_compaction,
                         parent_compaction_hash,
                         reasoning_effort: guardian_config.reasoning_effort.clone(),
-                        turn_id: turn_id.clone(),
+                        parent_turn_id: turn_id.clone(),
+                        root_turn_id,
                     })
                     .await
                 {
