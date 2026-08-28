@@ -347,9 +347,10 @@ impl ResponsesWebsocketConnection {
                     let failed_stream = guard.take();
                     drop(guard);
                     drop(failed_stream);
-                    if let Some(observer) = observer_for_task.as_ref() {
-                        observer.on_request_failure(&err.to_string(), false);
-                    }
+                    // The returned stream mapper owns classification of this error. Keeping the
+                    // recorder open here avoids racing a provider/API terminal classification
+                    // against the mapper (which can distinguish usage limits from transport
+                    // uncertainty after provider mapping).
                     let _ = tx_event.send(Err(err)).await;
                 }
             }
