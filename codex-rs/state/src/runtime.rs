@@ -82,6 +82,7 @@ pub use goal_owner_admissions::GoalOwnerAdmissionRetirementReason;
 pub use goal_owner_admissions::GoalOwnerAdmissionStore;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalDisposition;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalOutcome;
+pub use goal_owner_admissions::GoalOwnerDispatchFenceCapability;
 pub use goal_owner_admissions::canonical_provider_id;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
@@ -193,10 +194,12 @@ struct RuntimeOwnerLease {
     released: AtomicBool,
 }
 
-/// Process-lifetime locks used for goal-runtime ownership. The database-file
-/// lock is alias-stable (hardlinks share its inode); the adjacent lock keeps
-/// compatibility with older runtimes that only acquired `goals_*.runtime.lock`.
+/// Process-lifetime locks used for goal-runtime ownership. The v2 identity
+/// lock is the canonical cross-alias lock; the database and adjacent locks
+/// are retained as bridges for pathname replacement and older runtimes that
+/// only acquired `goals_*.runtime.lock`.
 struct RuntimeProcessLock {
+    _v2_identity: File,
     _database: File,
     _adjacent: File,
 }
@@ -235,38 +238,67 @@ fn try_acquire_runtime_process_lock(
     goals_path: &Path,
 ) -> anyhow::Result<Option<RuntimeProcessLock>> {
     use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
     let database = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .open(goals_path)?;
-    let result = unsafe { libc::flock(database.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result == 0 {
-        let adjacent_path = goals_path.with_extension("runtime.lock");
-        let adjacent = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(adjacent_path)?;
-        let adjacent_result =
-            unsafe { libc::flock(adjacent.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if adjacent_result == 0 {
-            return Ok(Some(RuntimeProcessLock {
-                _database: database,
-                _adjacent: adjacent,
-            }));
-        }
+    // Keep the v2 lock identity byte-for-byte compatible: it is keyed by the
+    // device/inode pair in the system temporary directory, so hard-link
+    // aliases converge on the same lock before any migration is attempted.
+    let metadata = database.metadata()?;
+    let lock_name = format!(
+        ".codex-goals-runtime-{:x}-{:x}.lock",
+        metadata.dev(),
+        metadata.ino()
+    );
+    let v2_identity = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(std::env::temp_dir().join(lock_name))?;
+    let result = unsafe { libc::flock(v2_identity.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result != 0 {
         let error = std::io::Error::last_os_error();
         if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
             return Ok(None);
         }
         return Err(error.into());
     }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
-        return Ok(None);
+
+    // The identity lock alone cannot prevent a replacement at the configured
+    // pathname from being treated as a new database. Couple it to the file
+    // and the historical adjacent lock so a live predecessor remains visible
+    // across rename/recreate and mixed-version upgrades.
+    let result = unsafe { libc::flock(database.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Ok(None);
+        }
+        return Err(error.into());
     }
-    Err(error.into())
+    let adjacent_path = goals_path.with_extension("runtime.lock");
+    let adjacent = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(adjacent_path)?;
+    let adjacent_result =
+        unsafe { libc::flock(adjacent.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if adjacent_result != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Ok(None);
+        }
+        return Err(error.into());
+    }
+    Ok(Some(RuntimeProcessLock {
+        _v2_identity: v2_identity,
+        _database: database,
+        _adjacent: adjacent,
+    }))
 }
 
 #[cfg(not(unix))]
@@ -938,6 +970,38 @@ mod tests {
             "new ownership must respect the parent DB-adjacent lock"
         );
         drop(legacy);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_process_lock_rejects_pathname_replacement_while_owner_is_live() {
+        let root = unique_temp_dir();
+        fs::create_dir_all(&root).expect("create replacement-lock test directory");
+        let goals = root.join("goals.sqlite");
+        let moved = root.join("goals.sqlite.previous");
+        fs::File::create(&goals).expect("create goals database fixture");
+
+        let lock = try_acquire_runtime_process_lock(&goals)
+            .expect("acquire original database lock")
+            .expect("original database should own the process lock");
+        fs::rename(&goals, &moved).expect("move live database pathname");
+        fs::File::create(&goals).expect("create replacement database pathname");
+
+        assert!(
+            try_acquire_runtime_process_lock(&goals)
+                .expect("probe replacement pathname")
+                .is_none(),
+            "a replacement pathname must not bypass the live adjacent lock bridge"
+        );
+
+        drop(lock);
+        assert!(
+            try_acquire_runtime_process_lock(&goals)
+                .expect("reacquire replacement pathname")
+                .is_some(),
+            "the replacement pathname should acquire after the predecessor exits"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

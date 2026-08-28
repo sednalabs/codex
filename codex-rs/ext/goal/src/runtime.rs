@@ -81,7 +81,7 @@ struct DispatchClaimGuard {
     store: codex_state::GoalOwnerAdmissionStore,
     authority: codex_state::GoalOwnerAdmissionAuthority,
     claim_id: Uuid,
-    fence_identity: Uuid,
+    fence_identity: codex_state::GoalOwnerDispatchFenceCapability,
     armed: bool,
 }
 
@@ -90,7 +90,7 @@ impl DispatchClaimGuard {
         store: codex_state::GoalOwnerAdmissionStore,
         authority: codex_state::GoalOwnerAdmissionAuthority,
         claim_id: Uuid,
-        fence_identity: Uuid,
+        fence_identity: codex_state::GoalOwnerDispatchFenceCapability,
     ) -> Self {
         Self {
             store,
@@ -1183,15 +1183,13 @@ impl GoalRuntimeHandle {
             self.clear_deferral_if_retired(&record.authority).await?;
             return Ok(());
         }
-        if let Some(dispatch_claim_id) = record.dispatch_claim_id {
+        if let (Some(dispatch_claim_id), Some(dispatch_fence_id)) =
+            (record.dispatch_claim_id, record.dispatch_fence_id)
+        {
             // A claim cannot survive a process restart as an owner. Reopen the
             // exact pending generation for a fresh timer claim.
             admissions
-                .release_dispatch_claim(
-                    &record.authority,
-                    dispatch_claim_id,
-                    record.dispatch_fence_id.unwrap_or(Uuid::nil()),
-                )
+                .release_dispatch_claim(&record.authority, dispatch_claim_id, dispatch_fence_id)
                 .await
                 .map_err(|err| err.to_string())?;
         }
@@ -1641,7 +1639,7 @@ impl GoalRuntimeHandle {
         &self,
         authority: &codex_state::GoalOwnerAdmissionAuthority,
         dispatch_claim_id: Uuid,
-        fence_identity: Uuid,
+        fence_identity: codex_state::GoalOwnerDispatchFenceCapability,
     ) {
         if let Err(error) = self
             .inner
@@ -1717,6 +1715,14 @@ impl GoalRuntimeHandle {
             return Ok(false);
         };
         if goal.status != codex_state::ThreadGoalStatus::Active {
+            self.inner.accounting_state.clear_active_goal();
+            return Ok(false);
+        }
+        // Disablement can race every awaited read above on a multi-thread
+        // runtime. Revalidate immediately before opening the automatic turn
+        // so a current-thread disable cannot publish after its fence is
+        // revoked but before its asynchronous cleanup runs.
+        if !self.tools_visible() {
             self.inner.accounting_state.clear_active_goal();
             return Ok(false);
         }

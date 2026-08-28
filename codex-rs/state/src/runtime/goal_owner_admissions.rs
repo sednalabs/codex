@@ -114,6 +114,27 @@ pub struct GoalOwnerAdmissionAuthority {
     pub cancellation_epoch: i64,
 }
 
+/// Opaque capability binding a dispatch claim to its owning coordinator.
+/// Callers can carry and compare it, but cannot recover or supply the
+/// persisted UUID identity through the public API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GoalOwnerDispatchFenceCapability(Uuid);
+
+impl GoalOwnerDispatchFenceCapability {
+    /// Mint a fresh owner-bound capability for a new coordinator.
+    pub fn fresh() -> Self {
+        Self(Uuid::now_v7())
+    }
+
+    fn as_uuid(self) -> Uuid {
+        self.0
+    }
+
+    fn is_nil(self) -> bool {
+        self.0.is_nil()
+    }
+}
+
 /// The one scheduled successor that may consume an admission generation.
 ///
 /// This token is deliberately narrower than a thread-level authority: a
@@ -217,7 +238,7 @@ pub struct GoalOwnerAdmissionRecord {
     pub dispatch_claim_id: Option<Uuid>,
     /// Exact in-memory continuation fence bound to the dispatch claim. A
     /// missing value on a legacy row is intentionally not provider permission.
-    pub dispatch_fence_id: Option<Uuid>,
+    pub dispatch_fence_id: Option<GoalOwnerDispatchFenceCapability>,
     pub dispatch_claimed_at: Option<DateTime<Utc>>,
     pub deferred_terminal_disposition: GoalOwnerAdmissionTerminalDisposition,
     pub uncertainty_resolution_evidence: Option<String>,
@@ -492,14 +513,11 @@ WHERE phase = 'in_flight'
     pub async fn claim_dispatch(
         &self,
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
-        fence_identity: Uuid,
+        fence_identity: GoalOwnerDispatchFenceCapability,
         now: DateTime<Utc>,
     ) -> anyhow::Result<Option<Uuid>> {
         let _capability_guard = self.require_write_capability()?;
         validate_continuation_authority(continuation_authority)?;
-        if fence_identity.is_nil() {
-            bail!("goal-owner dispatch claim requires a non-empty fence identity")
-        }
         let authority = &continuation_authority.authority;
         let now_ms = admission_datetime_to_epoch_millis(now);
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -539,7 +557,7 @@ WHERE thread_id = ?
             "#,
         )
         .bind(claim_id.to_string())
-        .bind(fence_identity.to_string())
+        .bind(fence_identity.as_uuid().to_string())
         .bind(now_ms)
         .bind(now_ms)
         .bind(authority.thread_id.to_string())
@@ -563,7 +581,7 @@ WHERE thread_id = ?
         &self,
         authority: &GoalOwnerAdmissionAuthority,
         dispatch_claim_id: Uuid,
-        fence_identity: Uuid,
+        fence_identity: GoalOwnerDispatchFenceCapability,
     ) -> anyhow::Result<bool> {
         let _capability_guard = self.require_write_capability()?;
         validate_authority(authority)?;
@@ -591,7 +609,7 @@ WHERE thread_id = ?
         .bind(authority.generation)
         .bind(authority.cancellation_epoch)
         .bind(dispatch_claim_id.to_string())
-        .bind(fence_identity.to_string())
+        .bind(fence_identity.as_uuid().to_string())
         .execute(self.pool.as_ref())
         .await?;
         Ok(result.rows_affected() == 1)
@@ -879,7 +897,7 @@ WHERE thread_id = ? AND goal_id = ? AND generation = ?
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         now: DateTime<Utc>,
     ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
-        self.try_acquire_inner(continuation_authority, None, now)
+        self.try_acquire_inner(continuation_authority, None, None, now)
             .await
     }
 
@@ -890,16 +908,23 @@ WHERE thread_id = ? AND goal_id = ? AND generation = ?
         &self,
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         dispatch_claim_id: Uuid,
+        fence_identity: GoalOwnerDispatchFenceCapability,
         now: DateTime<Utc>,
     ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
-        self.try_acquire_inner(continuation_authority, Some(dispatch_claim_id), now)
-            .await
+        self.try_acquire_inner(
+            continuation_authority,
+            Some(dispatch_claim_id),
+            Some(fence_identity),
+            now,
+        )
+        .await
     }
 
     async fn try_acquire_inner(
         &self,
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         dispatch_claim_id: Option<Uuid>,
+        dispatch_fence_id: Option<GoalOwnerDispatchFenceCapability>,
         now: DateTime<Utc>,
     ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
         let _capability_guard = self.require_write_capability()?;
@@ -917,7 +942,9 @@ WHERE thread_id = ? AND goal_id = ? AND generation = ?
             transaction.commit().await?;
             return Ok(GoalOwnerAdmissionAcquireResult::NotCurrent);
         }
-        if current.dispatch_claim_id != dispatch_claim_id {
+        if current.dispatch_claim_id != dispatch_claim_id
+            || current.dispatch_fence_id != dispatch_fence_id
+        {
             transaction.commit().await?;
             return Ok(GoalOwnerAdmissionAcquireResult::NotCurrent);
         }
@@ -1879,7 +1906,7 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
                 .map(|value| Uuid::parse_str(&value))
                 .transpose()?,
             dispatch_fence_id: dispatch_fence_id
-                .map(|value| Uuid::parse_str(&value))
+                .map(|value| Uuid::parse_str(&value).map(GoalOwnerDispatchFenceCapability))
                 .transpose()?,
             dispatch_claimed_at: dispatch_claimed_at_ms
                 .map(admission_epoch_millis_to_datetime)
@@ -2265,6 +2292,9 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
     }
     let has_lease = record.lease_id.is_some();
     let has_dispatch_claim = record.dispatch_claim_id.is_some();
+    if record.dispatch_fence_id.is_some_and(|fence| fence.is_nil()) {
+        bail!("goal-owner admission has an empty dispatch fence capability")
+    }
     if has_lease != record.lease_acquired_at.is_some()
         || has_lease != record.lease_cancellation_epoch.is_some()
         || has_dispatch_claim != record.dispatch_claimed_at.is_some()
