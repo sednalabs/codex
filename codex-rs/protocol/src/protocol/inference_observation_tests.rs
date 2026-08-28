@@ -296,6 +296,14 @@ fn inference_call_event_preserves_unknown_nested_enums() -> Result<()> {
 }
 
 #[test]
+fn inference_call_event_normalization_preserves_receipts_on_replay() {
+    let durable = inference_call_event(InferenceCallStatus::Completed)
+        .into_durable()
+        .expect("bounded event");
+    assert_eq!(durable.clone().into_durable(), Some(durable));
+}
+
+#[test]
 fn inference_call_event_never_truncates_correlation_identifiers() {
     let mut oversized_call = inference_call_event(InferenceCallStatus::Started);
     oversized_call.inference_call_id = "c".repeat(INFERENCE_CALL_ID_MAX_BYTES + 1);

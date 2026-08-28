@@ -192,8 +192,13 @@ impl InferenceCallEvent {
             return None;
         }
 
-        self.truncated_fields = None;
-        self.omitted_fields = None;
+        // Preserve prior normalization receipts when a durable event is
+        // validated or replay-normalized a second time. This keeps
+        // truncation/omission provenance lossless across reducer replay.
+        let prior_truncated_fields = self.truncated_fields.take();
+        let prior_omitted_fields = self.omitted_fields.take();
+        self.truncated_fields = prior_truncated_fields;
+        self.omitted_fields = prior_omitted_fields;
         self.remove_lifecycle_inapplicable_evidence();
 
         truncate_required_string(

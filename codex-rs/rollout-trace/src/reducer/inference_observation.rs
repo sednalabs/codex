@@ -82,6 +82,12 @@ impl TraceReducer {
                     inference_call_id
                 );
             }
+            if event.status == InferenceCallStatus::LocalDenied {
+                bail!(
+                    "inference observation local denial followed physical open for {}",
+                    inference_call_id
+                );
+            }
             ensure_same_attempt_identity(&observation.event, &event)?;
             observation.execution.ended_at_unix_ms = Some(wall_time_unix_ms);
             observation.execution.ended_seq = Some(seq);
