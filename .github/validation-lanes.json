@@ -297,6 +297,31 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.core-late-steer-observer-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "core-carry"
+      ],
+      "explicit_only": true,
+      "frontier_default": false,
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-late-steer-observer-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": true,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.core-subagent-surface-targeted",
       "groups": [
         "core"
@@ -2138,6 +2163,20 @@
       "required_any_paths": [
         "codex-rs/core/src/session/tests.rs",
         "codex-rs/core/src/tasks/mod.rs"
+      ]
+    },
+    {
+      "route_id": "core-late-steer-observer",
+      "lane_ids": [
+        "codex.core-late-steer-observer-targeted"
+      ],
+      "allowed_paths": [
+        "codex-rs/core/tests/suite/pending_input.rs",
+        "justfile",
+        ".github/validation-lanes.json"
+      ],
+      "required_any_paths": [
+        "codex-rs/core/tests/suite/pending_input.rs"
       ]
     },
     {
