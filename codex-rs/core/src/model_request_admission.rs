@@ -23,6 +23,7 @@ use codex_state::GoalOwnerAdmissionRecord;
 use codex_state::GoalOwnerAdmissionStore;
 use codex_state::GoalOwnerAdmissionTerminalDisposition;
 use codex_state::GoalOwnerAdmissionTerminalOutcome;
+use codex_state::canonical_provider_id;
 use tokio::sync::Mutex;
 use tracing::debug;
 use tracing::warn;
@@ -368,6 +369,13 @@ impl ModelRequestAdmissionBroker {
         // A prior successful continuation no longer restricts the thread,
         // regardless of later model/provider resolution.
         if record.phase == GoalOwnerAdmissionPhase::Terminal {
+            // Cancellation is scoped to the exact continuation authority. A subsequent
+            // ordinary user request must not inherit a settled cancellation row.
+            if record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Cancelled
+                && continuation_authority.is_none()
+            {
+                return Ok(ModelRequestAdmissionDecision::Unrestricted);
+            }
             return Ok(decision_for_record(&record, now));
         }
         if !record_matches_identity(&record, identity) {
@@ -473,7 +481,8 @@ fn record_matches_identity(
 ) -> bool {
     record.configured_provider_key.as_deref() == Some(identity.configured_provider_key.as_str())
         && record.requested_model == identity.configured_requested_model
-        && record.effective_provider_id.as_deref() == Some(identity.effective_provider_id.as_str())
+        && record.effective_provider_id.as_deref().map(canonical_provider_id)
+            == Some(canonical_provider_id(identity.effective_provider_id.as_str()))
         && record.effective_model.as_deref() == Some(identity.effective_model.as_str())
 }
 

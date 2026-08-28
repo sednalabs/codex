@@ -716,6 +716,25 @@ impl GoalRuntimeHandle {
 
     pub async fn restore_after_resume(&self) -> Result<(), String> {
         if !self.is_enabled() {
+            if let Some(record) = self
+                .inner
+                .state_dbs
+                .goal_owner_admissions()
+                .get(self.thread_id())
+                .await
+                .map_err(|err| err.to_string())?
+                && record.phase == codex_state::GoalOwnerAdmissionPhase::Pending
+            {
+                self.inner
+                    .state_dbs
+                    .goal_owner_admissions()
+                    .cancel(
+                        &record.authority,
+                        codex_state::GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+                    )
+                    .await
+                    .map_err(|err| err.to_string())?;
+            }
             return Ok(());
         }
 

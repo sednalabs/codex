@@ -49,7 +49,7 @@ pub trait WebsocketTelemetry: Send + Sync {
 /// opportunity rather than sharing a pre-retry observation.
 pub trait RequestAttemptObserver: Send + Sync {
     fn on_request_open(&self);
-    fn on_request_failure(&self, error: &str);
+    fn on_request_failure(&self, error: &str, provider_terminal: bool);
 }
 
 pub(crate) trait WithStatus {
@@ -128,7 +128,10 @@ where
             observer.on_request_open();
             let result = send(req).await;
             if let Err(error) = &result {
-                observer.on_request_failure(&error.to_string());
+                observer.on_request_failure(
+                    &error.to_string(),
+                    matches!(error, TransportError::Http { .. }),
+                );
             }
             if let Some(t) = telemetry.as_ref() {
                 let (status, err) = match &result {
