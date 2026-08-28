@@ -189,8 +189,16 @@ struct RuntimeOwnerLease {
     store: GoalOwnerAdmissionStore,
     owner_id: Uuid,
     capability: Arc<RuntimeOwnerCapability>,
-    _process_lock: File,
+    _process_lock: RuntimeProcessLock,
     released: AtomicBool,
+}
+
+/// Process-lifetime locks used for goal-runtime ownership. The database-file
+/// lock is alias-stable (hardlinks share its inode); the adjacent lock keeps
+/// compatibility with older runtimes that only acquired `goals_*.runtime.lock`.
+struct RuntimeProcessLock {
+    _database: File,
+    _adjacent: File,
 }
 
 impl RuntimeOwnerLease {
@@ -223,31 +231,36 @@ impl Drop for RuntimeOwnerLease {
 /// Unix advisory locks are released by the kernel on process death, which is
 /// the death proof required before replacing the durable owner audit row.
 #[cfg(unix)]
-fn try_acquire_runtime_process_lock(goals_path: &Path) -> anyhow::Result<Option<File>> {
+fn try_acquire_runtime_process_lock(
+    goals_path: &Path,
+) -> anyhow::Result<Option<RuntimeProcessLock>> {
     use std::os::fd::AsRawFd;
-    use std::os::unix::fs::MetadataExt;
-
-    let canonical_goals_path = std::fs::canonicalize(goals_path)?;
-    let metadata = std::fs::metadata(&canonical_goals_path)?;
-    let lock_name = format!(
-        ".codex-goals-runtime-{:x}-{:x}.lock",
-        metadata.dev(),
-        metadata.ino()
-    );
-    // Hardlinks can have different parent directories, so placing this next
-    // to the path would let two aliases acquire independent locks. Device
-    // and inode identify the database independent of whichever alias was
-    // supplied by the caller; the system temporary directory gives that
-    // identity one shared namespace.
-    let lock_path = std::env::temp_dir().join(lock_name);
-    let file = OpenOptions::new()
+    let database = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
-        .open(lock_path)?;
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        .open(goals_path)?;
+    let result = unsafe { libc::flock(database.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if result == 0 {
-        return Ok(Some(file));
+        let adjacent_path = goals_path.with_extension("runtime.lock");
+        let adjacent = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(adjacent_path)?;
+        let adjacent_result =
+            unsafe { libc::flock(adjacent.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if adjacent_result == 0 {
+            return Ok(Some(RuntimeProcessLock {
+                _database: database,
+                _adjacent: adjacent,
+            }));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Ok(None);
+        }
+        return Err(error.into());
     }
     let error = std::io::Error::last_os_error();
     if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
@@ -257,7 +270,9 @@ fn try_acquire_runtime_process_lock(goals_path: &Path) -> anyhow::Result<Option<
 }
 
 #[cfg(not(unix))]
-fn try_acquire_runtime_process_lock(_goals_path: &Path) -> anyhow::Result<Option<File>> {
+fn try_acquire_runtime_process_lock(
+    _goals_path: &Path,
+) -> anyhow::Result<Option<RuntimeProcessLock>> {
     // Do not claim recovery authority without a process-lifetime lock/death
     // proof on platforms where this implementation has not been verified.
     Ok(None)
@@ -309,27 +324,33 @@ impl StateRuntime {
         let goals_path = sqlite.goals_db_path();
         let memories_path = sqlite.memories_db_path();
         let usage_path = sqlite.usage_db_path();
-        remove_legacy_db_files(
-            sqlite.home(),
-            database_filename(&state_path)?,
-            STATE_DB_BASENAME,
-            "state",
-        )
-        .await;
-        remove_legacy_db_files(
-            sqlite.home(),
-            database_filename(&logs_path)?,
-            LOGS_DB_BASENAME,
-            "logs",
-        )
-        .await;
-        remove_legacy_db_files(
-            sqlite.home(),
-            database_filename(&usage_path)?,
-            USAGE_DB_BASENAME,
-            "usage",
-        )
-        .await;
+        // Ownership arbitration must precede legacy cleanup and goals-schema
+        // migration. A losing runtime may inspect the existing DB read-only,
+        // but it must not mutate it while another owner holds the lock.
+        let process_lock = try_acquire_runtime_process_lock(&goals_path)?;
+        if process_lock.is_some() {
+            remove_legacy_db_files(
+                sqlite.home(),
+                database_filename(&state_path)?,
+                STATE_DB_BASENAME,
+                "state",
+            )
+            .await;
+            remove_legacy_db_files(
+                sqlite.home(),
+                database_filename(&logs_path)?,
+                LOGS_DB_BASENAME,
+                "logs",
+            )
+            .await;
+            remove_legacy_db_files(
+                sqlite.home(),
+                database_filename(&usage_path)?,
+                USAGE_DB_BASENAME,
+                "usage",
+            )
+            .await;
+        }
         let state_migrator = runtime_state_migrator();
         let logs_migrator = runtime_logs_migrator();
         let usage_migrator = runtime_usage_migrator();
@@ -370,10 +391,17 @@ impl StateRuntime {
                 return Err(err);
             }
         };
-        let goals_pool = match sqlite
-            .open_goals_db(&goals_migrator, telemetry_override)
-            .await
-        {
+        let goals_pool_result = if process_lock.is_some() {
+            sqlite
+                .open_goals_db(&goals_migrator, telemetry_override)
+                .await
+        } else {
+            sqlite
+                .open_read_only_pool(&goals_path)
+                .await
+                .map_err(Into::into)
+        };
+        let goals_pool = match goals_pool_result {
             Ok(db) => Arc::new(db),
             Err(err) => {
                 warn!("failed to open goals db at {}: {err}", goals_path.display());
@@ -470,9 +498,7 @@ impl StateRuntime {
             Arc::clone(&owner_capability),
             None,
         );
-        let runtime_owner = if let Some(process_lock) =
-            try_acquire_runtime_process_lock(&goals_path)?
-        {
+        let runtime_owner = if let Some(process_lock) = process_lock {
             let owner_id = Uuid::now_v7();
             if let Err(err) = bootstrap_goal_owner_admissions
                 .claim_runtime_owner(owner_id)
@@ -800,6 +826,8 @@ mod tests {
     #[cfg(unix)]
     use std::fs;
     use std::io;
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
     use std::path::Path;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -884,6 +912,32 @@ mod tests {
                 .is_some(),
             "the alias should acquire only after the first lock is released"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_process_lock_respects_legacy_adjacent_lock() {
+        let root = unique_temp_dir();
+        fs::create_dir_all(&root).expect("create legacy-lock test directory");
+        let goals = root.join("goals.sqlite");
+        fs::File::create(&goals).expect("create goals database fixture");
+        let adjacent = goals.with_extension("runtime.lock");
+        let legacy = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&adjacent)
+            .expect("create legacy adjacent lock");
+        let result = unsafe { libc::flock(legacy.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(result, 0, "acquire legacy adjacent lock fixture");
+        assert!(
+            try_acquire_runtime_process_lock(&goals)
+                .expect("probe legacy adjacent lock")
+                .is_none(),
+            "new ownership must respect the parent DB-adjacent lock"
+        );
+        drop(legacy);
         let _ = fs::remove_dir_all(root);
     }
 

@@ -551,7 +551,11 @@ impl ModelRequestAdmissionBroker {
         };
         state_db
             .goal_owner_admissions()
-            .release_dispatch_claim(&continuation.authority().authority, dispatch_claim_id)
+            .release_dispatch_claim(
+                &continuation.authority().authority,
+                dispatch_claim_id,
+                continuation.fence_identity(),
+            )
             .await
             .map(|_| ())
             .map_err(storage_error)

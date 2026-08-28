@@ -2049,9 +2049,13 @@ impl ModelClientSession {
             let stream_result = stream_result.map_err(|err| {
                 let response_debug_context = extract_response_debug_context_from_api_error(&err);
                 let provider_denial = api_error_is_definitive_provider_denial(&err);
-                let provider_terminal = api_error_is_provider_terminal(&err);
                 let err = self.client.state.provider.map_api_error(err);
-                (err, provider_denial || provider_terminal)
+                // Keep WebSocket and SSE/HTTP admission settlement aligned:
+                // semantic provider terminal events are authoritative for
+                // evidence, but only the explicit denial classifier settles
+                // an admitted lease as rejected. Transport uncertainty (incl.
+                // HTTP 5xx) must never become a denial through this path.
+                (err, provider_denial)
             });
             let stream_result = match stream_result {
                 Ok(stream_result) => stream_result,
