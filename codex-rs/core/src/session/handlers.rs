@@ -602,13 +602,15 @@ async fn shutdown_session_runtime(sess: &Arc<Session>) {
 }
 
 async fn emit_thread_stop_lifecycle(sess: &Session) {
-    for contributor in sess.services.extensions.thread_lifecycle_contributors() {
-        contributor
-            .on_thread_stop(codex_extension_api::ThreadStopInput {
-                session_store: &sess.services.session_extension_data,
-                thread_store: &sess.services.thread_extension_data,
-            })
-            .await;
+    if !sess.is_continuity_health_check() {
+        for contributor in sess.services.extensions.thread_lifecycle_contributors() {
+            contributor
+                .on_thread_stop(codex_extension_api::ThreadStopInput {
+                    session_store: &sess.services.session_extension_data,
+                    thread_store: &sess.services.thread_extension_data,
+                })
+                .await;
+        }
     }
 }
 

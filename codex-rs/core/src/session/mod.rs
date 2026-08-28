@@ -707,7 +707,12 @@ impl Session {
             None
         };
         // Dynamic tools are defined at thread start and persisted in rollout session metadata.
-        let dynamic_tools = if dynamic_tools.is_empty() {
+        let dynamic_tools = if continuity_health_check {
+            // A continuity child must not restore model- or parent-supplied dynamic tools from
+            // forked history/session metadata. Its capability surface is intentionally empty;
+            // preserve only the explicit V2 residency identity for lifecycle accounting.
+            Vec::new()
+        } else if dynamic_tools.is_empty() {
             persisted_tools
                 .filter(|tools| !tools.is_empty())
                 .or_else(|| conversation_history.get_dynamic_tools())
@@ -3500,26 +3505,28 @@ impl Session {
         contextual_user_sections: &mut Vec<String>,
         separate_developer_sections: &mut Vec<String>,
     ) {
-        let context_contributors = self.services.extensions.context_contributors().to_vec();
+        if !self.is_continuity_health_check() {
+            let context_contributors = self.services.extensions.context_contributors().to_vec();
 
-        for contributor in &context_contributors {
-            for fragment in contributor
-                .contribute_turn_context(TurnContextContributionInput {
-                    thread_id: self.thread_id(),
-                    turn_id: turn_context.sub_id.as_str(),
-                    session_store: &self.services.session_extension_data,
-                    thread_store: &self.services.thread_extension_data,
-                    turn_store: turn_context.extension_data.as_ref(),
-                    model_context_window: turn_context.model_context_window(),
-                })
-                .await
-            {
-                push_prompt_fragment(
-                    fragment,
-                    developer_sections,
-                    contextual_user_sections,
-                    separate_developer_sections,
-                );
+            for contributor in &context_contributors {
+                for fragment in contributor
+                    .contribute_turn_context(TurnContextContributionInput {
+                        thread_id: self.thread_id(),
+                        turn_id: turn_context.sub_id.as_str(),
+                        session_store: &self.services.session_extension_data,
+                        thread_store: &self.services.thread_extension_data,
+                        turn_store: turn_context.extension_data.as_ref(),
+                        model_context_window: turn_context.model_context_window(),
+                    })
+                    .await
+                {
+                    push_prompt_fragment(
+                        fragment,
+                        developer_sections,
+                        contextual_user_sections,
+                        separate_developer_sections,
+                    );
+                }
             }
         }
     }
@@ -3674,21 +3681,23 @@ impl Session {
         {
             contextual_user_sections.push(recommended_plugins.render());
         }
-        let context_contributors = self.services.extensions.context_contributors().to_vec();
-        for contributor in &context_contributors {
-            for fragment in contributor
-                .contribute_thread_context(
-                    &self.services.session_extension_data,
-                    &self.services.thread_extension_data,
-                )
-                .await
-            {
-                push_prompt_fragment(
-                    fragment,
-                    &mut developer_sections,
-                    &mut contextual_user_sections,
-                    &mut separate_developer_sections,
-                );
+        if !self.is_continuity_health_check() {
+            let context_contributors = self.services.extensions.context_contributors().to_vec();
+            for contributor in &context_contributors {
+                for fragment in contributor
+                    .contribute_thread_context(
+                        &self.services.session_extension_data,
+                        &self.services.thread_extension_data,
+                    )
+                    .await
+                {
+                    push_prompt_fragment(
+                        fragment,
+                        &mut developer_sections,
+                        &mut contextual_user_sections,
+                        &mut separate_developer_sections,
+                    );
+                }
             }
         }
         self.append_turn_context_contributions(
@@ -4308,13 +4317,15 @@ impl Session {
     pub async fn interrupt_task(self: &Arc<Self>) {
         info!("interrupt received: abort current task, if any");
         let had_active_turn = self.active_turn.lock().await.is_some();
-        for contributor in self.services.extensions.thread_lifecycle_contributors() {
-            contributor
-                .on_thread_interrupt(codex_extension_api::ThreadInterruptInput {
-                    session_store: &self.services.session_extension_data,
-                    thread_store: &self.services.thread_extension_data,
-                })
-                .await;
+        if !self.is_continuity_health_check() {
+            for contributor in self.services.extensions.thread_lifecycle_contributors() {
+                contributor
+                    .on_thread_interrupt(codex_extension_api::ThreadInterruptInput {
+                        session_store: &self.services.session_extension_data,
+                        thread_store: &self.services.thread_extension_data,
+                    })
+                    .await;
+            }
         }
         self.abort_all_tasks(TurnAbortReason::Interrupted).await;
         if !had_active_turn {

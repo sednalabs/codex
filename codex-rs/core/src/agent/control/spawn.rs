@@ -676,6 +676,7 @@ impl AgentControl {
                     inheritance,
                     multi_agent_version,
                     /*suppress_inherited_capabilities*/ continuity_health_check,
+                    /*continuity_health_check*/ continuity_health_check,
                 ))
                 .await?
             }
@@ -1336,6 +1337,7 @@ impl AgentControl {
         inheritance: SpawnAgentThreadInheritance,
         multi_agent_version: MultiAgentVersion,
         suppress_inherited_capabilities: bool,
+        continuity_health_check: bool,
     ) -> CodexResult<crate::thread_manager::NewThread> {
         let SpawnAgentThreadInheritance {
             environments: inherited_environments,
