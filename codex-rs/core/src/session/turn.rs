@@ -1459,13 +1459,12 @@ async fn cleanup_continuity_child(
     child_thread_id: codex_protocol::ThreadId,
     cancellation_token: &CancellationToken,
 ) -> bool {
-    let close_result = tokio::select! {
-        _ = cancellation_token.cancelled() => None,
-        result = tokio::time::timeout(
-            CONTINUITY_CHILD_CLEANUP_TIMEOUT,
-            control.close_agent(child_thread_id),
-        ) => Some(result),
-    };
+    let close_result = await_continuity_cleanup(
+        cancellation_token,
+        CONTINUITY_CHILD_CLEANUP_TIMEOUT,
+        control.close_agent(child_thread_id),
+    )
+    .await;
     // A running child provider turn can keep `close_agent` waiting behind the
     // session loop's shutdown barrier. Never let that wait extend the parent
     // turn indefinitely. The detached owner deliberately keeps the manager's
@@ -1525,6 +1524,24 @@ async fn cleanup_continuity_child(
         );
     }));
     false
+}
+
+/// Await child teardown only while the parent still has a bounded cleanup
+/// window. A cancellation or timeout hands the exact child to the detached
+/// manager-owned cleanup owner instead of leaving the parent behind a held
+/// provider stream.
+async fn await_continuity_cleanup<F>(
+    cancellation_token: &CancellationToken,
+    timeout: std::time::Duration,
+    cleanup: F,
+) -> Option<CodexResult<String>>
+where
+    F: std::future::Future<Output = CodexResult<String>> + Send,
+{
+    tokio::select! {
+        _ = cancellation_token.cancelled() => None,
+        result = tokio::time::timeout(timeout, cleanup) => result.ok(),
+    }
 }
 
 async fn monitor_continuity_child(

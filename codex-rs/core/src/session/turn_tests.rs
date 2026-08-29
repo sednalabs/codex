@@ -5,6 +5,8 @@ use codex_protocol::ResponseItemId;
 use codex_protocol::items::AgentMessageContent;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::prelude::*;
 
 struct RewriteAgentMessageContributor;
@@ -95,5 +97,38 @@ async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
     assert_eq!(
         last_agent_message.as_deref(),
         Some("plan contributed assistant text")
+    );
+}
+
+#[tokio::test]
+async fn held_provider_stream_does_not_block_continuity_cleanup_deadline() {
+    let cancellation_token = CancellationToken::new();
+    let cleanup = await_continuity_cleanup(
+        &cancellation_token,
+        Duration::from_millis(5),
+        std::future::pending::<CodexResult<String>>(),
+    )
+    .await;
+
+    assert!(
+        cleanup.is_none(),
+        "a held provider stream must become a deferred cleanup receipt at the deadline"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_continuity_cleanup_does_not_wait_for_forever_retry() {
+    let cancellation_token = CancellationToken::new();
+    cancellation_token.cancel();
+    let cleanup = await_continuity_cleanup(
+        &cancellation_token,
+        Duration::from_secs(1),
+        std::future::pending::<CodexResult<String>>(),
+    )
+    .await;
+
+    assert!(
+        cleanup.is_none(),
+        "cancellation must hand forever-temporary-429 cleanup to the detached owner"
     );
 }
