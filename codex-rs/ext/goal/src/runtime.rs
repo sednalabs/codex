@@ -196,7 +196,7 @@ impl GoalRuntimeHandle {
             )
             .await
         {
-            self.fail_closed_continuation_boundary(None).await;
+            self.fail_closed_continuation_boundary(/*turn_id*/ None).await;
             return Err(error);
         }
         Ok(())
@@ -268,7 +268,7 @@ impl GoalRuntimeHandle {
                     self.inject_active_turn_steering(item).await;
                 }
                 if let Err(error) = self.continue_if_idle().await {
-                    self.fail_closed_continuation_boundary(None).await;
+                    self.fail_closed_continuation_boundary(/*turn_id*/ None).await;
                     return Err(error);
                 }
             }

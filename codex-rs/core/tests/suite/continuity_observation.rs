@@ -60,6 +60,13 @@ fn body_contains(request: &Request, text: &str) -> bool {
         .is_some_and(|body| body.contains(text))
 }
 
+fn request_header<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
+    request
+        .headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+}
+
 fn request_has_input_type(request: &Request, input_type: &str) -> bool {
     decoded_body(request)
         .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
@@ -101,8 +108,7 @@ async fn wait_for_child_thread(
             .expect("mock server should expose received requests")
             .iter()
             .filter_map(|request| {
-                request
-                    .header("thread-id")
+                request_header(request, "thread-id")
                     .filter(|thread_id| body_contains(request, CHILD_PROMPT))
                     .and_then(|thread_id| codex_protocol::ThreadId::from_string(thread_id).ok())
             })
@@ -329,27 +335,26 @@ async fn usage_limit_v2_probe_reaches_child_provider_and_records_outcome() -> Re
         root_index < child_index,
         "the authoritative parent rejection must precede the child request"
     );
-    let root_thread_id = root_request
-        .header("thread-id")
-        .expect("root request thread identity");
+    let root_thread_id =
+        request_header(root_request, "thread-id").expect("root request thread identity");
     let child_thread_id = child_id.to_string();
     assert_eq!(
-        child_request.header("thread-id"),
+        request_header(child_request, "thread-id"),
         Some(child_thread_id.as_str()),
         "the physical child request must bind the selected V2 child thread"
     );
     assert_eq!(
-        child_request.header("session-id"),
-        root_request.header("session-id"),
+        request_header(child_request, "session-id"),
+        request_header(root_request, "session-id"),
         "root and child requests must remain in one session"
     );
     assert_eq!(
-        child_request.header("x-codex-parent-thread-id"),
+        request_header(child_request, "x-codex-parent-thread-id"),
         Some(root_thread_id),
         "the child request parent header must bind the selected root"
     );
     assert_eq!(
-        child_request.header("x-openai-subagent"),
+        request_header(child_request, "x-openai-subagent"),
         Some("collab_spawn"),
         "the diagnostic child must retain the V2 subagent identity"
     );
