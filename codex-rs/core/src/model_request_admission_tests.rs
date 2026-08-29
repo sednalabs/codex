@@ -16,18 +16,32 @@ use tempfile::TempDir;
 const SUCCESSOR_TURN_ID: &str = "turn-successor";
 const SUCCESSOR_REQUEST_ID: &str = "successor-request";
 
-fn issuer(
+async fn thread_owner(
+    admissions: Arc<codex_state::InstalledGoalRuntimeAdmissions>,
+    thread_id: ThreadId,
+) -> Arc<codex_state::GoalRuntimeThreadOwner> {
+    Arc::new(
+        admissions
+            .start_thread_owner(thread_id)
+            .await
+            .expect("issue test Runtime Custodian owner"),
+    )
+}
+
+async fn issuer(
     admissions: Arc<codex_state::InstalledGoalRuntimeAdmissions>,
     thread_id: ThreadId,
 ) -> GoalRuntimeContinuationIssuer {
-    GoalRuntimeContinuationIssuer::for_thread(admissions, thread_id)
+    GoalRuntimeContinuationIssuer::from_thread_owner(thread_owner(admissions, thread_id).await)
 }
 
-fn fenced(
+async fn fenced(
     admissions: &Arc<codex_state::InstalledGoalRuntimeAdmissions>,
     authority: codex_state::GoalOwnerAdmissionContinuationAuthority,
 ) -> GoalOwnerContinuation {
-    issuer(Arc::clone(admissions), authority.authority.thread_id).continuation(authority)
+    issuer(Arc::clone(admissions), authority.authority.thread_id)
+        .await
+        .continuation(authority)
 }
 
 fn identity(thread_id: ThreadId, kind: InferenceRequestKind) -> ModelRequestIdentity {
@@ -82,12 +96,11 @@ async fn runtime() -> (TempDir, AdmissionTestRuntime) {
 async fn retained_issuer_shares_installed_revocation_epoch() {
     let (_home, test_runtime) = runtime().await;
     let thread_id = ThreadId::new();
-    let primary_issuer = issuer(Arc::clone(&test_runtime.admissions), thread_id);
-    let retained_issuer = issuer(Arc::clone(&test_runtime.admissions), thread_id);
+    let primary_issuer = issuer(Arc::clone(&test_runtime.admissions), thread_id).await;
+    let retained_issuer = issuer(Arc::clone(&test_runtime.admissions), thread_id).await;
     let stale_epoch = primary_issuer.current_epoch();
-    let guard = test_runtime
-        .admissions
-        .owner_for_thread(thread_id)
+    let thread_owner = thread_owner(Arc::clone(&test_runtime.admissions), thread_id).await;
+    let guard = thread_owner
         .enter_continuation(stale_epoch)
         .expect("initial installed owner epoch should enter");
     assert!(guard.is_current_epoch());
@@ -100,13 +113,7 @@ async fn retained_issuer_shares_installed_revocation_epoch() {
     );
     assert_ne!(primary_issuer.current_epoch(), stale_epoch);
     assert!(!guard.is_current_epoch());
-    assert!(
-        test_runtime
-            .admissions
-            .owner_for_thread(thread_id)
-            .enter_continuation(stale_epoch)
-            .is_none()
-    );
+    assert!(thread_owner.enter_continuation(stale_epoch).is_none());
 }
 
 fn observation(
@@ -138,13 +145,23 @@ fn observation(
     }
 }
 
+async fn observe_denial(
+    admissions: &Arc<codex_state::InstalledGoalRuntimeAdmissions>,
+    observation: &GoalOwnerAdmissionObservation,
+) -> anyhow::Result<GoalOwnerAdmissionRecord> {
+    thread_owner(Arc::clone(admissions), observation.thread_id)
+        .await
+        .observe_denial(observation)
+        .await
+}
+
 async fn admit(
     broker: &ModelRequestAdmissionBroker,
     admissions: &Arc<codex_state::InstalledGoalRuntimeAdmissions>,
     record: &GoalOwnerAdmissionRecord,
     identity: &ModelRequestIdentity,
 ) -> ModelRequestAdmissionDecision {
-    let coordinator = issuer(Arc::clone(admissions), record.authority.thread_id);
+    let coordinator = issuer(Arc::clone(admissions), record.authority.thread_id).await;
     let claim_id = coordinator
         .claim_dispatch(&record.continuation_authority(), Utc::now())
         .await
@@ -195,16 +212,12 @@ async fn nonterminal_records_require_exact_authority_before_any_provider_call() 
         ),
     ] {
         let thread_id = ThreadId::new();
-        store
-            .observe_denial(&observation(
-                thread_id,
-                name,
-                phase,
-                deadline,
-                InferenceRequestKind::Turn,
-            ))
-            .await
-            .expect("record blocked admission");
+        observe_denial(
+            store,
+            &observation(thread_id, name, phase, deadline, InferenceRequestKind::Turn),
+        )
+        .await
+        .expect("record blocked admission");
         let decision = broker
             .admit(
                 &identity(thread_id, InferenceRequestKind::Turn),
@@ -225,17 +238,19 @@ async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_reque
     let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
     let store = &test_runtime.admissions;
     let thread_id = ThreadId::new();
-    let record = store
-        .observe_denial(&observation(
+    let record = observe_denial(
+        store,
+        &observation(
             thread_id,
             "exact",
             GoalOwnerAdmissionPhase::Pending,
             Utc::now() - Duration::seconds(1),
             InferenceRequestKind::Turn,
-        ))
-        .await
-        .expect("record eligible admission");
-    let authority = fenced(store, record.continuation_authority());
+        ),
+    )
+    .await
+    .expect("record eligible admission");
+    let authority = fenced(store, record.continuation_authority()).await;
 
     let wrong_kind = identity(thread_id, InferenceRequestKind::RemoteCompact);
     let wrong_turn = identity_with(
@@ -255,6 +270,7 @@ async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_reque
     let mut wrong_authority = authority.authority().clone();
     wrong_authority.decision_id = Uuid::now_v7();
 
+    let wrong_continuation = fenced(store, wrong_authority).await;
     for (identity, authority) in [
         (identity(thread_id, InferenceRequestKind::Turn), None),
         (wrong_kind, Some(authority.clone())),
@@ -263,7 +279,7 @@ async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_reque
         (wrong_effective_provider, Some(authority.clone())),
         (
             identity(thread_id, InferenceRequestKind::Turn),
-            Some(fenced(store, wrong_authority)),
+            Some(wrong_continuation),
         ),
     ] {
         let decision = broker
@@ -296,23 +312,26 @@ async fn foreign_coordinator_token_cannot_consume_dispatch_claim() {
     let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
     let store = &test_runtime.admissions;
     let thread_id = ThreadId::new();
-    let record = store
-        .observe_denial(&observation(
+    let record = observe_denial(
+        store,
+        &observation(
             thread_id,
             "foreign-fence",
             GoalOwnerAdmissionPhase::Pending,
             Utc::now() - Duration::seconds(1),
             InferenceRequestKind::Turn,
-        ))
-        .await
-        .expect("record eligible admission");
-    let trusted = issuer(Arc::clone(store), record.authority.thread_id);
+        ),
+    )
+    .await
+    .expect("record eligible admission");
+    let trusted = issuer(Arc::clone(store), record.authority.thread_id).await;
     let claim_id = trusted
         .claim_dispatch(&record.continuation_authority(), Utc::now())
         .await
         .expect("claim exact admission")
         .expect("eligible admission claim");
     let forged = issuer(Arc::clone(store), ThreadId::new())
+        .await
         .continuation_with_dispatch_claim(record.continuation_authority(), claim_id);
     let decision = broker
         .admit(
@@ -330,16 +349,18 @@ async fn cancellation_before_request_open_fence_causes_zero_physical_calls() {
     let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
     let store = &test_runtime.admissions;
     let thread_id = ThreadId::new();
-    let record = store
-        .observe_denial(&observation(
+    let record = observe_denial(
+        store,
+        &observation(
             thread_id,
             "cancel-before-open",
             GoalOwnerAdmissionPhase::Pending,
             Utc::now() - Duration::seconds(1),
             InferenceRequestKind::Turn,
-        ))
-        .await
-        .expect("record eligible admission");
+        ),
+    )
+    .await
+    .expect("record eligible admission");
     let decision = admit(
         &broker,
         store,
@@ -347,7 +368,8 @@ async fn cancellation_before_request_open_fence_causes_zero_physical_calls() {
         &identity(thread_id, InferenceRequestKind::Turn),
     )
     .await;
-    store
+    thread_owner(Arc::clone(store), thread_id)
+        .await
         .cancel(
             &record.authority,
             GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
@@ -365,17 +387,19 @@ async fn revocation_after_admission_releases_the_unopened_lease_without_provider
     let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
     let store = &test_runtime.admissions;
     let thread_id = ThreadId::new();
-    let record = store
-        .observe_denial(&observation(
+    let record = observe_denial(
+        store,
+        &observation(
             thread_id,
             "revoke-after-admit",
             GoalOwnerAdmissionPhase::Pending,
             Utc::now() - Duration::seconds(1),
             InferenceRequestKind::Turn,
-        ))
-        .await
-        .expect("record eligible admission");
-    let coordinator = issuer(Arc::clone(store), thread_id);
+        ),
+    )
+    .await
+    .expect("record eligible admission");
+    let coordinator = issuer(Arc::clone(store), thread_id).await;
     let claim_id = coordinator
         .claim_dispatch(&record.continuation_authority(), Utc::now())
         .await
@@ -420,17 +444,19 @@ async fn revocation_after_durable_open_is_definitely_cancelled_before_provider_i
     let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
     let store = &test_runtime.admissions;
     let thread_id = ThreadId::new();
-    let record = store
-        .observe_denial(&observation(
+    let record = observe_denial(
+        store,
+        &observation(
             thread_id,
             "revoke-after-open",
             GoalOwnerAdmissionPhase::Pending,
             Utc::now() - Duration::seconds(1),
             InferenceRequestKind::Turn,
-        ))
-        .await
-        .expect("record eligible admission");
-    let coordinator = issuer(Arc::clone(store), thread_id);
+        ),
+    )
+    .await
+    .expect("record eligible admission");
+    let coordinator = issuer(Arc::clone(store), thread_id).await;
     let claim_id = coordinator
         .claim_dispatch(&record.continuation_authority(), Utc::now())
         .await
@@ -484,17 +510,20 @@ async fn terminal_success_is_unrestricted_before_identity_matching() {
     let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
     let store = &test_runtime.admissions;
     let thread_id = ThreadId::new();
-    let record = store
-        .observe_denial(&observation(
+    let record = observe_denial(
+        store,
+        &observation(
             thread_id,
             "succeeded",
             GoalOwnerAdmissionPhase::Pending,
             Utc::now() - Duration::seconds(1),
             InferenceRequestKind::Turn,
-        ))
-        .await
-        .expect("record eligible admission");
-    let lease = match store
+        ),
+    )
+    .await
+    .expect("record eligible admission");
+    let thread_owner = thread_owner(Arc::clone(store), thread_id).await;
+    let lease = match thread_owner
         .try_acquire(&record.continuation_authority(), Utc::now())
         .await
         .expect("acquire admission")
@@ -502,8 +531,13 @@ async fn terminal_success_is_unrestricted_before_identity_matching() {
         GoalOwnerAdmissionAcquireResult::Acquired(lease) => *lease,
         result => panic!("expected eligible lease, got {result:?}"),
     };
-    assert!(store.open_lease(&lease).await.expect("open admission"));
-    store
+    assert!(
+        thread_owner
+            .open_lease(&lease)
+            .await
+            .expect("open admission")
+    );
+    thread_owner
         .finish(
             &lease,
             GoalOwnerAdmissionTerminalOutcome::Succeeded,
@@ -531,10 +565,11 @@ async fn terminal_success_is_unrestricted_before_identity_matching() {
         .expect("unrestricted successor can call provider");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
+    let continuation = fenced(store, record.continuation_authority()).await;
     let continuation_decision = broker
         .admit(
             &identity(thread_id, InferenceRequestKind::Turn),
-            Some(&fenced(store, record.continuation_authority())),
+            Some(&continuation),
         )
         .await
         .expect("evaluate settled continuation");
@@ -550,17 +585,20 @@ async fn continuation_token_without_active_record_fails_closed() {
     let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
     let store = &test_runtime.admissions;
     let thread_id = ThreadId::new();
-    let record = store
-        .observe_denial(&observation(
+    let record = observe_denial(
+        store,
+        &observation(
             thread_id,
             "retired-before-continuation",
             GoalOwnerAdmissionPhase::Pending,
             Utc::now() - Duration::seconds(1),
             InferenceRequestKind::Turn,
-        ))
-        .await
-        .expect("record eligible admission");
-    let lease = match store
+        ),
+    )
+    .await
+    .expect("record eligible admission");
+    let thread_owner = thread_owner(Arc::clone(store), thread_id).await;
+    let lease = match thread_owner
         .try_acquire(&record.continuation_authority(), Utc::now())
         .await
         .expect("acquire admission")
@@ -568,7 +606,7 @@ async fn continuation_token_without_active_record_fails_closed() {
         GoalOwnerAdmissionAcquireResult::Acquired(lease) => *lease,
         result => panic!("expected eligible lease, got {result:?}"),
     };
-    store
+    thread_owner
         .finish(
             &lease,
             GoalOwnerAdmissionTerminalOutcome::Succeeded,
@@ -576,7 +614,7 @@ async fn continuation_token_without_active_record_fails_closed() {
         )
         .await
         .expect("finish admission");
-    store
+    thread_owner
         .retire(
             &record.authority,
             codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
@@ -585,10 +623,11 @@ async fn continuation_token_without_active_record_fails_closed() {
         .expect("retire admission")
         .expect("retirement persists");
 
+    let continuation = fenced(store, record.continuation_authority()).await;
     let decision = broker
         .admit(
             &identity(thread_id, InferenceRequestKind::Turn),
-            Some(&fenced(store, record.continuation_authority())),
+            Some(&continuation),
         )
         .await
         .expect("evaluate missing active generation");
@@ -598,10 +637,11 @@ async fn continuation_token_without_active_record_fails_closed() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 
     let no_state_broker = ModelRequestAdmissionBroker::new(None);
+    let continuation = fenced(store, record.continuation_authority()).await;
     let no_state_decision = no_state_broker
         .admit(
             &identity(thread_id, InferenceRequestKind::Turn),
-            Some(&fenced(store, record.continuation_authority())),
+            Some(&continuation),
         )
         .await
         .expect("evaluate continuation without state runtime");
@@ -615,31 +655,35 @@ async fn continuation_token_without_active_record_fails_closed() {
 async fn disabled_or_stale_installed_issuer_cannot_publish_a_provider_request() {
     let (_home, test_runtime) = runtime().await;
     let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
-    let record = test_runtime
-        .admissions
-        .observe_denial(&observation(
+    let record = observe_denial(
+        &test_runtime.admissions,
+        &observation(
             ThreadId::new(),
             "disabled-owner",
             GoalOwnerAdmissionPhase::Pending,
             Utc::now() - Duration::seconds(1),
             InferenceRequestKind::Turn,
-        ))
-        .await
-        .expect("record eligible admission");
+        ),
+    )
+    .await
+    .expect("record eligible admission");
     let primary_issuer = issuer(
         Arc::clone(&test_runtime.admissions),
         record.authority.thread_id,
-    );
+    )
+    .await;
     let retained_before_stop = issuer(
         Arc::clone(&test_runtime.admissions),
         record.authority.thread_id,
-    );
+    )
+    .await;
     let stale_continuation = primary_issuer.continuation(record.continuation_authority());
     assert_eq!(primary_issuer.set_enabled(false), Some(1));
     let retained_issuer = issuer(
         Arc::clone(&test_runtime.admissions),
         record.authority.thread_id,
-    );
+    )
+    .await;
     assert!(
         !retained_issuer.is_enabled(),
         "a retained installed facade must share the disabled thread owner"
@@ -700,18 +744,19 @@ async fn cross_runtime_admissions_are_rejected_before_provider_publication() {
     let (_state_a_home, state_a) = runtime().await;
     let (_state_b_home, state_b) = runtime().await;
     let broker = ModelRequestAdmissionBroker::new(Some(state_a.state_db.clone()));
-    let record = state_b
-        .admissions
-        .observe_denial(&observation(
+    let record = observe_denial(
+        &state_b.admissions,
+        &observation(
             ThreadId::new(),
             "cross-runtime-owner",
             GoalOwnerAdmissionPhase::Pending,
             Utc::now() - Duration::seconds(1),
             InferenceRequestKind::Turn,
-        ))
-        .await
-        .expect("record other-runtime admission");
-    let foreign_issuer = issuer(Arc::clone(&state_b.admissions), record.authority.thread_id);
+        ),
+    )
+    .await
+    .expect("record other-runtime admission");
+    let foreign_issuer = issuer(Arc::clone(&state_b.admissions), record.authority.thread_id).await;
     let dispatch_claim_id = foreign_issuer
         .claim_dispatch(&record.continuation_authority(), Utc::now())
         .await

@@ -52,9 +52,10 @@ pub(crate) enum ActiveGoalStopReason {
 struct GoalRuntimeInner {
     thread_id: ThreadId,
     state_dbs: Arc<codex_state::StateRuntime>,
-    /// Private, installation-owned admission facade. This is never obtained
-    /// from `StateRuntime`; the public runtime view remains diagnostics-only.
-    goal_owner_admissions: Arc<codex_state::InstalledGoalRuntimeAdmissions>,
+    /// Private, custodian-issued capability for this exact thread. This is
+    /// never obtained from `StateRuntime`, an installed facade, or a thread
+    /// identifier; the public runtime view remains diagnostics-only.
+    goal_owner_admissions: Arc<codex_state::GoalRuntimeThreadOwner>,
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
@@ -182,7 +183,7 @@ impl GoalRuntimeHandle {
     pub(crate) fn new(
         thread_id: ThreadId,
         state_dbs: Arc<codex_state::StateRuntime>,
-        goal_runtime_admissions: Arc<codex_state::InstalledGoalRuntimeAdmissions>,
+        goal_runtime_admissions: Arc<codex_state::GoalRuntimeThreadOwner>,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
         thread_manager: Weak<ThreadManager>,
@@ -201,10 +202,9 @@ impl GoalRuntimeHandle {
                 accounting_state,
                 tools_available_for_thread: config.tools_available_for_thread,
                 continuation: GoalContinuationCoordinator {
-                    fence: GoalRuntimeContinuationIssuer::for_authorized_handoff(
-                        goal_runtime_admissions,
-                        thread_id,
-                    ),
+                    fence: GoalRuntimeContinuationIssuer::from_thread_owner(Arc::clone(
+                        &goal_runtime_admissions,
+                    )),
                     state: Mutex::new(ProviderContinuationState::default()),
                     lifecycle: Semaphore::new(/*permits*/ 1),
                 },
@@ -216,18 +216,6 @@ impl GoalRuntimeHandle {
         let Some(enablement_epoch) = self.inner.continuation.fence.set_enabled(enabled) else {
             return;
         };
-        let fence = self.inner.continuation.fence.clone();
-        let cooperative_quiescence = match tokio::runtime::Handle::try_current() {
-            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-                tokio::task::block_in_place(|| fence.wait_for_quiescence());
-                false
-            }
-            Ok(_) => true,
-            Err(_) => {
-                fence.wait_for_quiescence();
-                false
-            }
-        };
         if enabled {
             let authority = self
                 .inner
@@ -238,13 +226,7 @@ impl GoalRuntimeHandle {
                 .last_authority
                 .clone();
             let inner = Arc::downgrade(&self.inner);
-            let quiescence_fence = fence.clone();
             let reconcile = async move {
-                if cooperative_quiescence {
-                    while !quiescence_fence.is_quiescent() {
-                        tokio::task::yield_now().await;
-                    }
-                }
                 let Some(inner) = inner.upgrade() else {
                     return;
                 };
@@ -308,13 +290,7 @@ impl GoalRuntimeHandle {
             state.blocked = true;
             if let Some(authority) = authority {
                 let inner = Arc::downgrade(&self.inner);
-                let quiescence_fence = Arc::clone(&fence);
                 let cancel = async move {
-                    if cooperative_quiescence {
-                        while !quiescence_fence.is_quiescent() {
-                            tokio::task::yield_now().await;
-                        }
-                    }
                     let Some(inner) = inner.upgrade() else {
                         return;
                     };
@@ -582,7 +558,7 @@ impl GoalRuntimeHandle {
                 if let Some(previous) = self
                     .inner
                     .goal_owner_admissions
-                    .get(self.thread_id())
+                    .get()
                     .await
                     .map_err(|err| err.to_string())?
                 {
@@ -1046,10 +1022,7 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
         let admissions = &self.inner.goal_owner_admissions;
-        let persisted = admissions
-            .get(self.thread_id())
-            .await
-            .map_err(|err| err.to_string())?;
+        let persisted = admissions.get().await.map_err(|err| err.to_string())?;
         if let Some(record) = persisted.as_ref()
             && record.phase == codex_state::GoalOwnerAdmissionPhase::Terminal
         {
@@ -1226,11 +1199,7 @@ impl GoalRuntimeHandle {
             return Ok(false);
         }
         let admissions = &self.inner.goal_owner_admissions;
-        let Some(record) = admissions
-            .get(self.thread_id())
-            .await
-            .map_err(|err| err.to_string())?
-        else {
+        let Some(record) = admissions.get().await.map_err(|err| err.to_string())? else {
             return Ok(false);
         };
         if record.terminal_outcome != codex_state::GoalOwnerAdmissionTerminalOutcome::Exhausted {
@@ -1889,10 +1858,11 @@ mod tests {
             ))
             .expect("initialize state runtime");
         let (_runtime, goal_runtime_admissions) = bootstrap.into_goal_runtime().into_parts();
-        let issuer = GoalRuntimeContinuationIssuer::for_thread(
-            Arc::new(goal_runtime_admissions),
-            authority.thread_id,
-        );
+        let owner = tokio::runtime::Runtime::new()
+            .expect("test runtime")
+            .block_on(goal_runtime_admissions.start_thread_owner(authority.thread_id))
+            .expect("issue test thread owner");
+        let issuer = GoalRuntimeContinuationIssuer::from_thread_owner(Arc::new(owner));
         DeferredProviderContinuation {
             turn_id: "turn".to_string(),
             goal_id: authority.goal_id.clone(),
