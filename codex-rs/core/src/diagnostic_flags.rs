@@ -142,28 +142,29 @@ pub fn continuity_observation_chain_id(source: &SessionSource) -> Option<String>
     Some(chain_id.clone())
 }
 
-/// Build a causal request id with the immutable parent and child identities
-/// carried by the host-authored diagnostic source. This is a join key for
-/// trace logs; aggregate counters intentionally remain low-cardinality.
+/// Build a causal correlation key with the immutable parent and child
+/// identities carried by the host-authored diagnostic source. The sampling
+/// attempt identities are logical client boundaries, not physical provider
+/// request IDs; physical-send evidence is joined from the provider receipt.
 pub fn continuity_observation_request_correlation(
     source: &SessionSource,
     child_thread_id: &str,
     turn_id: &str,
-    request_id: &str,
+    logical_sampling_attempt_id: &str,
 ) -> Option<String> {
     let SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic {
         chain_id,
         parent_thread_id,
         parent_turn_id,
         spawn_call_id,
-        parent_sampling_request_id,
+        parent_logical_sampling_attempt_id,
         ..
     }) = source
     else {
         return None;
     };
     Some(format!(
-        "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:parent_sampling_request:{parent_sampling_request_id}:child_thread:{child_thread_id}:turn:{turn_id}:request:{request_id}"
+        "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:parent_logical_sampling_attempt:{parent_logical_sampling_attempt_id}:child_thread:{child_thread_id}:turn:{turn_id}:logical_sampling_attempt:{logical_sampling_attempt_id}"
     ))
 }
 
@@ -177,23 +178,26 @@ pub fn continuity_observation_child_correlation(
         parent_thread_id,
         parent_turn_id,
         spawn_call_id,
-        parent_sampling_request_id,
+        parent_logical_sampling_attempt_id,
         ..
     }) = source
     else {
         return None;
     };
     Some(format!(
-        "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:parent_sampling_request:{parent_sampling_request_id}:child_thread:{child_thread_id}:{stage}"
+        "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:parent_logical_sampling_attempt:{parent_logical_sampling_attempt_id}:child_thread:{child_thread_id}:{stage}"
     ))
 }
 
-/// Identity of the most recent client sampling request. The host stores this
-/// before opening the provider stream so a subsequent diagnostic probe can
-/// join itself to the exact request that received a usage-limit response.
+/// Identity of the most recent logical client sampling attempt. The host
+/// stores this before opening the provider stream so a subsequent diagnostic
+/// probe can join itself to the logical attempt that received a usage-limit
+/// response. It is not a physical provider request ID.
 #[derive(Clone, Debug)]
-pub struct ContinuitySamplingRequestIdentity {
-    pub request_id: String,
+pub struct ContinuityLogicalSamplingAttemptIdentity {
+    pub logical_sampling_attempt_id: String,
+    /// Logical trace correlation; a provider/mock-server receipt is required
+    /// to prove physical transmission for this attempt.
     pub correlation_id: String,
 }
 
@@ -425,7 +429,7 @@ mod tests {
                     chain_id: "chain-1".to_string(),
                     parent_turn_id: "turn-1".to_string(),
                     spawn_call_id: "call-1".to_string(),
-                    parent_sampling_request_id: "request-1".to_string(),
+                    parent_logical_sampling_attempt_id: "attempt-1".to_string(),
                 })
             } else {
                 SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -465,7 +469,7 @@ mod tests {
             "child-request",
         )
         .expect("diagnostic request should have a causal correlation");
-        assert!(request_correlation.contains("parent_sampling_request:request-1"));
+        assert!(request_correlation.contains("parent_logical_sampling_attempt:attempt-1"));
         assert!(request_correlation.contains("child_thread:33333333-3333-4333-8333-333333333333"));
         assert!(
             continuity_observation_child_correlation(
@@ -474,7 +478,7 @@ mod tests {
                 "child_created",
             )
             .expect("diagnostic child stage should have a causal correlation")
-            .contains("parent_sampling_request:request-1")
+            .contains("parent_logical_sampling_attempt:attempt-1")
         );
     }
 }

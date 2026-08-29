@@ -289,7 +289,7 @@ async fn finalize_turn_item_suppresses_generic_contributors_for_diagnostic_sourc
         chain_id: "chain-test".to_string(),
         parent_turn_id: "turn-test".to_string(),
         spawn_call_id: "call-test".to_string(),
-        parent_sampling_request_id: "request-test".to_string(),
+        parent_logical_sampling_attempt_id: "attempt-test".to_string(),
     });
 
     finalize_turn_item(

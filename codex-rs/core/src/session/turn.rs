@@ -145,6 +145,7 @@ pub(crate) struct CachedEndpointRecommendedPluginCandidates {
 
 const POST_SAMPLING_TOKEN_ESTIMATE_TARGET: &str = "codex_core::post_sampling_token_estimate";
 const CONTINUITY_OBSERVATION_PROBE_MARKER: &str = "<continuity_observation_probe>";
+const CONTINUITY_CHILD_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug)]
 struct ContinuityObservationTurn;
@@ -1309,10 +1310,10 @@ async fn run_continuity_post_usage_limit_probe(
     let task_name = crate::diagnostic_flags::next_continuity_probe_task_name("post_limit");
     let call_id = format!("diag_{task_name}");
     let chain_id = crate::diagnostic_flags::next_continuity_correlation_id("post_limit");
-    let parent_sampling_request_id = turn_context
+    let parent_logical_sampling_attempt_id = turn_context
         .extension_data
-        .get::<crate::diagnostic_flags::ContinuitySamplingRequestIdentity>()
-        .map(|identity| identity.request_id.clone())
+        .get::<crate::diagnostic_flags::ContinuityLogicalSamplingAttemptIdentity>()
+        .map(|identity| identity.logical_sampling_attempt_id.clone())
         .unwrap_or_else(|| "unknown".to_string());
     let child_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     let session = tool_runtime.session();
@@ -1334,7 +1335,7 @@ async fn run_continuity_post_usage_limit_probe(
     })
     .to_string();
     let correlation_id = format!(
-        "continuity:{chain_id}:parent_thread:{}:parent_turn:{}:spawn:{call_id}:parent_sampling_request:{parent_sampling_request_id}",
+        "continuity:{chain_id}:parent_thread:{}:parent_turn:{}:spawn:{call_id}:parent_logical_sampling_attempt:{parent_logical_sampling_attempt_id}",
         session.thread_id, turn_context.sub_id
     );
     let call = crate::tools::router::ToolCall {
@@ -1365,7 +1366,7 @@ async fn run_continuity_post_usage_limit_probe(
                 parent_thread_id: session.thread_id.to_string(),
                 parent_turn_id: turn_context.sub_id.clone(),
                 spawn_call_id: call_id.clone(),
-                parent_sampling_request_id,
+                parent_logical_sampling_attempt_id,
             },
             cancellation_token.clone(),
         )
@@ -1453,34 +1454,76 @@ fn continuity_child_deadline_outcome(status: &AgentStatus) -> &'static str {
 
 async fn cleanup_continuity_child(
     control: crate::agent::control::AgentControl,
+    telemetry: codex_otel::SessionTelemetry,
+    correlation_id: String,
     child_thread_id: codex_protocol::ThreadId,
+    cancellation_token: &CancellationToken,
 ) -> bool {
-    for attempt in 0..3 {
-        let close_result = control.close_agent(child_thread_id).await;
-        let status = control.get_status(child_thread_id).await;
-        if close_result.is_ok() && continuity_child_terminal_outcome(&status).is_some() {
-            return true;
-        }
-
-        // `close_agent` normally removes the ephemeral child. If persistence or
-        // shutdown reported an error, use the manager's removal path as a
-        // second, explicit owner and verify the terminal postcondition below.
-        if let Err(error) = control.shutdown_live_agent(child_thread_id).await {
+    let close_result = tokio::select! {
+        _ = cancellation_token.cancelled() => None,
+        result = tokio::time::timeout(
+            CONTINUITY_CHILD_CLEANUP_TIMEOUT,
+            control.close_agent(child_thread_id),
+        ) => Some(result),
+    };
+    // A running child provider turn can keep `close_agent` waiting behind the
+    // session loop's shutdown barrier. Never let that wait extend the parent
+    // turn indefinitely. The detached owner deliberately keeps the manager's
+    // registry/residency ownership until `close_agent` reaches its normal
+    // terminal removal path; removing a still-live child here would make its
+    // capacity reusable while its runtime continued executing.
+    match close_result {
+        Some(Ok(Ok(_))) => return true,
+        Some(Ok(Err(error))) => {
             tracing::debug!(
                 %child_thread_id,
                 %error,
-                attempt,
-                "continuity observation child cleanup fallback failed"
+                "continuity observation child cleanup did not complete synchronously; deferring to manager-owned cleanup"
             );
         }
-        let status = control.get_status(child_thread_id).await;
-        if continuity_child_terminal_outcome(&status).is_some() {
-            return true;
+        Some(Err(_)) => {
+            tracing::debug!(
+                %child_thread_id,
+                timeout = ?CONTINUITY_CHILD_CLEANUP_TIMEOUT,
+                "continuity observation child cleanup timed out; deferring to manager-owned cleanup"
+            );
         }
-        if attempt < 2 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        None => {
+            tracing::debug!(
+                %child_thread_id,
+                "continuity observation child cleanup was cancelled; deferring to manager-owned cleanup"
+            );
         }
     }
+    let deferred_control = control.clone();
+    let deferred_telemetry = telemetry.clone();
+    let deferred_correlation_id = correlation_id.clone();
+    std::mem::drop(tokio::spawn(async move {
+        let deferred_result = deferred_control.close_agent(child_thread_id).await;
+        let completed = deferred_result.is_ok()
+            || matches!(
+                deferred_control.get_status(child_thread_id).await,
+                AgentStatus::NotFound
+            );
+        if !completed {
+            tracing::warn!(
+                %child_thread_id,
+                result = ?deferred_result,
+                "manager-owned continuity child cleanup finished with an error"
+            );
+        }
+        crate::diagnostic_flags::record_continuity_stage_with_context(
+            &deferred_telemetry,
+            "parent",
+            if completed {
+                "diagnostic_child_cleanup_completed"
+            } else {
+                "diagnostic_child_cleanup_failed"
+            },
+            "direct_probe",
+            Some(deferred_correlation_id.as_str()),
+        );
+    }));
     false
 }
 
@@ -1566,14 +1609,21 @@ async fn monitor_continuity_child(
         Some(correlation_id.as_str()),
     );
 
-    let cleanup_ok = cleanup_continuity_child(control, child_thread_id).await;
+    let cleanup_ok = cleanup_continuity_child(
+        control,
+        telemetry.clone(),
+        correlation_id.clone(),
+        child_thread_id,
+        &cancellation_token,
+    )
+    .await;
     crate::diagnostic_flags::record_continuity_stage_with_context(
         &telemetry,
         "parent",
         if cleanup_ok {
             "diagnostic_child_cleanup_completed"
         } else {
-            "diagnostic_child_cleanup_failed"
+            "diagnostic_child_cleanup_deferred"
         },
         "direct_probe",
         Some(correlation_id.as_str()),
@@ -2600,18 +2650,27 @@ async fn try_run_sampling_request(
     let actor = continuity_actor(&turn_context);
     let observation_origin =
         crate::diagnostic_flags::continuity_observation_origin(&turn_context.session_source);
-    let request_id = crate::diagnostic_flags::next_continuity_correlation_id("transport");
+    // This host-generated value identifies the logical client sampling
+    // attempt. It is not the provider's physical request ID; the latter is
+    // established only by a provider/mock-server transport receipt.
+    let logical_sampling_attempt_id =
+        crate::diagnostic_flags::next_continuity_correlation_id("sampling_attempt");
     let child_thread_id = sess.thread_id.to_string();
     let correlation_id = crate::diagnostic_flags::continuity_observation_request_correlation(
         &turn_context.session_source,
         &child_thread_id,
         &turn_context.sub_id,
-        &request_id,
+        &logical_sampling_attempt_id,
     )
-    .unwrap_or_else(|| format!("turn:{}:request:{request_id}", turn_context.sub_id));
+    .unwrap_or_else(|| {
+        format!(
+            "turn:{}:logical_sampling_attempt:{logical_sampling_attempt_id}",
+            turn_context.sub_id
+        )
+    });
     turn_context.extension_data.insert(
-        crate::diagnostic_flags::ContinuitySamplingRequestIdentity {
-            request_id: request_id.clone(),
+        crate::diagnostic_flags::ContinuityLogicalSamplingAttemptIdentity {
+            logical_sampling_attempt_id: logical_sampling_attempt_id.clone(),
             correlation_id: correlation_id.clone(),
         },
     );
