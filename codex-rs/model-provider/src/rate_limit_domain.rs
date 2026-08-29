@@ -46,10 +46,11 @@ pub struct RateLimitEvidence {
 
 impl RateLimitEvidence {
     /// G2: enough provider attribution exists to retain evidence, without
-    /// asserting that admission is safe. Missing deadline, budget, or
-    /// freshness intentionally does not make this helper admission-capable.
+    /// asserting that admission is safe. Unknown provider scope or eligibility
+    /// is deliberately retainable evidence; use `is_dormant` and G3 for the
+    /// fail-closed admission boundary.
     pub fn g2_evidence_only_ready(&self) -> bool {
-        !self.is_dormant()
+        true
     }
 
     /// G3: admission-capable only when every required provider fact is present
@@ -138,9 +139,18 @@ mod tests {
                 scope: RateLimitDomainScope::Independent,
             };
             assert!(evidence.is_dormant());
-            assert!(!evidence.g2_evidence_only_ready());
+            assert!(evidence.g2_evidence_only_ready());
             assert!(!evidence.g3_admission_capable_ready());
         }
+
+        let unknown_scope = RateLimitEvidence {
+            local: local("r-unknown-scope", None, None),
+            observed: observed_complete(),
+            scope: RateLimitDomainScope::Unknown,
+        };
+        assert!(unknown_scope.is_dormant());
+        assert!(unknown_scope.g2_evidence_only_ready());
+        assert!(!unknown_scope.g3_admission_capable_ready());
     }
 
     #[test]
