@@ -145,7 +145,9 @@ where
                 return;
             };
             if let Err(err) = runtime.restore_after_resume().await {
-                runtime.fail_closed_continuation_boundary(None).await;
+                runtime
+                    .fail_closed_continuation_boundary(/*turn_id*/ None)
+                    .await;
                 tracing::warn!(
                     "failed to restore goal runtime after thread resume for {}: {err}",
                     runtime.thread_id()
@@ -161,7 +163,9 @@ where
             };
 
             if let Err(err) = runtime.continue_if_idle().await {
-                runtime.fail_closed_continuation_boundary(None).await;
+                runtime
+                    .fail_closed_continuation_boundary(/*turn_id*/ None)
+                    .await;
                 tracing::warn!(
                     "failed to continue active goal for idle thread {}: {err}",
                     runtime.thread_id()
