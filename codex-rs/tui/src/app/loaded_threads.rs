@@ -105,18 +105,24 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
 
 fn thread_spawn_agent_path(source: &SessionSource) -> Option<String> {
     match source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) => {
-            agent_path.clone().map(String::from)
-        }
+        SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn { agent_path, .. }
+            | SubAgentSource::ContinuityDiagnostic { agent_path, .. },
+        ) => agent_path.clone().map(String::from),
         _ => None,
     }
 }
 
 fn thread_spawn_parent_thread_id(source: &SessionSource) -> Option<ThreadId> {
     match source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        }) => Some(*parent_thread_id),
+        SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }
+            | SubAgentSource::ContinuityDiagnostic {
+                parent_thread_id, ..
+            },
+        ) => Some(*parent_thread_id),
         _ => None,
     }
 }

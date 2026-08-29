@@ -246,7 +246,10 @@ fn format_agent_nickname(name: &str, nickname_reset_count: usize) -> String {
 
 fn session_depth(session_source: &SessionSource) -> i32 {
     match session_source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { depth, .. }) => *depth,
+        SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn { depth, .. }
+            | SubAgentSource::ContinuityDiagnostic { depth, .. },
+        ) => *depth,
         SessionSource::SubAgent(_) => 0,
         _ => 0,
     }

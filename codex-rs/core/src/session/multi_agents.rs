@@ -23,9 +23,9 @@ fn configured_usage_hint_text_for_source<'a>(
     session_source: &SessionSource,
 ) -> Option<&'a str> {
     match session_source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) => {
-            multi_agent_v2.subagent_usage_hint_text.as_deref()
-        }
+        SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn { .. } | SubAgentSource::ContinuityDiagnostic { .. },
+        ) => multi_agent_v2.subagent_usage_hint_text.as_deref(),
         SessionSource::Cli
         | SessionSource::VSCode
         | SessionSource::Exec
@@ -56,7 +56,9 @@ pub(crate) fn effective_multi_agent_mode(turn_context: &TurnContext) -> Option<M
     };
 
     match &turn_context.session_source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn { .. } | SubAgentSource::ContinuityDiagnostic { .. },
+        )
         | SessionSource::Cli
         | SessionSource::VSCode
         | SessionSource::Exec

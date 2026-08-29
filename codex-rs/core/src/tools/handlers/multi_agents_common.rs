@@ -142,6 +142,43 @@ pub(crate) fn thread_spawn_source(
     }))
 }
 
+/// Build the durable source for a host-created continuity probe. The caller
+/// must have obtained the context from the internal tool-call source; this
+/// helper intentionally has no task-name based admission logic.
+pub(crate) fn continuity_diagnostic_thread_spawn_source(
+    parent_thread_id: ThreadId,
+    parent_session_source: &SessionSource,
+    depth: i32,
+    agent_role: Option<&str>,
+    task_name: Option<String>,
+    chain_id: String,
+    parent_turn_id: String,
+    spawn_call_id: String,
+) -> Result<SessionSource, FunctionCallError> {
+    let agent_path = task_name
+        .as_deref()
+        .map(|task_name| {
+            parent_session_source
+                .get_agent_path()
+                .unwrap_or_else(AgentPath::root)
+                .join(task_name)
+                .map_err(FunctionCallError::RespondToModel)
+        })
+        .transpose()?;
+    Ok(SessionSource::SubAgent(
+        SubAgentSource::ContinuityDiagnostic {
+            parent_thread_id,
+            depth,
+            agent_path,
+            agent_nickname: None,
+            agent_role: agent_role.map(str::to_string),
+            chain_id,
+            parent_turn_id,
+            spawn_call_id,
+        },
+    ))
+}
+
 pub(crate) fn parse_collab_input(
     message: Option<String>,
     items: Option<Vec<UserInput>>,

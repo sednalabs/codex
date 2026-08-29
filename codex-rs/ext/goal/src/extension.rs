@@ -203,10 +203,10 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
-            if !runtime.is_enabled() {
-                return;
-            }
-
+            // Explicit turns are a recovery boundary even when the goal
+            // runtime has since been disabled. Clear stale durable recovery
+            // state before consulting the feature flag so a later re-enable
+            // cannot resurrect an old continuation.
             if let Err(err) = self
                 .state_dbs
                 .thread_goals()
@@ -222,6 +222,9 @@ where
                 .await
             {
                 tracing::warn!("failed to clear preserved continuity marker: {err}");
+            }
+            if !runtime.is_enabled() {
+                return;
             }
 
             let accounting = runtime.accounting_state();

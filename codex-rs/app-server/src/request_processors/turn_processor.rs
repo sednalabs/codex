@@ -27,7 +27,9 @@ pub(super) fn can_accept_direct_input(
     multi_agent_version != Some(MultiAgentVersion::V2)
         || !matches!(
             session_source,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+            SessionSource::SubAgent(
+                SubAgentSource::ThreadSpawn { .. } | SubAgentSource::ContinuityDiagnostic { .. },
+            )
         )
 }
 

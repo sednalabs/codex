@@ -362,7 +362,11 @@ impl ToolCallTimingGuard {
         // Code-mode calls are nested within a direct code-mode tool call whose
         // timing already includes them. Suppress nested guards so consumers do
         // not mistake overlapping events for independent tool-call latency.
-        if !matches!(source, ToolCallSource::Direct) || !tracing::enabled!(tracing::Level::INFO) {
+        if !matches!(
+            source,
+            ToolCallSource::Direct | ToolCallSource::ContinuityDiagnostic { .. }
+        ) || !tracing::enabled!(tracing::Level::INFO)
+        {
             return None;
         }
 

@@ -677,6 +677,9 @@ fn source_category(source: &str) -> &'static str {
         SessionSource::SubAgent(SubAgentSource::Review) => "subagent:review",
         SessionSource::SubAgent(SubAgentSource::Compact) => "subagent:compact",
         SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) => "subagent:thread_spawn",
+        SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic { .. }) => {
+            "subagent:continuity_diagnostic"
+        }
         SessionSource::SubAgent(SubAgentSource::MemoryConsolidation) => {
             "subagent:memory_consolidation"
         }

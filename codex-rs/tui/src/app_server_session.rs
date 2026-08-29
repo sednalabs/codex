@@ -240,9 +240,10 @@ pub(crate) struct AppServerStartedThread {
 
 pub(crate) fn source_agent_path(source: &SessionSource) -> Option<String> {
     match source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) => {
-            agent_path.clone().map(String::from)
-        }
+        SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn { agent_path, .. }
+            | SubAgentSource::ContinuityDiagnostic { agent_path, .. },
+        ) => agent_path.clone().map(String::from),
         _ => None,
     }
 }

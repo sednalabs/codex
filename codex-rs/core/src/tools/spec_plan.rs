@@ -207,8 +207,13 @@ fn build_tool_specs_and_registry(
     let mut planned_tools = PlannedTools::default();
     add_tool_sources(&context, &mut planned_tools);
     apply_direct_model_only_namespace_overrides(turn_context, &mut planned_tools);
-    append_tool_search_executor(&context, &mut planned_tools);
-    prepend_code_mode_executors(&context, &mut planned_tools);
+    // Diagnostic children have an intentionally tiny whole-registry profile;
+    // do not reintroduce code-mode or tool-search executors after the source
+    // planner's early admission return.
+    if !crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        append_tool_search_executor(&context, &mut planned_tools);
+        prepend_code_mode_executors(&context, &mut planned_tools);
+    }
     build_model_visible_specs_and_registry(turn_context, planned_tools)
 }
 

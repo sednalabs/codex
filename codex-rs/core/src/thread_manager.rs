@@ -1416,10 +1416,14 @@ impl ThreadManagerState {
                     return None;
                 }
                 match &thread.session_source {
-                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                        parent_thread_id,
-                        ..
-                    }) => Some((*parent_thread_id, *thread_id)),
+                    SessionSource::SubAgent(
+                        SubAgentSource::ThreadSpawn {
+                            parent_thread_id, ..
+                        }
+                        | SubAgentSource::ContinuityDiagnostic {
+                            parent_thread_id, ..
+                        },
+                    ) => Some((*parent_thread_id, *thread_id)),
                     _ => None,
                 }
             })
@@ -1589,9 +1593,14 @@ impl ThreadManagerState {
         forked_from_thread_id: Option<ThreadId>,
     ) -> Option<MultiAgentVersion> {
         let inherited_thread_id = match session_source {
-            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id, ..
-            })) => Some(*parent_thread_id),
+            Some(SessionSource::SubAgent(
+                SubAgentSource::ThreadSpawn {
+                    parent_thread_id, ..
+                }
+                | SubAgentSource::ContinuityDiagnostic {
+                    parent_thread_id, ..
+                },
+            )) => Some(*parent_thread_id),
             _ => match initial_history {
                 InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
                 InitialHistory::Forked(_) => forked_from_thread_id.or(parent_thread_id),
@@ -1639,9 +1648,14 @@ impl ThreadManagerState {
         }
 
         let inherited_thread_id = match session_source {
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id, ..
-            }) => Some(*parent_thread_id),
+            SessionSource::SubAgent(
+                SubAgentSource::ThreadSpawn {
+                    parent_thread_id, ..
+                }
+                | SubAgentSource::ContinuityDiagnostic {
+                    parent_thread_id, ..
+                },
+            ) => Some(*parent_thread_id),
             _ => parent_thread_id.or(forked_from_thread_id),
         };
         let instructions = match inherited_thread_id {
@@ -1666,9 +1680,14 @@ impl ThreadManagerState {
         forked_from_thread_id: Option<ThreadId>,
     ) -> Option<String> {
         let inherited_thread_id = match session_source {
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id, ..
-            }) => Some(*parent_thread_id),
+            SessionSource::SubAgent(
+                SubAgentSource::ThreadSpawn {
+                    parent_thread_id, ..
+                }
+                | SubAgentSource::ContinuityDiagnostic {
+                    parent_thread_id, ..
+                },
+            ) => Some(*parent_thread_id),
             _ => parent_thread_id.or(forked_from_thread_id),
         };
         let thread = self.get_thread(inherited_thread_id?).await.ok()?;
@@ -2124,9 +2143,14 @@ impl ThreadManagerState {
         // context. Resumed children already have a prior `ThreadStarted` event
         // for this thread id; deriving a child trace during resume would write
         // that start event again and make the bundle unreplayable.
-        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        }) = session_source
+        let SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }
+            | SubAgentSource::ContinuityDiagnostic {
+                parent_thread_id, ..
+            },
+        ) = session_source
         else {
             return codex_rollout_trace::ThreadTraceContext::disabled();
         };

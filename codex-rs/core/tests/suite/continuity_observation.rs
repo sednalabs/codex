@@ -279,6 +279,50 @@ async fn usage_limit_v2_probe_reaches_child_provider_and_records_outcome() -> Re
         .iter()
         .filter(|request| request.url.path().ends_with("/responses"))
         .count();
+    let root_request = requests
+        .iter()
+        .find(|request| body_contains(request, ROOT_PROMPT))
+        .expect("root request should be recorded");
+    let child_request = requests
+        .iter()
+        .find(|request| body_contains(request, CHILD_PROMPT))
+        .expect("child request should be recorded");
+    let root_index = requests
+        .iter()
+        .position(|request| std::ptr::eq(request, root_request))
+        .expect("root request index");
+    let child_index = requests
+        .iter()
+        .position(|request| std::ptr::eq(request, child_request))
+        .expect("child request index");
+    assert!(
+        root_index < child_index,
+        "the authoritative parent rejection must precede the child request"
+    );
+    let root_thread_id = root_request
+        .header("thread-id")
+        .expect("root request thread identity");
+    let child_thread_id = child_id.to_string();
+    assert_eq!(
+        child_request.header("thread-id"),
+        Some(child_thread_id.as_str()),
+        "the physical child request must bind the selected V2 child thread"
+    );
+    assert_eq!(
+        child_request.header("session-id"),
+        root_request.header("session-id"),
+        "root and child requests must remain in one session"
+    );
+    assert_eq!(
+        child_request.header("x-codex-parent-thread-id"),
+        Some(root_thread_id),
+        "the child request parent header must bind the selected root"
+    );
+    assert_eq!(
+        child_request.header("x-openai-subagent"),
+        Some("collab_spawn"),
+        "the diagnostic child must retain the V2 subagent identity"
+    );
     let child_requests = requests
         .iter()
         .filter(|request| {
@@ -332,11 +376,11 @@ async fn usage_limit_v2_probe_reaches_child_provider_and_records_outcome() -> Re
         }
         if !has_fields(&[
             ("continuity_actor", "child"),
-            ("continuity_stage", "provider_transport_attempt"),
+            ("continuity_stage", "sampling_request_started"),
         ]) {
-            return Err("missing child physical provider-request observation".to_string());
+            return Err("missing child sampling-request observation".to_string());
         }
-        if !has_direct_context("provider_transport_attempt") {
+        if !has_direct_context("sampling_request_started") {
             return Err("missing child provider correlation context".to_string());
         }
         if !has_fields(&[

@@ -161,18 +161,21 @@ impl GoalRuntimeHandle {
         goal: codex_state::ThreadGoal,
         previous_goal: Option<PreviousGoalSnapshot>,
     ) -> Result<(), String> {
-        if !self.is_enabled() {
-            return Ok(());
-        }
-
         // A new explicit goal supersedes any persisted diagnostic continuation
-        // marker from a previous goal.
-        self.inner
+        // marker from a previous goal, even if the extension was disabled by
+        // the time the explicit mutation arrived.
+        if let Err(err) = self
+            .inner
             .state_dbs
             .thread_goals()
             .clear_thread_goal_continuity_research(self.thread_id())
             .await
-            .map_err(|err| err.to_string())?;
+        {
+            return Err(err.to_string());
+        }
+        if !self.is_enabled() {
+            return Ok(());
+        }
 
         let replaced_existing_goal = previous_goal
             .as_ref()
@@ -284,18 +287,50 @@ impl GoalRuntimeHandle {
             .await
             .map_err(|err| err.to_string())?;
 
-        accounting.finish_turn(turn_id);
         match goal {
             Some(goal) if goal.status == codex_state::ThreadGoalStatus::Active => {
-                self.inner
+                let marker_armed = match self
+                    .inner
                     .state_dbs
                     .thread_goals()
-                    .mark_thread_goal_continuity_research(self.thread_id())
+                    .arm_thread_goal_continuity_research_if_active(self.thread_id())
                     .await
-                    .map_err(|err| err.to_string())?;
+                {
+                    Ok(armed) => armed,
+                    Err(err) => {
+                        // Do not leave an in-memory active goal behind when the
+                        // durable recovery capability could not be committed.
+                        // That would make the next idle boundary indistinguishable
+                        // from an explicitly preserved turn.
+                        accounting.finish_turn(turn_id);
+                        accounting.clear_active_goal();
+                        if let Err(deferral_err) = self
+                            .inner
+                            .state_dbs
+                            .thread_goals()
+                            .mark_thread_goal_continuation_deferral(self.thread_id())
+                            .await
+                        {
+                            tracing::error!(
+                                error = %deferral_err,
+                                "failed to persist fail-closed continuation deferral"
+                            );
+                        }
+                        return Err(err.to_string());
+                    }
+                };
+                if !marker_armed {
+                    accounting.finish_turn(turn_id);
+                    accounting.clear_active_goal();
+                    return Err(
+                        "active goal changed before continuity marker could be armed".into(),
+                    );
+                }
+                accounting.finish_turn(turn_id);
                 accounting.mark_idle_goal_active(goal.goal_id);
             }
             Some(_) | None => {
+                accounting.finish_turn(turn_id);
                 let _ = self
                     .inner
                     .state_dbs

@@ -87,6 +87,7 @@ async fn notify_tool_finish_parts(
 fn extension_tool_call_source(source: ToolCallSource) -> ExtensionToolCallSource {
     match source {
         ToolCallSource::Direct => ExtensionToolCallSource::Direct,
+        ToolCallSource::ContinuityDiagnostic { .. } => ExtensionToolCallSource::Direct,
         ToolCallSource::CodeMode {
             cell_id,
             runtime_tool_call_id,
