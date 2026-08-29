@@ -43,12 +43,18 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::InferenceCallTransport;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::ExecutionStatus;
-use codex_rollout_trace::InferenceTraceAttempt;
+use codex_rollout_trace::InferenceAdmission;
+use codex_rollout_trace::InferenceAttemptMetadata;
+use codex_rollout_trace::InferenceCacheState;
+use codex_rollout_trace::InferenceObservationRecorder;
+use codex_rollout_trace::InferenceProviderIdentity;
+use codex_rollout_trace::InferenceRequestKind;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_rollout_trace::RawTraceEventPayload;
 use codex_rollout_trace::RolloutTrace;
@@ -386,40 +392,63 @@ where
     }
 }
 
-fn started_inference_attempt(temp: &TempDir) -> anyhow::Result<InferenceTraceAttempt> {
+fn inference_attempt_metadata(thread_id: ThreadId) -> InferenceAttemptMetadata {
+    InferenceAttemptMetadata {
+        inference_call_id: "inference-1".to_string(),
+        thread_id,
+        turn_id: "turn-1".to_string(),
+        parent_thread_id: None,
+        spawn_request_id: None,
+        source: None,
+        session_source: SessionSource::Cli,
+        request_kind: InferenceRequestKind::Turn,
+        transport: InferenceCallTransport::ResponsesHttp,
+        provider: InferenceProviderIdentity {
+            configured_provider: "test-provider".to_string(),
+            configured_model: Some("gpt-test".to_string()),
+            requested_model: "gpt-test".to_string(),
+            effective_provider: "test-provider".to_string(),
+            effective_model: "gpt-test".to_string(),
+            requested_service_tier: None,
+        },
+        cache_state: InferenceCacheState::NotApplicable,
+        admission: InferenceAdmission::Admitted,
+        goal_owner_admission_ref: None,
+        request_started_at_ms: 0,
+    }
+}
+
+fn started_inference_observation_recorder(
+    temp: &TempDir,
+) -> anyhow::Result<InferenceObservationRecorder> {
+    let thread_id = ThreadId::new();
+    let thread_id_string = thread_id.to_string();
     let writer = Arc::new(TraceWriter::create(
         temp.path(),
         "trace-1".to_string(),
         "rollout-1".to_string(),
-        "thread-root".to_string(),
+        thread_id_string.clone(),
     )?);
     writer.append(RawTraceEventPayload::ThreadStarted {
-        thread_id: "thread-root".to_string(),
+        thread_id: thread_id_string.clone(),
         agent_path: "/root".to_string(),
         metadata_payload: None,
     })?;
     writer.append(RawTraceEventPayload::CodexTurnStarted {
         codex_turn_id: "turn-1".to_string(),
-        thread_id: "thread-root".to_string(),
+        thread_id: thread_id_string.clone(),
     })?;
 
     let inference_trace = InferenceTraceContext::enabled(
         writer,
-        "thread-root".to_string(),
+        thread_id_string,
         "turn-1".to_string(),
         "gpt-test".to_string(),
         "test-provider".to_string(),
     );
-    let attempt = inference_trace.start_attempt();
-    attempt.record_started(&json!({
-        "model": "gpt-test",
-        "input": [{
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": "hello"}]
-        }],
-    }));
-    Ok(attempt)
+    let recorder = inference_trace.observation_recorder(inference_attempt_metadata(thread_id));
+    recorder.record_physical_request_opened()?;
+    Ok(recorder)
 }
 
 fn output_message(id: &str, text: &str) -> ResponseItem {
@@ -585,26 +614,35 @@ async fn summarize_memories_returns_empty_for_empty_input() {
 #[tokio::test]
 async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Result<()> {
     let temp = TempDir::new()?;
-    let attempt = started_inference_attempt(&temp)?;
+    let recorder = started_inference_observation_recorder(&temp)?;
 
     // The provider has produced one complete output item, but no terminal
     // response.completed event. The harness has enough information to keep this
     // item in history, so the trace should preserve it when the stream is
     // abandoned.
     let item = output_message("1", "partial answer");
-    let api_stream = futures::stream::iter([Ok(ResponseEvent::OutputItemDone(item))])
-        .chain(futures::stream::pending());
+    let api_stream = futures::stream::iter([
+        Ok(ResponseEvent::Created),
+        Ok(ResponseEvent::OutputItemDone(item)),
+    ])
+    .chain(futures::stream::pending());
     let (mut stream, _) = super::map_response_events(
         /*upstream_request_id*/ None,
         api_stream,
         test_session_telemetry(),
-        attempt,
+        recorder,
         test_model_provider(),
         ModelRequestAdmissionDecision::Unrestricted
             .begin_network_request()
             .await
             .expect("unrestricted request lease"),
     );
+
+    let acknowledged = stream
+        .next()
+        .await
+        .expect("mapped stream should yield provider acknowledgement")?;
+    assert!(matches!(acknowledged, ResponseEvent::Created));
 
     let observed = stream
         .next()
@@ -652,7 +690,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         Some("req-123".to_string()),
         api_stream,
         test_session_telemetry(),
-        InferenceTraceAttempt::disabled(),
+        InferenceObservationRecorder::disabled(inference_attempt_metadata(ThreadId::new())),
         test_model_provider(),
         ModelRequestAdmissionDecision::Unrestricted
             .begin_network_request()
@@ -710,7 +748,7 @@ async fn bedrock_unauthorized_error_uses_provider_mapping() {
 async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
 -> anyhow::Result<()> {
     let temp = TempDir::new()?;
-    let attempt = started_inference_attempt(&temp)?;
+    let recorder = started_inference_observation_recorder(&temp)?;
     let backpressured_item_yielded = Arc::new(Notify::new());
     let mut events = VecDeque::new();
     for _ in 0..super::RESPONSE_STREAM_CHANNEL_CAPACITY {
@@ -731,7 +769,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         /*upstream_request_id*/ None,
         api_stream,
         test_session_telemetry(),
-        attempt,
+        recorder,
         test_model_provider(),
         ModelRequestAdmissionDecision::Unrestricted
             .begin_network_request()

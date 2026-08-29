@@ -574,7 +574,7 @@ impl ModelClient {
                     service_tier,
                     self.state.session_source.clone(),
                 ),
-                /*continuation_authority*/ None,
+                /*continuation*/ None,
             )
             .await
     }
@@ -587,7 +587,7 @@ impl ModelClient {
         ModelClientSession {
             client: self.clone(),
             websocket_session: self.take_cached_websocket_session(),
-            goal_owner_continuation: None,
+            goal_owner_continuation: /*goal_owner_continuation*/ None,
             turn_state: Arc::new(OnceLock::new()),
         }
     }

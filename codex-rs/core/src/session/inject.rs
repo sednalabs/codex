@@ -1,9 +1,9 @@
 use super::input_queue::TurnInput;
 use super::session::Session;
 use super::turn_context::TurnContext;
+use crate::GoalOwnerContinuation;
 use crate::codex_thread::TryStartTurnIfIdleError;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
-use crate::GoalOwnerContinuation;
 use crate::state::ActiveTurn;
 use crate::state::TurnState;
 use crate::tasks::RegularTask;
@@ -47,8 +47,10 @@ impl Session {
         self: &Arc<Self>,
         input: Vec<ResponseItem>,
     ) -> Result<(), TryStartTurnIfIdleError> {
-        self.try_start_turn_if_idle_with_goal_owner_continuation(input, None)
-            .await
+        self.try_start_turn_if_idle_with_goal_owner_continuation(
+            input, /*goal_owner_continuation*/ None,
+        )
+        .await
     }
 
     pub(crate) async fn try_start_turn_if_idle_with_goal_owner_continuation(

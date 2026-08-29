@@ -167,7 +167,7 @@ impl GoalRuntimeContinuationIssuer {
         &self,
         authority: GoalOwnerAdmissionContinuationAuthority,
     ) -> GoalOwnerContinuation {
-        GoalOwnerContinuation::from_coordinator(authority, None, self)
+        GoalOwnerContinuation::from_coordinator(authority, /*dispatch_claim_id*/ None, self)
     }
 
     pub fn continuation_with_dispatch_claim(
