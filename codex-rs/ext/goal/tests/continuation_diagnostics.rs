@@ -34,7 +34,10 @@ async fn usage_limit_preservation_is_opt_in() -> anyhow::Result<()> {
         exercise_usage_limit(/*preserve*/ false, temporary_usage_limit_details()).await?;
     assert_eq!(ThreadGoalStatus::UsageLimited, ordinary_status);
     assert_eq!(7, ordinary_tokens, "terminal usage must be accounted");
-    assert!(!ordinary_marker, "ordinary stop must not leave a research marker");
+    assert!(
+        !ordinary_marker,
+        "ordinary stop must not leave a research marker"
+    );
 
     let (persisted_status, persisted_tokens, persisted_marker) =
         exercise_usage_limit(/*preserve*/ true, temporary_usage_limit_details()).await?;
@@ -43,7 +46,10 @@ async fn usage_limit_preservation_is_opt_in() -> anyhow::Result<()> {
         7, persisted_tokens,
         "preserved usage must be accounted once"
     );
-    assert!(persisted_marker, "preserved goal must leave a restart marker");
+    assert!(
+        persisted_marker,
+        "preserved goal must leave a restart marker"
+    );
     Ok(())
 }
 
@@ -57,7 +63,10 @@ async fn entitlement_denials_are_not_preserved_as_usage_limits() -> anyhow::Resu
         let (status, tokens, marker) = exercise_usage_limit(/*preserve*/ true, details).await?;
         assert_eq!(ThreadGoalStatus::Blocked, status);
         assert_eq!(7, tokens, "entitlement denial usage must be accounted");
-        assert!(!marker, "entitlement denial must not leave a research marker");
+        assert!(
+            !marker,
+            "entitlement denial must not leave a research marker"
+        );
     }
     Ok(())
 }
