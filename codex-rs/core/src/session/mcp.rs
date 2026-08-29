@@ -90,6 +90,7 @@ impl Session {
         config: &Config,
     ) -> (McpConfig, McpRuntimeContext) {
         let originator = self.originator().await;
+        let session_source = self.session_source().await;
         let environments = self.services.turn_environments.snapshot().await;
         let selected_capability_roots = self
             .resolve_selected_capability_roots_for_step(&environments)
@@ -102,13 +103,14 @@ impl Session {
         let mcp_config = self
             .services
             .mcp_manager
-            .runtime_config_for_step(
+            .runtime_config_for_step_with_source(
                 config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
                 &originator,
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
+                &session_source,
             )
             .await
             .config;
@@ -174,16 +176,18 @@ impl Session {
                     &ready_selected_capability_roots,
                 )
                 .await;
+            let session_source = self.session_source().await;
             let mcp_projection = self
                 .services
                 .mcp_manager
-                .runtime_config_for_step(
+                .runtime_config_for_step_with_source(
                     &desired.config,
                     &self.services.mcp_thread_init,
                     &self.services.thread_extension_data,
                     &desired.originator,
                     &ready_selected_capability_roots,
                     executor_capability_discovery.as_deref(),
+                    &session_source,
                 )
                 .await;
             self.publish_mcp_runtime(
@@ -226,16 +230,18 @@ impl Session {
                 &ready_selected_capability_roots,
             )
             .await;
+        let session_source = self.session_source().await;
         let mcp_projection = self
             .services
             .mcp_manager
-            .runtime_config_for_step(
+            .runtime_config_for_step_with_source(
                 &desired.config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
                 &desired.originator,
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
+                &session_source,
             )
             .await;
         let input = self.build_mcp_runtime_input(
@@ -545,13 +551,14 @@ impl Session {
         let mcp_projection = self
             .services
             .mcp_manager
-            .runtime_config_for_step(
+            .runtime_config_for_step_with_source(
                 refresh_config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
                 &turn_context.originator,
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
+                &turn_context.session_source,
             )
             .await;
         let mut desired = self.latest_mcp_desired_state(auth).await;

@@ -460,7 +460,11 @@ async fn warm_plugins_and_skills_for_session_init(
     plugins_manager: Arc<PluginsManager>,
     skills_service: Arc<SkillsService>,
     turn_environments: &TurnEnvironmentSnapshot,
+    session_source: &SessionSource,
 ) -> Vec<SkillError> {
+    if crate::diagnostic_flags::suppress_generic_extension_contributors(session_source) {
+        return Vec::new();
+    }
     let fs = turn_environments.primary_filesystem();
     let plugins_input = config.plugins_config_input();
     let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
@@ -520,6 +524,16 @@ impl Session {
     pub(crate) async fn originator(&self) -> String {
         let state = self.state.lock().await;
         state.session_configuration.originator.clone()
+    }
+
+    pub(crate) async fn session_source(&self) -> SessionSource {
+        let state = self.state.lock().await;
+        state.session_configuration.session_source.clone()
+    }
+
+    pub(crate) async fn generic_extensions_allowed(&self) -> bool {
+        let source = self.session_source().await;
+        !crate::diagnostic_flags::suppress_generic_extension_contributors(&source)
     }
 
     #[instrument(name = "session_init", level = "info", skip_all)]
@@ -750,6 +764,7 @@ impl Session {
         let mcp_thread_init_for_startup = &mcp_thread_init;
         let thread_extension_data_for_mcp = &thread_extension_data;
         let mcp_originator = session_configuration.originator.clone();
+        let mcp_session_source = session_configuration.session_source.clone();
         let mcp_runtime_cwd = session_configuration
             .environment_selections()
             .first()
@@ -759,13 +774,14 @@ impl Session {
         let auth_and_mcp_fut = async move {
             let auth = auth_manager_clone.auth().await;
             let mcp_projection = mcp_manager_for_mcp
-                .runtime_config_for_step(
+                .runtime_config_for_step_with_source(
                     &config_for_mcp,
                     mcp_thread_init_for_startup,
                     thread_extension_data_for_mcp,
                     &mcp_originator,
                     /*ready_selected_capability_roots*/ &[],
                     /*executor_capability_discovery*/ None,
+                    &mcp_session_source,
                 )
                 .await;
             (auth, mcp_projection)
@@ -979,6 +995,7 @@ impl Session {
                 Arc::clone(&plugins_manager),
                 Arc::clone(&skills_service),
                 &resolved_environments,
+                &session_configuration.session_source,
             )
             .instrument(info_span!(
                 "session_init.plugin_skill_warmup",
@@ -1107,16 +1124,20 @@ impl Session {
             let session_extension_data =
                 codex_extension_api::ExtensionData::new(session_id.to_string());
             let mcp_resource_client = Arc::new(McpResourceClient::new(Arc::clone(&mcp_runtime)));
-            for contributor in extensions.thread_lifecycle_contributors() {
-                contributor.on_thread_start(codex_extension_api::ThreadStartInput {
-                    config: config.as_ref(),
-                    session_source: &session_configuration.session_source,
-                    persistent_thread_state_available: state_db_ctx.is_some(),
-                    environments: session_configuration.environment_selections(),
-                    mcp_resource_client: Some(Arc::clone(&mcp_resource_client)),
-                    session_store: &session_extension_data,
-                    thread_store: &thread_extension_data,
-                }).await;
+            if !crate::diagnostic_flags::suppress_generic_extension_contributors(
+                &session_configuration.session_source,
+            ) {
+                for contributor in extensions.thread_lifecycle_contributors() {
+                    contributor.on_thread_start(codex_extension_api::ThreadStartInput {
+                        config: config.as_ref(),
+                        session_source: &session_configuration.session_source,
+                        persistent_thread_state_available: state_db_ctx.is_some(),
+                        environments: session_configuration.environment_selections(),
+                        mcp_resource_client: Some(Arc::clone(&mcp_resource_client)),
+                        session_store: &session_extension_data,
+                        thread_store: &thread_extension_data,
+                    }).await;
+                }
             }
 
             let services = SessionServices {
@@ -1282,13 +1303,14 @@ impl Session {
                     .set_auth_mode(latest_auth.as_ref().map(CodexAuth::api_auth_mode));
                 sess.services
                     .mcp_manager
-                    .runtime_config_for_step(
+                    .runtime_config_for_step_with_source(
                         config.as_ref(),
                         &sess.services.mcp_thread_init,
                         &sess.services.thread_extension_data,
                         &session_configuration.originator,
                         /*ready_selected_capability_roots*/ &[],
                         /*executor_capability_discovery*/ None,
+                        &session_configuration.session_source,
                     )
                     .await
             } else {

@@ -323,6 +323,9 @@ impl CodexThread {
     }
 
     pub(crate) async fn emit_thread_resume_lifecycle(&self) {
+        if !self.session.generic_extensions_allowed().await {
+            return;
+        }
         for contributor in self
             .session
             .services

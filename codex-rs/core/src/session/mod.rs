@@ -1588,7 +1588,9 @@ impl Session {
         &self,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
-        let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
+        let generic_extensions_allowed = self.generic_extensions_allowed().await;
+        let notify_config_contributors = generic_extensions_allowed
+            && !self.services.extensions.config_contributors().is_empty();
         let (previous_config, new_config, permission_profile_changed, mcp_inputs_changed) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
@@ -1637,7 +1639,8 @@ impl Session {
             )
         };
 
-        self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
+        self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref())
+            .await;
         if permission_profile_changed {
             self.refresh_managed_network_proxy_for_current_permission_profile()
                 .await;
@@ -1733,7 +1736,9 @@ impl Session {
         // Refresh only the user layer from the incoming snapshot. Preserve thread-local
         // layers such as request/session overrides that were present when this session
         // was created.
-        let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
+        let generic_extensions_allowed = self.generic_extensions_allowed().await;
+        let notify_config_contributors = generic_extensions_allowed
+            && !self.services.extensions.config_contributors().is_empty();
         let (previous_config, new_config, config) = {
             let mut state = self.state.lock().await;
             let previous_config = notify_config_contributors
@@ -1759,7 +1764,8 @@ impl Session {
                 .then(|| Self::build_effective_session_config(&state.session_configuration));
             (previous_config, new_config, config)
         };
-        self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
+        self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref())
+            .await;
         self.schedule_mcp_prewarm();
         let environments = self.services.turn_environments.snapshot().await;
         let hooks = build_hooks_for_config(
@@ -1800,11 +1806,14 @@ impl Session {
         self.schedule_mcp_prewarm();
     }
 
-    fn emit_config_changed_contributors(
+    async fn emit_config_changed_contributors(
         &self,
         previous_config: Option<&Config>,
         new_config: Option<&Config>,
     ) {
+        if !self.generic_extensions_allowed().await {
+            return;
+        }
         let (Some(previous_config), Some(new_config)) = (previous_config, new_config) else {
             return;
         };
@@ -3389,6 +3398,11 @@ impl Session {
         contextual_user_sections: &mut Vec<String>,
         separate_developer_sections: &mut Vec<String>,
     ) {
+        if crate::diagnostic_flags::suppress_generic_extension_contributors(
+            &turn_context.session_source,
+        ) {
+            return;
+        }
         let context_contributors = self.services.extensions.context_contributors().to_vec();
 
         for contributor in &context_contributors {
@@ -3503,7 +3517,9 @@ impl Session {
                     .push(PersonalitySpecInstructions::new(personality_message).render());
             }
         }
-        if turn_context.config.include_skill_instructions {
+        let suppress_generic_contributors =
+            crate::diagnostic_flags::suppress_generic_extension_contributors(&session_source);
+        if turn_context.config.include_skill_instructions && !suppress_generic_contributors {
             let host_catalog_in_world_state = turn_context
                 .extension_data
                 .get::<HostSkillsCatalogInWorldState>()
@@ -3535,49 +3551,55 @@ impl Session {
                 }
             }
         }
-        let loaded_plugins = self
-            .services
-            .plugins_manager
-            .plugins_for_config(&turn_context.config.plugins_config_input())
-            .await;
-        let recommended_plugin_candidates =
-            if crate::tools::spec_plan::tool_suggest_enabled(turn_context) {
-                let auth = self.services.auth_manager.auth().await;
-                let plugins_config = turn_context.config.plugins_config_input();
-                self.services
-                    .plugins_manager
-                    .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
-                        plugins_config: &plugins_config,
-                        loaded_plugins: &loaded_plugins,
-                        auth: auth.as_ref(),
-                        disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
-                        app_server_client_name: turn_context.app_server_client_name.as_deref(),
-                    })
-                    .await
-            } else {
-                None
-            };
+        let loaded_plugins = if suppress_generic_contributors {
+            Default::default()
+        } else {
+            self.services
+                .plugins_manager
+                .plugins_for_config(&turn_context.config.plugins_config_input())
+                .await
+        };
+        let recommended_plugin_candidates = if !suppress_generic_contributors
+            && crate::tools::spec_plan::tool_suggest_enabled(turn_context)
+        {
+            let auth = self.services.auth_manager.auth().await;
+            let plugins_config = turn_context.config.plugins_config_input();
+            self.services
+                .plugins_manager
+                .recommended_plugin_candidates_for_config(RecommendedPluginCandidatesInput {
+                    plugins_config: &plugins_config,
+                    loaded_plugins: &loaded_plugins,
+                    auth: auth.as_ref(),
+                    disabled_tools: &turn_context.config.tool_suggest.disabled_tools,
+                    app_server_client_name: turn_context.app_server_client_name.as_deref(),
+                })
+                .await
+        } else {
+            None
+        };
         if let Some(recommended_plugins) = recommended_plugin_candidates
             .as_deref()
             .and_then(RecommendedPluginsInstructions::from_plugins)
         {
             contextual_user_sections.push(recommended_plugins.render());
         }
-        let context_contributors = self.services.extensions.context_contributors().to_vec();
-        for contributor in &context_contributors {
-            for fragment in contributor
-                .contribute_thread_context(
-                    &self.services.session_extension_data,
-                    &self.services.thread_extension_data,
-                )
-                .await
-            {
-                push_prompt_fragment(
-                    fragment,
-                    &mut developer_sections,
-                    &mut contextual_user_sections,
-                    &mut separate_developer_sections,
-                );
+        if !suppress_generic_contributors {
+            let context_contributors = self.services.extensions.context_contributors().to_vec();
+            for contributor in &context_contributors {
+                for fragment in contributor
+                    .contribute_thread_context(
+                        &self.services.session_extension_data,
+                        &self.services.thread_extension_data,
+                    )
+                    .await
+                {
+                    push_prompt_fragment(
+                        fragment,
+                        &mut developer_sections,
+                        &mut contextual_user_sections,
+                        &mut separate_developer_sections,
+                    );
+                }
             }
         }
         self.append_turn_context_contributions(
@@ -3899,15 +3921,19 @@ impl Session {
             };
             let budget_result = self.record_rollout_budget_usage(token_usage);
             if let Some(token_info) = token_info.as_ref() {
-                for contributor in self.services.extensions.token_usage_contributors() {
-                    contributor
-                        .on_token_usage(
-                            &self.services.session_extension_data,
-                            &self.services.thread_extension_data,
-                            turn_context.extension_data.as_ref(),
-                            token_info,
-                        )
-                        .await;
+                if !crate::diagnostic_flags::suppress_generic_extension_contributors(
+                    &turn_context.session_source,
+                ) {
+                    for contributor in self.services.extensions.token_usage_contributors() {
+                        contributor
+                            .on_token_usage(
+                                &self.services.session_extension_data,
+                                &self.services.thread_extension_data,
+                                turn_context.extension_data.as_ref(),
+                                token_info,
+                            )
+                            .await;
+                    }
                 }
             }
             budget_result?;

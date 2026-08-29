@@ -1,6 +1,7 @@
 use codex_config::McpServerConfig;
 use codex_exec_server_protocol::ExecutorCapabilityDiscoverySnapshot;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::protocol::SessionSource;
 
 use crate::ExtensionData;
 use crate::ExtensionDataInit;
@@ -23,6 +24,8 @@ pub struct McpServerContributionContext<'a, C> {
     ready_selected_capability_roots: Option<&'a [SelectedCapabilityRoot]>,
     /// Executor-materialized capability files shared by all consumers in this exact step.
     executor_capability_discovery: Option<&'a ExecutorCapabilityDiscoverySnapshot>,
+    /// Source of the active thread, when this is a thread-scoped resolution.
+    session_source: Option<&'a SessionSource>,
 }
 
 impl<C> Clone for McpServerContributionContext<'_, C> {
@@ -43,6 +46,7 @@ impl<'a, C> McpServerContributionContext<'a, C> {
             originator: None,
             ready_selected_capability_roots: None,
             executor_capability_discovery: None,
+            session_source: None,
         }
     }
 
@@ -62,6 +66,29 @@ impl<'a, C> McpServerContributionContext<'a, C> {
             originator: Some(originator),
             ready_selected_capability_roots: Some(ready_selected_capability_roots),
             executor_capability_discovery,
+            session_source: None,
+        }
+    }
+
+    /// Creates context for one model step while retaining the host-authored
+    /// source used to gate generic extension contributors.
+    pub fn for_step_with_source(
+        config: &'a C,
+        thread_init: &'a ExtensionDataInit,
+        thread_store: &'a ExtensionData,
+        originator: &'a str,
+        ready_selected_capability_roots: &'a [SelectedCapabilityRoot],
+        executor_capability_discovery: Option<&'a ExecutorCapabilityDiscoverySnapshot>,
+        session_source: &'a SessionSource,
+    ) -> Self {
+        Self {
+            config,
+            thread_store: Some(thread_store),
+            thread_init: Some(thread_init),
+            originator: Some(originator),
+            ready_selected_capability_roots: Some(ready_selected_capability_roots),
+            executor_capability_discovery,
+            session_source: Some(session_source),
         }
     }
 
@@ -93,6 +120,11 @@ impl<'a, C> McpServerContributionContext<'a, C> {
     /// Returns the executor-materialized capability files for this model step, when enabled.
     pub fn executor_capability_discovery(&self) -> Option<&'a ExecutorCapabilityDiscoverySnapshot> {
         self.executor_capability_discovery
+    }
+
+    /// Returns the host-authored source for the active thread, when known.
+    pub fn session_source(&self) -> Option<&'a SessionSource> {
+        self.session_source
     }
 }
 

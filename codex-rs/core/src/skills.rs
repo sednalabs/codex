@@ -91,17 +91,21 @@ pub(crate) async fn maybe_emit_implicit_skill_invocation(
     }
     let skill_name_tag = sanitize_metric_tag_value(skill_name.as_str());
 
-    for contributor in sess.services.extensions.skill_invocation_contributors() {
-        contributor
-            .on_skill_invocation(SkillInvocationInput {
-                session_store: &sess.services.session_extension_data,
-                thread_store: &sess.services.thread_extension_data,
-                turn_store: turn_context.extension_data.as_ref(),
-                turn_id: turn_context.sub_id.as_str(),
-                skill_resource: skill_path.as_ref(),
-                kind: SkillInvocationKind::Implicit,
-            })
-            .await;
+    if !crate::diagnostic_flags::suppress_generic_extension_contributors(
+        &turn_context.session_source,
+    ) {
+        for contributor in sess.services.extensions.skill_invocation_contributors() {
+            contributor
+                .on_skill_invocation(SkillInvocationInput {
+                    session_store: &sess.services.session_extension_data,
+                    thread_store: &sess.services.thread_extension_data,
+                    turn_store: turn_context.extension_data.as_ref(),
+                    turn_id: turn_context.sub_id.as_str(),
+                    skill_resource: skill_path.as_ref(),
+                    kind: SkillInvocationKind::Implicit,
+                })
+                .await;
+        }
     }
 
     turn_context.session_telemetry.counter(

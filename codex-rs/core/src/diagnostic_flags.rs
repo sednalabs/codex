@@ -117,6 +117,13 @@ pub fn is_continuity_diagnostic_child(source: &SessionSource) -> bool {
     )
 }
 
+/// Generic extension contributors must not run for host-created diagnostic
+/// children. Keep this source check in one place so new contributor call sites
+/// cannot accidentally infer diagnostic provenance from model-controlled data.
+pub fn suppress_generic_extension_contributors(source: &SessionSource) -> bool {
+    is_continuity_diagnostic_child(source)
+}
+
 pub fn continuity_observation_origin(source: &SessionSource) -> &'static str {
     if is_continuity_diagnostic_child(source) {
         "direct_probe"
@@ -197,7 +204,13 @@ pub fn record_continuity_stage(
     actor: &'static str,
     stage: &'static str,
 ) {
-    record_continuity_stage_with_context(telemetry, actor, stage, "unspecified", None);
+    record_continuity_stage_with_context(
+        telemetry,
+        actor,
+        stage,
+        "unspecified",
+        /*correlation_id*/ None,
+    );
 }
 
 pub fn record_continuity_stage_with_context(
@@ -258,7 +271,13 @@ pub fn record_continuity_provider_outcome(
     actor: &'static str,
     outcome: &'static str,
 ) {
-    record_continuity_provider_outcome_with_context(telemetry, actor, outcome, "unspecified", None);
+    record_continuity_provider_outcome_with_context(
+        telemetry,
+        actor,
+        outcome,
+        "unspecified",
+        /*correlation_id*/ None,
+    );
 }
 
 pub fn record_continuity_provider_outcome_with_context(
@@ -332,6 +351,7 @@ mod tests {
     use super::is_continuity_diagnostic_child;
     use super::is_temporary_usage_limit_error;
     use super::is_truthy;
+    use super::suppress_generic_extension_contributors;
     use codex_protocol::ThreadId;
     use codex_protocol::error::CodexErrorDetails;
     use codex_protocol::error::UsageLimitReachedError;
@@ -392,7 +412,7 @@ mod tests {
     fn diagnostic_child_detection_requires_host_authored_source() {
         let parent_thread_id = ThreadId::from_string("22222222-2222-4222-8222-222222222222")
             .expect("valid parent thread id");
-        let source = |path, diagnostic| {
+        let source = |path: &str, diagnostic: bool| {
             if diagnostic {
                 SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic {
                     parent_thread_id,
@@ -420,7 +440,15 @@ mod tests {
             "/root/model_worker",
             true
         )));
+        assert!(suppress_generic_extension_contributors(&source(
+            "/root/model_worker",
+            true
+        )));
         assert!(!is_continuity_diagnostic_child(&source(
+            "/root/continuity_probe",
+            false
+        )));
+        assert!(!suppress_generic_extension_contributors(&source(
             "/root/continuity_probe",
             false
         )));

@@ -651,7 +651,9 @@ async fn build_skills_and_plugins(
     cancellation_token: &CancellationToken,
 ) -> Option<(Vec<ResponseItem>, HashSet<String>)> {
     let turn_context = step_context.turn.as_ref();
-    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+    if crate::diagnostic_flags::suppress_generic_extension_contributors(
+        &turn_context.session_source,
+    ) {
         // Diagnostic children receive only the explicit probe message. Do not
         // let plugin/skill/app discovery or MCP dependency installation add
         // model-visible input contributors.
@@ -848,7 +850,9 @@ async fn build_extension_turn_input_items(
     cancellation_token: &CancellationToken,
 ) -> Option<Vec<ResponseItem>> {
     let turn_context = step_context.turn.as_ref();
-    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+    if crate::diagnostic_flags::suppress_generic_extension_contributors(
+        &turn_context.session_source,
+    ) {
         return Some(Vec::new());
     }
     let contributors = sess.services.extensions.turn_input_contributors().to_vec();
@@ -1432,6 +1436,21 @@ fn continuity_child_terminal_outcome(status: &AgentStatus) -> Option<&'static st
     }
 }
 
+fn continuity_child_deadline_outcome(status: &AgentStatus) -> &'static str {
+    if let Some(outcome) = continuity_child_terminal_outcome(status) {
+        return outcome;
+    }
+    match status {
+        AgentStatus::Running => "expired",
+        AgentStatus::PendingInit => "status_unavailable",
+        AgentStatus::Completed(_)
+        | AgentStatus::Errored(_)
+        | AgentStatus::Interrupted
+        | AgentStatus::Shutdown
+        | AgentStatus::NotFound => unreachable!("terminal status handled above"),
+    }
+}
+
 async fn cleanup_continuity_child(
     control: crate::agent::control::AgentControl,
     child_thread_id: codex_protocol::ThreadId,
@@ -1525,7 +1544,7 @@ async fn monitor_continuity_child(
                 }
                 _ = &mut deadline_sleep => {
                     let latest_status = control.get_status(child_thread_id).await;
-                    continuity_child_terminal_outcome(&latest_status).unwrap_or("status_unavailable")
+                    continuity_child_deadline_outcome(&latest_status)
                 }
             }
         }
@@ -1703,7 +1722,7 @@ async fn run_sampling_request(
                             crate::diagnostic_flags::continuity_observation_origin(
                                 &turn_context.session_source,
                             ),
-                            None,
+                            /*correlation_id*/ None,
                         );
                     }
                     err
@@ -1791,7 +1810,9 @@ pub(crate) async fn built_tools(
     mcp: &codex_mcp::McpBinding,
     step_store: &ExtensionData,
 ) -> (Vec<ToolInfo>, Arc<ToolRouter>) {
-    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+    if crate::diagnostic_flags::suppress_generic_extension_contributors(
+        &turn_context.session_source,
+    ) {
         // Do not initialize plugin, MCP, extension, dynamic-tool, or
         // environment-tool contributors for an evidence-only child. The
         // planner admits only its two read-only utility tools below.
@@ -1933,7 +1954,11 @@ pub(crate) async fn built_tools(
         ToolRouterParams {
             tool_runtimes: mcp_tool_runtimes,
             tool_suggest_candidates,
-            extension_tool_executors: extension_tool_executors(sess, step_store),
+            extension_tool_executors: extension_tool_executors(
+                sess,
+                step_store,
+                &turn_context.session_source,
+            ),
             wait_for_environment_tool_config: sess
                 .services
                 .thread_extension_data
@@ -2664,7 +2689,9 @@ async fn try_run_sampling_request(
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
     let mut plan_mode_state = plan_mode.then(|| PlanModeStreamState::new(&turn_context.sub_id));
     let defer_streamed_turn_items_for_contributors =
-        !sess.services.extensions.turn_item_contributors().is_empty();
+        !crate::diagnostic_flags::suppress_generic_extension_contributors(
+            &turn_context.session_source,
+        ) && !sess.services.extensions.turn_item_contributors().is_empty();
     let mut active_item_is_streaming_to_client = false;
     let receiving_span = trace_span!("receiving_stream");
     let outcome: CodexResult<SamplingRequestResult> = loop {

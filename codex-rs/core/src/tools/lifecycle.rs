@@ -10,6 +10,11 @@ use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 
 pub(crate) async fn notify_tool_start(invocation: &ToolInvocation) {
+    if crate::diagnostic_flags::suppress_generic_extension_contributors(
+        &invocation.turn.session_source,
+    ) {
+        return;
+    }
     for contributor in invocation
         .session
         .services
@@ -68,6 +73,9 @@ async fn notify_tool_finish_parts(
     source: ToolCallSource,
     outcome: ToolCallOutcome,
 ) {
+    if crate::diagnostic_flags::suppress_generic_extension_contributors(&turn.session_source) {
+        return;
+    }
     for contributor in session.services.extensions.tool_lifecycle_contributors() {
         contributor
             .on_tool_finish(ToolFinishInput {

@@ -13,6 +13,11 @@ impl Session {
         turn_context: &TurnContext,
         token_usage_at_turn_start: &TokenUsage,
     ) {
+        if crate::diagnostic_flags::suppress_generic_extension_contributors(
+            &turn_context.session_source,
+        ) {
+            return;
+        }
         let collaboration_mode = turn_context.collaboration_mode();
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
@@ -29,6 +34,9 @@ impl Session {
     }
 
     pub(super) async fn emit_turn_stop_lifecycle(&self, turn_store: &ExtensionData) {
+        if !self.generic_extensions_allowed().await {
+            return;
+        }
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_stop(codex_extension_api::TurnStopInput {
@@ -44,6 +52,9 @@ impl Session {
         if self.active_turn.lock().await.is_some()
             || self.input_queue.has_trigger_turn_mailbox_items().await
         {
+            return;
+        }
+        if !self.generic_extensions_allowed().await {
             return;
         }
 
@@ -62,6 +73,9 @@ impl Session {
         reason: TurnAbortReason,
         turn_store: &ExtensionData,
     ) {
+        if !self.generic_extensions_allowed().await {
+            return;
+        }
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_abort(codex_extension_api::TurnAbortInput {
@@ -79,8 +93,12 @@ impl Session {
         turn_context: &TurnContext,
         error: CodexErrorInfo,
     ) {
-        self.emit_turn_error_lifecycle_with_details(turn_context, error, None)
-            .await;
+        self.emit_turn_error_lifecycle_with_details(
+            turn_context,
+            error,
+            /*error_details*/ None,
+        )
+        .await;
     }
 
     pub(crate) async fn emit_turn_error_lifecycle_with_details(
@@ -89,6 +107,11 @@ impl Session {
         error: CodexErrorInfo,
         error_details: Option<&CodexErrorDetails>,
     ) {
+        if crate::diagnostic_flags::suppress_generic_extension_contributors(
+            &turn_context.session_source,
+        ) {
+            return;
+        }
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
                 .on_turn_error(codex_extension_api::TurnErrorInput {

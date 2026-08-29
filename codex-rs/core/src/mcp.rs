@@ -26,6 +26,7 @@ use codex_mcp::configured_mcp_servers;
 use codex_mcp::effective_mcp_servers;
 use codex_plugin::AppConnectorId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::protocol::SessionSource;
 
 const LEGACY_CODEX_APPS_REGISTRATION_ID: &str = "legacy_codex_apps";
 
@@ -135,6 +136,31 @@ impl McpManager {
         .await
     }
 
+    pub(crate) async fn runtime_config_for_step_with_source(
+        &self,
+        config: &Config,
+        thread_init: &ExtensionDataInit,
+        thread_store: &ExtensionData,
+        originator: &str,
+        ready_selected_capability_roots: &[SelectedCapabilityRoot],
+        executor_capability_discovery: Option<&ExecutorCapabilityDiscoverySnapshot>,
+        session_source: &SessionSource,
+    ) -> McpRuntimeProjection {
+        self.runtime_config_with_context(
+            McpServerContributionContext::for_step_with_source(
+                config,
+                thread_init,
+                thread_store,
+                originator,
+                ready_selected_capability_roots,
+                executor_capability_discovery,
+                session_source,
+            ),
+            Some(originator),
+        )
+        .await
+    }
+
     async fn runtime_config_with_context(
         &self,
         context: McpServerContributionContext<'_, Config>,
@@ -145,66 +171,74 @@ impl McpManager {
         let mut selected_plugin_connector_sources = Vec::new();
         let mut selected_plugin_registrations = Vec::new();
         let mut overlays = Vec::new();
+        let suppress_generic_contributors = context
+            .session_source()
+            .is_some_and(crate::diagnostic_flags::suppress_generic_extension_contributors);
         // A contributor can emit multiple ordered actions, so order each action globally rather
         // than enumerating contributors.
         let mut contribution_order = 0;
-        for contributor in self.extensions.mcp_server_contributors() {
-            for contribution in contributor.contribute(context).await {
-                match contribution {
-                    McpServerContribution::Set { name, config } => {
-                        overlays.push(OrderedMcpOverlay::Set {
-                            contributor_id: contributor.id(),
-                            contribution_order,
+        if !suppress_generic_contributors {
+            for contributor in self.extensions.mcp_server_contributors() {
+                for contribution in contributor.contribute(context).await {
+                    match contribution {
+                        McpServerContribution::Set { name, config } => {
+                            overlays.push(OrderedMcpOverlay::Set {
+                                contributor_id: contributor.id(),
+                                contribution_order,
+                                name,
+                                config,
+                            });
+                        }
+                        McpServerContribution::SelectedPlugin {
                             name,
-                            config,
-                        });
-                    }
-                    McpServerContribution::SelectedPlugin {
-                        name,
-                        plugin_id,
-                        plugin_display_name,
-                        selection_order,
-                        config,
-                    } => selected_plugin_registrations.push(
-                        McpServerRegistration::from_selected_plugin(
-                            name,
-                            McpPluginAttribution::new(plugin_id, plugin_display_name),
+                            plugin_id,
+                            plugin_display_name,
                             selection_order,
-                            *config,
+                            config,
+                        } => selected_plugin_registrations.push(
+                            McpServerRegistration::from_selected_plugin(
+                                name,
+                                McpPluginAttribution::new(plugin_id, plugin_display_name),
+                                selection_order,
+                                *config,
+                            ),
                         ),
-                    ),
-                    McpServerContribution::SelectedPluginPackage {
-                        plugin_id,
-                        plugin_display_name,
-                        connector_ids,
-                    } => {
-                        selected_plugin_available = true;
-                        if !connector_ids.is_empty() {
-                            selected_plugin_connector_sources.push(
-                                PluginConnectorSource::from_connector_ids(
-                                    plugin_id,
-                                    plugin_display_name,
-                                    connector_ids.into_iter().map(AppConnectorId),
-                                ),
-                            );
+                        McpServerContribution::SelectedPluginPackage {
+                            plugin_id,
+                            plugin_display_name,
+                            connector_ids,
+                        } => {
+                            selected_plugin_available = true;
+                            if !connector_ids.is_empty() {
+                                selected_plugin_connector_sources.push(
+                                    PluginConnectorSource::from_connector_ids(
+                                        plugin_id,
+                                        plugin_display_name,
+                                        connector_ids.into_iter().map(AppConnectorId),
+                                    ),
+                                );
+                            }
+                        }
+                        McpServerContribution::Remove { name } => {
+                            overlays.push(OrderedMcpOverlay::Remove {
+                                contributor_id: contributor.id(),
+                                contribution_order,
+                                name,
+                            });
                         }
                     }
-                    McpServerContribution::Remove { name } => {
-                        overlays.push(OrderedMcpOverlay::Remove {
-                            contributor_id: contributor.id(),
-                            contribution_order,
-                            name,
-                        });
-                    }
+                    contribution_order += 1;
                 }
-                contribution_order += 1;
             }
         }
 
-        let loaded_plugins = self
-            .plugins_manager
-            .plugins_for_config(&config.plugins_config_input())
-            .await;
+        let loaded_plugins = if suppress_generic_contributors {
+            Default::default()
+        } else {
+            self.plugins_manager
+                .plugins_for_config(&config.plugins_config_input())
+                .await
+        };
         let plugins_available =
             selected_plugin_available || !loaded_plugins.capability_summaries().is_empty();
         let mut mcp_config = config
