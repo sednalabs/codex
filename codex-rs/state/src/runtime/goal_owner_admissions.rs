@@ -291,6 +291,15 @@ pub struct GoalOwnerAdmissionStore {
     owner_lease: Option<Arc<RuntimeOwnerLease>>,
 }
 
+impl std::fmt::Debug for GoalOwnerAdmissionStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GoalOwnerAdmissionStore")
+            .field("mutation_capability", &self.write_capability.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl GoalOwnerAdmissionStore {
     pub(crate) fn new(pool: Arc<SqlitePool>) -> Self {
         Self {

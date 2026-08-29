@@ -11,6 +11,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
@@ -43,10 +44,16 @@ use crate::StateDbHandle;
 #[derive(Clone, Debug)]
 pub struct GoalOwnerContinuation {
     authority: GoalOwnerAdmissionContinuationAuthority,
+    /// Installation-owned store carried from the trusted goal runtime. Core
+    /// never reacquires mutation authority from a generic StateRuntime.
+    store: Option<GoalOwnerAdmissionStore>,
     dispatch_claim_id: Option<Uuid>,
     fence: Option<Arc<GoalContinuationFence>>,
     fence_identity: GoalOwnerDispatchFenceCapability,
     fence_epoch: u64,
+    enabled: Arc<AtomicBool>,
+    enablement_epoch: Arc<AtomicU64>,
+    installation_epoch: u64,
 }
 
 /// Synchronous revocation fence shared by a deferred continuation and every
@@ -134,16 +141,28 @@ impl GoalContinuationFence {
 /// callers can mint a token only from the coordinator that owns its epoch and
 /// cannot attach an unrelated fence to an existing token.
 #[derive(Clone, Debug)]
-pub struct GoalContinuationFenceCoordinator {
+pub struct GoalRuntimeContinuationIssuer {
     fence: Arc<GoalContinuationFence>,
     identity: GoalOwnerDispatchFenceCapability,
+    store: Option<GoalOwnerAdmissionStore>,
+    enabled: Arc<AtomicBool>,
+    enablement_epoch: Arc<AtomicU64>,
 }
 
-impl GoalContinuationFenceCoordinator {
-    pub fn new() -> Self {
+impl GoalRuntimeContinuationIssuer {
+    /// Construct the continuation issuer from the installation-owned store.
+    /// A generic StateRuntime store is diagnostics-only and fails closed.
+    pub fn from_installed_store(
+        store: GoalOwnerAdmissionStore,
+        enabled: Arc<AtomicBool>,
+        enablement_epoch: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             fence: Arc::new(GoalContinuationFence::new()),
             identity: GoalOwnerDispatchFenceCapability::fresh(),
+            store: Some(store),
+            enabled,
+            enablement_epoch,
         }
     }
 
@@ -151,20 +170,30 @@ impl GoalContinuationFenceCoordinator {
     /// fence. Callers never receive the persisted identity or a raw issuer.
     pub async fn claim_dispatch(
         &self,
-        store: &GoalOwnerAdmissionStore,
         authority: &GoalOwnerAdmissionContinuationAuthority,
+        installation_epoch: u64,
         now: DateTime<Utc>,
     ) -> anyhow::Result<Option<Uuid>> {
+        if !self.enabled.load(AtomicOrdering::Acquire)
+            || self.enablement_epoch.load(AtomicOrdering::Acquire) != installation_epoch
+        {
+            anyhow::bail!("goal continuation issuer is disabled or stale")
+        }
+        let Some(store) = self.store.as_ref() else {
+            anyhow::bail!("goal continuation fence is not installed for admission mutation")
+        };
         store.claim_dispatch(authority, self.identity, now).await
     }
 
     /// Release only a claim owned by this coordinator's private fence.
     pub async fn release_dispatch_claim(
         &self,
-        store: &GoalOwnerAdmissionStore,
         authority: &codex_state::GoalOwnerAdmissionAuthority,
         dispatch_claim_id: Uuid,
     ) -> anyhow::Result<bool> {
+        let Some(store) = self.store.as_ref() else {
+            anyhow::bail!("goal continuation fence is not installed for admission mutation")
+        };
         store
             .release_dispatch_claim(authority, dispatch_claim_id, self.identity)
             .await
@@ -227,19 +256,26 @@ impl GoalOwnerContinuation {
 
     pub(crate) fn has_fence(&self) -> bool {
         self.fence.is_some()
+            && self.store.is_some()
+            && self.enabled.load(AtomicOrdering::Acquire)
+            && self.enablement_epoch.load(AtomicOrdering::Acquire) == self.installation_epoch
     }
 
     fn from_coordinator(
         authority: GoalOwnerAdmissionContinuationAuthority,
         dispatch_claim_id: Option<Uuid>,
-        coordinator: &GoalContinuationFenceCoordinator,
+        coordinator: &GoalRuntimeContinuationIssuer,
     ) -> Self {
         Self {
             authority,
+            store: coordinator.store.clone(),
             dispatch_claim_id,
             fence: Some(coordinator.fence()),
             fence_identity: coordinator.identity,
             fence_epoch: coordinator.current_epoch(),
+            enabled: Arc::clone(&coordinator.enabled),
+            enablement_epoch: Arc::clone(&coordinator.enablement_epoch),
+            installation_epoch: coordinator.enablement_epoch.load(AtomicOrdering::Acquire),
         }
     }
 
@@ -253,6 +289,10 @@ impl GoalOwnerContinuation {
 
     pub(crate) fn fence_identity(&self) -> GoalOwnerDispatchFenceCapability {
         self.fence_identity
+    }
+
+    pub(crate) fn store(&self) -> Option<&GoalOwnerAdmissionStore> {
+        self.store.as_ref()
     }
 }
 
@@ -572,11 +612,10 @@ impl ModelRequestAdmissionBroker {
         let Some(dispatch_claim_id) = continuation.dispatch_claim_id() else {
             return Ok(());
         };
-        let Some(state_db) = &self.state_db else {
+        let Some(store) = continuation.store() else {
             return Ok(());
         };
-        state_db
-            .goal_owner_admissions()
+        store
             .release_dispatch_claim(
                 &continuation.authority().authority,
                 dispatch_claim_id,
@@ -636,7 +675,12 @@ impl ModelRequestAdmissionBroker {
                 ModelRequestAdmissionDecision::Unrestricted
             });
         };
-        let store = state_db.goal_owner_admissions();
+        // A continuation carries the installation-owned store that created
+        // its claim. Generic StateRuntime access is diagnostics-only and is
+        // used solely for ordinary-turn observation.
+        let store = continuation.and_then(GoalOwnerContinuation::store);
+        let diagnostics_store = state_db.goal_owner_admissions();
+        let store = store.unwrap_or(diagnostics_store);
         let now = Utc::now();
         let record = store.get(identity.thread_id).await.map_err(storage_error)?;
         let Some(record) = record else {

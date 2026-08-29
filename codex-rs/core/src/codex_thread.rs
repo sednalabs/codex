@@ -191,16 +191,6 @@ pub struct CodexThread {
     session_configured: SessionConfiguredEvent,
     rollout_path: Option<PathBuf>,
     out_of_band_elicitations: Mutex<OutOfBandElicitations>,
-    goal_owner_publication_nonce: Arc<()>,
-}
-
-/// Thread-scoped capability required to publish a goal continuation. The
-/// nonce is minted with the thread and cannot be constructed by downstream
-/// crates, keeping the privileged publication seam typed and owner-scoped.
-#[derive(Clone)]
-pub struct GoalOwnerPublicationCapability {
-    thread_id: ThreadId,
-    nonce: Arc<()>,
 }
 
 #[derive(Default)]
@@ -267,7 +257,6 @@ impl CodexThread {
             session_configured,
             rollout_path,
             out_of_band_elicitations: Mutex::new(OutOfBandElicitations::default()),
-            goal_owner_publication_nonce: Arc::new(()),
         }
     }
 
@@ -452,27 +441,17 @@ impl CodexThread {
         self.session.try_start_turn_if_idle(items).await
     }
 
-    /// Returns the thread-scoped capability required to publish a goal
-    /// continuation.
-    pub fn goal_owner_publication_capability(&self) -> GoalOwnerPublicationCapability {
-        GoalOwnerPublicationCapability {
-            thread_id: self.session.thread_id(),
-            nonce: Arc::clone(&self.goal_owner_publication_nonce),
-        }
-    }
-
     /// Starts one automatic goal continuation and activates its typed health-check context.
     ///
     /// If the idle gate rejects the start, remove the activation so a later unrelated turn
     /// cannot inherit diagnostic behavior.
     pub async fn publish_goal_continuation(
         &self,
-        capability: GoalOwnerPublicationCapability,
         items: Vec<ResponseItem>,
         goal_owner_continuation: crate::GoalOwnerContinuation,
     ) -> Result<(), TryStartTurnIfIdleError> {
-        if capability.thread_id != self.session.thread_id()
-            || !Arc::ptr_eq(&capability.nonce, &self.goal_owner_publication_nonce)
+        if !goal_owner_continuation.has_fence()
+            || goal_owner_continuation.authority().authority.thread_id != self.session.thread_id()
         {
             return Err(TryStartTurnIfIdleError::new(
                 TryStartTurnIfIdleRejectionReason::Busy,

@@ -55,6 +55,12 @@ pub struct GoalExtensionConfig {
     pub enabled: bool,
 }
 
+/// Installation-owned admission facade copied only into Core's private
+/// thread extension data. It is intentionally not exposed from StateRuntime,
+/// StateDb, or CodexThread.
+#[derive(Clone)]
+struct GoalRuntimeAdmissionInstallation(codex_state::GoalOwnerAdmissionStore);
+
 impl GoalExtensionConfig {
     fn from_enabled(enabled: bool) -> Self {
         Self { enabled }
@@ -64,6 +70,7 @@ impl GoalExtensionConfig {
 #[derive(Clone)]
 pub struct GoalExtension<C> {
     state_dbs: Arc<codex_state::StateRuntime>,
+    goal_runtime_admission_installation: GoalRuntimeAdmissionInstallation,
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
@@ -88,8 +95,18 @@ impl<C> GoalExtension<C> {
         goal_service: Arc<GoalService>,
         goals_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
     ) -> Self {
+        let goal_runtime_admission_installation = state_dbs
+            .take_goal_runtime_admissions()
+            .map(GoalRuntimeAdmissionInstallation)
+            .unwrap_or_else(|| {
+                // A second installation, or a read-only Runtime-B, has no
+                // continuation mutation authority. Retain the diagnostic handle
+                // so every attempted mutation fails closed.
+                GoalRuntimeAdmissionInstallation(state_dbs.goal_owner_admissions().clone())
+            });
         Self {
             state_dbs,
+            goal_runtime_admission_installation,
             analytics: GoalAnalytics::new(analytics_events_client),
             event_emitter: GoalEventEmitter::new(event_sink),
             metrics: GoalMetrics::new(metrics_client),
@@ -121,10 +138,16 @@ where
             let Ok(thread_id) = ThreadId::from_string(input.thread_store.level_id()) else {
                 return;
             };
+            let installation = input
+                .thread_store
+                .get_or_init::<GoalRuntimeAdmissionInstallation>(|| {
+                    self.goal_runtime_admission_installation.clone()
+                });
             let runtime = input.thread_store.get_or_init::<GoalRuntimeHandle>(|| {
                 GoalRuntimeHandle::new(
                     thread_id,
                     Arc::clone(&self.state_dbs),
+                    installation.0.clone(),
                     self.event_emitter.clone(),
                     self.metrics.clone(),
                     self.thread_manager.clone(),
