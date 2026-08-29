@@ -210,7 +210,9 @@ fn build_tool_specs_and_registry(
     // Diagnostic children have an intentionally tiny whole-registry profile;
     // do not reintroduce code-mode or tool-search executors after the source
     // planner's early admission return.
-    if !crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+    if !crate::diagnostic_flags::suppress_generic_extension_contributors(
+        &turn_context.session_source,
+    ) {
         append_tool_search_executor(&context, &mut planned_tools);
         prepend_code_mode_executors(&context, &mut planned_tools);
     }
@@ -601,8 +603,9 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
     // durable in the V2 agent path, so admission remains restricted after a
     // cold reload as well as during the initial turn. In particular, do not
     // register shell, patch, MCP, extension, collaboration, or hosted tools.
-    if crate::diagnostic_flags::is_continuity_diagnostic_child(&context.turn_context.session_source)
-    {
+    if crate::diagnostic_flags::suppress_generic_extension_contributors(
+        &context.turn_context.session_source,
+    ) {
         planned_tools.add(GetContextRemainingHandler);
         planned_tools.add(CurrentTimeHandler);
         return;

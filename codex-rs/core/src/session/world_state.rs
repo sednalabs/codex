@@ -23,6 +23,10 @@ impl Session {
         step_context: &StepContext,
     ) -> WorldState {
         let turn_context = step_context.turn.as_ref();
+        let suppress_generic_contributors =
+            crate::diagnostic_flags::suppress_generic_extension_contributors(
+                &turn_context.session_source,
+            );
         tracing::trace!(
             selected_capability_root_count = step_context.selected_capability_roots.len(),
             "building step world state"
@@ -91,17 +95,19 @@ impl Session {
                     .features
                     .enabled(Feature::DeferredExecutor),
         ));
-        let apps_available =
-            if turn_context.config.include_apps_instructions && turn_context.apps_enabled() {
-                connectors::with_app_enabled_state(
-                    connectors::accessible_connectors_from_mcp_tools(&step_context.mcp_tools),
-                    &turn_context.config,
-                )
-                .into_iter()
-                .any(|connector| connector.is_accessible && connector.is_enabled)
-            } else {
-                false
-            };
+        let apps_available = if !suppress_generic_contributors
+            && turn_context.config.include_apps_instructions
+            && turn_context.apps_enabled()
+        {
+            connectors::with_app_enabled_state(
+                connectors::accessible_connectors_from_mcp_tools(&step_context.mcp_tools),
+                &turn_context.config,
+            )
+            .into_iter()
+            .any(|connector| connector.is_accessible && connector.is_enabled)
+        } else {
+            false
+        };
         world_state.add_section(AppsInstructionsState::new(apps_available));
         world_state.add_section(PluginsInstructionsState::new(
             step_context.mcp.plugins_available(),
@@ -121,23 +127,25 @@ impl Session {
             .iter()
             .map(|root| root.selected_root().clone())
             .collect::<Vec<_>>();
-        for contributor in self.services.extensions.context_contributors() {
-            for section in contributor
-                .contribute_world_state(WorldStateContributionInput {
-                    thread_id: self.thread_id(),
-                    turn_id: turn_context.sub_id.as_str(),
-                    environments: &environments,
-                    ready_selected_capability_roots: &ready_selected_capability_roots,
-                    executor_capability_discovery: step_context
-                        .executor_capability_discovery
-                        .as_deref(),
-                    session_store: &self.services.session_extension_data,
-                    thread_store: &self.services.thread_extension_data,
-                    turn_store: turn_context.extension_data.as_ref(),
-                })
-                .await
-            {
-                world_state.add_extension_section(section);
+        if !suppress_generic_contributors {
+            for contributor in self.services.extensions.context_contributors() {
+                for section in contributor
+                    .contribute_world_state(WorldStateContributionInput {
+                        thread_id: self.thread_id(),
+                        turn_id: turn_context.sub_id.as_str(),
+                        environments: &environments,
+                        ready_selected_capability_roots: &ready_selected_capability_roots,
+                        executor_capability_discovery: step_context
+                            .executor_capability_discovery
+                            .as_deref(),
+                        session_store: &self.services.session_extension_data,
+                        thread_store: &self.services.thread_extension_data,
+                        turn_store: turn_context.extension_data.as_ref(),
+                    })
+                    .await
+                {
+                    world_state.add_extension_section(section);
+                }
             }
         }
         world_state.add_section(MultiAgentModeState::new(

@@ -263,7 +263,11 @@ impl ToolRouter {
 pub(crate) fn extension_tool_executors(
     session: &Session,
     step_store: &codex_extension_api::ExtensionData,
+    session_source: &codex_protocol::protocol::SessionSource,
 ) -> Vec<Arc<dyn ToolExecutor<ExtensionToolCall>>> {
+    if crate::diagnostic_flags::suppress_generic_extension_contributors(session_source) {
+        return Vec::new();
+    }
     session
         .services
         .extensions

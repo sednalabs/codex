@@ -602,6 +602,9 @@ async fn shutdown_session_runtime(sess: &Arc<Session>) {
 }
 
 async fn emit_thread_stop_lifecycle(sess: &Session) {
+    if !sess.generic_extensions_allowed().await {
+        return;
+    }
     for contributor in sess.services.extensions.thread_lifecycle_contributors() {
         contributor
             .on_thread_stop(codex_extension_api::ThreadStopInput {

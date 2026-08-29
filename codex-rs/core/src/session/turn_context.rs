@@ -668,7 +668,9 @@ impl Session {
         sub_id: String,
         updates: SessionSettingsUpdate,
     ) -> CodexResult<Arc<TurnContext>> {
-        let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
+        let generic_extensions_allowed = self.generic_extensions_allowed().await;
+        let notify_config_contributors = generic_extensions_allowed
+            && !self.services.extensions.config_contributors().is_empty();
         let update_result: CodexResult<_> = {
             let mut state = self.state.lock().await;
             match state.session_configuration.clone().apply(&updates) {
@@ -729,7 +731,8 @@ impl Session {
                 return Err(CodexErr::InvalidRequest(message));
             }
         };
-        self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
+        self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref())
+            .await;
         if mcp_inputs_changed {
             self.schedule_mcp_prewarm();
         }
@@ -817,30 +820,41 @@ impl Session {
                     .or(model_info.multi_agent_version),
             ),
         };
+        let suppress_generic_contributors =
+            crate::diagnostic_flags::suppress_generic_extension_contributors(
+                &session_configuration.session_source,
+            );
         let plugins_input = per_turn_config.plugins_config_input();
-        let plugin_outcome = self
-            .services
-            .plugins_manager
-            .plugins_for_config(&plugins_input)
-            .await;
+        let plugin_outcome = if suppress_generic_contributors {
+            codex_core_plugins::PluginLoadOutcome::default()
+        } else {
+            self.services
+                .plugins_manager
+                .plugins_for_config(&plugins_input)
+                .await
+        };
         let trusted_plugin_roots = TrustedPluginRoots::from_plugin_load_outcome(
             &plugin_outcome,
             per_turn_config.codex_home.as_path(),
         );
-        let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
-        let plugin_skill_snapshots = self
-            .services
-            .plugins_manager
-            .plugin_skill_snapshots_for_config(&plugins_input);
-        let skills_input = skills_load_input_from_config(&per_turn_config, effective_skill_roots)
-            .with_plugin_skill_snapshots(plugin_skill_snapshots);
         let fs = primary_turn_environment
             .map(|turn_environment| turn_environment.environment.get_filesystem());
-        let skills_snapshot = self
-            .services
-            .skills_service
-            .snapshot_for_config(&skills_input, fs)
-            .await;
+        let skills_snapshot = if suppress_generic_contributors {
+            HostSkillsSnapshot::new(Arc::new(codex_core_skills::SkillLoadOutcome::default()))
+        } else {
+            let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
+            let plugin_skill_snapshots = self
+                .services
+                .plugins_manager
+                .plugin_skill_snapshots_for_config(&plugins_input);
+            let skills_input =
+                skills_load_input_from_config(&per_turn_config, effective_skill_roots)
+                    .with_plugin_skill_snapshots(plugin_skill_snapshots);
+            self.services
+                .skills_service
+                .snapshot_for_config(&skills_input, fs)
+                .await
+        };
         let mut turn_context: TurnContext = Self::make_turn_context(
             self.thread_id(),
             self.session_id(),

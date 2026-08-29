@@ -208,9 +208,13 @@ pub(crate) struct HandleOutputCtx {
 
 pub(crate) async fn apply_turn_item_contributors(
     sess: &Session,
+    session_source: &codex_protocol::protocol::SessionSource,
     turn_store: &ExtensionData,
     item: &mut TurnItem,
 ) {
+    if crate::diagnostic_flags::suppress_generic_extension_contributors(session_source) {
+        return;
+    }
     let contributors = sess.services.extensions.turn_item_contributors().to_vec();
     for contributor in contributors {
         if let Err(err) = contributor
@@ -394,6 +398,7 @@ pub(crate) async fn handle_non_tool_response_item(
     item: &ResponseItem,
     plan_mode: bool,
 ) -> Option<TurnItem> {
+    let session_source = sess.session_source().await;
     let item_type = match item {
         ResponseItem::AdditionalTools { .. } => "additional_tools",
         ResponseItem::Message { .. } => "message",
@@ -424,7 +429,14 @@ pub(crate) async fn handle_non_tool_response_item(
         | ResponseItem::Reasoning { .. }
         | ResponseItem::WebSearchCall { .. } => {
             let mut turn_item = parse_turn_item(item)?;
-            finalize_turn_item(sess, contributor_policy, &mut turn_item, plan_mode).await;
+            finalize_turn_item(
+                sess,
+                contributor_policy,
+                &mut turn_item,
+                plan_mode,
+                &session_source,
+            )
+            .await;
             Some(turn_item)
         }
         ResponseItem::FunctionCallOutput { .. }
@@ -442,9 +454,12 @@ pub(crate) async fn finalize_turn_item(
     contributor_policy: TurnItemContributorPolicy<'_>,
     turn_item: &mut TurnItem,
     plan_mode: bool,
+    session_source: &codex_protocol::protocol::SessionSource,
 ) {
     if let TurnItemContributorPolicy::Run(turn_store) = contributor_policy {
-        apply_turn_item_contributors(sess, turn_store, turn_item).await;
+        if !crate::diagnostic_flags::suppress_generic_extension_contributors(session_source) {
+            apply_turn_item_contributors(sess, session_source, turn_store, turn_item).await;
+        }
     }
     if let TurnItem::AgentMessage(agent_message) = &mut *turn_item {
         let combined = agent_message

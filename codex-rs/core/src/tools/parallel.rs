@@ -38,6 +38,7 @@ struct ToolCallTimingGuard {
     turn_id: String,
     call_id: String,
     tool_name: codex_tools::ToolName,
+    tool_source: &'static str,
 }
 
 /// Connects the tool runtime's cancellation branch to the spawn owner's publication CAS.
@@ -362,11 +363,10 @@ impl ToolCallTimingGuard {
         // Code-mode calls are nested within a direct code-mode tool call whose
         // timing already includes them. Suppress nested guards so consumers do
         // not mistake overlapping events for independent tool-call latency.
-        if !matches!(
-            source,
-            ToolCallSource::Direct | ToolCallSource::ContinuityDiagnostic { .. }
-        ) || !tracing::enabled!(tracing::Level::INFO)
-        {
+        let Some(tool_source) = tool_call_timing_source(source) else {
+            return None;
+        };
+        if !tracing::enabled!(tracing::Level::INFO) {
             return None;
         }
 
@@ -377,7 +377,16 @@ impl ToolCallTimingGuard {
             turn_id: turn_id.to_string(),
             call_id: call.call_id.clone(),
             tool_name: call.tool_name.clone(),
+            tool_source,
         })
+    }
+}
+
+fn tool_call_timing_source(source: &ToolCallSource) -> Option<&'static str> {
+    match source {
+        ToolCallSource::Direct => Some("direct"),
+        ToolCallSource::ContinuityDiagnostic { .. } => Some("continuity_diagnostic"),
+        ToolCallSource::CodeMode { .. } => None,
     }
 }
 
@@ -412,7 +421,7 @@ impl Drop for ToolCallTimingGuard {
                     turn_id = %self.turn_id,
                     tool_name = %self.tool_name,
                     call_id = %self.call_id,
-                    tool_source = "direct",
+                    tool_source = self.tool_source,
                     execution_started = execution_started_at.is_some(),
                     dispatch_duration_ms = $dispatch_duration_ms,
                     handler_duration_ms = $handler_duration_ms,
@@ -491,7 +500,30 @@ mod tests {
                 direct_guard.is_some(),
                 "direct tool calls should create a timing guard"
             );
+            assert_eq!(
+                direct_guard.as_ref().map(|guard| guard.tool_source),
+                Some("direct")
+            );
             drop(direct_guard);
+
+            let diagnostic_guard = ToolCallTimingGuard::capture(
+                Instant::now(),
+                &"conversation-id",
+                "turn-id",
+                &call,
+                &ToolCallSource::ContinuityDiagnostic {
+                    chain_id: "chain-1".to_string(),
+                    parent_thread_id: "thread-1".to_string(),
+                    parent_turn_id: "turn-1".to_string(),
+                    spawn_call_id: "call-0".to_string(),
+                    parent_sampling_request_id: "request-0".to_string(),
+                },
+            );
+            assert_eq!(
+                diagnostic_guard.as_ref().map(|guard| guard.tool_source),
+                Some("continuity_diagnostic")
+            );
+            drop(diagnostic_guard);
 
             let code_mode_guard = ToolCallTimingGuard::capture(
                 Instant::now(),

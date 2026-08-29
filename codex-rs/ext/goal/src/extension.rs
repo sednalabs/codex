@@ -102,7 +102,7 @@ where
     fn on_thread_start<'a>(&'a self, input: ThreadStartInput<'a, C>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             let enabled = (self.goals_enabled)(input.config)
-                && !codex_core::diagnostic_flags::is_continuity_diagnostic_child(
+                && !codex_core::diagnostic_flags::suppress_generic_extension_contributors(
                     input.session_source,
                 );
             let tools_available_for_thread = input.persistent_thread_state_available

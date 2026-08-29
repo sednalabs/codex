@@ -57,6 +57,18 @@ fn post_sampling_token_estimate_is_disabled_by_always_on_sinks() {
     });
 }
 
+#[test]
+fn continuity_deadline_maps_known_running_status_to_expired() {
+    assert_eq!(
+        continuity_child_deadline_outcome(&AgentStatus::Running),
+        "expired"
+    );
+    assert_eq!(
+        continuity_child_deadline_outcome(&AgentStatus::PendingInit),
+        "status_unavailable"
+    );
+}
+
 #[tokio::test]
 async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
     let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;

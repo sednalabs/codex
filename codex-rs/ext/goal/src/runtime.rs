@@ -531,8 +531,46 @@ impl GoalRuntimeHandle {
             .get_thread_goal(self.thread_id())
             .await
             .map_err(|err| err.to_string())?;
+        let continuity_research_enabled =
+            codex_core::diagnostic_flags::continuity_preserve_after_usage_limit_enabled();
+        let continuity_research_marker = self
+            .inner
+            .state_dbs
+            .thread_goals()
+            .has_thread_goal_continuity_research(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?;
+        let continuation_deferral = self
+            .inner
+            .state_dbs
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?;
         match goal {
             Some(goal) if goal.status == codex_state::ThreadGoalStatus::Active => {
+                if !should_restore_active_goal_after_resume(
+                    continuity_research_enabled,
+                    continuity_research_marker,
+                    continuation_deferral,
+                ) {
+                    // A research-enabled restart has no positive durable
+                    // authorization to request provider work. This also
+                    // covers a failed deferral write: the process-local block
+                    // cannot be bypassed by the next idle callback.
+                    self.inner.accounting_state.clear_active_goal();
+                    self.inner
+                        .continuation_blocked
+                        .store(true, Ordering::Release);
+                    tracing::debug!(
+                        thread_id = %self.thread_id(),
+                        continuity_research_enabled,
+                        continuity_research_marker,
+                        continuation_deferral,
+                        "skipping active goal restore without durable continuation authorization"
+                    );
+                    return Ok(());
+                }
                 self.inner
                     .accounting_state
                     .mark_idle_goal_active(goal.goal_id);
@@ -833,5 +871,27 @@ impl GoalRuntimeHandle {
                 .is_none_or(|expected_goal_id| goal.goal_id == expected_goal_id)
                 .then_some(goal.status)
         }))
+    }
+}
+
+fn should_restore_active_goal_after_resume(
+    continuity_research_enabled: bool,
+    continuity_research_marker: bool,
+    continuation_deferral: bool,
+) -> bool {
+    !continuation_deferral && (!continuity_research_enabled || continuity_research_marker)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_restore_active_goal_after_resume;
+
+    #[test]
+    fn restart_gate_requires_positive_research_authorization() {
+        assert!(should_restore_active_goal_after_resume(false, false, false));
+        assert!(should_restore_active_goal_after_resume(true, true, false));
+        assert!(!should_restore_active_goal_after_resume(true, false, false));
+        assert!(!should_restore_active_goal_after_resume(false, true, true));
+        assert!(!should_restore_active_goal_after_resume(true, true, true));
     }
 }

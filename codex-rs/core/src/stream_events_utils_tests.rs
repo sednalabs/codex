@@ -2,6 +2,7 @@ use super::HandleOutputCtx;
 use super::TurnItemContributorPolicy;
 use super::completed_item_defers_mailbox_delivery_to_next_turn;
 use super::finalize_non_tool_response_item;
+use super::finalize_turn_item;
 use super::handle_non_tool_response_item;
 use super::handle_output_item_done;
 use super::last_assistant_message_from_item;
@@ -14,6 +15,7 @@ use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::TurnItemContributor;
 use codex_protocol::ResponseItemId;
+use codex_protocol::ThreadId;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::TurnItem;
 use codex_protocol::memory_citation::MemoryCitation;
@@ -24,6 +26,8 @@ use codex_protocol::models::LocalShellExecAction;
 use codex_protocol::models::LocalShellStatus;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -265,6 +269,43 @@ async fn handle_non_tool_response_item_runs_turn_item_contributors_only_when_req
         })
         .collect::<String>();
     assert_eq!(text, "hello world");
+}
+
+#[tokio::test]
+async fn finalize_turn_item_suppresses_generic_contributors_for_diagnostic_source() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let mut builder = codex_extension_api::ExtensionRegistryBuilder::new();
+    builder.turn_item_contributor(Arc::new(TestTurnItemContributor));
+    session.services.extensions = Arc::new(builder.build());
+    let turn_store = ExtensionData::new(turn_context.sub_id.clone());
+    let item = assistant_output_text("probe output");
+    let mut turn_item = crate::event_mapping::parse_turn_item(&item).expect("assistant message");
+    let diagnostic_source = SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic {
+        parent_thread_id: ThreadId::default(),
+        depth: 1,
+        agent_path: None,
+        agent_nickname: None,
+        agent_role: None,
+        chain_id: "chain-test".to_string(),
+        parent_turn_id: "turn-test".to_string(),
+        spawn_call_id: "call-test".to_string(),
+        parent_sampling_request_id: "request-test".to_string(),
+    });
+
+    finalize_turn_item(
+        &session,
+        TurnItemContributorPolicy::Run(&turn_store),
+        &mut turn_item,
+        /*plan_mode*/ false,
+        &diagnostic_source,
+    )
+    .await;
+
+    assert!(turn_store.get::<TurnItemContributorRan>().is_none());
+    let TurnItem::AgentMessage(agent_message) = turn_item else {
+        panic!("expected agent message");
+    };
+    assert_eq!(agent_message.memory_citation, None);
 }
 
 #[tokio::test]
