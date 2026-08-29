@@ -299,7 +299,9 @@ impl GoalRuntimeHandle {
                     {
                         return;
                     }
-                    let runtime = GoalRuntimeHandle { inner };
+                    let runtime = GoalRuntimeHandle {
+                        inner: Arc::clone(&inner),
+                    };
                     let Ok(_goal_state_permit) = runtime.goal_state_permit().await else {
                         return;
                     };
@@ -672,7 +674,7 @@ impl GoalRuntimeHandle {
                 state.blocked = true;
                 let eligible_at = Instant::now().checked_add(delay);
                 let cancellation = CancellationToken::new();
-                let authority = continuation.authority().authority.clone();
+                let authority = continuation.continuation_authority().authority;
                 state.pending = Some(DeferredProviderContinuation {
                     turn_id,
                     goal_id,
@@ -870,7 +872,7 @@ impl GoalRuntimeHandle {
             let pending = state.pending.take();
             let authority = pending
                 .as_ref()
-                .map(|pending| pending.continuation.authority().authority.clone())
+                .map(|pending| pending.continuation.continuation_authority().authority)
                 .or_else(|| state.last_authority.clone());
             (pending, authority)
         };
@@ -909,7 +911,7 @@ impl GoalRuntimeHandle {
         let Some(continuation) = turn_store.get::<GoalOwnerContinuation>() else {
             return Ok(());
         };
-        let authority = continuation.authority().authority.clone();
+        let authority = continuation.continuation_authority().authority;
         self.retire_safe_terminal_admission(
             &authority, /*clear_deferral*/ true, /*allow_exhausted*/ false,
         )
@@ -1282,7 +1284,7 @@ impl GoalRuntimeHandle {
                 return Ok(());
             }
             (
-                pending.continuation.authority().clone(),
+                pending.continuation.continuation_authority(),
                 pending.cancellation.clone(),
                 pending.enablement_epoch,
             )
@@ -1394,20 +1396,9 @@ impl GoalRuntimeHandle {
             .await;
             return Ok(());
         }
-        let start_result = {
-            let Some(_publication_guard) = claimed_continuation.enter_fence() else {
-                self.release_dispatch_claim_best_effort(
-                    &continuation_authority.authority,
-                    dispatch_claim_id,
-                    &self.inner.continuation.fence,
-                )
-                .await;
-                return Ok(());
-            };
-            thread
-                .publish_goal_continuation(Vec::new(), claimed_continuation)
-                .await
-        };
+        let start_result = thread
+            .publish_goal_continuation(Vec::new(), claimed_continuation)
+            .await;
         if start_result.is_err() {
             self.release_dispatch_claim_best_effort(
                 &continuation_authority.authority,
@@ -1829,7 +1820,7 @@ fn pending_continuation_is_current(
     continuation_authority: &codex_state::GoalOwnerAdmissionContinuationAuthority,
 ) -> bool {
     !pending.cancellation.is_cancelled()
-        && pending.continuation.authority() == continuation_authority
+        && &pending.continuation.continuation_authority() == continuation_authority
 }
 
 #[cfg(test)]
@@ -1882,10 +1873,10 @@ mod tests {
     }
 
     #[test]
-    fn pending_continuation_match_requires_exact_live_authority() {
+    fn pending_continuation_match_requires_exact_live_public_projection() {
         let first_authority = authority(1);
         let mut first = pending(first_authority.clone());
-        let first_continuation_authority = first.continuation.authority().clone();
+        let first_continuation_authority = first.continuation.continuation_authority();
         assert!(pending_continuation_is_current(
             &first,
             &first_continuation_authority,

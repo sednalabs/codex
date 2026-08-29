@@ -458,6 +458,12 @@ impl CodexThread {
                 items,
             ));
         }
+        let Some(_publication_guard) = goal_owner_continuation.enter_fence() else {
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::Busy,
+                items,
+            ));
+        };
         self.session
             .services
             .thread_extension_data

@@ -210,6 +210,15 @@ impl GoalOwnerContinuation {
         &self.authority
     }
 
+    /// Returns an immutable copy of the exact successor admission descriptor.
+    ///
+    /// Extensions may compare or schedule this projection, but it does not
+    /// expose the installed thread owner, issuer, dispatch-fence capability,
+    /// or any mutation authority.
+    pub fn continuation_authority(&self) -> GoalOwnerAdmissionContinuationAuthority {
+        self.authority.clone()
+    }
+
     pub(crate) fn dispatch_claim_id(&self) -> Option<Uuid> {
         self.dispatch_claim_id
     }
@@ -1206,3 +1215,61 @@ impl Drop for ModelRequestLeaseGuard {
 #[cfg(test)]
 #[path = "model_request_admission_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod continuation_fence_tests {
+    use super::*;
+    use codex_utils_absolute_path::test_support::PathExt;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn continuation_fence_stays_held_across_an_awaited_publication_boundary() {
+        let home = TempDir::new().expect("temporary Codex home");
+        let bootstrap = codex_state::StateRuntime::init_with_goal_runtime_bootstrap(
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
+            "test-provider".to_string(),
+        )
+        .await
+        .expect("initialize state runtime");
+        let (_runtime, admissions) = bootstrap.into_goal_runtime().into_parts();
+        let thread_id = ThreadId::new();
+        let owner = Arc::new(
+            admissions
+                .start_thread_owner(thread_id)
+                .await
+                .expect("issue test Runtime Custodian owner"),
+        );
+        let issuer = GoalRuntimeContinuationIssuer::from_thread_owner(Arc::clone(&owner));
+        let continuation = issuer.continuation(GoalOwnerAdmissionContinuationAuthority {
+            authority: codex_state::GoalOwnerAdmissionAuthority {
+                thread_id,
+                goal_id: "goal".to_string(),
+                generation: 1,
+                cancellation_epoch: 0,
+            },
+            intended_request_kind: "turn".to_string(),
+            successor_turn_id: "successor-turn".to_string(),
+            logical_successor_request_id: "successor-request".to_string(),
+            decision_id: Uuid::nil(),
+        });
+
+        let publication_guard = continuation
+            .enter_fence()
+            .expect("current continuation enters its private publication fence");
+        assert!(publication_guard.is_current_epoch());
+        assert!(
+            !owner.continuations_are_quiescent(),
+            "the fence must remain live while publication is awaiting"
+        );
+
+        tokio::task::yield_now().await;
+
+        assert!(publication_guard.is_current_epoch());
+        assert!(
+            !owner.continuations_are_quiescent(),
+            "the fence must remain live after the awaited publication boundary"
+        );
+        drop(publication_guard);
+        assert!(owner.continuations_are_quiescent());
+    }
+}
