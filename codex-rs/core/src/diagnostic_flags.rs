@@ -391,7 +391,9 @@ mod tests {
         // Older providers omit the subtype while still returning the explicit
         // usage-limit error; that remains a temporary limit rather than an
         // entitlement denial.
-        assert!(is_temporary_usage_limit_error(&usage_limit(None)));
+        assert!(is_temporary_usage_limit_error(&usage_limit(
+            /*rate_limit_reached_type*/ None,
+        )));
         for denial in [
             RateLimitReachedType::WorkspaceOwnerCreditsDepleted,
             RateLimitReachedType::WorkspaceMemberCreditsDepleted,
