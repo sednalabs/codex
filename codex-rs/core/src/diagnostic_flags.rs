@@ -106,7 +106,7 @@ pub fn record_continuity_stage(
     if continuity_observation_enabled() {
         telemetry.counter(
             "codex.diagnostic.continuity_observation",
-            1,
+            /*inc*/ 1,
             &[("actor", actor), ("stage", stage)],
         );
     }
@@ -122,7 +122,7 @@ pub fn record_continuity_provider_outcome(
     if continuity_observation_enabled() {
         telemetry.counter(
             "codex.diagnostic.continuity_observation",
-            1,
+            /*inc*/ 1,
             &[
                 ("actor", actor),
                 ("stage", "provider_outcome"),

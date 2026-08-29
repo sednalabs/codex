@@ -124,7 +124,7 @@ async fn handle_spawn_agent(
     if crate::diagnostic_flags::continuity_observation_enabled() {
         turn.session_telemetry.counter(
             "codex.diagnostic.continuity_observation",
-            1,
+            /*inc*/ 1,
             &[("actor", "parent"), ("stage", "spawn_control_attempt")],
         );
         tracing::info!(
@@ -201,7 +201,7 @@ async fn handle_spawn_agent(
     if crate::diagnostic_flags::continuity_observation_enabled() {
         turn.session_telemetry.counter(
             "codex.diagnostic.continuity_observation",
-            1,
+            /*inc*/ 1,
             &[("actor", "parent"), ("stage", "spawn_published")],
         );
     }
