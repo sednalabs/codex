@@ -163,8 +163,15 @@ fn continuity_actor(turn_context: &TurnContext) -> &'static str {
 
 fn continuity_provider_outcome(err: &CodexErr) -> &'static str {
     match err.details() {
-        CodexErrorDetails::UsageLimitReached(_) => "usage_limit",
+        CodexErrorDetails::UsageLimitReached(_) => {
+            if crate::diagnostic_flags::is_temporary_usage_limit_error(err.details()) {
+                "usage_limit"
+            } else {
+                "entitlement_rejected"
+            }
+        }
         CodexErrorDetails::QuotaExceeded => "quota_rejected",
+        CodexErrorDetails::UsageNotIncluded => "entitlement_rejected",
         CodexErrorDetails::ServerOverloaded => "capacity_rejected",
         CodexErrorDetails::TurnAborted => "cancelled",
         _ if err.is_retryable() => "retryable_error",
@@ -214,8 +221,12 @@ pub(crate) async fn run_turn(
             return Err(err);
         }
         let error = err.to_codex_protocol_error();
-        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-            .await;
+        sess.emit_turn_error_lifecycle_with_details(
+            turn_context.as_ref(),
+            error.clone(),
+            Some(err.details()),
+        )
+        .await;
         error!("Failed to run pre-sampling compact");
         return Ok(None);
     }
@@ -452,8 +463,12 @@ pub(crate) async fn run_turn(
                             return Err(err);
                         }
                         let error = err.to_codex_protocol_error();
-                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-                            .await;
+                        sess.emit_turn_error_lifecycle_with_details(
+                            turn_context.as_ref(),
+                            error.clone(),
+                            Some(err.details()),
+                        )
+                        .await;
                         return Ok(None);
                     }
                     if run_pending_session_start_hooks(&sess, &turn_context).await {
@@ -537,8 +552,12 @@ pub(crate) async fn run_turn(
             {
                 sess.track_turn_codex_error(turn_context.as_ref(), &codex_error);
                 let error = CodexErrorInfo::BadRequest;
-                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-                    .await;
+                sess.emit_turn_error_lifecycle_with_details(
+                    turn_context.as_ref(),
+                    error.clone(),
+                    Some(codex_error.details()),
+                )
+                .await;
                 let message = "Invalid image in your last message. Please remove it and try again."
                     .to_string();
                 let event = EventMsg::Error(ErrorEvent {
@@ -551,8 +570,12 @@ pub(crate) async fn run_turn(
             Err(e) => {
                 info!("Turn error: {e:#}");
                 let error = e.to_codex_protocol_error();
-                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-                    .await;
+                sess.emit_turn_error_lifecycle_with_details(
+                    turn_context.as_ref(),
+                    error.clone(),
+                    Some(e.details()),
+                )
+                .await;
                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
                 let error_event = e.to_error_event(/*message_prefix*/ None);
                 sess.send_event(&turn_context, EventMsg::Error(error_event))
@@ -1282,21 +1305,27 @@ async fn run_continuity_post_usage_limit_probe(
         ToolName::plain("spawn_agent")
     };
     let arguments = serde_json::json!({
-        "message": "Run one bounded diagnostic child step: use an available read-only tool to inspect the current environment or worktree, then report one concise evidence-backed fact to the parent.",
+        "message": "Run one bounded diagnostic child step: use an admitted read-only diagnostic tool if one is available, then report one concise evidence-backed fact to the parent.",
         "task_name": task_name,
         "fork_turns": "none"
     })
     .to_string();
+    let correlation_id = format!(
+        "continuity:{}:turn:{}:spawn",
+        task_name, turn_context.sub_id
+    );
     let call = crate::tools::router::ToolCall {
         tool_name: tool_name.clone(),
         call_id: call_id.clone(),
         payload: crate::tools::context::ToolPayload::Function { arguments },
     };
 
-    crate::diagnostic_flags::record_continuity_stage(
+    crate::diagnostic_flags::record_continuity_stage_with_context(
         &turn_context.session_telemetry,
         "parent",
         "post_usage_limit_spawn_attempt",
+        "direct_probe",
+        Some(correlation_id.as_str()),
     );
     tracing::info!(
         turn_id = %turn_context.sub_id,
@@ -1305,26 +1334,75 @@ async fn run_continuity_post_usage_limit_probe(
         "continuity observation dispatching bounded post-usage-limit V2 spawn"
     );
 
+    let session = tool_runtime.session();
     match tool_runtime
         .handle_tool_call_with_source(
             call,
             crate::tools::router::ToolCallSource::Direct,
-            cancellation_token,
+            cancellation_token.clone(),
         )
         .await
     {
         Ok(_) => {
-            crate::diagnostic_flags::record_continuity_stage(
+            crate::diagnostic_flags::record_continuity_stage_with_context(
                 &turn_context.session_telemetry,
                 "parent",
                 "post_usage_limit_spawn_completed",
+                "direct_probe",
+                Some(correlation_id.as_str()),
             );
+            if let Ok(child_thread_id) = session
+                .services
+                .agent_control
+                .resolve_agent_reference(
+                    session.thread_id,
+                    &turn_context.session_source,
+                    task_name.as_str(),
+                )
+                .await
+            {
+                let control = session.services.agent_control.clone();
+                let telemetry = turn_context.session_telemetry.clone();
+                let monitor_correlation_id = correlation_id.clone();
+                tokio::spawn(async move {
+                    let expired = tokio::select! {
+                        _ = cancellation_token.cancelled() => false,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => true,
+                    };
+                    let stage = if expired {
+                        "diagnostic_child_lifetime_expired"
+                    } else {
+                        "diagnostic_child_local_cancelled"
+                    };
+                    crate::diagnostic_flags::record_continuity_stage_with_context(
+                        &telemetry,
+                        "parent",
+                        stage,
+                        "direct_probe",
+                        Some(monitor_correlation_id.as_str()),
+                    );
+                    if let Err(error) = control.close_agent(child_thread_id).await {
+                        tracing::debug!(
+                            %child_thread_id,
+                            %error,
+                            "continuity observation child cleanup was already terminal or unavailable"
+                        );
+                    }
+                });
+            } else {
+                tracing::debug!(
+                    %task_name,
+                    "continuity observation could not resolve the published child for bounded cleanup"
+                );
+            }
         }
         Err(error) => {
-            crate::diagnostic_flags::record_continuity_stage(
+            crate::diagnostic_flags::record_continuity_stage_with_context(
                 &turn_context.session_telemetry,
                 "parent",
                 "post_usage_limit_spawn_failed",
+                "direct_probe",
+                Some(correlation_id.as_str()),
             );
             warn!(
                 turn_id = %turn_context.sub_id,
@@ -1432,6 +1510,8 @@ async fn run_sampling_request(
                     return Err(err);
                 }
                 CodexErrorDetails::UsageLimitReached(e) => {
+                    let temporary_usage_limit =
+                        crate::diagnostic_flags::is_temporary_usage_limit_error(err.details());
                     if !crate::diagnostic_flags::continuity_suppress_usage_limit_snapshot_enabled()
                     {
                         let rate_limits = e.rate_limits.clone();
@@ -1452,7 +1532,8 @@ async fn run_sampling_request(
                                 &turn_context.session_source,
                                 codex_protocol::protocol::SessionSource::SubAgent(_)
                             );
-                    if (continuation_probe_turn || post_usage_limit_v2_spawn)
+                    if temporary_usage_limit
+                        && (continuation_probe_turn || post_usage_limit_v2_spawn)
                         && turn_context
                             .extension_data
                             .get::<ContinuityPostUsageLimitProbeDispatched>()
@@ -1467,6 +1548,16 @@ async fn run_sampling_request(
                             cancellation_token.child_token(),
                         )
                         .await;
+                    } else if !temporary_usage_limit {
+                        crate::diagnostic_flags::record_continuity_stage_with_context(
+                            &turn_context.session_telemetry,
+                            continuity_actor(&turn_context),
+                            "usage_limit_non_temporary",
+                            crate::diagnostic_flags::continuity_observation_origin(
+                                &turn_context.session_source,
+                            ),
+                            None,
+                        );
                     }
                     err
                 }
@@ -1478,7 +1569,7 @@ async fn run_sampling_request(
             original_input = Some(prompt.input);
         }
 
-        if matches!(err.details(), CodexErrorDetails::UsageLimitReached(_))
+        if crate::diagnostic_flags::is_temporary_usage_limit_error(err.details())
             && crate::diagnostic_flags::continuity_retry_same_turn_enabled()
         {
             let unbounded =
@@ -2316,10 +2407,30 @@ async fn try_run_sampling_request(
         .enabled(Feature::ConcurrentReasoningSummaries)
         && turn_context.provider.info().is_openai();
     let actor = continuity_actor(&turn_context);
-    crate::diagnostic_flags::record_continuity_stage(
+    let observation_origin =
+        crate::diagnostic_flags::continuity_observation_origin(&turn_context.session_source);
+    let correlation_id =
+        crate::diagnostic_flags::continuity_observation_chain_id(&turn_context.session_source)
+            .map(|chain_id| {
+                format!(
+                    "continuity:{chain_id}:turn:{}:request:{}",
+                    turn_context.sub_id,
+                    crate::diagnostic_flags::next_continuity_correlation_id("transport")
+                )
+            })
+            .unwrap_or_else(|| {
+                format!(
+                    "turn:{}:request:{}",
+                    turn_context.sub_id,
+                    crate::diagnostic_flags::next_continuity_correlation_id("transport")
+                )
+            });
+    crate::diagnostic_flags::record_continuity_stage_with_context(
         &turn_context.session_telemetry,
         actor,
-        "provider_request_begun",
+        "provider_transport_attempt",
+        observation_origin,
+        Some(correlation_id.as_str()),
     );
     let stream_result = client_session
         .stream(
@@ -2338,22 +2449,35 @@ async fn try_run_sampling_request(
     let mut stream = match stream_result {
         Err(codex_async_utils::CancelErr::Cancelled) => {
             let err = CodexErr::TurnAborted;
-            crate::diagnostic_flags::record_continuity_provider_outcome(
+            crate::diagnostic_flags::record_continuity_provider_outcome_with_context(
                 &turn_context.session_telemetry,
                 actor,
                 continuity_provider_outcome(&err),
+                observation_origin,
+                Some(correlation_id.as_str()),
             );
             return Err(err);
         }
         Ok(Err(err)) => {
-            crate::diagnostic_flags::record_continuity_provider_outcome(
+            crate::diagnostic_flags::record_continuity_provider_outcome_with_context(
                 &turn_context.session_telemetry,
                 actor,
                 continuity_provider_outcome(&err),
+                observation_origin,
+                Some(correlation_id.as_str()),
             );
             return Err(err);
         }
-        Ok(Ok(stream)) => stream,
+        Ok(Ok(stream)) => {
+            crate::diagnostic_flags::record_continuity_stage_with_context(
+                &turn_context.session_telemetry,
+                actor,
+                "provider_accepted",
+                observation_origin,
+                Some(correlation_id.as_str()),
+            );
+            stream
+        }
     };
     let mut in_flight: FuturesOrdered<BoxFuture<'static, CodexResult<ResponseInputItem>>> =
         FuturesOrdered::new();
@@ -2400,10 +2524,12 @@ async fn try_run_sampling_request(
             Ok(event) => event,
             Err(codex_async_utils::CancelErr::Cancelled) => {
                 let err = CodexErr::TurnAborted;
-                crate::diagnostic_flags::record_continuity_provider_outcome(
+                crate::diagnostic_flags::record_continuity_provider_outcome_with_context(
                     &turn_context.session_telemetry,
                     actor,
                     continuity_provider_outcome(&err),
+                    observation_origin,
+                    Some(correlation_id.as_str()),
                 );
                 break Err(err);
             }
@@ -2412,19 +2538,23 @@ async fn try_run_sampling_request(
         let event = match event {
             Some(Ok(event)) => event,
             Some(Err(err)) => {
-                crate::diagnostic_flags::record_continuity_provider_outcome(
+                crate::diagnostic_flags::record_continuity_provider_outcome_with_context(
                     &turn_context.session_telemetry,
                     actor,
                     continuity_provider_outcome(&err),
+                    observation_origin,
+                    Some(correlation_id.as_str()),
                 );
                 break Err(err);
             }
             None => {
                 let err = CodexErr::Stream("stream closed before response.completed".into());
-                crate::diagnostic_flags::record_continuity_provider_outcome(
+                crate::diagnostic_flags::record_continuity_provider_outcome_with_context(
                     &turn_context.session_telemetry,
                     actor,
                     continuity_provider_outcome(&err),
+                    observation_origin,
+                    Some(correlation_id.as_str()),
                 );
                 break Err(err);
             }
@@ -2436,7 +2566,15 @@ async fn try_run_sampling_request(
         record_turn_ttft_metric(&turn_context, &event).await;
 
         match event {
-            ResponseEvent::Created => {}
+            ResponseEvent::Created => {
+                crate::diagnostic_flags::record_continuity_stage_with_context(
+                    &turn_context.session_telemetry,
+                    actor,
+                    "provider_created",
+                    observation_origin,
+                    Some(correlation_id.as_str()),
+                );
+            }
             ResponseEvent::OutputItemDone(mut item) => {
                 assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
                 if let Some((_, mut consumer)) = active_tool_argument_diff_consumer.take()
@@ -2704,10 +2842,12 @@ async fn try_run_sampling_request(
                 if let Some(false) = end_turn {
                     needs_follow_up = true;
                 }
-                crate::diagnostic_flags::record_continuity_provider_outcome(
+                crate::diagnostic_flags::record_continuity_provider_outcome_with_context(
                     &turn_context.session_telemetry,
                     actor,
                     "completed",
+                    observation_origin,
+                    Some(correlation_id.as_str()),
                 );
                 break Ok(SamplingRequestResult {
                     needs_follow_up,

@@ -153,6 +153,46 @@ SELECT EXISTS(
         Ok(())
     }
 
+    /// Mark a goal as having been preserved by the opt-in continuity research
+    /// path. This marker survives a process restart so disabling the research
+    /// flags cannot turn stale state into an unsolicited provider request.
+    pub async fn mark_thread_goal_continuity_research(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO thread_goal_continuity_research (thread_id) VALUES (?) ON CONFLICT(thread_id) DO NOTHING",
+        )
+        .bind(thread_id.to_string())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(())
+    }
+
+    pub async fn has_thread_goal_continuity_research(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<bool> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM thread_goal_continuity_research WHERE thread_id = ?)",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(self.pool.as_ref())
+        .await
+        .map_err(Into::into)
+    }
+
+    pub async fn clear_thread_goal_continuity_research(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM thread_goal_continuity_research WHERE thread_id = ?")
+            .bind(thread_id.to_string())
+            .execute(self.pool.as_ref())
+            .await?;
+        Ok(())
+    }
+
     pub async fn replace_thread_goal(
         &self,
         thread_id: ThreadId,

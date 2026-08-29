@@ -129,6 +129,10 @@ impl ToolCallRuntime {
         self.router.create_diff_consumer(tool_name)
     }
 
+    pub(crate) fn session(&self) -> Arc<Session> {
+        Arc::clone(&self.session)
+    }
+
     #[instrument(level = "trace", skip_all)]
     pub(crate) fn handle_tool_call(
         self,

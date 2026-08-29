@@ -165,6 +165,15 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
 
+        // A new explicit goal supersedes any persisted diagnostic continuation
+        // marker from a previous goal.
+        self.inner
+            .state_dbs
+            .thread_goals()
+            .clear_thread_goal_continuity_research(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?;
+
         let replaced_existing_goal = previous_goal
             .as_ref()
             .is_some_and(|previous_goal| previous_goal.goal_id != goal.goal_id);
@@ -255,6 +264,18 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
 
+        // A preserved turn still consumed real wall-clock/token progress. Charge
+        // that delta before ending the turn, while retaining the idle goal for
+        // the explicitly selected continuation path. The accounting snapshot is
+        // marked here, so a later stop/finish hook cannot charge it twice.
+        self.account_active_goal_progress(
+            turn_id,
+            &format!("{turn_id}:continuity-preserve-progress"),
+            codex_state::GoalAccountingMode::ActiveOnly,
+            BudgetLimitedGoalDisposition::KeepActive,
+        )
+        .await?;
+
         let goal = self
             .inner
             .state_dbs
@@ -266,9 +287,23 @@ impl GoalRuntimeHandle {
         accounting.finish_turn(turn_id);
         match goal {
             Some(goal) if goal.status == codex_state::ThreadGoalStatus::Active => {
+                self.inner
+                    .state_dbs
+                    .thread_goals()
+                    .mark_thread_goal_continuity_research(self.thread_id())
+                    .await
+                    .map_err(|err| err.to_string())?;
                 accounting.mark_idle_goal_active(goal.goal_id);
             }
-            Some(_) | None => accounting.clear_active_goal(),
+            Some(_) | None => {
+                let _ = self
+                    .inner
+                    .state_dbs
+                    .thread_goals()
+                    .clear_thread_goal_continuity_research(self.thread_id())
+                    .await;
+                accounting.clear_active_goal();
+            }
         }
         Ok(())
     }
@@ -398,6 +433,33 @@ impl GoalRuntimeHandle {
         // change the goal after we read it but before the continuation launches.
         let _goal_state_permit = self.goal_state_permit().await?;
 
+        let continuity_research_marker = self
+            .inner
+            .state_dbs
+            .thread_goals()
+            .has_thread_goal_continuity_research(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?;
+        if continuity_research_marker {
+            if !codex_core::diagnostic_flags::continuity_preserve_after_usage_limit_enabled() {
+                // This goal was preserved by an earlier opt-in run. Do not
+                // silently resume provider work after flags are removed or a
+                // process restart restores the persisted goal.
+                self.inner.accounting_state.clear_active_goal();
+                tracing::debug!(
+                    thread_id = %self.thread_id(),
+                    "skipping preserved goal continuation because continuity research is disabled"
+                );
+                return Ok(());
+            }
+            self.inner
+                .state_dbs
+                .thread_goals()
+                .clear_thread_goal_continuity_research(self.thread_id())
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+
         if self
             .inner
             .state_dbs
@@ -435,30 +497,37 @@ impl GoalRuntimeHandle {
         }
         let item = continuation_steering_item(&protocol_goal_from_state(goal));
         let continuity_observation = codex_core::diagnostic_flags::continuity_observation_enabled();
+        let correlation_id = format!("thread:{}:continuation", self.thread_id());
         if continuity_observation {
-            codex_core::diagnostic_flags::record_continuity_stage(
+            codex_core::diagnostic_flags::record_continuity_stage_with_context(
                 &thread.session_telemetry(),
                 "parent",
                 "continuation_attempt",
+                "direct_probe",
+                Some(correlation_id.as_str()),
             );
         }
 
         match thread.try_start_turn_if_idle(vec![item]).await {
             Ok(()) => {
                 if continuity_observation {
-                    codex_core::diagnostic_flags::record_continuity_stage(
+                    codex_core::diagnostic_flags::record_continuity_stage_with_context(
                         &thread.session_telemetry(),
                         "parent",
                         "continuation_started",
+                        "direct_probe",
+                        Some(correlation_id.as_str()),
                     );
                 }
             }
             Err(err) => {
                 if continuity_observation {
-                    codex_core::diagnostic_flags::record_continuity_stage(
+                    codex_core::diagnostic_flags::record_continuity_stage_with_context(
                         &thread.session_telemetry(),
                         "parent",
                         "continuation_rejected",
+                        "direct_probe",
+                        Some(correlation_id.as_str()),
                     );
                 }
                 let reason = err.reason();
