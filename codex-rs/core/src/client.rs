@@ -661,7 +661,7 @@ impl ModelClient {
                 model_info,
                 settings.service_tier.clone(),
                 responses_metadata,
-                None,
+                /*goal_owner_continuation*/ None,
             )
             .await?;
         let result = async {
