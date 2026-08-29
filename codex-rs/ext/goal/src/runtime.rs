@@ -888,10 +888,30 @@ mod tests {
 
     #[test]
     fn restart_gate_requires_positive_research_authorization() {
-        assert!(should_restore_active_goal_after_resume(false, false, false));
-        assert!(should_restore_active_goal_after_resume(true, true, false));
-        assert!(!should_restore_active_goal_after_resume(true, false, false));
-        assert!(!should_restore_active_goal_after_resume(false, true, true));
-        assert!(!should_restore_active_goal_after_resume(true, true, true));
+        assert!(should_restore_active_goal_after_resume(
+            /*continuity_research_enabled*/ false,
+            /*continuity_research_marker*/ false,
+            /*continuation_deferral*/ false,
+        ));
+        assert!(should_restore_active_goal_after_resume(
+            /*continuity_research_enabled*/ true,
+            /*continuity_research_marker*/ true,
+            /*continuation_deferral*/ false,
+        ));
+        assert!(!should_restore_active_goal_after_resume(
+            /*continuity_research_enabled*/ true,
+            /*continuity_research_marker*/ false,
+            /*continuation_deferral*/ false,
+        ));
+        assert!(!should_restore_active_goal_after_resume(
+            /*continuity_research_enabled*/ false,
+            /*continuity_research_marker*/ true,
+            /*continuation_deferral*/ true,
+        ));
+        assert!(!should_restore_active_goal_after_resume(
+            /*continuity_research_enabled*/ true,
+            /*continuity_research_marker*/ true,
+            /*continuation_deferral*/ true,
+        ));
     }
 }
