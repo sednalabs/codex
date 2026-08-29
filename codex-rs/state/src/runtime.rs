@@ -84,6 +84,7 @@ pub use goal_owner_admissions::GoalOwnerAdmissionStore;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalDisposition;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalOutcome;
 pub use goal_owner_admissions::GoalOwnerDispatchFenceCapability;
+pub use goal_owner_admissions::GoalRuntimeAdmissionInstallation;
 pub use goal_owner_admissions::canonical_provider_id;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
@@ -340,7 +341,7 @@ pub struct StateRuntime {
     /// The sole mutation-bearing admission handle is handed to the installed
     /// goal runtime exactly once. Ordinary StateRuntime consumers retain only
     /// the diagnostics store above, which carries no owner capability.
-    goal_owner_admission_installation: Mutex<Option<GoalOwnerAdmissionStore>>,
+    goal_owner_admission_installation: Mutex<Option<GoalRuntimeAdmissionInstallation>>,
     memories: MemoryStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
@@ -640,7 +641,9 @@ impl StateRuntime {
                 runtime_owner.clone(),
             ),
             goal_owner_admissions,
-            goal_owner_admission_installation: Mutex::new(Some(goal_owner_admission_installation)),
+            goal_owner_admission_installation: Mutex::new(Some(
+                GoalRuntimeAdmissionInstallation::new(goal_owner_admission_installation),
+            )),
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
             logs_pool,
@@ -708,11 +711,14 @@ impl StateRuntime {
     /// The extension installation path is the only caller in production. The
     /// handle is one-shot, so later or competing consumers receive no mutation
     /// authority; StateRuntime continues to expose diagnostics only.
-    pub fn take_goal_runtime_admissions(&self) -> Option<GoalOwnerAdmissionStore> {
+    pub fn install_goal_runtime_admissions(
+        &self,
+    ) -> Result<GoalRuntimeAdmissionInstallation, &'static str> {
         self.goal_owner_admission_installation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
+            .ok_or("goal runtime admission installation is unavailable")
     }
 
     /// Whether this runtime holds the process-lifetime goal database lease.
@@ -1109,8 +1115,9 @@ mod tests {
             .expect("initialize owning runtime");
         assert!(runtime.owns_goal_runtime());
         let cloned_store = runtime
-            .take_goal_runtime_admissions()
-            .expect("owning runtime supplies its installation facade");
+            .install_goal_runtime_admissions()
+            .expect("owning runtime supplies its installation facade")
+            .installed_store();
         drop(runtime);
 
         let blocked_runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())

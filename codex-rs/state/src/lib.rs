@@ -74,6 +74,7 @@ pub use runtime::GoalOwnerAdmissionStore;
 pub use runtime::GoalOwnerAdmissionTerminalDisposition;
 pub use runtime::GoalOwnerAdmissionTerminalOutcome;
 pub use runtime::GoalOwnerDispatchFenceCapability;
+pub use runtime::GoalRuntimeAdmissionInstallation;
 pub use runtime::GoalStore;
 pub use runtime::GoalUpdate;
 pub use runtime::MemoryStore;

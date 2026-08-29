@@ -291,6 +291,26 @@ pub struct GoalOwnerAdmissionStore {
     owner_lease: Option<Arc<RuntimeOwnerLease>>,
 }
 
+/// Opaque bootstrap witness for the sole goal runtime that may mutate the
+/// admission protocol.  It intentionally does not expose construction from a
+/// pool or from a diagnostic `StateRuntime` view.
+#[derive(Clone, Debug)]
+pub struct GoalRuntimeAdmissionInstallation {
+    store: GoalOwnerAdmissionStore,
+}
+
+impl GoalRuntimeAdmissionInstallation {
+    pub(crate) fn new(store: GoalOwnerAdmissionStore) -> Self {
+        Self { store }
+    }
+
+    /// This is consumed only by the installed continuation fence during host
+    /// composition. The generic runtime accessor remains diagnostics-only.
+    pub fn installed_store(&self) -> GoalOwnerAdmissionStore {
+        self.store.clone()
+    }
+}
+
 impl std::fmt::Debug for GoalOwnerAdmissionStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter

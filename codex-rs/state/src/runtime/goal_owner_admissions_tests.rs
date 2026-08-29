@@ -1032,8 +1032,9 @@ async fn read_only_runtime_cannot_self_claim_an_unclaimed_generation() {
         .await
         .expect("first runtime owns admission mutations");
     let installed = runtime_a
-        .take_goal_runtime_admissions()
-        .expect("installed runtime owns the one mutation facade");
+        .install_goal_runtime_admissions()
+        .expect("installed runtime owns the one mutation facade")
+        .installed_store();
     let record = installed
         .observe_denial(&observation(
             ThreadId::new(),
@@ -1078,10 +1079,11 @@ async fn public_runtime_admission_view_cannot_claim_installed_generation() {
         .await
         .expect("owning runtime");
     let installed = runtime
-        .take_goal_runtime_admissions()
-        .expect("installed goal runtime facade");
+        .install_goal_runtime_admissions()
+        .expect("installed goal runtime facade")
+        .installed_store();
     assert!(
-        runtime.take_goal_runtime_admissions().is_none(),
+        runtime.install_goal_runtime_admissions().is_err(),
         "the installation facade is single-use and cannot be cloned from StateRuntime"
     );
     let record = installed
