@@ -82,9 +82,9 @@ pub use goal_owner_admissions::GoalOwnerAdmissionRetirementReason;
 pub use goal_owner_admissions::GoalOwnerAdmissionStore;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalDisposition;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalOutcome;
-pub use goal_owner_admissions::GoalOwnerDispatchFenceCapability;
 pub use goal_owner_admissions::GoalRuntimeAdmissionFenceGuard;
-pub use goal_owner_admissions::GoalRuntimeAdmissionOwner;
+pub use goal_owner_admissions::GoalRuntimeHandoffReceipt;
+pub use goal_owner_admissions::GoalRuntimeThreadOwner;
 pub use goal_owner_admissions::InstalledGoalRuntimeAdmissions;
 pub use goal_owner_admissions::canonical_provider_id;
 pub use goals::GoalAccountingMode;
@@ -808,8 +808,9 @@ impl StateRuntime {
         admissions.validate_for_runtime(self).is_ok()
     }
 
-    /// Verify that a continuation owner was derived from this exact runtime.
-    pub fn validates_goal_runtime_owner(&self, owner: &GoalRuntimeAdmissionOwner) -> bool {
+    /// Verify that a thread capability was issued by this exact installed
+    /// runtime before Core accepts it at an admission boundary.
+    pub fn validates_goal_runtime_thread_owner(&self, owner: &GoalRuntimeThreadOwner) -> bool {
         owner.matches_runtime(self)
     }
 

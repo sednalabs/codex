@@ -23,10 +23,8 @@ use codex_state::GoalOwnerAdmissionPhase;
 use codex_state::GoalOwnerAdmissionRecord;
 use codex_state::GoalOwnerAdmissionTerminalDisposition;
 use codex_state::GoalOwnerAdmissionTerminalOutcome;
-use codex_state::GoalOwnerDispatchFenceCapability;
 use codex_state::GoalRuntimeAdmissionFenceGuard;
-use codex_state::GoalRuntimeAdmissionOwner;
-use codex_state::InstalledGoalRuntimeAdmissions;
+use codex_state::GoalRuntimeThreadOwner;
 use codex_state::canonical_provider_id;
 use tokio::sync::Mutex;
 use tracing::debug;
@@ -41,12 +39,10 @@ use crate::StateDbHandle;
 #[derive(Clone, Debug)]
 pub struct GoalOwnerContinuation {
     authority: GoalOwnerAdmissionContinuationAuthority,
-    /// Installation-owned store carried from the trusted goal runtime. Core
-    /// never reacquires mutation authority from a generic StateRuntime.
-    store: Arc<InstalledGoalRuntimeAdmissions>,
-    owner: GoalRuntimeAdmissionOwner,
+    /// Exact thread capability carried from the trusted Goal runtime. Core
+    /// cannot turn a generic StateRuntime or installed facade into one.
+    owner: Arc<GoalRuntimeThreadOwner>,
     dispatch_claim_id: Option<Uuid>,
-    fence_identity: GoalOwnerDispatchFenceCapability,
     fence_epoch: u64,
     installation_epoch: u64,
 }
@@ -56,8 +52,7 @@ pub struct GoalOwnerContinuation {
 /// cannot attach an unrelated fence to an existing token.
 #[derive(Clone, Debug)]
 pub struct GoalRuntimeContinuationIssuer {
-    store: Arc<InstalledGoalRuntimeAdmissions>,
-    owner: GoalRuntimeAdmissionOwner,
+    owner: Arc<GoalRuntimeThreadOwner>,
     // An issuer is valid for exactly one enablement generation. Clones of the
     // live coordinator share this stamp so that coordinator can disable and
     // later re-enable itself, while a separately retained issuer cannot mint
@@ -67,44 +62,30 @@ pub struct GoalRuntimeContinuationIssuer {
     // Facades derived while an owner is stopped can observe it for cleanup,
     // but cannot use a fresh local epoch stamp to restart it.
     may_reenable: bool,
+    // The issuer is also pinned to the fence epoch it was issued under. A
+    // later revoke/drain must not let a retained issuer read a fresh epoch and
+    // mint another continuation from the same shared owner capability.
+    issuer_continuation_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl GoalRuntimeContinuationIssuer {
-    /// Construct the per-thread continuation issuer derived from the opaque,
-    /// installed goal-runtime admissions facade. There is no caller-provided
-    /// lifecycle state: repeated issuers for this exact thread share one
-    /// installed owner identity and revocation epoch.
-    pub fn for_thread(
-        admissions: Arc<InstalledGoalRuntimeAdmissions>,
-        thread_id: ThreadId,
-    ) -> Self {
-        let owner = admissions.owner_for_thread(thread_id);
+    /// Construct an issuer from a capability already issued by the Runtime
+    /// Custodian. There is intentionally no `for_thread` factory: Core cannot
+    /// mint ownership from an ambient installed facade or a thread identifier.
+    pub fn from_thread_owner(owner: Arc<GoalRuntimeThreadOwner>) -> Self {
         Self {
             issuer_enablement_epoch: Arc::new(std::sync::atomic::AtomicU64::new(
                 owner.enablement_epoch(),
             )),
+            // A current active custodian may toggle its own enablement. An
+            // issuer first created while disabled cannot later revive the
+            // shared owner, and a root handoff still requires the durable
+            // Runtime Custodian receipt CAS.
             may_reenable: owner.is_enabled(),
-            owner,
-            store: admissions,
-        }
-    }
-
-    /// Create the issuer for a deliberate root replacement. The installed
-    /// facade proves the replacement first waited for predecessor quiescence;
-    /// ordinary [`Self::for_thread`] remains fail-closed after weak-owner
-    /// eviction or a stopped lifecycle.
-    pub fn for_authorized_handoff(
-        admissions: Arc<InstalledGoalRuntimeAdmissions>,
-        thread_id: ThreadId,
-    ) -> Self {
-        let owner = admissions.handoff_owner_for_thread(thread_id);
-        Self {
-            issuer_enablement_epoch: Arc::new(std::sync::atomic::AtomicU64::new(
-                owner.enablement_epoch(),
+            issuer_continuation_epoch: Arc::new(std::sync::atomic::AtomicU64::new(
+                owner.continuation_epoch(),
             )),
-            may_reenable: owner.is_enabled(),
             owner,
-            store: admissions,
         }
     }
 
@@ -112,7 +93,10 @@ impl GoalRuntimeContinuationIssuer {
         self.owner.is_enabled_at_generation(
             self.issuer_enablement_epoch
                 .load(std::sync::atomic::Ordering::Acquire),
-        )
+        ) && self.owner.continuation_epoch()
+            == self
+                .issuer_continuation_epoch
+                .load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn enablement_epoch(&self) -> u64 {
@@ -135,6 +119,10 @@ impl GoalRuntimeContinuationIssuer {
         if let Some(enablement_epoch) = enablement_epoch {
             self.issuer_enablement_epoch
                 .store(enablement_epoch, std::sync::atomic::Ordering::Release);
+            self.issuer_continuation_epoch.store(
+                self.owner.continuation_epoch(),
+                std::sync::atomic::Ordering::Release,
+            );
         }
         enablement_epoch
     }
@@ -152,9 +140,7 @@ impl GoalRuntimeContinuationIssuer {
         if authority.authority.thread_id != self.owner.thread_id() {
             anyhow::bail!("goal continuation authority belongs to a different installed owner")
         }
-        self.store
-            .claim_dispatch(authority, self.owner.fence_identity(), now)
-            .await
+        self.owner.claim_dispatch(authority, now).await
     }
 
     /// Release only a claim owned by this coordinator's private fence.
@@ -163,29 +149,18 @@ impl GoalRuntimeContinuationIssuer {
         authority: &codex_state::GoalOwnerAdmissionAuthority,
         dispatch_claim_id: Uuid,
     ) -> anyhow::Result<bool> {
-        self.store
-            .release_dispatch_claim(authority, dispatch_claim_id, self.owner.fence_identity())
+        self.owner
+            .release_dispatch_claim(authority, dispatch_claim_id)
             .await
     }
 
     pub fn current_epoch(&self) -> u64 {
-        self.owner.continuation_epoch()
+        self.issuer_continuation_epoch
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn revoke(&self) {
         self.owner.revoke_continuations();
-    }
-
-    pub fn revoke_and_wait(&self) {
-        self.owner.revoke_continuations_and_wait();
-    }
-
-    pub fn wait_for_quiescence(&self) {
-        self.owner.wait_for_continuations();
-    }
-
-    pub fn is_quiescent(&self) -> bool {
-        self.owner.continuations_are_quiescent()
     }
 
     pub fn continuation(
@@ -222,10 +197,8 @@ impl GoalOwnerContinuation {
     ) -> Self {
         Self {
             authority,
-            store: Arc::clone(&coordinator.store),
-            owner: coordinator.owner.clone(),
+            owner: Arc::clone(&coordinator.owner),
             dispatch_claim_id,
-            fence_identity: coordinator.owner.fence_identity(),
             fence_epoch: coordinator.current_epoch(),
             installation_epoch: coordinator
                 .issuer_enablement_epoch
@@ -241,15 +214,7 @@ impl GoalOwnerContinuation {
         self.dispatch_claim_id
     }
 
-    pub(crate) fn fence_identity(&self) -> GoalOwnerDispatchFenceCapability {
-        self.fence_identity
-    }
-
-    pub(crate) fn installed_admissions(&self) -> &Arc<InstalledGoalRuntimeAdmissions> {
-        &self.store
-    }
-
-    pub(crate) fn owner(&self) -> &GoalRuntimeAdmissionOwner {
+    pub(crate) fn thread_owner(&self) -> &Arc<GoalRuntimeThreadOwner> {
         &self.owner
     }
 }
@@ -547,12 +512,8 @@ impl ModelRequestAdmissionBroker {
             return Ok(());
         };
         continuation
-            .installed_admissions()
-            .release_dispatch_claim(
-                &continuation.authority().authority,
-                dispatch_claim_id,
-                continuation.fence_identity(),
-            )
+            .thread_owner()
+            .release_dispatch_claim(&continuation.authority().authority, dispatch_claim_id)
             .await
             .map(|_| ())
             .map_err(storage_error)
@@ -607,19 +568,18 @@ impl ModelRequestAdmissionBroker {
                 ModelRequestAdmissionDecision::Unrestricted
             });
         };
-        // A continuation carries the installation-owned store that created
-        // its claim. Generic StateRuntime access is diagnostics-only and is
-        // used solely for ordinary-turn observation.
-        let installed_admissions = continuation.map(GoalOwnerContinuation::installed_admissions);
+        // A continuation carries an exact Runtime Custodian thread capability.
+        // Generic StateRuntime access remains diagnostics-only and serves
+        // ordinary-turn observation only.
+        let thread_owner = continuation.map(GoalOwnerContinuation::thread_owner);
         if let Some(continuation) = continuation
-            && (!state_db.validates_goal_runtime_admissions(continuation.installed_admissions())
-                || !state_db.validates_goal_runtime_owner(continuation.owner()))
+            && !state_db.validates_goal_runtime_thread_owner(continuation.thread_owner())
         {
             return Ok(ModelRequestAdmissionDecision::Dormant);
         }
         let now = Utc::now();
-        let record = match installed_admissions {
-            Some(admissions) => admissions.get(identity.thread_id).await,
+        let record = match thread_owner {
+            Some(owner) => owner.get().await,
             None => {
                 state_db
                     .goal_owner_admissions()
@@ -679,9 +639,9 @@ impl ModelRequestAdmissionBroker {
         // The durable dispatch claim is bound to the exact fence that minted
         // this token. Copying the authority and claim UUID into a token from a
         // foreign coordinator must never authorize provider I/O.
-        if !continuation.is_some_and(|continuation| {
-            record.dispatch_fence_matches(continuation.fence_identity())
-        }) {
+        if !continuation
+            .is_some_and(|continuation| continuation.thread_owner().dispatch_claim_matches(&record))
+        {
             return Ok(ModelRequestAdmissionDecision::Dormant);
         }
         if record.phase != GoalOwnerAdmissionPhase::Pending {
@@ -692,24 +652,17 @@ impl ModelRequestAdmissionBroker {
             return Ok(ModelRequestAdmissionDecision::Deferred);
         }
 
-        let Some(store) = installed_admissions else {
+        let Some(thread_owner) = thread_owner else {
             return Ok(ModelRequestAdmissionDecision::Dormant);
         };
-        let acquire_result = store
-            .try_acquire_claimed(
-                continuation_authority,
-                dispatch_claim_id,
-                continuation
-                    .map(GoalOwnerContinuation::fence_identity)
-                    .expect("claimed continuation must carry its fence capability"),
-                now,
-            )
+        let acquire_result = thread_owner
+            .try_acquire_claimed(continuation_authority, dispatch_claim_id, now)
             .await
             .map_err(storage_error)?;
         match acquire_result {
             GoalOwnerAdmissionAcquireResult::Acquired(lease) => {
                 Ok(ModelRequestAdmissionDecision::Admitted(Arc::new(
-                    AdmittedModelRequest::new(store.clone(), *lease, continuation),
+                    AdmittedModelRequest::new(Arc::clone(thread_owner), *lease, continuation),
                 )))
             }
             GoalOwnerAdmissionAcquireResult::Exhausted(_) => {
@@ -722,7 +675,7 @@ impl ModelRequestAdmissionBroker {
                 // lifecycle transition. A fresh read may expose a final,
                 // durable decision; a missing or still-uncertain record stays
                 // fail-closed and cannot authorize provider I/O.
-                let current = store.get(identity.thread_id).await.map_err(storage_error)?;
+                let current = thread_owner.get().await.map_err(storage_error)?;
                 Ok(
                     current.map_or(ModelRequestAdmissionDecision::Dormant, |record| {
                         if continuation_matches_record(continuation_authority, &record)
@@ -851,24 +804,24 @@ fn storage_error(error: anyhow::Error) -> CodexErr {
 }
 
 pub(crate) struct AdmittedModelRequest {
-    store: Arc<InstalledGoalRuntimeAdmissions>,
+    thread_owner: Arc<GoalRuntimeThreadOwner>,
     lease: GoalOwnerAdmissionLease,
     lifecycle: Mutex<LeaseLifecycle>,
-    owner: Option<GoalRuntimeAdmissionOwner>,
+    owner: Option<Arc<GoalRuntimeThreadOwner>>,
     fence_epoch: u64,
 }
 
 impl AdmittedModelRequest {
     fn new(
-        store: Arc<InstalledGoalRuntimeAdmissions>,
+        thread_owner: Arc<GoalRuntimeThreadOwner>,
         lease: GoalOwnerAdmissionLease,
         continuation: Option<&GoalOwnerContinuation>,
     ) -> Self {
         Self {
-            store,
+            thread_owner,
             lease,
             lifecycle: Mutex::new(LeaseLifecycle::default()),
-            owner: continuation.map(|continuation| continuation.owner.clone()),
+            owner: continuation.map(|continuation| Arc::clone(&continuation.owner)),
             fence_epoch: continuation.map_or(0, |continuation| continuation.fence_epoch),
         }
     }
@@ -894,7 +847,7 @@ impl AdmittedModelRequest {
             }
         }
         let released = self
-            .store
+            .thread_owner
             .release_acquired_lease(&self.lease)
             .await
             .map_err(storage_error)?;
@@ -925,7 +878,7 @@ impl AdmittedModelRequest {
 
         if request_opened {
             let cancelled = self
-                .store
+                .thread_owner
                 .cancel_opened_lease_before_transport(&self.lease)
                 .await
                 .map_err(storage_error)?;
@@ -941,7 +894,7 @@ impl AdmittedModelRequest {
         }
 
         if self
-            .store
+            .thread_owner
             .release_acquired_lease(&self.lease)
             .await
             .map_err(storage_error)?
@@ -970,7 +923,7 @@ impl AdmittedModelRequest {
             }
         }
         let persisted = self
-            .store
+            .thread_owner
             .finish(&self.lease, outcome, disposition)
             .await
             .map_err(storage_error)?;
@@ -1096,13 +1049,16 @@ impl ModelRequestLeaseGuard {
         if !needs_open {
             return Ok(());
         }
-        let opened = match admitted.store.open_lease(&admitted.lease).await {
+        let opened = match admitted.thread_owner.open_lease(&admitted.lease).await {
             Ok(opened) => opened,
             Err(error) => {
                 let mut lifecycle = admitted.lifecycle.lock().await;
                 lifecycle.opening = false;
                 drop(lifecycle);
-                let _ = admitted.store.release_acquired_lease(&admitted.lease).await;
+                let _ = admitted
+                    .thread_owner
+                    .release_acquired_lease(&admitted.lease)
+                    .await;
                 return Err(storage_error(error));
             }
         };

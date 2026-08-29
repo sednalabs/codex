@@ -124,11 +124,34 @@ where
             let Ok(thread_id) = ThreadId::from_string(input.thread_store.level_id()) else {
                 return;
             };
+            let thread_owner = match self
+                .goal_runtime_admissions
+                .start_thread_owner(thread_id)
+                .await
+            {
+                Ok(owner) => Arc::new(owner),
+                Err(start_error) => match self
+                    .goal_runtime_admissions
+                    .take_over_crashed_thread(thread_id)
+                    .await
+                {
+                    Ok(owner) => Arc::new(owner),
+                    Err(takeover_error) => {
+                        tracing::warn!(
+                            thread_id = %thread_id,
+                            start_error = %start_error,
+                            takeover_error = %takeover_error,
+                            "goal runtime custodian did not issue a thread owner"
+                        );
+                        return;
+                    }
+                },
+            };
             let runtime = input.thread_store.get_or_init::<GoalRuntimeHandle>(|| {
                 GoalRuntimeHandle::new(
                     thread_id,
                     Arc::clone(&self.state_dbs),
-                    Arc::clone(&self.goal_runtime_admissions),
+                    thread_owner,
                     self.event_emitter.clone(),
                     self.metrics.clone(),
                     self.thread_manager.clone(),

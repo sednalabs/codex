@@ -102,107 +102,223 @@ async fn installed_runtime(sqlite: crate::SqliteConfig) -> GoalAdmissionTestRunt
 }
 
 #[tokio::test]
-async fn installed_owner_registry_preserves_a_disabled_tombstone_after_the_last_fence_guard() {
+async fn weak_live_registry_reclaims_without_default_enabled_recreation() {
     let runtime = runtime().await;
     let thread_id = ThreadId::new();
-    let owner = runtime.admissions.owner_for_thread(thread_id);
-    let concurrent_issuer_owner = runtime.admissions.owner_for_thread(thread_id);
-    assert!(Arc::ptr_eq(&owner.inner, &concurrent_issuer_owner.inner));
+    let owner = runtime
+        .admissions
+        .start_thread_owner(thread_id)
+        .await
+        .expect("create the first durable thread owner");
     assert_eq!(runtime.admissions.live_owner_registry_len(), 1);
 
-    let epoch = owner.continuation_epoch();
-    let guard = owner
-        .enter_continuation(epoch)
-        .expect("the current owner epoch enters");
-    drop(owner);
-    drop(concurrent_issuer_owner);
-    assert_eq!(
-        runtime.admissions.live_owner_registry_len(),
-        1,
-        "an active continuation guard keeps its owner identity live"
-    );
-
-    drop(guard);
-    assert_eq!(
-        runtime.admissions.live_owner_registry_len(),
-        1,
-        "a dead thread owner leaves a lifecycle tombstone instead of recreating enabled authority"
-    );
-    let recreated = runtime.admissions.owner_for_thread(thread_id);
-    assert!(
-        !recreated.is_enabled(),
-        "an incidental facade recreation must start disabled after owner eviction"
-    );
-    assert!(
-        recreated
-            .enter_continuation(recreated.continuation_epoch())
-            .is_none(),
-        "a tombstoned facade cannot publish a continuation"
-    );
-    let handed_off = runtime.admissions.handoff_owner_for_thread(thread_id);
-    assert!(
-        handed_off.is_enabled(),
-        "only the explicit installed handoff re-enables the retired lifecycle"
-    );
-}
-
-#[test]
-fn revocation_waits_for_an_entered_guard_before_finishing_the_old_epoch() {
-    let owner = Arc::new(GoalRuntimeAdmissionOwnerInner {
-        runtime_identity: GoalRuntimeAdmissionRuntimeIdentity(Uuid::now_v7()),
-        thread_id: ThreadId::new(),
-        registry: Weak::new(),
-        registry_generation: Uuid::now_v7(),
-        fence_identity: GoalOwnerDispatchFenceCapability::fresh(),
-        lifecycle: Arc::new(GoalRuntimeAdmissionOwnerLifecycle::enabled()),
-        continuation_fence: Arc::new(GoalRuntimeContinuationFence::new()),
-    });
-    let owner = GoalRuntimeAdmissionOwner { inner: owner };
     let guard = owner
         .enter_continuation(owner.continuation_epoch())
-        .expect("enter the current epoch");
-    let (revoked_tx, revoked_rx) = std::sync::mpsc::channel();
-    let revoker = owner.clone();
-    std::thread::spawn(move || {
-        revoker.revoke_continuations_and_wait();
-        revoked_tx.send(()).expect("report completed revocation");
-    });
-
-    assert!(
-        revoked_rx
-            .recv_timeout(std::time::Duration::from_millis(20))
-            .is_err(),
-        "a revocation cannot complete while an entered guard is still active"
+        .expect("current owner enters its continuation epoch");
+    drop(owner);
+    assert_eq!(
+        runtime.admissions.live_owner_registry_len(),
+        1,
+        "an entered guard owns the live registry entry"
     );
     drop(guard);
-    revoked_rx
-        .recv_timeout(std::time::Duration::from_secs(1))
-        .expect("revocation completes after the entered guard drops");
+    assert_eq!(
+        runtime.admissions.live_owner_registry_len(),
+        0,
+        "the weak registry reclaims dropped thread owners"
+    );
     assert!(
-        owner.enter_continuation(0).is_none(),
-        "the old epoch cannot re-enter after revocation linearizes"
+        runtime
+            .admissions
+            .start_thread_owner(thread_id)
+            .await
+            .is_err(),
+        "weak-registry reclamation cannot mint a default-enabled replacement"
     );
 }
 
 #[tokio::test]
-async fn stale_enablement_generation_cannot_revive_a_stopped_owner() {
+async fn handoff_receipt_is_exact_single_consume_and_parallel_safe() {
     let runtime = runtime().await;
-    let owner = runtime.admissions.owner_for_thread(ThreadId::new());
-    assert_eq!(owner.set_enabled_if_generation(0, false), Some(1));
+    let thread_id = ThreadId::new();
+    let owner = runtime
+        .admissions
+        .start_thread_owner(thread_id)
+        .await
+        .expect("start predecessor owner");
+    assert!(owner.begin_drain().await.expect("begin drain"));
     assert!(
-        owner.set_enabled_if_generation(0, true).is_none(),
-        "a retained pre-stop generation cannot win a later enable transition"
+        owner
+            .enter_continuation(owner.continuation_epoch())
+            .is_none(),
+        "a draining predecessor cannot re-enter at its new fence epoch"
+    );
+
+    let first = owner.clone();
+    let second = owner.clone();
+    let (first, second) = tokio::join!(
+        first.try_issue_handoff_receipt(),
+        second.try_issue_handoff_receipt()
+    );
+    let receipts = [
+        first.expect("first handoff attempt"),
+        second.expect("second handoff attempt"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    assert_eq!(receipts.len(), 1, "only one CAS may issue a receipt");
+    let receipt = receipts.into_iter().next().expect("one receipt");
+
+    assert!(
+        runtime.admissions.consume_handoff(receipt).await.is_err(),
+        "the predecessor installation cannot consume its own receipt"
+    );
+}
+
+#[tokio::test]
+async fn handoff_rejects_duplicate_stale_wrong_thread_and_wrong_installation_receipts() {
+    let home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(home.as_path().abs());
+    let thread_id = ThreadId::new();
+    let predecessor = installed_runtime(sqlite.clone()).await;
+    let owner = predecessor
+        .admissions
+        .start_thread_owner(thread_id)
+        .await
+        .expect("start predecessor owner");
+    assert!(owner.begin_drain().await.expect("begin drain"));
+    let receipt = owner
+        .try_issue_handoff_receipt()
+        .await
+        .expect("issue handoff receipt")
+        .expect("drained owner produces one receipt");
+    let duplicate = GoalRuntimeHandoffReceipt {
+        thread_id: receipt.thread_id,
+        predecessor_installation_id: receipt.predecessor_installation_id,
+        predecessor_generation: receipt.predecessor_generation,
+        transition_id: receipt.transition_id,
+    };
+    let wrong_thread = GoalRuntimeHandoffReceipt {
+        thread_id: ThreadId::new(),
+        predecessor_installation_id: receipt.predecessor_installation_id,
+        predecessor_generation: receipt.predecessor_generation,
+        transition_id: receipt.transition_id,
+    };
+    let wrong_installation = GoalRuntimeHandoffReceipt {
+        thread_id: receipt.thread_id,
+        predecessor_installation_id: receipt.predecessor_installation_id,
+        predecessor_generation: receipt.predecessor_generation,
+        transition_id: receipt.transition_id,
+    };
+    assert!(
+        predecessor
+            .admissions
+            .consume_handoff(wrong_installation)
+            .await
+            .is_err(),
+        "the predecessor installation cannot self-consume"
+    );
+    drop(owner);
+    drop(predecessor);
+
+    let successor = installed_runtime(sqlite).await;
+    assert!(
+        successor
+            .admissions
+            .consume_handoff(wrong_thread)
+            .await
+            .is_err(),
+        "a receipt cannot transfer another thread's lifecycle"
     );
     assert!(
-        !owner.is_enabled(),
-        "a failed stale transition leaves the installed owner stopped"
+        successor.admissions.consume_handoff(receipt).await.is_ok(),
+        "the exact successor consumes the receipt once"
     );
+    assert!(
+        successor
+            .admissions
+            .consume_handoff(duplicate)
+            .await
+            .is_err(),
+        "a consumed receipt is permanently stale"
+    );
+}
+
+#[tokio::test]
+async fn canonical_thread_deletion_reclaims_only_the_durable_lifecycle_tombstone() {
+    let runtime = runtime().await;
+    let thread_id = ThreadId::new();
+    let owner = runtime
+        .admissions
+        .start_thread_owner(thread_id)
+        .await
+        .expect("issue thread owner");
+    drop(owner);
+    let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+    sqlx::query(
+        r#"
+INSERT INTO thread_goals (
+    thread_id, goal_id, objective, status, token_budget, tokens_used,
+    time_used_seconds, created_at_ms, updated_at_ms
+) VALUES (?, 'goal', 'objective', 'complete', NULL, 0, 0, ?, ?)
+        "#,
+    )
+    .bind(thread_id.to_string())
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(runtime.admissions.store.pool.as_ref())
+    .await
+    .expect("insert canonical thread row");
+    sqlx::query("DELETE FROM thread_goals WHERE thread_id = ?")
+        .bind(thread_id.to_string())
+        .execute(runtime.admissions.store.pool.as_ref())
+        .await
+        .expect("delete canonical thread row after all work settled");
+    let lifecycle_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM goal_runtime_thread_lifecycles WHERE thread_id = ?",
+    )
+    .bind(thread_id.to_string())
+    .fetch_one(runtime.admissions.store.pool.as_ref())
+    .await
+    .expect("count lifecycle rows");
     assert_eq!(
-        owner.authorize_handoff(),
-        Some(2),
-        "only explicit handoff starts the next owner generation"
+        lifecycle_count, 0,
+        "canonical deletion reclaims the tombstone"
     );
-    assert!(owner.is_enabled_at_generation(2));
+}
+
+#[tokio::test]
+async fn crash_recovery_requires_explicit_startup_takeover() {
+    let home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(home.as_path().abs());
+    let thread_id = ThreadId::new();
+    let first = installed_runtime(sqlite.clone()).await;
+    let owner = first
+        .admissions
+        .start_thread_owner(thread_id)
+        .await
+        .expect("start predecessor");
+    drop(owner);
+    drop(first);
+
+    let recovered = installed_runtime(sqlite).await;
+    assert!(
+        recovered
+            .admissions
+            .start_thread_owner(thread_id)
+            .await
+            .is_err(),
+        "a crashed durable row is not an implicit enabled owner"
+    );
+    assert!(
+        recovered
+            .admissions
+            .take_over_crashed_thread(thread_id)
+            .await
+            .is_ok(),
+        "only startup takeover may replace a crash-retired owner"
+    );
 }
 
 enum GoalDbCorruption {

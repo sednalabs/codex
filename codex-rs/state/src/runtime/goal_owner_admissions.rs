@@ -5,7 +5,6 @@ use chrono::Utc;
 use codex_protocol::ThreadId;
 use sqlx::Row;
 use std::collections::HashMap;
-use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
@@ -86,6 +85,32 @@ admission_enum!(GoalOwnerAdmissionRetirementReason {
     UserRecovery => "user_recovery",
 });
 
+/// Durable lifecycle of the one runtime custodian permitted to own a thread.
+///
+/// `Draining` deliberately has no synchronous waiting semantics. A future
+/// actor/supervisor is expected to close admission, await its own guards, and
+/// then ask the state kernel to issue a handoff receipt.
+admission_enum!(GoalRuntimeThreadLifecyclePhase {
+    Active => "active",
+    Draining => "draining",
+    Retired => "retired",
+    RetiredCrash => "retired_crash",
+});
+
+/// A non-cloneable, exact predecessor-to-successor handoff receipt.
+///
+/// It carries no mutation store and is consumed only by an installed runtime
+/// whose process installation differs from the retired predecessor. Its
+/// durable compare-and-swap is the authority transfer boundary.
+#[derive(Debug)]
+#[must_use = "a handoff receipt must be consumed by its successor or deliberately discarded"]
+pub struct GoalRuntimeHandoffReceipt {
+    thread_id: ThreadId,
+    predecessor_installation_id: Uuid,
+    predecessor_generation: i64,
+    transition_id: Uuid,
+}
+
 /// Canonical SHA-256 digest for non-secret account-context correlation evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalOwnerAdmissionAccountContextFingerprint(String);
@@ -124,11 +149,11 @@ pub struct GoalOwnerAdmissionAuthority {
 /// Callers can carry and compare it, but cannot recover or supply the
 /// persisted UUID identity through the public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GoalOwnerDispatchFenceCapability(Uuid);
+struct GoalOwnerDispatchFenceCapability(Uuid);
 
 impl GoalOwnerDispatchFenceCapability {
     /// Mint a fresh owner-bound capability for a new coordinator.
-    pub fn fresh() -> Self {
+    fn fresh() -> Self {
         Self(Uuid::now_v7())
     }
 
@@ -350,11 +375,192 @@ pub struct InstalledGoalRuntimeAdmissions {
 }
 
 impl InstalledGoalRuntimeAdmissions {
-    /// Derive the one per-thread lifecycle owner from this exact installed
-    /// runtime. Repeated requests for the same thread share identity,
-    /// enablement state, and revocation epoch; a retained facade cannot mint a
-    /// fresh enabled issuer for a disabled thread.
-    pub fn owner_for_thread(&self, thread_id: ThreadId) -> GoalRuntimeAdmissionOwner {
+    /// Create the first live owner for a canonical thread.
+    ///
+    /// This is intentionally a durable transition, not an ambient lookup.
+    /// Once the weak live owner is reclaimed, a caller cannot recreate an
+    /// enabled owner from this facade: it must consume an exact handoff receipt
+    /// or perform startup takeover after crash recovery has retired the old
+    /// installation.
+    pub async fn start_thread_owner(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<GoalRuntimeThreadOwner> {
+        let _capability_guard = self.store.require_write_capability()?;
+        let installation_id = self.store.runtime_installation_id()?;
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let inserted = sqlx::query(
+            r#"
+INSERT INTO goal_runtime_thread_lifecycles (
+    thread_id, installation_id, generation, phase, transition_id, updated_at_ms
+) VALUES (?, ?, 1, 'active', NULL, ?)
+ON CONFLICT(thread_id) DO NOTHING
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .bind(installation_id.to_string())
+        .bind(now_ms)
+        .execute(self.store.pool.as_ref())
+        .await?;
+        if inserted.rows_affected() == 1 {
+            return Ok(self.thread_owner_from_durable(thread_id, installation_id, 1));
+        }
+
+        // Returning an already-live owner is not minting: the weak registry
+        // proves a current custodian instance still owns this exact durable
+        // tuple. If it has been reclaimed, the durable active row remains a
+        // tombstone and this path fails closed instead of recreating it.
+        let live_owner_exists = self
+            .owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&thread_id)
+            .is_some_and(|registered| registered.inner.upgrade().is_some());
+        if !live_owner_exists {
+            bail!("goal runtime thread owner requires an exact handoff or crash takeover")
+        }
+        let row = sqlx::query(
+            r#"
+SELECT installation_id, generation, phase
+FROM goal_runtime_thread_lifecycles
+WHERE thread_id = ?
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(self.store.pool.as_ref())
+        .await?;
+        let Some(row) = row else {
+            bail!("live goal runtime owner is missing its durable lifecycle row")
+        };
+        let row_installation_id = row.try_get::<String, _>("installation_id")?;
+        let generation: i64 = row.try_get("generation")?;
+        let phase: String = row.try_get("phase")?;
+        if row_installation_id != installation_id.to_string()
+            || phase != GoalRuntimeThreadLifecyclePhase::Active.as_str()
+        {
+            bail!("goal runtime thread owner is not active for this installation")
+        }
+        Ok(self.thread_owner_from_durable(thread_id, installation_id, generation))
+    }
+
+    /// Consume exactly one durable predecessor handoff receipt.
+    ///
+    /// The transition is an atomic durable CAS from the exact retired
+    /// predecessor tuple to this installation's next generation. Stale,
+    /// duplicate, foreign-thread, and same-installation receipts all reject
+    /// before a new live owner is created.
+    pub async fn consume_handoff(
+        &self,
+        receipt: GoalRuntimeHandoffReceipt,
+    ) -> anyhow::Result<GoalRuntimeThreadOwner> {
+        let _capability_guard = self.store.require_write_capability()?;
+        let installation_id = self.store.runtime_installation_id()?;
+        if installation_id == receipt.predecessor_installation_id {
+            bail!("goal runtime handoff successor must use a different installation")
+        }
+        let next_generation = receipt
+            .predecessor_generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("goal runtime lifecycle generation overflow"))?;
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let updated = sqlx::query(
+            r#"
+UPDATE goal_runtime_thread_lifecycles
+SET installation_id = ?,
+    generation = ?,
+    phase = 'active',
+    transition_id = NULL,
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND installation_id = ?
+  AND generation = ?
+  AND phase = 'retired'
+  AND transition_id = ?
+            "#,
+        )
+        .bind(installation_id.to_string())
+        .bind(next_generation)
+        .bind(now_ms)
+        .bind(receipt.thread_id.to_string())
+        .bind(receipt.predecessor_installation_id.to_string())
+        .bind(receipt.predecessor_generation)
+        .bind(receipt.transition_id.to_string())
+        .execute(self.store.pool.as_ref())
+        .await?;
+        if updated.rows_affected() != 1 {
+            bail!("goal runtime handoff receipt is stale, consumed, or foreign")
+        }
+        Ok(self.thread_owner_from_durable(receipt.thread_id, installation_id, next_generation))
+    }
+
+    /// Take over a thread only after startup recovery durably classified the
+    /// predecessor installation as crashed. This is the sole receipt-free
+    /// successor path; ordinary weak-registry eviction cannot use it.
+    pub async fn take_over_crashed_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<GoalRuntimeThreadOwner> {
+        let _capability_guard = self.store.require_write_capability()?;
+        let installation_id = self.store.runtime_installation_id()?;
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let mut transaction = self.store.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let row = sqlx::query(
+            r#"
+SELECT generation
+FROM goal_runtime_thread_lifecycles
+WHERE thread_id = ? AND phase = 'retired_crash'
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(row) = row else {
+            transaction.commit().await?;
+            bail!("goal runtime startup takeover requires a crashed predecessor")
+        };
+        let predecessor_generation: i64 = row.try_get("generation")?;
+        let generation = predecessor_generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("goal runtime lifecycle generation overflow"))?;
+        let updated = sqlx::query(
+            r#"
+UPDATE goal_runtime_thread_lifecycles
+SET installation_id = ?, generation = ?, phase = 'active', transition_id = NULL, updated_at_ms = ?
+WHERE thread_id = ? AND generation = ? AND phase = 'retired_crash'
+            "#,
+        )
+        .bind(installation_id.to_string())
+        .bind(generation)
+        .bind(now_ms)
+        .bind(thread_id.to_string())
+        .bind(predecessor_generation)
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() != 1 {
+            bail!("goal runtime startup takeover lost its durable lifecycle row")
+        }
+        transaction.commit().await?;
+        Ok(self.thread_owner_from_durable(thread_id, installation_id, generation))
+    }
+
+    fn thread_owner_from_durable(
+        &self,
+        thread_id: ThreadId,
+        installation_id: Uuid,
+        generation: i64,
+    ) -> GoalRuntimeThreadOwner {
+        GoalRuntimeThreadOwner {
+            owner: self.owner_for_thread_internal(thread_id),
+            store: self.store.clone(),
+            installation_id,
+            generation,
+        }
+    }
+
+    /// Derive the transient in-process owner only after a durable custodian
+    /// transition has authorized it. This method never creates durable
+    /// authority and is intentionally private to the state kernel.
+    fn owner_for_thread_internal(&self, thread_id: ThreadId) -> GoalRuntimeAdmissionOwner {
         let mut owners = self
             .owners
             .lock()
@@ -364,12 +570,9 @@ impl InstalledGoalRuntimeAdmissions {
                 return GoalRuntimeAdmissionOwner { inner };
             }
 
-            // A dead weak owner deliberately leaves a retired lifecycle
-            // tombstone behind. Recreating an incidental facade for that
-            // thread must not manufacture a fresh enabled authority after
-            // the old root stopped; an explicit transition from the trusted
-            // owner is required before it can publish again.
-            let lifecycle = Arc::clone(&registered.lifecycle);
+            // Weak registry reclamation is safe because the canonical durable
+            // lifecycle row remains authoritative. This helper is called only
+            // after a new durable transition, never as an ambient fallback.
             let registry_generation = Uuid::now_v7();
             let inner = Arc::new(GoalRuntimeAdmissionOwnerInner {
                 runtime_identity: self.runtime_identity,
@@ -377,7 +580,7 @@ impl InstalledGoalRuntimeAdmissions {
                 registry: Arc::downgrade(&self.owners),
                 registry_generation,
                 fence_identity: GoalOwnerDispatchFenceCapability::fresh(),
-                lifecycle,
+                lifecycle: Arc::new(GoalRuntimeAdmissionOwnerLifecycle::enabled()),
                 continuation_fence: Arc::new(GoalRuntimeContinuationFence::new()),
             });
             owners.insert(
@@ -385,15 +588,11 @@ impl InstalledGoalRuntimeAdmissions {
                 RegisteredGoalRuntimeAdmissionOwner {
                     generation: registry_generation,
                     inner: Arc::downgrade(&inner),
-                    lifecycle: Arc::clone(&inner.lifecycle),
                 },
             );
             return GoalRuntimeAdmissionOwner { inner };
         }
 
-        // A first owner starts enabled. Subsequent dead owners take the
-        // tombstone branch above, so a thread cannot regain publication
-        // authority merely because its weak facade was evicted.
         let registry_generation = Uuid::now_v7();
         let inner = Arc::new(GoalRuntimeAdmissionOwnerInner {
             runtime_identity: self.runtime_identity,
@@ -409,20 +608,9 @@ impl InstalledGoalRuntimeAdmissions {
             RegisteredGoalRuntimeAdmissionOwner {
                 generation: registry_generation,
                 inner: Arc::downgrade(&inner),
-                lifecycle: Arc::clone(&inner.lifecycle),
             },
         );
         GoalRuntimeAdmissionOwner { inner }
-    }
-
-    /// Re-enable a stopped per-thread owner only for a deliberate root
-    /// handoff. Ordinary facade recreation uses [`Self::owner_for_thread`]
-    /// and remains disabled after eviction; this path first revokes and waits
-    /// for the predecessor's entered work before exposing the next generation.
-    pub fn handoff_owner_for_thread(&self, thread_id: ThreadId) -> GoalRuntimeAdmissionOwner {
-        let owner = self.owner_for_thread(thread_id);
-        owner.authorize_handoff();
-        owner
     }
 
     #[cfg(test)]
@@ -430,7 +618,9 @@ impl InstalledGoalRuntimeAdmissions {
         self.owners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
+            .values()
+            .filter(|registered| registered.inner.strong_count() != 0)
+            .count()
     }
 
     /// Verify that this installed facade was produced for this exact state
@@ -456,7 +646,7 @@ impl InstalledGoalRuntimeAdmissions {
         self.store.get_generation(authority).await
     }
 
-    pub async fn claim_dispatch(
+    pub(crate) async fn claim_dispatch(
         &self,
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         fence_identity: GoalOwnerDispatchFenceCapability,
@@ -467,7 +657,7 @@ impl InstalledGoalRuntimeAdmissions {
             .await
     }
 
-    pub async fn release_dispatch_claim(
+    pub(crate) async fn release_dispatch_claim(
         &self,
         authority: &GoalOwnerAdmissionAuthority,
         dispatch_claim_id: Uuid,
@@ -478,21 +668,21 @@ impl InstalledGoalRuntimeAdmissions {
             .await
     }
 
-    pub async fn clear_deferral_if_retired(
+    pub(crate) async fn clear_deferral_if_retired(
         &self,
         authority: &GoalOwnerAdmissionAuthority,
     ) -> anyhow::Result<bool> {
         self.store.clear_deferral_if_retired(authority).await
     }
 
-    pub async fn observe_denial(
+    pub(crate) async fn observe_denial(
         &self,
         observation: &GoalOwnerAdmissionObservation,
     ) -> anyhow::Result<GoalOwnerAdmissionRecord> {
         self.store.observe_denial(observation).await
     }
 
-    pub async fn retire(
+    pub(crate) async fn retire(
         &self,
         authority: &GoalOwnerAdmissionAuthority,
         reason: GoalOwnerAdmissionRetirementReason,
@@ -500,7 +690,7 @@ impl InstalledGoalRuntimeAdmissions {
         self.store.retire(authority, reason).await
     }
 
-    pub async fn retire_cancelled_generation(
+    pub(crate) async fn retire_cancelled_generation(
         &self,
         authority: &GoalOwnerAdmissionAuthority,
         reason: GoalOwnerAdmissionRetirementReason,
@@ -510,14 +700,14 @@ impl InstalledGoalRuntimeAdmissions {
             .await
     }
 
-    pub async fn recover_exhausted_for_user(
+    pub(crate) async fn recover_exhausted_for_user(
         &self,
         authority: &GoalOwnerAdmissionAuthority,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
         self.store.recover_exhausted_for_user(authority).await
     }
 
-    pub async fn try_acquire(
+    pub(crate) async fn try_acquire(
         &self,
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         now: DateTime<Utc>,
@@ -525,7 +715,7 @@ impl InstalledGoalRuntimeAdmissions {
         self.store.try_acquire(continuation_authority, now).await
     }
 
-    pub async fn try_acquire_claimed(
+    pub(crate) async fn try_acquire_claimed(
         &self,
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         dispatch_claim_id: Uuid,
@@ -542,11 +732,11 @@ impl InstalledGoalRuntimeAdmissions {
             .await
     }
 
-    pub async fn open_lease(&self, lease: &GoalOwnerAdmissionLease) -> anyhow::Result<bool> {
+    pub(crate) async fn open_lease(&self, lease: &GoalOwnerAdmissionLease) -> anyhow::Result<bool> {
         self.store.open_lease(lease).await
     }
 
-    pub async fn release_acquired_lease(
+    pub(crate) async fn release_acquired_lease(
         &self,
         lease: &GoalOwnerAdmissionLease,
     ) -> anyhow::Result<bool> {
@@ -556,14 +746,14 @@ impl InstalledGoalRuntimeAdmissions {
     /// Cancel an opened lease only while the caller still proves that no
     /// transport received it. This is distinct from ordinary cancellation of
     /// in-flight provider work, whose physical effect remains uncertain.
-    pub async fn cancel_opened_lease_before_transport(
+    pub(crate) async fn cancel_opened_lease_before_transport(
         &self,
         lease: &GoalOwnerAdmissionLease,
     ) -> anyhow::Result<bool> {
         self.store.cancel_opened_lease_before_transport(lease).await
     }
 
-    pub async fn finish(
+    pub(crate) async fn finish(
         &self,
         lease: &GoalOwnerAdmissionLease,
         outcome: GoalOwnerAdmissionTerminalOutcome,
@@ -572,7 +762,7 @@ impl InstalledGoalRuntimeAdmissions {
         self.store.finish(lease, outcome, disposition).await
     }
 
-    pub async fn resolve_uncertain(
+    pub(crate) async fn resolve_uncertain(
         &self,
         authority: &GoalOwnerAdmissionAuthority,
         outcome: GoalOwnerAdmissionTerminalOutcome,
@@ -584,7 +774,7 @@ impl InstalledGoalRuntimeAdmissions {
             .await
     }
 
-    pub async fn cancel(
+    pub(crate) async fn cancel(
         &self,
         authority: &GoalOwnerAdmissionAuthority,
         disposition: GoalOwnerAdmissionTerminalDisposition,
@@ -608,7 +798,6 @@ struct GoalRuntimeAdmissionOwnerInner {
 struct RegisteredGoalRuntimeAdmissionOwner {
     generation: Uuid,
     inner: Weak<GoalRuntimeAdmissionOwnerInner>,
-    lifecycle: Arc<GoalRuntimeAdmissionOwnerLifecycle>,
 }
 
 /// Linearizable enablement state shared by every facade ever derived for one
@@ -651,14 +840,10 @@ impl Drop for GoalRuntimeAdmissionOwnerInner {
             registered.generation == self.registry_generation
                 && registered.inner.upgrade().is_none()
         }) {
-            let mut lifecycle = self
-                .lifecycle
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            lifecycle.enabled = false;
-            lifecycle.retired = true;
-            lifecycle.enablement_epoch = lifecycle.enablement_epoch.wrapping_add(1);
+            // The durable lifecycle row is the tombstone. Removing the weak
+            // map entry keeps live memory proportional to live owners without
+            // granting a future caller a default-enabled recreation path.
+            registry.remove(&self.thread_id);
         }
     }
 }
@@ -671,7 +856,6 @@ impl Drop for GoalRuntimeAdmissionOwnerInner {
 struct GoalRuntimeContinuationFence {
     epoch: AtomicU64,
     active: Mutex<usize>,
-    idle: Condvar,
 }
 
 /// Active-operation guard returned only by the installed owner. It holds the
@@ -690,7 +874,6 @@ impl GoalRuntimeContinuationFence {
         Self {
             epoch: AtomicU64::new(0),
             active: Mutex::new(0),
-            idle: Condvar::new(),
         }
     }
 }
@@ -703,9 +886,6 @@ impl Drop for GoalRuntimeAdmissionFenceGuard {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *active = active.saturating_sub(1);
-        if *active == 0 {
-            self.fence.idle.notify_all();
-        }
     }
 }
 
@@ -717,9 +897,9 @@ impl GoalRuntimeAdmissionFenceGuard {
 }
 
 /// Opaque, shared lifecycle owner for one installed runtime and one thread.
-/// It can only originate from [`InstalledGoalRuntimeAdmissions::owner_for_thread`].
+/// It can only originate from the private Runtime Custodian live registry.
 #[derive(Clone, Debug)]
-pub struct GoalRuntimeAdmissionOwner {
+struct GoalRuntimeAdmissionOwner {
     inner: Arc<GoalRuntimeAdmissionOwnerInner>,
 }
 
@@ -730,7 +910,7 @@ impl GoalRuntimeAdmissionOwner {
     }
 
     /// Shared durable dispatch fence identity for this exact installed owner.
-    pub fn fence_identity(&self) -> GoalOwnerDispatchFenceCapability {
+    fn fence_identity(&self) -> GoalOwnerDispatchFenceCapability {
         self.inner.fence_identity
     }
 
@@ -808,7 +988,7 @@ impl GoalRuntimeAdmissionOwner {
     pub fn revoke_continuations(&self) {
         // `enter_continuation` checks the epoch and publishes its active
         // guard while holding this same mutex. Taking it here makes either
-        // enter-before-revoke (which revoke observes and waits for) or
+        // enter-before-revoke (which the later async drain observes) or
         // revoke-before-enter (which enter rejects) the sole outcomes.
         let fence = &self.inner.continuation_fence;
         let _active = fence
@@ -816,29 +996,6 @@ impl GoalRuntimeAdmissionOwner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         fence.epoch.fetch_add(1, Ordering::AcqRel);
-    }
-
-    /// Advance the shared revocation epoch and wait for all active operations
-    /// from every issuer derived from this owner to quiesce.
-    pub fn revoke_continuations_and_wait(&self) {
-        self.revoke_continuations();
-        self.wait_for_continuations();
-    }
-
-    /// Wait for all operations entered under the current or a prior epoch to
-    /// quiesce without advancing the epoch again.
-    pub fn wait_for_continuations(&self) {
-        let fence = &self.inner.continuation_fence;
-        let mut active = fence
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while *active != 0 {
-            active = fence
-                .idle
-                .wait(active)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
     }
 
     /// Non-blocking shared quiescence probe for a current-thread executor.
@@ -884,42 +1041,363 @@ impl GoalRuntimeAdmissionOwner {
         Some(enablement_epoch)
     }
 
-    /// Begin an explicitly authorized replacement generation only after the
-    /// predecessor's continuation guards have quiesced. This is intentionally
-    /// distinct from ordinary issuer enablement so a retained or newly
-    /// recreated facade cannot restart a stopped owner by itself.
-    pub fn authorize_handoff(&self) -> Option<u64> {
-        {
-            let mut lifecycle = self
-                .inner
-                .lifecycle
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if lifecycle.enabled {
-                // Close publication before the quiescence wait. Otherwise a
-                // predecessor could enter a fresh guard after the wait
-                // observes zero active work but before this handoff enables
-                // the replacement generation.
-                lifecycle.enabled = false;
-                lifecycle.enablement_epoch = lifecycle.enablement_epoch.wrapping_add(1);
-            }
-        }
-        self.revoke_continuations_and_wait();
+    /// Retire this in-process issuer permanently after its durable lifecycle
+    /// has entered the handoff drain. Existing fence guards remain observable
+    /// to the asynchronous drain, but no retained issuer can re-enter using a
+    /// freshly observed epoch.
+    fn retire_for_handoff(&self) {
         let mut lifecycle = self
             .inner
             .lifecycle
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        lifecycle.enabled = true;
-        lifecycle.retired = false;
+        if lifecycle.retired {
+            return;
+        }
+        lifecycle.enabled = false;
+        lifecycle.retired = true;
         lifecycle.enablement_epoch = lifecycle.enablement_epoch.wrapping_add(1);
-        Some(lifecycle.enablement_epoch)
+        self.revoke_continuations();
     }
 
     pub(crate) fn matches_runtime(&self, runtime: &super::StateRuntime) -> bool {
         self.inner.runtime_identity == runtime.goal_runtime_admission_runtime_identity
+    }
+}
+
+/// Installation-issued capability for exactly one canonical thread lifecycle.
+///
+/// This value has no public constructor and never exposes its raw admission
+/// store or dispatch-fence identity. Cloning shares a single already-issued
+/// owner; it cannot mint another owner, rebind itself to a different thread,
+/// or survive a durable handoff/recovery generation change.
+#[derive(Clone, Debug)]
+pub struct GoalRuntimeThreadOwner {
+    owner: GoalRuntimeAdmissionOwner,
+    store: GoalOwnerAdmissionStore,
+    installation_id: Uuid,
+    generation: i64,
+}
+
+impl GoalRuntimeThreadOwner {
+    pub(crate) fn matches_runtime(&self, runtime: &super::StateRuntime) -> bool {
+        self.owner.matches_runtime(runtime)
+    }
+
+    pub fn thread_id(&self) -> ThreadId {
+        self.owner.thread_id()
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.owner.is_enabled()
+    }
+
+    pub fn enablement_epoch(&self) -> u64 {
+        self.owner.enablement_epoch()
+    }
+
+    pub fn is_enabled_at_generation(&self, expected_enablement_epoch: u64) -> bool {
+        self.owner
+            .is_enabled_at_generation(expected_enablement_epoch)
+    }
+
+    pub fn continuation_epoch(&self) -> u64 {
+        self.owner.continuation_epoch()
+    }
+
+    pub fn enter_continuation(&self, epoch: u64) -> Option<GoalRuntimeAdmissionFenceGuard> {
+        self.owner.enter_continuation(epoch)
+    }
+
+    pub fn revoke_continuations(&self) {
+        self.owner.revoke_continuations();
+    }
+
+    pub fn continuations_are_quiescent(&self) -> bool {
+        self.owner.continuations_are_quiescent()
+    }
+
+    pub fn set_enabled_if_generation(
+        &self,
+        expected_enablement_epoch: u64,
+        enabled: bool,
+    ) -> Option<u64> {
+        self.owner
+            .set_enabled_if_generation(expected_enablement_epoch, enabled)
+    }
+
+    /// Begin the durable write-side drain boundary without waiting for reader
+    /// work. A future async actor owns the wait and calls
+    /// `try_issue_handoff_receipt` once its permits have settled.
+    pub async fn begin_drain(&self) -> anyhow::Result<bool> {
+        let _capability_guard = self.store.require_write_capability()?;
+        let transition_id = Uuid::now_v7();
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let updated = sqlx::query(
+            r#"
+UPDATE goal_runtime_thread_lifecycles
+SET phase = 'draining', transition_id = ?, updated_at_ms = ?
+WHERE thread_id = ?
+  AND installation_id = ?
+  AND generation = ?
+  AND phase = 'active'
+            "#,
+        )
+        .bind(transition_id.to_string())
+        .bind(now_ms)
+        .bind(self.thread_id().to_string())
+        .bind(self.installation_id.to_string())
+        .bind(self.generation)
+        .execute(self.store.pool.as_ref())
+        .await?;
+        if updated.rows_affected() == 1 {
+            // This owner is permanently predecessor-only once its durable
+            // row enters `draining`: no retained issuer may observe the new
+            // fence epoch and publish again while an async supervisor settles
+            // already-entered work.
+            self.owner.retire_for_handoff();
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Materialize the one-consume handoff receipt only after the caller has
+    /// independently awaited its async drain. This method never blocks.
+    pub async fn try_issue_handoff_receipt(
+        &self,
+    ) -> anyhow::Result<Option<GoalRuntimeHandoffReceipt>> {
+        if !self.continuations_are_quiescent() {
+            return Ok(None);
+        }
+        let _capability_guard = self.store.require_write_capability()?;
+        let mut transaction = self.store.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let row = sqlx::query(
+            r#"
+SELECT transition_id
+FROM goal_runtime_thread_lifecycles
+WHERE thread_id = ?
+  AND installation_id = ?
+  AND generation = ?
+  AND phase = 'draining'
+            "#,
+        )
+        .bind(self.thread_id().to_string())
+        .bind(self.installation_id.to_string())
+        .bind(self.generation)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(row) = row else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        let transition_id = row
+            .try_get::<String, _>("transition_id")
+            .ok()
+            .and_then(|value| Uuid::parse_str(&value).ok())
+            .ok_or_else(admission_integrity_error)?;
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let updated = sqlx::query(
+            r#"
+UPDATE goal_runtime_thread_lifecycles
+SET phase = 'retired', updated_at_ms = ?
+WHERE thread_id = ?
+  AND installation_id = ?
+  AND generation = ?
+  AND phase = 'draining'
+  AND transition_id = ?
+            "#,
+        )
+        .bind(now_ms)
+        .bind(self.thread_id().to_string())
+        .bind(self.installation_id.to_string())
+        .bind(self.generation)
+        .bind(transition_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        if updated.rows_affected() != 1 {
+            bail!("goal runtime handoff receipt lost its exact durable transition")
+        }
+        transaction.commit().await?;
+        Ok(Some(GoalRuntimeHandoffReceipt {
+            thread_id: self.thread_id(),
+            predecessor_installation_id: self.installation_id,
+            predecessor_generation: self.generation,
+            transition_id,
+        }))
+    }
+
+    fn check_authority_thread(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+    ) -> anyhow::Result<()> {
+        if authority.thread_id != self.thread_id() {
+            bail!("goal runtime thread owner cannot mutate a foreign thread")
+        }
+        Ok(())
+    }
+
+    pub async fn get(&self) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.store.get(self.thread_id()).await
+    }
+
+    pub async fn get_generation(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.check_authority_thread(authority)?;
+        self.store.get_generation(authority).await
+    }
+
+    pub async fn observe_denial(
+        &self,
+        observation: &GoalOwnerAdmissionObservation,
+    ) -> anyhow::Result<GoalOwnerAdmissionRecord> {
+        if observation.thread_id != self.thread_id() {
+            bail!("goal runtime thread owner cannot observe a foreign thread")
+        }
+        self.store.observe_denial(observation).await
+    }
+
+    pub async fn claim_dispatch(
+        &self,
+        authority: &GoalOwnerAdmissionContinuationAuthority,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Option<Uuid>> {
+        self.check_authority_thread(&authority.authority)?;
+        self.store
+            .claim_dispatch(authority, self.owner.fence_identity(), now)
+            .await
+    }
+
+    pub fn dispatch_claim_matches(&self, record: &GoalOwnerAdmissionRecord) -> bool {
+        record.dispatch_fence_matches(self.owner.fence_identity())
+    }
+
+    pub async fn release_dispatch_claim(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        dispatch_claim_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        self.check_authority_thread(authority)?;
+        self.store
+            .release_dispatch_claim(authority, dispatch_claim_id, self.owner.fence_identity())
+            .await
+    }
+
+    pub async fn try_acquire_claimed(
+        &self,
+        authority: &GoalOwnerAdmissionContinuationAuthority,
+        dispatch_claim_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
+        self.check_authority_thread(&authority.authority)?;
+        self.store
+            .try_acquire_claimed(
+                authority,
+                dispatch_claim_id,
+                self.owner.fence_identity(),
+                now,
+            )
+            .await
+    }
+
+    pub async fn try_acquire(
+        &self,
+        authority: &GoalOwnerAdmissionContinuationAuthority,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
+        self.check_authority_thread(&authority.authority)?;
+        self.store.try_acquire(authority, now).await
+    }
+
+    pub async fn open_lease(&self, lease: &GoalOwnerAdmissionLease) -> anyhow::Result<bool> {
+        self.check_authority_thread(&lease.authority)?;
+        self.store.open_lease(lease).await
+    }
+
+    pub async fn release_acquired_lease(
+        &self,
+        lease: &GoalOwnerAdmissionLease,
+    ) -> anyhow::Result<bool> {
+        self.check_authority_thread(&lease.authority)?;
+        self.store.release_acquired_lease(lease).await
+    }
+
+    pub async fn cancel_opened_lease_before_transport(
+        &self,
+        lease: &GoalOwnerAdmissionLease,
+    ) -> anyhow::Result<bool> {
+        self.check_authority_thread(&lease.authority)?;
+        self.store.cancel_opened_lease_before_transport(lease).await
+    }
+
+    pub async fn finish(
+        &self,
+        lease: &GoalOwnerAdmissionLease,
+        outcome: GoalOwnerAdmissionTerminalOutcome,
+        disposition: GoalOwnerAdmissionTerminalDisposition,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.check_authority_thread(&lease.authority)?;
+        self.store.finish(lease, outcome, disposition).await
+    }
+
+    pub async fn cancel(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        disposition: GoalOwnerAdmissionTerminalDisposition,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.check_authority_thread(authority)?;
+        self.store.cancel(authority, disposition).await
+    }
+
+    pub async fn retire(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        reason: GoalOwnerAdmissionRetirementReason,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.check_authority_thread(authority)?;
+        self.store.retire(authority, reason).await
+    }
+
+    pub async fn retire_cancelled_generation(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        reason: GoalOwnerAdmissionRetirementReason,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.check_authority_thread(authority)?;
+        self.store
+            .retire_cancelled_generation(authority, reason)
+            .await
+    }
+
+    pub async fn recover_exhausted_for_user(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.check_authority_thread(authority)?;
+        self.store.recover_exhausted_for_user(authority).await
+    }
+
+    pub async fn clear_deferral_if_retired(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+    ) -> anyhow::Result<bool> {
+        self.check_authority_thread(authority)?;
+        self.store.clear_deferral_if_retired(authority).await
+    }
+
+    pub async fn resolve_uncertain(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        outcome: GoalOwnerAdmissionTerminalOutcome,
+        disposition: GoalOwnerAdmissionTerminalDisposition,
+        evidence: &str,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.check_authority_thread(authority)?;
+        self.store
+            .resolve_uncertain(authority, outcome, disposition, evidence)
+            .await
     }
 }
 
@@ -984,6 +1462,16 @@ impl GoalOwnerAdmissionStore {
         }
     }
 
+    fn runtime_installation_id(&self) -> anyhow::Result<Uuid> {
+        let Some(owner_lease) = self.owner_lease.as_ref() else {
+            bail!("goal runtime custodian requires the runtime owner installation")
+        };
+        if !owner_lease.capability.is_active() {
+            bail!("goal runtime custodian installation is no longer active")
+        }
+        Ok(owner_lease.owner_id)
+    }
+
     /// Record the process that holds the OS-backed runtime ownership lock.
     ///
     /// The caller must acquire the process-lifetime lock before invoking this
@@ -998,7 +1486,7 @@ SELECT 1, ?, ?
 WHERE EXISTS (
     SELECT 1
     FROM goal_owner_runtime_protocol
-    WHERE protocol_key = 1 AND protocol_version = 3
+    WHERE protocol_key = 1 AND protocol_version = 4
 )
 ON CONFLICT(owner_key) DO UPDATE SET
     owner_id = excluded.owner_id,
@@ -1047,7 +1535,24 @@ ON CONFLICT(owner_key) DO UPDATE SET
         if registered_owner.as_deref() != Some(expected_owner.as_str()) {
             bail!("goal-owner admission recovery requires the exact runtime owner")
         }
-        Self::recover_in_flight_on_open_impl(self.pool.as_ref()).await
+        Self::recover_in_flight_on_open_impl(self.pool.as_ref()).await?;
+        // A fresh process installation is the only receipt-free recovery
+        // authority. Mark all predecessor lifecycles as crash-retired before
+        // any extension may request startup takeover; this never recreates a
+        // default-enabled owner.
+        sqlx::query(
+            r#"
+UPDATE goal_runtime_thread_lifecycles
+SET phase = 'retired_crash', transition_id = NULL, updated_at_ms = ?
+WHERE installation_id != ?
+  AND phase IN ('active', 'draining')
+            "#,
+        )
+        .bind(admission_datetime_to_epoch_millis(Utc::now()))
+        .bind(owner_id.to_string())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1160,7 +1665,7 @@ WHERE phase = 'in_flight'
     /// The claim is the durable owner fence between timer eligibility and
     /// publishing a successor turn. It is intentionally separate from the
     /// provider-attempt lease and can be released only by the exact claimant.
-    pub async fn claim_dispatch(
+    pub(crate) async fn claim_dispatch(
         &self,
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         fence_identity: GoalOwnerDispatchFenceCapability,
@@ -1227,7 +1732,7 @@ WHERE thread_id = ?
 
     /// Release only an exact pending dispatch claim. A stale claimant is a
     /// no-op, so cleanup cannot clear a replacement generation's owner fence.
-    pub async fn release_dispatch_claim(
+    pub(crate) async fn release_dispatch_claim(
         &self,
         authority: &GoalOwnerAdmissionAuthority,
         dispatch_claim_id: Uuid,
@@ -1554,7 +2059,7 @@ WHERE thread_id = ? AND goal_id = ? AND generation = ?
     /// Atomically consume an exact scheduler dispatch claim while reserving
     /// the provider attempt. An unclaimed or differently claimed generation
     /// cannot be acquired through this path.
-    pub async fn try_acquire_claimed(
+    pub(crate) async fn try_acquire_claimed(
         &self,
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         dispatch_claim_id: Uuid,
@@ -2751,7 +3256,7 @@ impl GoalOwnerAdmissionRecord {
     }
 
     /// Test whether this durable generation carries the exact opaque fence.
-    pub fn dispatch_fence_matches(&self, fence: GoalOwnerDispatchFenceCapability) -> bool {
+    fn dispatch_fence_matches(&self, fence: GoalOwnerDispatchFenceCapability) -> bool {
         self.dispatch_fence_id == Some(fence)
     }
 }

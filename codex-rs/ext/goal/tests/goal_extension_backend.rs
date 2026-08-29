@@ -869,7 +869,11 @@ async fn replaced_abort_retires_exact_settled_provider_continuation() -> anyhow:
         .await?
         .ok_or_else(|| anyhow::anyhow!("pending continuation admission should exist"))?;
     let continuation_authority = pending.continuation_authority();
-    let lease = match admissions
+    let thread_owner = runtime
+        .goal_runtime_admissions
+        .start_thread_owner(thread_id)
+        .await?;
+    let lease = match thread_owner
         .try_acquire(&continuation_authority, chrono::Utc::now())
         .await?
     {
@@ -880,8 +884,8 @@ async fn replaced_abort_retires_exact_settled_provider_continuation() -> anyhow:
             ));
         }
     };
-    assert!(admissions.open_lease(&lease).await?);
-    let settled = admissions
+    assert!(thread_owner.open_lease(&lease).await?);
+    let settled = thread_owner
         .finish(
             &lease,
             codex_state::GoalOwnerAdmissionTerminalOutcome::Succeeded,
@@ -892,10 +896,12 @@ async fn replaced_abort_retires_exact_settled_provider_continuation() -> anyhow:
 
     let turn_store = ExtensionData::new(settled.successor_turn_id.clone());
     turn_store.insert(
-        codex_core::GoalRuntimeContinuationIssuer::for_thread(
-            Arc::clone(&runtime.goal_runtime_admissions),
-            settled.authority.thread_id,
-        )
+        codex_core::GoalRuntimeContinuationIssuer::from_thread_owner(Arc::new(
+            runtime
+                .goal_runtime_admissions
+                .start_thread_owner(settled.authority.thread_id)
+                .await?,
+        ))
         .continuation(settled.continuation_authority()),
     );
     harness
@@ -991,12 +997,11 @@ async fn same_installation_resume_cannot_clear_a_live_dispatch_claim() -> anyhow
         .get(thread_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("pending continuation admission should exist"))?;
-    let claim_id = admissions
-        .claim_dispatch(
-            &before.continuation_authority(),
-            codex_state::GoalOwnerDispatchFenceCapability::fresh(),
-            chrono::Utc::now(),
-        )
+    let claim_id = runtime
+        .goal_runtime_admissions
+        .start_thread_owner(thread_id)
+        .await?
+        .claim_dispatch(&before.continuation_authority(), chrono::Utc::now())
         .await?
         .ok_or_else(|| anyhow::anyhow!("pending continuation should be claimable"))?;
 
@@ -1043,15 +1048,19 @@ async fn resume_preserves_exhausted_generation_and_blocks_goal() -> anyhow::Resu
         .get(thread_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("first continuation admission should exist"))?;
-    let first_lease = match admissions
+    let thread_owner = runtime
+        .goal_runtime_admissions
+        .start_thread_owner(thread_id)
+        .await?;
+    let first_lease = match thread_owner
         .try_acquire(&first.continuation_authority(), chrono::Utc::now())
         .await?
     {
         codex_state::GoalOwnerAdmissionAcquireResult::Acquired(lease) => *lease,
         result => return Err(anyhow::anyhow!("expected first lease, got {result:?}")),
     };
-    assert!(admissions.open_lease(&first_lease).await?);
-    let first = admissions
+    assert!(thread_owner.open_lease(&first_lease).await?);
+    let first = thread_owner
         .finish(
             &first_lease,
             codex_state::GoalOwnerAdmissionTerminalOutcome::Succeeded,
@@ -1059,7 +1068,7 @@ async fn resume_preserves_exhausted_generation_and_blocks_goal() -> anyhow::Resu
         )
         .await?
         .ok_or_else(|| anyhow::anyhow!("first terminal admission should exist"))?;
-    admissions
+    thread_owner
         .retire(
             &first.authority,
             codex_state::GoalOwnerAdmissionRetirementReason::Superseded,
@@ -1085,7 +1094,7 @@ async fn resume_preserves_exhausted_generation_and_blocks_goal() -> anyhow::Resu
         .get(thread_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("second continuation admission should exist"))?;
-    let exhausted = admissions
+    let exhausted = thread_owner
         .try_acquire(&second.continuation_authority(), chrono::Utc::now())
         .await?;
     let codex_state::GoalOwnerAdmissionAcquireResult::Exhausted(exhausted) = exhausted else {
