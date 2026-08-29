@@ -67,7 +67,7 @@ async fn exercise_usage_limit(preserve: bool) -> anyhow::Result<ThreadGoalStatus
         &mut builder,
         Arc::clone(&runtime),
         AnalyticsEventsClient::disabled(),
-        None,
+        /*metrics_client*/ None,
         Weak::new(),
         Arc::clone(&goal_service),
         |_| true,
