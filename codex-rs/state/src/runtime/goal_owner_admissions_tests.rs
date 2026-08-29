@@ -62,14 +62,43 @@ fn observation_with_max(
     }
 }
 
-async fn runtime() -> Arc<StateRuntime> {
+struct GoalAdmissionTestRuntime {
+    state_runtime: Arc<StateRuntime>,
+    admissions: InstalledGoalRuntimeAdmissions,
+}
+
+impl std::ops::Deref for GoalAdmissionTestRuntime {
+    type Target = StateRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        self.state_runtime.as_ref()
+    }
+}
+
+impl GoalAdmissionTestRuntime {
+    fn goal_owner_admissions(&self) -> &InstalledGoalRuntimeAdmissions {
+        &self.admissions
+    }
+}
+
+async fn runtime() -> GoalAdmissionTestRuntime {
     let codex_home = unique_temp_dir();
-    StateRuntime::init(
-        crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
-        "test-provider".to_string(),
-    )
+    installed_runtime(crate::SqliteConfig::new_for_testing(
+        codex_home.as_path().abs(),
+    ))
     .await
-    .expect("initialize state runtime")
+}
+
+async fn installed_runtime(sqlite: crate::SqliteConfig) -> GoalAdmissionTestRuntime {
+    let bootstrap =
+        StateRuntime::init_with_goal_runtime_bootstrap(sqlite, "test-provider".to_string())
+            .await
+            .expect("initialize state runtime");
+    let (state_runtime, goal_runtime_admission_installation) = bootstrap.into_parts();
+    GoalAdmissionTestRuntime {
+        state_runtime,
+        admissions: goal_runtime_admission_installation.install(),
+    }
 }
 
 enum GoalDbCorruption {
@@ -555,9 +584,7 @@ async fn malformed_origin_history_fails_closed_before_replay() {
 async fn joined_reader_rejects_wrong_goal_with_a_valid_newer_goal_chain() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
-        .await
-        .expect("initialize state runtime");
+    let runtime = installed_runtime(sqlite.clone()).await;
     let store = runtime.goal_owner_admissions();
     let thread_id = ThreadId::new();
     let origin_a = observation(
@@ -614,9 +641,7 @@ async fn joined_reader_rejects_wrong_goal_with_a_valid_newer_goal_chain() {
 async fn joined_reader_rejects_mismatched_origin_request_and_immutable_evidence() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
-        .await
-        .expect("initialize state runtime");
+    let runtime = installed_runtime(sqlite.clone()).await;
     let store = runtime.goal_owner_admissions();
     let origin_request_mismatch = store
         .observe_denial(&observation(
@@ -675,9 +700,7 @@ async fn joined_reader_rejects_mismatched_origin_request_and_immutable_evidence(
 async fn isolated_corruption_injection_fails_closed_for_missing_active_origin() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
-        .await
-        .expect("initialize state runtime");
+    let runtime = installed_runtime(sqlite.clone()).await;
     let store = runtime.goal_owner_admissions();
     let foreign_keys = sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
         .fetch_one(store.pool.as_ref())
@@ -775,9 +798,7 @@ async fn corrupted_acquired_admission_cannot_open_provider_work() {
 async fn recovery_rejects_corrupt_acquired_rows_before_mutating_any_affected_row() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
-        .await
-        .expect("initialize state runtime");
+    let runtime = installed_runtime(sqlite.clone()).await;
     let store = runtime.goal_owner_admissions();
     let acquired = store
         .observe_denial(&observation(
@@ -838,9 +859,7 @@ async fn recovery_rejects_corrupt_acquired_rows_before_mutating_any_affected_row
 async fn recovery_rejects_corrupt_in_flight_rows_before_mutating_any_affected_row() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
-        .await
-        .expect("initialize state runtime");
+    let runtime = installed_runtime(sqlite.clone()).await;
     let store = runtime.goal_owner_admissions();
     let acquired = store
         .observe_denial(&observation(
@@ -994,9 +1013,7 @@ async fn dispatch_claim_is_single_owner_and_consumed_by_acquire() {
 async fn live_runtime_owner_blocks_competing_startup_recovery() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-    let runtime_a = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
-        .await
-        .expect("first runtime owns admission recovery");
+    let runtime_a = installed_runtime(sqlite.clone()).await;
     let record = runtime_a
         .goal_owner_admissions()
         .observe_denial(&observation(
@@ -1028,13 +1045,12 @@ async fn live_runtime_owner_blocks_competing_startup_recovery() {
 async fn read_only_runtime_cannot_self_claim_an_unclaimed_generation() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-    let runtime_a = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
-        .await
-        .expect("first runtime owns admission mutations");
-    let installed = runtime_a
-        .install_goal_runtime_admissions()
-        .expect("installed runtime owns the one mutation facade")
-        .installed_store();
+    let bootstrap =
+        StateRuntime::init_with_goal_runtime_bootstrap(sqlite.clone(), "test-provider".to_string())
+            .await
+            .expect("first runtime owns admission mutations");
+    let (runtime_a, goal_runtime_admission_installation) = bootstrap.into_parts();
+    let installed = goal_runtime_admission_installation.install();
     let record = installed
         .observe_denial(&observation(
             ThreadId::new(),
@@ -1075,17 +1091,12 @@ async fn read_only_runtime_cannot_self_claim_an_unclaimed_generation() {
 async fn public_runtime_admission_view_cannot_claim_installed_generation() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-    let runtime = StateRuntime::init(sqlite, "test-provider".to_string())
-        .await
-        .expect("owning runtime");
-    let installed = runtime
-        .install_goal_runtime_admissions()
-        .expect("installed goal runtime facade")
-        .installed_store();
-    assert!(
-        runtime.install_goal_runtime_admissions().is_err(),
-        "the installation facade is single-use and cannot be cloned from StateRuntime"
-    );
+    let bootstrap =
+        StateRuntime::init_with_goal_runtime_bootstrap(sqlite, "test-provider".to_string())
+            .await
+            .expect("owning runtime");
+    let (runtime, goal_runtime_admission_installation) = bootstrap.into_parts();
+    let installed = goal_runtime_admission_installation.install();
     let record = installed
         .observe_denial(&observation(
             ThreadId::new(),
@@ -1116,6 +1127,31 @@ async fn public_runtime_admission_view_cannot_claim_installed_generation() {
             .expect("generation remains durable")
             .dispatch_claim_id
     );
+    runtime.close().await;
+    let _ = tokio::fs::remove_dir_all(codex_home).await;
+}
+
+#[tokio::test]
+async fn diagnostic_init_cannot_mint_or_mutate_goal_admissions_before_installation() {
+    let codex_home = unique_temp_dir();
+    let runtime = StateRuntime::init(
+        crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+        "test-provider".to_string(),
+    )
+    .await
+    .expect("initialize diagnostic state runtime");
+    let error = runtime
+        .goal_owner_admissions()
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "foreign-consumer",
+            "request-foreign-consumer",
+            Utc::now(),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect_err("diagnostic StateRuntime must not mint admission authority");
+    assert!(error.to_string().contains("runtime owner capability"));
     runtime.close().await;
     let _ = tokio::fs::remove_dir_all(codex_home).await;
 }
@@ -1648,9 +1684,7 @@ async fn same_goal_generations_share_one_total_attempt_and_second_claim_exhausts
 async fn restart_does_not_reopen_a_durably_exhausted_chain() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
-        .await
-        .expect("initialize runtime");
+    let runtime = installed_runtime(sqlite.clone()).await;
     let store = runtime.goal_owner_admissions();
     let thread_id = ThreadId::new();
     let first = store
@@ -1822,9 +1856,7 @@ async fn replacement_retirement_preserves_old_terminal_evidence() {
 async fn acquired_reopen_decrements_generation_and_chain_counts_once() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
-        .await
-        .expect("initialize runtime");
+    let runtime = installed_runtime(sqlite.clone()).await;
     let record = runtime
         .goal_owner_admissions()
         .observe_denial(&observation(
@@ -1871,9 +1903,7 @@ async fn acquired_reopen_decrements_generation_and_chain_counts_once() {
 async fn in_flight_reopen_is_uncertain_and_preserves_lease() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-    let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
-        .await
-        .expect("initialize runtime");
+    let runtime = installed_runtime(sqlite.clone()).await;
     let record = runtime
         .goal_owner_admissions()
         .observe_denial(&observation(

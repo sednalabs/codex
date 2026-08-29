@@ -15,19 +15,17 @@ use tempfile::TempDir;
 const SUCCESSOR_TURN_ID: &str = "turn-successor";
 const SUCCESSOR_REQUEST_ID: &str = "successor-request";
 
-fn issuer(store: codex_state::GoalOwnerAdmissionStore) -> GoalRuntimeContinuationIssuer {
-    GoalRuntimeContinuationIssuer::from_installed_store(
-        store,
-        Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        Arc::new(std::sync::atomic::AtomicU64::new(0)),
-    )
+fn issuer(
+    admissions: codex_state::InstalledGoalRuntimeAdmissions,
+) -> GoalRuntimeContinuationIssuer {
+    GoalRuntimeContinuationIssuer::from_installed_admissions(admissions, true)
 }
 
 fn fenced(
-    store: &codex_state::GoalOwnerAdmissionStore,
+    admissions: &codex_state::InstalledGoalRuntimeAdmissions,
     authority: codex_state::GoalOwnerAdmissionContinuationAuthority,
 ) -> GoalOwnerContinuation {
-    issuer(store.clone()).continuation(authority)
+    issuer(admissions.clone()).continuation(authority)
 }
 
 #[test]
@@ -69,15 +67,27 @@ fn identity_with(
     )
 }
 
-async fn runtime() -> (TempDir, StateDbHandle) {
+struct AdmissionTestRuntime {
+    state_db: StateDbHandle,
+    admissions: codex_state::InstalledGoalRuntimeAdmissions,
+}
+
+async fn runtime() -> (TempDir, AdmissionTestRuntime) {
     let home = TempDir::new().expect("temporary Codex home");
-    let runtime = codex_state::StateRuntime::init(
+    let bootstrap = codex_state::StateRuntime::init_with_goal_runtime_bootstrap(
         codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         "test-provider".to_string(),
     )
     .await
     .expect("initialize state runtime");
-    (home, runtime)
+    let (state_db, goal_runtime_admission_installation) = bootstrap.into_parts();
+    (
+        home,
+        AdmissionTestRuntime {
+            state_db,
+            admissions: goal_runtime_admission_installation.install(),
+        },
+    )
 }
 
 fn observation(
@@ -111,23 +121,13 @@ fn observation(
 
 async fn admit(
     broker: &ModelRequestAdmissionBroker,
+    admissions: &codex_state::InstalledGoalRuntimeAdmissions,
     record: &GoalOwnerAdmissionRecord,
     identity: &ModelRequestIdentity,
 ) -> ModelRequestAdmissionDecision {
-    let coordinator = issuer(
-        broker
-            .state_db
-            .as_ref()
-            .expect("state runtime")
-            .goal_owner_admissions()
-            .clone(),
-    );
+    let coordinator = issuer(admissions.clone());
     let claim_id = coordinator
-        .claim_dispatch(
-            &record.continuation_authority(),
-            /*installation_epoch*/ 0,
-            Utc::now(),
-        )
+        .claim_dispatch(&record.continuation_authority(), Utc::now())
         .await
         .expect("claim exact admission")
         .expect("eligible admission claim");
@@ -160,13 +160,9 @@ async fn fake_unary_compact_request(
 
 #[tokio::test]
 async fn nonterminal_records_require_exact_authority_before_any_provider_call() {
-    let (_home, state_db) = runtime().await;
-    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
-    let store = broker
-        .state_db
-        .as_ref()
-        .expect("state runtime")
-        .goal_owner_admissions();
+    let (_home, test_runtime) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
+    let store = &test_runtime.admissions;
     let now = Utc::now();
 
     for (phase, deadline, name) in [
@@ -204,13 +200,9 @@ async fn nonterminal_records_require_exact_authority_before_any_provider_call() 
 
 #[tokio::test]
 async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_request() {
-    let (_home, state_db) = runtime().await;
-    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
-    let store = broker
-        .state_db
-        .as_ref()
-        .expect("state runtime")
-        .goal_owner_admissions();
+    let (_home, test_runtime) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
+    let store = &test_runtime.admissions;
     let thread_id = ThreadId::new();
     let record = store
         .observe_denial(&observation(
@@ -264,6 +256,7 @@ async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_reque
 
     let decision = admit(
         &broker,
+        store,
         &record,
         &identity(thread_id, InferenceRequestKind::Turn),
     )
@@ -278,13 +271,9 @@ async fn continuation_token_fences_same_thread_wrong_kind_turn_and_logical_reque
 
 #[tokio::test]
 async fn foreign_coordinator_token_cannot_consume_dispatch_claim() {
-    let (_home, state_db) = runtime().await;
-    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
-    let store = broker
-        .state_db
-        .as_ref()
-        .expect("state runtime")
-        .goal_owner_admissions();
+    let (_home, test_runtime) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
+    let store = &test_runtime.admissions;
     let thread_id = ThreadId::new();
     let record = store
         .observe_denial(&observation(
@@ -298,11 +287,7 @@ async fn foreign_coordinator_token_cannot_consume_dispatch_claim() {
         .expect("record eligible admission");
     let trusted = issuer(store.clone());
     let claim_id = trusted
-        .claim_dispatch(
-            &record.continuation_authority(),
-            /*installation_epoch*/ 0,
-            Utc::now(),
-        )
+        .claim_dispatch(&record.continuation_authority(), Utc::now())
         .await
         .expect("claim exact admission")
         .expect("eligible admission claim");
@@ -320,13 +305,9 @@ async fn foreign_coordinator_token_cannot_consume_dispatch_claim() {
 
 #[tokio::test]
 async fn cancellation_before_request_open_fence_causes_zero_physical_calls() {
-    let (_home, state_db) = runtime().await;
-    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
-    let store = broker
-        .state_db
-        .as_ref()
-        .expect("state runtime")
-        .goal_owner_admissions();
+    let (_home, test_runtime) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
+    let store = &test_runtime.admissions;
     let thread_id = ThreadId::new();
     let record = store
         .observe_denial(&observation(
@@ -340,6 +321,7 @@ async fn cancellation_before_request_open_fence_causes_zero_physical_calls() {
         .expect("record eligible admission");
     let decision = admit(
         &broker,
+        store,
         &record,
         &identity(thread_id, InferenceRequestKind::Turn),
     )
@@ -358,13 +340,9 @@ async fn cancellation_before_request_open_fence_causes_zero_physical_calls() {
 
 #[tokio::test]
 async fn terminal_success_is_unrestricted_before_identity_matching() {
-    let (_home, state_db) = runtime().await;
-    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
-    let store = broker
-        .state_db
-        .as_ref()
-        .expect("state runtime")
-        .goal_owner_admissions();
+    let (_home, test_runtime) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
+    let store = &test_runtime.admissions;
     let thread_id = ThreadId::new();
     let record = store
         .observe_denial(&observation(
@@ -428,13 +406,9 @@ async fn terminal_success_is_unrestricted_before_identity_matching() {
 
 #[tokio::test]
 async fn continuation_token_without_active_record_fails_closed() {
-    let (_home, state_db) = runtime().await;
-    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
-    let store = broker
-        .state_db
-        .as_ref()
-        .expect("state runtime")
-        .goal_owner_admissions();
+    let (_home, test_runtime) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
+    let store = &test_runtime.admissions;
     let thread_id = ThreadId::new();
     let record = store
         .observe_denial(&observation(
@@ -497,6 +471,45 @@ async fn continuation_token_without_active_record_fails_closed() {
     ));
 }
 
+#[tokio::test]
+async fn disabled_or_stale_installed_issuer_cannot_publish_a_provider_request() {
+    let (_home, test_runtime) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
+    let record = test_runtime
+        .admissions
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "disabled-owner",
+            GoalOwnerAdmissionPhase::Pending,
+            Utc::now() - Duration::seconds(1),
+            InferenceRequestKind::Turn,
+        ))
+        .await
+        .expect("record eligible admission");
+    let issuer = issuer(test_runtime.admissions.clone());
+    let stale_continuation = issuer.continuation(record.continuation_authority());
+    assert_eq!(issuer.set_enabled(false), Some(1));
+    assert!(
+        issuer
+            .claim_dispatch(&record.continuation_authority(), Utc::now())
+            .await
+            .is_err()
+    );
+    assert_eq!(issuer.set_enabled(true), Some(2));
+
+    let decision = broker
+        .admit(
+            &identity(record.authority.thread_id, InferenceRequestKind::Turn),
+            Some(&stale_continuation),
+        )
+        .await
+        .expect("stale continuation is rejected before publication");
+    assert!(matches!(decision, ModelRequestAdmissionDecision::Dormant));
+    let calls = AtomicUsize::new(0);
+    assert!(fake_stream_request(&decision, &calls).await.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn identity_preserves_configured_and_effective_provider_model_values() {
     let thread_id = ThreadId::new();
@@ -530,8 +543,8 @@ fn identity_preserves_configured_and_effective_provider_model_values() {
 
 #[tokio::test]
 async fn private_typed_prewarm_bypasses_the_admission_ledger_only_for_generate_false() {
-    let (_home, state_db) = runtime().await;
-    let broker = ModelRequestAdmissionBroker::new(Some(state_db));
+    let (_home, test_runtime) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
     let identity = ModelRequestIdentity::prewarm(
         ThreadId::new(),
         Some(SUCCESSOR_TURN_ID.to_string()),

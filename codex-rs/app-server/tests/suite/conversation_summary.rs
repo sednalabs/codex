@@ -161,6 +161,7 @@ async fn get_conversation_summary_by_thread_id_reads_pathless_store_thread() -> 
         feedback: CodexFeedback::new(),
         log_db: None,
         state_db: None,
+        goal_runtime_admissions: None,
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         config_warnings: Vec::new(),
         session_source: SessionSource::Cli,

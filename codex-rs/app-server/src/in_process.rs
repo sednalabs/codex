@@ -206,7 +206,6 @@ async fn deliver_in_process_events(
 ///
 /// These fields mirror the pieces of ambient process state that stdio and
 /// websocket transports normally assemble before `MessageProcessor` starts.
-#[derive(Clone)]
 pub struct InProcessStartArgs {
     /// Resolved argv0 dispatch paths used by command execution internals.
     pub arg0_paths: Arg0DispatchPaths,
@@ -228,6 +227,12 @@ pub struct InProcessStartArgs {
     pub log_db: Option<LogDbLayer>,
     /// Process-wide SQLite state handle shared with embedded app-server consumers.
     pub state_db: Option<StateDbHandle>,
+    /// One-time goal-runtime bootstrap witness paired with `state_db`.
+    ///
+    /// The in-process host consumes this before it constructs the private
+    /// extension registry; callers cannot substitute a diagnostic state-db
+    /// clone for this witness.
+    pub goal_runtime_admission_installation: Option<codex_state::GoalRuntimeAdmissionInstallation>,
     /// Environment manager used by core execution and filesystem operations.
     pub environment_manager: Arc<EnvironmentManager>,
     /// Startup warnings emitted after initialize succeeds.
@@ -559,6 +564,9 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 feedback: args.feedback,
                 log_db: args.log_db,
                 state_db: args.state_db,
+                goal_runtime_admissions: args
+                    .goal_runtime_admission_installation
+                    .map(codex_state::GoalRuntimeAdmissionInstallation::install),
                 config_warnings: args.config_warnings,
                 session_source: args.session_source,
                 auth_manager,
@@ -934,6 +942,7 @@ mod tests {
             feedback: CodexFeedback::new(),
             log_db: None,
             state_db: Some(state_db),
+            goal_runtime_admission_installation: None,
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
             config_warnings: Vec::new(),
             session_source,

@@ -38,7 +38,6 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::AtomicUsize;
@@ -85,6 +84,7 @@ pub use goal_owner_admissions::GoalOwnerAdmissionTerminalDisposition;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalOutcome;
 pub use goal_owner_admissions::GoalOwnerDispatchFenceCapability;
 pub use goal_owner_admissions::GoalRuntimeAdmissionInstallation;
+pub use goal_owner_admissions::InstalledGoalRuntimeAdmissions;
 pub use goal_owner_admissions::canonical_provider_id;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
@@ -330,6 +330,31 @@ fn try_acquire_runtime_process_lock(
     Ok(None)
 }
 
+/// Initialization result for the one composition root that is allowed to
+/// install goal-runtime admission authority.
+///
+/// The runtime handle is intentionally separate from the installation
+/// witness. Once [`Self::into_parts`] has moved the witness into the trusted
+/// composition root, ordinary `StateRuntime` holders retain diagnostics only.
+#[must_use = "the goal-runtime installation witness must be installed or deliberately dropped"]
+pub struct StateRuntimeBootstrap {
+    state_runtime: Arc<StateRuntime>,
+    goal_runtime_admission_installation: GoalRuntimeAdmissionInstallation,
+}
+
+impl StateRuntimeBootstrap {
+    /// Split the diagnostic runtime from its one-time installation witness.
+    pub fn into_parts(self) -> (Arc<StateRuntime>, GoalRuntimeAdmissionInstallation) {
+        (self.state_runtime, self.goal_runtime_admission_installation)
+    }
+
+    /// Keep only the diagnostic runtime for callers that do not compose the
+    /// goal extension.
+    pub fn into_state_runtime(self) -> Arc<StateRuntime> {
+        self.state_runtime
+    }
+}
+
 pub struct StateRuntime {
     sqlite: SqliteConfig,
     default_provider: String,
@@ -338,10 +363,6 @@ pub struct StateRuntime {
     usage_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
     goal_owner_admissions: GoalOwnerAdmissionStore,
-    /// The sole mutation-bearing admission handle is handed to the installed
-    /// goal runtime exactly once. Ordinary StateRuntime consumers retain only
-    /// the diagnostics store above, which carries no owner capability.
-    goal_owner_admission_installation: Mutex<Option<GoalRuntimeAdmissionInstallation>>,
     memories: MemoryStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
@@ -349,13 +370,33 @@ pub struct StateRuntime {
 }
 
 impl StateRuntime {
-    /// Initialize the state runtime using the provided SQLite configuration and default provider.
+    /// Initialize a diagnostic state runtime using the provided SQLite
+    /// configuration and default provider.
     ///
     /// This opens (and migrates) the SQLite databases under the configured
     /// `sqlite_home`.
     /// Logs and paginated thread history live in dedicated files to reduce
     /// lock contention with the rest of the state store.
+    ///
+    /// This deliberately drops the one-time goal-runtime installation witness.
+    /// A composition root that installs the goal extension must instead call
+    /// [`Self::init_with_goal_runtime_bootstrap`] and move that witness to the
+    /// extension setup explicitly.
     pub async fn init(sqlite: SqliteConfig, default_provider: String) -> anyhow::Result<Arc<Self>> {
+        Ok(
+            Self::init_with_goal_runtime_bootstrap(sqlite, default_provider)
+                .await?
+                .into_state_runtime(),
+        )
+    }
+
+    /// Initialize state together with the sole goal-runtime installation
+    /// witness. Only a trusted application composition root may call this
+    /// entry point and pass the witness by value to the goal extension.
+    pub async fn init_with_goal_runtime_bootstrap(
+        sqlite: SqliteConfig,
+        default_provider: String,
+    ) -> anyhow::Result<StateRuntimeBootstrap> {
         Self::init_inner(sqlite, default_provider, /*telemetry_override*/ None).await
     }
 
@@ -365,14 +406,18 @@ impl StateRuntime {
         default_provider: String,
         telemetry_override: &dyn DbTelemetry,
     ) -> anyhow::Result<Arc<Self>> {
-        Self::init_inner(sqlite, default_provider, Some(telemetry_override)).await
+        Ok(
+            Self::init_inner(sqlite, default_provider, Some(telemetry_override))
+                .await?
+                .into_state_runtime(),
+        )
     }
 
     async fn init_inner(
         sqlite: SqliteConfig,
         default_provider: String,
         telemetry_override: Option<&dyn DbTelemetry>,
-    ) -> anyhow::Result<Arc<Self>> {
+    ) -> anyhow::Result<StateRuntimeBootstrap> {
         tokio::fs::create_dir_all(sqlite.home()).await?;
         let state_path = sqlite.state_db_path();
         let logs_path = sqlite.logs_db_path();
@@ -641,9 +686,6 @@ impl StateRuntime {
                 runtime_owner.clone(),
             ),
             goal_owner_admissions,
-            goal_owner_admission_installation: Mutex::new(Some(
-                GoalRuntimeAdmissionInstallation::new(goal_owner_admission_installation),
-            )),
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
             logs_pool,
@@ -657,7 +699,12 @@ impl StateRuntime {
         if let Err(err) = runtime.run_logs_startup_maintenance().await {
             warn!("logs startup maintenance failed; continuing runtime initialization: {err}");
         }
-        Ok(runtime)
+        Ok(StateRuntimeBootstrap {
+            state_runtime: runtime,
+            goal_runtime_admission_installation: GoalRuntimeAdmissionInstallation::new(
+                goal_owner_admission_installation,
+            ),
+        })
     }
 
     /// Return the SQLite configuration for this runtime.
@@ -704,21 +751,6 @@ impl StateRuntime {
     /// schedule, claim, clear, or publish a continuation.
     pub fn goal_owner_admissions(&self) -> &GoalOwnerAdmissionStore {
         &self.goal_owner_admissions
-    }
-
-    /// Consume the installation-only admission facade.
-    ///
-    /// The extension installation path is the only caller in production. The
-    /// handle is one-shot, so later or competing consumers receive no mutation
-    /// authority; StateRuntime continues to expose diagnostics only.
-    pub fn install_goal_runtime_admissions(
-        &self,
-    ) -> Result<GoalRuntimeAdmissionInstallation, &'static str> {
-        self.goal_owner_admission_installation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .ok_or("goal runtime admission installation is unavailable")
     }
 
     /// Whether this runtime holds the process-lifetime goal database lease.
@@ -1110,14 +1142,15 @@ mod tests {
     async fn cloned_store_keeps_runtime_owner_lock_until_it_is_dropped() {
         let codex_home = unique_temp_dir();
         let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-        let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
-            .await
-            .expect("initialize owning runtime");
+        let bootstrap = StateRuntime::init_with_goal_runtime_bootstrap(
+            sqlite.clone(),
+            "test-provider".to_string(),
+        )
+        .await
+        .expect("initialize owning runtime");
+        let (runtime, goal_runtime_admission_installation) = bootstrap.into_parts();
         assert!(runtime.owns_goal_runtime());
-        let cloned_store = runtime
-            .install_goal_runtime_admissions()
-            .expect("owning runtime supplies its installation facade")
-            .installed_store();
+        let cloned_store = goal_runtime_admission_installation.install();
         drop(runtime);
 
         let blocked_runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())

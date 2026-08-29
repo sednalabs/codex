@@ -28,6 +28,29 @@ use tracing::warn;
 /// Core-facing handle to the SQLite-backed state runtime.
 pub type StateDbHandle = Arc<codex_state::StateRuntime>;
 
+/// Trusted composition result for a state runtime and its one-time goal
+/// admission installation witness. This must be consumed by the application
+/// root that installs the goal extension; callers that retain only
+/// [`StateDbHandle`] receive diagnostic admission access only.
+#[must_use = "the goal-runtime installation witness must reach the composition root"]
+pub struct StateDbBootstrap {
+    state_db: StateDbHandle,
+    goal_runtime_admission_installation: codex_state::GoalRuntimeAdmissionInstallation,
+}
+
+impl StateDbBootstrap {
+    /// Split the diagnostic state handle from its one-time admission witness.
+    pub fn into_parts(self) -> (StateDbHandle, codex_state::GoalRuntimeAdmissionInstallation) {
+        (self.state_db, self.goal_runtime_admission_installation)
+    }
+
+    /// Keep only the diagnostic state handle for a host without goal runtime
+    /// composition.
+    pub fn into_state_db(self) -> StateDbHandle {
+        self.state_db
+    }
+}
+
 #[cfg(not(test))]
 const STARTUP_BACKFILL_POLL_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(test)]
@@ -37,11 +60,16 @@ const STARTUP_BACKFILL_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const STARTUP_BACKFILL_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Initialize the state runtime for thread state persistence.
+/// Initialize a diagnostic state runtime for thread state persistence.
 ///
 /// This is the process entry point for local state: it opens the SQLite-backed
 /// runtime, applies rollout metadata backfills as needed, and returns the
 /// initialized handle.
+///
+/// This drops the one-time goal-runtime installation witness. A host that
+/// installs the goal extension must use
+/// [`try_init_with_goal_runtime_bootstrap`] and carry its witness into that
+/// composition step.
 pub async fn init(config: &impl RolloutConfigView) -> Option<StateDbHandle> {
     let config = RolloutConfig::from_view(config);
     match try_init_with_roots(config.codex_home, config.sqlite, config.model_provider_id).await {
@@ -56,10 +84,28 @@ pub async fn init(config: &impl RolloutConfigView) -> Option<StateDbHandle> {
 /// Initialize the state runtime and return any initialization error to the caller.
 ///
 /// Prefer [`init`] unless the caller needs to surface the exact failure after
-/// tracing or UI setup has completed.
+/// tracing or UI setup has completed. Like [`init`], this returns diagnostics
+/// only; trusted goal-runtime composition must use
+/// [`try_init_with_goal_runtime_bootstrap`].
 pub async fn try_init(config: &impl RolloutConfigView) -> anyhow::Result<StateDbHandle> {
+    Ok(try_init_with_goal_runtime_bootstrap(config)
+        .await?
+        .into_state_db())
+}
+
+/// Initialize state for a trusted host composition root. The returned witness
+/// is non-cloneable and must be moved directly into goal-extension setup.
+pub async fn try_init_with_goal_runtime_bootstrap(
+    config: &impl RolloutConfigView,
+) -> anyhow::Result<StateDbBootstrap> {
     let config = RolloutConfig::from_view(config);
-    try_init_with_roots(config.codex_home, config.sqlite, config.model_provider_id).await
+    try_init_with_roots_bootstrap(
+        config.codex_home,
+        config.sqlite,
+        config.model_provider_id,
+        /*backfill_lease_seconds*/ None,
+    )
+    .await
 }
 
 async fn try_init_with_roots(
@@ -67,46 +113,35 @@ async fn try_init_with_roots(
     sqlite: SqliteConfig,
     default_model_provider_id: String,
 ) -> anyhow::Result<StateDbHandle> {
-    try_init_with_roots_inner(
+    Ok(try_init_with_roots_bootstrap(
         codex_home,
         sqlite,
         default_model_provider_id,
         /*backfill_lease_seconds*/ None,
     )
-    .await
+    .await?
+    .into_state_db())
 }
 
-#[cfg(test)]
-async fn try_init_with_roots_and_backfill_lease(
-    codex_home: PathBuf,
-    sqlite: SqliteConfig,
-    default_model_provider_id: String,
-    backfill_lease_seconds: i64,
-) -> anyhow::Result<StateDbHandle> {
-    try_init_with_roots_inner(
-        codex_home,
-        sqlite,
-        default_model_provider_id,
-        Some(backfill_lease_seconds),
-    )
-    .await
-}
-
-async fn try_init_with_roots_inner(
+async fn try_init_with_roots_bootstrap(
     codex_home: PathBuf,
     sqlite: SqliteConfig,
     default_model_provider_id: String,
     backfill_lease_seconds: Option<i64>,
-) -> anyhow::Result<StateDbHandle> {
-    let runtime =
-        codex_state::StateRuntime::init(sqlite.clone(), default_model_provider_id.clone())
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to initialize state runtime at {}",
-                    sqlite.home().display()
-                )
-            })?;
+) -> anyhow::Result<StateDbBootstrap> {
+    let (runtime, goal_runtime_admission_installation) =
+        codex_state::StateRuntime::init_with_goal_runtime_bootstrap(
+            sqlite.clone(),
+            default_model_provider_id.clone(),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "failed to initialize state runtime at {}",
+                sqlite.home().display()
+            )
+        })?
+        .into_parts();
     let backfill_gate_started = Instant::now();
     let backfill_gate_result = wait_for_backfill_gate(
         runtime.as_ref(),
@@ -124,7 +159,27 @@ async fn try_init_with_roots_inner(
         runtime.close().await;
         return Err(err);
     }
-    Ok(runtime)
+    Ok(StateDbBootstrap {
+        state_db: runtime,
+        goal_runtime_admission_installation,
+    })
+}
+
+#[cfg(test)]
+async fn try_init_with_roots_and_backfill_lease(
+    codex_home: PathBuf,
+    sqlite: SqliteConfig,
+    default_model_provider_id: String,
+    backfill_lease_seconds: i64,
+) -> anyhow::Result<StateDbHandle> {
+    Ok(try_init_with_roots_bootstrap(
+        codex_home,
+        sqlite,
+        default_model_provider_id,
+        Some(backfill_lease_seconds),
+    )
+    .await?
+    .into_state_db())
 }
 
 async fn wait_for_backfill_gate(

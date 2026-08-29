@@ -53,9 +53,9 @@ pub(crate) enum ActiveGoalStopReason {
 struct GoalRuntimeInner {
     thread_id: ThreadId,
     state_dbs: Arc<codex_state::StateRuntime>,
-    /// Private copy of the bootstrap witness's store. This is never obtained
+    /// Private, installation-owned admission facade. This is never obtained
     /// from `StateRuntime`; the public runtime view remains diagnostics-only.
-    goal_owner_admissions: codex_state::GoalOwnerAdmissionStore,
+    goal_owner_admissions: codex_state::InstalledGoalRuntimeAdmissions,
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
@@ -183,19 +183,18 @@ impl GoalRuntimeHandle {
     pub(crate) fn new(
         thread_id: ThreadId,
         state_dbs: Arc<codex_state::StateRuntime>,
-        goal_runtime_admission_installation: codex_state::GoalRuntimeAdmissionInstallation,
+        goal_runtime_admissions: codex_state::InstalledGoalRuntimeAdmissions,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
         thread_manager: Weak<ThreadManager>,
         accounting_state: Arc<GoalAccountingState>,
         config: GoalRuntimeConfig,
     ) -> Self {
-        let goal_owner_admissions = goal_runtime_admission_installation.installed_store();
         Self {
             inner: Arc::new(GoalRuntimeInner {
                 thread_id,
                 state_dbs,
-                goal_owner_admissions,
+                goal_owner_admissions: goal_runtime_admissions.clone(),
                 analytics: config.analytics,
                 event_emitter,
                 metrics,
@@ -203,8 +202,8 @@ impl GoalRuntimeHandle {
                 accounting_state,
                 tools_available_for_thread: config.tools_available_for_thread,
                 continuation: GoalContinuationCoordinator {
-                    fence: GoalRuntimeContinuationIssuer::from_installation(
-                        goal_runtime_admission_installation,
+                    fence: GoalRuntimeContinuationIssuer::from_installed_admissions(
+                        goal_runtime_admissions,
                         config.enabled,
                     ),
                     state: Mutex::new(ProviderContinuationState::default()),
@@ -1908,17 +1907,16 @@ mod tests {
         authority: codex_state::GoalOwnerAdmissionAuthority,
     ) -> DeferredProviderContinuation {
         let home = tempfile::TempDir::new().expect("temporary Codex home");
-        let runtime = tokio::runtime::Runtime::new()
+        let bootstrap = tokio::runtime::Runtime::new()
             .expect("test runtime")
-            .block_on(codex_state::StateRuntime::init(
+            .block_on(codex_state::StateRuntime::init_with_goal_runtime_bootstrap(
                 codex_state::SqliteConfig::new_for_testing(home.path().abs()),
                 "test-provider".to_string(),
             ))
             .expect("initialize state runtime");
-        let issuer = GoalRuntimeContinuationIssuer::from_installation(
-            runtime
-                .install_goal_runtime_admissions()
-                .expect("installed runtime supplies its continuation issuer"),
+        let (_runtime, goal_runtime_admission_installation) = bootstrap.into_parts();
+        let issuer = GoalRuntimeContinuationIssuer::from_installed_admissions(
+            goal_runtime_admission_installation.install(),
             true,
         );
         DeferredProviderContinuation {

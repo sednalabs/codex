@@ -46,6 +46,9 @@ pub(crate) struct ThreadExtensionDependencies {
     pub(crate) event_sink: Arc<dyn ExtensionEventSink>,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) state_db: Option<StateDbHandle>,
+    /// Private admissions installed by the one-time state bootstrap witness.
+    /// A diagnostic state-db clone is not a substitute.
+    pub(crate) goal_runtime_admissions: Option<codex_state::InstalledGoalRuntimeAdmissions>,
     pub(crate) analytics_events_client: AnalyticsEventsClient,
     pub(crate) thread_manager: Weak<ThreadManager>,
     pub(crate) goal_service: Arc<GoalService>,
@@ -201,6 +204,7 @@ where
         event_sink,
         auth_manager,
         state_db,
+        goal_runtime_admissions,
         analytics_events_client,
         thread_manager,
         goal_service,
@@ -211,16 +215,30 @@ where
         thread_store: _thread_store,
     } = dependencies;
     let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(event_sink);
-    if let Some(state_db) = state_db {
-        codex_goal_extension::install_with_backend(
-            &mut builder,
-            state_db,
-            analytics_events_client,
-            codex_otel::global(),
-            thread_manager,
-            goal_service,
-            |config: &Config| config.features.enabled(codex_features::Feature::Goals),
-        );
+    match (state_db, goal_runtime_admissions) {
+        (Some(state_db), Some(goal_runtime_admissions)) => {
+            codex_goal_extension::install_with_backend(
+                &mut builder,
+                state_db,
+                goal_runtime_admissions,
+                analytics_events_client,
+                codex_otel::global(),
+                thread_manager,
+                goal_service,
+                |config: &Config| config.features.enabled(codex_features::Feature::Goals),
+            );
+        }
+        (Some(_), None) => {
+            tracing::warn!(
+                "goal extension not installed because the state bootstrap witness is absent"
+            );
+        }
+        (None, None) => {}
+        (None, Some(_)) => {
+            tracing::error!(
+                "goal extension bootstrap witness was supplied without its matching state runtime"
+            );
+        }
     }
     codex_git_attribution::install(
         &mut builder,

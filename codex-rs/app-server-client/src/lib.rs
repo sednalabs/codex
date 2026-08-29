@@ -294,7 +294,6 @@ impl Error for TypedRequestError {
     }
 }
 
-#[derive(Clone)]
 pub struct InProcessClientStartArgs {
     /// Resolved argv0 dispatch paths used by command execution internals.
     pub arg0_paths: Arg0DispatchPaths,
@@ -314,6 +313,12 @@ pub struct InProcessClientStartArgs {
     pub log_db: Option<LogDbLayer>,
     /// Process-wide SQLite state handle shared with the embedded app-server.
     pub state_db: Option<StateDbHandle>,
+    /// One-time goal-runtime bootstrap witness paired with `state_db`.
+    ///
+    /// This is consumed by the embedded app-server before it creates the
+    /// private goal extension. A diagnostic state handle alone cannot grant
+    /// goal-admission mutation authority.
+    pub goal_runtime_admission_installation: Option<codex_state::GoalRuntimeAdmissionInstallation>,
     /// Environment manager used by core execution and filesystem operations.
     pub environment_manager: Arc<EnvironmentManager>,
     /// Startup warnings emitted after initialize succeeds.
@@ -381,6 +386,7 @@ impl InProcessClientStartArgs {
             feedback: self.feedback,
             log_db: self.log_db,
             state_db: self.state_db,
+            goal_runtime_admission_installation: self.goal_runtime_admission_installation,
             environment_manager: self.environment_manager,
             config_warnings: self.config_warnings,
             session_source: self.session_source,
@@ -1008,6 +1014,7 @@ mod tests {
             feedback: CodexFeedback::new(),
             log_db: None,
             state_db: Some(state_db),
+            goal_runtime_admission_installation: None,
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
             config_warnings: Vec::new(),
             session_source,
@@ -2533,6 +2540,7 @@ mod tests {
             feedback: CodexFeedback::new(),
             log_db: None,
             state_db: None,
+            goal_runtime_admission_installation: None,
             environment_manager: environment_manager.clone(),
             config_warnings: Vec::new(),
             session_source: SessionSource::Exec,
@@ -2582,6 +2590,7 @@ mod tests {
             feedback: CodexFeedback::new(),
             log_db: None,
             state_db: None,
+            goal_runtime_admission_installation: None,
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
             config_warnings: Vec::new(),
             session_source: SessionSource::Exec,

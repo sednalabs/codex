@@ -27,6 +27,7 @@ pub use model::Phase2JobClaimOutcome;
 pub use runtime::ConfiguredIdentityProvenance;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
+pub use runtime::StateRuntimeBootstrap;
 pub use sqlite::SqliteConfig;
 
 pub use audit::ThreadStateAuditRow;
@@ -77,6 +78,7 @@ pub use runtime::GoalOwnerDispatchFenceCapability;
 pub use runtime::GoalRuntimeAdmissionInstallation;
 pub use runtime::GoalStore;
 pub use runtime::GoalUpdate;
+pub use runtime::InstalledGoalRuntimeAdmissions;
 pub use runtime::MemoryStore;
 pub use runtime::RemoteControlEnrollmentRecord;
 pub use runtime::RuntimeDbBackup;

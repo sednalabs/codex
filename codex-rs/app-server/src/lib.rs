@@ -607,6 +607,9 @@ pub async fn run_main_with_transport_options(
         }
     };
     let state_db = state_db_init.state_db;
+    let goal_runtime_admissions = state_db_init
+        .goal_runtime_admission_installation
+        .map(codex_state::GoalRuntimeAdmissionInstallation::install);
     if let Some(recovery_notice) = state_db_init.recovery_notice {
         config_warnings.push(ConfigWarningNotification {
             summary: SQLITE_RECOVERY_CONFIG_WARNING_SUMMARY.to_string(),
@@ -892,6 +895,7 @@ pub async fn run_main_with_transport_options(
             feedback: feedback.clone(),
             log_db,
             state_db: state_db.clone(),
+            goal_runtime_admissions,
             config_warnings,
             session_source,
             auth_manager,
@@ -1198,6 +1202,7 @@ struct RecoveredSqliteDatabase {
 
 struct StateDbInitResult {
     state_db: Option<rollout_state_db::StateDbHandle>,
+    goal_runtime_admission_installation: Option<codex_state::GoalRuntimeAdmissionInstallation>,
     recovery_notice: Option<SqliteRecoveryNotice>,
 }
 
@@ -1207,8 +1212,9 @@ async fn init_sqlite_state_db_with_fresh_start_on_corruption(
     let mut attempted_backups = HashSet::new();
     let mut recovered_databases = Vec::new();
     loop {
-        let err = match rollout_state_db::try_init(config).await {
-            Ok(state_db) => {
+        let err = match rollout_state_db::try_init_with_goal_runtime_bootstrap(config).await {
+            Ok(bootstrap) => {
+                let (state_db, goal_runtime_admission_installation) = bootstrap.into_parts();
                 let recovery_notice = sqlite_recovery_notice(&recovered_databases);
                 if recovery_notice.is_some() {
                     emit_state_db_backup_warning(SQLITE_RECOVERY_CONFIG_WARNING_SUMMARY);
@@ -1225,6 +1231,7 @@ async fn init_sqlite_state_db_with_fresh_start_on_corruption(
                 }
                 return Ok(StateDbInitResult {
                     state_db: Some(state_db),
+                    goal_runtime_admission_installation: Some(goal_runtime_admission_installation),
                     recovery_notice,
                 });
             }
