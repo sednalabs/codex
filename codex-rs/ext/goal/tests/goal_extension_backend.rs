@@ -865,10 +865,9 @@ async fn replaced_abort_retires_exact_settled_provider_continuation() -> anyhow:
 
     let turn_store = ExtensionData::new(settled.successor_turn_id.clone());
     turn_store.insert(
-        codex_core::GoalRuntimeContinuationIssuer::from_installed_store(
+        codex_core::GoalRuntimeContinuationIssuer::from_installed_admissions(
             runtime.goal_owner_admissions().clone(),
-            Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            true,
         )
         .continuation(settled.continuation_authority()),
     );
@@ -1613,7 +1612,7 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
 }
 
 async fn installed_tools(
-    runtime: Arc<codex_state::StateRuntime>,
+    runtime: GoalTestRuntime,
     thread_id: ThreadId,
 ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
     installed_tools_with_start(
@@ -1626,7 +1625,7 @@ async fn installed_tools(
 }
 
 async fn installed_tools_with_start(
-    runtime: Arc<codex_state::StateRuntime>,
+    runtime: GoalTestRuntime,
     thread_id: ThreadId,
     session_source: SessionSource,
     persistent_thread_state_available: bool,
@@ -1635,7 +1634,8 @@ async fn installed_tools_with_start(
     let goal_service = Arc::new(GoalService::new());
     install_with_backend(
         &mut builder,
-        runtime,
+        Arc::clone(&runtime.state_runtime),
+        runtime.goal_runtime_admissions.clone(),
         AnalyticsEventsClient::disabled(),
         /*metrics_client*/ None,
         Weak::new(),
@@ -1680,16 +1680,14 @@ struct GoalExtensionHarness {
 }
 
 impl GoalExtensionHarness {
-    async fn new(
-        runtime: Arc<codex_state::StateRuntime>,
-        thread_id: ThreadId,
-    ) -> anyhow::Result<Self> {
+    async fn new(runtime: GoalTestRuntime, thread_id: ThreadId) -> anyhow::Result<Self> {
         let sink = Arc::new(RecordingEventSink::default());
         let mut builder = ExtensionRegistryBuilder::<()>::with_event_sink(sink.clone());
         let goal_service = Arc::new(GoalService::new());
         install_with_backend(
             &mut builder,
-            runtime,
+            Arc::clone(&runtime.state_runtime),
+            runtime.goal_runtime_admissions.clone(),
             AnalyticsEventsClient::disabled(),
             /*metrics_client*/ None,
             Weak::new(),
@@ -1941,13 +1939,44 @@ fn tool_call(tool_name: &str, call_id: &str, arguments: serde_json::Value) -> To
     }
 }
 
-async fn test_runtime() -> anyhow::Result<Arc<codex_state::StateRuntime>> {
+#[derive(Clone)]
+struct GoalTestRuntime {
+    state_runtime: Arc<codex_state::StateRuntime>,
+    goal_runtime_admissions: codex_state::InstalledGoalRuntimeAdmissions,
+}
+
+impl std::ops::Deref for GoalTestRuntime {
+    type Target = codex_state::StateRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        self.state_runtime.as_ref()
+    }
+}
+
+impl AsRef<codex_state::StateRuntime> for GoalTestRuntime {
+    fn as_ref(&self) -> &codex_state::StateRuntime {
+        self.state_runtime.as_ref()
+    }
+}
+
+impl GoalTestRuntime {
+    fn goal_owner_admissions(&self) -> &codex_state::InstalledGoalRuntimeAdmissions {
+        &self.goal_runtime_admissions
+    }
+}
+
+async fn test_runtime() -> anyhow::Result<GoalTestRuntime> {
     let tempdir = TempDir::new()?;
-    codex_state::StateRuntime::init(
+    let bootstrap = codex_state::StateRuntime::init_with_goal_runtime_bootstrap(
         codex_state::SqliteConfig::new_for_testing(tempdir.keep().as_path().abs()),
         "test-provider".to_string(),
     )
-    .await
+    .await?;
+    let (state_runtime, goal_runtime_admission_installation) = bootstrap.into_parts();
+    Ok(GoalTestRuntime {
+        state_runtime,
+        goal_runtime_admissions: goal_runtime_admission_installation.install(),
+    })
 }
 
 fn test_thread_id() -> anyhow::Result<ThreadId> {

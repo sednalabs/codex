@@ -64,7 +64,7 @@ impl GoalExtensionConfig {
 #[derive(Clone)]
 pub struct GoalExtension<C> {
     state_dbs: Arc<codex_state::StateRuntime>,
-    goal_runtime_admission_installation: codex_state::GoalRuntimeAdmissionInstallation,
+    goal_runtime_admissions: codex_state::InstalledGoalRuntimeAdmissions,
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
@@ -82,6 +82,7 @@ impl<C> std::fmt::Debug for GoalExtension<C> {
 impl<C> GoalExtension<C> {
     pub(crate) fn new_with_host_capabilities(
         state_dbs: Arc<codex_state::StateRuntime>,
+        goal_runtime_admissions: codex_state::InstalledGoalRuntimeAdmissions,
         analytics_events_client: AnalyticsEventsClient,
         event_sink: Arc<dyn ExtensionEventSink>,
         metrics_client: Option<MetricsClient>,
@@ -89,12 +90,9 @@ impl<C> GoalExtension<C> {
         goal_service: Arc<GoalService>,
         goals_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
     ) -> Self {
-        let goal_runtime_admission_installation = state_dbs
-            .install_goal_runtime_admissions()
-            .expect("goal extension requires the bootstrap-owned admission installation");
         Self {
             state_dbs,
-            goal_runtime_admission_installation,
+            goal_runtime_admissions,
             analytics: GoalAnalytics::new(analytics_events_client),
             event_emitter: GoalEventEmitter::new(event_sink),
             metrics: GoalMetrics::new(metrics_client),
@@ -126,16 +124,11 @@ where
             let Ok(thread_id) = ThreadId::from_string(input.thread_store.level_id()) else {
                 return;
             };
-            let installation = input
-                .thread_store
-                .get_or_init::<codex_state::GoalRuntimeAdmissionInstallation>(|| {
-                    self.goal_runtime_admission_installation.clone()
-                });
             let runtime = input.thread_store.get_or_init::<GoalRuntimeHandle>(|| {
                 GoalRuntimeHandle::new(
                     thread_id,
                     Arc::clone(&self.state_dbs),
-                    installation.clone(),
+                    self.goal_runtime_admissions.clone(),
                     self.event_emitter.clone(),
                     self.metrics.clone(),
                     self.thread_manager.clone(),
@@ -560,6 +553,7 @@ where
 pub fn install_with_backend<C>(
     registry: &mut ExtensionRegistryBuilder<C>,
     state_dbs: Arc<codex_state::StateRuntime>,
+    goal_runtime_admissions: codex_state::InstalledGoalRuntimeAdmissions,
     analytics_events_client: AnalyticsEventsClient,
     metrics_client: Option<MetricsClient>,
     thread_manager: Weak<ThreadManager>,
@@ -570,6 +564,7 @@ pub fn install_with_backend<C>(
 {
     let extension = Arc::new(GoalExtension::new_with_host_capabilities(
         state_dbs,
+        goal_runtime_admissions,
         analytics_events_client,
         registry.event_sink(),
         metrics_client,

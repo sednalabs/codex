@@ -292,9 +292,9 @@ pub struct GoalOwnerAdmissionStore {
 }
 
 /// Opaque bootstrap witness for the sole goal runtime that may mutate the
-/// admission protocol.  It intentionally does not expose construction from a
-/// pool or from a diagnostic `StateRuntime` view.
-#[derive(Clone, Debug)]
+/// admission protocol. It is non-cloneable and is produced only by
+/// `StateRuntimeBootstrap`, never by a diagnostic `StateRuntime` view.
+#[derive(Debug)]
 pub struct GoalRuntimeAdmissionInstallation {
     store: GoalOwnerAdmissionStore,
 }
@@ -304,10 +304,170 @@ impl GoalRuntimeAdmissionInstallation {
         Self { store }
     }
 
-    /// This is consumed only by the installed continuation fence during host
-    /// composition. The generic runtime accessor remains diagnostics-only.
-    pub fn installed_store(&self) -> GoalOwnerAdmissionStore {
-        self.store.clone()
+    /// Consume the bootstrap witness into the private, installed admission
+    /// facade held by the goal extension and its per-thread runtimes.
+    pub fn install(self) -> InstalledGoalRuntimeAdmissions {
+        InstalledGoalRuntimeAdmissions { store: self.store }
+    }
+}
+
+/// Mutation-bearing admission facade created only by consuming a bootstrap
+/// witness. It deliberately exposes protocol operations, not the raw store,
+/// so Core and the goal extension cannot recover a bearer from a diagnostic
+/// state handle or manufacture one from a pool.
+#[derive(Clone, Debug)]
+pub struct InstalledGoalRuntimeAdmissions {
+    store: GoalOwnerAdmissionStore,
+}
+
+impl InstalledGoalRuntimeAdmissions {
+    pub async fn get(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.store.get(thread_id).await
+    }
+
+    pub async fn get_generation(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.store.get_generation(authority).await
+    }
+
+    pub async fn claim_dispatch(
+        &self,
+        continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
+        fence_identity: GoalOwnerDispatchFenceCapability,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<Option<Uuid>> {
+        self.store
+            .claim_dispatch(continuation_authority, fence_identity, now)
+            .await
+    }
+
+    pub async fn release_dispatch_claim(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        dispatch_claim_id: Uuid,
+        fence_identity: GoalOwnerDispatchFenceCapability,
+    ) -> anyhow::Result<bool> {
+        self.store
+            .release_dispatch_claim(authority, dispatch_claim_id, fence_identity)
+            .await
+    }
+
+    pub async fn clear_deferral_if_retired(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+    ) -> anyhow::Result<bool> {
+        self.store.clear_deferral_if_retired(authority).await
+    }
+
+    pub async fn observe_denial(
+        &self,
+        observation: &GoalOwnerAdmissionObservation,
+    ) -> anyhow::Result<GoalOwnerAdmissionRecord> {
+        self.store.observe_denial(observation).await
+    }
+
+    pub async fn retire(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        reason: GoalOwnerAdmissionRetirementReason,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.store.retire(authority, reason).await
+    }
+
+    pub async fn retire_cancelled_generation(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        reason: GoalOwnerAdmissionRetirementReason,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.store
+            .retire_cancelled_generation(authority, reason)
+            .await
+    }
+
+    pub async fn recover_exhausted_for_user(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.store.recover_exhausted_for_user(authority).await
+    }
+
+    pub async fn try_acquire(
+        &self,
+        continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
+        self.store.try_acquire(continuation_authority, now).await
+    }
+
+    pub async fn try_acquire_claimed(
+        &self,
+        continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
+        dispatch_claim_id: Uuid,
+        fence_identity: GoalOwnerDispatchFenceCapability,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
+        self.store
+            .try_acquire_claimed(
+                continuation_authority,
+                dispatch_claim_id,
+                fence_identity,
+                now,
+            )
+            .await
+    }
+
+    pub async fn open_lease(&self, lease: &GoalOwnerAdmissionLease) -> anyhow::Result<bool> {
+        self.store.open_lease(lease).await
+    }
+
+    pub async fn release_acquired_lease(
+        &self,
+        lease: &GoalOwnerAdmissionLease,
+    ) -> anyhow::Result<bool> {
+        self.store.release_acquired_lease(lease).await
+    }
+
+    pub async fn finish(
+        &self,
+        lease: &GoalOwnerAdmissionLease,
+        outcome: GoalOwnerAdmissionTerminalOutcome,
+        disposition: GoalOwnerAdmissionTerminalDisposition,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.store.finish(lease, outcome, disposition).await
+    }
+
+    pub async fn resolve_uncertain(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        outcome: GoalOwnerAdmissionTerminalOutcome,
+        disposition: GoalOwnerAdmissionTerminalDisposition,
+        resolution_evidence: &str,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.store
+            .resolve_uncertain(authority, outcome, disposition, resolution_evidence)
+            .await
+    }
+
+    pub async fn cancel(
+        &self,
+        authority: &GoalOwnerAdmissionAuthority,
+        disposition: GoalOwnerAdmissionTerminalDisposition,
+    ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
+        self.store.cancel(authority, disposition).await
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Deref for InstalledGoalRuntimeAdmissions {
+    type Target = GoalOwnerAdmissionStore;
+
+    fn deref(&self) -> &Self::Target {
+        &self.store
     }
 }
 

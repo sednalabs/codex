@@ -26,10 +26,10 @@ use codex_state::GoalOwnerAdmissionContinuationAuthority;
 use codex_state::GoalOwnerAdmissionLease;
 use codex_state::GoalOwnerAdmissionPhase;
 use codex_state::GoalOwnerAdmissionRecord;
-use codex_state::GoalOwnerAdmissionStore;
 use codex_state::GoalOwnerAdmissionTerminalDisposition;
 use codex_state::GoalOwnerAdmissionTerminalOutcome;
 use codex_state::GoalOwnerDispatchFenceCapability;
+use codex_state::InstalledGoalRuntimeAdmissions;
 use codex_state::canonical_provider_id;
 use tokio::sync::Mutex;
 use tracing::debug;
@@ -46,7 +46,7 @@ pub struct GoalOwnerContinuation {
     authority: GoalOwnerAdmissionContinuationAuthority,
     /// Installation-owned store carried from the trusted goal runtime. Core
     /// never reacquires mutation authority from a generic StateRuntime.
-    store: Option<GoalOwnerAdmissionStore>,
+    store: Option<InstalledGoalRuntimeAdmissions>,
     dispatch_claim_id: Option<Uuid>,
     fence: Option<Arc<GoalContinuationFence>>,
     fence_identity: GoalOwnerDispatchFenceCapability,
@@ -144,22 +144,23 @@ impl GoalContinuationFence {
 pub struct GoalRuntimeContinuationIssuer {
     fence: Arc<GoalContinuationFence>,
     identity: GoalOwnerDispatchFenceCapability,
-    store: Option<GoalOwnerAdmissionStore>,
+    store: Option<InstalledGoalRuntimeAdmissions>,
     enabled: Arc<AtomicBool>,
     enablement_epoch: Arc<AtomicU64>,
 }
 
 impl GoalRuntimeContinuationIssuer {
-    /// Construct the continuation issuer from the installation-owned store.
-    /// A generic StateRuntime store is diagnostics-only and fails closed.
-    pub fn from_installation(
-        installation: codex_state::GoalRuntimeAdmissionInstallation,
+    /// Construct the continuation issuer from admissions installed by the
+    /// bootstrap witness. A generic StateRuntime store cannot produce this
+    /// facade and remains diagnostics-only.
+    pub fn from_installed_admissions(
+        admissions: InstalledGoalRuntimeAdmissions,
         enabled: bool,
     ) -> Self {
         Self {
             fence: Arc::new(GoalContinuationFence::new()),
             identity: GoalOwnerDispatchFenceCapability::fresh(),
-            store: Some(installation.installed_store()),
+            store: Some(admissions),
             enabled: Arc::new(AtomicBool::new(enabled)),
             enablement_epoch: Arc::new(AtomicU64::new(0)),
         }
@@ -304,7 +305,7 @@ impl GoalOwnerContinuation {
         self.fence_identity
     }
 
-    pub(crate) fn store(&self) -> Option<&GoalOwnerAdmissionStore> {
+    pub(crate) fn installed_admissions(&self) -> Option<&InstalledGoalRuntimeAdmissions> {
         self.store.as_ref()
     }
 }
@@ -625,7 +626,7 @@ impl ModelRequestAdmissionBroker {
         let Some(dispatch_claim_id) = continuation.dispatch_claim_id() else {
             return Ok(());
         };
-        let Some(store) = continuation.store() else {
+        let Some(store) = continuation.installed_admissions() else {
             return Ok(());
         };
         store
@@ -691,11 +692,19 @@ impl ModelRequestAdmissionBroker {
         // A continuation carries the installation-owned store that created
         // its claim. Generic StateRuntime access is diagnostics-only and is
         // used solely for ordinary-turn observation.
-        let store = continuation.and_then(GoalOwnerContinuation::store);
-        let diagnostics_store = state_db.goal_owner_admissions();
-        let store = store.unwrap_or(diagnostics_store);
+        let installed_admissions =
+            continuation.and_then(GoalOwnerContinuation::installed_admissions);
         let now = Utc::now();
-        let record = store.get(identity.thread_id).await.map_err(storage_error)?;
+        let record = match installed_admissions {
+            Some(admissions) => admissions.get(identity.thread_id).await,
+            None => {
+                state_db
+                    .goal_owner_admissions()
+                    .get(identity.thread_id)
+                    .await
+            }
+        }
+        .map_err(storage_error)?;
         let Some(record) = record else {
             // A typed continuation is permission only when its exact durable generation is
             // present. A missing active row is a fail-closed lifecycle failure, never a reason
@@ -760,6 +769,9 @@ impl ModelRequestAdmissionBroker {
             return Ok(ModelRequestAdmissionDecision::Deferred);
         }
 
+        let Some(store) = installed_admissions else {
+            return Ok(ModelRequestAdmissionDecision::Dormant);
+        };
         let acquire_result = store
             .try_acquire_claimed(
                 continuation_authority,
@@ -916,7 +928,7 @@ fn storage_error(error: anyhow::Error) -> CodexErr {
 }
 
 pub(crate) struct AdmittedModelRequest {
-    store: GoalOwnerAdmissionStore,
+    store: InstalledGoalRuntimeAdmissions,
     lease: GoalOwnerAdmissionLease,
     lifecycle: Mutex<LeaseLifecycle>,
     fence: Option<Arc<GoalContinuationFence>>,
@@ -925,7 +937,7 @@ pub(crate) struct AdmittedModelRequest {
 
 impl AdmittedModelRequest {
     fn new(
-        store: GoalOwnerAdmissionStore,
+        store: InstalledGoalRuntimeAdmissions,
         lease: GoalOwnerAdmissionLease,
         continuation: Option<&GoalOwnerContinuation>,
     ) -> Self {

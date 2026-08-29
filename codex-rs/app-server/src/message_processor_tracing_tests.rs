@@ -260,6 +260,7 @@ async fn build_test_processor(
         feedback: CodexFeedback::new(),
         log_db: None,
         state_db: None,
+        goal_runtime_admissions: None,
         config_warnings: Vec::new(),
         session_source: SessionSource::VSCode,
         auth_manager,
