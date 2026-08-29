@@ -2967,9 +2967,13 @@ pub enum SubAgentSource {
         parent_turn_id: String,
         /// Parent tool-call id that requested the spawn.
         spawn_call_id: String,
-        /// Exact parent sampling request id that produced the authoritative limit.
-        #[serde(default)]
-        parent_sampling_request_id: String,
+        /// Logical client sampling-attempt identity that produced the authoritative limit.
+        ///
+        /// This is intentionally not a provider request ID. Physical-send
+        /// evidence comes from the provider/mock-server receipt joined to this
+        /// logical attempt.
+        #[serde(default, alias = "parent_sampling_request_id")]
+        parent_logical_sampling_attempt_id: String,
     },
     MemoryConsolidation,
     Other(String),

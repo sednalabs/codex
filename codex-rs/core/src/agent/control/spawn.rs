@@ -670,7 +670,7 @@ impl AgentControl {
                 chain_id,
                 parent_turn_id,
                 spawn_call_id,
-                parent_sampling_request_id,
+                parent_logical_sampling_attempt_id,
                 ..
             })) => {
                 let Some(reservation) = reservation.as_mut() else {
@@ -709,7 +709,7 @@ impl AgentControl {
                             chain_id,
                             parent_turn_id,
                             spawn_call_id,
-                            parent_sampling_request_id,
+                            parent_logical_sampling_attempt_id,
                         },
                     )),
                     agent_metadata,
@@ -1787,7 +1787,7 @@ impl AgentControl {
                 chain_id,
                 parent_turn_id,
                 spawn_call_id,
-                parent_sampling_request_id,
+                parent_logical_sampling_attempt_id,
                 ..
             }) => {
                 let (prepared_source, agent_metadata) = self.prepare_thread_spawn(
@@ -1820,7 +1820,7 @@ impl AgentControl {
                         chain_id,
                         parent_turn_id,
                         spawn_call_id,
-                        parent_sampling_request_id,
+                        parent_logical_sampling_attempt_id,
                     }),
                     agent_metadata,
                 )

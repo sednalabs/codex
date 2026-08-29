@@ -516,7 +516,7 @@ mod tests {
                     parent_thread_id: "thread-1".to_string(),
                     parent_turn_id: "turn-1".to_string(),
                     spawn_call_id: "call-0".to_string(),
-                    parent_sampling_request_id: "request-0".to_string(),
+                    parent_logical_sampling_attempt_id: "attempt-0".to_string(),
                 },
             );
             assert_eq!(

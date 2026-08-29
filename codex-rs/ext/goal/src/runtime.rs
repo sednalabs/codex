@@ -602,7 +602,10 @@ impl GoalRuntimeHandle {
             .await
             .map_err(|err| err.to_string())?;
         if continuity_research_marker {
-            if !codex_core::diagnostic_flags::continuity_preserve_after_usage_limit_enabled() {
+            if !continuity_research_continuation_allowed(
+                continuity_research_marker,
+                codex_core::diagnostic_flags::continuity_preserve_after_usage_limit_enabled(),
+            ) {
                 // This goal was preserved by an earlier opt-in run. Do not
                 // silently resume provider work after flags are removed or a
                 // process restart restores the persisted goal.
@@ -613,12 +616,6 @@ impl GoalRuntimeHandle {
                 );
                 return Ok(());
             }
-            self.inner
-                .state_dbs
-                .thread_goals()
-                .clear_thread_goal_continuity_research(self.thread_id())
-                .await
-                .map_err(|err| err.to_string())?;
         }
 
         if self
@@ -671,6 +668,22 @@ impl GoalRuntimeHandle {
 
         match thread.try_start_turn_if_idle(vec![item]).await {
             Ok(()) => {
+                // Consume the durable opt-in marker only after the thread has
+                // admitted the continuation. Plan/busy/pending rejection must
+                // leave it armed so disabling research before a later idle
+                // callback cannot turn that rejected attempt into an implicit
+                // provider request.
+                if continuity_research_marker_should_be_consumed(
+                    continuity_research_marker,
+                    /*admitted*/ true,
+                ) {
+                    self.inner
+                        .state_dbs
+                        .thread_goals()
+                        .clear_thread_goal_continuity_research(self.thread_id())
+                        .await
+                        .map_err(|err| err.to_string())?;
+                }
                 if continuity_observation {
                     codex_core::diagnostic_flags::record_continuity_stage_with_context(
                         &thread.session_telemetry(),
@@ -882,8 +895,18 @@ fn should_restore_active_goal_after_resume(
     !continuation_deferral && (!continuity_research_enabled || continuity_research_marker)
 }
 
+fn continuity_research_continuation_allowed(marker_present: bool, research_enabled: bool) -> bool {
+    !marker_present || research_enabled
+}
+
+fn continuity_research_marker_should_be_consumed(marker_present: bool, admitted: bool) -> bool {
+    marker_present && admitted
+}
+
 #[cfg(test)]
 mod tests {
+    use super::continuity_research_continuation_allowed;
+    use super::continuity_research_marker_should_be_consumed;
     use super::should_restore_active_goal_after_resume;
 
     #[test]
@@ -913,5 +936,27 @@ mod tests {
             /*continuity_research_marker*/ true,
             /*continuation_deferral*/ true,
         ));
+    }
+
+    #[test]
+    fn plan_rejection_then_flag_off_idle_does_not_request_again() {
+        // A Plan-mode admission rejection must not consume the marker. If the
+        // opt-in flag is disabled before the next idle callback, the still
+        // armed marker is denied rather than converted into a provider call.
+        let marker_present = true;
+        let plan_admitted = false;
+        assert!(!continuity_research_marker_should_be_consumed(
+            marker_present,
+            plan_admitted,
+        ));
+        assert!(!continuity_research_continuation_allowed(
+            marker_present,
+            /*research_enabled*/ false,
+        ));
+        let request_started = continuity_research_continuation_allowed(
+            marker_present,
+            /*research_enabled*/ false,
+        ) && plan_admitted;
+        assert!(!request_started, "flag-off idle callback must not request work");
     }
 }

@@ -73,13 +73,13 @@ async fn handle_spawn_agent(
             parent_thread_id,
             parent_turn_id,
             spawn_call_id,
-            parent_sampling_request_id,
+            parent_logical_sampling_attempt_id,
         } => Some((
             chain_id,
             parent_thread_id,
             parent_turn_id,
             spawn_call_id,
-            parent_sampling_request_id,
+            parent_logical_sampling_attempt_id,
         )),
         ToolCallSource::Direct | ToolCallSource::CodeMode { .. } => None,
     };
@@ -160,7 +160,7 @@ async fn handle_spawn_agent(
         _parent_thread_id,
         parent_turn_id,
         spawn_call_id,
-        parent_sampling_request_id,
+        parent_logical_sampling_attempt_id,
     )) = diagnostic_context.as_ref()
     {
         continuity_diagnostic_thread_spawn_source(
@@ -172,7 +172,7 @@ async fn handle_spawn_agent(
             chain_id.clone(),
             parent_turn_id.clone(),
             spawn_call_id.clone(),
-            parent_sampling_request_id.clone(),
+            parent_logical_sampling_attempt_id.clone(),
         )?
     } else {
         thread_spawn_source(
@@ -205,10 +205,10 @@ async fn handle_spawn_agent(
             parent_thread_id,
             parent_turn_id,
             spawn_call_id,
-            parent_sampling_request_id,
+            parent_logical_sampling_attempt_id,
         )| {
             format!(
-                "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:parent_sampling_request:{parent_sampling_request_id}"
+                "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:parent_logical_sampling_attempt:{parent_logical_sampling_attempt_id}"
             )
         },
     );
@@ -311,9 +311,9 @@ async fn handle_spawn_agent(
         );
     }
     let publication_correlation_id = diagnostic_context.as_ref().map(
-        |(chain_id, parent_thread_id, parent_turn_id, spawn_call_id, parent_sampling_request_id)| {
+        |(chain_id, parent_thread_id, parent_turn_id, spawn_call_id, parent_logical_sampling_attempt_id)| {
             format!(
-                "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:parent_sampling_request:{parent_sampling_request_id}:child_thread:{new_thread_id}:initial_work_published"
+                "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:parent_logical_sampling_attempt:{parent_logical_sampling_attempt_id}:child_thread:{new_thread_id}:initial_work_published"
             )
         },
     );

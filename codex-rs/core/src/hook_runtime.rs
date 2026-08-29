@@ -934,7 +934,7 @@ mod tests {
                 chain_id: "chain-test".to_string(),
                 parent_turn_id: "turn-test".to_string(),
                 spawn_call_id: "call-test".to_string(),
-                parent_sampling_request_id: "request-test".to_string(),
+                parent_logical_sampling_attempt_id: "attempt-test".to_string(),
             });
         let session = std::sync::Arc::new(session);
         let turn_context = std::sync::Arc::new(turn_context);

@@ -159,7 +159,7 @@ async fn dispatch_lifecycle_trace_records_direct_and_code_mode_requesters() -> a
                     parent_thread_id: session.thread_id.to_string(),
                     parent_turn_id: "parent-turn".to_string(),
                     spawn_call_id: "spawn-call".to_string(),
-                    parent_sampling_request_id: "parent-request".to_string(),
+                    parent_logical_sampling_attempt_id: "parent-attempt".to_string(),
                 },
                 "{}",
             ),
