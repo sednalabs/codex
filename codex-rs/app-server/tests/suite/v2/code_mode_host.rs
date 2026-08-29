@@ -7,6 +7,9 @@ use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use codex_app_server_protocol::ThreadDecrementElicitationParams;
 use codex_app_server_protocol::ThreadDecrementElicitationResponse;
+use codex_app_server_protocol::ThreadGoalSetResponse;
+use codex_app_server_protocol::ThreadGoalStatus;
+use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadIncrementElicitationParams;
 use codex_app_server_protocol::ThreadIncrementElicitationResponse;
 use codex_app_server_protocol::ThreadStartParams;
@@ -315,5 +318,76 @@ async fn app_server_prewarms_flag_selected_grpc_code_mode_host_before_first_turn
         .await
         .context("stalled code-mode prewarm blocked thread shutdown")??;
     assert!(status.success(), "app-server did not exit successfully");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_server_blocks_goal_after_repeated_code_mode_host_failures() -> Result<()> {
+    let model_server = responses::start_mock_server().await;
+    let mut model_responses = Vec::new();
+    for turn in 1..=3 {
+        model_responses.push(responses::sse(vec![
+            responses::ev_response_created(&format!("resp-{turn}-exec")),
+            responses::ev_custom_tool_call(
+                &format!("call-exec-{turn}"),
+                "exec",
+                "text('unreachable')",
+            ),
+            responses::ev_completed(&format!("resp-{turn}-exec")),
+        ]));
+        model_responses.push(responses::sse(vec![
+            responses::ev_assistant_message(
+                &format!("msg-{turn}"),
+                "The execution host is unavailable.",
+            ),
+            responses::ev_completed(&format!("resp-{turn}-done")),
+        ]));
+    }
+    let response_mock = responses::mount_sse_sequence(&model_server, model_responses).await;
+
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&model_server.uri())
+        .enable_feature(Feature::CodeModeOnly)
+        .enable_feature(Feature::Goals)
+        .enable_feature(Feature::Sqlite)
+        .write(codex_home.path())?;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let host_url = format!("http://{}", listener.local_addr()?);
+    drop(listener);
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_args(&["--code-mode-host", &host_url])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    let thread = app_server
+        .start_thread(ThreadStartParams::default())
+        .await?;
+    let goal_request = app_server
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({
+                "threadId": thread.thread.id,
+                "objective": "finish the task",
+                "status": "active",
+            })),
+        )
+        .await?;
+    let _: ThreadGoalSetResponse =
+        timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(goal_request)).await??;
+
+    let goal = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let notification: ThreadGoalUpdatedNotification =
+                app_server.read_notification("thread/goal/updated").await?;
+            if notification.goal.status == ThreadGoalStatus::Blocked {
+                return Ok::<_, anyhow::Error>(notification.goal);
+            }
+        }
+    })
+    .await??;
+
+    assert_eq!(goal.status, ThreadGoalStatus::Blocked);
+    assert_eq!(response_mock.requests().len(), 6);
     Ok(())
 }
