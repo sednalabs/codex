@@ -58,6 +58,11 @@ pub struct GoalOwnerContinuation {
 pub struct GoalRuntimeContinuationIssuer {
     store: Arc<InstalledGoalRuntimeAdmissions>,
     owner: GoalRuntimeAdmissionOwner,
+    // An issuer is valid for exactly one enablement generation. Clones of the
+    // live coordinator share this stamp so that coordinator can disable and
+    // later re-enable itself, while a separately retained issuer cannot mint
+    // again after the owner has crossed a stop/restart boundary.
+    issuer_enablement_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl GoalRuntimeContinuationIssuer {
@@ -69,14 +74,22 @@ impl GoalRuntimeContinuationIssuer {
         admissions: Arc<InstalledGoalRuntimeAdmissions>,
         thread_id: ThreadId,
     ) -> Self {
+        let owner = admissions.owner_for_thread(thread_id);
         Self {
-            owner: admissions.owner_for_thread(thread_id),
+            issuer_enablement_epoch: Arc::new(std::sync::atomic::AtomicU64::new(
+                owner.enablement_epoch(),
+            )),
+            owner,
             store: admissions,
         }
     }
 
     pub fn is_enabled(&self) -> bool {
         self.owner.is_enabled()
+            && self.owner.enablement_epoch()
+                == self
+                    .issuer_enablement_epoch
+                    .load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn enablement_epoch(&self) -> u64 {
@@ -84,7 +97,22 @@ impl GoalRuntimeContinuationIssuer {
     }
 
     pub fn set_enabled(&self, enabled: bool) -> Option<u64> {
-        self.owner.set_enabled(enabled)
+        // Only the issuer that owned the immediately preceding enablement
+        // generation may transition it. A pre-stop retained issuer must not
+        // revive itself by toggling the shared owner back on.
+        if self.owner.enablement_epoch()
+            != self
+                .issuer_enablement_epoch
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return None;
+        }
+        let enablement_epoch = self.owner.set_enabled(enabled);
+        if let Some(enablement_epoch) = enablement_epoch {
+            self.issuer_enablement_epoch
+                .store(enablement_epoch, std::sync::atomic::Ordering::Release);
+        }
+        enablement_epoch
     }
 
     /// Atomically claim a pending generation using this coordinator's private
@@ -175,7 +203,9 @@ impl GoalOwnerContinuation {
             dispatch_claim_id,
             fence_identity: coordinator.owner.fence_identity(),
             fence_epoch: coordinator.current_epoch(),
-            installation_epoch: coordinator.owner.enablement_epoch(),
+            installation_epoch: coordinator
+                .issuer_enablement_epoch
+                .load(std::sync::atomic::Ordering::Acquire),
         }
     }
 
@@ -370,15 +400,21 @@ impl ModelRequestAdmissionDecision {
         match self {
             Self::Unrestricted => Ok(ModelRequestLeaseGuard::unrestricted()),
             Self::Admitted(admitted) => {
-                let fence_guard = admitted
+                let Some(fence_guard) = admitted
                     .owner
                     .as_ref()
                     .and_then(|owner| owner.enter_continuation(admitted.fence_epoch))
-                    .ok_or_else(|| {
-                        CodexErr::Fatal(
-                            "goal-owner continuation was revoked before request open".to_string(),
-                        )
-                    })?;
+                else {
+                    // Admission acquired a durable pre-network reservation,
+                    // but this continuation lost authority before it could
+                    // open. Return that exact reservation rather than leave
+                    // an acquired row for recovery or manufacture an
+                    // uncertainty without provider I/O.
+                    admitted.cancel_before_transport().await?;
+                    return Err(CodexErr::Fatal(
+                        "goal-owner continuation was revoked before request open".to_string(),
+                    ));
+                };
                 {
                     let mut lifecycle = admitted.lifecycle.lock().await;
                     if lifecycle.opening || lifecycle.request_opened {
@@ -415,17 +451,15 @@ impl ModelRequestAdmissionDecision {
                             .to_string(),
                     ));
                 }
-                if lifecycle.terminalized {
+                if lifecycle.terminalized || !fence_guard.is_current_epoch() {
                     drop(lifecycle);
-                    let _ = admitted
-                        .finish_if_unfinished(
-                            LeaseStage::CancelledBeforeAcknowledgement,
-                            GoalOwnerAdmissionTerminalOutcome::Uncertain,
-                            GoalOwnerAdmissionTerminalDisposition::ManualReview,
-                        )
-                        .await;
+                    // `open_lease` won only the durable request-open fence;
+                    // it has not authorized physical transport yet. A
+                    // revocation at this point is a definite cancellation,
+                    // never an Uncertain/ManualReview provider effect.
+                    admitted.cancel_before_transport().await?;
                     return Err(CodexErr::Fatal(
-                        "goal-owner admission lease was terminalized while opening".to_string(),
+                        "goal-owner continuation was revoked before transport open".to_string(),
                     ));
                 }
                 lifecycle.request_opened = true;
@@ -877,6 +911,39 @@ impl AdmittedModelRequest {
         lifecycle.terminalized = true;
         lifecycle.stage = LeaseStage::CancelledBeforeAcknowledgement;
         Ok(())
+    }
+
+    /// Close an admitted lease after continuation authority is revoked but
+    /// before any provider I/O. Prefer the exact acquired-to-pending release
+    /// CAS; if request-open won concurrently, close that in-flight lease as a
+    /// definite cancellation. Neither branch may create uncertainty because
+    /// this method is called before transport receives the lease guard.
+    async fn cancel_before_transport(&self) -> Result<()> {
+        {
+            let lifecycle = self.lifecycle.lock().await;
+            if lifecycle.terminalized {
+                return Ok(());
+            }
+        }
+
+        if self
+            .store
+            .release_acquired_lease(&self.lease)
+            .await
+            .map_err(storage_error)?
+        {
+            let mut lifecycle = self.lifecycle.lock().await;
+            lifecycle.terminalized = true;
+            lifecycle.stage = LeaseStage::CancelledBeforeAcknowledgement;
+            return Ok(());
+        }
+
+        self.finish_if_unfinished(
+            LeaseStage::CancelledBeforeAcknowledgement,
+            GoalOwnerAdmissionTerminalOutcome::Cancelled,
+            GoalOwnerAdmissionTerminalDisposition::None,
+        )
+        .await
     }
 
     async fn finish_if_unfinished(

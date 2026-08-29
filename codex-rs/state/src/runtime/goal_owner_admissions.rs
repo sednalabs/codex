@@ -7,6 +7,7 @@ use sqlx::Row;
 use std::collections::HashMap;
 use std::sync::Condvar;
 use std::sync::Mutex;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -346,7 +347,7 @@ impl GoalRuntimeAdmissionInstallation {
 pub struct InstalledGoalRuntimeAdmissions {
     store: GoalOwnerAdmissionStore,
     runtime_identity: GoalRuntimeAdmissionRuntimeIdentity,
-    owners: Arc<Mutex<HashMap<ThreadId, Arc<GoalRuntimeAdmissionOwnerInner>>>>,
+    owners: Arc<Mutex<HashMap<ThreadId, RegisteredGoalRuntimeAdmissionOwner>>>,
 }
 
 impl InstalledGoalRuntimeAdmissions {
@@ -359,17 +360,46 @@ impl InstalledGoalRuntimeAdmissions {
             .owners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let inner = Arc::clone(owners.entry(thread_id).or_insert_with(|| {
-            Arc::new(GoalRuntimeAdmissionOwnerInner {
-                runtime_identity: self.runtime_identity,
-                thread_id,
-                fence_identity: GoalOwnerDispatchFenceCapability::fresh(),
-                enabled: AtomicBool::new(true),
-                enablement_epoch: AtomicU64::new(0),
-                continuation_fence: Arc::new(GoalRuntimeContinuationFence::new()),
-            })
-        }));
+        if let Some(inner) = owners
+            .get(&thread_id)
+            .and_then(|registered| registered.inner.upgrade())
+        {
+            return GoalRuntimeAdmissionOwner { inner };
+        }
+
+        // The registry is an identity rendezvous for currently live runtime
+        // owners, not process-lifetime residency. Dead weak entries are
+        // removed before a replacement is installed, so distinct historical
+        // threads cannot accumulate forever while concurrent issuers for this
+        // thread still share this exact inner owner.
+        owners.remove(&thread_id);
+        let registry_generation = Uuid::now_v7();
+        let inner = Arc::new(GoalRuntimeAdmissionOwnerInner {
+            runtime_identity: self.runtime_identity,
+            thread_id,
+            registry: Arc::downgrade(&self.owners),
+            registry_generation,
+            fence_identity: GoalOwnerDispatchFenceCapability::fresh(),
+            enabled: AtomicBool::new(true),
+            enablement_epoch: AtomicU64::new(0),
+            continuation_fence: Arc::new(GoalRuntimeContinuationFence::new()),
+        });
+        owners.insert(
+            thread_id,
+            RegisteredGoalRuntimeAdmissionOwner {
+                generation: registry_generation,
+                inner: Arc::downgrade(&inner),
+            },
+        );
         GoalRuntimeAdmissionOwner { inner }
+    }
+
+    #[cfg(test)]
+    fn live_owner_registry_len(&self) -> usize {
+        self.owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Verify that this installed facade was produced for this exact state
@@ -526,10 +556,35 @@ impl InstalledGoalRuntimeAdmissions {
 struct GoalRuntimeAdmissionOwnerInner {
     runtime_identity: GoalRuntimeAdmissionRuntimeIdentity,
     thread_id: ThreadId,
+    registry: Weak<Mutex<HashMap<ThreadId, RegisteredGoalRuntimeAdmissionOwner>>>,
+    registry_generation: Uuid,
     fence_identity: GoalOwnerDispatchFenceCapability,
     enabled: AtomicBool,
     enablement_epoch: AtomicU64,
     continuation_fence: Arc<GoalRuntimeContinuationFence>,
+}
+
+#[derive(Debug)]
+struct RegisteredGoalRuntimeAdmissionOwner {
+    generation: Uuid,
+    inner: Weak<GoalRuntimeAdmissionOwnerInner>,
+}
+
+impl Drop for GoalRuntimeAdmissionOwnerInner {
+    fn drop(&mut self) {
+        let Some(registry) = self.registry.upgrade() else {
+            return;
+        };
+        let mut registry = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if registry.get(&self.thread_id).is_some_and(|registered| {
+            registered.generation == self.registry_generation
+                && registered.inner.upgrade().is_none()
+        }) {
+            registry.remove(&self.thread_id);
+        }
+    }
 }
 
 /// Shared, installed-only revocation fence for all continuations derived from
@@ -547,6 +602,10 @@ struct GoalRuntimeContinuationFence {
 /// shared revocation epoch across continuation publication and provider I/O.
 pub struct GoalRuntimeAdmissionFenceGuard {
     fence: Arc<GoalRuntimeContinuationFence>,
+    // A guard is live work for this owner. Keep that ownership alive so the
+    // installed registry cannot recreate a second fence for the same thread
+    // while an already-admitted operation is between publication and I/O.
+    _owner: Arc<GoalRuntimeAdmissionOwnerInner>,
     epoch: u64,
 }
 
@@ -630,16 +689,23 @@ impl GoalRuntimeAdmissionOwner {
         *active += 1;
         Some(GoalRuntimeAdmissionFenceGuard {
             fence: Arc::clone(fence),
+            _owner: Arc::clone(&self.inner),
             epoch,
         })
     }
 
     /// Advance the shared revocation epoch without waiting for active work.
     pub fn revoke_continuations(&self) {
-        self.inner
-            .continuation_fence
-            .epoch
-            .fetch_add(1, Ordering::AcqRel);
+        // `enter_continuation` checks the epoch and publishes its active
+        // guard while holding this same mutex. Taking it here makes either
+        // enter-before-revoke (which revoke observes and waits for) or
+        // revoke-before-enter (which enter rejects) the sole outcomes.
+        let fence = &self.inner.continuation_fence;
+        let _active = fence
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        fence.epoch.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Advance the shared revocation epoch and wait for all active operations

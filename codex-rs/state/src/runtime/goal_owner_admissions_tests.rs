@@ -101,6 +101,74 @@ async fn installed_runtime(sqlite: crate::SqliteConfig) -> GoalAdmissionTestRunt
     }
 }
 
+#[tokio::test]
+async fn installed_owner_registry_shares_live_owners_and_evicts_after_the_last_fence_guard() {
+    let runtime = runtime().await;
+    let thread_id = ThreadId::new();
+    let owner = runtime.admissions.owner_for_thread(thread_id);
+    let concurrent_issuer_owner = runtime.admissions.owner_for_thread(thread_id);
+    assert!(Arc::ptr_eq(&owner.inner, &concurrent_issuer_owner.inner));
+    assert_eq!(runtime.admissions.live_owner_registry_len(), 1);
+
+    let epoch = owner.continuation_epoch();
+    let guard = owner
+        .enter_continuation(epoch)
+        .expect("the current owner epoch enters");
+    drop(owner);
+    drop(concurrent_issuer_owner);
+    assert_eq!(
+        runtime.admissions.live_owner_registry_len(),
+        1,
+        "an active continuation guard keeps its owner identity live"
+    );
+
+    drop(guard);
+    assert_eq!(
+        runtime.admissions.live_owner_registry_len(),
+        0,
+        "a dead thread owner is removed instead of accumulating in the installed registry"
+    );
+}
+
+#[test]
+fn revocation_waits_for_an_entered_guard_before_finishing_the_old_epoch() {
+    let owner = Arc::new(GoalRuntimeAdmissionOwnerInner {
+        runtime_identity: GoalRuntimeAdmissionRuntimeIdentity(Uuid::now_v7()),
+        thread_id: ThreadId::new(),
+        registry: Weak::new(),
+        registry_generation: Uuid::now_v7(),
+        fence_identity: GoalOwnerDispatchFenceCapability::fresh(),
+        enabled: AtomicBool::new(true),
+        enablement_epoch: AtomicU64::new(0),
+        continuation_fence: Arc::new(GoalRuntimeContinuationFence::new()),
+    });
+    let owner = GoalRuntimeAdmissionOwner { inner: owner };
+    let guard = owner
+        .enter_continuation(owner.continuation_epoch())
+        .expect("enter the current epoch");
+    let (revoked_tx, revoked_rx) = std::sync::mpsc::channel();
+    let revoker = owner.clone();
+    std::thread::spawn(move || {
+        revoker.revoke_continuations_and_wait();
+        revoked_tx.send(()).expect("report completed revocation");
+    });
+
+    assert!(
+        revoked_rx
+            .recv_timeout(std::time::Duration::from_millis(20))
+            .is_err(),
+        "a revocation cannot complete while an entered guard is still active"
+    );
+    drop(guard);
+    revoked_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("revocation completes after the entered guard drops");
+    assert!(
+        owner.enter_continuation(0).is_none(),
+        "the old epoch cannot re-enter after revocation linearizes"
+    );
+}
+
 enum GoalDbCorruption {
     DeleteOrigin {
         thread_id: String,

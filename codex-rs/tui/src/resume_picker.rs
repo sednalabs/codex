@@ -64,6 +64,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Widget;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::warn;
@@ -410,20 +411,18 @@ async fn run_resume_picker_with_launch_context(
         pager_keymap: runtime_keymap.pager,
         list_keymap: runtime_keymap.list,
     };
-    run_session_picker_with_loader(
-        tui,
-        options,
-        spawn_app_server_page_loader(
-            app_server,
-            include_non_interactive,
-            thread_source_filter,
-            raw_reasoning_visibility(config),
-            (!uses_remote_workspace).then(|| config.codex_home.to_path_buf()),
-            bg_tx,
-        ),
-        bg_rx,
-    )
-    .await
+    let picker_loader = spawn_app_server_page_loader(
+        app_server,
+        include_non_interactive,
+        thread_source_filter,
+        raw_reasoning_visibility(config),
+        (!uses_remote_workspace).then(|| config.codex_home.to_path_buf()),
+        bg_tx,
+    );
+    let selection =
+        run_session_picker_with_loader(tui, options, Arc::clone(&picker_loader.loader), bg_rx)
+            .await;
+    picker_loader.finish(selection).await
 }
 
 pub async fn run_fork_picker_with_app_server(
@@ -457,20 +456,18 @@ pub async fn run_fork_picker_with_app_server(
         pager_keymap: runtime_keymap.pager,
         list_keymap: runtime_keymap.list,
     };
-    run_session_picker_with_loader(
-        tui,
-        options,
-        spawn_app_server_page_loader(
-            app_server,
-            /*include_non_interactive*/ false,
-            SessionThreadSourceFilter::Default,
-            raw_reasoning_visibility(config),
-            (!uses_remote_workspace).then(|| config.codex_home.to_path_buf()),
-            bg_tx,
-        ),
-        bg_rx,
-    )
-    .await
+    let picker_loader = spawn_app_server_page_loader(
+        app_server,
+        /*include_non_interactive*/ false,
+        SessionThreadSourceFilter::Default,
+        raw_reasoning_visibility(config),
+        (!uses_remote_workspace).then(|| config.codex_home.to_path_buf()),
+        bg_tx,
+    );
+    let selection =
+        run_session_picker_with_loader(tui, options, Arc::clone(&picker_loader.loader), bg_rx)
+            .await;
+    picker_loader.finish(selection).await
 }
 
 async fn run_session_picker_with_loader(
@@ -591,6 +588,37 @@ fn picker_cwd_filter(
     }
 }
 
+/// The picker owns an app-server only for its bounded lookup lifetime. The
+/// completion receipt is awaited before a caller can reuse a one-shot state
+/// composition, so a replacement embedded host never receives mutation
+/// authority while the picker root still owns the old one.
+struct AppServerPickerLoader {
+    loader: PickerLoader,
+    shutdown: oneshot::Receiver<Result<()>>,
+}
+
+impl AppServerPickerLoader {
+    async fn finish(self, selection: Result<SessionSelection>) -> Result<SessionSelection> {
+        let Self { loader, shutdown } = self;
+        drop(loader);
+        let shutdown_result = shutdown
+            .await
+            .map_err(|_| color_eyre::eyre::eyre!("app-server picker shutdown task ended early"))?;
+        match selection {
+            Ok(selection) => {
+                shutdown_result?;
+                Ok(selection)
+            }
+            Err(error) => {
+                if let Err(shutdown_error) = shutdown_result {
+                    warn!(error = %shutdown_error, "app-server picker also failed to shut down");
+                }
+                Err(error)
+            }
+        }
+    }
+}
+
 fn spawn_app_server_page_loader(
     app_server: AppServerSession,
     include_non_interactive: bool,
@@ -598,8 +626,9 @@ fn spawn_app_server_page_loader(
     raw_reasoning_visibility: RawReasoningVisibility,
     codex_home: Option<PathBuf>,
     bg_tx: mpsc::UnboundedSender<BackgroundEvent>,
-) -> PickerLoader {
+) -> AppServerPickerLoader {
     let (request_tx, mut request_rx) = mpsc::unbounded_channel::<PickerLoadRequest>();
+    let (shutdown_tx, shutdown) = oneshot::channel();
 
     tokio::spawn(async move {
         let mut app_server = app_server;
@@ -644,18 +673,16 @@ fn spawn_app_server_page_loader(
                 }
             }
         }
-        if let Err(err) = app_server.shutdown().await {
-            let err = err.to_string();
-            warn!(
-                err = err.as_str(),
-                "Failed to shut down app-server picker session"
-            );
-        }
+        let shutdown_result = app_server.shutdown().await.map_err(Into::into);
+        let _ = shutdown_tx.send(shutdown_result);
     });
 
-    Arc::new(move |request: PickerLoadRequest| {
-        let _ = request_tx.send(request);
-    })
+    AppServerPickerLoader {
+        loader: Arc::new(move |request: PickerLoadRequest| {
+            let _ = request_tx.send(request);
+        }),
+        shutdown,
+    }
 }
 
 /// Returns the human-readable column header for the given sort key.
@@ -3127,6 +3154,30 @@ mod tests {
                 loader(request);
             }
         })
+    }
+
+    #[tokio::test]
+    async fn picker_shutdown_receipt_precedes_the_selection_handoff() {
+        let (shutdown_tx, shutdown) = oneshot::channel();
+        let loader = AppServerPickerLoader {
+            loader: Arc::new(|_| {}),
+            shutdown,
+        };
+        let handoff =
+            tokio::spawn(async move { loader.finish(Ok(SessionSelection::StartFresh)).await });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !handoff.is_finished(),
+            "the caller must wait for the old picker app-server to shut down"
+        );
+        shutdown_tx
+            .send(Ok(()))
+            .expect("send the old-root shutdown receipt");
+        assert!(matches!(
+            handoff.await.expect("join picker handoff"),
+            Ok(SessionSelection::StartFresh)
+        ));
     }
 
     fn make_row(path: &str, ts: &str, preview: &str) -> Row {
