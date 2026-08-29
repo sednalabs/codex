@@ -328,6 +328,14 @@ pub struct GoalOwnerAdmissionStore {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GoalRuntimeAdmissionRuntimeIdentity(Uuid);
 
+impl GoalRuntimeAdmissionRuntimeIdentity {
+    /// Mint the opaque identity only while the parent runtime constructs its
+    /// bootstrap witness; no external caller can manufacture one.
+    pub(super) fn new() -> Self {
+        Self(Uuid::now_v7())
+    }
+}
+
 /// Opaque bootstrap witness for the sole goal runtime that may mutate the
 /// admission protocol. It is non-cloneable and is produced only by
 /// `StateRuntimeBootstrap`, never by a diagnostic `StateRuntime` view.
