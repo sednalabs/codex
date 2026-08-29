@@ -64,7 +64,7 @@ impl GoalExtensionConfig {
 #[derive(Clone)]
 pub struct GoalExtension<C> {
     state_dbs: Arc<codex_state::StateRuntime>,
-    goal_runtime_admissions: codex_state::InstalledGoalRuntimeAdmissions,
+    goal_runtime_admissions: Arc<codex_state::InstalledGoalRuntimeAdmissions>,
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
@@ -82,7 +82,7 @@ impl<C> std::fmt::Debug for GoalExtension<C> {
 impl<C> GoalExtension<C> {
     pub(crate) fn new_with_host_capabilities(
         state_dbs: Arc<codex_state::StateRuntime>,
-        goal_runtime_admissions: codex_state::InstalledGoalRuntimeAdmissions,
+        goal_runtime_admissions: Arc<codex_state::InstalledGoalRuntimeAdmissions>,
         analytics_events_client: AnalyticsEventsClient,
         event_sink: Arc<dyn ExtensionEventSink>,
         metrics_client: Option<MetricsClient>,
@@ -128,7 +128,7 @@ where
                 GoalRuntimeHandle::new(
                     thread_id,
                     Arc::clone(&self.state_dbs),
-                    self.goal_runtime_admissions.clone(),
+                    Arc::clone(&self.goal_runtime_admissions),
                     self.event_emitter.clone(),
                     self.metrics.clone(),
                     self.thread_manager.clone(),
@@ -553,15 +553,17 @@ where
 pub fn install_with_backend<C>(
     registry: &mut ExtensionRegistryBuilder<C>,
     state_dbs: Arc<codex_state::StateRuntime>,
-    goal_runtime_admissions: codex_state::InstalledGoalRuntimeAdmissions,
+    goal_runtime_admissions: Arc<codex_state::InstalledGoalRuntimeAdmissions>,
     analytics_events_client: AnalyticsEventsClient,
     metrics_client: Option<MetricsClient>,
     thread_manager: Weak<ThreadManager>,
     goal_service: Arc<GoalService>,
     goals_enabled: impl Fn(&C) -> bool + Send + Sync + 'static,
-) where
+) -> anyhow::Result<()>
+where
     C: Send + Sync + 'static,
 {
+    goal_runtime_admissions.validate_for_runtime(state_dbs.as_ref())?;
     let extension = Arc::new(GoalExtension::new_with_host_capabilities(
         state_dbs,
         goal_runtime_admissions,
@@ -578,6 +580,7 @@ pub fn install_with_backend<C>(
     registry.token_usage_contributor(extension.clone());
     registry.tool_lifecycle_contributor(extension.clone());
     registry.tool_contributor(extension);
+    Ok(())
 }
 
 fn goal_runtime_handle(thread_store: &ExtensionData) -> Option<Arc<GoalRuntimeHandle>> {

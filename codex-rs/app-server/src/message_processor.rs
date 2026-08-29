@@ -207,7 +207,7 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) feedback: CodexFeedback,
     pub(crate) log_db: Option<LogDbLayer>,
     pub(crate) state_db: Option<StateDbHandle>,
-    pub(crate) goal_runtime_admissions: Option<codex_state::InstalledGoalRuntimeAdmissions>,
+    pub(crate) goal_runtime_admissions: Option<Arc<codex_state::InstalledGoalRuntimeAdmissions>>,
     pub(crate) config_warnings: Vec<ConfigWarningNotification>,
     pub(crate) session_source: SessionSource,
     pub(crate) auth_manager: Arc<AuthManager>,

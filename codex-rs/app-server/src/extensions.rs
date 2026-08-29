@@ -48,7 +48,7 @@ pub(crate) struct ThreadExtensionDependencies {
     pub(crate) state_db: Option<StateDbHandle>,
     /// Private admissions installed by the one-time state bootstrap witness.
     /// A diagnostic state-db clone is not a substitute.
-    pub(crate) goal_runtime_admissions: Option<codex_state::InstalledGoalRuntimeAdmissions>,
+    pub(crate) goal_runtime_admissions: Option<Arc<codex_state::InstalledGoalRuntimeAdmissions>>,
     pub(crate) analytics_events_client: AnalyticsEventsClient,
     pub(crate) thread_manager: Weak<ThreadManager>,
     pub(crate) goal_service: Arc<GoalService>,
@@ -217,7 +217,7 @@ where
     let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(event_sink);
     match (state_db, goal_runtime_admissions) {
         (Some(state_db), Some(goal_runtime_admissions)) => {
-            codex_goal_extension::install_with_backend(
+            if let Err(error) = codex_goal_extension::install_with_backend(
                 &mut builder,
                 state_db,
                 goal_runtime_admissions,
@@ -226,7 +226,9 @@ where
                 thread_manager,
                 goal_service,
                 |config: &Config| config.features.enabled(codex_features::Feature::Goals),
-            );
+            ) {
+                tracing::error!(%error, "goal extension bootstrap does not match the state runtime");
+            }
         }
         (Some(_), None) => {
             tracing::warn!(

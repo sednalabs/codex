@@ -28,6 +28,8 @@ use codex_app_server_client::AppServerClient;
 use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessClientStartArgs;
+use codex_app_server_client::InProcessState;
+use codex_app_server_client::InProcessStateRestart;
 use codex_app_server_client::RemoteAppServerClient;
 use codex_app_server_client::RemoteAppServerConnectArgs;
 pub use codex_app_server_client::RemoteAppServerEndpoint;
@@ -329,7 +331,7 @@ async fn start_embedded_app_server(
     cloud_config_bundle: CloudConfigBundleLoader,
     feedback: codex_feedback::CodexFeedback,
     log_db: Option<log_db::LogDbLayer>,
-    state_db: Option<StateDbHandle>,
+    state: InProcessState,
     environment_manager: Arc<EnvironmentManager>,
 ) -> color_eyre::Result<InProcessAppServerClient> {
     start_embedded_app_server_with(
@@ -341,7 +343,7 @@ async fn start_embedded_app_server(
         cloud_config_bundle,
         feedback,
         log_db,
-        state_db,
+        state,
         environment_manager,
         InProcessAppServerClient::start,
     )
@@ -353,6 +355,14 @@ pub(crate) enum AppServerTarget {
     Embedded,
     LocalDaemon { endpoint: RemoteAppServerEndpoint },
     Remote { endpoint: RemoteAppServerEndpoint },
+}
+
+/// TUI-local ownership of the initial embedded host and its one explicit
+/// restart reserve. The reserve is consumed only after a picker owns and
+/// closes the startup host; it is never a generic cloneable admission bearer.
+struct AppServerStatePlan {
+    initial: InProcessState,
+    restart: Option<InProcessStateRestart>,
 }
 
 impl AppServerTarget {
@@ -372,18 +382,31 @@ impl AppServerTarget {
 async fn init_state_db_for_app_server_target(
     config: &Config,
     app_server_target: &AppServerTarget,
-) -> std::io::Result<Option<StateDbHandle>> {
+) -> std::io::Result<AppServerStatePlan> {
     match app_server_target {
-        AppServerTarget::Embedded => state_db::try_init(config).await.map(Some).map_err(|err| {
-            let database_path = codex_state::runtime_db_path_for_corruption_error(&err)
-                .unwrap_or_else(|| config.sqlite_config().state_db_path());
-            std::io::Error::other(LocalStateDbStartupError::new(
-                database_path,
-                format!("{err:#}"),
-            ))
-        }),
+        AppServerTarget::Embedded => state_db::try_init_with_goal_runtime_bootstrap(config)
+            .await
+            .map(InProcessState::with_one_restart_from_goal_runtime_bootstrap)
+            .map(|(initial, restart)| AppServerStatePlan {
+                initial,
+                restart: Some(restart),
+            })
+            .map_err(|err| {
+                let database_path = codex_state::runtime_db_path_for_corruption_error(&err)
+                    .unwrap_or_else(|| config.sqlite_config().state_db_path());
+                std::io::Error::other(LocalStateDbStartupError::new(
+                    database_path,
+                    format!("{err:#}"),
+                ))
+            }),
         AppServerTarget::LocalDaemon { .. } | AppServerTarget::Remote { .. } => {
-            Ok(state_db::get_state_db(config).await)
+            Ok(AppServerStatePlan {
+                initial: match state_db::get_state_db(config).await {
+                    Some(state_db) => InProcessState::diagnostics(state_db),
+                    None => InProcessState::none(),
+                },
+                restart: None,
+            })
         }
     }
 }
@@ -544,7 +567,7 @@ async fn start_app_server(
     cloud_config_bundle: CloudConfigBundleLoader,
     feedback: codex_feedback::CodexFeedback,
     log_db: Option<log_db::LogDbLayer>,
-    state_db: Option<StateDbHandle>,
+    state: InProcessState,
     environment_manager: Arc<EnvironmentManager>,
 ) -> color_eyre::Result<AppServerClient> {
     match target {
@@ -557,7 +580,7 @@ async fn start_app_server(
             cloud_config_bundle,
             feedback,
             log_db,
-            state_db,
+            state,
             environment_manager,
         )
         .await
@@ -571,7 +594,7 @@ async fn start_app_server(
 pub(crate) async fn start_app_server_for_picker(
     config: &Config,
     target: &AppServerTarget,
-    state_db: Option<StateDbHandle>,
+    state: InProcessState,
     environment_manager: Arc<EnvironmentManager>,
 ) -> color_eyre::Result<AppServerSession> {
     let app_server = start_app_server(
@@ -584,7 +607,7 @@ pub(crate) async fn start_app_server_for_picker(
         CloudConfigBundleLoader::default(),
         codex_feedback::CodexFeedback::new(),
         /*log_db*/ None,
-        state_db,
+        state,
         environment_manager,
     )
     .await?;
@@ -598,11 +621,11 @@ pub(crate) async fn start_app_server_for_picker(
 pub(crate) async fn start_embedded_app_server_for_picker(
     config: &Config,
 ) -> color_eyre::Result<AppServerSession> {
-    let state_db = init_state_db_for_app_server_target(config, &AppServerTarget::Embedded).await?;
+    let state = init_state_db_for_app_server_target(config, &AppServerTarget::Embedded).await?;
     start_app_server_for_picker(
         config,
         &AppServerTarget::Embedded,
-        state_db,
+        state.initial,
         Arc::new(EnvironmentManager::default_for_tests()),
     )
     .await
@@ -618,7 +641,7 @@ async fn start_embedded_app_server_with<F, Fut>(
     cloud_config_bundle: CloudConfigBundleLoader,
     feedback: codex_feedback::CodexFeedback,
     log_db: Option<log_db::LogDbLayer>,
-    state_db: Option<StateDbHandle>,
+    state: InProcessState,
     environment_manager: Arc<EnvironmentManager>,
     start_client: F,
 ) -> color_eyre::Result<InProcessAppServerClient>
@@ -645,7 +668,7 @@ where
         cloud_config_bundle,
         feedback,
         log_db,
-        state_db,
+        state,
         environment_manager,
         config_warnings,
         session_source: serde_json::from_value(serde_json::json!("cli"))
@@ -1270,7 +1293,9 @@ pub async fn run_main(
             codex_rollout::sqlite_telemetry_recorder(metrics.clone(), otel_originator.as_str());
         let _ = codex_state::install_process_db_telemetry(telemetry);
     }
-    let state_db = init_state_db_for_app_server_target(&config, &app_server_target).await?;
+    let app_server_state_plan =
+        init_state_db_for_app_server_target(&config, &app_server_target).await?;
+    let state_db = app_server_state_plan.initial.state_db();
     let config_toml_log_dir_configured = config
         .config_layer_stack
         .effective_config()
@@ -1401,6 +1426,8 @@ pub async fn run_main(
         feedback,
         log_db,
         state_db,
+        Some(app_server_state_plan.initial),
+        app_server_state_plan.restart,
         environment_manager,
     )
     .await
@@ -1423,6 +1450,8 @@ async fn run_ratatui_app(
     feedback: codex_feedback::CodexFeedback,
     log_db: Option<log_db::LogDbLayer>,
     state_db: Option<StateDbHandle>,
+    mut app_server_state: Option<InProcessState>,
+    mut app_server_restart: Option<InProcessStateRestart>,
     environment_manager: Arc<EnvironmentManager>,
 ) -> color_eyre::Result<AppExitInfo> {
     let uses_remote_workspace = app_server_target.uses_remote_workspace();
@@ -1484,7 +1513,9 @@ async fn run_ratatui_app(
         cloud_config_bundle.clone(),
         feedback.clone(),
         log_db.clone(),
-        state_db.clone(),
+        app_server_state
+            .take()
+            .expect("app-server state composition is initialized before startup"),
         environment_manager.clone(),
     )
     .await
@@ -1850,7 +1881,19 @@ async fn run_ratatui_app(
             cloud_config_bundle.clone(),
             feedback.clone(),
             log_db.clone(),
-            state_db.clone(),
+            match app_server_state.take().or_else(|| {
+                app_server_restart
+                    .take()
+                    .map(InProcessStateRestart::into_state)
+            }) {
+                Some(state) => state,
+                None if matches!(app_server_target, AppServerTarget::Embedded) => {
+                    return Err(color_eyre::eyre::eyre!(
+                        "embedded app-server restart requires its original goal-runtime bootstrap"
+                    ));
+                }
+                None => InProcessState::none(),
+            },
             environment_manager.clone(),
         )
         .await
@@ -2327,7 +2370,7 @@ mod tests {
             CloudConfigBundleLoader::default(),
             codex_feedback::CodexFeedback::new(),
             /*log_db*/ None,
-            state_db,
+            state_db.initial,
             Arc::new(EnvironmentManager::default_for_tests()),
         )
         .await
@@ -2380,6 +2423,7 @@ mod tests {
                 .join(format!("rollout-{filename_timestamp}-{thread_id}.jsonl"));
             let state_db =
                 init_state_db_for_app_server_target(&config, &AppServerTarget::Embedded).await?;
+            let diagnostic_state_db = state_db.initial.state_db();
             let target_session = resume_picker::SessionTarget {
                 path: Some(rollout_path),
                 thread_id,
@@ -2393,7 +2437,7 @@ mod tests {
             let fallback_cwd = match resolve_startup_resume_or_fork_cwd(
                 &mut tui,
                 &config,
-                state_db.as_deref(),
+                diagnostic_state_db.as_deref(),
                 &session_selection,
                 cwd_override,
                 /*uses_remote_workspace*/ false,
@@ -2422,7 +2466,7 @@ mod tests {
             let mut app_server = start_app_server_for_picker(
                 &final_config,
                 &AppServerTarget::Embedded,
-                state_db,
+                state_db.initial,
                 Arc::new(EnvironmentManager::default_for_tests()),
             )
             .await?;
@@ -3284,7 +3328,7 @@ mod tests {
             CloudConfigBundleLoader::default(),
             codex_feedback::CodexFeedback::new(),
             /*log_db*/ None,
-            /*state_db*/ None,
+            InProcessState::none(),
             Arc::new(EnvironmentManager::default_for_tests()),
             |_args| async { Err(std::io::Error::other("boom")) },
         )

@@ -23,6 +23,7 @@ use codex_app_server_client::ExecServerRuntimePaths;
 use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessClientStartArgs;
 use codex_app_server_client::InProcessServerEvent;
+use codex_app_server_client::InProcessState;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
@@ -556,7 +557,13 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         arg0_paths.codex_self_exe.clone(),
         arg0_paths.codex_linux_sandbox_exe.clone(),
     )?;
-    let state_db = codex_core::init_state_db(&config).await;
+    let state_bootstrap = codex_core::init_state_db_with_goal_runtime_bootstrap(&config).await;
+    let state_db = state_bootstrap
+        .as_ref()
+        .map(|bootstrap| bootstrap.state_db());
+    let state = state_bootstrap
+        .map(InProcessState::from_goal_runtime_bootstrap)
+        .unwrap_or_else(InProcessState::none);
     let environment_manager = if run_loader_overrides.ignore_user_config {
         EnvironmentManager::from_env(Some(local_runtime_paths), config.http_client_factory())
             .await?
@@ -577,7 +584,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         cloud_config_bundle: run_cloud_config_bundle,
         feedback: CodexFeedback::new(),
         log_db: None,
-        state_db: state_db.clone(),
+        state,
         environment_manager: std::sync::Arc::new(environment_manager),
         config_warnings,
         session_source: SessionSource::Exec,

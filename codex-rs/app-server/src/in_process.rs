@@ -105,6 +105,99 @@ pub const DEFAULT_IN_PROCESS_CHANNEL_CAPACITY: usize = CHANNEL_CAPACITY;
 
 type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorError>;
 
+/// Opaque in-process state composition. Its private fields ensure callers
+/// cannot pair a state runtime from one bootstrap with admissions from another.
+/// The bootstrap constructor preserves the exact identity binding and the goal
+/// extension verifies that binding again before registration.
+pub struct InProcessState {
+    state_db: Option<StateDbHandle>,
+    goal_runtime_admissions: Option<Arc<codex_state::InstalledGoalRuntimeAdmissions>>,
+}
+
+/// One pre-authorized embedded-app-server restart state. It is non-cloneable
+/// and can be consumed exactly once; this lets a TUI picker replace the
+/// temporary embedded host without reconstructing or mismatching authority.
+pub struct InProcessStateRestart {
+    state_db: Option<StateDbHandle>,
+    goal_runtime_admissions: Option<Arc<codex_state::InstalledGoalRuntimeAdmissions>>,
+}
+
+impl InProcessStateRestart {
+    /// Consume this one-shot reserve to create the replacement host state.
+    pub fn into_state(self) -> InProcessState {
+        InProcessState {
+            state_db: self.state_db,
+            goal_runtime_admissions: self.goal_runtime_admissions,
+        }
+    }
+}
+
+impl InProcessState {
+    /// Start without local SQLite state.
+    pub fn none() -> Self {
+        Self {
+            state_db: None,
+            goal_runtime_admissions: None,
+        }
+    }
+
+    /// Supply a diagnostic-only state runtime. This intentionally does not
+    /// install the Goal extension.
+    pub fn diagnostics(state_db: StateDbHandle) -> Self {
+        Self {
+            state_db: Some(state_db),
+            goal_runtime_admissions: None,
+        }
+    }
+
+    /// Preserve a state bootstrap and its exact goal-admission authority as
+    /// one inseparable app-server input.
+    pub fn from_goal_runtime_bootstrap(
+        bootstrap: codex_rollout::state_db::StateDbBootstrap,
+    ) -> Self {
+        let (state_db, goal_runtime_admissions) = bootstrap.into_parts();
+        Self {
+            state_db: Some(state_db),
+            goal_runtime_admissions: Some(Arc::new(goal_runtime_admissions)),
+        }
+    }
+
+    /// Consume one bootstrap into the initial embedded host plus exactly one
+    /// non-cloneable restart reserve. No raw store or independently supplied
+    /// issuer crosses this boundary.
+    pub fn with_one_restart_from_goal_runtime_bootstrap(
+        bootstrap: codex_rollout::state_db::StateDbBootstrap,
+    ) -> (Self, InProcessStateRestart) {
+        let (state_db, goal_runtime_admissions) = bootstrap.into_parts();
+        let goal_runtime_admissions = Arc::new(goal_runtime_admissions);
+        (
+            Self {
+                state_db: Some(state_db.clone()),
+                goal_runtime_admissions: Some(Arc::clone(&goal_runtime_admissions)),
+            },
+            InProcessStateRestart {
+                state_db: Some(state_db),
+                goal_runtime_admissions: Some(goal_runtime_admissions),
+            },
+        )
+    }
+
+    /// Borrow a diagnostic clone for pre-start logging and session lookup.
+    /// This clone cannot mint goal-admission authority.
+    pub fn state_db(&self) -> Option<StateDbHandle> {
+        self.state_db.clone()
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Option<StateDbHandle>,
+        Option<Arc<codex_state::InstalledGoalRuntimeAdmissions>>,
+    ) {
+        (self.state_db, self.goal_runtime_admissions)
+    }
+}
+
 fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     matches!(
         notification,
@@ -225,14 +318,8 @@ pub struct InProcessStartArgs {
     pub feedback: CodexFeedback,
     /// SQLite tracing layer used to flush recently emitted logs before feedback upload.
     pub log_db: Option<LogDbLayer>,
-    /// Process-wide SQLite state handle shared with embedded app-server consumers.
-    pub state_db: Option<StateDbHandle>,
-    /// One-time goal-runtime bootstrap witness paired with `state_db`.
-    ///
-    /// The in-process host consumes this before it constructs the private
-    /// extension registry; callers cannot substitute a diagnostic state-db
-    /// clone for this witness.
-    pub goal_runtime_admission_installation: Option<codex_state::GoalRuntimeAdmissionInstallation>,
+    /// Opaque local-state composition for the embedded app-server.
+    pub state: InProcessState,
     /// Environment manager used by core execution and filesystem operations.
     pub environment_manager: Arc<EnvironmentManager>,
     /// Startup warnings emitted after initialize succeeds.
@@ -553,6 +640,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             args.thread_config_loader,
         );
         let (processor_tx, mut processor_rx) = mpsc::channel::<ProcessorCommand>(channel_capacity);
+        let (state_db, goal_runtime_admissions) = args.state.into_parts();
         let mut processor_handle = tokio::spawn(async move {
             let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
                 outgoing: Arc::clone(&processor_outgoing),
@@ -563,10 +651,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 environment_manager: args.environment_manager,
                 feedback: args.feedback,
                 log_db: args.log_db,
-                state_db: args.state_db,
-                goal_runtime_admissions: args
-                    .goal_runtime_admission_installation
-                    .map(codex_state::GoalRuntimeAdmissionInstallation::install),
+                state_db,
+                goal_runtime_admissions,
                 config_warnings: args.config_warnings,
                 session_source: args.session_source,
                 auth_manager,
@@ -941,8 +1027,7 @@ mod tests {
             thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
             feedback: CodexFeedback::new(),
             log_db: None,
-            state_db: Some(state_db),
-            goal_runtime_admission_installation: None,
+            state: InProcessState::diagnostics(state_db),
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
             config_warnings: Vec::new(),
             session_source,

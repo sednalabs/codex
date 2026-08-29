@@ -30,6 +30,8 @@ pub use codex_app_server::app_server_control_socket_path;
 pub use codex_app_server::in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 pub use codex_app_server::in_process::InProcessServerEvent;
 use codex_app_server::in_process::InProcessStartArgs;
+pub use codex_app_server::in_process::InProcessState;
+pub use codex_app_server::in_process::InProcessStateRestart;
 use codex_app_server::in_process::LogDbLayer;
 pub use codex_app_server::in_process::StateDbHandle;
 use codex_app_server_protocol::ClientInfo;
@@ -311,14 +313,8 @@ pub struct InProcessClientStartArgs {
     pub feedback: CodexFeedback,
     /// SQLite tracing layer used to flush recently emitted logs before feedback upload.
     pub log_db: Option<LogDbLayer>,
-    /// Process-wide SQLite state handle shared with the embedded app-server.
-    pub state_db: Option<StateDbHandle>,
-    /// One-time goal-runtime bootstrap witness paired with `state_db`.
-    ///
-    /// This is consumed by the embedded app-server before it creates the
-    /// private goal extension. A diagnostic state handle alone cannot grant
-    /// goal-admission mutation authority.
-    pub goal_runtime_admission_installation: Option<codex_state::GoalRuntimeAdmissionInstallation>,
+    /// Opaque local-state composition for the embedded app-server.
+    pub state: InProcessState,
     /// Environment manager used by core execution and filesystem operations.
     pub environment_manager: Arc<EnvironmentManager>,
     /// Startup warnings emitted after initialize succeeds.
@@ -385,8 +381,7 @@ impl InProcessClientStartArgs {
             thread_config_loader,
             feedback: self.feedback,
             log_db: self.log_db,
-            state_db: self.state_db,
-            goal_runtime_admission_installation: self.goal_runtime_admission_installation,
+            state: self.state,
             environment_manager: self.environment_manager,
             config_warnings: self.config_warnings,
             session_source: self.session_source,
@@ -1013,8 +1008,7 @@ mod tests {
             cloud_config_bundle: CloudConfigBundleLoader::default(),
             feedback: CodexFeedback::new(),
             log_db: None,
-            state_db: Some(state_db),
-            goal_runtime_admission_installation: None,
+            state: InProcessState::diagnostics(state_db),
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
             config_warnings: Vec::new(),
             session_source,
@@ -2539,8 +2533,7 @@ mod tests {
             cloud_config_bundle: CloudConfigBundleLoader::default(),
             feedback: CodexFeedback::new(),
             log_db: None,
-            state_db: None,
-            goal_runtime_admission_installation: None,
+            state: InProcessState::none(),
             environment_manager: environment_manager.clone(),
             config_warnings: Vec::new(),
             session_source: SessionSource::Exec,
@@ -2589,8 +2582,7 @@ mod tests {
             cloud_config_bundle: CloudConfigBundleLoader::default(),
             feedback: CodexFeedback::new(),
             log_db: None,
-            state_db: None,
-            goal_runtime_admission_installation: None,
+            state: InProcessState::none(),
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
             config_warnings: Vec::new(),
             session_source: SessionSource::Exec,

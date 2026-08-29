@@ -83,7 +83,8 @@ pub use goal_owner_admissions::GoalOwnerAdmissionStore;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalDisposition;
 pub use goal_owner_admissions::GoalOwnerAdmissionTerminalOutcome;
 pub use goal_owner_admissions::GoalOwnerDispatchFenceCapability;
-pub use goal_owner_admissions::GoalRuntimeAdmissionInstallation;
+pub use goal_owner_admissions::GoalRuntimeAdmissionFenceGuard;
+pub use goal_owner_admissions::GoalRuntimeAdmissionOwner;
 pub use goal_owner_admissions::InstalledGoalRuntimeAdmissions;
 pub use goal_owner_admissions::canonical_provider_id;
 pub use goals::GoalAccountingMode;
@@ -343,13 +344,53 @@ pub struct StateRuntimeBootstrap {
 }
 
 impl StateRuntimeBootstrap {
-    /// Split the diagnostic runtime from its one-time installation witness.
-    pub fn into_parts(self) -> (Arc<StateRuntime>, GoalRuntimeAdmissionInstallation) {
-        (self.state_runtime, self.goal_runtime_admission_installation)
+    /// Bind the one-time installation witness to its exact state runtime.
+    /// The resulting pair may be moved across crates, but the installed
+    /// admissions reject any different runtime before extension setup or
+    /// continuation publication.
+    pub fn into_goal_runtime(self) -> StateRuntimeGoalRuntime {
+        let admissions = self
+            .goal_runtime_admission_installation
+            .install_for(self.state_runtime.as_ref())
+            .expect("a StateRuntimeBootstrap always carries its matching witness");
+        StateRuntimeGoalRuntime {
+            state_runtime: self.state_runtime,
+            admissions,
+        }
     }
 
     /// Keep only the diagnostic runtime for callers that do not compose the
     /// goal extension.
+    pub fn into_state_runtime(self) -> Arc<StateRuntime> {
+        self.state_runtime
+    }
+}
+
+/// Bound state runtime and installed admission facade for a trusted goal
+/// composition root. The facade is non-cloneable and validates this exact
+/// runtime identity whenever it is consumed by another crate.
+#[must_use = "the bound goal-runtime pair must reach extension setup or be deliberately dropped"]
+pub struct StateRuntimeGoalRuntime {
+    state_runtime: Arc<StateRuntime>,
+    admissions: InstalledGoalRuntimeAdmissions,
+}
+
+impl StateRuntimeGoalRuntime {
+    /// Borrow a diagnostic state-handle clone while retaining the inseparable
+    /// installed admission facade for later composition.
+    pub fn state_runtime(&self) -> Arc<StateRuntime> {
+        Arc::clone(&self.state_runtime)
+    }
+
+    /// Move the bound runtime and installed facade to the consuming host. The
+    /// facade independently validates the runtime at every authority boundary,
+    /// so pairing either part with a different bootstrap fails closed.
+    pub fn into_parts(self) -> (Arc<StateRuntime>, InstalledGoalRuntimeAdmissions) {
+        (self.state_runtime, self.admissions)
+    }
+
+    /// Keep only the diagnostic state runtime for a host that intentionally
+    /// does not install goal runtime support.
     pub fn into_state_runtime(self) -> Arc<StateRuntime> {
         self.state_runtime
     }
@@ -363,6 +404,7 @@ pub struct StateRuntime {
     usage_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
     goal_owner_admissions: GoalOwnerAdmissionStore,
+    goal_runtime_admission_runtime_identity: GoalRuntimeAdmissionRuntimeIdentity,
     memories: MemoryStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
@@ -679,6 +721,8 @@ impl StateRuntime {
         // the owner-capable clone here would let any downstream StateRuntime
         // holder mint and dispatch an automatic continuation.
         let goal_owner_admissions = GoalOwnerAdmissionStore::read_only(Arc::clone(&goals_pool));
+        let goal_runtime_admission_runtime_identity =
+            GoalRuntimeAdmissionRuntimeIdentity(Uuid::now_v7());
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::with_capability(
                 Arc::clone(&goals_pool),
@@ -686,6 +730,7 @@ impl StateRuntime {
                 runtime_owner.clone(),
             ),
             goal_owner_admissions,
+            goal_runtime_admission_runtime_identity,
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
             logs_pool,
@@ -703,6 +748,7 @@ impl StateRuntime {
             state_runtime: runtime,
             goal_runtime_admission_installation: GoalRuntimeAdmissionInstallation::new(
                 goal_owner_admission_installation,
+                goal_runtime_admission_runtime_identity,
             ),
         })
     }
@@ -751,6 +797,20 @@ impl StateRuntime {
     /// schedule, claim, clear, or publish a continuation.
     pub fn goal_owner_admissions(&self) -> &GoalOwnerAdmissionStore {
         &self.goal_owner_admissions
+    }
+
+    /// Verify that an opaque installed admission facade belongs to this exact
+    /// runtime/database identity before Core accepts it for provider admission.
+    pub fn validates_goal_runtime_admissions(
+        &self,
+        admissions: &InstalledGoalRuntimeAdmissions,
+    ) -> bool {
+        admissions.validate_for_runtime(self).is_ok()
+    }
+
+    /// Verify that a continuation owner was derived from this exact runtime.
+    pub fn validates_goal_runtime_owner(&self, owner: &GoalRuntimeAdmissionOwner) -> bool {
+        owner.matches_runtime(self)
     }
 
     /// Whether this runtime holds the process-lifetime goal database lease.
@@ -1148,9 +1208,8 @@ mod tests {
         )
         .await
         .expect("initialize owning runtime");
-        let (runtime, goal_runtime_admission_installation) = bootstrap.into_parts();
+        let (runtime, cloned_store) = bootstrap.into_goal_runtime().into_parts();
         assert!(runtime.owns_goal_runtime());
-        let cloned_store = goal_runtime_admission_installation.install();
         drop(runtime);
 
         let blocked_runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())

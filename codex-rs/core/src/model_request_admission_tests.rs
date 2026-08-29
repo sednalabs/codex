@@ -8,6 +8,7 @@ use codex_state::GoalOwnerAdmissionPhase;
 use codex_state::GoalOwnerAdmissionRecord;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use tempfile::TempDir;
@@ -16,30 +17,17 @@ const SUCCESSOR_TURN_ID: &str = "turn-successor";
 const SUCCESSOR_REQUEST_ID: &str = "successor-request";
 
 fn issuer(
-    admissions: codex_state::InstalledGoalRuntimeAdmissions,
+    admissions: Arc<codex_state::InstalledGoalRuntimeAdmissions>,
+    thread_id: ThreadId,
 ) -> GoalRuntimeContinuationIssuer {
-    GoalRuntimeContinuationIssuer::from_installed_admissions(admissions, true)
+    GoalRuntimeContinuationIssuer::for_thread(admissions, thread_id)
 }
 
 fn fenced(
-    admissions: &codex_state::InstalledGoalRuntimeAdmissions,
+    admissions: &Arc<codex_state::InstalledGoalRuntimeAdmissions>,
     authority: codex_state::GoalOwnerAdmissionContinuationAuthority,
 ) -> GoalOwnerContinuation {
-    issuer(admissions.clone()).continuation(authority)
-}
-
-#[test]
-fn fence_guard_rejects_revoke_and_reenable_with_stale_epoch() {
-    let fence = Arc::new(GoalContinuationFence::new());
-    let stale = fence.enter(0).expect("initial epoch should enter");
-    assert!(stale.is_current_epoch());
-
-    fence.revoke();
-    assert!(!stale.is_current_epoch());
-
-    let current = fence.enter(1).expect("new epoch should enter");
-    assert!(current.is_current_epoch());
-    assert!(!stale.is_current_epoch());
+    issuer(Arc::clone(admissions), authority.authority.thread_id).continuation(authority)
 }
 
 fn identity(thread_id: ThreadId, kind: InferenceRequestKind) -> ModelRequestIdentity {
@@ -69,7 +57,7 @@ fn identity_with(
 
 struct AdmissionTestRuntime {
     state_db: StateDbHandle,
-    admissions: codex_state::InstalledGoalRuntimeAdmissions,
+    admissions: Arc<codex_state::InstalledGoalRuntimeAdmissions>,
 }
 
 async fn runtime() -> (TempDir, AdmissionTestRuntime) {
@@ -80,14 +68,45 @@ async fn runtime() -> (TempDir, AdmissionTestRuntime) {
     )
     .await
     .expect("initialize state runtime");
-    let (state_db, goal_runtime_admission_installation) = bootstrap.into_parts();
+    let (state_db, admissions) = bootstrap.into_goal_runtime().into_parts();
     (
         home,
         AdmissionTestRuntime {
             state_db,
-            admissions: goal_runtime_admission_installation.install(),
+            admissions: Arc::new(admissions),
         },
     )
+}
+
+#[tokio::test]
+async fn retained_issuer_shares_installed_revocation_epoch() {
+    let (_home, test_runtime) = runtime().await;
+    let thread_id = ThreadId::new();
+    let primary_issuer = issuer(Arc::clone(&test_runtime.admissions), thread_id);
+    let retained_issuer = issuer(Arc::clone(&test_runtime.admissions), thread_id);
+    let stale_epoch = primary_issuer.current_epoch();
+    let guard = test_runtime
+        .admissions
+        .owner_for_thread(thread_id)
+        .enter_continuation(stale_epoch)
+        .expect("initial installed owner epoch should enter");
+    assert!(guard.is_current_epoch());
+
+    retained_issuer.revoke();
+
+    assert_eq!(
+        primary_issuer.current_epoch(),
+        retained_issuer.current_epoch()
+    );
+    assert_ne!(primary_issuer.current_epoch(), stale_epoch);
+    assert!(!guard.is_current_epoch());
+    assert!(
+        test_runtime
+            .admissions
+            .owner_for_thread(thread_id)
+            .enter_continuation(stale_epoch)
+            .is_none()
+    );
 }
 
 fn observation(
@@ -121,11 +140,11 @@ fn observation(
 
 async fn admit(
     broker: &ModelRequestAdmissionBroker,
-    admissions: &codex_state::InstalledGoalRuntimeAdmissions,
+    admissions: &Arc<codex_state::InstalledGoalRuntimeAdmissions>,
     record: &GoalOwnerAdmissionRecord,
     identity: &ModelRequestIdentity,
 ) -> ModelRequestAdmissionDecision {
-    let coordinator = issuer(admissions.clone());
+    let coordinator = issuer(Arc::clone(admissions), record.authority.thread_id);
     let claim_id = coordinator
         .claim_dispatch(&record.continuation_authority(), Utc::now())
         .await
@@ -285,13 +304,13 @@ async fn foreign_coordinator_token_cannot_consume_dispatch_claim() {
         ))
         .await
         .expect("record eligible admission");
-    let trusted = issuer(store.clone());
+    let trusted = issuer(Arc::clone(store), record.authority.thread_id);
     let claim_id = trusted
         .claim_dispatch(&record.continuation_authority(), Utc::now())
         .await
         .expect("claim exact admission")
         .expect("eligible admission claim");
-    let forged = issuer(store.clone())
+    let forged = issuer(Arc::clone(store), ThreadId::new())
         .continuation_with_dispatch_claim(record.continuation_authority(), claim_id);
     let decision = broker
         .admit(
@@ -486,14 +505,32 @@ async fn disabled_or_stale_installed_issuer_cannot_publish_a_provider_request() 
         ))
         .await
         .expect("record eligible admission");
-    let issuer = issuer(test_runtime.admissions.clone());
+    let issuer = issuer(
+        Arc::clone(&test_runtime.admissions),
+        record.authority.thread_id,
+    );
     let stale_continuation = issuer.continuation(record.continuation_authority());
     assert_eq!(issuer.set_enabled(false), Some(1));
+    let retained_issuer = issuer(
+        Arc::clone(&test_runtime.admissions),
+        record.authority.thread_id,
+    );
+    assert!(
+        !retained_issuer.is_enabled(),
+        "a retained installed facade must share the disabled thread owner"
+    );
     assert!(
         issuer
             .claim_dispatch(&record.continuation_authority(), Utc::now())
             .await
             .is_err()
+    );
+    assert!(
+        retained_issuer
+            .claim_dispatch(&record.continuation_authority(), Utc::now())
+            .await
+            .is_err(),
+        "a foreign issuer derived after disable cannot bypass the shared owner epoch"
     );
     assert_eq!(issuer.set_enabled(true), Some(2));
 
@@ -504,6 +541,44 @@ async fn disabled_or_stale_installed_issuer_cannot_publish_a_provider_request() 
         )
         .await
         .expect("stale continuation is rejected before publication");
+    assert!(matches!(decision, ModelRequestAdmissionDecision::Dormant));
+    let calls = AtomicUsize::new(0);
+    assert!(fake_stream_request(&decision, &calls).await.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn cross_runtime_admissions_are_rejected_before_provider_publication() {
+    let (_state_a_home, state_a) = runtime().await;
+    let (_state_b_home, state_b) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(state_a.state_db.clone()));
+    let record = state_b
+        .admissions
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "cross-runtime-owner",
+            GoalOwnerAdmissionPhase::Pending,
+            Utc::now() - Duration::seconds(1),
+            InferenceRequestKind::Turn,
+        ))
+        .await
+        .expect("record other-runtime admission");
+    let foreign_issuer = issuer(Arc::clone(&state_b.admissions), record.authority.thread_id);
+    let dispatch_claim_id = foreign_issuer
+        .claim_dispatch(&record.continuation_authority(), Utc::now())
+        .await
+        .expect("claim other-runtime continuation")
+        .expect("eligible continuation receives a claim");
+    let foreign_continuation = foreign_issuer
+        .continuation_with_dispatch_claim(record.continuation_authority(), dispatch_claim_id);
+
+    let decision = broker
+        .admit(
+            &identity(record.authority.thread_id, InferenceRequestKind::Turn),
+            Some(&foreign_continuation),
+        )
+        .await
+        .expect("cross-runtime admission is rejected");
     assert!(matches!(decision, ModelRequestAdmissionDecision::Dormant));
     let calls = AtomicUsize::new(0);
     assert!(fake_stream_request(&decision, &calls).await.is_err());
