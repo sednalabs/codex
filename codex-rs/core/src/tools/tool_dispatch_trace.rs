@@ -66,9 +66,11 @@ fn tool_dispatch_invocation(invocation: &ToolInvocation) -> Option<ToolDispatchI
         ToolCallSource::Direct => ToolDispatchRequester::Model {
             model_visible_call_id: invocation.call_id.clone(),
         },
-        ToolCallSource::ContinuityDiagnostic { .. } => ToolDispatchRequester::Model {
-            model_visible_call_id: invocation.call_id.clone(),
-        },
+        ToolCallSource::ContinuityDiagnostic { .. } => {
+            ToolDispatchRequester::ContinuityDiagnostic {
+                host_call_id: invocation.call_id.clone(),
+            }
+        }
         ToolCallSource::CodeMode {
             cell_id,
             runtime_tool_call_id,
@@ -99,9 +101,11 @@ fn tool_dispatch_result(
         ToolCallSource::Direct => Some(ToolDispatchResult::DirectResponse {
             response_item: result.to_response_item(call_id, payload),
         }),
-        ToolCallSource::ContinuityDiagnostic { .. } => Some(ToolDispatchResult::DirectResponse {
-            response_item: result.to_response_item(call_id, payload),
-        }),
+        ToolCallSource::ContinuityDiagnostic { .. } => {
+            Some(ToolDispatchResult::ContinuityDiagnosticResponse {
+                response_item: result.to_response_item(call_id, payload),
+            })
+        }
         ToolCallSource::CodeMode { .. } => Some(ToolDispatchResult::CodeModeResponse {
             value: result.code_mode_result(payload),
         }),

@@ -75,7 +75,10 @@ fn request_has_input_type(request: &Request, input_type: &str) -> bool {
         })
 }
 
-async fn wait_for_child_thread(test: &TestCodex) -> Result<codex_protocol::ThreadId> {
+async fn wait_for_child_thread(
+    test: &TestCodex,
+    server: &wiremock::MockServer,
+) -> Result<codex_protocol::ThreadId> {
     let root_thread_id = test.session_configured.thread_id;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -85,6 +88,25 @@ async fn wait_for_child_thread(test: &TestCodex) -> Result<codex_protocol::Threa
             .await
             .into_iter()
             .find(|thread_id| *thread_id != root_thread_id)
+        {
+            return Ok(thread_id);
+        }
+        // Successful diagnostic children are closed by the parent monitor as
+        // soon as their terminal status is observed. Preserve the physical
+        // request identity for assertions even when the live registry entry
+        // has already been reclaimed.
+        if let Some(thread_id) = server
+            .received_requests()
+            .await
+            .expect("mock server should expose received requests")
+            .iter()
+            .filter_map(|request| {
+                request
+                    .header("thread-id")
+                    .filter(|thread_id| body_contains(request, CHILD_PROMPT))
+                    .and_then(|thread_id| codex_protocol::ThreadId::from_string(thread_id).ok())
+            })
+            .next()
         {
             return Ok(thread_id);
         }
@@ -99,7 +121,10 @@ async fn wait_for_child_completion(
     test: &TestCodex,
     child_id: codex_protocol::ThreadId,
 ) -> Result<()> {
-    let child = test.thread_manager.get_thread(child_id).await?;
+    let child = match test.thread_manager.get_thread(child_id).await {
+        Ok(child) => child,
+        Err(_) => return Ok(()),
+    };
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if matches!(
@@ -248,7 +273,7 @@ async fn usage_limit_v2_probe_reaches_child_provider_and_records_outcome() -> Re
         "parent must not retry the rejected call"
     );
 
-    let child_id = wait_for_child_thread(&test).await?;
+    let child_id = wait_for_child_thread(&test, &server).await?;
     let child_request_deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let child_request_seen = server
@@ -270,6 +295,11 @@ async fn usage_limit_v2_probe_reaches_child_provider_and_records_outcome() -> Re
         sleep(Duration::from_millis(10)).await;
     }
     wait_for_child_completion(&test, child_id).await?;
+    assert_eq!(
+        test.thread_manager.list_thread_ids().await.len(),
+        1,
+        "a terminal diagnostic child must be reclaimed from the live registry"
+    );
 
     let requests = server
         .received_requests()
@@ -463,6 +493,109 @@ async fn entitlement_denial_does_not_retry_or_spawn_a_probe() -> Result<()> {
         test.thread_manager.list_thread_ids().await.len(),
         1,
         "permanent denial must not spawn a diagnostic child"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+#[traced_test]
+async fn sequential_retry_allows_more_than_one_temporary_limit_before_success() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let _observation = EnvVarGuard::enabled(CONTINUITY_OBSERVATION_ENV);
+    let _retry = EnvVarGuard::enabled(CONTINUITY_RETRY_ENV);
+    let _unbounded =
+        EnvVarGuard::enabled("CODEX_EXPERIMENTAL_CONTINUITY_UNBOUNDED_SEQUENTIAL_RETRY");
+    let _post_limit_spawn = EnvVarGuard::enabled(POST_USAGE_LIMIT_SPAWN_ENV);
+    let server = start_mock_server().await;
+    for _ in 0..2 {
+        mount_response_once_match(
+            &server,
+            |request: &Request| body_contains(request, ROOT_PROMPT),
+            ResponseTemplate::new(429)
+                .insert_header("content-type", "application/json")
+                .set_body_json(serde_json::json!({
+                    "error": {
+                        "type": "usage_limit_reached",
+                        "message": "mock temporary usage limit",
+                        "resets_at": null,
+                        "plan_type": null
+                    }
+                })),
+        )
+        .await;
+    }
+    let _parent_success = mount_sse_once_match(
+        &server,
+        |request: &Request| body_contains(request, ROOT_PROMPT),
+        sse(vec![
+            ev_response_created("continuity-parent-success"),
+            ev_assistant_message("continuity-parent-message", "parent completed"),
+            ev_completed("continuity-parent-success"),
+        ]),
+    )
+    .await;
+    let _child_response = mount_sse_once_match(
+        &server,
+        |request: &Request| body_contains(request, CHILD_PROMPT),
+        sse(vec![
+            ev_response_created("continuity-child-retry"),
+            ev_assistant_message("continuity-child-message-retry", "child completed"),
+            ev_completed("continuity-child-retry"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("collaboration feature should be enabled");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("Multi-Agent V2 feature should be enabled");
+    });
+    let test = builder.build(&server).await?;
+    test.codex.submit(submit_user_turn(ROOT_PROMPT)).await?;
+    loop {
+        if matches!(
+            wait_for_event(&test.codex, |_| true).await,
+            EventMsg::TurnComplete(_)
+        ) {
+            break;
+        }
+    }
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should expose received requests");
+    let parent_requests = requests
+        .iter()
+        .filter(|request| {
+            request.url.path().ends_with("/responses") && body_contains(request, ROOT_PROMPT)
+        })
+        .count();
+    let child_requests = requests
+        .iter()
+        .filter(|request| {
+            request.url.path().ends_with("/responses") && body_contains(request, CHILD_PROMPT)
+        })
+        .count();
+    assert_eq!(
+        parent_requests, 3,
+        "retry mode must not impose a hard attempt ceiling"
+    );
+    assert_eq!(
+        child_requests, 1,
+        "the post-limit probe is admitted once per turn"
+    );
+    assert_eq!(
+        test.thread_manager.list_thread_ids().await.len(),
+        1,
+        "the terminal diagnostic child must be reclaimed before the parent turn completes"
     );
     Ok(())
 }

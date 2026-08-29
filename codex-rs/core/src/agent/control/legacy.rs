@@ -27,14 +27,21 @@ impl AgentControl {
     ) -> CodexResult<String> {
         let result = if let Ok(thread) = state.get_thread(agent_id).await {
             thread.session.ensure_rollout_materialized().await;
-            thread.session.flush_rollout().await?;
-            let result = if matches!(thread.agent_status().await, AgentStatus::Shutdown) {
+            let flush_result = thread.session.flush_rollout().await;
+            let shutdown_result = if matches!(thread.agent_status().await, AgentStatus::Shutdown) {
                 Ok(String::new())
             } else {
                 state.send_op(agent_id, Op::Shutdown {}).await
             };
             thread.wait_until_terminated().await;
-            result
+            // Always remove the runtime after termination, even when rollout
+            // persistence failed. Returning the persistence error preserves a
+            // fail-closed receipt while preventing an ephemeral child from
+            // occupying registry/residency capacity forever.
+            match flush_result {
+                Err(error) => Err(CodexErr::Io(error)),
+                Ok(()) => shutdown_result,
+            }
         } else {
             state.send_op(agent_id, Op::Shutdown {}).await
         };

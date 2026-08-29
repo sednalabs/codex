@@ -67,6 +67,9 @@ pub enum ToolDispatchRequester {
     Model {
         model_visible_call_id: ModelVisibleCallId,
     },
+    ContinuityDiagnostic {
+        host_call_id: ToolCallId,
+    },
     CodeCell {
         runtime_cell_id: String,
         runtime_tool_call_id: CodeModeRuntimeToolId,
@@ -100,6 +103,7 @@ pub enum ToolDispatchPayload {
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum ToolDispatchResult {
     DirectResponse { response_item: ResponseInputItem },
+    ContinuityDiagnosticResponse { response_item: ResponseInputItem },
     CodeModeResponse { value: JsonValue },
 }
 
@@ -116,6 +120,9 @@ struct DispatchedToolTraceRequest<'a> {
 #[serde(rename_all = "snake_case", tag = "type")]
 enum DispatchedToolTraceResponse<'a> {
     DirectResponse {
+        response_item: &'a ResponseInputItem,
+    },
+    ContinuityDiagnosticResponse {
         response_item: &'a ResponseInputItem,
     },
     CodeModeResponse {
@@ -168,6 +175,9 @@ impl ToolDispatchTraceContext {
         let response = match &result {
             ToolDispatchResult::DirectResponse { response_item } => {
                 DispatchedToolTraceResponse::DirectResponse { response_item }
+            }
+            ToolDispatchResult::ContinuityDiagnosticResponse { response_item } => {
+                DispatchedToolTraceResponse::ContinuityDiagnosticResponse { response_item }
             }
             ToolDispatchResult::CodeModeResponse { value } => {
                 DispatchedToolTraceResponse::CodeModeResponse { value }
@@ -247,6 +257,9 @@ fn requester_fields(
             None,
             RawToolCallRequester::Model,
         ),
+        ToolDispatchRequester::ContinuityDiagnostic { .. } => {
+            (None, None, RawToolCallRequester::ContinuityDiagnostic)
+        }
         ToolDispatchRequester::CodeCell {
             runtime_cell_id,
             runtime_tool_call_id,

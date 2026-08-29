@@ -150,6 +150,25 @@ async fn dispatch_lifecycle_trace_records_direct_and_code_mode_requesters() -> a
     registry
         .dispatch_any_with_terminal_outcome(
             test_invocation(
+                Arc::clone(&session),
+                Arc::clone(&turn),
+                "continuity-call",
+                "test_tool",
+                ToolCallSource::ContinuityDiagnostic {
+                    chain_id: "chain-test".to_string(),
+                    parent_thread_id: session.thread_id.to_string(),
+                    parent_turn_id: "parent-turn".to_string(),
+                    spawn_call_id: "spawn-call".to_string(),
+                    parent_sampling_request_id: "parent-request".to_string(),
+                },
+                "{}",
+            ),
+            /*terminal_outcome_reached*/ None,
+        )
+        .await?;
+    registry
+        .dispatch_any_with_terminal_outcome(
+            test_invocation(
                 session,
                 turn,
                 "code-mode-call",
@@ -198,6 +217,14 @@ async fn dispatch_lifecycle_trace_records_direct_and_code_mode_requesters() -> a
         ToolCallRequester::CodeCell {
             code_cell_id: "code_cell:call-code".to_string(),
         },
+    );
+    assert_eq!(
+        replayed.tool_calls["continuity-call"].requester,
+        ToolCallRequester::ContinuityDiagnostic,
+    );
+    assert_eq!(
+        replayed.tool_calls["continuity-call"].model_visible_call_id, None,
+        "host probes must never be reduced as model-visible calls",
     );
     assert!(
         replayed.tool_calls["code-mode-call"]

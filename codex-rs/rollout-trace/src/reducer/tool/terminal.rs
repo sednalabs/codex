@@ -476,6 +476,20 @@ fn parse_dispatch_terminal_response(value: JsonValue) -> Result<ParsedTerminalRe
                 chunk_id: None,
             }
         }
+        DispatchedToolTraceResponsePayload::ContinuityDiagnosticResponse { response_item } => {
+            let output = response_item
+                .get("output")
+                .and_then(json_text_content)
+                .unwrap_or_else(|| response_item.to_string());
+            TerminalResult {
+                exit_code: None,
+                stdout: output.clone(),
+                stderr: String::new(),
+                formatted_output: Some(output),
+                original_token_count: None,
+                chunk_id: None,
+            }
+        }
         DispatchedToolTraceResponsePayload::CodeModeResponse { value } => {
             // Code-mode returns the JavaScript-facing tool value, not the text
             // shown to the model. For write_stdin that value is the structured
@@ -589,6 +603,7 @@ struct DispatchedWriteStdinArgs {
 #[serde(rename_all = "snake_case", tag = "type")]
 enum DispatchedToolTraceResponsePayload {
     DirectResponse { response_item: JsonValue },
+    ContinuityDiagnosticResponse { response_item: JsonValue },
     CodeModeResponse { value: JsonValue },
     Error { error: String },
 }

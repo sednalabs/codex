@@ -73,7 +73,14 @@ async fn handle_spawn_agent(
             parent_thread_id,
             parent_turn_id,
             spawn_call_id,
-        } => Some((chain_id, parent_thread_id, parent_turn_id, spawn_call_id)),
+            parent_sampling_request_id,
+        } => Some((
+            chain_id,
+            parent_thread_id,
+            parent_turn_id,
+            spawn_call_id,
+            parent_sampling_request_id,
+        )),
         ToolCallSource::Direct | ToolCallSource::CodeMode { .. } => None,
     };
     let is_diagnostic_probe = diagnostic_context.is_some();
@@ -148,8 +155,13 @@ async fn handle_spawn_agent(
         args.expected_reasoning_effort.as_ref(),
     )?;
 
-    let spawn_source = if let Some((chain_id, parent_thread_id, parent_turn_id, spawn_call_id)) =
-        diagnostic_context.as_ref()
+    let spawn_source = if let Some((
+        chain_id,
+        _parent_thread_id,
+        parent_turn_id,
+        spawn_call_id,
+        parent_sampling_request_id,
+    )) = diagnostic_context.as_ref()
     {
         continuity_diagnostic_thread_spawn_source(
             session.thread_id,
@@ -160,6 +172,7 @@ async fn handle_spawn_agent(
             chain_id.clone(),
             parent_turn_id.clone(),
             spawn_call_id.clone(),
+            parent_sampling_request_id.clone(),
         )?
     } else {
         thread_spawn_source(
@@ -187,9 +200,15 @@ async fn handle_spawn_agent(
         "model_driven"
     };
     let correlation_id = diagnostic_context.as_ref().map(
-        |(chain_id, parent_thread_id, parent_turn_id, spawn_call_id)| {
+        |(
+            chain_id,
+            parent_thread_id,
+            parent_turn_id,
+            spawn_call_id,
+            parent_sampling_request_id,
+        )| {
             format!(
-                "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}"
+                "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:parent_sampling_request:{parent_sampling_request_id}"
             )
         },
     );
@@ -274,7 +293,11 @@ async fn handle_spawn_agent(
     turn.session_telemetry.counter(
         "codex.multi_agent.spawn",
         /*inc*/ 1,
-        &[("role", role_tag), ("version", "v2")],
+        &[
+            ("role", role_tag),
+            ("version", "v2"),
+            ("origin", observation_origin),
+        ],
     );
     if crate::diagnostic_flags::continuity_observation_enabled() {
         turn.session_telemetry.counter(
@@ -287,12 +310,21 @@ async fn handle_spawn_agent(
             ],
         );
     }
+    let publication_correlation_id = diagnostic_context.as_ref().map(
+        |(chain_id, parent_thread_id, parent_turn_id, spawn_call_id, parent_sampling_request_id)| {
+            format!(
+                "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:parent_sampling_request:{parent_sampling_request_id}:child_thread:{new_thread_id}:initial_work_published"
+            )
+        },
+    );
     crate::diagnostic_flags::record_continuity_stage_with_context(
         &turn.session_telemetry,
         "parent",
         "initial_work_published",
         observation_origin,
-        correlation_id.as_deref(),
+        publication_correlation_id
+            .as_deref()
+            .or(correlation_id.as_deref()),
     );
     let task_name = String::from(new_agent_path);
 

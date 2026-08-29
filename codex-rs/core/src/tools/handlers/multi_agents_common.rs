@@ -154,6 +154,7 @@ pub(crate) fn continuity_diagnostic_thread_spawn_source(
     chain_id: String,
     parent_turn_id: String,
     spawn_call_id: String,
+    parent_sampling_request_id: String,
 ) -> Result<SessionSource, FunctionCallError> {
     let agent_path = task_name
         .as_deref()
@@ -175,6 +176,7 @@ pub(crate) fn continuity_diagnostic_thread_spawn_source(
             chain_id,
             parent_turn_id,
             spawn_call_id,
+            parent_sampling_request_id,
         },
     ))
 }

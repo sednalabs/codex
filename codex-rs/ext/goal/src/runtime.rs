@@ -45,6 +45,7 @@ struct GoalRuntimeInner {
     thread_manager: Weak<ThreadManager>,
     accounting_state: Arc<GoalAccountingState>,
     enabled: AtomicBool,
+    continuation_blocked: AtomicBool,
     tools_available_for_thread: bool,
     goal_state_lock: Semaphore,
 }
@@ -97,6 +98,7 @@ impl GoalRuntimeHandle {
                 thread_manager,
                 accounting_state,
                 enabled: AtomicBool::new(config.enabled),
+                continuation_blocked: AtomicBool::new(false),
                 tools_available_for_thread: config.tools_available_for_thread,
                 goal_state_lock: Semaphore::new(/*permits*/ 1),
             }),
@@ -123,6 +125,39 @@ impl GoalRuntimeHandle {
         Arc::clone(&self.inner.accounting_state)
     }
 
+    /// Stop automatic continuation when a persistence or accounting boundary
+    /// is uncertain. The in-memory clear prevents the current process from
+    /// immediately requesting work, while the durable deferral prevents a
+    /// later idle callback or reload from doing so silently.
+    pub(crate) async fn fail_closed_continuation_boundary(&self, turn_id: Option<&str>) {
+        if let Some(turn_id) = turn_id {
+            self.inner.accounting_state.finish_turn(turn_id);
+        }
+        self.inner.accounting_state.clear_active_goal();
+        self.inner
+            .continuation_blocked
+            .store(true, Ordering::Release);
+        if let Err(error) = self
+            .inner
+            .state_dbs
+            .thread_goals()
+            .mark_thread_goal_continuation_deferral(self.thread_id())
+            .await
+        {
+            tracing::error!(
+                thread_id = %self.thread_id(),
+                %error,
+                "failed to persist fail-closed goal continuation deferral"
+            );
+        }
+    }
+
+    pub(crate) fn clear_continuation_block(&self) {
+        self.inner
+            .continuation_blocked
+            .store(false, Ordering::Release);
+    }
+
     pub(crate) async fn goal_state_permit(&self) -> Result<SemaphorePermit<'_>, String> {
         self.inner
             .goal_state_lock
@@ -137,22 +172,33 @@ impl GoalRuntimeHandle {
         }
 
         if let Some(turn_id) = self.inner.accounting_state.current_turn_id() {
-            self.account_active_goal_progress(
-                turn_id.as_str(),
-                &format!("{turn_id}:external-goal-mutation"),
-                codex_state::GoalAccountingMode::ActiveOnly,
-                BudgetLimitedGoalDisposition::ClearActive,
-            )
-            .await?;
+            if let Err(error) = self
+                .account_active_goal_progress(
+                    turn_id.as_str(),
+                    &format!("{turn_id}:external-goal-mutation"),
+                    codex_state::GoalAccountingMode::ActiveOnly,
+                    BudgetLimitedGoalDisposition::ClearActive,
+                )
+                .await
+            {
+                self.fail_closed_continuation_boundary(Some(turn_id.as_str()))
+                    .await;
+                return Err(error);
+            }
             return Ok(());
         }
 
-        self.account_idle_goal_progress(
-            &format!("{}:external-goal-mutation", self.inner.thread_id),
-            codex_state::GoalAccountingMode::ActiveOnly,
-            BudgetLimitedGoalDisposition::ClearActive,
-        )
-        .await?;
+        if let Err(error) = self
+            .account_idle_goal_progress(
+                &format!("{}:external-goal-mutation", self.inner.thread_id),
+                codex_state::GoalAccountingMode::ActiveOnly,
+                BudgetLimitedGoalDisposition::ClearActive,
+            )
+            .await
+        {
+            self.fail_closed_continuation_boundary(None).await;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -171,8 +217,12 @@ impl GoalRuntimeHandle {
             .clear_thread_goal_continuity_research(self.thread_id())
             .await
         {
+            let current_turn_id = self.inner.accounting_state.current_turn_id();
+            self.fail_closed_continuation_boundary(current_turn_id.as_deref())
+                .await;
             return Err(err.to_string());
         }
+        self.clear_continuation_block();
         if !self.is_enabled() {
             return Ok(());
         }
@@ -217,7 +267,10 @@ impl GoalRuntimeHandle {
                     let item = objective_updated_steering_item(&protocol_goal_from_state(goal));
                     self.inject_active_turn_steering(item).await;
                 }
-                self.continue_if_idle().await?;
+                if let Err(error) = self.continue_if_idle().await {
+                    self.fail_closed_continuation_boundary(None).await;
+                    return Err(error);
+                }
             }
             codex_state::ThreadGoalStatus::BudgetLimited => {
                 if self.inner.accounting_state.current_turn_id().is_none() {
@@ -244,6 +297,7 @@ impl GoalRuntimeHandle {
 
         self.inner.analytics.cleared(&goal);
         self.inner.accounting_state.clear_active_goal();
+        self.clear_continuation_block();
         Ok(())
     }
 
@@ -260,7 +314,13 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
 
-        let _goal_state_permit = self.goal_state_permit().await?;
+        let _goal_state_permit = match self.goal_state_permit().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                self.fail_closed_continuation_boundary(Some(turn_id)).await;
+                return Err(error);
+            }
+        };
         let accounting = self.accounting_state();
         if !accounting.turn_is_current_active_goal(turn_id) {
             accounting.finish_turn(turn_id);
@@ -271,21 +331,32 @@ impl GoalRuntimeHandle {
         // that delta before ending the turn, while retaining the idle goal for
         // the explicitly selected continuation path. The accounting snapshot is
         // marked here, so a later stop/finish hook cannot charge it twice.
-        self.account_active_goal_progress(
-            turn_id,
-            &format!("{turn_id}:continuity-preserve-progress"),
-            codex_state::GoalAccountingMode::ActiveOnly,
-            BudgetLimitedGoalDisposition::KeepActive,
-        )
-        .await?;
+        if let Err(error) = self
+            .account_active_goal_progress(
+                turn_id,
+                &format!("{turn_id}:continuity-preserve-progress"),
+                codex_state::GoalAccountingMode::ActiveOnly,
+                BudgetLimitedGoalDisposition::KeepActive,
+            )
+            .await
+        {
+            self.fail_closed_continuation_boundary(Some(turn_id)).await;
+            return Err(error);
+        }
 
-        let goal = self
+        let goal = match self
             .inner
             .state_dbs
             .thread_goals()
             .get_thread_goal(self.thread_id())
             .await
-            .map_err(|err| err.to_string())?;
+        {
+            Ok(goal) => goal,
+            Err(error) => {
+                self.fail_closed_continuation_boundary(Some(turn_id)).await;
+                return Err(error.to_string());
+            }
+        };
 
         match goal {
             Some(goal) if goal.status == codex_state::ThreadGoalStatus::Active => {
@@ -302,26 +373,12 @@ impl GoalRuntimeHandle {
                         // durable recovery capability could not be committed.
                         // That would make the next idle boundary indistinguishable
                         // from an explicitly preserved turn.
-                        accounting.finish_turn(turn_id);
-                        accounting.clear_active_goal();
-                        if let Err(deferral_err) = self
-                            .inner
-                            .state_dbs
-                            .thread_goals()
-                            .mark_thread_goal_continuation_deferral(self.thread_id())
-                            .await
-                        {
-                            tracing::error!(
-                                error = %deferral_err,
-                                "failed to persist fail-closed continuation deferral"
-                            );
-                        }
+                        self.fail_closed_continuation_boundary(Some(turn_id)).await;
                         return Err(err.to_string());
                     }
                 };
                 if !marker_armed {
-                    accounting.finish_turn(turn_id);
-                    accounting.clear_active_goal();
+                    self.fail_closed_continuation_boundary(Some(turn_id)).await;
                     return Err(
                         "active goal changed before continuity marker could be armed".into(),
                     );
@@ -331,12 +388,17 @@ impl GoalRuntimeHandle {
             }
             Some(_) | None => {
                 accounting.finish_turn(turn_id);
-                let _ = self
+                if self
                     .inner
                     .state_dbs
                     .thread_goals()
                     .clear_thread_goal_continuity_research(self.thread_id())
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    self.fail_closed_continuation_boundary(Some(turn_id)).await;
+                    return Err("failed to clear continuity marker after goal state changed".into());
+                }
                 accounting.clear_active_goal();
             }
         }
@@ -355,7 +417,13 @@ impl GoalRuntimeHandle {
 
         // Hold this through accounting and the status update so external goal
         // mutations and idle continuation cannot interleave between them.
-        let _goal_state_permit = self.goal_state_permit().await?;
+        let _goal_state_permit = match self.goal_state_permit().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                self.fail_closed_continuation_boundary(Some(turn_id)).await;
+                return Err(error);
+            }
+        };
         if !self
             .inner
             .accounting_state
@@ -372,22 +440,32 @@ impl GoalRuntimeHandle {
                 ("usage-limit", codex_state::ThreadGoalStatus::UsageLimited)
             }
         };
-        self.account_active_goal_progress(
-            turn_id,
-            &format!("{turn_id}:{event_name}-progress"),
-            codex_state::GoalAccountingMode::ActiveOnly,
-            BudgetLimitedGoalDisposition::ClearActive,
-        )
-        .await?;
+        if let Err(error) = self
+            .account_active_goal_progress(
+                turn_id,
+                &format!("{turn_id}:{event_name}-progress"),
+                codex_state::GoalAccountingMode::ActiveOnly,
+                BudgetLimitedGoalDisposition::ClearActive,
+            )
+            .await
+        {
+            self.fail_closed_continuation_boundary(Some(turn_id)).await;
+            return Err(error);
+        }
 
-        let Some(active_goal) = self
+        let Some(active_goal) = (match self
             .inner
             .state_dbs
             .thread_goals()
             .get_thread_goal(self.thread_id())
             .await
-            .map_err(|err| err.to_string())?
-        else {
+        {
+            Ok(goal) => goal,
+            Err(error) => {
+                self.fail_closed_continuation_boundary(Some(turn_id)).await;
+                return Err(error.to_string());
+            }
+        }) else {
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         };
@@ -399,7 +477,7 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
         let previous_status = Some(active_goal.status);
-        let Some(goal) = self
+        let Some(goal) = (match self
             .inner
             .state_dbs
             .thread_goals()
@@ -413,8 +491,14 @@ impl GoalRuntimeHandle {
                 },
             )
             .await
-            .map_err(|err| err.to_string())?
-        else {
+        {
+            Ok(goal) => goal,
+            Err(error) => {
+                self.fail_closed_continuation_boundary(Some(turn_id)).await;
+                return Err(error.to_string());
+            }
+        }) else {
+            self.fail_closed_continuation_boundary(Some(turn_id)).await;
             return Ok(());
         };
         self.inner
@@ -460,6 +544,10 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) async fn continue_if_idle(&self) -> Result<(), String> {
+        if self.inner.continuation_blocked.load(Ordering::Acquire) {
+            self.inner.accounting_state.clear_active_goal();
+            return Ok(());
+        }
         if !self.tools_visible() {
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
