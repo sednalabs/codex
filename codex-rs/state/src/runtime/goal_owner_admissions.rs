@@ -4,6 +4,12 @@ use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::ThreadId;
 use sqlx::Row;
+use std::collections::HashMap;
+use std::sync::Condvar;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use uuid::Uuid;
 
 const MAX_ORIGIN_ID_LENGTH: usize = 512;
@@ -291,23 +297,44 @@ pub struct GoalOwnerAdmissionStore {
     owner_lease: Option<Arc<RuntimeOwnerLease>>,
 }
 
+/// Opaque identity for the exact runtime/database pair that installed goal
+/// admission authority. It never leaves the state crate as a value callers can
+/// manufacture or compare.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GoalRuntimeAdmissionRuntimeIdentity(Uuid);
+
 /// Opaque bootstrap witness for the sole goal runtime that may mutate the
 /// admission protocol. It is non-cloneable and is produced only by
 /// `StateRuntimeBootstrap`, never by a diagnostic `StateRuntime` view.
 #[derive(Debug)]
-pub struct GoalRuntimeAdmissionInstallation {
+pub(crate) struct GoalRuntimeAdmissionInstallation {
     store: GoalOwnerAdmissionStore,
+    runtime_identity: GoalRuntimeAdmissionRuntimeIdentity,
 }
 
 impl GoalRuntimeAdmissionInstallation {
-    pub(crate) fn new(store: GoalOwnerAdmissionStore) -> Self {
-        Self { store }
+    pub(crate) fn new(
+        store: GoalOwnerAdmissionStore,
+        runtime_identity: GoalRuntimeAdmissionRuntimeIdentity,
+    ) -> Self {
+        Self {
+            store,
+            runtime_identity,
+        }
     }
 
-    /// Consume the bootstrap witness into the private, installed admission
-    /// facade held by the goal extension and its per-thread runtimes.
-    pub fn install(self) -> InstalledGoalRuntimeAdmissions {
-        InstalledGoalRuntimeAdmissions { store: self.store }
+    pub(crate) fn install_for(
+        self,
+        runtime: &super::StateRuntime,
+    ) -> anyhow::Result<InstalledGoalRuntimeAdmissions> {
+        if self.runtime_identity != runtime.goal_runtime_admission_runtime_identity {
+            bail!("goal runtime bootstrap witness does not match the supplied state runtime")
+        }
+        Ok(InstalledGoalRuntimeAdmissions {
+            store: self.store,
+            runtime_identity: self.runtime_identity,
+            owners: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 }
 
@@ -315,12 +342,45 @@ impl GoalRuntimeAdmissionInstallation {
 /// witness. It deliberately exposes protocol operations, not the raw store,
 /// so Core and the goal extension cannot recover a bearer from a diagnostic
 /// state handle or manufacture one from a pool.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct InstalledGoalRuntimeAdmissions {
     store: GoalOwnerAdmissionStore,
+    runtime_identity: GoalRuntimeAdmissionRuntimeIdentity,
+    owners: Arc<Mutex<HashMap<ThreadId, Arc<GoalRuntimeAdmissionOwnerInner>>>>,
 }
 
 impl InstalledGoalRuntimeAdmissions {
+    /// Derive the one per-thread lifecycle owner from this exact installed
+    /// runtime. Repeated requests for the same thread share identity,
+    /// enablement state, and revocation epoch; a retained facade cannot mint a
+    /// fresh enabled issuer for a disabled thread.
+    pub fn owner_for_thread(&self, thread_id: ThreadId) -> GoalRuntimeAdmissionOwner {
+        let mut owners = self
+            .owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = Arc::clone(owners.entry(thread_id).or_insert_with(|| {
+            Arc::new(GoalRuntimeAdmissionOwnerInner {
+                runtime_identity: self.runtime_identity,
+                thread_id,
+                fence_identity: GoalOwnerDispatchFenceCapability::fresh(),
+                enabled: AtomicBool::new(true),
+                enablement_epoch: AtomicU64::new(0),
+                continuation_fence: Arc::new(GoalRuntimeContinuationFence::new()),
+            })
+        }));
+        GoalRuntimeAdmissionOwner { inner }
+    }
+
+    /// Verify that this installed facade was produced for this exact state
+    /// runtime before it reaches extension setup or admission publication.
+    pub fn validate_for_runtime(&self, runtime: &super::StateRuntime) -> anyhow::Result<()> {
+        if self.runtime_identity != runtime.goal_runtime_admission_runtime_identity {
+            bail!("goal runtime admissions do not match the supplied state runtime")
+        }
+        Ok(())
+    }
+
     pub async fn get(
         &self,
         thread_id: ThreadId,
@@ -459,6 +519,180 @@ impl InstalledGoalRuntimeAdmissions {
         disposition: GoalOwnerAdmissionTerminalDisposition,
     ) -> anyhow::Result<Option<GoalOwnerAdmissionRecord>> {
         self.store.cancel(authority, disposition).await
+    }
+}
+
+#[derive(Debug)]
+struct GoalRuntimeAdmissionOwnerInner {
+    runtime_identity: GoalRuntimeAdmissionRuntimeIdentity,
+    thread_id: ThreadId,
+    fence_identity: GoalOwnerDispatchFenceCapability,
+    enabled: AtomicBool,
+    enablement_epoch: AtomicU64,
+    continuation_fence: Arc<GoalRuntimeContinuationFence>,
+}
+
+/// Shared, installed-only revocation fence for all continuations derived from
+/// one goal-runtime owner. Keeping this state with the owner (rather than a
+/// caller-created issuer) prevents a retained facade from starting at a fresh
+/// epoch after another issuer has been revoked.
+#[derive(Debug)]
+struct GoalRuntimeContinuationFence {
+    epoch: AtomicU64,
+    active: Mutex<usize>,
+    idle: Condvar,
+}
+
+/// Active-operation guard returned only by the installed owner. It holds the
+/// shared revocation epoch across continuation publication and provider I/O.
+pub struct GoalRuntimeAdmissionFenceGuard {
+    fence: Arc<GoalRuntimeContinuationFence>,
+    epoch: u64,
+}
+
+impl GoalRuntimeContinuationFence {
+    fn new() -> Self {
+        Self {
+            epoch: AtomicU64::new(0),
+            active: Mutex::new(0),
+            idle: Condvar::new(),
+        }
+    }
+}
+
+impl Drop for GoalRuntimeAdmissionFenceGuard {
+    fn drop(&mut self) {
+        let mut active = self
+            .fence
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *active = active.saturating_sub(1);
+        if *active == 0 {
+            self.fence.idle.notify_all();
+        }
+    }
+}
+
+impl GoalRuntimeAdmissionFenceGuard {
+    /// Whether revocation has not advanced since this operation entered.
+    pub fn is_current_epoch(&self) -> bool {
+        self.fence.epoch.load(Ordering::Acquire) == self.epoch
+    }
+}
+
+/// Opaque, shared lifecycle owner for one installed runtime and one thread.
+/// It can only originate from [`InstalledGoalRuntimeAdmissions::owner_for_thread`].
+#[derive(Clone, Debug)]
+pub struct GoalRuntimeAdmissionOwner {
+    inner: Arc<GoalRuntimeAdmissionOwnerInner>,
+}
+
+impl GoalRuntimeAdmissionOwner {
+    /// The stable thread identity owned by this lifecycle coordinator.
+    pub fn thread_id(&self) -> ThreadId {
+        self.inner.thread_id
+    }
+
+    /// Shared durable dispatch fence identity for this exact installed owner.
+    pub fn fence_identity(&self) -> GoalOwnerDispatchFenceCapability {
+        self.inner.fence_identity
+    }
+
+    /// Whether this owner currently permits continuation publication.
+    pub fn is_enabled(&self) -> bool {
+        self.inner.enabled.load(Ordering::Acquire)
+    }
+
+    /// The shared revocation epoch for every issuer and continuation derived
+    /// from this owner.
+    pub fn enablement_epoch(&self) -> u64 {
+        self.inner.enablement_epoch.load(Ordering::Acquire)
+    }
+
+    /// The shared revocation epoch for every issuer and continuation derived
+    /// from this installed owner.
+    pub fn continuation_epoch(&self) -> u64 {
+        self.inner.continuation_fence.epoch.load(Ordering::Acquire)
+    }
+
+    /// Enter the exact shared revocation epoch. A caller cannot enter a
+    /// retained or revoked generation after another issuer advances it.
+    pub fn enter_continuation(&self, epoch: u64) -> Option<GoalRuntimeAdmissionFenceGuard> {
+        let fence = &self.inner.continuation_fence;
+        let mut active = fence
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if fence.epoch.load(Ordering::Acquire) != epoch {
+            return None;
+        }
+        *active += 1;
+        Some(GoalRuntimeAdmissionFenceGuard {
+            fence: Arc::clone(fence),
+            epoch,
+        })
+    }
+
+    /// Advance the shared revocation epoch without waiting for active work.
+    pub fn revoke_continuations(&self) {
+        self.inner
+            .continuation_fence
+            .epoch
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Advance the shared revocation epoch and wait for all active operations
+    /// from every issuer derived from this owner to quiesce.
+    pub fn revoke_continuations_and_wait(&self) {
+        self.revoke_continuations();
+        self.wait_for_continuations();
+    }
+
+    /// Wait for all operations entered under the current or a prior epoch to
+    /// quiesce without advancing the epoch again.
+    pub fn wait_for_continuations(&self) {
+        let fence = &self.inner.continuation_fence;
+        let mut active = fence
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *active != 0 {
+            active = fence
+                .idle
+                .wait(active)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Non-blocking shared quiescence probe for a current-thread executor.
+    pub fn continuations_are_quiescent(&self) -> bool {
+        *self
+            .inner
+            .continuation_fence
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            == 0
+    }
+
+    /// Change this owner's enablement state, advancing the common epoch only
+    /// when the state changes.
+    pub fn set_enabled(&self, enabled: bool) -> Option<u64> {
+        let was_enabled = self.inner.enabled.swap(enabled, Ordering::AcqRel);
+        if was_enabled == enabled {
+            None
+        } else {
+            // This transition belongs to the installed owner. A retained
+            // issuer therefore observes the same revocation before it can
+            // publish or open provider I/O.
+            self.revoke_continuations();
+            Some(self.inner.enablement_epoch.fetch_add(1, Ordering::AcqRel) + 1)
+        }
+    }
+
+    pub(crate) fn matches_runtime(&self, runtime: &super::StateRuntime) -> bool {
+        self.inner.runtime_identity == runtime.goal_runtime_admission_runtime_identity
     }
 }
 

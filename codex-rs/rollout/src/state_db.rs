@@ -34,20 +34,27 @@ pub type StateDbHandle = Arc<codex_state::StateRuntime>;
 /// [`StateDbHandle`] receive diagnostic admission access only.
 #[must_use = "the goal-runtime installation witness must reach the composition root"]
 pub struct StateDbBootstrap {
-    state_db: StateDbHandle,
-    goal_runtime_admission_installation: codex_state::GoalRuntimeAdmissionInstallation,
+    goal_runtime: codex_state::StateRuntimeGoalRuntime,
 }
 
 impl StateDbBootstrap {
-    /// Split the diagnostic state handle from its one-time admission witness.
-    pub fn into_parts(self) -> (StateDbHandle, codex_state::GoalRuntimeAdmissionInstallation) {
-        (self.state_db, self.goal_runtime_admission_installation)
+    /// Borrow a diagnostic state-handle clone while retaining the bound goal
+    /// admission facade for the consuming composition root.
+    pub fn state_db(&self) -> StateDbHandle {
+        self.goal_runtime.state_runtime()
+    }
+
+    /// Split the diagnostic state handle from its bound installed admission
+    /// facade. The facade validates this exact runtime before any extension or
+    /// provider-admission use, so cross-root substitution fails closed.
+    pub fn into_parts(self) -> (StateDbHandle, codex_state::InstalledGoalRuntimeAdmissions) {
+        self.goal_runtime.into_parts()
     }
 
     /// Keep only the diagnostic state handle for a host without goal runtime
     /// composition.
     pub fn into_state_db(self) -> StateDbHandle {
-        self.state_db
+        self.goal_runtime.into_state_runtime()
     }
 }
 
@@ -129,19 +136,19 @@ async fn try_init_with_roots_bootstrap(
     default_model_provider_id: String,
     backfill_lease_seconds: Option<i64>,
 ) -> anyhow::Result<StateDbBootstrap> {
-    let (runtime, goal_runtime_admission_installation) =
-        codex_state::StateRuntime::init_with_goal_runtime_bootstrap(
-            sqlite.clone(),
-            default_model_provider_id.clone(),
+    let goal_runtime = codex_state::StateRuntime::init_with_goal_runtime_bootstrap(
+        sqlite.clone(),
+        default_model_provider_id.clone(),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "failed to initialize state runtime at {}",
+            sqlite.home().display()
         )
-        .await
-        .with_context(|| {
-            format!(
-                "failed to initialize state runtime at {}",
-                sqlite.home().display()
-            )
-        })?
-        .into_parts();
+    })?
+    .into_goal_runtime();
+    let runtime = goal_runtime.state_runtime();
     let backfill_gate_started = Instant::now();
     let backfill_gate_result = wait_for_backfill_gate(
         runtime.as_ref(),
@@ -159,10 +166,7 @@ async fn try_init_with_roots_bootstrap(
         runtime.close().await;
         return Err(err);
     }
-    Ok(StateDbBootstrap {
-        state_db: runtime,
-        goal_runtime_admission_installation,
-    })
+    Ok(StateDbBootstrap { goal_runtime })
 }
 
 #[cfg(test)]

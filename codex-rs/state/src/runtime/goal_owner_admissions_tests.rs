@@ -64,7 +64,7 @@ fn observation_with_max(
 
 struct GoalAdmissionTestRuntime {
     state_runtime: Arc<StateRuntime>,
-    admissions: InstalledGoalRuntimeAdmissions,
+    admissions: Arc<InstalledGoalRuntimeAdmissions>,
 }
 
 impl std::ops::Deref for GoalAdmissionTestRuntime {
@@ -77,7 +77,7 @@ impl std::ops::Deref for GoalAdmissionTestRuntime {
 
 impl GoalAdmissionTestRuntime {
     fn goal_owner_admissions(&self) -> &InstalledGoalRuntimeAdmissions {
-        &self.admissions
+        self.admissions.as_ref()
     }
 }
 
@@ -94,10 +94,10 @@ async fn installed_runtime(sqlite: crate::SqliteConfig) -> GoalAdmissionTestRunt
         StateRuntime::init_with_goal_runtime_bootstrap(sqlite, "test-provider".to_string())
             .await
             .expect("initialize state runtime");
-    let (state_runtime, goal_runtime_admission_installation) = bootstrap.into_parts();
+    let (state_runtime, admissions) = bootstrap.into_goal_runtime().into_parts();
     GoalAdmissionTestRuntime {
         state_runtime,
-        admissions: goal_runtime_admission_installation.install(),
+        admissions: Arc::new(admissions),
     }
 }
 
@@ -1049,8 +1049,7 @@ async fn read_only_runtime_cannot_self_claim_an_unclaimed_generation() {
         StateRuntime::init_with_goal_runtime_bootstrap(sqlite.clone(), "test-provider".to_string())
             .await
             .expect("first runtime owns admission mutations");
-    let (runtime_a, goal_runtime_admission_installation) = bootstrap.into_parts();
-    let installed = goal_runtime_admission_installation.install();
+    let (runtime_a, installed) = bootstrap.into_goal_runtime().into_parts();
     let record = installed
         .observe_denial(&observation(
             ThreadId::new(),
@@ -1095,8 +1094,7 @@ async fn public_runtime_admission_view_cannot_claim_installed_generation() {
         StateRuntime::init_with_goal_runtime_bootstrap(sqlite, "test-provider".to_string())
             .await
             .expect("owning runtime");
-    let (runtime, goal_runtime_admission_installation) = bootstrap.into_parts();
-    let installed = goal_runtime_admission_installation.install();
+    let (runtime, installed) = bootstrap.into_goal_runtime().into_parts();
     let record = installed
         .observe_denial(&observation(
             ThreadId::new(),
@@ -1154,6 +1152,44 @@ async fn diagnostic_init_cannot_mint_or_mutate_goal_admissions_before_installati
     assert!(error.to_string().contains("runtime owner capability"));
     runtime.close().await;
     let _ = tokio::fs::remove_dir_all(codex_home).await;
+}
+
+#[tokio::test]
+async fn installed_admissions_reject_a_different_runtime_before_publication() {
+    let runtime_a_home = unique_temp_dir();
+    let runtime_b_home = unique_temp_dir();
+    let bootstrap_a = StateRuntime::init_with_goal_runtime_bootstrap(
+        crate::SqliteConfig::new_for_testing(runtime_a_home.as_path().abs()),
+        "test-provider".to_string(),
+    )
+    .await
+    .expect("initialize first runtime");
+    let bootstrap_b = StateRuntime::init_with_goal_runtime_bootstrap(
+        crate::SqliteConfig::new_for_testing(runtime_b_home.as_path().abs()),
+        "test-provider".to_string(),
+    )
+    .await
+    .expect("initialize second runtime");
+    let (runtime_a, admissions_a) = bootstrap_a.into_goal_runtime().into_parts();
+    let (runtime_b, admissions_b) = bootstrap_b.into_goal_runtime().into_parts();
+
+    assert!(runtime_a.validates_goal_runtime_admissions(&admissions_a));
+    assert!(runtime_b.validates_goal_runtime_admissions(&admissions_b));
+    assert!(
+        admissions_b
+            .validate_for_runtime(runtime_a.as_ref())
+            .is_err(),
+        "state A plus admissions B must fail before extension or provider admission"
+    );
+    assert!(
+        !runtime_a.validates_goal_runtime_admissions(&admissions_b),
+        "state A must not accept a facade minted for runtime B"
+    );
+
+    runtime_a.close().await;
+    runtime_b.close().await;
+    let _ = tokio::fs::remove_dir_all(runtime_a_home).await;
+    let _ = tokio::fs::remove_dir_all(runtime_b_home).await;
 }
 
 #[tokio::test]

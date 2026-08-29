@@ -1023,6 +1023,7 @@ mod tests {
     use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
     use codex_app_server_client::InProcessAppServerClient;
     use codex_app_server_client::InProcessClientStartArgs;
+    use codex_app_server_client::InProcessState;
     use codex_arg0::Arg0DispatchPaths;
     use codex_cloud_config::cloud_config_bundle_loader_for_storage;
     use codex_config::types::AuthCredentialsStoreMode;
@@ -1073,7 +1074,7 @@ mod tests {
             .await,
             feedback: codex_feedback::CodexFeedback::new(),
             log_db: None,
-            state_db: None,
+            state: InProcessState::none(),
             environment_manager: Arc::new(
                 codex_app_server_client::EnvironmentManager::default_for_tests(),
             ),

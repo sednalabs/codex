@@ -3,7 +3,6 @@ use std::sync::Mutex;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -55,7 +54,7 @@ struct GoalRuntimeInner {
     state_dbs: Arc<codex_state::StateRuntime>,
     /// Private, installation-owned admission facade. This is never obtained
     /// from `StateRuntime`; the public runtime view remains diagnostics-only.
-    goal_owner_admissions: codex_state::InstalledGoalRuntimeAdmissions,
+    goal_owner_admissions: Arc<codex_state::InstalledGoalRuntimeAdmissions>,
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
@@ -183,7 +182,7 @@ impl GoalRuntimeHandle {
     pub(crate) fn new(
         thread_id: ThreadId,
         state_dbs: Arc<codex_state::StateRuntime>,
-        goal_runtime_admissions: codex_state::InstalledGoalRuntimeAdmissions,
+        goal_runtime_admissions: Arc<codex_state::InstalledGoalRuntimeAdmissions>,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
         thread_manager: Weak<ThreadManager>,
@@ -194,7 +193,7 @@ impl GoalRuntimeHandle {
             inner: Arc::new(GoalRuntimeInner {
                 thread_id,
                 state_dbs,
-                goal_owner_admissions: goal_runtime_admissions.clone(),
+                goal_owner_admissions: Arc::clone(&goal_runtime_admissions),
                 analytics: config.analytics,
                 event_emitter,
                 metrics,
@@ -202,9 +201,9 @@ impl GoalRuntimeHandle {
                 accounting_state,
                 tools_available_for_thread: config.tools_available_for_thread,
                 continuation: GoalContinuationCoordinator {
-                    fence: GoalRuntimeContinuationIssuer::from_installed_admissions(
+                    fence: GoalRuntimeContinuationIssuer::for_thread(
                         goal_runtime_admissions,
-                        config.enabled,
+                        thread_id,
                     ),
                     state: Mutex::new(ProviderContinuationState::default()),
                     lifecycle: Semaphore::new(/*permits*/ 1),
@@ -220,15 +219,12 @@ impl GoalRuntimeHandle {
         let fence = self.inner.continuation.fence.clone();
         let cooperative_quiescence = match tokio::runtime::Handle::try_current() {
             Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-                tokio::task::block_in_place(|| fence.revoke_and_wait());
+                tokio::task::block_in_place(|| fence.wait_for_quiescence());
                 false
             }
-            Ok(_) => {
-                fence.revoke();
-                true
-            }
+            Ok(_) => true,
             Err(_) => {
-                fence.revoke_and_wait();
+                fence.wait_for_quiescence();
                 false
             }
         };
@@ -707,11 +703,7 @@ impl GoalRuntimeHandle {
                     continuation,
                     eligible_at,
                     cancellation: cancellation.clone(),
-                    enablement_epoch: self
-                        .inner
-                        .continuation
-                        .enablement_epoch
-                        .load(Ordering::Relaxed),
+                    enablement_epoch: self.inner.continuation.fence.enablement_epoch(),
                 });
                 state.last_authority = Some(authority);
                 ProviderContinuationAction::Scheduled {
@@ -1197,11 +1189,7 @@ impl GoalRuntimeHandle {
                     continuation,
                     eligible_at,
                     cancellation: cancellation.clone(),
-                    enablement_epoch: self
-                        .inner
-                        .continuation
-                        .enablement_epoch
-                        .load(Ordering::Relaxed),
+                    enablement_epoch: self.inner.continuation.fence.enablement_epoch(),
                 });
                 state.last_authority = Some(record.authority.clone());
             } else {
@@ -1620,22 +1608,13 @@ impl GoalRuntimeHandle {
             self.inner.accounting_state.clear_active_goal();
             return Ok(false);
         }
-        let start_enablement_epoch = self
-            .inner
-            .continuation
-            .enablement_epoch
-            .load(Ordering::Acquire);
+        let start_enablement_epoch = self.inner.continuation.fence.enablement_epoch();
         // Hold this through the read/start window so external set/clear cannot
         // change the goal after we read it but before the continuation launches.
         let _goal_state_permit = self.goal_state_permit().await?;
 
         if !self.tools_visible()
-            || self
-                .inner
-                .continuation
-                .enablement_epoch
-                .load(Ordering::Acquire)
-                != start_enablement_epoch
+            || self.inner.continuation.fence.enablement_epoch() != start_enablement_epoch
         {
             return Ok(false);
         }
@@ -1692,12 +1671,7 @@ impl GoalRuntimeHandle {
         // so a current-thread disable cannot publish after its fence is
         // revoked but before its asynchronous cleanup runs.
         if !self.tools_visible()
-            || self
-                .inner
-                .continuation
-                .enablement_epoch
-                .load(Ordering::Acquire)
-                != start_enablement_epoch
+            || self.inner.continuation.fence.enablement_epoch() != start_enablement_epoch
         {
             self.inner.accounting_state.clear_active_goal();
             return Ok(false);
@@ -1914,10 +1888,10 @@ mod tests {
                 "test-provider".to_string(),
             ))
             .expect("initialize state runtime");
-        let (_runtime, goal_runtime_admission_installation) = bootstrap.into_parts();
-        let issuer = GoalRuntimeContinuationIssuer::from_installed_admissions(
-            goal_runtime_admission_installation.install(),
-            true,
+        let (_runtime, goal_runtime_admissions) = bootstrap.into_goal_runtime().into_parts();
+        let issuer = GoalRuntimeContinuationIssuer::for_thread(
+            Arc::new(goal_runtime_admissions),
+            authority.thread_id,
         );
         DeferredProviderContinuation {
             turn_id: "turn".to_string(),

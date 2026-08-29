@@ -28,6 +28,7 @@ pub use runtime::ConfiguredIdentityProvenance;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
 pub use runtime::StateRuntimeBootstrap;
+pub use runtime::StateRuntimeGoalRuntime;
 pub use sqlite::SqliteConfig;
 
 pub use audit::ThreadStateAuditRow;
@@ -75,7 +76,8 @@ pub use runtime::GoalOwnerAdmissionStore;
 pub use runtime::GoalOwnerAdmissionTerminalDisposition;
 pub use runtime::GoalOwnerAdmissionTerminalOutcome;
 pub use runtime::GoalOwnerDispatchFenceCapability;
-pub use runtime::GoalRuntimeAdmissionInstallation;
+pub use runtime::GoalRuntimeAdmissionFenceGuard;
+pub use runtime::GoalRuntimeAdmissionOwner;
 pub use runtime::GoalStore;
 pub use runtime::GoalUpdate;
 pub use runtime::InstalledGoalRuntimeAdmissions;

@@ -128,6 +128,33 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
 }
 
 #[tokio::test]
+async fn cross_runtime_bootstrap_is_rejected_before_goal_extension_registration()
+-> anyhow::Result<()> {
+    let state_a = test_runtime().await?;
+    let state_b = test_runtime().await?;
+    let mut builder = ExtensionRegistryBuilder::<()>::new();
+    let error = install_with_backend(
+        &mut builder,
+        Arc::clone(&state_a.state_runtime),
+        Arc::clone(&state_b.goal_runtime_admissions),
+        AnalyticsEventsClient::disabled(),
+        /*metrics_client*/ None,
+        Weak::new(),
+        Arc::new(GoalService::new()),
+        |_| true,
+    )
+    .expect_err("admissions from state B must not install into state A");
+
+    assert!(
+        error
+            .to_string()
+            .contains("goal runtime admissions do not match")
+    );
+    assert!(builder.build().thread_lifecycle_contributors().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn goal_tools_hidden_for_ephemeral_threads() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -865,9 +892,9 @@ async fn replaced_abort_retires_exact_settled_provider_continuation() -> anyhow:
 
     let turn_store = ExtensionData::new(settled.successor_turn_id.clone());
     turn_store.insert(
-        codex_core::GoalRuntimeContinuationIssuer::from_installed_admissions(
-            runtime.goal_owner_admissions().clone(),
-            true,
+        codex_core::GoalRuntimeContinuationIssuer::for_thread(
+            Arc::clone(&runtime.goal_runtime_admissions),
+            settled.authority.thread_id,
         )
         .continuation(settled.continuation_authority()),
     );
@@ -1641,7 +1668,8 @@ async fn installed_tools_with_start(
         Weak::new(),
         goal_service,
         |_| true,
-    );
+    )
+    .expect("test goal runtime bootstrap must match its state runtime");
     let registry = builder.build();
     let session_store = ExtensionData::new("session-1");
     let thread_store = ExtensionData::new(thread_id.to_string());
@@ -1693,7 +1721,7 @@ impl GoalExtensionHarness {
             Weak::new(),
             Arc::clone(&goal_service),
             |_| true,
-        );
+        )?;
         let registry = builder.build();
         let session_store = ExtensionData::new("session-1");
         let thread_store = ExtensionData::new(thread_id.to_string());
@@ -1942,7 +1970,7 @@ fn tool_call(tool_name: &str, call_id: &str, arguments: serde_json::Value) -> To
 #[derive(Clone)]
 struct GoalTestRuntime {
     state_runtime: Arc<codex_state::StateRuntime>,
-    goal_runtime_admissions: codex_state::InstalledGoalRuntimeAdmissions,
+    goal_runtime_admissions: Arc<codex_state::InstalledGoalRuntimeAdmissions>,
 }
 
 impl std::ops::Deref for GoalTestRuntime {
@@ -1961,7 +1989,7 @@ impl AsRef<codex_state::StateRuntime> for GoalTestRuntime {
 
 impl GoalTestRuntime {
     fn goal_owner_admissions(&self) -> &codex_state::InstalledGoalRuntimeAdmissions {
-        &self.goal_runtime_admissions
+        self.goal_runtime_admissions.as_ref()
     }
 }
 
@@ -1972,10 +2000,10 @@ async fn test_runtime() -> anyhow::Result<GoalTestRuntime> {
         "test-provider".to_string(),
     )
     .await?;
-    let (state_runtime, goal_runtime_admission_installation) = bootstrap.into_parts();
+    let (state_runtime, goal_runtime_admissions) = bootstrap.into_goal_runtime().into_parts();
     Ok(GoalTestRuntime {
         state_runtime,
-        goal_runtime_admissions: goal_runtime_admission_installation.install(),
+        goal_runtime_admissions: Arc::new(goal_runtime_admissions),
     })
 }
 
