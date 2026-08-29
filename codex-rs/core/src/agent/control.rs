@@ -654,11 +654,18 @@ impl AgentControl {
         let state = self.upgrade().ok()?;
         let thread = state.get_thread(thread_id).await.ok()?;
         let snapshot = thread.config_snapshot().await;
-        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            agent_nickname,
-            agent_role,
-            ..
-        }) = snapshot.session_source
+        let SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn {
+                agent_nickname,
+                agent_role,
+                ..
+            }
+            | SubAgentSource::ContinuityDiagnostic {
+                agent_nickname,
+                agent_role,
+                ..
+            },
+        ) = snapshot.session_source
         else {
             return None;
         };
@@ -1168,9 +1175,14 @@ impl AgentControl {
         child_reference: String,
         child_agent_path: Option<AgentPath>,
     ) {
-        let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        })) = session_source
+        let Some(SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }
+            | SubAgentSource::ContinuityDiagnostic {
+                parent_thread_id, ..
+            },
+        )) = session_source
         else {
             return;
         };
@@ -1314,9 +1326,14 @@ impl AgentControl {
         state: &Arc<ThreadManagerState>,
         session_source: Option<&SessionSource>,
     ) -> Option<TurnEnvironmentSnapshot> {
-        let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        })) = session_source
+        let Some(SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }
+            | SubAgentSource::ContinuityDiagnostic {
+                parent_thread_id, ..
+            },
+        )) = session_source
         else {
             return None;
         };
@@ -1338,9 +1355,14 @@ impl AgentControl {
         session_source: Option<&SessionSource>,
         child_config: &Config,
     ) -> Option<Arc<crate::exec_policy::ExecPolicyManager>> {
-        let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        })) = session_source
+        let Some(SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }
+            | SubAgentSource::ContinuityDiagnostic {
+                parent_thread_id, ..
+            },
+        )) = session_source
         else {
             return None;
         };
@@ -1426,6 +1448,24 @@ impl AgentControl {
             )
             .await
         {
+            if let Some(source) = session_source
+                && crate::diagnostic_flags::is_continuity_diagnostic_child(source)
+            {
+                let correlation_id =
+                    crate::diagnostic_flags::continuity_observation_child_correlation(
+                        source,
+                        child_thread_id,
+                        "publication_failed",
+                    );
+                crate::diagnostic_flags::record_continuity_stage_with_child_context(
+                    &child_thread.session_telemetry(),
+                    "child",
+                    "child_publication_failed",
+                    "direct_probe",
+                    correlation_id.as_deref(),
+                    child_thread_id,
+                );
+            }
             warn!("failed to persist thread-spawn edge: {err}");
         }
     }
@@ -1597,9 +1637,14 @@ impl AgentControl {
 
 fn thread_spawn_parent_thread_id(session_source: &SessionSource) -> Option<ThreadId> {
     match session_source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        }) => Some(*parent_thread_id),
+        SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }
+            | SubAgentSource::ContinuityDiagnostic {
+                parent_thread_id, ..
+            },
+        ) => Some(*parent_thread_id),
         _ => None,
     }
 }
@@ -1771,7 +1816,10 @@ pub(crate) fn render_input_preview(input: &[UserInput]) -> String {
 
 fn thread_spawn_depth(session_source: &SessionSource) -> Option<i32> {
     match session_source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { depth, .. }) => Some(*depth),
+        SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn { depth, .. }
+            | SubAgentSource::ContinuityDiagnostic { depth, .. },
+        ) => Some(*depth),
         _ => None,
     }
 }

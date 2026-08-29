@@ -104,16 +104,25 @@ pub(crate) async fn run_pending_session_start_hooks(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
 ) -> bool {
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        // A diagnostic child is evidence-only. User-configured lifecycle
+        // hooks are another possible input/context contributor, so do not run
+        // them for this source.
+        while sess.take_pending_session_start_source().await.is_some() {}
+        return false;
+    }
     while let Some(session_start_source) = sess.take_pending_session_start_source().await {
         // Pending session-start hooks are reused to dispatch thread-spawn subagent
         // starts. Other subagent sessions are internal/system work and do not run
         // start hooks.
         let target = match &turn_context.session_source {
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. })
-                if matches!(
-                    session_start_source,
-                    codex_hooks::SessionStartSource::Startup
-                ) =>
+            SessionSource::SubAgent(
+                SubAgentSource::ThreadSpawn { agent_role, .. }
+                | SubAgentSource::ContinuityDiagnostic { agent_role, .. },
+            ) if matches!(
+                session_start_source,
+                codex_hooks::SessionStartSource::Startup
+            ) =>
             {
                 let context = subagent_hook_context(sess, agent_role);
                 StartHookTarget::SubagentStart {
@@ -167,6 +176,11 @@ pub(crate) async fn run_pre_tool_use_hooks(
     tool_name: &HookToolName,
     tool_input: &Value,
 ) -> PreToolUseHookResult {
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        return PreToolUseHookResult::Continue {
+            updated_input: None,
+        };
+    }
     let request = PreToolUseRequest {
         session_id: sess.session_id().into(),
         turn_id: turn_context.sub_id.clone(),
@@ -228,6 +242,9 @@ pub(crate) async fn run_permission_request_hooks(
     run_id_suffix: &str,
     payload: PermissionRequestPayload,
 ) -> Option<PermissionRequestDecision> {
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        return None;
+    }
     let request = PermissionRequestRequest {
         session_id: sess.session_id().into(),
         turn_id: turn_context.sub_id.clone(),
@@ -270,6 +287,14 @@ pub(crate) async fn run_post_tool_use_hooks(
     tool_input: Value,
     tool_response: Value,
 ) -> PostToolUseOutcome {
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        return PostToolUseOutcome {
+            hook_events: Vec::new(),
+            should_block: false,
+            additional_contexts: Vec::new(),
+            feedback_message: None,
+        };
+    }
     let request = PostToolUseRequest {
         session_id: sess.session_id().into(),
         turn_id: turn_context.sub_id.clone(),
@@ -301,14 +326,24 @@ pub(crate) async fn run_turn_stop_hooks(
     stop_hook_active: bool,
     last_assistant_message: Option<String>,
 ) -> StopOutcome {
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        return StopOutcome::default();
+    }
     // Resolve the stop hook kind from the session source before building the
     // request. Root turns run Stop; thread-spawned child turns run SubagentStop.
     let (target, transcript_path) = match &turn_context.session_source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            agent_role,
-            parent_thread_id,
-            ..
-        }) => {
+        SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn {
+                agent_role,
+                parent_thread_id,
+                ..
+            }
+            | SubAgentSource::ContinuityDiagnostic {
+                agent_role,
+                parent_thread_id,
+                ..
+            },
+        ) => {
             let context = subagent_hook_context(sess, agent_role);
             let agent_transcript_path = sess.hook_transcript_path().await;
             let parent_transcript_path = match sess
@@ -534,6 +569,12 @@ pub(crate) async fn inspect_pending_input(
     turn_context: &Arc<TurnContext>,
     pending_input_item: &TurnInput,
 ) -> HookRuntimeOutcome {
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        return HookRuntimeOutcome {
+            should_stop: false,
+            additional_contexts: Vec::new(),
+        };
+    }
     match pending_input_item {
         TurnInput::UserInput { content, .. } => {
             let request = UserPromptSubmitRequest {
@@ -784,9 +825,10 @@ fn thread_spawn_subagent_hook_context(
     turn_context: &TurnContext,
 ) -> Option<SubagentHookContext> {
     match &turn_context.session_source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) => {
-            Some(subagent_hook_context(sess, agent_role))
-        }
+        SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn { agent_role, .. }
+            | SubAgentSource::ContinuityDiagnostic { agent_role, .. },
+        ) => Some(subagent_hook_context(sess, agent_role)),
         _ => None,
     }
 }

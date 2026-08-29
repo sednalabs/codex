@@ -6,6 +6,7 @@ use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::config::Config;
+use crate::tools::context::ToolCallSource;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
@@ -49,6 +50,7 @@ async fn handle_spawn_agent(
         turn,
         payload,
         call_id,
+        source,
         ..
     } = invocation;
     let arguments = function_arguments(payload)?;
@@ -65,7 +67,16 @@ async fn handle_spawn_agent(
     let child_depth = next_thread_spawn_depth(&session_source);
     let mut config =
         build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
-    let is_diagnostic_probe = args.task_name.starts_with("continuity_");
+    let diagnostic_context = match source {
+        ToolCallSource::ContinuityDiagnostic {
+            chain_id,
+            parent_thread_id,
+            parent_turn_id,
+            spawn_call_id,
+        } => Some((chain_id, parent_thread_id, parent_turn_id, spawn_call_id)),
+        ToolCallSource::Direct | ToolCallSource::CodeMode { .. } => None,
+    };
+    let is_diagnostic_probe = diagnostic_context.is_some();
     if let Some(service_tier) = args.service_tier.as_ref() {
         config.service_tier = Some(service_tier.clone());
     }
@@ -118,6 +129,9 @@ async fn handle_spawn_agent(
         );
         config.mcp_servers = Constrained::allow_only(HashMap::new());
         config.features.disable(Feature::Collab);
+        config.features.disable(Feature::CodeMode);
+        config.features.disable(Feature::CodeModeOnly);
+        config.features.disable(Feature::CodeModeBufferedExec);
         config.features.disable(Feature::Apps);
         config.features.disable(Feature::Plugins);
         config.features.disable(Feature::MemoryTool);
@@ -134,13 +148,28 @@ async fn handle_spawn_agent(
         args.expected_reasoning_effort.as_ref(),
     )?;
 
-    let spawn_source = thread_spawn_source(
-        session.thread_id,
-        &turn.session_source,
-        child_depth,
-        role_name,
-        Some(args.task_name.clone()),
-    )?;
+    let spawn_source = if let Some((chain_id, parent_thread_id, parent_turn_id, spawn_call_id)) =
+        diagnostic_context.as_ref()
+    {
+        continuity_diagnostic_thread_spawn_source(
+            session.thread_id,
+            &turn.session_source,
+            child_depth,
+            role_name,
+            Some(args.task_name.clone()),
+            chain_id.clone(),
+            parent_turn_id.clone(),
+            spawn_call_id.clone(),
+        )?
+    } else {
+        thread_spawn_source(
+            session.thread_id,
+            &turn.session_source,
+            child_depth,
+            role_name,
+            Some(args.task_name.clone()),
+        )?
+    };
     let new_agent_path = spawn_source.get_agent_path().ok_or_else(|| {
         FunctionCallError::RespondToModel(
             "spawned agent is missing a canonical task name".to_string(),
@@ -157,13 +186,19 @@ async fn handle_spawn_agent(
     } else {
         "model_driven"
     };
-    let correlation_id = format!("continuity:{}:turn:{}:spawn", args.task_name, turn.sub_id);
+    let correlation_id = diagnostic_context.as_ref().map(
+        |(chain_id, parent_thread_id, parent_turn_id, spawn_call_id)| {
+            format!(
+                "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}"
+            )
+        },
+    );
     crate::diagnostic_flags::record_continuity_stage_with_context(
         &turn.session_telemetry,
         "parent",
         "spawn_validation_admitted",
         observation_origin,
-        Some(correlation_id.as_str()),
+        correlation_id.as_deref(),
     );
     if crate::diagnostic_flags::continuity_observation_enabled() {
         turn.session_telemetry.counter(
@@ -203,13 +238,6 @@ async fn handle_spawn_agent(
     .await
     .map_err(collab_spawn_error)?;
     let new_thread_id = spawned_agent.thread_id;
-    crate::diagnostic_flags::record_continuity_stage_with_context(
-        &turn.session_telemetry,
-        "parent",
-        "child_created",
-        observation_origin,
-        Some(correlation_id.as_str()),
-    );
     let agent_snapshot = session
         .services
         .agent_control
@@ -264,7 +292,7 @@ async fn handle_spawn_agent(
         "parent",
         "initial_work_published",
         observation_origin,
-        Some(correlation_id.as_str()),
+        correlation_id.as_deref(),
     );
     let task_name = String::from(new_agent_path);
 

@@ -232,7 +232,13 @@ ON CONFLICT(thread_id) DO UPDATE SET
             SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 ..
-            }) => Some(*parent_thread_id),
+            })
+            | SessionSource::SubAgent(
+                codex_protocol::protocol::SubAgentSource::ContinuityDiagnostic {
+                    parent_thread_id,
+                    ..
+                },
+            ) => Some(*parent_thread_id),
             _ => None,
         }
     }

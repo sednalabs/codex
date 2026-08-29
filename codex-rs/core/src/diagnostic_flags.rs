@@ -12,6 +12,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use codex_otel::SessionTelemetry;
+use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::UsageLimitReachedError;
 use codex_protocol::protocol::RateLimitReachedType;
@@ -107,17 +108,12 @@ fn is_temporary_usage_limit(error: &UsageLimitReachedError) -> bool {
 /// Identify the child created by the automatic diagnostic probe from durable
 /// V2 session metadata. This keeps its restrictive tool admission in force
 /// after a cold reload without widening restrictions for model-created agents.
+/// The source variant is host-authored; task names and agent paths are not
+/// security or provenance signals.
 pub fn is_continuity_diagnostic_child(source: &SessionSource) -> bool {
     matches!(
         source,
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            agent_path: Some(path),
-            ..
-        }) if path
-            .as_str()
-            .rsplit('/')
-            .next()
-            .is_some_and(|name| name.starts_with("continuity_"))
+        SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic { .. })
     )
 }
 
@@ -129,20 +125,58 @@ pub fn continuity_observation_origin(source: &SessionSource) -> &'static str {
     }
 }
 
-/// Return the stable diagnostic task component used to join parent spawn,
-/// child publication, transport, and outcome observations. The task component
-/// is already durable in the V2 child source, so it remains available after a
-/// restart without recording provider/account identifiers.
+/// Return the immutable host-generated diagnostic chain used to join parent
+/// spawn, child publication, transport, and outcome observations.
 pub fn continuity_observation_chain_id(source: &SessionSource) -> Option<String> {
-    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-        agent_path: Some(path),
+    let SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic { chain_id, .. }) = source
+    else {
+        return None;
+    };
+    Some(chain_id.clone())
+}
+
+/// Build a causal request id with the immutable parent and child identities
+/// carried by the host-authored diagnostic source. This is a join key for
+/// trace logs; aggregate counters intentionally remain low-cardinality.
+pub fn continuity_observation_request_correlation(
+    source: &SessionSource,
+    child_thread_id: &str,
+    turn_id: &str,
+    request_id: &str,
+) -> Option<String> {
+    let SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic {
+        chain_id,
+        parent_thread_id,
+        parent_turn_id,
+        spawn_call_id,
         ..
     }) = source
     else {
         return None;
     };
-    let name = path.as_str().rsplit('/').next()?;
-    name.starts_with("continuity_").then(|| name.to_string())
+    Some(format!(
+        "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:child_thread:{child_thread_id}:turn:{turn_id}:request:{request_id}"
+    ))
+}
+
+pub fn continuity_observation_child_correlation(
+    source: &SessionSource,
+    child_thread_id: ThreadId,
+    stage: &str,
+) -> Option<String> {
+    let SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic {
+        chain_id,
+        parent_thread_id,
+        parent_turn_id,
+        spawn_call_id,
+        ..
+    }) = source
+    else {
+        return None;
+    };
+    Some(format!(
+        "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:child_thread:{child_thread_id}:{stage}"
+    ))
 }
 
 /// Record a bounded continuity stage without including provider or account
@@ -168,6 +202,34 @@ pub fn record_continuity_stage_with_context(
             continuity_stage = stage,
             continuity_origin = origin,
             continuity_correlation_id = correlation_id.unwrap_or("unknown"),
+            "continuity observation stage recorded"
+        );
+        telemetry.counter(
+            "codex.diagnostic.continuity_observation",
+            /*inc*/ 1,
+            &[("actor", actor), ("stage", stage), ("origin", origin)],
+        );
+    }
+}
+
+/// Record a stage that has an exact child identity. Unlike the aggregate
+/// counters, this event is suitable for causal joins because the child id is
+/// emitted at the point the manager creates the child runtime.
+pub fn record_continuity_stage_with_child_context(
+    telemetry: &SessionTelemetry,
+    actor: &'static str,
+    stage: &'static str,
+    origin: &'static str,
+    correlation_id: Option<&str>,
+    child_thread_id: ThreadId,
+) {
+    if continuity_observation_enabled() {
+        tracing::debug!(
+            continuity_actor = actor,
+            continuity_stage = stage,
+            continuity_origin = origin,
+            continuity_correlation_id = correlation_id.unwrap_or("unknown"),
+            continuity_child_thread_id = %child_thread_id,
             "continuity observation stage recorded"
         );
         telemetry.counter(
@@ -257,7 +319,6 @@ mod tests {
     use super::is_continuity_diagnostic_child;
     use super::is_temporary_usage_limit_error;
     use super::is_truthy;
-    use codex_protocol::AgentPath;
     use codex_protocol::ThreadId;
     use codex_protocol::error::CodexErrorDetails;
     use codex_protocol::error::UsageLimitReachedError;
@@ -315,27 +376,39 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_child_detection_is_path_scoped() {
+    fn diagnostic_child_detection_requires_host_authored_source() {
         let parent_thread_id = ThreadId::from_string("22222222-2222-4222-8222-222222222222")
             .expect("valid parent thread id");
-        let source = |path| {
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id,
-                depth: 1,
-                agent_path: Some(AgentPath::try_from(path).expect("valid agent path")),
-                agent_nickname: None,
-                agent_role: None,
-            })
+        let source = |path, diagnostic| {
+            if diagnostic {
+                SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: Some(path.parse().expect("valid agent path")),
+                    agent_nickname: None,
+                    agent_role: None,
+                    chain_id: "chain-1".to_string(),
+                    parent_turn_id: "turn-1".to_string(),
+                    spawn_call_id: "call-1".to_string(),
+                })
+            } else {
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: Some(path.parse().expect("valid agent path")),
+                    agent_nickname: None,
+                    agent_role: None,
+                })
+            }
         };
 
         assert!(is_continuity_diagnostic_child(&source(
-            "/root/continuity_probe"
-        )));
-        assert!(is_continuity_diagnostic_child(&source(
-            "/root/reviewer/continuity_probe"
+            "/root/model_worker",
+            true
         )));
         assert!(!is_continuity_diagnostic_child(&source(
-            "/root/model_worker"
+            "/root/continuity_probe",
+            false
         )));
         assert!(!is_continuity_diagnostic_child(&SessionSource::SubAgent(
             SubAgentSource::Review

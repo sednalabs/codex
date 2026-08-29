@@ -812,7 +812,10 @@ impl Session {
             };
             let rollout_thread_trace = if matches!(
                 session_configuration.session_source,
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+                SessionSource::SubAgent(
+                    SubAgentSource::ThreadSpawn { .. }
+                        | SubAgentSource::ContinuityDiagnostic { .. },
+                )
             ) {
                 // Spawned child threads are part of their root rollout tree. If the
                 // parent had no trace bundle, do not create an orphan child bundle

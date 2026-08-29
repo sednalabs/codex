@@ -153,6 +153,22 @@ SELECT EXISTS(
         Ok(())
     }
 
+    /// Persist a fail-closed continuation deferral. This is used when a
+    /// recovery marker cannot be committed, so an active goal cannot be
+    /// mistaken for an explicitly preserved turn at the next idle boundary.
+    pub async fn mark_thread_goal_continuation_deferral(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO thread_goal_continuation_deferrals (thread_id) VALUES (?) ON CONFLICT(thread_id) DO NOTHING",
+        )
+        .bind(thread_id.to_string())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(())
+    }
+
     /// Mark a goal as having been preserved by the opt-in continuity research
     /// path. This marker survives a process restart so disabling the research
     /// flags cannot turn stale state into an unsolicited provider request.
@@ -167,6 +183,32 @@ SELECT EXISTS(
         .execute(self.pool.as_ref())
         .await?;
         Ok(())
+    }
+
+    /// Atomically arm continuity recovery only while the durable goal is still
+    /// active. The marker and the active-state check share one writer
+    /// transaction, so a concurrent goal transition cannot leave a recovery
+    /// capability detached from the goal state it authorizes.
+    pub async fn arm_thread_goal_continuity_research_if_active(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<bool> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO thread_goal_continuity_research (thread_id) SELECT ? WHERE EXISTS (SELECT 1 FROM thread_goals WHERE thread_id = ? AND status = 'active') ON CONFLICT(thread_id) DO NOTHING",
+        )
+        .bind(thread_id.to_string())
+        .bind(thread_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        let armed = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM thread_goal_continuity_research marker JOIN thread_goals goal ON goal.thread_id = marker.thread_id WHERE marker.thread_id = ? AND goal.status = 'active')",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(armed)
     }
 
     pub async fn has_thread_goal_continuity_research(

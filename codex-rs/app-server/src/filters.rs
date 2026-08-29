@@ -72,7 +72,10 @@ pub(crate) fn source_kind_matches(source: &CoreSessionSource, filter: &[ThreadSo
         }
         ThreadSourceKind::SubAgentThreadSpawn => matches!(
             source,
-            CoreSessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn { .. })
+            CoreSessionSource::SubAgent(
+                CoreSubAgentSource::ThreadSpawn { .. }
+                    | CoreSubAgentSource::ContinuityDiagnostic { .. },
+            )
         ),
         ThreadSourceKind::SubAgentOther => matches!(
             source,

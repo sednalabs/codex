@@ -1928,7 +1928,9 @@ fn subagent_header_value(session_source: &SessionSource) -> Option<String> {
             SubAgentSource::Review => Some("review".to_string()),
             SubAgentSource::Compact => Some("compact".to_string()),
             SubAgentSource::MemoryConsolidation => Some("memory_consolidation".to_string()),
-            SubAgentSource::ThreadSpawn { .. } => Some("collab_spawn".to_string()),
+            SubAgentSource::ThreadSpawn { .. } | SubAgentSource::ContinuityDiagnostic { .. } => {
+                Some("collab_spawn".to_string())
+            }
             SubAgentSource::Other(label) => Some(label.clone()),
         },
         SessionSource::Internal(InternalSessionSource::MemoryConsolidation) => {

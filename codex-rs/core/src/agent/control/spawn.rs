@@ -635,6 +635,57 @@ impl AgentControl {
                 )?;
                 (Some(session_source), agent_metadata)
             }
+            Some(SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic {
+                parent_thread_id,
+                depth,
+                agent_path,
+                agent_role,
+                chain_id,
+                parent_turn_id,
+                spawn_call_id,
+                ..
+            })) => {
+                let Some(reservation) = reservation.as_mut() else {
+                    return Err(CodexErr::Fatal(
+                        "spawn reservation missing before publication".to_string(),
+                    ));
+                };
+                let (prepared_source, agent_metadata) = self.prepare_thread_spawn(
+                    reservation,
+                    &config,
+                    parent_thread_id,
+                    depth,
+                    agent_path,
+                    agent_role,
+                    /*preferred_agent_nickname*/ None,
+                )?;
+                let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    agent_path,
+                    agent_nickname,
+                    agent_role,
+                    ..
+                }) = prepared_source
+                else {
+                    return Err(CodexErr::Fatal(
+                        "prepared continuity diagnostic source was not a thread spawn".to_string(),
+                    ));
+                };
+                (
+                    Some(SessionSource::SubAgent(
+                        SubAgentSource::ContinuityDiagnostic {
+                            parent_thread_id,
+                            depth,
+                            agent_path,
+                            agent_nickname,
+                            agent_role,
+                            chain_id,
+                            parent_turn_id,
+                            spawn_call_id,
+                        },
+                    )),
+                    agent_metadata,
+                )
+            }
             other => (other, AgentMetadata::default()),
         };
         let notification_source = session_source.clone();
@@ -681,6 +732,26 @@ impl AgentControl {
             }
             (None, _, _) => Box::pin(state.spawn_new_thread(config.clone(), self.clone())).await?,
         };
+        // This is the manager's actual child-creation boundary. Publication and
+        // initial input delivery happen later and must not be conflated with
+        // existence of the child runtime.
+        if let Some(source) = notification_source.as_ref()
+            && crate::diagnostic_flags::is_continuity_diagnostic_child(source)
+        {
+            let correlation_id = crate::diagnostic_flags::continuity_observation_child_correlation(
+                source,
+                new_thread.thread_id,
+                "child_created",
+            );
+            crate::diagnostic_flags::record_continuity_stage_with_child_context(
+                &new_thread.thread.session_telemetry(),
+                "child",
+                "child_created",
+                "direct_probe",
+                correlation_id.as_deref(),
+                new_thread.thread_id,
+            );
+        }
         #[cfg(test)]
         self.await_after_new_thread_test_hook(new_thread.thread_id)
             .await;
@@ -796,6 +867,24 @@ impl AgentControl {
             }
         };
         if let Err(error) = initial_input_result {
+            if let Some(source) = notification_source.as_ref()
+                && crate::diagnostic_flags::is_continuity_diagnostic_child(source)
+            {
+                let correlation_id =
+                    crate::diagnostic_flags::continuity_observation_child_correlation(
+                        source,
+                        new_thread.thread_id,
+                        "initial_delivery_failed",
+                    );
+                crate::diagnostic_flags::record_continuity_stage_with_child_context(
+                    &new_thread.thread.session_telemetry(),
+                    "child",
+                    "initial_work_delivery_failed",
+                    "direct_probe",
+                    correlation_id.as_deref(),
+                    new_thread.thread_id,
+                );
+            }
             if let Err(cleanup_error) = self
                 .reconcile_unpublished_spawn(
                     &state,
@@ -917,9 +1006,12 @@ impl AgentControl {
         }
 
         if let Some(SessionSource::SubAgent(
-            subagent_source @ SubAgentSource::ThreadSpawn {
+            subagent_source @ (SubAgentSource::ThreadSpawn {
                 parent_thread_id, ..
-            },
+            }
+            | SubAgentSource::ContinuityDiagnostic {
+                parent_thread_id, ..
+            }),
         )) = notification_source.as_ref()
         {
             let client_metadata = match state.get_thread(*parent_thread_id).await {
@@ -954,6 +1046,24 @@ impl AgentControl {
         // listener attaches and drains it. Publishing only after the CAS therefore preserves
         // cancellation-owned invisibility without dropping a fast child's early stream events.
         state.notify_thread_created(new_thread.thread_id);
+
+        if let Some(source) = notification_source.as_ref()
+            && crate::diagnostic_flags::is_continuity_diagnostic_child(source)
+        {
+            let correlation_id = crate::diagnostic_flags::continuity_observation_child_correlation(
+                source,
+                new_thread.thread_id,
+                "publication",
+            );
+            crate::diagnostic_flags::record_continuity_stage_with_child_context(
+                &new_thread.thread.session_telemetry(),
+                "child",
+                "child_publication_completed",
+                "direct_probe",
+                correlation_id.as_deref(),
+                new_thread.thread_id,
+            );
+        }
 
         self.persist_thread_spawn_edge_for_source(
             new_thread.thread.as_ref(),
@@ -1323,9 +1433,14 @@ impl AgentControl {
                 "spawn_agent fork requires a fork mode".to_string(),
             ));
         };
-        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        }) = &session_source
+        let SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }
+            | SubAgentSource::ContinuityDiagnostic {
+                parent_thread_id, ..
+            },
+        ) = &session_source
         else {
             return Err(CodexErr::Fatal(
                 "spawn_agent fork requires a thread-spawn session source".to_string(),
@@ -1590,6 +1705,49 @@ impl AgentControl {
                 resumed_agent_role,
                 resumed_agent_nickname,
             )?,
+            SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic {
+                parent_thread_id,
+                depth,
+                agent_path,
+                chain_id,
+                parent_turn_id,
+                spawn_call_id,
+                ..
+            }) => {
+                let (prepared_source, agent_metadata) = self.prepare_thread_spawn(
+                    &mut reservation,
+                    &config,
+                    parent_thread_id,
+                    depth,
+                    agent_path.or(resumed_agent_path),
+                    resumed_agent_role,
+                    resumed_agent_nickname,
+                )?;
+                let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    agent_path,
+                    agent_nickname,
+                    agent_role,
+                    ..
+                }) = prepared_source
+                else {
+                    return Err(CodexErr::Fatal(
+                        "prepared continuity diagnostic source was not a thread spawn".to_string(),
+                    ));
+                };
+                (
+                    SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic {
+                        parent_thread_id,
+                        depth,
+                        agent_path,
+                        agent_nickname,
+                        agent_role,
+                        chain_id,
+                        parent_turn_id,
+                        spawn_call_id,
+                    }),
+                    agent_metadata,
+                )
+            }
             other => (other, AgentMetadata::default()),
         };
         let notification_source = session_source.clone();

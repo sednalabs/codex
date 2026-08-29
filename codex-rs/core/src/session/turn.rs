@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::SkillInjections;
+use crate::agent::status::is_final;
 use crate::build_skill_injections;
 use crate::capacity_retry::notify_and_wait_for_capacity_retry;
 use crate::client::ModelClientSession;
@@ -649,6 +650,12 @@ async fn build_skills_and_plugins(
     cancellation_token: &CancellationToken,
 ) -> Option<(Vec<ResponseItem>, HashSet<String>)> {
     let turn_context = step_context.turn.as_ref();
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        // Diagnostic children receive only the explicit probe message. Do not
+        // let plugin/skill/app discovery or MCP dependency installation add
+        // model-visible input contributors.
+        return Some((Vec::new(), HashSet::new()));
+    }
     // Guardian input embeds the parent transcript as untrusted evidence. Do not interpret skill or
     // plugin mentions from that generated prompt as requests to inject additional instructions.
     if crate::guardian::is_guardian_reviewer_source(&turn_context.session_source) {
@@ -840,6 +847,9 @@ async fn build_extension_turn_input_items(
     cancellation_token: &CancellationToken,
 ) -> Option<Vec<ResponseItem>> {
     let turn_context = step_context.turn.as_ref();
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        return Some(Vec::new());
+    }
     let contributors = sess.services.extensions.turn_input_contributors().to_vec();
     if contributors.is_empty() {
         return Some(Vec::new());
@@ -1293,6 +1303,9 @@ async fn run_continuity_post_usage_limit_probe(
 ) {
     let task_name = crate::diagnostic_flags::next_continuity_probe_task_name("post_limit");
     let call_id = format!("diag_{task_name}");
+    let chain_id = crate::diagnostic_flags::next_continuity_correlation_id("post_limit");
+    let child_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let session = tool_runtime.session();
     let tool_name = if turn_context.provider.capabilities().namespace_tools {
         turn_context
             .config
@@ -1311,8 +1324,8 @@ async fn run_continuity_post_usage_limit_probe(
     })
     .to_string();
     let correlation_id = format!(
-        "continuity:{}:turn:{}:spawn",
-        task_name, turn_context.sub_id
+        "continuity:{chain_id}:parent_thread:{}:parent_turn:{}:spawn:{call_id}",
+        session.thread_id, turn_context.sub_id
     );
     let call = crate::tools::router::ToolCall {
         tool_name: tool_name.clone(),
@@ -1334,11 +1347,15 @@ async fn run_continuity_post_usage_limit_probe(
         "continuity observation dispatching bounded post-usage-limit V2 spawn"
     );
 
-    let session = tool_runtime.session();
     match tool_runtime
         .handle_tool_call_with_source(
             call,
-            crate::tools::router::ToolCallSource::Direct,
+            crate::tools::router::ToolCallSource::ContinuityDiagnostic {
+                chain_id,
+                parent_thread_id: session.thread_id.to_string(),
+                parent_turn_id: turn_context.sub_id.clone(),
+                spawn_call_id: call_id.clone(),
+            },
             cancellation_token.clone(),
         )
         .await
@@ -1365,28 +1382,107 @@ async fn run_continuity_post_usage_limit_probe(
                 let telemetry = turn_context.session_telemetry.clone();
                 let monitor_correlation_id = correlation_id.clone();
                 tokio::spawn(async move {
-                    let expired = tokio::select! {
-                        _ = cancellation_token.cancelled() => false,
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => true,
-                    };
-                    let stage = if expired {
-                        "diagnostic_child_lifetime_expired"
+                    let mut deadline_sleep = tokio::time::sleep_until(child_deadline);
+                    tokio::pin!(deadline_sleep);
+                    let monitor_outcome = if let Ok(mut status_rx) =
+                        control.subscribe_status(child_thread_id).await
+                    {
+                        if is_final(&status_rx.borrow().clone()) {
+                            "completed"
+                        } else {
+                            loop {
+                                tokio::select! {
+                                    _ = cancellation_token.cancelled() => break "cancelled",
+                                    _ = &mut deadline_sleep => break "expired",
+                                    changed = status_rx.changed() => {
+                                        if changed.is_err() {
+                                            break if is_final(&status_rx.borrow().clone()) {
+                                                "completed"
+                                            } else {
+                                                "status_unavailable"
+                                            };
+                                        }
+                                        if is_final(&status_rx.borrow().clone()) {
+                                            break "completed";
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     } else {
-                        "diagnostic_child_local_cancelled"
+                        tokio::select! {
+                            _ = cancellation_token.cancelled() => "cancelled",
+                            _ = &mut deadline_sleep => "expired",
+                        }
                     };
-                    crate::diagnostic_flags::record_continuity_stage_with_context(
-                        &telemetry,
-                        "parent",
-                        stage,
-                        "direct_probe",
-                        Some(monitor_correlation_id.as_str()),
-                    );
-                    if let Err(error) = control.close_agent(child_thread_id).await {
-                        tracing::debug!(
-                            %child_thread_id,
-                            %error,
-                            "continuity observation child cleanup was already terminal or unavailable"
-                        );
+                    match monitor_outcome {
+                        "completed" => {
+                            crate::diagnostic_flags::record_continuity_stage_with_context(
+                                &telemetry,
+                                "parent",
+                                "diagnostic_child_completed",
+                                "direct_probe",
+                                Some(monitor_correlation_id.as_str()),
+                            )
+                        }
+                        "cancelled" | "expired" | "status_unavailable" => {
+                            let stage = match monitor_outcome {
+                                "expired" => "diagnostic_child_lifetime_expired",
+                                "status_unavailable" => "diagnostic_child_status_unavailable",
+                                _ => "diagnostic_child_local_cancelled",
+                            };
+                            crate::diagnostic_flags::record_continuity_stage_with_context(
+                                &telemetry,
+                                "parent",
+                                stage,
+                                "direct_probe",
+                                Some(monitor_correlation_id.as_str()),
+                            );
+                            let mut closed = false;
+                            for attempt in 0..3 {
+                                match control.close_agent(child_thread_id).await {
+                                    Ok(()) => {
+                                        closed = true;
+                                        break;
+                                    }
+                                    Err(error) => {
+                                        if is_final(&control.get_status(child_thread_id).await) {
+                                            closed = true;
+                                            crate::diagnostic_flags::record_continuity_stage_with_context(
+                                                &telemetry,
+                                                "parent",
+                                                "diagnostic_child_close_reconciled",
+                                                "direct_probe",
+                                                Some(monitor_correlation_id.as_str()),
+                                            );
+                                            break;
+                                        }
+                                        tracing::debug!(
+                                            %child_thread_id,
+                                            %error,
+                                            attempt,
+                                            "continuity observation child cleanup attempt failed"
+                                        );
+                                        if attempt < 2 {
+                                            tokio::time::sleep(std::time::Duration::from_millis(
+                                                100,
+                                            ))
+                                            .await;
+                                        }
+                                    }
+                                }
+                            }
+                            if !closed {
+                                crate::diagnostic_flags::record_continuity_stage_with_context(
+                                    &telemetry,
+                                    "parent",
+                                    "diagnostic_child_close_failed",
+                                    "direct_probe",
+                                    Some(monitor_correlation_id.as_str()),
+                                );
+                            }
+                        }
+                        _ => unreachable!("continuity monitor has one of three outcomes"),
                     }
                 });
             } else {
@@ -1644,6 +1740,25 @@ pub(crate) async fn built_tools(
     mcp: &codex_mcp::McpBinding,
     step_store: &ExtensionData,
 ) -> (Vec<ToolInfo>, Arc<ToolRouter>) {
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        // Do not initialize plugin, MCP, extension, dynamic-tool, or
+        // environment-tool contributors for an evidence-only child. The
+        // planner admits only its two read-only utility tools below.
+        let tool_router = Arc::new(ToolRouter::from_context(
+            turn_context,
+            environments,
+            mcp,
+            ToolRouterParams {
+                tool_runtimes: Vec::new(),
+                tool_suggest_candidates: None,
+                extension_tool_executors: Vec::new(),
+                wait_for_environment_tool_config: None,
+                dynamic_tools: &[],
+            },
+            &sess.services.tool_search_handler_cache,
+        ));
+        return (Vec::new(), tool_router);
+    }
     let all_mcp_tools = mcp.tools().to_vec();
     let loaded_plugins = sess
         .services
@@ -2409,26 +2524,22 @@ async fn try_run_sampling_request(
     let actor = continuity_actor(&turn_context);
     let observation_origin =
         crate::diagnostic_flags::continuity_observation_origin(&turn_context.session_source);
-    let correlation_id =
-        crate::diagnostic_flags::continuity_observation_chain_id(&turn_context.session_source)
-            .map(|chain_id| {
-                format!(
-                    "continuity:{chain_id}:turn:{}:request:{}",
-                    turn_context.sub_id,
-                    crate::diagnostic_flags::next_continuity_correlation_id("transport")
-                )
-            })
-            .unwrap_or_else(|| {
-                format!(
-                    "turn:{}:request:{}",
-                    turn_context.sub_id,
-                    crate::diagnostic_flags::next_continuity_correlation_id("transport")
-                )
-            });
+    let request_id = crate::diagnostic_flags::next_continuity_correlation_id("transport");
+    let child_thread_id = sess.thread_id.to_string();
+    let correlation_id = crate::diagnostic_flags::continuity_observation_request_correlation(
+        &turn_context.session_source,
+        &child_thread_id,
+        &turn_context.sub_id,
+        &request_id,
+    )
+    .unwrap_or_else(|| format!("turn:{}:request:{request_id}", turn_context.sub_id));
     crate::diagnostic_flags::record_continuity_stage_with_context(
         &turn_context.session_telemetry,
         actor,
-        "provider_transport_attempt",
+        // This is the client sampling boundary, not a claim that an HTTP or
+        // WebSocket frame reached the provider. Mock-server receipts remain
+        // the physical-send proof for the research harness.
+        "sampling_request_started",
         observation_origin,
         Some(correlation_id.as_str()),
     );

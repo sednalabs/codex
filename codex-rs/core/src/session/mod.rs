@@ -1993,11 +1993,18 @@ impl Session {
             return;
         }
 
-        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id,
-            agent_path: Some(child_agent_path),
-            ..
-        }) = &turn_context.session_source
+        let SessionSource::SubAgent(
+            SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                agent_path: Some(child_agent_path),
+                ..
+            }
+            | SubAgentSource::ContinuityDiagnostic {
+                parent_thread_id,
+                agent_path: Some(child_agent_path),
+                ..
+            },
+        ) = &turn_context.session_source
         else {
             return;
         };
