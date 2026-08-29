@@ -2967,6 +2967,9 @@ pub enum SubAgentSource {
         parent_turn_id: String,
         /// Parent tool-call id that requested the spawn.
         spawn_call_id: String,
+        /// Exact parent sampling request id that produced the authoritative limit.
+        #[serde(default)]
+        parent_sampling_request_id: String,
     },
     MemoryConsolidation,
     Other(String),

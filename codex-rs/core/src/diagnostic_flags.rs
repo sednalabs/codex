@@ -149,13 +149,14 @@ pub fn continuity_observation_request_correlation(
         parent_thread_id,
         parent_turn_id,
         spawn_call_id,
+        parent_sampling_request_id,
         ..
     }) = source
     else {
         return None;
     };
     Some(format!(
-        "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:child_thread:{child_thread_id}:turn:{turn_id}:request:{request_id}"
+        "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:parent_sampling_request:{parent_sampling_request_id}:child_thread:{child_thread_id}:turn:{turn_id}:request:{request_id}"
     ))
 }
 
@@ -169,14 +170,24 @@ pub fn continuity_observation_child_correlation(
         parent_thread_id,
         parent_turn_id,
         spawn_call_id,
+        parent_sampling_request_id,
         ..
     }) = source
     else {
         return None;
     };
     Some(format!(
-        "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:child_thread:{child_thread_id}:{stage}"
+        "continuity:{chain_id}:parent_thread:{parent_thread_id}:parent_turn:{parent_turn_id}:spawn:{spawn_call_id}:parent_sampling_request:{parent_sampling_request_id}:child_thread:{child_thread_id}:{stage}"
     ))
+}
+
+/// Identity of the most recent client sampling request. The host stores this
+/// before opening the provider stream so a subsequent diagnostic probe can
+/// join itself to the exact request that received a usage-limit response.
+#[derive(Clone, Debug)]
+pub struct ContinuitySamplingRequestIdentity {
+    pub request_id: String,
+    pub correlation_id: String,
 }
 
 /// Record a bounded continuity stage without including provider or account
@@ -316,6 +327,8 @@ fn is_truthy(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::continuity_observation_child_correlation;
+    use super::continuity_observation_request_correlation;
     use super::is_continuity_diagnostic_child;
     use super::is_temporary_usage_limit_error;
     use super::is_truthy;
@@ -390,6 +403,7 @@ mod tests {
                     chain_id: "chain-1".to_string(),
                     parent_turn_id: "turn-1".to_string(),
                     spawn_call_id: "call-1".to_string(),
+                    parent_sampling_request_id: "request-1".to_string(),
                 })
             } else {
                 SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -413,5 +427,24 @@ mod tests {
         assert!(!is_continuity_diagnostic_child(&SessionSource::SubAgent(
             SubAgentSource::Review
         )));
+
+        let request_correlation = continuity_observation_request_correlation(
+            &source("/root/diagnostic", true),
+            "33333333-3333-4333-8333-333333333333",
+            "child-turn",
+            "child-request",
+        )
+        .expect("diagnostic request should have a causal correlation");
+        assert!(request_correlation.contains("parent_sampling_request:request-1"));
+        assert!(request_correlation.contains("child_thread:33333333-3333-4333-8333-333333333333"));
+        assert!(
+            continuity_observation_child_correlation(
+                &source("/root/diagnostic", true),
+                parent_thread_id,
+                "child_created",
+            )
+            .expect("diagnostic child stage should have a causal correlation")
+            .contains("parent_sampling_request:request-1")
+        );
     }
 }

@@ -104,6 +104,7 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageContentDeltaEvent;
 use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
@@ -1304,6 +1305,11 @@ async fn run_continuity_post_usage_limit_probe(
     let task_name = crate::diagnostic_flags::next_continuity_probe_task_name("post_limit");
     let call_id = format!("diag_{task_name}");
     let chain_id = crate::diagnostic_flags::next_continuity_correlation_id("post_limit");
+    let parent_sampling_request_id = turn_context
+        .extension_data
+        .get::<crate::diagnostic_flags::ContinuitySamplingRequestIdentity>()
+        .map(|identity| identity.request_id.clone())
+        .unwrap_or_else(|| "unknown".to_string());
     let child_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     let session = tool_runtime.session();
     let tool_name = if turn_context.provider.capabilities().namespace_tools {
@@ -1324,7 +1330,7 @@ async fn run_continuity_post_usage_limit_probe(
     })
     .to_string();
     let correlation_id = format!(
-        "continuity:{chain_id}:parent_thread:{}:parent_turn:{}:spawn:{call_id}",
+        "continuity:{chain_id}:parent_thread:{}:parent_turn:{}:spawn:{call_id}:parent_sampling_request:{parent_sampling_request_id}",
         session.thread_id, turn_context.sub_id
     );
     let call = crate::tools::router::ToolCall {
@@ -1355,6 +1361,7 @@ async fn run_continuity_post_usage_limit_probe(
                 parent_thread_id: session.thread_id.to_string(),
                 parent_turn_id: turn_context.sub_id.clone(),
                 spawn_call_id: call_id.clone(),
+                parent_sampling_request_id,
             },
             cancellation_token.clone(),
         )
@@ -1381,110 +1388,15 @@ async fn run_continuity_post_usage_limit_probe(
                 let control = session.services.agent_control.clone();
                 let telemetry = turn_context.session_telemetry.clone();
                 let monitor_correlation_id = correlation_id.clone();
-                tokio::spawn(async move {
-                    let mut deadline_sleep = tokio::time::sleep_until(child_deadline);
-                    tokio::pin!(deadline_sleep);
-                    let monitor_outcome = if let Ok(mut status_rx) =
-                        control.subscribe_status(child_thread_id).await
-                    {
-                        if is_final(&status_rx.borrow().clone()) {
-                            "completed"
-                        } else {
-                            loop {
-                                tokio::select! {
-                                    _ = cancellation_token.cancelled() => break "cancelled",
-                                    _ = &mut deadline_sleep => break "expired",
-                                    changed = status_rx.changed() => {
-                                        if changed.is_err() {
-                                            break if is_final(&status_rx.borrow().clone()) {
-                                                "completed"
-                                            } else {
-                                                "status_unavailable"
-                                            };
-                                        }
-                                        if is_final(&status_rx.borrow().clone()) {
-                                            break "completed";
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        tokio::select! {
-                            _ = cancellation_token.cancelled() => "cancelled",
-                            _ = &mut deadline_sleep => "expired",
-                        }
-                    };
-                    match monitor_outcome {
-                        "completed" => {
-                            crate::diagnostic_flags::record_continuity_stage_with_context(
-                                &telemetry,
-                                "parent",
-                                "diagnostic_child_completed",
-                                "direct_probe",
-                                Some(monitor_correlation_id.as_str()),
-                            )
-                        }
-                        "cancelled" | "expired" | "status_unavailable" => {
-                            let stage = match monitor_outcome {
-                                "expired" => "diagnostic_child_lifetime_expired",
-                                "status_unavailable" => "diagnostic_child_status_unavailable",
-                                _ => "diagnostic_child_local_cancelled",
-                            };
-                            crate::diagnostic_flags::record_continuity_stage_with_context(
-                                &telemetry,
-                                "parent",
-                                stage,
-                                "direct_probe",
-                                Some(monitor_correlation_id.as_str()),
-                            );
-                            let mut closed = false;
-                            for attempt in 0..3 {
-                                match control.close_agent(child_thread_id).await {
-                                    Ok(()) => {
-                                        closed = true;
-                                        break;
-                                    }
-                                    Err(error) => {
-                                        if is_final(&control.get_status(child_thread_id).await) {
-                                            closed = true;
-                                            crate::diagnostic_flags::record_continuity_stage_with_context(
-                                                &telemetry,
-                                                "parent",
-                                                "diagnostic_child_close_reconciled",
-                                                "direct_probe",
-                                                Some(monitor_correlation_id.as_str()),
-                                            );
-                                            break;
-                                        }
-                                        tracing::debug!(
-                                            %child_thread_id,
-                                            %error,
-                                            attempt,
-                                            "continuity observation child cleanup attempt failed"
-                                        );
-                                        if attempt < 2 {
-                                            tokio::time::sleep(std::time::Duration::from_millis(
-                                                100,
-                                            ))
-                                            .await;
-                                        }
-                                    }
-                                }
-                            }
-                            if !closed {
-                                crate::diagnostic_flags::record_continuity_stage_with_context(
-                                    &telemetry,
-                                    "parent",
-                                    "diagnostic_child_close_failed",
-                                    "direct_probe",
-                                    Some(monitor_correlation_id.as_str()),
-                                );
-                            }
-                        }
-                        _ => unreachable!("continuity monitor has one of three outcomes"),
-                    }
-                });
+                monitor_continuity_child(
+                    control,
+                    telemetry,
+                    monitor_correlation_id,
+                    child_thread_id,
+                    cancellation_token,
+                    child_deadline,
+                )
+                .await;
             } else {
                 tracing::debug!(
                     %task_name,
@@ -1508,6 +1420,145 @@ async fn run_continuity_post_usage_limit_probe(
             );
         }
     }
+}
+
+fn continuity_child_terminal_outcome(status: &AgentStatus) -> Option<&'static str> {
+    match status {
+        AgentStatus::Completed(_) => Some("completed"),
+        AgentStatus::Errored(_) => Some("errored"),
+        AgentStatus::Interrupted => Some("interrupted"),
+        AgentStatus::PendingInit | AgentStatus::Running => None,
+        AgentStatus::Shutdown | AgentStatus::NotFound => Some("status_unavailable"),
+    }
+}
+
+async fn cleanup_continuity_child(
+    control: crate::agent::control::AgentControl,
+    child_thread_id: codex_protocol::ThreadId,
+) -> bool {
+    for attempt in 0..3 {
+        let close_result = control.close_agent(child_thread_id).await;
+        let status = control.get_status(child_thread_id).await;
+        if close_result.is_ok() && continuity_child_terminal_outcome(&status).is_some() {
+            return true;
+        }
+
+        // `close_agent` normally removes the ephemeral child. If persistence or
+        // shutdown reported an error, use the manager's removal path as a
+        // second, explicit owner and verify the terminal postcondition below.
+        if let Err(error) = control.shutdown_live_agent(child_thread_id).await {
+            tracing::debug!(
+                %child_thread_id,
+                %error,
+                attempt,
+                "continuity observation child cleanup fallback failed"
+            );
+        }
+        let status = control.get_status(child_thread_id).await;
+        if continuity_child_terminal_outcome(&status).is_some() {
+            return true;
+        }
+        if attempt < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+    false
+}
+
+async fn monitor_continuity_child(
+    control: crate::agent::control::AgentControl,
+    telemetry: codex_otel::SessionTelemetry,
+    correlation_id: String,
+    child_thread_id: codex_protocol::ThreadId,
+    cancellation_token: CancellationToken,
+    child_deadline: tokio::time::Instant,
+) {
+    let mut deadline_sleep = tokio::time::sleep_until(child_deadline);
+    tokio::pin!(deadline_sleep);
+    let monitor_outcome = if let Ok(mut status_rx) = control.subscribe_status(child_thread_id).await
+    {
+        let initial_status = status_rx.borrow().clone();
+        if let Some(outcome) = continuity_child_terminal_outcome(&initial_status) {
+            outcome
+        } else {
+            loop {
+                tokio::select! {
+                    _ = cancellation_token.cancelled() => {
+                        // Cancellation can race the final status update. Re-read the manager
+                        // state so a completed/errored/interrupted child is not mislabeled as
+                        // locally cancelled.
+                        let latest_status = control.get_status(child_thread_id).await;
+                        break continuity_child_terminal_outcome(&latest_status)
+                            .unwrap_or("cancelled");
+                    }
+                    _ = &mut deadline_sleep => {
+                        // A completion can race the timer. Re-read the manager
+                        // status at the deadline before declaring expiry.
+                        let latest_status = control.get_status(child_thread_id).await;
+                        break continuity_child_terminal_outcome(&latest_status)
+                            .unwrap_or("expired");
+                    }
+                    changed = status_rx.changed() => {
+                        if changed.is_err() {
+                            let latest_status = control.get_status(child_thread_id).await;
+                            break continuity_child_terminal_outcome(&latest_status)
+                                .unwrap_or("status_unavailable");
+                        }
+                        if let Some(outcome) =
+                            continuity_child_terminal_outcome(&status_rx.borrow().clone())
+                        {
+                            break outcome;
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        let latest_status = control.get_status(child_thread_id).await;
+        if let Some(outcome) = continuity_child_terminal_outcome(&latest_status) {
+            outcome
+        } else {
+            tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    let latest_status = control.get_status(child_thread_id).await;
+                    continuity_child_terminal_outcome(&latest_status).unwrap_or("cancelled")
+                }
+                _ = &mut deadline_sleep => {
+                    let latest_status = control.get_status(child_thread_id).await;
+                    continuity_child_terminal_outcome(&latest_status).unwrap_or("status_unavailable")
+                }
+            }
+        }
+    };
+
+    let stage = match monitor_outcome {
+        "completed" => "diagnostic_child_completed",
+        "errored" => "diagnostic_child_errored",
+        "interrupted" => "diagnostic_child_interrupted",
+        "expired" => "diagnostic_child_lifetime_expired",
+        "status_unavailable" => "diagnostic_child_status_unavailable",
+        _ => "diagnostic_child_local_cancelled",
+    };
+    crate::diagnostic_flags::record_continuity_stage_with_context(
+        &telemetry,
+        "parent",
+        stage,
+        "direct_probe",
+        Some(correlation_id.as_str()),
+    );
+
+    let cleanup_ok = cleanup_continuity_child(control, child_thread_id).await;
+    crate::diagnostic_flags::record_continuity_stage_with_context(
+        &telemetry,
+        "parent",
+        if cleanup_ok {
+            "diagnostic_child_cleanup_completed"
+        } else {
+            "diagnostic_child_cleanup_failed"
+        },
+        "direct_probe",
+        Some(correlation_id.as_str()),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2533,6 +2584,12 @@ async fn try_run_sampling_request(
         &request_id,
     )
     .unwrap_or_else(|| format!("turn:{}:request:{request_id}", turn_context.sub_id));
+    turn_context.extension_data.insert(
+        crate::diagnostic_flags::ContinuitySamplingRequestIdentity {
+            request_id: request_id.clone(),
+            correlation_id: correlation_id.clone(),
+        },
+    );
     crate::diagnostic_flags::record_continuity_stage_with_context(
         &turn_context.session_telemetry,
         actor,

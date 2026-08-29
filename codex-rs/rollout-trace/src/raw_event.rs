@@ -57,6 +57,8 @@ pub struct RawTraceEventContext {
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum RawToolCallRequester {
     Model,
+    /// Host-created continuity observation probe; never a model-authored call.
+    ContinuityDiagnostic,
     CodeCell {
         /// Runtime-local code-mode cell handle.
         runtime_cell_id: String,

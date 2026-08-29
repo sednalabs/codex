@@ -66,6 +66,33 @@ fn is_benign_unpublished_spawn_persistence_error(error: &std::io::Error) -> bool
     )
 }
 
+fn record_continuity_child_stage(
+    child_thread: &crate::CodexThread,
+    child_thread_id: ThreadId,
+    source: Option<&SessionSource>,
+    stage: &'static str,
+) {
+    let Some(source) = source else {
+        return;
+    };
+    if !crate::diagnostic_flags::is_continuity_diagnostic_child(source) {
+        return;
+    }
+    let correlation_id = crate::diagnostic_flags::continuity_observation_child_correlation(
+        source,
+        child_thread_id,
+        stage,
+    );
+    crate::diagnostic_flags::record_continuity_stage_with_child_context(
+        &child_thread.session_telemetry(),
+        "child",
+        stage,
+        "direct_probe",
+        correlation_id.as_deref(),
+        child_thread_id,
+    );
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum UnpublishedSpawnReconciliation {
     ShutdownThenVerifyTerminal,
@@ -643,6 +670,7 @@ impl AgentControl {
                 chain_id,
                 parent_turn_id,
                 spawn_call_id,
+                parent_sampling_request_id,
                 ..
             })) => {
                 let Some(reservation) = reservation.as_mut() else {
@@ -681,6 +709,7 @@ impl AgentControl {
                             chain_id,
                             parent_turn_id,
                             spawn_call_id,
+                            parent_sampling_request_id,
                         },
                     )),
                     agent_metadata,
@@ -756,6 +785,12 @@ impl AgentControl {
         self.await_after_new_thread_test_hook(new_thread.thread_id)
             .await;
         if spawn_cancellation_owns_child(self, publication_key.as_ref()) {
+            record_continuity_child_stage(
+                &new_thread.thread,
+                new_thread.thread_id,
+                notification_source.as_ref(),
+                "child_spawn_cancelled_before_delivery",
+            );
             if let Err(cleanup_error) = self
                 .reconcile_unpublished_spawn(
                     &state,
@@ -784,6 +819,12 @@ impl AgentControl {
                 self.state.claim_spawn_publication_delivery(key)
             });
         if delivery_decision == SpawnPublicationDecision::CancellationOwned {
+            record_continuity_child_stage(
+                &new_thread.thread,
+                new_thread.thread_id,
+                notification_source.as_ref(),
+                "child_delivery_cancelled",
+            );
             if let Err(cleanup_error) = self
                 .reconcile_unpublished_spawn(
                     &state,
@@ -809,6 +850,12 @@ impl AgentControl {
             let error = CodexErr::Fatal(format!(
                 "spawn publication entered invalid initial-delivery state: {delivery_decision:?}"
             ));
+            record_continuity_child_stage(
+                &new_thread.thread,
+                new_thread.thread_id,
+                notification_source.as_ref(),
+                "child_delivery_state_invalid",
+            );
             if let Err(cleanup_error) = self
                 .reconcile_unpublished_spawn(
                     &state,
@@ -909,23 +956,39 @@ impl AgentControl {
             .as_ref()
             .map(crate::diagnostic_flags::continuity_observation_origin)
             .unwrap_or("model_driven");
-        let correlation_id = notification_source
-            .as_ref()
-            .and_then(crate::diagnostic_flags::continuity_observation_chain_id)
-            .map(|chain_id| format!("continuity:{chain_id}:initial_work"))
-            .or_else(|| {
+        let correlation_id = notification_source.as_ref().and_then(|source| {
+            crate::diagnostic_flags::continuity_observation_child_correlation(
+                source,
+                new_thread.thread_id,
+                "initial_work_submitted",
+            )
+        });
+        if let Some(source) = notification_source.as_ref()
+            && crate::diagnostic_flags::is_continuity_diagnostic_child(source)
+        {
+            crate::diagnostic_flags::record_continuity_stage_with_child_context(
+                &new_thread.thread.session_telemetry(),
+                "child",
+                "initial_work_submitted",
+                observation_origin,
+                correlation_id.as_deref(),
+                new_thread.thread_id,
+            );
+        } else {
+            let correlation_id = correlation_id.or_else(|| {
                 options
                     .spawn_call_id
                     .as_deref()
                     .map(|call_id| format!("spawn:{call_id}"))
             });
-        crate::diagnostic_flags::record_continuity_stage_with_context(
-            &new_thread.thread.session_telemetry(),
-            "child",
-            "initial_work_submitted",
-            observation_origin,
-            correlation_id.as_deref(),
-        );
+            crate::diagnostic_flags::record_continuity_stage_with_context(
+                &new_thread.thread.session_telemetry(),
+                "child",
+                "initial_work_submitted",
+                observation_origin,
+                correlation_id.as_deref(),
+            );
+        }
 
         #[cfg(test)]
         self.await_after_initial_delivery_test_hook(new_thread.thread_id)
@@ -940,6 +1003,12 @@ impl AgentControl {
                 self.state.publish_spawn_publication(key)
             });
         if publication_decision == SpawnPublicationDecision::CancellationOwned {
+            record_continuity_child_stage(
+                &new_thread.thread,
+                new_thread.thread_id,
+                notification_source.as_ref(),
+                "child_publication_failed",
+            );
             if let Err(cleanup_error) = self
                 .reconcile_unpublished_spawn(
                     &state,
@@ -965,6 +1034,12 @@ impl AgentControl {
             let error = CodexErr::Fatal(format!(
                 "spawn publication entered invalid parent-visible state: {publication_decision:?}"
             ));
+            record_continuity_child_stage(
+                &new_thread.thread,
+                new_thread.thread_id,
+                notification_source.as_ref(),
+                "child_publication_failed",
+            );
             if let Err(cleanup_error) = self
                 .reconcile_unpublished_spawn(
                     &state,
@@ -1712,6 +1787,7 @@ impl AgentControl {
                 chain_id,
                 parent_turn_id,
                 spawn_call_id,
+                parent_sampling_request_id,
                 ..
             }) => {
                 let (prepared_source, agent_metadata) = self.prepare_thread_spawn(
@@ -1744,6 +1820,7 @@ impl AgentControl {
                         chain_id,
                         parent_turn_id,
                         spawn_call_id,
+                        parent_sampling_request_id,
                     }),
                     agent_metadata,
                 )

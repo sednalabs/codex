@@ -156,6 +156,8 @@ pub struct ToolCall {
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum ToolCallRequester {
     Model,
+    /// Host-created continuity observation probe; never a model-authored call.
+    ContinuityDiagnostic,
     /// Model-authored JavaScript requested the tool through code-mode.
     CodeCell {
         code_cell_id: CodeCellId,

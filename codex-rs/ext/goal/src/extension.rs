@@ -101,7 +101,10 @@ where
 {
     fn on_thread_start<'a>(&'a self, input: ThreadStartInput<'a, C>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
-            let enabled = (self.goals_enabled)(input.config);
+            let enabled = (self.goals_enabled)(input.config)
+                && !codex_core::diagnostic_flags::is_continuity_diagnostic_child(
+                    input.session_source,
+                );
             let tools_available_for_thread = input.persistent_thread_state_available
                 && !matches!(
                     input.session_source,
@@ -141,8 +144,8 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
-
             if let Err(err) = runtime.restore_after_resume().await {
+                runtime.fail_closed_continuation_boundary(None).await;
                 tracing::warn!(
                     "failed to restore goal runtime after thread resume for {}: {err}",
                     runtime.thread_id()
@@ -158,6 +161,7 @@ where
             };
 
             if let Err(err) = runtime.continue_if_idle().await {
+                runtime.fail_closed_continuation_boundary(None).await;
                 tracing::warn!(
                     "failed to continue active goal for idle thread {}: {err}",
                     runtime.thread_id()
@@ -213,7 +217,11 @@ where
                 .clear_thread_goal_continuation_deferral(runtime.thread_id())
                 .await
             {
-                tracing::warn!("failed to clear deferred goal continuation: {err}");
+                runtime
+                    .fail_closed_continuation_boundary(Some(input.turn_id))
+                    .await;
+                tracing::error!("failed to clear deferred goal continuation: {err}");
+                return;
             }
             if let Err(err) = self
                 .state_dbs
@@ -221,8 +229,13 @@ where
                 .clear_thread_goal_continuity_research(runtime.thread_id())
                 .await
             {
-                tracing::warn!("failed to clear preserved continuity marker: {err}");
+                runtime
+                    .fail_closed_continuation_boundary(Some(input.turn_id))
+                    .await;
+                tracing::error!("failed to clear preserved continuity marker: {err}");
+                return;
             }
+            runtime.clear_continuation_block();
             if !runtime.is_enabled() {
                 return;
             }
@@ -246,6 +259,9 @@ where
                 .get_thread_goal(runtime.thread_id())
                 .await
             else {
+                runtime
+                    .fail_closed_continuation_boundary(Some(input.turn_id))
+                    .await;
                 return;
             };
             if let Some(goal) = goal
@@ -279,6 +295,9 @@ where
                 )
                 .await
             {
+                runtime
+                    .fail_closed_continuation_boundary(Some(turn_id))
+                    .await;
                 tracing::warn!(
                     "failed to account active goal progress at turn stop for {turn_id}: {err}"
                 );
@@ -307,6 +326,9 @@ where
                 )
                 .await
             {
+                runtime
+                    .fail_closed_continuation_boundary(Some(turn_id))
+                    .await;
                 tracing::warn!(
                     "failed to account active goal progress after turn abort for {turn_id}: {err}"
                 );
@@ -402,6 +424,12 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
+            if matches!(
+                input.source,
+                codex_extension_api::ToolCallSource::ContinuityDiagnostic
+            ) {
+                return;
+            }
             let should_count_for_goal_progress = runtime.is_enabled()
                 && tool_attempt_counts_for_goal_progress(input.outcome)
                 && !(input.tool_name.namespace.is_none()
@@ -422,6 +450,9 @@ where
                 Ok(Some(progress)) => progress,
                 Ok(None) => return,
                 Err(err) => {
+                    runtime
+                        .fail_closed_continuation_boundary(Some(turn_id))
+                        .await;
                     tracing::warn!(
                         "failed to account active goal progress after tool finish for {turn_id}: {err}"
                     );

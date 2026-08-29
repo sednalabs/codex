@@ -402,13 +402,15 @@ pub(crate) async fn run_turn_stop_hooks(
 
 #[instrument(level = "trace", skip_all)]
 pub(crate) async fn run_session_end_hooks(sess: &Arc<Session>) {
+    let turn_context = sess.new_default_turn().await;
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        return;
+    }
     let hooks = sess.hooks();
     let preview_runs = hooks.preview_session_end();
     if preview_runs.is_empty() {
         return;
     }
-
-    let turn_context = sess.new_default_turn().await;
 
     // SessionEnd is root-only; ThreadSpawn uses SubagentStart/SubagentStop and other subagents
     // are internal implementation details.
@@ -437,6 +439,9 @@ pub(crate) async fn run_pre_compact_hooks(
     turn_context: &Arc<TurnContext>,
     trigger: CompactionTrigger,
 ) -> PreCompactHookOutcome {
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        return PreCompactHookOutcome::Continue;
+    }
     let request = codex_hooks::PreCompactRequest {
         session_id: sess.session_id().into(),
         turn_id: turn_context.sub_id.clone(),
@@ -474,6 +479,9 @@ pub(crate) async fn run_post_compact_hooks(
     turn_context: &Arc<TurnContext>,
     trigger: CompactionTrigger,
 ) -> PostCompactHookOutcome {
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        return PostCompactHookOutcome::Continue;
+    }
     let request = codex_hooks::PostCompactRequest {
         session_id: sess.session_id().into(),
         turn_id: turn_context.sub_id.clone(),
@@ -503,6 +511,9 @@ pub(crate) async fn run_legacy_after_agent_hook(
     input: &[ResponseItem],
     last_assistant_message: Option<String>,
 ) -> bool {
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        return false;
+    }
     let mut abort_message = None;
     let input_messages = input
         .iter()
@@ -670,6 +681,9 @@ pub(crate) async fn record_additional_contexts(
     turn_context: &Arc<TurnContext>,
     additional_contexts: Vec<String>,
 ) {
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&turn_context.session_source) {
+        return;
+    }
     let developer_messages = additional_context_messages(additional_contexts);
     if developer_messages.is_empty() {
         return;
@@ -851,6 +865,8 @@ fn compaction_trigger_label(value: CompactionTrigger) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use codex_analytics::CompactionTrigger;
+    use codex_protocol::AgentPath;
     use codex_protocol::models::ContentItem;
     use codex_protocol::protocol::HookEventName;
     use codex_protocol::protocol::HookExecutionMode;
@@ -858,16 +874,116 @@ mod tests {
     use codex_protocol::protocol::HookRunStatus;
     use codex_protocol::protocol::HookScope;
     use codex_protocol::protocol::HookSource;
+    use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
+    use codex_protocol::user_input::UserInput;
     use pretty_assertions::assert_eq;
 
     use super::additional_context_messages;
     use super::hook_run_analytics_payload;
     use super::hook_run_metric_tags;
+    use super::inspect_pending_input;
+    use super::run_legacy_after_agent_hook;
+    use super::run_pending_session_start_hooks;
+    use super::run_permission_request_hooks;
+    use super::run_post_compact_hooks;
+    use super::run_post_tool_use_hooks;
+    use super::run_pre_compact_hooks;
+    use super::run_pre_tool_use_hooks;
+    use super::run_turn_stop_hooks;
     use crate::session::tests::make_session_and_context;
+    use crate::tools::hook_names::HookToolName;
+    use crate::tools::sandboxing::PermissionRequestPayload;
     use codex_protocol::protocol::HookCompletedEvent;
     use codex_protocol::protocol::HookRunSummary;
     use codex_utils_absolute_path::test_support::PathBufExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
+
+    #[tokio::test]
+    async fn continuity_diagnostic_source_bypasses_hostile_hook_input_paths() {
+        let (session, mut turn_context) = make_session_and_context().await;
+        turn_context.session_source =
+            SessionSource::SubAgent(SubAgentSource::ContinuityDiagnostic {
+                parent_thread_id: session.thread_id(),
+                depth: 1,
+                agent_path: Some(AgentPath::root().join("continuity_probe").unwrap()),
+                agent_nickname: None,
+                agent_role: None,
+                chain_id: "chain-test".to_string(),
+                parent_turn_id: "turn-test".to_string(),
+                spawn_call_id: "call-test".to_string(),
+                parent_sampling_request_id: "request-test".to_string(),
+            });
+        let session = std::sync::Arc::new(session);
+        let turn_context = std::sync::Arc::new(turn_context);
+
+        assert!(!run_pending_session_start_hooks(&session, &turn_context).await);
+        assert!(matches!(
+            run_pre_tool_use_hooks(
+                &session,
+                &turn_context,
+                "tool-use".to_string(),
+                &HookToolName::new("hostile_tool"),
+                &serde_json::json!({"deny": true}),
+            )
+            .await,
+            super::PreToolUseHookResult::Continue {
+                updated_input: None
+            }
+        ));
+        assert!(
+            run_permission_request_hooks(
+                &session,
+                &turn_context,
+                "permission",
+                PermissionRequestPayload::bash("hostile".to_string(), None),
+            )
+            .await
+            .is_none()
+        );
+        let post_tool = run_post_tool_use_hooks(
+            &session,
+            &turn_context,
+            "tool-use".to_string(),
+            "hostile_tool".to_string(),
+            Vec::new(),
+            serde_json::json!({}),
+            serde_json::json!({}),
+        )
+        .await;
+        assert!(!post_tool.should_block);
+        assert!(post_tool.hook_events.is_empty());
+        assert!(matches!(
+            run_pre_compact_hooks(&session, &turn_context, CompactionTrigger::Manual,).await,
+            super::PreCompactHookOutcome::Continue
+        ));
+        assert!(matches!(
+            run_post_compact_hooks(&session, &turn_context, CompactionTrigger::Manual,).await,
+            super::PostCompactHookOutcome::Continue
+        ));
+        assert!(
+            run_turn_stop_hooks(&session, &turn_context, false, None)
+                .await
+                .hook_events
+                .is_empty()
+        );
+        assert!(!run_legacy_after_agent_hook(&session, &turn_context, &[], None).await);
+        assert!(
+            !inspect_pending_input(
+                &session,
+                &turn_context,
+                &crate::session::TurnInput::UserInput {
+                    content: vec![UserInput::Text {
+                        text: "hostile".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                    client_id: None,
+                },
+            )
+            .await
+            .should_stop
+        );
+    }
 
     #[test]
     fn additional_context_messages_stay_separate_and_ordered() {

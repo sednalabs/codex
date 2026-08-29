@@ -52,6 +52,7 @@ pub enum ToolCallSource {
         parent_thread_id: String,
         parent_turn_id: String,
         spawn_call_id: String,
+        parent_sampling_request_id: String,
     },
     CodeMode {
         /// Runtime cell that issued the nested tool request.

@@ -1455,12 +1455,12 @@ impl AgentControl {
                     crate::diagnostic_flags::continuity_observation_child_correlation(
                         source,
                         child_thread_id,
-                        "publication_failed",
+                        "graph_persistence_failed",
                     );
                 crate::diagnostic_flags::record_continuity_stage_with_child_context(
                     &child_thread.session_telemetry(),
                     "child",
-                    "child_publication_failed",
+                    "child_graph_persistence_failed",
                     "direct_probe",
                     correlation_id.as_deref(),
                     child_thread_id,
