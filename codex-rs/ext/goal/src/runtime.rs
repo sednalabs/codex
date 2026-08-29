@@ -201,7 +201,7 @@ impl GoalRuntimeHandle {
                 accounting_state,
                 tools_available_for_thread: config.tools_available_for_thread,
                 continuation: GoalContinuationCoordinator {
-                    fence: GoalRuntimeContinuationIssuer::for_thread(
+                    fence: GoalRuntimeContinuationIssuer::for_authorized_handoff(
                         goal_runtime_admissions,
                         thread_id,
                     ),

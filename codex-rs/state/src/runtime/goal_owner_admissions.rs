@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::Weak;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use uuid::Uuid;
@@ -360,19 +359,41 @@ impl InstalledGoalRuntimeAdmissions {
             .owners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(inner) = owners
-            .get(&thread_id)
-            .and_then(|registered| registered.inner.upgrade())
-        {
+        if let Some(registered) = owners.get(&thread_id) {
+            if let Some(inner) = registered.inner.upgrade() {
+                return GoalRuntimeAdmissionOwner { inner };
+            }
+
+            // A dead weak owner deliberately leaves a retired lifecycle
+            // tombstone behind. Recreating an incidental facade for that
+            // thread must not manufacture a fresh enabled authority after
+            // the old root stopped; an explicit transition from the trusted
+            // owner is required before it can publish again.
+            let lifecycle = Arc::clone(&registered.lifecycle);
+            let registry_generation = Uuid::now_v7();
+            let inner = Arc::new(GoalRuntimeAdmissionOwnerInner {
+                runtime_identity: self.runtime_identity,
+                thread_id,
+                registry: Arc::downgrade(&self.owners),
+                registry_generation,
+                fence_identity: GoalOwnerDispatchFenceCapability::fresh(),
+                lifecycle,
+                continuation_fence: Arc::new(GoalRuntimeContinuationFence::new()),
+            });
+            owners.insert(
+                thread_id,
+                RegisteredGoalRuntimeAdmissionOwner {
+                    generation: registry_generation,
+                    inner: Arc::downgrade(&inner),
+                    lifecycle: Arc::clone(&inner.lifecycle),
+                },
+            );
             return GoalRuntimeAdmissionOwner { inner };
         }
 
-        // The registry is an identity rendezvous for currently live runtime
-        // owners, not process-lifetime residency. Dead weak entries are
-        // removed before a replacement is installed, so distinct historical
-        // threads cannot accumulate forever while concurrent issuers for this
-        // thread still share this exact inner owner.
-        owners.remove(&thread_id);
+        // A first owner starts enabled. Subsequent dead owners take the
+        // tombstone branch above, so a thread cannot regain publication
+        // authority merely because its weak facade was evicted.
         let registry_generation = Uuid::now_v7();
         let inner = Arc::new(GoalRuntimeAdmissionOwnerInner {
             runtime_identity: self.runtime_identity,
@@ -380,8 +401,7 @@ impl InstalledGoalRuntimeAdmissions {
             registry: Arc::downgrade(&self.owners),
             registry_generation,
             fence_identity: GoalOwnerDispatchFenceCapability::fresh(),
-            enabled: AtomicBool::new(true),
-            enablement_epoch: AtomicU64::new(0),
+            lifecycle: Arc::new(GoalRuntimeAdmissionOwnerLifecycle::enabled()),
             continuation_fence: Arc::new(GoalRuntimeContinuationFence::new()),
         });
         owners.insert(
@@ -389,9 +409,20 @@ impl InstalledGoalRuntimeAdmissions {
             RegisteredGoalRuntimeAdmissionOwner {
                 generation: registry_generation,
                 inner: Arc::downgrade(&inner),
+                lifecycle: Arc::clone(&inner.lifecycle),
             },
         );
         GoalRuntimeAdmissionOwner { inner }
+    }
+
+    /// Re-enable a stopped per-thread owner only for a deliberate root
+    /// handoff. Ordinary facade recreation uses [`Self::owner_for_thread`]
+    /// and remains disabled after eviction; this path first revokes and waits
+    /// for the predecessor's entered work before exposing the next generation.
+    pub fn handoff_owner_for_thread(&self, thread_id: ThreadId) -> GoalRuntimeAdmissionOwner {
+        let owner = self.owner_for_thread(thread_id);
+        owner.authorize_handoff();
+        owner
     }
 
     #[cfg(test)]
@@ -522,6 +553,16 @@ impl InstalledGoalRuntimeAdmissions {
         self.store.release_acquired_lease(lease).await
     }
 
+    /// Cancel an opened lease only while the caller still proves that no
+    /// transport received it. This is distinct from ordinary cancellation of
+    /// in-flight provider work, whose physical effect remains uncertain.
+    pub async fn cancel_opened_lease_before_transport(
+        &self,
+        lease: &GoalOwnerAdmissionLease,
+    ) -> anyhow::Result<bool> {
+        self.store.cancel_opened_lease_before_transport(lease).await
+    }
+
     pub async fn finish(
         &self,
         lease: &GoalOwnerAdmissionLease,
@@ -559,8 +600,7 @@ struct GoalRuntimeAdmissionOwnerInner {
     registry: Weak<Mutex<HashMap<ThreadId, RegisteredGoalRuntimeAdmissionOwner>>>,
     registry_generation: Uuid,
     fence_identity: GoalOwnerDispatchFenceCapability,
-    enabled: AtomicBool,
-    enablement_epoch: AtomicU64,
+    lifecycle: Arc<GoalRuntimeAdmissionOwnerLifecycle>,
     continuation_fence: Arc<GoalRuntimeContinuationFence>,
 }
 
@@ -568,6 +608,35 @@ struct GoalRuntimeAdmissionOwnerInner {
 struct RegisteredGoalRuntimeAdmissionOwner {
     generation: Uuid,
     inner: Weak<GoalRuntimeAdmissionOwnerInner>,
+    lifecycle: Arc<GoalRuntimeAdmissionOwnerLifecycle>,
+}
+
+/// Linearizable enablement state shared by every facade ever derived for one
+/// installed thread owner. A tombstone is retained after weak-owner eviction
+/// so a replacement facade remains stopped rather than silently becoming a
+/// second authority-bearing root.
+#[derive(Debug)]
+struct GoalRuntimeAdmissionOwnerLifecycle {
+    state: Mutex<GoalRuntimeAdmissionOwnerLifecycleState>,
+}
+
+#[derive(Debug)]
+struct GoalRuntimeAdmissionOwnerLifecycleState {
+    enabled: bool,
+    enablement_epoch: u64,
+    retired: bool,
+}
+
+impl GoalRuntimeAdmissionOwnerLifecycle {
+    fn enabled() -> Self {
+        Self {
+            state: Mutex::new(GoalRuntimeAdmissionOwnerLifecycleState {
+                enabled: true,
+                enablement_epoch: 0,
+                retired: false,
+            }),
+        }
+    }
 }
 
 impl Drop for GoalRuntimeAdmissionOwnerInner {
@@ -582,7 +651,14 @@ impl Drop for GoalRuntimeAdmissionOwnerInner {
             registered.generation == self.registry_generation
                 && registered.inner.upgrade().is_none()
         }) {
-            registry.remove(&self.thread_id);
+            let mut lifecycle = self
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            lifecycle.enabled = false;
+            lifecycle.retired = true;
+            lifecycle.enablement_epoch = lifecycle.enablement_epoch.wrapping_add(1);
         }
     }
 }
@@ -660,13 +736,38 @@ impl GoalRuntimeAdmissionOwner {
 
     /// Whether this owner currently permits continuation publication.
     pub fn is_enabled(&self) -> bool {
-        self.inner.enabled.load(Ordering::Acquire)
+        self.inner
+            .lifecycle
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .enabled
     }
 
     /// The shared revocation epoch for every issuer and continuation derived
     /// from this owner.
     pub fn enablement_epoch(&self) -> u64 {
-        self.inner.enablement_epoch.load(Ordering::Acquire)
+        self.inner
+            .lifecycle
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .enablement_epoch
+    }
+
+    /// Check enablement and its expected generation while holding one shared
+    /// lifecycle lock. Callers must use this rather than composing separate
+    /// enabled/epoch reads across a trusted stop or restart transition.
+    pub fn is_enabled_at_generation(&self, expected_enablement_epoch: u64) -> bool {
+        let lifecycle = self
+            .inner
+            .lifecycle
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lifecycle.enabled
+            && !lifecycle.retired
+            && lifecycle.enablement_epoch == expected_enablement_epoch
     }
 
     /// The shared revocation epoch for every issuer and continuation derived
@@ -678,6 +779,15 @@ impl GoalRuntimeAdmissionOwner {
     /// Enter the exact shared revocation epoch. A caller cannot enter a
     /// retained or revoked generation after another issuer advances it.
     pub fn enter_continuation(&self, epoch: u64) -> Option<GoalRuntimeAdmissionFenceGuard> {
+        let lifecycle = self
+            .inner
+            .lifecycle
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !lifecycle.enabled || lifecycle.retired {
+            return None;
+        }
         let fence = &self.inner.continuation_fence;
         let mut active = fence
             .active
@@ -742,19 +852,70 @@ impl GoalRuntimeAdmissionOwner {
             == 0
     }
 
-    /// Change this owner's enablement state, advancing the common epoch only
-    /// when the state changes.
-    pub fn set_enabled(&self, enabled: bool) -> Option<u64> {
-        let was_enabled = self.inner.enabled.swap(enabled, Ordering::AcqRel);
-        if was_enabled == enabled {
-            None
-        } else {
-            // This transition belongs to the installed owner. A retained
-            // issuer therefore observes the same revocation before it can
-            // publish or open provider I/O.
-            self.revoke_continuations();
-            Some(self.inner.enablement_epoch.fetch_add(1, Ordering::AcqRel) + 1)
+    /// Change enablement only when the caller still owns the exact preceding
+    /// generation. The lifecycle lock and subsequent fence revocation give a
+    /// stop/restart one total order: stale retained issuers cannot revive an
+    /// owner after another trusted transition has completed.
+    pub fn set_enabled_if_generation(
+        &self,
+        expected_enablement_epoch: u64,
+        enabled: bool,
+    ) -> Option<u64> {
+        let mut lifecycle = self
+            .inner
+            .lifecycle
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if lifecycle.retired
+            || lifecycle.enablement_epoch != expected_enablement_epoch
+            || lifecycle.enabled == enabled
+        {
+            return None;
         }
+        lifecycle.enabled = enabled;
+        lifecycle.enablement_epoch = lifecycle.enablement_epoch.wrapping_add(1);
+        let enablement_epoch = lifecycle.enablement_epoch;
+        // This transition belongs to the installed owner. A retained issuer
+        // therefore observes the shared revocation before it can publish or
+        // open provider I/O. Keep the lifecycle lock until the fence has
+        // advanced so enablement and continuation admission cannot interleave.
+        self.revoke_continuations();
+        Some(enablement_epoch)
+    }
+
+    /// Begin an explicitly authorized replacement generation only after the
+    /// predecessor's continuation guards have quiesced. This is intentionally
+    /// distinct from ordinary issuer enablement so a retained or newly
+    /// recreated facade cannot restart a stopped owner by itself.
+    pub fn authorize_handoff(&self) -> Option<u64> {
+        {
+            let mut lifecycle = self
+                .inner
+                .lifecycle
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if lifecycle.enabled {
+                // Close publication before the quiescence wait. Otherwise a
+                // predecessor could enter a fresh guard after the wait
+                // observes zero active work but before this handoff enables
+                // the replacement generation.
+                lifecycle.enabled = false;
+                lifecycle.enablement_epoch = lifecycle.enablement_epoch.wrapping_add(1);
+            }
+        }
+        self.revoke_continuations_and_wait();
+        let mut lifecycle = self
+            .inner
+            .lifecycle
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lifecycle.enabled = true;
+        lifecycle.retired = false;
+        lifecycle.enablement_epoch = lifecycle.enablement_epoch.wrapping_add(1);
+        Some(lifecycle.enablement_epoch)
     }
 
     pub(crate) fn matches_runtime(&self, runtime: &super::StateRuntime) -> bool {
@@ -1565,9 +1726,11 @@ WHERE thread_id = ?
         Ok(GoalOwnerAdmissionAcquireResult::Acquired(Box::new(lease)))
     }
 
-    /// Atomically linearize an acquired lease as provider work immediately
-    /// before network I/O. A cancellation or retirement that commits first
-    /// leaves this method with no row, which prohibits the physical request.
+    /// Atomically linearize an acquired lease as the guarded pre-transport
+    /// handoff immediately before network I/O. A cancellation or retirement
+    /// that commits first leaves this method with no row, which prohibits the
+    /// physical request. A later fence revocation before handoff is recorded
+    /// by [`Self::cancel_opened_lease_before_transport`].
     pub async fn open_lease(&self, lease: &GoalOwnerAdmissionLease) -> anyhow::Result<bool> {
         let _capability_guard = self.require_write_capability()?;
         validate_lease(lease)?;
@@ -1692,6 +1855,100 @@ WHERE thread_id = ?
         .await?;
         if decremented.rows_affected() != 1 {
             bail!("released goal-owner admission is missing its chain attempt")
+        }
+        transaction.commit().await?;
+        Ok(true)
+    }
+
+    /// Record an exact opened-but-not-sent lease as definitely cancelled.
+    ///
+    /// `open_lease` is the durable request-open fence, not physical provider
+    /// I/O. The guarded Core transport boundary calls this only after a
+    /// revocation wins before it hands the request to HTTP or WebSocket. The
+    /// exact `in_flight` CAS therefore preserves the no-provider-effect proof
+    /// without overloading the ordinary cancellation path, which must remain
+    /// uncertain for a request that may already have been sent.
+    pub async fn cancel_opened_lease_before_transport(
+        &self,
+        lease: &GoalOwnerAdmissionLease,
+    ) -> anyhow::Result<bool> {
+        let _capability_guard = self.require_write_capability()?;
+        validate_lease(lease)?;
+        let now_ms = admission_datetime_to_epoch_millis(Utc::now());
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let current = fetch_record_for_authority(&mut *transaction, &lease.authority).await?;
+        let Some(current) = current else {
+            transaction.commit().await?;
+            return Ok(false);
+        };
+        if current.phase != GoalOwnerAdmissionPhase::InFlight
+            || current.retired_at.is_some()
+            || !same_lease(&current, lease)
+            || current.continuation_authority() != lease.continuation_authority
+        {
+            transaction.commit().await?;
+            return Ok(false);
+        }
+        let cancelled = sqlx::query(
+            r#"
+UPDATE goal_owner_admissions
+SET phase = 'terminal',
+    terminal_outcome = 'cancelled',
+    attempts_started = attempts_started - 1,
+    lease_id = NULL,
+    lease_acquired_at_ms = NULL,
+    lease_cancellation_epoch = NULL,
+    deferred_terminal_disposition = 'none',
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND goal_id = ?
+  AND generation = ?
+  AND cancellation_epoch = ?
+  AND intended_request_kind = ?
+  AND successor_turn_id = ?
+  AND logical_successor_request_id = ?
+  AND decision_id = ?
+  AND phase = 'in_flight'
+  AND lease_id = ?
+  AND lease_cancellation_epoch = ?
+  AND attempts_started > 0
+  AND retired_at_ms IS NULL
+            "#,
+        )
+        .bind(now_ms)
+        .bind(lease.authority.thread_id.to_string())
+        .bind(&lease.authority.goal_id)
+        .bind(lease.authority.generation)
+        .bind(lease.authority.cancellation_epoch)
+        .bind(&lease.continuation_authority.intended_request_kind)
+        .bind(&lease.continuation_authority.successor_turn_id)
+        .bind(&lease.continuation_authority.logical_successor_request_id)
+        .bind(lease.continuation_authority.decision_id.to_string())
+        .bind(lease.lease_id.to_string())
+        .bind(lease.authority.cancellation_epoch)
+        .execute(&mut *transaction)
+        .await?;
+        if cancelled.rows_affected() == 0 {
+            transaction.commit().await?;
+            return Ok(false);
+        }
+        let decremented = sqlx::query(
+            r#"
+UPDATE goal_owner_admission_goal_chains
+SET attempts_started = attempts_started - 1,
+    updated_at_ms = ?
+WHERE thread_id = ?
+  AND goal_id = ?
+  AND attempts_started > 0
+            "#,
+        )
+        .bind(now_ms)
+        .bind(lease.authority.thread_id.to_string())
+        .bind(&lease.authority.goal_id)
+        .execute(&mut *transaction)
+        .await?;
+        if decremented.rows_affected() != 1 {
+            bail!("cancelled unsent goal-owner admission is missing its chain attempt")
         }
         transaction.commit().await?;
         Ok(true)
@@ -2869,8 +3126,11 @@ fn terminal_state_is_coherent(record: &GoalOwnerAdmissionRecord, has_lease: bool
         }
         GoalOwnerAdmissionTerminalOutcome::Cancelled => {
             !has_lease
-                && record.deferred_terminal_disposition
-                    == GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn
+                && matches!(
+                    record.deferred_terminal_disposition,
+                    GoalOwnerAdmissionTerminalDisposition::None
+                        | GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn
+                )
         }
         GoalOwnerAdmissionTerminalOutcome::None => false,
     }

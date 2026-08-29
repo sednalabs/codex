@@ -163,6 +163,7 @@ async fn fake_stream_request(
     calls: &AtomicUsize,
 ) -> Result<()> {
     let mut lease = decision.begin_network_request().await?;
+    lease.open_transport().await?;
     calls.fetch_add(1, Ordering::SeqCst);
     lease.provider_acknowledged().await?;
     lease.completed().await
@@ -173,6 +174,7 @@ async fn fake_unary_compact_request(
     calls: &AtomicUsize,
 ) -> Result<()> {
     let mut lease = decision.begin_network_request().await?;
+    lease.open_transport().await?;
     calls.fetch_add(1, Ordering::SeqCst);
     lease.completed().await
 }
@@ -413,7 +415,7 @@ async fn revocation_after_admission_releases_the_unopened_lease_without_provider
 }
 
 #[tokio::test]
-async fn revocation_after_request_open_is_definitely_cancelled_before_provider_io() {
+async fn revocation_after_durable_open_is_definitely_cancelled_before_provider_io() {
     let (_home, test_runtime) = runtime().await;
     let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
     let store = &test_runtime.admissions;
@@ -446,11 +448,15 @@ async fn revocation_after_request_open_is_definitely_cancelled_before_provider_i
     let mut lease = decision
         .begin_network_request()
         .await
-        .expect("open the durable request fence only");
+        .expect("reserve the exclusive local transport guard only");
+    lease
+        .open_transport()
+        .await
+        .expect("open the durable request fence without handing it to a provider");
 
     coordinator.revoke();
     let calls = AtomicUsize::new(0);
-    assert!(lease.ensure_request_open_allowed().await.is_err());
+    assert!(lease.open_transport().await.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 
     let cancelled = store
@@ -467,6 +473,9 @@ async fn revocation_after_request_open_is_definitely_cancelled_before_provider_i
         cancelled.deferred_terminal_disposition,
         codex_state::GoalOwnerAdmissionTerminalDisposition::None
     );
+    assert_eq!(cancelled.attempts_started, 0);
+    assert_eq!(cancelled.chain_attempts_started, 0);
+    assert_eq!(cancelled.lease_id, None);
 }
 
 #[tokio::test]
