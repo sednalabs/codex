@@ -627,6 +627,9 @@ pub struct MultiAgentRoleMessages {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct MultiAgentModeMessages {
     pub explicit: Option<String>,
+    /// Ultra-only mode instructions. Missing or null uses the built-in proactive hint;
+    /// an empty string suppresses the mode message. `hint_text` takes precedence.
+    pub proactive: Option<String>,
     pub hint_text: Option<String>,
 }
 
@@ -1110,7 +1113,7 @@ mod tests {
     #[test]
     fn multi_agent_messages_preserve_missing_and_empty_values() {
         let messages: ModelMessages = from_str(
-            r#"{"instructions_template":null,"instructions_variables":null,"multi_agent":{"role":{"root":"","subagent":"subagent base"},"mode":{"explicit":"explicit mode","hint_text":""}}}"#,
+            r#"{"instructions_template":null,"instructions_variables":null,"multi_agent":{"role":{"root":"","subagent":"subagent base"},"mode":{"explicit":"explicit mode","proactive":"","hint_text":""}}}"#,
         )
         .expect("multi-agent messages should deserialize");
 
@@ -1123,6 +1126,7 @@ mod tests {
                 }),
                 mode: Some(MultiAgentModeMessages {
                     explicit: Some("explicit mode".to_string()),
+                    proactive: Some(String::new()),
                     hint_text: Some(String::new()),
                 }),
             })

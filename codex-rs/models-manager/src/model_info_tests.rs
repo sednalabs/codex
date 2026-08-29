@@ -54,6 +54,7 @@ fn base_instruction_override_is_literal_and_preserves_catalog_messages() {
         }),
         mode: Some(MultiAgentModeMessages {
             explicit: Some("explicit mode".to_string()),
+            proactive: Some("proactive mode".to_string()),
             hint_text: Some("mode hint".to_string()),
         }),
     };
