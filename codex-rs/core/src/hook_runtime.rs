@@ -958,7 +958,10 @@ mod tests {
                 &session,
                 &turn_context,
                 "permission",
-                PermissionRequestPayload::bash("hostile".to_string(), None),
+                PermissionRequestPayload::bash(
+                    "hostile".to_string(),
+                    /*description*/ None,
+                ),
             )
             .await
             .is_none()
@@ -984,12 +987,23 @@ mod tests {
             super::PostCompactHookOutcome::Continue
         ));
         assert!(
-            run_turn_stop_hooks(&session, &turn_context, false, None)
+            run_turn_stop_hooks(
+                &session,
+                &turn_context,
+                /*stop_hook_active*/ false,
+                /*last_assistant_message*/ None,
+            )
                 .await
                 .hook_events
                 .is_empty()
         );
-        assert!(!run_legacy_after_agent_hook(&session, &turn_context, &[], None).await);
+        assert!(!run_legacy_after_agent_hook(
+            &session,
+            &turn_context,
+            &[],
+            /*last_assistant_message*/ None,
+        )
+        .await);
         assert!(
             !inspect_pending_input(
                 &session,
