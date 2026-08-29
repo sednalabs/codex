@@ -658,7 +658,7 @@ impl StateRuntime {
         let bootstrap_goal_owner_admissions = GoalOwnerAdmissionStore::with_capability(
             Arc::clone(&goals_pool),
             Arc::clone(&owner_capability),
-            None,
+            /*owner_lease*/ None,
         );
         let runtime_owner = if let Some(process_lock) = process_lock {
             let owner_id = Uuid::now_v7();
