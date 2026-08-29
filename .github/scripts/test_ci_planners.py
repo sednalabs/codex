@@ -4323,6 +4323,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
             run_script,
         )
 
+    def test_validation_lab_summary_binds_actual_workflow_identity(self) -> None:
+        summary_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/validation-lab.yml",
+            "summary",
+            "Build validation summary artifact",
+        )
+        run_script = summary_step.get("run") or ""
+
+        self.assertIn('--workflow-file "validation-lab.yml"', run_script)
+        self.assertIn(
+            '--event-policy "${{ github.event_name == \'workflow_dispatch\' && \'workflow_dispatch_exact_head_manual\' || \'workflow_call_exact_head_reusable\' }}"',
+            run_script,
+        )
+
     def test_sedna_heavy_tests_uses_safe_ref_env_and_requested_lane_inputs(self) -> None:
         metadata_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml",

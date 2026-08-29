@@ -1390,6 +1390,8 @@ jobs:
             --run-id "${GITHUB_RUN_ID}" \
             --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --workflow-file "validation-lab.yml" \
+            --event-policy "${{ github.event_name == 'workflow_dispatch' && 'workflow_dispatch_exact_head_manual' || 'workflow_call_exact_head_reusable' }}" \
             --run-selected-lanes "${{ needs.metadata.outputs.run_selected_lanes }}" \
             --run-smoke-gate "${{ needs.metadata.outputs.run_smoke_gate }}" \
             --smoke-gate-kind "${{ needs.metadata.outputs.smoke_gate_kind }}" \
