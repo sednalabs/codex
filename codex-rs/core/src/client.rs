@@ -2078,13 +2078,18 @@ impl ModelClientSession {
                 }
                 Err((error, _)) => return Err(error),
             };
+            let last_request = self
+                .websocket_session
+                .last_request
+                .as_ref()
+                .expect("the websocket request is stored before its observation is finalized");
             let recorder = observer
                 .as_ref()
                 .map(|observer| observer.take_current())
                 .unwrap_or_else(|| {
                     inference_trace.observation_recorder(self.inference_observation_metadata(
                         request_kind,
-                        &request,
+                        last_request,
                         responses_metadata,
                         InferenceCallTransport::ResponsesWebsocket,
                         InferenceAdmission::Unknown,

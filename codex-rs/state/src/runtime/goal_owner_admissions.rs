@@ -411,7 +411,11 @@ ON CONFLICT(thread_id) DO NOTHING
         .execute(self.store.pool.as_ref())
         .await?;
         if inserted.rows_affected() == 1 {
-            return Ok(self.thread_owner_from_durable(thread_id, installation_id, 1));
+            return Ok(self.thread_owner_from_durable(
+                thread_id,
+                installation_id,
+                /*generation*/ 1,
+            ));
         }
 
         // Returning an already-live owner is not minting: the weak registry
@@ -2060,8 +2064,13 @@ WHERE thread_id = ? AND goal_id = ? AND generation = ?
         continuation_authority: &GoalOwnerAdmissionContinuationAuthority,
         now: DateTime<Utc>,
     ) -> anyhow::Result<GoalOwnerAdmissionAcquireResult> {
-        self.try_acquire_inner(continuation_authority, None, None, now)
-            .await
+        self.try_acquire_inner(
+            continuation_authority,
+            /*dispatch_claim_id*/ None,
+            /*dispatch_fence_id*/ None,
+            now,
+        )
+        .await
     }
 
     /// Atomically consume an exact scheduler dispatch claim while reserving
