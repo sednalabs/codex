@@ -66,9 +66,14 @@ pub(crate) trait WithStatus {
 pub(crate) fn http_body_is_usage_limit(body: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
-        .and_then(|value| value.get("error").and_then(|error| error.get("type")))
-        .and_then(serde_json::Value::as_str)
-        == Some("usage_limit_reached")
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|error| error.get("type"))
+                .and_then(serde_json::Value::as_str)
+                .map(|error_type| error_type == "usage_limit_reached")
+        })
+        .unwrap_or(false)
 }
 
 fn http_status(err: &TransportError) -> Option<StatusCode> {
