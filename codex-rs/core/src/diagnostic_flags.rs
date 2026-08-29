@@ -104,6 +104,11 @@ pub fn record_continuity_stage(
     stage: &'static str,
 ) {
     if continuity_observation_enabled() {
+        tracing::debug!(
+            continuity_actor = actor,
+            continuity_stage = stage,
+            "continuity observation stage recorded"
+        );
         telemetry.counter(
             "codex.diagnostic.continuity_observation",
             /*inc*/ 1,
@@ -120,6 +125,11 @@ pub fn record_continuity_provider_outcome(
     outcome: &'static str,
 ) {
     if continuity_observation_enabled() {
+        tracing::debug!(
+            continuity_actor = actor,
+            continuity_outcome = outcome,
+            "continuity observation provider outcome recorded"
+        );
         telemetry.counter(
             "codex.diagnostic.continuity_observation",
             /*inc*/ 1,
