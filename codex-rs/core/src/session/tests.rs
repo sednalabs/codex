@@ -1613,8 +1613,12 @@ async fn user_shell_commands_remain_login_shells_when_model_login_shells_are_dis
 
 #[tokio::test]
 async fn get_base_instructions_no_user_content() {
+    let prompt_path = codex_utils_cargo_bin::find_resource!(
+        "tests/fixtures/prompt_with_apply_patch_instructions.md"
+    )
+    .expect("resolve prompt fixture path");
     let prompt_with_apply_patch_instructions =
-        include_str!("../../prompt_with_apply_patch_instructions.md");
+        std::fs::read_to_string(prompt_path).expect("read prompt fixture");
     let models_response = bundled_models_response()
         .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
     let model_info_for_slug = |slug: &str, config: &Config| {
