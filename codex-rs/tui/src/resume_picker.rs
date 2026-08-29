@@ -65,6 +65,7 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::Widget;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::warn;
@@ -594,12 +595,22 @@ fn picker_cwd_filter(
 /// authority while the picker root still owns the old one.
 struct AppServerPickerLoader {
     loader: PickerLoader,
+    shutdown_request: watch::Sender<bool>,
     shutdown: oneshot::Receiver<Result<()>>,
 }
 
 impl AppServerPickerLoader {
     async fn finish(self, selection: Result<SessionSelection>) -> Result<SessionSelection> {
-        let Self { loader, shutdown } = self;
+        let Self {
+            loader,
+            shutdown_request,
+            shutdown,
+        } = self;
+        // Do not wait for an arbitrary page, preview, or transcript request
+        // to complete. Dropping its future is the bounded lookup-cancellation
+        // boundary; the worker then obtains the authentic app-server shutdown
+        // receipt before this selection can create a replacement root.
+        shutdown_request.send_replace(true);
         drop(loader);
         let shutdown_result = shutdown
             .await
@@ -628,12 +639,23 @@ fn spawn_app_server_page_loader(
     bg_tx: mpsc::UnboundedSender<BackgroundEvent>,
 ) -> AppServerPickerLoader {
     let (request_tx, mut request_rx) = mpsc::unbounded_channel::<PickerLoadRequest>();
+    let (shutdown_request, mut shutdown_rx) = watch::channel(false);
     let (shutdown_tx, shutdown) = oneshot::channel();
 
     tokio::spawn(async move {
         let mut app_server = app_server;
-        while let Some(request) = request_rx.recv().await {
-            match request {
+        loop {
+            let request = tokio::select! {
+                _ = wait_for_picker_shutdown(&mut shutdown_rx) => break,
+                request = request_rx.recv() => request,
+            };
+            let Some(request) = request else {
+                break;
+            };
+            let event = tokio::select! {
+                _ = wait_for_picker_shutdown(&mut shutdown_rx) => break,
+                event = async {
+                    match request {
                 PickerLoadRequest::Page(request) => {
                     let cursor = request.cursor.map(|PageCursor::AppServer(cursor)| cursor);
                     let page = load_app_server_page(
@@ -646,17 +668,17 @@ fn spawn_app_server_page_loader(
                         thread_source_filter,
                     )
                     .await;
-                    let _ = bg_tx.send(BackgroundEvent::Page {
+                    BackgroundEvent::Page {
                         request_token: request.request_token,
                         search_token: request.search_token,
                         page,
-                    });
+                    }
                 }
                 PickerLoadRequest::Preview { thread_id } => {
                     let preview =
                         load_transcript_preview(&mut app_server, thread_id, codex_home.as_deref())
                             .await;
-                    let _ = bg_tx.send(BackgroundEvent::Preview { thread_id, preview });
+                    BackgroundEvent::Preview { thread_id, preview }
                 }
                 PickerLoadRequest::Transcript { thread_id } => {
                     let transcript = load_session_transcript(
@@ -666,12 +688,15 @@ fn spawn_app_server_page_loader(
                         codex_home.as_deref(),
                     )
                     .await;
-                    let _ = bg_tx.send(BackgroundEvent::Transcript {
+                    BackgroundEvent::Transcript {
                         thread_id,
                         transcript,
-                    });
+                    }
                 }
             }
+                },
+            };
+            let _ = bg_tx.send(event);
         }
         let shutdown_result = app_server.shutdown().await.map_err(Into::into);
         let _ = shutdown_tx.send(shutdown_result);
@@ -681,7 +706,14 @@ fn spawn_app_server_page_loader(
         loader: Arc::new(move |request: PickerLoadRequest| {
             let _ = request_tx.send(request);
         }),
+        shutdown_request,
         shutdown,
+    }
+}
+
+async fn wait_for_picker_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
+    if !*shutdown_rx.borrow_and_update() {
+        let _ = shutdown_rx.changed().await;
     }
 }
 
@@ -3157,16 +3189,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn picker_shutdown_receipt_precedes_the_selection_handoff() {
+    async fn picker_cancels_lookups_and_waits_for_shutdown_before_selection_handoff() {
         let (shutdown_tx, shutdown) = oneshot::channel();
+        let (shutdown_request, mut shutdown_rx) = watch::channel(false);
         let loader = AppServerPickerLoader {
             loader: Arc::new(|_| {}),
+            shutdown_request,
             shutdown,
         };
         let handoff =
             tokio::spawn(async move { loader.finish(Ok(SessionSelection::StartFresh)).await });
 
         tokio::task::yield_now().await;
+        assert_eq!(
+            *shutdown_rx.borrow_and_update(),
+            true,
+            "finishing the picker cancels outstanding lookup work before waiting"
+        );
         assert!(
             !handoff.is_finished(),
             "the caller must wait for the old picker app-server to shut down"

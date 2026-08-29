@@ -63,6 +63,10 @@ pub struct GoalRuntimeContinuationIssuer {
     // later re-enable itself, while a separately retained issuer cannot mint
     // again after the owner has crossed a stop/restart boundary.
     issuer_enablement_epoch: Arc<std::sync::atomic::AtomicU64>,
+    // Only a currently live issuer may resume the generation it stopped.
+    // Facades derived while an owner is stopped can observe it for cleanup,
+    // but cannot use a fresh local epoch stamp to restart it.
+    may_reenable: bool,
 }
 
 impl GoalRuntimeContinuationIssuer {
@@ -79,17 +83,36 @@ impl GoalRuntimeContinuationIssuer {
             issuer_enablement_epoch: Arc::new(std::sync::atomic::AtomicU64::new(
                 owner.enablement_epoch(),
             )),
+            may_reenable: owner.is_enabled(),
+            owner,
+            store: admissions,
+        }
+    }
+
+    /// Create the issuer for a deliberate root replacement. The installed
+    /// facade proves the replacement first waited for predecessor quiescence;
+    /// ordinary [`Self::for_thread`] remains fail-closed after weak-owner
+    /// eviction or a stopped lifecycle.
+    pub fn for_authorized_handoff(
+        admissions: Arc<InstalledGoalRuntimeAdmissions>,
+        thread_id: ThreadId,
+    ) -> Self {
+        let owner = admissions.handoff_owner_for_thread(thread_id);
+        Self {
+            issuer_enablement_epoch: Arc::new(std::sync::atomic::AtomicU64::new(
+                owner.enablement_epoch(),
+            )),
+            may_reenable: owner.is_enabled(),
             owner,
             store: admissions,
         }
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.owner.is_enabled()
-            && self.owner.enablement_epoch()
-                == self
-                    .issuer_enablement_epoch
-                    .load(std::sync::atomic::Ordering::Acquire)
+        self.owner.is_enabled_at_generation(
+            self.issuer_enablement_epoch
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
     }
 
     pub fn enablement_epoch(&self) -> u64 {
@@ -100,14 +123,15 @@ impl GoalRuntimeContinuationIssuer {
         // Only the issuer that owned the immediately preceding enablement
         // generation may transition it. A pre-stop retained issuer must not
         // revive itself by toggling the shared owner back on.
-        if self.owner.enablement_epoch()
-            != self
-                .issuer_enablement_epoch
-                .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if enabled && !self.may_reenable {
             return None;
         }
-        let enablement_epoch = self.owner.set_enabled(enabled);
+        let expected_enablement_epoch = self
+            .issuer_enablement_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
+        let enablement_epoch = self
+            .owner
+            .set_enabled_if_generation(expected_enablement_epoch, enabled);
         if let Some(enablement_epoch) = enablement_epoch {
             self.issuer_enablement_epoch
                 .store(enablement_epoch, std::sync::atomic::Ordering::Release);
@@ -430,40 +454,12 @@ impl ModelRequestAdmissionDecision {
                     }
                     lifecycle.opening = true;
                 }
-
-                let opened = match admitted.store.open_lease(&admitted.lease).await {
-                    Ok(opened) => opened,
-                    Err(error) => {
-                        let mut lifecycle = admitted.lifecycle.lock().await;
-                        lifecycle.opening = false;
-                        drop(lifecycle);
-                        let _ = admitted.store.release_acquired_lease(&admitted.lease).await;
-                        return Err(storage_error(error));
-                    }
-                };
-                let mut lifecycle = admitted.lifecycle.lock().await;
-                lifecycle.opening = false;
-                if !opened {
-                    lifecycle.terminalized = true;
-                    lifecycle.stage = LeaseStage::CancelledBeforeAcknowledgement;
-                    return Err(CodexErr::Fatal(
-                        "goal-owner admission was cancelled before its request-open fence"
-                            .to_string(),
-                    ));
-                }
-                if lifecycle.terminalized || !fence_guard.is_current_epoch() {
-                    drop(lifecycle);
-                    // `open_lease` won only the durable request-open fence;
-                    // it has not authorized physical transport yet. A
-                    // revocation at this point is a definite cancellation,
-                    // never an Uncertain/ManualReview provider effect.
-                    admitted.cancel_before_transport().await?;
-                    return Err(CodexErr::Fatal(
-                        "goal-owner continuation was revoked before transport open".to_string(),
-                    ));
-                }
-                lifecycle.request_opened = true;
-                lifecycle.stage = LeaseStage::RequestOpened;
+                // This returns only the exclusive local lease guard. The
+                // durable `in_flight` transition happens at
+                // `open_transport`, immediately where Core hands the request
+                // to HTTP or WebSocket. A lifecycle stop in setup therefore
+                // releases the acquired reservation rather than creating a
+                // false provider-effect uncertainty.
                 Ok(ModelRequestLeaseGuard::admitted(
                     Arc::clone(admitted),
                     fence_guard,
@@ -474,7 +470,7 @@ impl ModelRequestAdmissionDecision {
     }
 
     /// Release an acquired pre-network lease when local setup fails. If the
-    /// request-open fence has already won, preserve conservative terminal
+    /// transport handoff has already won, preserve conservative terminal
     /// handling instead.
     pub(crate) async fn terminalize_if_unfinished(&self) {
         let Self::Admitted(admitted) = self else {
@@ -919,11 +915,29 @@ impl AdmittedModelRequest {
     /// definite cancellation. Neither branch may create uncertainty because
     /// this method is called before transport receives the lease guard.
     async fn cancel_before_transport(&self) -> Result<()> {
-        {
+        let request_opened = {
             let lifecycle = self.lifecycle.lock().await;
             if lifecycle.terminalized {
                 return Ok(());
             }
+            lifecycle.request_opened
+        };
+
+        if request_opened {
+            let cancelled = self
+                .store
+                .cancel_opened_lease_before_transport(&self.lease)
+                .await
+                .map_err(storage_error)?;
+            if !cancelled {
+                return Err(CodexErr::Fatal(
+                    "goal-owner opened admission is no longer current before transport".to_string(),
+                ));
+            }
+            let mut lifecycle = self.lifecycle.lock().await;
+            lifecycle.terminalized = true;
+            lifecycle.stage = LeaseStage::CancelledBeforeAcknowledgement;
+            return Ok(());
         }
 
         if self
@@ -938,12 +952,9 @@ impl AdmittedModelRequest {
             return Ok(());
         }
 
-        self.finish_if_unfinished(
-            LeaseStage::CancelledBeforeAcknowledgement,
-            GoalOwnerAdmissionTerminalOutcome::Cancelled,
-            GoalOwnerAdmissionTerminalDisposition::None,
-        )
-        .await
+        Err(CodexErr::Fatal(
+            "goal-owner acquired admission is no longer current before transport".to_string(),
+        ))
     }
 
     async fn finish_if_unfinished(
@@ -1051,23 +1062,75 @@ impl ModelRequestLeaseGuard {
     }
 
     /// Recheck the continuation fence immediately before handing the request
-    /// to a transport. This closes the synchronous disable/current-thread
-    /// window where revocation cannot await an already-running future.
-    pub(crate) async fn ensure_request_open_allowed(&mut self) -> Result<()> {
+    /// to a transport and atomically open its durable request fence. Every
+    /// HTTP and WebSocket path must call this at the handoff site, not while
+    /// constructing auth or request state, so a revoked continuation cannot
+    /// physically send through a detached transport task.
+    pub(crate) async fn open_transport(&mut self) -> Result<()> {
         if self
             ._fence_guard
             .as_ref()
             .is_some_and(|fence| !fence.is_current_epoch())
         {
             if let Some(admitted) = self.admitted.take() {
-                admitted
-                    .finish_if_unfinished(
-                        LeaseStage::CancelledBeforeAcknowledgement,
-                        GoalOwnerAdmissionTerminalOutcome::Cancelled,
-                        GoalOwnerAdmissionTerminalDisposition::None,
-                    )
-                    .await?;
+                admitted.cancel_before_transport().await?;
             }
+            self._fence_guard = None;
+            return Err(CodexErr::Fatal(
+                "goal-owner continuation was revoked before transport open".to_string(),
+            ));
+        }
+
+        let Some(admitted) = self.admitted.as_ref() else {
+            return Ok(());
+        };
+        let needs_open = {
+            let lifecycle = admitted.lifecycle.lock().await;
+            if lifecycle.terminalized {
+                return Err(CodexErr::Fatal(
+                    "goal-owner admission lease is already terminal".to_string(),
+                ));
+            }
+            !lifecycle.request_opened
+        };
+        if !needs_open {
+            return Ok(());
+        }
+        let opened = match admitted.store.open_lease(&admitted.lease).await {
+            Ok(opened) => opened,
+            Err(error) => {
+                let mut lifecycle = admitted.lifecycle.lock().await;
+                lifecycle.opening = false;
+                drop(lifecycle);
+                let _ = admitted.store.release_acquired_lease(&admitted.lease).await;
+                return Err(storage_error(error));
+            }
+        };
+        if !opened {
+            let mut lifecycle = admitted.lifecycle.lock().await;
+            lifecycle.opening = false;
+            lifecycle.terminalized = true;
+            lifecycle.stage = LeaseStage::CancelledBeforeAcknowledgement;
+            return Err(CodexErr::Fatal(
+                "goal-owner admission was cancelled before its request-open fence".to_string(),
+            ));
+        }
+        {
+            let mut lifecycle = admitted.lifecycle.lock().await;
+            lifecycle.opening = false;
+            lifecycle.request_opened = true;
+            lifecycle.stage = LeaseStage::RequestOpened;
+        }
+        if self
+            ._fence_guard
+            .as_ref()
+            .is_some_and(|fence| !fence.is_current_epoch())
+        {
+            let admitted = self
+                .admitted
+                .take()
+                .expect("admitted guard remains owned until transport handoff");
+            admitted.cancel_before_transport().await?;
             self._fence_guard = None;
             return Err(CodexErr::Fatal(
                 "goal-owner continuation was revoked before transport open".to_string(),
@@ -1129,6 +1192,9 @@ impl ModelRequestLeaseGuard {
 
     pub(crate) async fn cancelled_or_dropped(&mut self) -> Result<()> {
         if let Some(admitted) = &self.admitted {
+            if !admitted.lifecycle.lock().await.request_opened {
+                return admitted.release_if_unopened().await;
+            }
             let stage = if admitted.lifecycle.lock().await.acknowledged {
                 LeaseStage::CancelledAfterAcknowledgement
             } else {
@@ -1156,6 +1222,12 @@ impl Drop for ModelRequestLeaseGuard {
             return;
         };
         handle.spawn(async move {
+            if !admitted.lifecycle.lock().await.request_opened {
+                if let Err(error) = admitted.release_if_unopened().await {
+                    warn!(error = %error, lease_id = %admitted.lease.lease_id, "failed to release dropped unopened model request");
+                }
+                return;
+            }
             let stage = if admitted.lifecycle.lock().await.acknowledged {
                 LeaseStage::CancelledAfterAcknowledgement
             } else {

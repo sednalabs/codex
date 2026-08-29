@@ -102,7 +102,7 @@ async fn installed_runtime(sqlite: crate::SqliteConfig) -> GoalAdmissionTestRunt
 }
 
 #[tokio::test]
-async fn installed_owner_registry_shares_live_owners_and_evicts_after_the_last_fence_guard() {
+async fn installed_owner_registry_preserves_a_disabled_tombstone_after_the_last_fence_guard() {
     let runtime = runtime().await;
     let thread_id = ThreadId::new();
     let owner = runtime.admissions.owner_for_thread(thread_id);
@@ -125,8 +125,24 @@ async fn installed_owner_registry_shares_live_owners_and_evicts_after_the_last_f
     drop(guard);
     assert_eq!(
         runtime.admissions.live_owner_registry_len(),
-        0,
-        "a dead thread owner is removed instead of accumulating in the installed registry"
+        1,
+        "a dead thread owner leaves a lifecycle tombstone instead of recreating enabled authority"
+    );
+    let recreated = runtime.admissions.owner_for_thread(thread_id);
+    assert!(
+        !recreated.is_enabled(),
+        "an incidental facade recreation must start disabled after owner eviction"
+    );
+    assert!(
+        recreated
+            .enter_continuation(recreated.continuation_epoch())
+            .is_none(),
+        "a tombstoned facade cannot publish a continuation"
+    );
+    let handed_off = runtime.admissions.handoff_owner_for_thread(thread_id);
+    assert!(
+        handed_off.is_enabled(),
+        "only the explicit installed handoff re-enables the retired lifecycle"
     );
 }
 
@@ -138,8 +154,7 @@ fn revocation_waits_for_an_entered_guard_before_finishing_the_old_epoch() {
         registry: Weak::new(),
         registry_generation: Uuid::now_v7(),
         fence_identity: GoalOwnerDispatchFenceCapability::fresh(),
-        enabled: AtomicBool::new(true),
-        enablement_epoch: AtomicU64::new(0),
+        lifecycle: Arc::new(GoalRuntimeAdmissionOwnerLifecycle::enabled()),
         continuation_fence: Arc::new(GoalRuntimeContinuationFence::new()),
     });
     let owner = GoalRuntimeAdmissionOwner { inner: owner };
@@ -167,6 +182,27 @@ fn revocation_waits_for_an_entered_guard_before_finishing_the_old_epoch() {
         owner.enter_continuation(0).is_none(),
         "the old epoch cannot re-enter after revocation linearizes"
     );
+}
+
+#[tokio::test]
+async fn stale_enablement_generation_cannot_revive_a_stopped_owner() {
+    let runtime = runtime().await;
+    let owner = runtime.admissions.owner_for_thread(ThreadId::new());
+    assert_eq!(owner.set_enabled_if_generation(0, false), Some(1));
+    assert!(
+        owner.set_enabled_if_generation(0, true).is_none(),
+        "a retained pre-stop generation cannot win a later enable transition"
+    );
+    assert!(
+        !owner.is_enabled(),
+        "a failed stale transition leaves the installed owner stopped"
+    );
+    assert_eq!(
+        owner.authorize_handoff(),
+        Some(2),
+        "only explicit handoff starts the next owner generation"
+    );
+    assert!(owner.is_enabled_at_generation(2));
 }
 
 enum GoalDbCorruption {
@@ -1431,6 +1467,58 @@ async fn release_acquired_lease_decrements_generation_and_chain_once() {
     assert_eq!(released.attempts_started, 0);
     assert_eq!(released.chain_attempts_started, 0);
     assert_eq!(released.lease_id, None);
+}
+
+#[tokio::test]
+async fn opened_unsent_lease_cancels_with_no_deferred_operator_action() {
+    let runtime = runtime().await;
+    let store = runtime.goal_owner_admissions();
+    let record = store
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "goal-opened-unsent",
+            "request-opened-unsent",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record admission");
+    let lease = acquire(store, &record).await;
+    assert!(
+        store
+            .open_lease(&lease)
+            .await
+            .expect("durably open the request before transport")
+    );
+    assert!(
+        store
+            .cancel_opened_lease_before_transport(&lease)
+            .await
+            .expect("cancel the exact unsent opened lease")
+    );
+    assert!(
+        !store
+            .cancel_opened_lease_before_transport(&lease)
+            .await
+            .expect("the same opened lease cannot be cancelled twice")
+    );
+    let cancelled = store
+        .get_generation(&record.authority)
+        .await
+        .expect("read terminal generation")
+        .expect("terminal generation is retained");
+    assert_eq!(cancelled.phase, GoalOwnerAdmissionPhase::Terminal);
+    assert_eq!(
+        cancelled.terminal_outcome,
+        GoalOwnerAdmissionTerminalOutcome::Cancelled
+    );
+    assert_eq!(
+        cancelled.deferred_terminal_disposition,
+        GoalOwnerAdmissionTerminalDisposition::None
+    );
+    assert_eq!(cancelled.attempts_started, 0);
+    assert_eq!(cancelled.chain_attempts_started, 0);
+    assert_eq!(cancelled.lease_id, None);
 }
 
 #[tokio::test]
