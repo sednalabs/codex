@@ -8,8 +8,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use chrono::Utc;
-use codex_core::GoalContinuationFenceCoordinator;
 use codex_core::GoalOwnerContinuation;
+use codex_core::GoalRuntimeContinuationIssuer;
 use codex_core::ThreadManager;
 use codex_extension_api::ProviderEvidenceAuthority;
 use codex_extension_api::RateLimitDomain;
@@ -53,6 +53,9 @@ pub(crate) enum ActiveGoalStopReason {
 struct GoalRuntimeInner {
     thread_id: ThreadId,
     state_dbs: Arc<codex_state::StateRuntime>,
+    /// Installation-owned mutation facade. The generic StateRuntime handle is
+    /// deliberately diagnostics-only and cannot mint a continuation path.
+    goal_owner_admissions: codex_state::GoalOwnerAdmissionStore,
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
@@ -66,9 +69,9 @@ struct GoalRuntimeInner {
 /// callers retain only a wake handle and consult this coordinator for every
 /// authority, epoch, claim, and lifecycle transition.
 struct GoalContinuationCoordinator {
-    enabled: AtomicBool,
-    enablement_epoch: AtomicU64,
-    fence: GoalContinuationFenceCoordinator,
+    enabled: Arc<AtomicBool>,
+    enablement_epoch: Arc<AtomicU64>,
+    fence: GoalRuntimeContinuationIssuer,
     state: Mutex<ProviderContinuationState>,
     lifecycle: Semaphore,
 }
@@ -78,22 +81,19 @@ struct GoalContinuationCoordinator {
 /// same exact CAS release; after publication ownership transfers to the turn
 /// token and the guard is disarmed.
 struct DispatchClaimGuard {
-    store: codex_state::GoalOwnerAdmissionStore,
     authority: codex_state::GoalOwnerAdmissionAuthority,
     claim_id: Uuid,
-    coordinator: GoalContinuationFenceCoordinator,
+    coordinator: GoalRuntimeContinuationIssuer,
     armed: bool,
 }
 
 impl DispatchClaimGuard {
     fn new(
-        store: codex_state::GoalOwnerAdmissionStore,
         authority: codex_state::GoalOwnerAdmissionAuthority,
         claim_id: Uuid,
-        coordinator: GoalContinuationFenceCoordinator,
+        coordinator: GoalRuntimeContinuationIssuer,
     ) -> Self {
         Self {
-            store,
             authority,
             claim_id,
             coordinator,
@@ -118,7 +118,7 @@ impl Drop for DispatchClaimGuard {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 if let Err(error) = coordinator
-                    .release_dispatch_claim(&store, &authority, claim_id)
+                    .release_dispatch_claim(&authority, claim_id)
                     .await
                 {
                     tracing::warn!(
@@ -186,16 +186,20 @@ impl GoalRuntimeHandle {
     pub(crate) fn new(
         thread_id: ThreadId,
         state_dbs: Arc<codex_state::StateRuntime>,
+        goal_owner_admissions: codex_state::GoalOwnerAdmissionStore,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
         thread_manager: Weak<ThreadManager>,
         accounting_state: Arc<GoalAccountingState>,
         config: GoalRuntimeConfig,
     ) -> Self {
+        let enabled = Arc::new(AtomicBool::new(config.enabled));
+        let enablement_epoch = Arc::new(AtomicU64::new(0));
         Self {
             inner: Arc::new(GoalRuntimeInner {
                 thread_id,
                 state_dbs,
+                goal_owner_admissions: goal_owner_admissions.clone(),
                 analytics: config.analytics,
                 event_emitter,
                 metrics,
@@ -203,9 +207,13 @@ impl GoalRuntimeHandle {
                 accounting_state,
                 tools_available_for_thread: config.tools_available_for_thread,
                 continuation: GoalContinuationCoordinator {
-                    enabled: AtomicBool::new(config.enabled),
-                    enablement_epoch: AtomicU64::new(0),
-                    fence: GoalContinuationFenceCoordinator::new(),
+                    enabled: Arc::clone(&enabled),
+                    enablement_epoch: Arc::clone(&enablement_epoch),
+                    fence: GoalRuntimeContinuationIssuer::from_installed_store(
+                        goal_owner_admissions,
+                        enabled,
+                        enablement_epoch,
+                    ),
                     state: Mutex::new(ProviderContinuationState::default()),
                     lifecycle: Semaphore::new(/*permits*/ 1),
                 },
@@ -613,8 +621,7 @@ impl GoalRuntimeHandle {
                 // uncertain generation remains an explicit recovery gate.
                 if let Some(previous) = self
                     .inner
-                    .state_dbs
-                    .goal_owner_admissions()
+                    .goal_owner_admissions
                     .get(self.thread_id())
                     .await
                     .map_err(|err| err.to_string())?
@@ -628,8 +635,7 @@ impl GoalRuntimeHandle {
                 }
                 let record = self
                     .inner
-                    .state_dbs
-                    .goal_owner_admissions()
+                    .goal_owner_admissions
                     .observe_denial(&codex_state::GoalOwnerAdmissionObservation {
                         thread_id: self.thread_id(),
                         goal_id: goal.goal_id.clone(),
@@ -826,7 +832,7 @@ impl GoalRuntimeHandle {
         &self,
         authority: &codex_state::GoalOwnerAdmissionAuthority,
     ) -> Result<(), String> {
-        let admissions = self.inner.state_dbs.goal_owner_admissions();
+        let admissions = &self.inner.goal_owner_admissions;
         let cancelled = admissions
             .cancel(
                 authority,
@@ -866,7 +872,7 @@ impl GoalRuntimeHandle {
         clear_deferral: bool,
         allow_exhausted: bool,
     ) -> Result<bool, String> {
-        let admissions = self.inner.state_dbs.goal_owner_admissions();
+        let admissions = &self.inner.goal_owner_admissions;
         let Some(record) = admissions
             .get_generation(authority)
             .await
@@ -907,8 +913,7 @@ impl GoalRuntimeHandle {
         authority: &codex_state::GoalOwnerAdmissionAuthority,
     ) -> Result<(), String> {
         self.inner
-            .state_dbs
-            .goal_owner_admissions()
+            .goal_owner_admissions
             .clear_deferral_if_retired(authority)
             .await
             .map(|_| ())
@@ -1084,7 +1089,7 @@ impl GoalRuntimeHandle {
             );
             return Ok(());
         }
-        let admissions = self.inner.state_dbs.goal_owner_admissions();
+        let admissions = &self.inner.goal_owner_admissions;
         let persisted = admissions
             .get(self.thread_id())
             .await
@@ -1268,7 +1273,7 @@ impl GoalRuntimeHandle {
         if !self.inner.state_dbs.owns_goal_runtime() {
             return Ok(false);
         }
-        let admissions = self.inner.state_dbs.goal_owner_admissions();
+        let admissions = &self.inner.goal_owner_admissions;
         let Some(record) = admissions
             .get(self.thread_id())
             .await
@@ -1305,8 +1310,7 @@ impl GoalRuntimeHandle {
         }
         let resolved = self
             .inner
-            .state_dbs
-            .goal_owner_admissions()
+            .goal_owner_admissions
             .resolve_uncertain(&authority, outcome, disposition, &resolution_evidence)
             .await
             .map_err(|err| err.to_string())?;
@@ -1379,18 +1383,13 @@ impl GoalRuntimeHandle {
             .inner
             .continuation
             .fence
-            .claim_dispatch(
-                self.inner.state_dbs.goal_owner_admissions(),
-                &continuation_authority,
-                Utc::now(),
-            )
+            .claim_dispatch(&continuation_authority, enablement_epoch, Utc::now())
             .await
             .map_err(|err| err.to_string())?
         else {
             return Ok(());
         };
         let mut dispatch_claim_guard = DispatchClaimGuard::new(
-            self.inner.state_dbs.goal_owner_admissions().clone(),
             continuation_authority.authority.clone(),
             dispatch_claim_id,
             self.inner.continuation.fence.clone(),
@@ -1485,11 +1484,7 @@ impl GoalRuntimeHandle {
                 return Ok(());
             };
             thread
-                .publish_goal_continuation(
-                    thread.goal_owner_publication_capability(),
-                    Vec::new(),
-                    claimed_continuation,
-                )
+                .publish_goal_continuation(Vec::new(), claimed_continuation)
                 .await
         };
         if start_result.is_err() {
@@ -1615,8 +1610,7 @@ impl GoalRuntimeHandle {
         }
         let Some(record) = self
             .inner
-            .state_dbs
-            .goal_owner_admissions()
+            .goal_owner_admissions
             .get_generation(&continuation_authority.authority)
             .await
             .map_err(|err| err.to_string())?
@@ -1642,14 +1636,10 @@ impl GoalRuntimeHandle {
         &self,
         authority: &codex_state::GoalOwnerAdmissionAuthority,
         dispatch_claim_id: Uuid,
-        coordinator: &GoalContinuationFenceCoordinator,
+        coordinator: &GoalRuntimeContinuationIssuer,
     ) {
         if let Err(error) = coordinator
-            .release_dispatch_claim(
-                self.inner.state_dbs.goal_owner_admissions(),
-                authority,
-                dispatch_claim_id,
-            )
+            .release_dispatch_claim(authority, dispatch_claim_id)
             .await
         {
             tracing::warn!(
@@ -1943,6 +1933,7 @@ fn pending_continuation_is_current(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_utils_absolute_path::test_support::PathExt;
 
     fn authority(generation: i64) -> codex_state::GoalOwnerAdmissionAuthority {
         codex_state::GoalOwnerAdmissionAuthority {
@@ -1956,10 +1947,25 @@ mod tests {
     fn pending(
         authority: codex_state::GoalOwnerAdmissionAuthority,
     ) -> DeferredProviderContinuation {
+        let home = tempfile::TempDir::new().expect("temporary Codex home");
+        let runtime = tokio::runtime::Runtime::new()
+            .expect("test runtime")
+            .block_on(codex_state::StateRuntime::init(
+                codex_state::SqliteConfig::new_for_testing(home.path().abs()),
+                "test-provider".to_string(),
+            ))
+            .expect("initialize state runtime");
+        let issuer = GoalRuntimeContinuationIssuer::from_installed_store(
+            runtime
+                .take_goal_runtime_admissions()
+                .expect("installed runtime supplies its continuation issuer"),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicU64::new(0)),
+        );
         DeferredProviderContinuation {
             turn_id: "turn".to_string(),
             goal_id: authority.goal_id.clone(),
-            continuation: GoalContinuationFenceCoordinator::new().continuation(
+            continuation: issuer.continuation(
                 codex_state::GoalOwnerAdmissionContinuationAuthority {
                     authority,
                     intended_request_kind: "turn".to_string(),

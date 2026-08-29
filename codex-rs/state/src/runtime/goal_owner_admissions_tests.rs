@@ -1031,8 +1031,10 @@ async fn read_only_runtime_cannot_self_claim_an_unclaimed_generation() {
     let runtime_a = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
         .await
         .expect("first runtime owns admission mutations");
-    let record = runtime_a
-        .goal_owner_admissions()
+    let installed = runtime_a
+        .take_goal_runtime_admissions()
+        .expect("installed runtime owns the one mutation facade");
+    let record = installed
         .observe_denial(&observation(
             ThreadId::new(),
             "read-only-claim",
@@ -1057,8 +1059,7 @@ async fn read_only_runtime_cannot_self_claim_an_unclaimed_generation() {
         .await
         .expect_err("read-only downstream runtime must not self-claim");
     assert!(error.to_string().contains("runtime owner capability"));
-    let unchanged = runtime_a
-        .goal_owner_admissions()
+    let unchanged = installed
         .get_generation(&record.authority)
         .await
         .expect("read exact pending generation")
@@ -1066,6 +1067,54 @@ async fn read_only_runtime_cannot_self_claim_an_unclaimed_generation() {
     assert_eq!(unchanged.dispatch_claim_id, None);
     runtime_b.close().await;
     runtime_a.close().await;
+    let _ = tokio::fs::remove_dir_all(codex_home).await;
+}
+
+#[tokio::test]
+async fn public_runtime_admission_view_cannot_claim_installed_generation() {
+    let codex_home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+    let runtime = StateRuntime::init(sqlite, "test-provider".to_string())
+        .await
+        .expect("owning runtime");
+    let installed = runtime
+        .take_goal_runtime_admissions()
+        .expect("installed goal runtime facade");
+    assert!(
+        runtime.take_goal_runtime_admissions().is_none(),
+        "the installation facade is single-use and cannot be cloned from StateRuntime"
+    );
+    let record = installed
+        .observe_denial(&observation(
+            ThreadId::new(),
+            "public-runtime-view",
+            "request-public-runtime-view",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ))
+        .await
+        .expect("record installed generation");
+
+    let error = runtime
+        .goal_owner_admissions()
+        .claim_dispatch(
+            &record.continuation_authority(),
+            GoalOwnerDispatchFenceCapability::fresh(),
+            Utc::now(),
+        )
+        .await
+        .expect_err("generic StateRuntime view must be diagnostics-only");
+    assert!(error.to_string().contains("runtime owner capability"));
+    assert_eq!(
+        None,
+        installed
+            .get_generation(&record.authority)
+            .await
+            .expect("read installed generation")
+            .expect("generation remains durable")
+            .dispatch_claim_id
+    );
+    runtime.close().await;
     let _ = tokio::fs::remove_dir_all(codex_home).await;
 }
 

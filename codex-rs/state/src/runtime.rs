@@ -38,6 +38,7 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::AtomicUsize;
@@ -328,7 +329,6 @@ fn try_acquire_runtime_process_lock(
     Ok(None)
 }
 
-#[derive(Clone)]
 pub struct StateRuntime {
     sqlite: SqliteConfig,
     default_provider: String,
@@ -337,6 +337,10 @@ pub struct StateRuntime {
     usage_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
     goal_owner_admissions: GoalOwnerAdmissionStore,
+    /// The sole mutation-bearing admission handle is handed to the installed
+    /// goal runtime exactly once. Ordinary StateRuntime consumers retain only
+    /// the diagnostics store above, which carries no owner capability.
+    goal_owner_admission_installation: Mutex<Option<GoalOwnerAdmissionStore>>,
     memories: MemoryStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
@@ -616,7 +620,7 @@ impl StateRuntime {
         let capability = runtime_owner
             .as_ref()
             .map(|owner| Arc::clone(&owner.capability));
-        let goal_owner_admissions = if let Some(capability) = capability.clone() {
+        let goal_owner_admission_installation = if let Some(capability) = capability.clone() {
             GoalOwnerAdmissionStore::with_capability(
                 Arc::clone(&goals_pool),
                 capability,
@@ -625,6 +629,10 @@ impl StateRuntime {
         } else {
             GoalOwnerAdmissionStore::read_only(Arc::clone(&goals_pool))
         };
+        // Diagnostics deliberately use a distinct read-only store. Publishing
+        // the owner-capable clone here would let any downstream StateRuntime
+        // holder mint and dispatch an automatic continuation.
+        let goal_owner_admissions = GoalOwnerAdmissionStore::read_only(Arc::clone(&goals_pool));
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::with_capability(
                 Arc::clone(&goals_pool),
@@ -632,6 +640,7 @@ impl StateRuntime {
                 runtime_owner.clone(),
             ),
             goal_owner_admissions,
+            goal_owner_admission_installation: Mutex::new(Some(goal_owner_admission_installation)),
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
             logs_pool,
@@ -684,9 +693,26 @@ impl StateRuntime {
         &self.thread_goals
     }
 
-    /// Durable authority ledger for one exact goal-owner admission per thread.
+    /// Read-only durable admission ledger for diagnostics.
+    ///
+    /// This intentionally has no runtime-owner capability. The installed goal
+    /// runtime receives the sole mutation-bearing handle during installation;
+    /// a generic StateRuntime or StateDb handle must not be sufficient to
+    /// schedule, claim, clear, or publish a continuation.
     pub fn goal_owner_admissions(&self) -> &GoalOwnerAdmissionStore {
         &self.goal_owner_admissions
+    }
+
+    /// Consume the installation-only admission facade.
+    ///
+    /// The extension installation path is the only caller in production. The
+    /// handle is one-shot, so later or competing consumers receive no mutation
+    /// authority; StateRuntime continues to expose diagnostics only.
+    pub fn take_goal_runtime_admissions(&self) -> Option<GoalOwnerAdmissionStore> {
+        self.goal_owner_admission_installation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     /// Whether this runtime holds the process-lifetime goal database lease.
@@ -1082,7 +1108,9 @@ mod tests {
             .await
             .expect("initialize owning runtime");
         assert!(runtime.owns_goal_runtime());
-        let cloned_store = runtime.goal_owner_admissions().clone();
+        let cloned_store = runtime
+            .take_goal_runtime_admissions()
+            .expect("owning runtime supplies its installation facade");
         drop(runtime);
 
         let blocked_runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())

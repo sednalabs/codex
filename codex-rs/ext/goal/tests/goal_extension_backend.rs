@@ -865,8 +865,12 @@ async fn replaced_abort_retires_exact_settled_provider_continuation() -> anyhow:
 
     let turn_store = ExtensionData::new(settled.successor_turn_id.clone());
     turn_store.insert(
-        codex_core::GoalContinuationFenceCoordinator::new()
-            .continuation(settled.continuation_authority()),
+        codex_core::GoalRuntimeContinuationIssuer::from_installed_store(
+            runtime.goal_owner_admissions().clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        )
+        .continuation(settled.continuation_authority()),
     );
     harness
         .abort_turn_with_store(&turn_store, TurnAbortReason::Replaced)
