@@ -3,6 +3,7 @@ mod auth;
 mod bearer_auth_provider;
 mod models_endpoint;
 mod provider;
+mod rate_limit_domain;
 
 pub use amazon_bedrock::is_supported_amazon_bedrock_region;
 pub use auth::AgentIdentitySessionFallback;
@@ -24,3 +25,6 @@ pub use provider::ProviderAccountState;
 pub use provider::ProviderCapabilities;
 pub use provider::SharedModelProvider;
 pub use provider::create_model_provider;
+pub use rate_limit_domain::{
+    LocalRequestFacts, ProviderObservedFacts, RateLimitDomainScope, RateLimitEvidence,
+};
