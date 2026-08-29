@@ -72,6 +72,7 @@ use tracing::error;
 use ts_rs::TS;
 
 mod inference_observation;
+pub use inference_observation::GoalOwnerAdmissionRef;
 pub use inference_observation::INFERENCE_CALL_CORRELATION_ID_MAX_BYTES;
 pub use inference_observation::INFERENCE_CALL_EVENT_MAX_BYTES;
 pub use inference_observation::INFERENCE_CALL_ID_MAX_BYTES;

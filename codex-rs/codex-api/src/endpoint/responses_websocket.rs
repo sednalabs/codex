@@ -239,8 +239,13 @@ impl ResponsesWebsocketConnection {
         connection_reused: bool,
         turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
-        self.stream_request_observed(request, connection_reused, turn_state, None)
-            .await
+        self.stream_request_observed(
+            request,
+            connection_reused,
+            turn_state,
+            /*observer*/ None,
+        )
+        .await
     }
 
     /// Streams a request while invoking `observer` immediately before the
