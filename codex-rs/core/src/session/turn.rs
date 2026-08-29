@@ -142,14 +142,35 @@ pub(crate) struct CachedEndpointRecommendedPluginCandidates {
 }
 
 const POST_SAMPLING_TOKEN_ESTIMATE_TARGET: &str = "codex_core::post_sampling_token_estimate";
-const GOAL_MULTI_AGENT_STRESS_CONTINUATION_MARKER: &str =
-    "<goal_multi_agent_stress_continuation_probe>";
+const CONTINUITY_OBSERVATION_PROBE_MARKER: &str = "<continuity_observation_probe>";
 
 #[derive(Clone, Copy, Debug)]
-struct GoalMultiAgentStressTurn;
+struct ContinuityObservationTurn;
 
 #[derive(Clone, Copy, Debug)]
-struct GoalMultiAgentStressPostUsageLimitProbeDispatched;
+struct ContinuityPostUsageLimitProbeDispatched;
+
+fn continuity_actor(turn_context: &TurnContext) -> &'static str {
+    if matches!(
+        &turn_context.session_source,
+        codex_protocol::protocol::SessionSource::SubAgent(_)
+    ) {
+        "child"
+    } else {
+        "parent"
+    }
+}
+
+fn continuity_provider_outcome(err: &CodexErr) -> &'static str {
+    match err.details() {
+        CodexErrorDetails::UsageLimitReached(_) => "usage_limit",
+        CodexErrorDetails::QuotaExceeded => "quota_rejected",
+        CodexErrorDetails::ServerOverloaded => "capacity_rejected",
+        CodexErrorDetails::TurnAborted => "cancelled",
+        _ if err.is_retryable() => "retryable_error",
+        _ => "error",
+    }
+}
 
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
@@ -1227,17 +1248,7 @@ pub(crate) fn build_prompt(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(deprecated)]
-#[instrument(level = "trace",
-    skip_all,
-    fields(
-        turn_id = %step_context.turn.sub_id,
-        model = %step_context.turn.model_info.slug,
-        cwd = %step_context.turn.cwd.display()
-    )
-)]
-fn goal_multi_agent_stress_continuation_input(input: &[ResponseItem]) -> bool {
+fn continuity_observation_probe_input(input: &[ResponseItem]) -> bool {
     input.iter().any(|item| {
         let ResponseItem::Message { content, .. } = item else {
             return false;
@@ -1246,18 +1257,18 @@ fn goal_multi_agent_stress_continuation_input(input: &[ResponseItem]) -> bool {
             matches!(
                 content_item,
                 ContentItem::InputText { text }
-                    if text.contains(GOAL_MULTI_AGENT_STRESS_CONTINUATION_MARKER)
+                    if text.contains(CONTINUITY_OBSERVATION_PROBE_MARKER)
             )
         })
     })
 }
 
-async fn run_goal_multi_agent_stress_post_usage_limit_probe(
+async fn run_continuity_post_usage_limit_probe(
     tool_runtime: ToolCallRuntime,
     turn_context: Arc<TurnContext>,
     cancellation_token: CancellationToken,
 ) {
-    let task_name = crate::diagnostic_flags::next_goal_multi_agent_probe_task_name("post_429");
+    let task_name = crate::diagnostic_flags::next_continuity_probe_task_name("post_limit");
     let call_id = format!("diag_{task_name}");
     let tool_name = if turn_context.provider.capabilities().namespace_tools {
         turn_context
@@ -1282,16 +1293,16 @@ async fn run_goal_multi_agent_stress_post_usage_limit_probe(
         payload: crate::tools::context::ToolPayload::Function { arguments },
     };
 
-    turn_context.session_telemetry.counter(
-        "codex.diagnostic.goal_multi_agent_stress",
-        1,
-        &[("stage", "post_usage_limit_dispatch_attempt")],
+    crate::diagnostic_flags::record_continuity_stage(
+        &turn_context.session_telemetry,
+        "parent",
+        "post_usage_limit_spawn_attempt",
     );
     tracing::info!(
         turn_id = %turn_context.sub_id,
         %call_id,
         tool = %tool_name,
-        "multi-agent stress diagnostic dispatching bounded post-usage-limit V2 spawn"
+        "continuity observation dispatching bounded post-usage-limit V2 spawn"
     );
 
     match tool_runtime
@@ -1303,28 +1314,38 @@ async fn run_goal_multi_agent_stress_post_usage_limit_probe(
         .await
     {
         Ok(_) => {
-            turn_context.session_telemetry.counter(
-                "codex.diagnostic.goal_multi_agent_stress",
-                1,
-                &[("stage", "post_usage_limit_dispatch_completed")],
+            crate::diagnostic_flags::record_continuity_stage(
+                &turn_context.session_telemetry,
+                "parent",
+                "post_usage_limit_spawn_completed",
             );
         }
         Err(error) => {
-            turn_context.session_telemetry.counter(
-                "codex.diagnostic.goal_multi_agent_stress",
-                1,
-                &[("stage", "post_usage_limit_dispatch_failed")],
+            crate::diagnostic_flags::record_continuity_stage(
+                &turn_context.session_telemetry,
+                "parent",
+                "post_usage_limit_spawn_failed",
             );
             warn!(
                 turn_id = %turn_context.sub_id,
                 %call_id,
                 %error,
-                "multi-agent stress diagnostic post-usage-limit V2 spawn failed"
+                "continuity observation post-usage-limit V2 spawn failed"
             );
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+#[allow(deprecated)]
+#[instrument(level = "trace",
+    skip_all,
+    fields(
+        turn_id = %step_context.turn.sub_id,
+        model = %step_context.turn.model_info.slug,
+        cwd = %step_context.turn.cwd.display()
+    )
+)]
 async fn run_sampling_request(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
@@ -1353,11 +1374,14 @@ async fn run_sampling_request(
         Arc::clone(&turn_diff_tracker),
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
-    let multi_agent_stress_enabled = crate::diagnostic_flags::goal_multi_agent_stress_enabled();
-    if multi_agent_stress_enabled && goal_multi_agent_stress_continuation_input(&input) {
-        turn_context.extension_data.insert(GoalMultiAgentStressTurn);
+    let continuation_probe_enabled =
+        crate::diagnostic_flags::continuity_continuation_probe_enabled();
+    if continuation_probe_enabled && continuity_observation_probe_input(&input) {
+        turn_context
+            .extension_data
+            .insert(ContinuityObservationTurn);
     }
-    let multi_agent_stress_goal_turn = multi_agent_stress_enabled
+    let continuation_probe_turn = continuation_probe_enabled
         && turn_context.multi_agent_version == codex_protocol::protocol::MultiAgentVersion::V2
         && !matches!(
             &turn_context.session_source,
@@ -1365,7 +1389,7 @@ async fn run_sampling_request(
         )
         && turn_context
             .extension_data
-            .get::<GoalMultiAgentStressTurn>()
+            .get::<ContinuityObservationTurn>()
             .is_some();
     let mut retries = 0;
     let mut usage_limit_retries = 0;
@@ -1408,7 +1432,8 @@ async fn run_sampling_request(
                     return Err(err);
                 }
                 CodexErrorDetails::UsageLimitReached(e) => {
-                    if !crate::diagnostic_flags::suppress_usage_limit_state_updates() {
+                    if !crate::diagnostic_flags::continuity_suppress_usage_limit_snapshot_enabled()
+                    {
                         let rate_limits = e.rate_limits.clone();
                         if let Some(rate_limits) = rate_limits {
                             sess.update_rate_limits(&turn_context, *rate_limits).await;
@@ -1416,19 +1441,27 @@ async fn run_sampling_request(
                     } else {
                         warn!(
                             turn_id = %turn_context.sub_id,
-                            "goal error diagnostic mode skipped rate-limit snapshot update"
+                            "continuity observation skipped usage-limit snapshot update"
                         );
                     }
-                    if multi_agent_stress_goal_turn
+                    let post_usage_limit_v2_spawn =
+                        crate::diagnostic_flags::continuity_v2_post_usage_limit_spawn_enabled()
+                            && turn_context.multi_agent_version
+                                == codex_protocol::protocol::MultiAgentVersion::V2
+                            && !matches!(
+                                &turn_context.session_source,
+                                codex_protocol::protocol::SessionSource::SubAgent(_)
+                            );
+                    if (continuation_probe_turn || post_usage_limit_v2_spawn)
                         && turn_context
                             .extension_data
-                            .get::<GoalMultiAgentStressPostUsageLimitProbeDispatched>()
+                            .get::<ContinuityPostUsageLimitProbeDispatched>()
                             .is_none()
                     {
                         turn_context
                             .extension_data
-                            .insert(GoalMultiAgentStressPostUsageLimitProbeDispatched);
-                        run_goal_multi_agent_stress_post_usage_limit_probe(
+                            .insert(ContinuityPostUsageLimitProbeDispatched);
+                        run_continuity_post_usage_limit_probe(
                             tool_runtime.clone(),
                             Arc::clone(&turn_context),
                             cancellation_token.child_token(),
@@ -1446,24 +1479,29 @@ async fn run_sampling_request(
         }
 
         if matches!(err.details(), CodexErrorDetails::UsageLimitReached(_))
-            && crate::diagnostic_flags::goal_error_retry_in_place_enabled()
+            && crate::diagnostic_flags::continuity_retry_same_turn_enabled()
         {
-            if usage_limit_retries >= max_retries {
+            let unbounded =
+                crate::diagnostic_flags::continuity_unbounded_sequential_retry_enabled();
+            if !unbounded && usage_limit_retries >= max_retries {
                 return Err(err);
             }
-            usage_limit_retries += 1;
+            usage_limit_retries = usage_limit_retries.saturating_add(1);
             let retry_count = usage_limit_retries;
             let delay = err
                 .retry_delay()
-                .unwrap_or_else(|| crate::util::backoff(retry_count));
+                .unwrap_or_else(|| crate::util::backoff(retry_count.min(10)));
             warn!(
                 turn_id = %turn_context.sub_id,
                 retry_count,
-                max_retries,
+                max_retries = if unbounded { None } else { Some(max_retries) },
                 ?delay,
-                "retrying usage-limit diagnostic sampling request in place"
+                unbounded,
+                "retrying usage-limit diagnostic sampling request sequentially"
             );
-            tokio::time::sleep(delay).await;
+            tokio::time::sleep(delay)
+                .or_cancel(&cancellation_token)
+                .await?;
             turn_context.turn_timing_state.record_sampling_retry();
             continue;
         }
@@ -2277,7 +2315,13 @@ async fn try_run_sampling_request(
         .features
         .enabled(Feature::ConcurrentReasoningSummaries)
         && turn_context.provider.info().is_openai();
-    let mut stream = client_session
+    let actor = continuity_actor(&turn_context);
+    crate::diagnostic_flags::record_continuity_stage(
+        &turn_context.session_telemetry,
+        actor,
+        "provider_request_begun",
+    );
+    let stream_result = client_session
         .stream(
             prompt,
             &turn_context.model_info,
@@ -2290,7 +2334,27 @@ async fn try_run_sampling_request(
         )
         .instrument(trace_span!("stream_request"))
         .or_cancel(&cancellation_token)
-        .await??;
+        .await;
+    let mut stream = match stream_result {
+        Err(codex_async_utils::CancelErr::Cancelled) => {
+            let err = CodexErr::TurnAborted;
+            crate::diagnostic_flags::record_continuity_provider_outcome(
+                &turn_context.session_telemetry,
+                actor,
+                continuity_provider_outcome(&err),
+            );
+            return Err(err);
+        }
+        Ok(Err(err)) => {
+            crate::diagnostic_flags::record_continuity_provider_outcome(
+                &turn_context.session_telemetry,
+                actor,
+                continuity_provider_outcome(&err),
+            );
+            return Err(err);
+        }
+        Ok(Ok(stream)) => stream,
+    };
     let mut in_flight: FuturesOrdered<BoxFuture<'static, CodexResult<ResponseInputItem>>> =
         FuturesOrdered::new();
     let mut needs_follow_up = false;
@@ -2335,17 +2399,34 @@ async fn try_run_sampling_request(
         {
             Ok(event) => event,
             Err(codex_async_utils::CancelErr::Cancelled) => {
-                break Err(CodexErr::TurnAborted);
+                let err = CodexErr::TurnAborted;
+                crate::diagnostic_flags::record_continuity_provider_outcome(
+                    &turn_context.session_telemetry,
+                    actor,
+                    continuity_provider_outcome(&err),
+                );
+                break Err(err);
             }
         };
 
         let event = match event {
             Some(Ok(event)) => event,
-            Some(Err(err)) => break Err(err),
+            Some(Err(err)) => {
+                crate::diagnostic_flags::record_continuity_provider_outcome(
+                    &turn_context.session_telemetry,
+                    actor,
+                    continuity_provider_outcome(&err),
+                );
+                break Err(err);
+            }
             None => {
-                break Err(CodexErr::Stream(
-                    "stream closed before response.completed".into(),
-                ));
+                let err = CodexErr::Stream("stream closed before response.completed".into());
+                crate::diagnostic_flags::record_continuity_provider_outcome(
+                    &turn_context.session_telemetry,
+                    actor,
+                    continuity_provider_outcome(&err),
+                );
+                break Err(err);
             }
         };
 
@@ -2623,6 +2704,11 @@ async fn try_run_sampling_request(
                 if let Some(false) = end_turn {
                     needs_follow_up = true;
                 }
+                crate::diagnostic_flags::record_continuity_provider_outcome(
+                    &turn_context.session_telemetry,
+                    actor,
+                    "completed",
+                );
                 break Ok(SamplingRequestResult {
                     needs_follow_up,
                     last_agent_message,

@@ -312,7 +312,7 @@ where
             };
 
             if matches!(input.error, CodexErrorInfo::UsageLimitExceeded)
-                && codex_core::diagnostic_flags::goal_error_continuation_enabled()
+                && codex_core::diagnostic_flags::continuity_preserve_after_usage_limit_enabled()
             {
                 if let Err(err) = runtime
                     .preserve_active_goal_after_turn_error(input.turn_id)

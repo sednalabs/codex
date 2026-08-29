@@ -434,31 +434,31 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
         let item = continuation_steering_item(&protocol_goal_from_state(goal));
-        let multi_agent_stress = codex_core::diagnostic_flags::goal_multi_agent_stress_enabled();
-        if multi_agent_stress {
-            thread.session_telemetry().counter(
-                "codex.diagnostic.goal_multi_agent_stress",
-                1,
-                &[("stage", "continuation_attempt")],
+        let continuity_observation = codex_core::diagnostic_flags::continuity_observation_enabled();
+        if continuity_observation {
+            codex_core::diagnostic_flags::record_continuity_stage(
+                &thread.session_telemetry(),
+                "parent",
+                "continuation_attempt",
             );
         }
 
         match thread.try_start_turn_if_idle(vec![item]).await {
             Ok(()) => {
-                if multi_agent_stress {
-                    thread.session_telemetry().counter(
-                        "codex.diagnostic.goal_multi_agent_stress",
-                        1,
-                        &[("stage", "continuation_started")],
+                if continuity_observation {
+                    codex_core::diagnostic_flags::record_continuity_stage(
+                        &thread.session_telemetry(),
+                        "parent",
+                        "continuation_started",
                     );
                 }
             }
             Err(err) => {
-                if multi_agent_stress {
-                    thread.session_telemetry().counter(
-                        "codex.diagnostic.goal_multi_agent_stress",
-                        1,
-                        &[("stage", "continuation_rejected")],
+                if continuity_observation {
+                    codex_core::diagnostic_flags::record_continuity_stage(
+                        &thread.session_telemetry(),
+                        "parent",
+                        "continuation_rejected",
                     );
                 }
                 let reason = err.reason();

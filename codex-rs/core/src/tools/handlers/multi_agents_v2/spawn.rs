@@ -47,19 +47,6 @@ async fn handle_spawn_agent(
         call_id,
         ..
     } = invocation;
-    if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
-        turn.session_telemetry.counter(
-            "codex.diagnostic.goal_multi_agent_stress",
-            1,
-            &[("stage", "spawn_handler_attempt")],
-        );
-        tracing::info!(
-            turn_id = %turn.sub_id,
-            call_id = %call_id,
-            "multi-agent stress diagnostic entered V2 spawn handler"
-        );
-    }
-
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
     let fork_mode = args.fork_mode()?;
@@ -129,17 +116,22 @@ async fn handle_spawn_agent(
         .unwrap_or_else(AgentPath::root);
     let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
-    if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
+    crate::diagnostic_flags::record_continuity_stage(
+        &turn.session_telemetry,
+        "parent",
+        "spawn_accepted",
+    );
+    if crate::diagnostic_flags::continuity_observation_enabled() {
         turn.session_telemetry.counter(
-            "codex.diagnostic.goal_multi_agent_stress",
+            "codex.diagnostic.continuity_observation",
             1,
-            &[("stage", "spawn_control_attempt")],
+            &[("actor", "parent"), ("stage", "spawn_control_attempt")],
         );
         tracing::info!(
             turn_id = %turn.sub_id,
             call_id = %call_id,
             task_name = %args.task_name,
-            "multi-agent stress diagnostic calling V2 spawn control"
+            "continuity observation calling V2 spawn control"
         );
     }
     let spawned_agent = Box::pin(
@@ -163,6 +155,11 @@ async fn handle_spawn_agent(
     .await
     .map_err(collab_spawn_error)?;
     let new_thread_id = spawned_agent.thread_id;
+    crate::diagnostic_flags::record_continuity_stage(
+        &turn.session_telemetry,
+        "parent",
+        "child_created",
+    );
     let agent_snapshot = session
         .services
         .agent_control
@@ -201,13 +198,18 @@ async fn handle_spawn_agent(
         /*inc*/ 1,
         &[("role", role_tag), ("version", "v2")],
     );
-    if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
+    if crate::diagnostic_flags::continuity_observation_enabled() {
         turn.session_telemetry.counter(
-            "codex.diagnostic.goal_multi_agent_stress",
+            "codex.diagnostic.continuity_observation",
             1,
-            &[("stage", "spawn_published")],
+            &[("actor", "parent"), ("stage", "spawn_published")],
         );
     }
+    crate::diagnostic_flags::record_continuity_stage(
+        &turn.session_telemetry,
+        "parent",
+        "initial_work_published",
+    );
     let task_name = String::from(new_agent_path);
 
     let hide_agent_metadata = turn.config.multi_agent_v2.hide_spawn_agent_metadata;

@@ -76,19 +76,19 @@ fn continuation_prompt(goal: &ThreadGoal) -> String {
             panic!("embedded goals/continuation.md template failed to render: {err}")
         });
 
-    if codex_core::diagnostic_flags::goal_multi_agent_stress_enabled() {
+    if codex_core::diagnostic_flags::continuity_continuation_probe_enabled() {
         let task_name =
             codex_core::diagnostic_flags::next_goal_multi_agent_probe_task_name("continuation");
         prompt.push_str(&format!(
             "
 
-<goal_multi_agent_stress_continuation_probe>
-Diagnostic continuation probe:
+<continuity_observation_probe>
+Continuity observation probe:
              - Before other substantive work in this automatic continuation, call the Multi-Agent V2 `spawn_agent` tool exposed in this turn exactly once.
              - Use task_name `{task_name}` and fork_turns `none`. Use the configured V2 namespace if this turn exposes one; do not substitute the legacy V1 collaboration tool.
              - In the child message, briefly restate the active objective and ask the child to perform one concrete tool-backed inspection or work step that advances it, then report evidence back.
              - The parent should continue its own useful work after issuing the spawn; do not wait for the child unless the normal task flow requires it.
-             - If the plain `spawn_agent` call fails or is unavailable, keep the goal active and continue useful work. A later automatic continuation will try a fresh probe.
+             - If the V2 `spawn_agent` call fails or is unavailable, keep the goal active and continue useful work. A later automatic continuation will try a fresh probe.
 "
         ));
     }
