@@ -111,7 +111,7 @@ async fn held_provider_stream_does_not_block_continuity_cleanup_deadline() {
     .await;
 
     assert!(
-        cleanup.is_none(),
+        matches!(cleanup, Some(Err(_))),
         "a held provider stream must become a deferred cleanup receipt at the deadline"
     );
 }

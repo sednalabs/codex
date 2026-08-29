@@ -1534,13 +1534,13 @@ async fn await_continuity_cleanup<F>(
     cancellation_token: &CancellationToken,
     timeout: std::time::Duration,
     cleanup: F,
-) -> Option<CodexResult<String>>
+) -> Option<Result<CodexResult<String>, tokio::time::error::Elapsed>>
 where
     F: std::future::Future<Output = CodexResult<String>> + Send,
 {
     tokio::select! {
         _ = cancellation_token.cancelled() => None,
-        result = tokio::time::timeout(timeout, cleanup) => result.ok(),
+        result = tokio::time::timeout(timeout, cleanup) => Some(result),
     }
 }
 
@@ -1552,7 +1552,7 @@ async fn monitor_continuity_child(
     cancellation_token: CancellationToken,
     child_deadline: tokio::time::Instant,
 ) {
-    let mut deadline_sleep = tokio::time::sleep_until(child_deadline);
+    let deadline_sleep = tokio::time::sleep_until(child_deadline);
     tokio::pin!(deadline_sleep);
     let monitor_outcome = if let Ok(mut status_rx) = control.subscribe_status(child_thread_id).await
     {
