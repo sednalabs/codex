@@ -26,6 +26,8 @@ use chrono::Utc;
 use codex_extension_api::ExtensionStorageId;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::RolloutItem;
+use goal_owner_admissions::GoalRuntimeAdmissionInstallation;
+use goal_owner_admissions::GoalRuntimeAdmissionRuntimeIdentity;
 use serde_json::Value;
 use sqlx::QueryBuilder;
 use sqlx::Row;
