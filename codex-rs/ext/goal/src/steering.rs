@@ -78,7 +78,7 @@ fn continuation_prompt(goal: &ThreadGoal) -> String {
 
     if codex_core::diagnostic_flags::continuity_continuation_probe_enabled() {
         let task_name =
-            codex_core::diagnostic_flags::next_goal_multi_agent_probe_task_name("continuation");
+            codex_core::diagnostic_flags::next_continuity_probe_task_name("continuation");
         prompt.push_str(&format!(
             "
 

@@ -37,6 +37,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::error::UsageLimitReachedError;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -1311,11 +1313,21 @@ impl GoalExtensionHarness {
 
     async fn notify_turn_error(&self, turn_id: &str, error: CodexErrorInfo) {
         let turn_store = ExtensionData::new(turn_id);
+        let error_details = matches!(&error, CodexErrorInfo::UsageLimitExceeded).then(|| {
+            CodexErrorDetails::UsageLimitReached(UsageLimitReachedError {
+                plan_type: None,
+                resets_at: None,
+                rate_limits: None,
+                promo_message: None,
+                rate_limit_reached_type: None,
+            })
+        });
         for contributor in self.registry.turn_lifecycle_contributors() {
             contributor
                 .on_turn_error(TurnErrorInput {
                     turn_id,
                     error: error.clone(),
+                    error_details: error_details.as_ref(),
                     session_store: &self.session_store,
                     thread_store: &self.thread_store,
                     turn_store: &turn_store,

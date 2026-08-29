@@ -592,6 +592,17 @@ fn code_mode_namespace_descriptions(
 
 #[instrument(level = "trace", skip_all)]
 fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
+    // Automatic continuity probes are evidence-only children. Their source is
+    // durable in the V2 agent path, so admission remains restricted after a
+    // cold reload as well as during the initial turn. In particular, do not
+    // register shell, patch, MCP, extension, collaboration, or hosted tools.
+    if crate::diagnostic_flags::is_continuity_diagnostic_child(&context.turn_context.session_source)
+    {
+        planned_tools.add(GetContextRemainingHandler);
+        planned_tools.add(CurrentTimeHandler);
+        return;
+    }
+
     // Guardian reviewers receive only `exec_command`, `write_stdin`, and `view_image`
     // when an environment is available; all general tool sources stay excluded.
     if crate::guardian::is_guardian_reviewer_source(&context.turn_context.session_source) {

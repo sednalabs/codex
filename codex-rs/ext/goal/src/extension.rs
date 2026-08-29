@@ -215,6 +215,14 @@ where
             {
                 tracing::warn!("failed to clear deferred goal continuation: {err}");
             }
+            if let Err(err) = self
+                .state_dbs
+                .thread_goals()
+                .clear_thread_goal_continuity_research(runtime.thread_id())
+                .await
+            {
+                tracing::warn!("failed to clear preserved continuity marker: {err}");
+            }
 
             let accounting = runtime.accounting_state();
             accounting.start_turn(
@@ -311,7 +319,11 @@ where
                 return;
             };
 
+            let temporary_usage_limit = input.error_details.is_some_and(|details| {
+                codex_core::diagnostic_flags::is_temporary_usage_limit_error(details)
+            });
             if matches!(input.error, CodexErrorInfo::UsageLimitExceeded)
+                && temporary_usage_limit
                 && codex_core::diagnostic_flags::continuity_preserve_after_usage_limit_enabled()
             {
                 if let Err(err) = runtime
@@ -327,7 +339,9 @@ where
             }
 
             let reason = match input.error {
-                CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
+                CodexErrorInfo::UsageLimitExceeded if temporary_usage_limit => {
+                    ActiveGoalStopReason::UsageLimit
+                }
                 // The turn has ended because the error was non-retryable or its
                 // retries were exhausted. Block the goal to prevent automatic
                 // continuation from looping and consuming tokens, as can happen

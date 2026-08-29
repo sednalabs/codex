@@ -816,10 +816,26 @@ impl AgentControl {
             return Err(error);
         }
 
-        crate::diagnostic_flags::record_continuity_stage(
+        let observation_origin = notification_source
+            .as_ref()
+            .map(crate::diagnostic_flags::continuity_observation_origin)
+            .unwrap_or("model_driven");
+        let correlation_id = notification_source
+            .as_ref()
+            .and_then(crate::diagnostic_flags::continuity_observation_chain_id)
+            .map(|chain_id| format!("continuity:{chain_id}:initial_work"))
+            .or_else(|| {
+                options
+                    .spawn_call_id
+                    .as_deref()
+                    .map(|call_id| format!("spawn:{call_id}"))
+            });
+        crate::diagnostic_flags::record_continuity_stage_with_context(
             &new_thread.thread.session_telemetry(),
             "child",
             "initial_work_submitted",
+            observation_origin,
+            correlation_id.as_deref(),
         );
 
         #[cfg(test)]

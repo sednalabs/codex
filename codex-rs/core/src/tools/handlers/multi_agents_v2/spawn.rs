@@ -9,8 +9,12 @@ use crate::config::Config;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
+use codex_config::Constrained;
+use codex_features::Feature;
 use codex_protocol::AgentPath;
+use codex_protocol::models::PermissionProfile;
 use codex_tools::ToolSpec;
+use std::collections::HashMap;
 
 #[derive(Default)]
 pub(crate) struct Handler {
@@ -61,6 +65,7 @@ async fn handle_spawn_agent(
     let child_depth = next_thread_spawn_depth(&session_source);
     let mut config =
         build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
+    let is_diagnostic_probe = args.task_name.starts_with("continuity_");
     if let Some(service_tier) = args.service_tier.as_ref() {
         config.service_tier = Some(service_tier.clone());
     }
@@ -87,6 +92,37 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    if is_diagnostic_probe {
+        // Keep the diagnostic child read-only even if the parent has a wider
+        // profile. Tool admission below is the primary boundary; these config
+        // reductions also survive into any future handler that consults the
+        // child session's feature or permission state.
+        config
+            .permissions
+            .set_permission_profile(PermissionProfile::read_only())
+            .map_err(|error| {
+                FunctionCallError::RespondToModel(format!(
+                    "diagnostic child read-only profile was not admissible: {error}"
+                ))
+            })?;
+        config.include_apps_instructions = false;
+        config.include_skill_instructions = false;
+        config.include_environment_context = false;
+        config.orchestrator_mcp_enabled = false;
+        config.orchestrator_skills_enabled = false;
+        config.ephemeral = true;
+        config.user_instructions = None;
+        config.developer_instructions = None;
+        config.base_instructions = Some(
+            "Use only the admitted read-only diagnostic tools. Do not spawn agents, execute commands, modify files, call MCP or extensions, or alter provider/account settings.".to_string(),
+        );
+        config.mcp_servers = Constrained::allow_only(HashMap::new());
+        config.features.disable(Feature::Collab);
+        config.features.disable(Feature::Apps);
+        config.features.disable(Feature::Plugins);
+        config.features.disable(Feature::MemoryTool);
+        config.features.disable(Feature::SkillMcpDependencyInstall);
+    }
     validate_spawn_agent_expected_model(
         &config,
         args.model.as_deref(),
@@ -116,16 +152,28 @@ async fn handle_spawn_agent(
         .unwrap_or_else(AgentPath::root);
     let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
-    crate::diagnostic_flags::record_continuity_stage(
+    let observation_origin = if is_diagnostic_probe {
+        "direct_probe"
+    } else {
+        "model_driven"
+    };
+    let correlation_id = format!("continuity:{}:turn:{}:spawn", args.task_name, turn.sub_id);
+    crate::diagnostic_flags::record_continuity_stage_with_context(
         &turn.session_telemetry,
         "parent",
-        "spawn_accepted",
+        "spawn_validation_admitted",
+        observation_origin,
+        Some(correlation_id.as_str()),
     );
     if crate::diagnostic_flags::continuity_observation_enabled() {
         turn.session_telemetry.counter(
             "codex.diagnostic.continuity_observation",
             /*inc*/ 1,
-            &[("actor", "parent"), ("stage", "spawn_control_attempt")],
+            &[
+                ("actor", "parent"),
+                ("stage", "spawn_creation_attempt"),
+                ("origin", observation_origin),
+            ],
         );
         tracing::info!(
             turn_id = %turn.sub_id,
@@ -155,10 +203,12 @@ async fn handle_spawn_agent(
     .await
     .map_err(collab_spawn_error)?;
     let new_thread_id = spawned_agent.thread_id;
-    crate::diagnostic_flags::record_continuity_stage(
+    crate::diagnostic_flags::record_continuity_stage_with_context(
         &turn.session_telemetry,
         "parent",
         "child_created",
+        observation_origin,
+        Some(correlation_id.as_str()),
     );
     let agent_snapshot = session
         .services
@@ -202,13 +252,19 @@ async fn handle_spawn_agent(
         turn.session_telemetry.counter(
             "codex.diagnostic.continuity_observation",
             /*inc*/ 1,
-            &[("actor", "parent"), ("stage", "spawn_published")],
+            &[
+                ("actor", "parent"),
+                ("stage", "spawn_publication_completed"),
+                ("origin", observation_origin),
+            ],
         );
     }
-    crate::diagnostic_flags::record_continuity_stage(
+    crate::diagnostic_flags::record_continuity_stage_with_context(
         &turn.session_telemetry,
         "parent",
         "initial_work_published",
+        observation_origin,
+        Some(correlation_id.as_str()),
     );
     let task_name = String::from(new_agent_path);
 

@@ -1,4 +1,5 @@
 use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnAbortReason;
@@ -49,6 +50,11 @@ pub struct TurnErrorInput<'a> {
     pub turn_id: &'a str,
     /// Error surfaced by the host for this turn.
     pub error: CodexErrorInfo,
+    /// Provider/core error details when the host has them. This preserves
+    /// distinctions that the client-facing [`CodexErrorInfo`] intentionally
+    /// coalesces, such as temporary rate limits versus quota or entitlement
+    /// denials.
+    pub error_details: Option<&'a CodexErrorDetails>,
     /// Store scoped to the host session runtime.
     pub session_store: &'a ExtensionData,
     /// Store scoped to this thread runtime.

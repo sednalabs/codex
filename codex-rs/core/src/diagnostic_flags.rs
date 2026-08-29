@@ -12,6 +12,11 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use codex_otel::SessionTelemetry;
+use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::error::UsageLimitReachedError;
+use codex_protocol::protocol::RateLimitReachedType;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 
 const RESEARCH_HARNESS_ENV: &str = "CODEX_EXPERIMENTAL_CONTINUITY_RESEARCH_HARNESS";
 const PRESERVE_AFTER_USAGE_LIMIT_ENV: &str =
@@ -25,39 +30,18 @@ const V2_POST_USAGE_LIMIT_SPAWN_ENV: &str =
     "CODEX_EXPERIMENTAL_CONTINUITY_V2_POST_USAGE_LIMIT_SPAWN";
 const OBSERVATION_ENV: &str = "CODEX_EXPERIMENTAL_CONTINUITY_OBSERVATION";
 
-// Compatibility aliases retained for operators using the earlier experimental
-// surface. New runs should use the neutral names above.
-const GOAL_ERROR_CONTINUATION_ENV: &str = "CODEX_EXPERIMENTAL_GOAL_ERROR_CONTINUATION";
-const GOAL_ERROR_RETRY_IN_PLACE_ENV: &str = "CODEX_EXPERIMENTAL_GOAL_ERROR_RETRY_IN_PLACE";
-const GOAL_MULTI_AGENT_STRESS_ENV: &str = "CODEX_EXPERIMENTAL_GOAL_MULTI_AGENT_STRESS";
-
 static GOAL_MULTI_AGENT_PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-#[doc(hidden)]
-pub fn goal_error_continuation_enabled() -> bool {
-    continuity_preserve_after_usage_limit_enabled()
-}
-
-#[doc(hidden)]
-pub fn goal_error_retry_in_place_enabled() -> bool {
-    continuity_retry_same_turn_enabled()
-}
-
-#[doc(hidden)]
-pub fn goal_multi_agent_stress_enabled() -> bool {
-    env_enabled(GOAL_MULTI_AGENT_STRESS_ENV) || continuity_research_harness_enabled()
-}
-
 /// Enable the optional continuation prompt probe used by the complete
-/// research profile (or by the preserved legacy stress alias).
+/// research profile.
 pub fn continuity_continuation_probe_enabled() -> bool {
-    env_enabled(GOAL_MULTI_AGENT_STRESS_ENV) || continuity_research_harness_enabled()
+    continuity_research_harness_enabled()
 }
 
 /// Preserve an active persisted goal for the normal idle continuation path
 /// after the provider authoritatively reports a usage limit.
 pub fn continuity_preserve_after_usage_limit_enabled() -> bool {
-    selected(PRESERVE_AFTER_USAGE_LIMIT_ENV) || env_enabled(GOAL_ERROR_CONTINUATION_ENV)
+    selected(PRESERVE_AFTER_USAGE_LIMIT_ENV)
 }
 
 /// Keep the local rate-limit snapshot unchanged after a provider usage-limit
@@ -69,7 +53,7 @@ pub fn continuity_suppress_usage_limit_snapshot_enabled() -> bool {
 /// Retry a usage-limit response sequentially within the same turn. The normal
 /// retry budget remains in force unless the separate unbounded control is set.
 pub fn continuity_retry_same_turn_enabled() -> bool {
-    selected(RETRY_SAME_TURN_ENV) || env_enabled(GOAL_ERROR_RETRY_IN_PLACE_ENV)
+    selected(RETRY_SAME_TURN_ENV)
 }
 
 /// Remove the client attempt-count ceiling for the diagnostic same-turn retry.
@@ -81,19 +65,84 @@ pub fn continuity_unbounded_sequential_retry_enabled() -> bool {
 /// Dispatch one bounded V2 child probe after an authoritative usage-limit
 /// response on an eligible parent turn.
 pub fn continuity_v2_post_usage_limit_spawn_enabled() -> bool {
-    selected(V2_POST_USAGE_LIMIT_SPAWN_ENV) || env_enabled(GOAL_MULTI_AGENT_STRESS_ENV)
+    selected(V2_POST_USAGE_LIMIT_SPAWN_ENV)
 }
 
 /// Enable stage and provider-outcome telemetry for the research harness.
 pub fn continuity_observation_enabled() -> bool {
-    selected(OBSERVATION_ENV)
-        || env_enabled(GOAL_MULTI_AGENT_STRESS_ENV)
-        || continuity_research_harness_enabled()
+    selected(OBSERVATION_ENV) || continuity_research_harness_enabled()
 }
 
 /// True when the complete explicit research profile is selected.
 pub fn continuity_research_harness_enabled() -> bool {
     env_enabled(RESEARCH_HARNESS_ENV)
+}
+
+/// Return true only for the explicit temporary rate-limit response. Quota and
+/// workspace entitlement denials are deliberately excluded even though the
+/// client-facing protocol maps them to the same usage-limit error.
+pub fn is_temporary_usage_limit_error(details: &CodexErrorDetails) -> bool {
+    let CodexErrorDetails::UsageLimitReached(error) = details else {
+        return false;
+    };
+    is_temporary_usage_limit(error)
+}
+
+fn is_temporary_usage_limit(error: &UsageLimitReachedError) -> bool {
+    match error.rate_limit_reached_type {
+        Some(RateLimitReachedType::RateLimitReached) => true,
+        Some(
+            RateLimitReachedType::WorkspaceOwnerCreditsDepleted
+            | RateLimitReachedType::WorkspaceMemberCreditsDepleted
+            | RateLimitReachedType::WorkspaceOwnerUsageLimitReached
+            | RateLimitReachedType::WorkspaceMemberUsageLimitReached,
+        ) => false,
+        // The upstream `usage_limit_reached` error is itself the temporary
+        // class. Older responses may omit `resets_at`; the explicit
+        // entitlement/rejection kinds above remain fail-closed.
+        None => true,
+    }
+}
+
+/// Identify the child created by the automatic diagnostic probe from durable
+/// V2 session metadata. This keeps its restrictive tool admission in force
+/// after a cold reload without widening restrictions for model-created agents.
+pub fn is_continuity_diagnostic_child(source: &SessionSource) -> bool {
+    matches!(
+        source,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            agent_path: Some(path),
+            ..
+        }) if path
+            .as_str()
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.starts_with("continuity_"))
+    )
+}
+
+pub fn continuity_observation_origin(source: &SessionSource) -> &'static str {
+    if is_continuity_diagnostic_child(source) {
+        "direct_probe"
+    } else {
+        "model_driven"
+    }
+}
+
+/// Return the stable diagnostic task component used to join parent spawn,
+/// child publication, transport, and outcome observations. The task component
+/// is already durable in the V2 child source, so it remains available after a
+/// restart without recording provider/account identifiers.
+pub fn continuity_observation_chain_id(source: &SessionSource) -> Option<String> {
+    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        agent_path: Some(path),
+        ..
+    }) = source
+    else {
+        return None;
+    };
+    let name = path.as_str().rsplit('/').next()?;
+    name.starts_with("continuity_").then(|| name.to_string())
 }
 
 /// Record a bounded continuity stage without including provider or account
@@ -103,16 +152,28 @@ pub fn record_continuity_stage(
     actor: &'static str,
     stage: &'static str,
 ) {
+    record_continuity_stage_with_context(telemetry, actor, stage, "unspecified", None);
+}
+
+pub fn record_continuity_stage_with_context(
+    telemetry: &SessionTelemetry,
+    actor: &'static str,
+    stage: &'static str,
+    origin: &'static str,
+    correlation_id: Option<&str>,
+) {
     if continuity_observation_enabled() {
         tracing::debug!(
             continuity_actor = actor,
             continuity_stage = stage,
+            continuity_origin = origin,
+            continuity_correlation_id = correlation_id.unwrap_or("unknown"),
             "continuity observation stage recorded"
         );
         telemetry.counter(
             "codex.diagnostic.continuity_observation",
             /*inc*/ 1,
-            &[("actor", actor), ("stage", stage)],
+            &[("actor", actor), ("stage", stage), ("origin", origin)],
         );
     }
 }
@@ -124,10 +185,22 @@ pub fn record_continuity_provider_outcome(
     actor: &'static str,
     outcome: &'static str,
 ) {
+    record_continuity_provider_outcome_with_context(telemetry, actor, outcome, "unspecified", None);
+}
+
+pub fn record_continuity_provider_outcome_with_context(
+    telemetry: &SessionTelemetry,
+    actor: &'static str,
+    outcome: &'static str,
+    origin: &'static str,
+    correlation_id: Option<&str>,
+) {
     if continuity_observation_enabled() {
         tracing::debug!(
             continuity_actor = actor,
             continuity_outcome = outcome,
+            continuity_origin = origin,
+            continuity_correlation_id = correlation_id.unwrap_or("unknown"),
             "continuity observation provider outcome recorded"
         );
         telemetry.counter(
@@ -137,6 +210,7 @@ pub fn record_continuity_provider_outcome(
                 ("actor", actor),
                 ("stage", "provider_outcome"),
                 ("outcome", outcome),
+                ("origin", origin),
             ],
         );
     }
@@ -151,9 +225,9 @@ pub fn next_continuity_probe_task_name(kind: &str) -> String {
     format!("continuity_{kind}_{epoch_millis}_{sequence}")
 }
 
-#[doc(hidden)]
-pub fn next_goal_multi_agent_probe_task_name(kind: &str) -> String {
-    next_continuity_probe_task_name(kind)
+pub fn next_continuity_correlation_id(kind: &str) -> String {
+    let sequence = GOAL_MULTI_AGENT_PROBE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("continuity_{kind}_{sequence}")
 }
 
 pub fn suppress_usage_limit_state_updates() -> bool {
@@ -180,7 +254,26 @@ fn is_truthy(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::is_continuity_diagnostic_child;
+    use super::is_temporary_usage_limit_error;
     use super::is_truthy;
+    use codex_protocol::AgentPath;
+    use codex_protocol::ThreadId;
+    use codex_protocol::error::CodexErrorDetails;
+    use codex_protocol::error::UsageLimitReachedError;
+    use codex_protocol::protocol::RateLimitReachedType;
+    use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
+
+    fn usage_limit(rate_limit_reached_type: Option<RateLimitReachedType>) -> CodexErrorDetails {
+        CodexErrorDetails::UsageLimitReached(UsageLimitReachedError {
+            plan_type: None,
+            resets_at: None,
+            rate_limits: None,
+            promo_message: None,
+            rate_limit_reached_type,
+        })
+    }
 
     #[test]
     fn parses_truthy_values() {
@@ -194,5 +287,58 @@ mod tests {
         for value in ["", "0", "false", "off", "no", "anything"] {
             assert!(!is_truthy(value), "expected {value:?} to be falsey");
         }
+    }
+
+    #[test]
+    fn only_explicit_temporary_rate_limits_are_continuable() {
+        assert!(is_temporary_usage_limit_error(&usage_limit(Some(
+            RateLimitReachedType::RateLimitReached,
+        ))));
+        // Older providers omit the subtype while still returning the explicit
+        // usage-limit error; that remains a temporary limit rather than an
+        // entitlement denial.
+        assert!(is_temporary_usage_limit_error(&usage_limit(None)));
+        for denial in [
+            RateLimitReachedType::WorkspaceOwnerCreditsDepleted,
+            RateLimitReachedType::WorkspaceMemberCreditsDepleted,
+            RateLimitReachedType::WorkspaceOwnerUsageLimitReached,
+            RateLimitReachedType::WorkspaceMemberUsageLimitReached,
+        ] {
+            assert!(!is_temporary_usage_limit_error(&usage_limit(Some(denial))));
+        }
+        assert!(!is_temporary_usage_limit_error(
+            &CodexErrorDetails::QuotaExceeded
+        ));
+        assert!(!is_temporary_usage_limit_error(
+            &CodexErrorDetails::UsageNotIncluded
+        ));
+    }
+
+    #[test]
+    fn diagnostic_child_detection_is_path_scoped() {
+        let parent_thread_id = ThreadId::from_string("22222222-2222-4222-8222-222222222222")
+            .expect("valid parent thread id");
+        let source = |path| {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(AgentPath::try_from(path).expect("valid agent path")),
+                agent_nickname: None,
+                agent_role: None,
+            })
+        };
+
+        assert!(is_continuity_diagnostic_child(&source(
+            "/root/continuity_probe"
+        )));
+        assert!(is_continuity_diagnostic_child(&source(
+            "/root/reviewer/continuity_probe"
+        )));
+        assert!(!is_continuity_diagnostic_child(&source(
+            "/root/model_worker"
+        )));
+        assert!(!is_continuity_diagnostic_child(&SessionSource::SubAgent(
+            SubAgentSource::Review
+        )));
     }
 }

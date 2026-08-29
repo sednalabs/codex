@@ -34,6 +34,7 @@ use wiremock::ResponseTemplate;
 const ROOT_PROMPT: &str = "continuity observation parent";
 const CHILD_PROMPT: &str = "Run one bounded diagnostic child step";
 const CONTINUITY_OBSERVATION_ENV: &str = "CODEX_EXPERIMENTAL_CONTINUITY_OBSERVATION";
+const CONTINUITY_RETRY_ENV: &str = "CODEX_EXPERIMENTAL_CONTINUITY_RETRY_SAME_TURN";
 const POST_USAGE_LIMIT_SPAWN_ENV: &str = "CODEX_EXPERIMENTAL_CONTINUITY_V2_POST_USAGE_LIMIT_SPAWN";
 
 fn decoded_body(request: &Request) -> Option<Vec<u8>> {
@@ -181,7 +182,11 @@ async fn usage_limit_v2_probe_reaches_child_provider_and_records_outcome() -> Re
     let _child_response = mount_sse_once_match(
         &server,
         |request: &Request| {
-            body_contains(request, CHILD_PROMPT) && request_has_input_type(request, "agent_message")
+            body_contains(request, CHILD_PROMPT)
+                && request_has_input_type(request, "agent_message")
+                && !body_contains(request, "spawn_agent")
+                && !body_contains(request, "apply_patch")
+                && !body_contains(request, "exec_command")
         },
         sse(vec![
             ev_response_created("continuity-child"),
@@ -301,23 +306,38 @@ async fn usage_limit_v2_probe_reaches_child_provider_and_records_outcome() -> Re
                 })
             })
         };
+        let has_direct_context = |stage: &str| {
+            lines.iter().any(|line| {
+                has_fields(&[
+                    ("continuity_stage", stage),
+                    ("continuity_origin", "direct_probe"),
+                ]) && line.contains("continuity_correlation_id=")
+                    && !line.contains("continuity_correlation_id=unknown")
+            })
+        };
         if !has_fields(&[("continuity_stage", "post_usage_limit_spawn_attempt")]) {
             return Err("missing post-limit spawn attempt observation".to_string());
         }
-        if !has_fields(&[("continuity_stage", "spawn_accepted")]) {
+        if !has_direct_context("post_usage_limit_spawn_attempt") {
+            return Err("missing parent spawn correlation context".to_string());
+        }
+        if !has_fields(&[("continuity_stage", "spawn_validation_admitted")]) {
             return Err("missing accepted-spawn observation".to_string());
         }
-        if !has_fields(&[("continuity_stage", "child_created")]) {
+        if !has_direct_context("child_created") {
             return Err("missing child-created observation".to_string());
         }
-        if !has_fields(&[("continuity_stage", "initial_work_published")]) {
+        if !has_direct_context("initial_work_published") {
             return Err("missing initial-work observation".to_string());
         }
         if !has_fields(&[
             ("continuity_actor", "child"),
-            ("continuity_stage", "provider_request_begun"),
+            ("continuity_stage", "provider_transport_attempt"),
         ]) {
             return Err("missing child physical provider-request observation".to_string());
+        }
+        if !has_direct_context("provider_transport_attempt") {
+            return Err("missing child provider correlation context".to_string());
         }
         if !has_fields(&[
             ("continuity_actor", "child"),
@@ -334,5 +354,71 @@ async fn usage_limit_v2_probe_reaches_child_provider_and_records_outcome() -> Re
         Ok(())
     });
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+#[traced_test]
+async fn entitlement_denial_does_not_retry_or_spawn_a_probe() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let _observation = EnvVarGuard::enabled(CONTINUITY_OBSERVATION_ENV);
+    let _retry = EnvVarGuard::enabled(CONTINUITY_RETRY_ENV);
+    let _post_limit_spawn = EnvVarGuard::enabled(POST_USAGE_LIMIT_SPAWN_ENV);
+    let server = start_mock_server().await;
+    let _denial = mount_response_once_match(
+        &server,
+        |request: &Request| body_contains(request, ROOT_PROMPT),
+        ResponseTemplate::new(429)
+            .insert_header("content-type", "application/json")
+            .set_body_json(serde_json::json!({
+                "error": {
+                    "type": "usage_not_included",
+                    "message": "mock entitlement denial"
+                }
+            })),
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("collaboration feature should be enabled");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("Multi-Agent V2 feature should be enabled");
+    });
+    let test = builder.build(&server).await?;
+    test.codex.submit(submit_user_turn(ROOT_PROMPT)).await?;
+
+    let mut saw_error = false;
+    loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::Error(_) => saw_error = true,
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+    assert!(saw_error, "the entitlement denial must be surfaced");
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should expose received requests");
+    let parent_requests = requests
+        .iter()
+        .filter(|request| {
+            request.url.path().ends_with("/responses") && body_contains(request, ROOT_PROMPT)
+        })
+        .count();
+    assert_eq!(parent_requests, 1, "permanent denial must not retry");
+    assert_eq!(
+        test.thread_manager.list_thread_ids().await.len(),
+        1,
+        "permanent denial must not spawn a diagnostic child"
+    );
     Ok(())
 }
