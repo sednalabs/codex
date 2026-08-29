@@ -53,8 +53,8 @@ pub(crate) enum ActiveGoalStopReason {
 struct GoalRuntimeInner {
     thread_id: ThreadId,
     state_dbs: Arc<codex_state::StateRuntime>,
-    /// Installation-owned mutation facade. The generic StateRuntime handle is
-    /// deliberately diagnostics-only and cannot mint a continuation path.
+    /// Private copy of the bootstrap witness's store. This is never obtained
+    /// from `StateRuntime`; the public runtime view remains diagnostics-only.
     goal_owner_admissions: codex_state::GoalOwnerAdmissionStore,
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
@@ -69,8 +69,6 @@ struct GoalRuntimeInner {
 /// callers retain only a wake handle and consult this coordinator for every
 /// authority, epoch, claim, and lifecycle transition.
 struct GoalContinuationCoordinator {
-    enabled: Arc<AtomicBool>,
-    enablement_epoch: Arc<AtomicU64>,
     fence: GoalRuntimeContinuationIssuer,
     state: Mutex<ProviderContinuationState>,
     lifecycle: Semaphore,
@@ -111,7 +109,6 @@ impl Drop for DispatchClaimGuard {
         if !self.armed {
             return;
         }
-        let store = self.store.clone();
         let authority = self.authority.clone();
         let claim_id = self.claim_id;
         let coordinator = self.coordinator.clone();
@@ -186,20 +183,19 @@ impl GoalRuntimeHandle {
     pub(crate) fn new(
         thread_id: ThreadId,
         state_dbs: Arc<codex_state::StateRuntime>,
-        goal_owner_admissions: codex_state::GoalOwnerAdmissionStore,
+        goal_runtime_admission_installation: codex_state::GoalRuntimeAdmissionInstallation,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
         thread_manager: Weak<ThreadManager>,
         accounting_state: Arc<GoalAccountingState>,
         config: GoalRuntimeConfig,
     ) -> Self {
-        let enabled = Arc::new(AtomicBool::new(config.enabled));
-        let enablement_epoch = Arc::new(AtomicU64::new(0));
+        let goal_owner_admissions = goal_runtime_admission_installation.installed_store();
         Self {
             inner: Arc::new(GoalRuntimeInner {
                 thread_id,
                 state_dbs,
-                goal_owner_admissions: goal_owner_admissions.clone(),
+                goal_owner_admissions,
                 analytics: config.analytics,
                 event_emitter,
                 metrics,
@@ -207,12 +203,9 @@ impl GoalRuntimeHandle {
                 accounting_state,
                 tools_available_for_thread: config.tools_available_for_thread,
                 continuation: GoalContinuationCoordinator {
-                    enabled: Arc::clone(&enabled),
-                    enablement_epoch: Arc::clone(&enablement_epoch),
-                    fence: GoalRuntimeContinuationIssuer::from_installed_store(
-                        goal_owner_admissions,
-                        enabled,
-                        enablement_epoch,
+                    fence: GoalRuntimeContinuationIssuer::from_installation(
+                        goal_runtime_admission_installation,
+                        config.enabled,
                     ),
                     state: Mutex::new(ProviderContinuationState::default()),
                     lifecycle: Semaphore::new(/*permits*/ 1),
@@ -222,20 +215,9 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) fn set_enabled(&self, enabled: bool) {
-        let was_enabled = self
-            .inner
-            .continuation
-            .enabled
-            .swap(enabled, Ordering::Relaxed);
-        if was_enabled == enabled {
+        let Some(enablement_epoch) = self.inner.continuation.fence.set_enabled(enabled) else {
             return;
-        }
-        let enablement_epoch = self
-            .inner
-            .continuation
-            .enablement_epoch
-            .fetch_add(1, Ordering::Relaxed)
-            + 1;
+        };
         let fence = self.inner.continuation.fence.clone();
         let cooperative_quiescence = match tokio::runtime::Handle::try_current() {
             Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
@@ -274,13 +256,8 @@ impl GoalRuntimeHandle {
                 let runtime = GoalRuntimeHandle {
                     inner: Arc::clone(&inner),
                 };
-                if runtime
-                    .inner
-                    .continuation
-                    .enablement_epoch
-                    .load(Ordering::Relaxed)
-                    != enablement_epoch
-                    || !runtime.inner.continuation.enabled.load(Ordering::Relaxed)
+                if runtime.inner.continuation.fence.enablement_epoch() != enablement_epoch
+                    || !runtime.inner.continuation.fence.is_enabled()
                 {
                     return;
                 }
@@ -289,13 +266,8 @@ impl GoalRuntimeHandle {
                         tracing::warn!("failed to acquire goal-state permit while re-enabling");
                         return;
                     };
-                    if runtime
-                        .inner
-                        .continuation
-                        .enablement_epoch
-                        .load(Ordering::Relaxed)
-                        != enablement_epoch
-                        || !runtime.inner.continuation.enabled.load(Ordering::Relaxed)
+                    if runtime.inner.continuation.fence.enablement_epoch() != enablement_epoch
+                        || !runtime.inner.continuation.fence.is_enabled()
                     {
                         return;
                     }
@@ -308,13 +280,8 @@ impl GoalRuntimeHandle {
                         return;
                     }
                 }
-                if runtime
-                    .inner
-                    .continuation
-                    .enablement_epoch
-                    .load(Ordering::Relaxed)
-                    == enablement_epoch
-                    && runtime.inner.continuation.enabled.load(Ordering::Relaxed)
+                if runtime.inner.continuation.fence.enablement_epoch() == enablement_epoch
+                    && runtime.inner.continuation.fence.is_enabled()
                 {
                     let mut state = runtime
                         .inner
@@ -356,9 +323,8 @@ impl GoalRuntimeHandle {
                     let Some(inner) = inner.upgrade() else {
                         return;
                     };
-                    if inner.continuation.enablement_epoch.load(Ordering::Relaxed)
-                        != enablement_epoch
-                        || inner.continuation.enabled.load(Ordering::Relaxed)
+                    if inner.continuation.fence.enablement_epoch() != enablement_epoch
+                        || inner.continuation.fence.is_enabled()
                     {
                         return;
                     }
@@ -366,9 +332,8 @@ impl GoalRuntimeHandle {
                     let Ok(_goal_state_permit) = runtime.goal_state_permit().await else {
                         return;
                     };
-                    if inner.continuation.enablement_epoch.load(Ordering::Relaxed)
-                        != enablement_epoch
-                        || inner.continuation.enabled.load(Ordering::Relaxed)
+                    if inner.continuation.fence.enablement_epoch() != enablement_epoch
+                        || inner.continuation.fence.is_enabled()
                     {
                         return;
                     }
@@ -387,7 +352,7 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
-        self.inner.continuation.enabled.load(Ordering::Relaxed)
+        self.inner.continuation.fence.is_enabled()
     }
 
     pub(crate) fn tools_visible(&self) -> bool {
@@ -1383,7 +1348,7 @@ impl GoalRuntimeHandle {
             .inner
             .continuation
             .fence
-            .claim_dispatch(&continuation_authority, enablement_epoch, Utc::now())
+            .claim_dispatch(&continuation_authority, Utc::now())
             .await
             .map_err(|err| err.to_string())?
         else {
@@ -1576,13 +1541,8 @@ impl GoalRuntimeHandle {
         enablement_epoch: u64,
     ) -> bool {
         !cancellation.is_cancelled()
-            && self.inner.continuation.enabled.load(Ordering::Relaxed)
-            && self
-                .inner
-                .continuation
-                .enablement_epoch
-                .load(Ordering::Relaxed)
-                == enablement_epoch
+            && self.inner.continuation.fence.is_enabled()
+            && self.inner.continuation.fence.enablement_epoch() == enablement_epoch
             && self
                 .inner
                 .continuation
@@ -1955,12 +1915,11 @@ mod tests {
                 "test-provider".to_string(),
             ))
             .expect("initialize state runtime");
-        let issuer = GoalRuntimeContinuationIssuer::from_installed_store(
+        let issuer = GoalRuntimeContinuationIssuer::from_installation(
             runtime
-                .take_goal_runtime_admissions()
+                .install_goal_runtime_admissions()
                 .expect("installed runtime supplies its continuation issuer"),
-            Arc::new(AtomicBool::new(true)),
-            Arc::new(AtomicU64::new(0)),
+            true,
         );
         DeferredProviderContinuation {
             turn_id: "turn".to_string(),

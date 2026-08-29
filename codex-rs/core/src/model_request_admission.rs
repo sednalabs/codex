@@ -152,17 +152,33 @@ pub struct GoalRuntimeContinuationIssuer {
 impl GoalRuntimeContinuationIssuer {
     /// Construct the continuation issuer from the installation-owned store.
     /// A generic StateRuntime store is diagnostics-only and fails closed.
-    pub fn from_installed_store(
-        store: GoalOwnerAdmissionStore,
-        enabled: Arc<AtomicBool>,
-        enablement_epoch: Arc<AtomicU64>,
+    pub fn from_installation(
+        installation: codex_state::GoalRuntimeAdmissionInstallation,
+        enabled: bool,
     ) -> Self {
         Self {
             fence: Arc::new(GoalContinuationFence::new()),
             identity: GoalOwnerDispatchFenceCapability::fresh(),
-            store: Some(store),
-            enabled,
-            enablement_epoch,
+            store: Some(installation.installed_store()),
+            enabled: Arc::new(AtomicBool::new(enabled)),
+            enablement_epoch: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(AtomicOrdering::Acquire)
+    }
+
+    pub fn enablement_epoch(&self) -> u64 {
+        self.enablement_epoch.load(AtomicOrdering::Acquire)
+    }
+
+    pub fn set_enabled(&self, enabled: bool) -> Option<u64> {
+        let was_enabled = self.enabled.swap(enabled, AtomicOrdering::AcqRel);
+        if was_enabled == enabled {
+            None
+        } else {
+            Some(self.enablement_epoch.fetch_add(1, AtomicOrdering::AcqRel) + 1)
         }
     }
 
@@ -171,12 +187,9 @@ impl GoalRuntimeContinuationIssuer {
     pub async fn claim_dispatch(
         &self,
         authority: &GoalOwnerAdmissionContinuationAuthority,
-        installation_epoch: u64,
         now: DateTime<Utc>,
     ) -> anyhow::Result<Option<Uuid>> {
-        if !self.enabled.load(AtomicOrdering::Acquire)
-            || self.enablement_epoch.load(AtomicOrdering::Acquire) != installation_epoch
-        {
+        if !self.is_enabled() {
             anyhow::bail!("goal continuation issuer is disabled or stale")
         }
         let Some(store) = self.store.as_ref() else {
