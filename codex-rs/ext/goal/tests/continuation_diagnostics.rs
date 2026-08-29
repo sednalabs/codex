@@ -5,6 +5,7 @@ use codex_analytics::AnalyticsEventsClient;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ThreadStartInput;
+use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalService;
@@ -20,10 +21,26 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage;
 use codex_utils_absolute_path::test_support::PathExt;
+use serial_test::serial;
+use std::ffi::OsString;
 use tempfile::TempDir;
 
 #[tokio::test]
-async fn record_only_error_observation_keeps_goal_active() -> anyhow::Result<()> {
+#[serial]
+async fn usage_limit_preservation_is_opt_in() -> anyhow::Result<()> {
+    let ordinary_status = exercise_usage_limit(/*preserve*/ false).await?;
+    assert_eq!(ThreadGoalStatus::UsageLimited, ordinary_status);
+
+    let persisted_status = exercise_usage_limit(/*preserve*/ true).await?;
+    assert_eq!(ThreadGoalStatus::Active, persisted_status);
+    Ok(())
+}
+
+async fn exercise_usage_limit(preserve: bool) -> anyhow::Result<ThreadGoalStatus> {
+    let _flag = EnvVarGuard::set(
+        "CODEX_EXPERIMENTAL_CONTINUITY_PRESERVE_AFTER_USAGE_LIMIT",
+        preserve,
+    );
     let tempdir = TempDir::new()?;
     let runtime = codex_state::StateRuntime::init(
         codex_state::SqliteConfig::new_for_testing(tempdir.keep().as_path().abs()),
@@ -108,14 +125,51 @@ async fn record_only_error_observation_keeps_goal_active() -> anyhow::Result<()>
             .await;
     }
 
-    let observed_error = CodexErrorInfo::UsageLimitExceeded;
-    assert!(matches!(observed_error, CodexErrorInfo::UsageLimitExceeded));
+    for contributor in registry.turn_lifecycle_contributors() {
+        contributor
+            .on_turn_error(TurnErrorInput {
+                turn_id: "turn-1",
+                error: CodexErrorInfo::UsageLimitExceeded,
+                session_store: &session_store,
+                thread_store: &thread_store,
+                turn_store: &turn_store,
+            })
+            .await;
+    }
 
     let goal = goal_service
         .get_thread_goal(runtime.as_ref(), thread_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
-    assert_eq!(ThreadGoalStatus::Active, goal.status);
+    Ok(goal.status)
+}
 
-    Ok(())
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, enabled: bool) -> Self {
+        let original = std::env::var_os(key);
+        unsafe {
+            if enabled {
+                std::env::set_var(key, "1");
+            } else {
+                std::env::remove_var(key);
+            }
+        }
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 }
