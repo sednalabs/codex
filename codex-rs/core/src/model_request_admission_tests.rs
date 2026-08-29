@@ -358,6 +358,118 @@ async fn cancellation_before_request_open_fence_causes_zero_physical_calls() {
 }
 
 #[tokio::test]
+async fn revocation_after_admission_releases_the_unopened_lease_without_provider_io() {
+    let (_home, test_runtime) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
+    let store = &test_runtime.admissions;
+    let thread_id = ThreadId::new();
+    let record = store
+        .observe_denial(&observation(
+            thread_id,
+            "revoke-after-admit",
+            GoalOwnerAdmissionPhase::Pending,
+            Utc::now() - Duration::seconds(1),
+            InferenceRequestKind::Turn,
+        ))
+        .await
+        .expect("record eligible admission");
+    let coordinator = issuer(Arc::clone(store), thread_id);
+    let claim_id = coordinator
+        .claim_dispatch(&record.continuation_authority(), Utc::now())
+        .await
+        .expect("claim exact admission")
+        .expect("eligible admission claim");
+    let continuation =
+        coordinator.continuation_with_dispatch_claim(record.continuation_authority(), claim_id);
+    let decision = broker
+        .admit(
+            &identity(thread_id, InferenceRequestKind::Turn),
+            Some(&continuation),
+        )
+        .await
+        .expect("admit exact continuation");
+
+    coordinator.revoke();
+    let calls = AtomicUsize::new(0);
+    assert!(decision.begin_network_request().await.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let released = store
+        .get(thread_id)
+        .await
+        .expect("read released admission")
+        .expect("admission remains pending for its owner");
+    assert_eq!(released.phase, GoalOwnerAdmissionPhase::Pending);
+    assert_eq!(released.attempts_started, 0);
+    assert_eq!(released.lease_id, None);
+    assert_eq!(
+        released.terminal_outcome,
+        codex_state::GoalOwnerAdmissionTerminalOutcome::None
+    );
+    assert_eq!(
+        released.deferred_terminal_disposition,
+        codex_state::GoalOwnerAdmissionTerminalDisposition::None
+    );
+}
+
+#[tokio::test]
+async fn revocation_after_request_open_is_definitely_cancelled_before_provider_io() {
+    let (_home, test_runtime) = runtime().await;
+    let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
+    let store = &test_runtime.admissions;
+    let thread_id = ThreadId::new();
+    let record = store
+        .observe_denial(&observation(
+            thread_id,
+            "revoke-after-open",
+            GoalOwnerAdmissionPhase::Pending,
+            Utc::now() - Duration::seconds(1),
+            InferenceRequestKind::Turn,
+        ))
+        .await
+        .expect("record eligible admission");
+    let coordinator = issuer(Arc::clone(store), thread_id);
+    let claim_id = coordinator
+        .claim_dispatch(&record.continuation_authority(), Utc::now())
+        .await
+        .expect("claim exact admission")
+        .expect("eligible admission claim");
+    let continuation =
+        coordinator.continuation_with_dispatch_claim(record.continuation_authority(), claim_id);
+    let decision = broker
+        .admit(
+            &identity(thread_id, InferenceRequestKind::Turn),
+            Some(&continuation),
+        )
+        .await
+        .expect("admit exact continuation");
+    let mut lease = decision
+        .begin_network_request()
+        .await
+        .expect("open the durable request fence only");
+
+    coordinator.revoke();
+    let calls = AtomicUsize::new(0);
+    assert!(lease.ensure_request_open_allowed().await.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let cancelled = store
+        .get(thread_id)
+        .await
+        .expect("read cancelled admission")
+        .expect("terminal admission is retained");
+    assert_eq!(cancelled.phase, GoalOwnerAdmissionPhase::Terminal);
+    assert_eq!(
+        cancelled.terminal_outcome,
+        codex_state::GoalOwnerAdmissionTerminalOutcome::Cancelled
+    );
+    assert_eq!(
+        cancelled.deferred_terminal_disposition,
+        codex_state::GoalOwnerAdmissionTerminalDisposition::None
+    );
+}
+
+#[tokio::test]
 async fn terminal_success_is_unrestricted_before_identity_matching() {
     let (_home, test_runtime) = runtime().await;
     let broker = ModelRequestAdmissionBroker::new(Some(test_runtime.state_db.clone()));
@@ -505,12 +617,16 @@ async fn disabled_or_stale_installed_issuer_cannot_publish_a_provider_request() 
         ))
         .await
         .expect("record eligible admission");
-    let issuer = issuer(
+    let primary_issuer = issuer(
         Arc::clone(&test_runtime.admissions),
         record.authority.thread_id,
     );
-    let stale_continuation = issuer.continuation(record.continuation_authority());
-    assert_eq!(issuer.set_enabled(false), Some(1));
+    let retained_before_stop = issuer(
+        Arc::clone(&test_runtime.admissions),
+        record.authority.thread_id,
+    );
+    let stale_continuation = primary_issuer.continuation(record.continuation_authority());
+    assert_eq!(primary_issuer.set_enabled(false), Some(1));
     let retained_issuer = issuer(
         Arc::clone(&test_runtime.admissions),
         record.authority.thread_id,
@@ -520,7 +636,7 @@ async fn disabled_or_stale_installed_issuer_cannot_publish_a_provider_request() 
         "a retained installed facade must share the disabled thread owner"
     );
     assert!(
-        issuer
+        primary_issuer
             .claim_dispatch(&record.continuation_authority(), Utc::now())
             .await
             .is_err()
@@ -532,7 +648,30 @@ async fn disabled_or_stale_installed_issuer_cannot_publish_a_provider_request() 
             .is_err(),
         "a foreign issuer derived after disable cannot bypass the shared owner epoch"
     );
-    assert_eq!(issuer.set_enabled(true), Some(2));
+    assert_eq!(primary_issuer.set_enabled(true), Some(2));
+    assert!(
+        !retained_before_stop.is_enabled(),
+        "an issuer retained before stop cannot regain authority after re-enable"
+    );
+    assert!(
+        retained_before_stop
+            .claim_dispatch(&record.continuation_authority(), Utc::now())
+            .await
+            .is_err(),
+        "a retained issuer cannot claim work after its enablement generation is retired"
+    );
+    let retained_continuation = retained_before_stop.continuation(record.continuation_authority());
+    let retained_decision = broker
+        .admit(
+            &identity(record.authority.thread_id, InferenceRequestKind::Turn),
+            Some(&retained_continuation),
+        )
+        .await
+        .expect("stale retained issuer is rejected before admission");
+    assert!(matches!(
+        retained_decision,
+        ModelRequestAdmissionDecision::Dormant
+    ));
 
     let decision = broker
         .admit(
