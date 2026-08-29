@@ -135,6 +135,19 @@ impl GoalRuntimeHandle {
         self.inner.root_accounting_state.clone()
     }
 
+    pub(crate) async fn invalidate_turn_lineage(&self) {
+        let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
+            return;
+        };
+        let Ok(thread) = thread_manager.get_thread(self.inner.thread_id).await else {
+            return;
+        };
+        thread.thread_extension_data().remove::<TurnStartOptions>();
+        if let Some(turn_id) = self.inner.accounting_state.current_turn_id() {
+            thread.invalidate_turn_lineage(turn_id.as_str()).await;
+        }
+    }
+
     pub(crate) async fn goal_state_permit(&self) -> Result<SemaphorePermit<'_>, String> {
         self.inner
             .goal_state_lock
@@ -430,13 +443,18 @@ impl GoalRuntimeHandle {
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         }
+        let start_options = thread
+            .thread_extension_data()
+            .get::<TurnStartOptions>()
+            .map(|options| options.as_ref().clone())
+            .unwrap_or_default();
         let item = continuation_steering_item(&protocol_goal_from_state(goal));
 
         match thread
             .start_turn_if_idle(
                 TurnInputRequest::new(TurnInput::ResponseItem(item)).on_start(TurnStartOptions {
                     turn_trigger: Some("goal".to_string()),
-                    ..Default::default()
+                    ..start_options
                 }),
             )
             .await

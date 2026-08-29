@@ -2986,6 +2986,214 @@ async fn thread_goal_set_edits_objective_without_resetting_usage() -> Result<()>
 }
 
 #[tokio::test]
+async fn thread_goal_keeps_original_root_until_external_objective_edit() -> Result<()> {
+    let (release_original_turn, original_turn_gate) = oneshot::channel();
+    let (release_edited_turn, edited_turn_gate) = oneshot::channel();
+    let (server, _response_completions) = start_streaming_sse_server(vec![
+        ungated_goal_response(responses::sse(vec![
+            responses::ev_response_created("create-original-goal"),
+            responses::ev_function_call(
+                "create-original-goal-call",
+                "create_goal",
+                r#"{"objective":"keep its original owner","token_budget":100}"#,
+            ),
+            responses::ev_completed_with_tokens("create-original-goal", /*total_tokens*/ 5),
+        ])),
+        vec![StreamingSseChunk {
+            gate: Some(original_turn_gate),
+            body: responses::sse_completed("finish-original-user-turn"),
+        }],
+        ungated_goal_response(responses::sse_completed("reopen-original-user-turn")),
+        ungated_goal_response(responses::sse_completed("finish-intervening-user-turn")),
+        ungated_goal_response(responses::sse(vec![
+            responses::ev_response_created("goal-continuation-after-intervening-turn"),
+            responses::ev_completed_with_tokens(
+                "goal-continuation-after-intervening-turn",
+                /*total_tokens*/ 40,
+            ),
+        ])),
+        vec![StreamingSseChunk {
+            gate: Some(edited_turn_gate),
+            body: responses::sse_completed("second-goal-continuation"),
+        }],
+        ungated_goal_response(responses::sse_completed("reopened-goal-turn")),
+        ungated_goal_response(responses::sse(vec![
+            responses::ev_response_created("rootless-goal-continuation"),
+            responses::ev_completed_with_tokens(
+                "rootless-goal-continuation",
+                /*total_tokens*/ 100,
+            ),
+        ])),
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    mock_responses_config(server.uri())
+        .enable_feature(Feature::Goals)
+        .write(codex_home.path())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_managed_config()
+        .build_initialized()
+        .await?;
+    let thread = mcp.start_thread(ThreadStartParams::default()).await?.thread;
+
+    let start_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![UserInput::Text {
+                text: "create the original goal".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let original_turn: TurnStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(start_id)).await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        server.wait_for_request_count(/*count*/ 2),
+    )
+    .await?;
+
+    let injection_id = mcp
+        .send_raw_request(
+            "thread/inject_items",
+            Some(json!({
+                "threadId": thread.id,
+                "items": [{
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{
+                        "type": "input_text",
+                        "text": "externally injected context",
+                    }],
+                }],
+            })),
+        )
+        .await?;
+    let _: serde_json::Value =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(injection_id)).await??;
+
+    let queue_id = mcp
+        .send_raw_request(
+            "thread/queue/add",
+            Some(json!({
+                "threadId": thread.id,
+                "input": [{
+                    "type": "text",
+                    "text": "an intervening user message",
+                    "textElements": [],
+                }],
+                "clientUserMessageId": "intervening-goal-message",
+            })),
+        )
+        .await?;
+    let _: serde_json::Value = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(queue_id)).await??;
+    release_original_turn
+        .send(())
+        .expect("original turn should remain open until the user message is queued");
+
+    for _ in 0..3 {
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_notification_message("turn/completed"),
+        )
+        .await??;
+    }
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        server.wait_for_request_count(/*count*/ 6),
+    )
+    .await?;
+
+    let edit_id = mcp
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({
+                "threadId": thread.id,
+                "objective": "externally updated goal",
+                "status": "active",
+            })),
+        )
+        .await?;
+    let edited_goal: ThreadGoalSetResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(edit_id)).await??;
+    assert_eq!(edited_goal.goal.objective, "externally updated goal");
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/goal/updated"),
+    )
+    .await??;
+
+    let get_id = mcp
+        .send_raw_request("thread/goal/get", Some(json!({ "threadId": thread.id })))
+        .await?;
+    let _: codex_app_server_protocol::ThreadGoalGetResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(get_id)).await??;
+    release_edited_turn
+        .send(())
+        .expect("goal turn should remain open until its external edit");
+
+    for _ in 0..2 {
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_notification_message("turn/completed"),
+        )
+        .await??;
+    }
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 8);
+    let reopened_original_request = serde_json::from_slice::<serde_json::Value>(&requests[2])?;
+    assert_eq!(
+        reopened_original_request["client_metadata"]["turn_id"].as_str(),
+        Some(original_turn.turn.id.as_str())
+    );
+    responses::assert_root_turn(&reopened_original_request, /*expected*/ None)?;
+    let intervening_request = serde_json::from_slice::<serde_json::Value>(&requests[3])?;
+    let intervening_turn_id = intervening_request["client_metadata"]["turn_id"]
+        .as_str()
+        .expect("intervening user turn ID");
+    responses::assert_root_turn(&intervening_request, Some(intervening_turn_id))?;
+    let first_continuation = serde_json::from_slice::<serde_json::Value>(&requests[4])?;
+    let first_continuation_turn_id = first_continuation["client_metadata"]["turn_id"]
+        .as_str()
+        .expect("first continuation turn ID");
+    let second_continuation = serde_json::from_slice::<serde_json::Value>(&requests[5])?;
+    for (request, parent_turn_id) in [
+        (&first_continuation, intervening_turn_id),
+        (&second_continuation, first_continuation_turn_id),
+    ] {
+        responses::assert_root_turn(request, Some(original_turn.turn.id.as_str()))?;
+        responses::assert_parent_turn(request, Some(parent_turn_id))?;
+    }
+    let edited_turn_id = second_continuation["client_metadata"]["turn_id"]
+        .as_str()
+        .expect("second continuation turn ID");
+
+    let reopened_request = serde_json::from_slice::<serde_json::Value>(&requests[6])?;
+    assert_eq!(
+        reopened_request["client_metadata"]["turn_id"].as_str(),
+        Some(edited_turn_id)
+    );
+    responses::assert_root_turn(&reopened_request, /*expected*/ None)?;
+    let continuation_request = serde_json::from_slice::<serde_json::Value>(&requests[7])?;
+    assert_ne!(
+        continuation_request["client_metadata"]["turn_id"].as_str(),
+        Some(edited_turn_id)
+    );
+    responses::assert_root_turn(&continuation_request, /*expected*/ None)?;
+    responses::assert_parent_turn(&continuation_request, /*expected*/ None)?;
+
+    server.shutdown().await;
+    Ok(())
+}
+
+fn ungated_goal_response(body: String) -> Vec<StreamingSseChunk> {
+    vec![StreamingSseChunk { gate: None, body }]
+}
+
+#[tokio::test]
 async fn thread_goal_lifecycle_emits_analytics_and_clear_deletes_goal() -> Result<()> {
     let server = create_mock_responses_server_sequence_unchecked(vec![
         responses::sse(vec![
@@ -3130,6 +3338,20 @@ async fn thread_goal_lifecycle_emits_analytics_and_clear_deletes_goal() -> Resul
         status["event_params"]["cumulative_time_accounted_seconds"],
         serde_json::Value::Null
     );
+
+    let requests = server.received_requests().await.expect("wiremock requests");
+    let goal_request = requests
+        .iter()
+        .filter(|request| request.url.path().ends_with("/responses"))
+        .nth(1)
+        .expect("externally created goal continuation request");
+    let goal_request_body = goal_request.body_json::<serde_json::Value>()?;
+    assert_eq!(
+        goal_request_body["client_metadata"]["turn_id"],
+        causal_turn_id
+    );
+    responses::assert_root_turn(&goal_request_body, /*expected*/ None)?;
+    responses::assert_parent_turn(&goal_request_body, /*expected*/ None)?;
 
     let clear_id = mcp
         .send_raw_request(
