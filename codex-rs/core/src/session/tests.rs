@@ -5818,6 +5818,101 @@ async fn session_configuration_apply_preserves_absolute_cwd_write_root_on_cwd_up
 }
 
 #[tokio::test]
+async fn compaction_checkpoint_waits_for_accepted_settings_persistence() {
+    let (mut session, _turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config
+                .permissions
+                .set_permission_profile(PermissionProfile::workspace_write())
+                .expect("set initial permission profile");
+        },
+    )
+    .await;
+    let rollout_path =
+        attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
+    let refresh_guard = session
+        .managed_network_proxy_refresh_lock
+        .acquire()
+        .await
+        .expect("network refresh lock");
+    let mut update = Box::pin(tokio::task::unconstrained(thread_settings::apply_update(
+        &session,
+        "settings".to_string(),
+        SessionSettingsUpdate {
+            step_settings: StepSettingsUpdate {
+                service_tier: Some(Some(ServiceTier::Fast.request_value().to_string())),
+                ..Default::default()
+            },
+            permission_profile: Some(PermissionProfile::read_only()),
+            ..Default::default()
+        },
+    )));
+    // Pause after committing settings but before their accepted snapshot is persisted.
+    assert!(futures::poll!(update.as_mut()).is_pending());
+    let committed = session.thread_settings_snapshot().await;
+    let history_before = session.clone_history().await;
+    let (window_number, window_ids) = session.advance_auto_compact_window().await;
+    let mut checkpoint = Box::pin(tokio::task::unconstrained(
+        session.replace_compacted_history(
+            vec![ResponseItemEnvelope::new(user_message("compacted history"))],
+            /*reference_context_item*/ None,
+            /*world_state_baseline*/ None,
+            CompactedHistoryMetadata {
+                message: "summary".to_string(),
+                window_number,
+                window_ids,
+            },
+        ),
+    ));
+    assert!(futures::poll!(checkpoint.as_mut()).is_pending());
+    assert_eq!(
+        session.clone_history().await.annotated_items(),
+        history_before.annotated_items()
+    );
+
+    // Direct runtime restoration may overlap postcommit work. The checkpoint must wait
+    // for the accepted event, then capture current settings rather than its older commit.
+    let restored = session
+        .update_settings(SessionSettingsUpdate {
+            step_settings: StepSettingsUpdate {
+                service_tier: Some(None),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await
+        .expect("restore current settings")
+        .snapshot;
+    assert_ne!(committed, restored);
+    drop(refresh_guard);
+    update.await.expect("accepted settings update");
+    checkpoint.await;
+
+    session.flush_rollout().await.expect("flush checkpoint");
+    let (items, _, _) = RolloutRecorder::load_rollout_items(&rollout_path)
+        .await
+        .expect("read persisted settings");
+    let snapshots = items
+        .into_iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                Some((event.thread_id, event.thread_settings))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        snapshots,
+        vec![
+            (Some(session.thread_id), committed),
+            (Some(session.thread_id), restored),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn session_settings_commit_keeps_snapshot_across_postcommit_wait() {
     let (session, _turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
@@ -6430,6 +6525,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         tx_event,
         agent_status: agent_status_tx,
         state: Mutex::new(state),
+        thread_settings_persistence: Semaphore::new(/*permits*/ 1),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         windows_sandbox_proxy_settings_mode:
@@ -8709,6 +8805,7 @@ where
         tx_event,
         agent_status: agent_status_tx,
         state: Mutex::new(state),
+        thread_settings_persistence: Semaphore::new(/*permits*/ 1),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         windows_sandbox_proxy_settings_mode:

@@ -3634,6 +3634,9 @@ impl Session {
                 .map(|id| id.to_string()),
             window_id: Some(metadata.window_ids.window_id.to_string()),
         };
+        // Wait for accepted updates to finish persisting, then keep later updates from
+        // overtaking the current settings snapshot while its checkpoint is written.
+        let _settings_guard = thread_settings::acquire_persistence_lock(self).await;
         // Compaction starts a new history window, so its WorldState baseline must be full.
         let mut world_state_item = None;
         {
@@ -3646,17 +3649,19 @@ impl Session {
             }
         }
 
-        self.persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
-            .await;
+        let mut rollout_items = vec![RolloutItem::Compacted(compacted_item)];
         // Persist the baseline after the replacement history that established it.
         if let Some(world_state_item) = world_state_item {
-            self.persist_rollout_items(&[RolloutItem::WorldState(world_state_item)])
-                .await;
+            rollout_items.push(RolloutItem::WorldState(world_state_item));
         }
         if let Some(turn_context_item) = reference_context_item {
-            self.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item)])
-                .await;
+            rollout_items.push(RolloutItem::TurnContext(turn_context_item));
         }
+        // The frozen turn context must not override current settings in persisted metadata.
+        rollout_items.push(RolloutItem::EventMsg(
+            thread_settings::applied_event(self).await,
+        ));
+        self.persist_rollout_items(&rollout_items).await;
         {
             let mut state = self.state.lock().await;
             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);

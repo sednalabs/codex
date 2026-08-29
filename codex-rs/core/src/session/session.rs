@@ -44,6 +44,9 @@ pub(crate) struct Session {
     pub(super) tx_event: Sender<Event>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
     pub(super) state: Mutex<SessionState>,
+    /// Orders accepted settings commits and their persisted events with compaction checkpoints.
+    /// Keep this separate from `state` so storage I/O does not block runtime state access.
+    pub(super) thread_settings_persistence: Semaphore,
     /// Serializes rebuild/apply cycles for the running proxy; each cycle
     /// rebuilds from the current SessionState while holding this lock.
     pub(super) managed_network_proxy_refresh_lock: Semaphore,
@@ -1469,6 +1472,7 @@ impl Session {
                 tx_event: tx_event.clone(),
                 agent_status,
                 state: Mutex::new(state),
+                thread_settings_persistence: Semaphore::new(/*permits*/ 1),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
                 windows_sandbox_proxy_settings_mode,

@@ -90,6 +90,7 @@ use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentMessageEvent;
@@ -102,6 +103,7 @@ use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource as RolloutSessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
@@ -112,6 +114,7 @@ use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::TextElement;
 use codex_rollout::CompactedItem;
 use codex_rollout::RolloutItem;
+use codex_rollout::RolloutRecorder;
 use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::read_session_meta_line;
 use codex_state::StateRuntime;
@@ -159,6 +162,7 @@ const CODEX_5_2_INSTRUCTIONS_TEMPLATE_DEFAULT: &str = "You are Codex, a coding a
 async fn thread_resume_paginated_model_context_preserves_original_metadata() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
+    let saved_cwd = normalized_existing_path(codex_home.path())?;
     mock_responses_config(&server.uri()).write(codex_home.path())?;
     let conversation_id = create_fake_paginated_rollout(
         codex_home.path(),
@@ -169,6 +173,24 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
         /*git_info*/ None,
     )?;
     let path = rollout_path(codex_home.path(), "2025-01-05T12-00-00", &conversation_id);
+    let startup_cwd = read_session_meta_line(&path).await?.meta.cwd;
+    let settings: ThreadSettingsAppliedEvent = serde_json::from_value(json!({
+        "thread_id": conversation_id,
+        "thread_settings": {
+            "model": "gpt-5.4",
+            "model_provider_id": "mock_provider",
+            "cwd": saved_cwd,
+            "approval_policy": "never",
+            "approvals_reviewer": "user",
+            "permission_profile": PermissionProfile::read_only(),
+            "collaboration_mode": { "mode": "default", "settings": { "model": "gpt-5.4" } },
+        },
+    }))?;
+    append_rollout_item_to_path(
+        &path,
+        &RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(settings)),
+    )
+    .await?;
     append_rollout_item_to_path(
         &path,
         &RolloutItem::Compacted(CompactedItem {
@@ -197,8 +219,11 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
         })
         .await?;
     let ThreadResumeResponse {
-        thread: resumed, ..
+        thread: resumed,
+        cwd,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, primary.read_response(resume_id)).await??;
+    assert_eq!(cwd.as_path(), saved_cwd);
     assert_eq!(resumed.id, conversation_id);
     assert_eq!(resumed.history_mode, ThreadHistoryMode::Paginated);
     assert_eq!(resumed.preview, "Saved user message");
@@ -232,8 +257,13 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
         })
         .await?;
     let ThreadResumeResponse {
-        thread: resumed, ..
+        thread: resumed,
+        cwd,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, secondary.read_response(resume_id)).await??;
+    // The completed turn now permits a bounded replay ending at the compaction,
+    // so the earlier settings snapshot is outside the normal resume window.
+    assert_eq!(cwd.as_path(), startup_cwd);
     assert_eq!(resumed.preview, "Saved user message");
     assert!(resumed.turns.is_empty());
 
@@ -883,6 +913,7 @@ async fn thread_resume_preserves_goal_first_and_fork_approvals_reviewer() -> Res
             .send_thread_start_request_with_auto_env(ThreadStartParams {
                 model: Some("gpt-5.2-codex".to_string()),
                 approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+                history_mode: Some(ThreadHistoryMode::Legacy),
                 ..Default::default()
             })
             .await?;
@@ -934,6 +965,24 @@ async fn thread_resume_preserves_goal_first_and_fork_approvals_reviewer() -> Res
             ..
         } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(fork_id)).await??;
         assert_eq!(approvals_reviewer, ApprovalsReviewer::User);
+        timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+        let (items, _, _) =
+            RolloutRecorder::load_rollout_items(fork_thread.path.as_ref().expect("fork rollout"))
+                .await?;
+        assert_eq!(
+            items
+                .into_iter()
+                .filter_map(|item| match item {
+                    RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) =>
+                        event.thread_id,
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ThreadId::from_string(&thread.id)?,
+                ThreadId::from_string(&fork_thread.id)?,
+            ]
+        );
 
         (thread.id, fork_thread.id)
     };
@@ -991,7 +1040,7 @@ async fn thread_resume_preserves_acknowledged_model_effort_and_approvals_reviewe
         ),
     )?;
 
-    let thread_id = {
+    let (thread_id, rollout_path) = {
         let mut mcp = TestAppServer::builder()
             .with_codex_home(codex_home.path())
             .build_initialized()
@@ -1000,6 +1049,7 @@ async fn thread_resume_preserves_acknowledged_model_effort_and_approvals_reviewe
         let start_id = mcp
             .send_thread_start_request_with_auto_env(ThreadStartParams {
                 model: Some("gpt-5.4".to_string()),
+                history_mode: Some(ThreadHistoryMode::Legacy),
                 ..Default::default()
             })
             .await?;
@@ -1027,6 +1077,15 @@ async fn thread_resume_preserves_acknowledged_model_effort_and_approvals_reviewe
             mcp.read_stream_until_notification_message("turn/completed"),
         )
         .await??;
+
+        let fork_id = mcp
+            .send_thread_fork_request(ThreadForkParams {
+                thread_id: thread.id.clone(),
+                ..Default::default()
+            })
+            .await?;
+        let ThreadForkResponse { thread, .. } =
+            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(fork_id)).await??;
 
         let update_id = mcp
             .send_thread_settings_update_request(ThreadSettingsUpdateParams {
@@ -1071,7 +1130,7 @@ async fn thread_resume_preserves_acknowledged_model_effort_and_approvals_reviewe
             Some(&read.cwd)
         );
 
-        thread.id
+        (thread.id, read.path.expect("materialized rollout path"))
     };
 
     let mut mcp = TestAppServer::builder()
@@ -1103,6 +1162,7 @@ async fn thread_resume_preserves_acknowledged_model_effort_and_approvals_reviewe
     let update_id = mcp
         .send_thread_settings_update_request(ThreadSettingsUpdateParams {
             thread_id: thread_id.clone(),
+            cwd: Some(persisted_cwd.clone()),
             collaboration_mode: Some(CollaborationMode {
                 mode: ModeKind::Default,
                 settings: Settings {
@@ -1121,7 +1181,15 @@ async fn thread_resume_preserves_acknowledged_model_effort_and_approvals_reviewe
         mcp.read_stream_until_notification_message("thread/settings/updated"),
     )
     .await??;
-    drop(mcp);
+    timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+
+    // Older rollouts can retain a frozen turn context after an accepted settings update.
+    let (items, _, _) = RolloutRecorder::load_rollout_items(&rollout_path).await?;
+    let frozen_context = items
+        .into_iter()
+        .find(|item| matches!(item, RolloutItem::TurnContext(_)))
+        .expect("initial turn context");
+    append_rollout_item_to_path(&rollout_path, &frozen_context).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -1134,10 +1202,12 @@ async fn thread_resume_preserves_acknowledged_model_effort_and_approvals_reviewe
         })
         .await?;
     let ThreadResumeResponse {
-        reasoning_effort, ..
+        cwd,
+        reasoning_effort,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
-
     assert_eq!(reasoning_effort, None);
+    assert_eq!(cwd.as_path(), persisted_cwd);
 
     Ok(())
 }
@@ -2035,6 +2105,7 @@ fn set_session_meta_on_fake_rollout(
 async fn thread_resume_returns_rollout_history() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
+    let saved_cwd = normalized_existing_path(codex_home.path())?;
     mock_responses_config(&server.uri()).write(codex_home.path())?;
 
     let preview = "Saved user message";
@@ -2054,6 +2125,23 @@ async fn thread_resume_returns_rollout_history() -> Result<()> {
         Some("mock_provider"),
         /*git_info*/ None,
     )?;
+    // Old snapshots have no owner ID: keep them readable without adopting their cwd.
+    let settings: ThreadSettingsAppliedEvent = serde_json::from_value(json!({
+        "thread_settings": {
+            "model": "gpt-5.4",
+            "model_provider_id": "mock_provider",
+            "cwd": saved_cwd,
+            "approval_policy": "never",
+            "approvals_reviewer": "user",
+            "permission_profile": PermissionProfile::read_only(),
+            "collaboration_mode": { "mode": "default", "settings": { "model": "gpt-5.4" } },
+        },
+    }))?;
+    append_rollout_item_to_path(
+        &rollout_path(codex_home.path(), "2025-01-05T12-00-00", &conversation_id),
+        &RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(settings)),
+    )
+    .await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -2066,14 +2154,15 @@ async fn thread_resume_returns_rollout_history() -> Result<()> {
             ..Default::default()
         })
         .await?;
-    let ThreadResumeResponse { thread, .. } =
+    let ThreadResumeResponse { thread, cwd, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
 
     assert_eq!(thread.id, conversation_id);
     assert_eq!(thread.preview, preview);
     assert_eq!(thread.model_provider, "mock_provider");
     assert!(thread.path.as_ref().expect("thread path").is_absolute());
-    assert_eq!(thread.cwd, test_absolute_path("/"));
+    assert_eq!(thread.cwd.as_path(), saved_cwd);
+    assert_eq!(cwd, test_absolute_path("/"));
     assert_eq!(thread.cli_version, "0.0.0");
     assert_eq!(thread.source, SessionSource::Cli);
     assert_eq!(thread.git_info, None);

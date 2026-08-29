@@ -3646,6 +3646,7 @@ async fn auto_compact_persists_rollout_entries() {
         .unwrap();
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
+    let expected_settings = codex.thread_settings_snapshot().await;
     codex.submit(Op::Shutdown).await.unwrap();
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 
@@ -3653,6 +3654,8 @@ async fn auto_compact_persists_rollout_entries() {
     let text = std::fs::read_to_string(&rollout_path).expect("failed to read rollout file");
 
     let mut turn_context_count = 0usize;
+    let mut saw_compaction = false;
+    let mut checkpoint = None;
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -3665,7 +3668,12 @@ async fn auto_compact_persists_rollout_entries() {
             RolloutItem::TurnContext(_) => {
                 turn_context_count += 1;
             }
-            RolloutItem::Compacted(_) => {}
+            RolloutItem::Compacted(_) => saw_compaction = true,
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(applied))
+                if saw_compaction && checkpoint.is_none() =>
+            {
+                checkpoint = Some((applied.thread_id, applied.thread_settings));
+            }
             _ => {}
         }
     }
@@ -3673,6 +3681,10 @@ async fn auto_compact_persists_rollout_entries() {
     assert_eq!(
         turn_context_count, 3,
         "rollout should contain one TurnContext entry per real user turn"
+    );
+    assert_eq!(
+        checkpoint,
+        Some((Some(session_configured.thread_id), expected_settings))
     );
 }
 
