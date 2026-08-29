@@ -55,7 +55,9 @@ pub trait RequestAttemptObserver: Send + Sync {
     /// Implementations that do not distinguish this boundary retain the legacy uncertain
     /// classification through `on_request_failure`.
     fn on_request_admission_failure(&self, error: &str) {
-        self.on_request_failure(error, false, false);
+        self.on_request_failure(
+            error, /*provider_terminal*/ false, /*usage_limit*/ false,
+        );
     }
 }
 

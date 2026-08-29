@@ -723,8 +723,7 @@ impl StateRuntime {
         // the owner-capable clone here would let any downstream StateRuntime
         // holder mint and dispatch an automatic continuation.
         let goal_owner_admissions = GoalOwnerAdmissionStore::read_only(Arc::clone(&goals_pool));
-        let goal_runtime_admission_runtime_identity =
-            GoalRuntimeAdmissionRuntimeIdentity(Uuid::now_v7());
+        let goal_runtime_admission_runtime_identity = GoalRuntimeAdmissionRuntimeIdentity::new();
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::with_capability(
                 Arc::clone(&goals_pool),
