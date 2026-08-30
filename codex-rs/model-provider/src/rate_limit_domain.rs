@@ -78,8 +78,8 @@ mod tests {
     fn local(request_id: &str, model: Option<&str>, thread_id: Option<&str>) -> LocalRequestFacts {
         LocalRequestFacts {
             request_id: request_id.into(),
-            model: model.map(str::into),
-            thread_id: thread_id.map(str::into),
+            model: model.map(str::to_owned),
+            thread_id: thread_id.map(str::to_owned),
         }
     }
 
