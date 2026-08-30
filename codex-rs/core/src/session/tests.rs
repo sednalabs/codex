@@ -10606,55 +10606,68 @@ async fn aborted_turn_local_continuation_preserves_claimed_input_after_forced_ab
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn compact_session_start_stop_preserves_claimed_late_steer() {
-    let (sess, tc, rx) = make_session_and_context_with_rx().await;
-    install_compact_session_start_stop_test_hook(&sess).await;
-    sess.state
-        .lock()
-        .await
-        .queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
+#[test]
+fn compact_session_start_stop_preserves_claimed_late_steer() {
+    std::thread::Builder::new()
+        .name("compact_session_start_stop_preserves_claimed_late_steer".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime should build")
+                .block_on(async {
+                    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+                    install_compact_session_start_stop_test_hook(&sess).await;
+                    sess.state.lock().await.queue_pending_session_start_source(
+                        codex_hooks::SessionStartSource::Compact,
+                    );
 
-    let (initial_tx, initial_rx) = async_channel::bounded(1);
-    sess.spawn_task(
-        Arc::clone(&tc),
-        test_input("initial", None),
-        RegularContinuationHarnessTask(Arc::new(RegularTask::new()), initial_tx),
-    )
-    .await;
-    initial_rx.recv().await.expect("initial task should run");
-    sess.steer_input(
-        vec![UserInput::Text {
-            text: "preserve after compact hook stop".to_string(),
-            text_elements: Vec::new(),
-        }],
-        /*additional_context*/ Default::default(),
-        Some(&tc.sub_id),
-        /*client_user_message_id*/ None,
-        /*responsesapi_client_metadata*/ None,
-    )
-    .await
-    .expect("steer should be accepted");
-    let (task_identity, task_token, _, _) = active_task_details(&sess).await;
-    sess.on_task_finished(task_identity, Arc::clone(&tc), Ok(None))
-        .await;
-    task_token.cancel();
+                    let (initial_tx, initial_rx) = async_channel::bounded(1);
+                    sess.spawn_task(
+                        Arc::clone(&tc),
+                        test_input("initial", None),
+                        RegularContinuationHarnessTask(Arc::new(RegularTask::new()), initial_tx),
+                    )
+                    .await;
+                    initial_rx.recv().await.expect("initial task should run");
+                    sess.steer_input(
+                        vec![UserInput::Text {
+                            text: "preserve after compact hook stop".to_string(),
+                            text_elements: Vec::new(),
+                        }],
+                        /*additional_context*/ Default::default(),
+                        Some(&tc.sub_id),
+                        /*client_user_message_id*/ None,
+                        /*responsesapi_client_metadata*/ None,
+                    )
+                    .await
+                    .expect("steer should be accepted");
+                    let (task_identity, task_token, _, _) = active_task_details(&sess).await;
+                    sess.on_task_finished(task_identity, Arc::clone(&tc), Ok(None))
+                        .await;
+                    task_token.cancel();
 
-    recv_terminal_event(&rx, TerminalEventKind::TurnComplete).await;
-    assert_no_terminal_event(
-        &rx,
-        "session-start hook stop must not emit a second terminal lifecycle event",
-    )
-    .await;
-    let history = sess.clone_history().await;
-    let preserved_late_steer_count = user_input_texts(history.raw_items())
-        .into_iter()
-        .filter(|text| *text == "preserve after compact hook stop")
-        .count();
-    assert_eq!(
-        1, preserved_late_steer_count,
-        "compact session-start stop must record the claimed late steer exactly once"
-    );
+                    recv_terminal_event(&rx, TerminalEventKind::TurnComplete).await;
+                    assert_no_terminal_event(
+                        &rx,
+                        "session-start hook stop must not emit a second terminal lifecycle event",
+                    )
+                    .await;
+                    let history = sess.clone_history().await;
+                    let preserved_late_steer_count = user_input_texts(history.raw_items())
+                        .into_iter()
+                        .filter(|text| *text == "preserve after compact hook stop")
+                        .count();
+                    assert_eq!(
+                        1, preserved_late_steer_count,
+                        "compact session-start stop must record the claimed late steer exactly once"
+                    );
+                });
+        })
+        .expect("test thread should spawn")
+        .join()
+        .expect("test thread should complete");
 }
 
 #[derive(Clone, Copy)]
