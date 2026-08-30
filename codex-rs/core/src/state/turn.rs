@@ -523,10 +523,8 @@ impl TurnState {
         // A requeued claim is mirrored at the front of the pending queue. Once abort cleanup
         // takes ownership of the captured claim, remove only that mirror so any newer pending
         // input remains available for the separate abort cleanup drain.
-        if let Some(input) = input.as_ref()
-            && self.pending_input.items.starts_with(input)
-        {
-            self.pending_input.items.drain(..input.len());
+        if let Some(input) = input.as_ref() {
+            self.pending_input.remove_prefix_if_matches(input);
         }
         input
     }

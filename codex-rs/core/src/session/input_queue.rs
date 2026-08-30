@@ -690,6 +690,14 @@ impl TurnInputQueue {
     pub(crate) fn restore_turn_local_continuation(&mut self, input: Vec<TurnInput>) {
         self.items.splice(0..0, input);
     }
+
+    pub(crate) fn remove_prefix_if_matches(&mut self, input: &[TurnInput]) -> bool {
+        if !self.items.starts_with(input) {
+            return false;
+        }
+        self.items.drain(..input.len());
+        true
+    }
 }
 
 #[cfg(test)]
