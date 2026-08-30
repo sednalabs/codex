@@ -531,13 +531,6 @@ impl TurnState {
         Arc::clone(&self.turn_local_continuation_input_changed)
     }
 
-    pub(crate) fn turn_local_continuation_input_is_claimed(&self) -> bool {
-        !matches!(
-            self.turn_local_continuation_input_state,
-            TurnLocalContinuationInputState::None | TurnLocalContinuationInputState::Consumed
-        )
-    }
-
     pub(crate) fn turn_local_continuation_input_is_requeued(&self) -> bool {
         self.turn_local_continuation_input_state == TurnLocalContinuationInputState::Requeued
     }
