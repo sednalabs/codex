@@ -1,50 +1,296 @@
 //! Typed, side-effect-free facts for reasoning about rate-limit domains.
 //!
 //! This module deliberately does not infer coupling from model or thread
-//! identities.  Provider scope and eligibility are observations, and remain
+//! identities. Provider scope and eligibility are observations, and remain
 //! unknown until a provider supplies them.
 
-/// The provider's declared coupling domain for a request.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RateLimitDomainScope {
-    /// Requests with the same opaque key intentionally share a limit domain.
-    Shared(String),
-    /// The provider states that this request has an independent domain.
+use std::error::Error;
+use std::fmt;
+
+const MAX_OPAQUE_VALUE_LENGTH: usize = 128;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpaqueValueError {
+    Empty,
+    TooLong,
+    InvalidCharacter,
+}
+
+fn validate_opaque_value(value: &str) -> Result<(), OpaqueValueError> {
+    if value.is_empty() {
+        return Err(OpaqueValueError::Empty);
+    }
+    if value.len() > MAX_OPAQUE_VALUE_LENGTH {
+        return Err(OpaqueValueError::TooLong);
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(OpaqueValueError::InvalidCharacter);
+    }
+    Ok(())
+}
+
+/// An opaque, provider-issued non-secret identity for a rate-limit domain.
+///
+/// The value is intentionally not exposed after construction. Callers must
+/// provide a bounded, printable provider-domain identifier; credentials,
+/// headers, and unrestricted identity strings are not valid inputs.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ProviderDomainId(String);
+
+impl ProviderDomainId {
+    /// Construct an opaque provider-domain identity after validating its shape.
+    ///
+    /// Shape validation does not attest provider authority; callers should only
+    /// pass a non-secret identity obtained from the provider.
+    pub fn try_new(value: impl AsRef<str>) -> Result<Self, ProviderDomainIdError> {
+        let value = value.as_ref();
+        validate_opaque_value(value).map_err(ProviderDomainIdError::from)?;
+        Ok(Self(value.to_owned()))
+    }
+}
+
+impl fmt::Debug for ProviderDomainId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("ProviderDomainId")
+            .field(&"<redacted>")
+            .finish()
+    }
+}
+
+/// Why an opaque provider-domain identity was rejected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderDomainIdError {
+    /// The supplied identity was empty.
+    Empty,
+    /// The supplied identity exceeded the bounded representation.
+    TooLong,
+    /// The supplied identity contained whitespace, control, or unsupported characters.
+    InvalidCharacter,
+}
+
+impl From<OpaqueValueError> for ProviderDomainIdError {
+    fn from(error: OpaqueValueError) -> Self {
+        match error {
+            OpaqueValueError::Empty => Self::Empty,
+            OpaqueValueError::TooLong => Self::TooLong,
+            OpaqueValueError::InvalidCharacter => Self::InvalidCharacter,
+        }
+    }
+}
+
+impl fmt::Display for ProviderDomainIdError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Empty => "provider domain identity is empty",
+            Self::TooLong => "provider domain identity is too long",
+            Self::InvalidCharacter => "provider domain identity contains unsupported characters",
+        })
+    }
+}
+
+impl Error for ProviderDomainIdError {}
+
+#[derive(Clone, Eq, PartialEq)]
+struct OpaqueProviderFact(String);
+
+impl OpaqueProviderFact {
+    fn try_new(value: &str) -> Result<Self, ProviderFactError> {
+        validate_opaque_value(value).map_err(ProviderFactError::from)?;
+        Ok(Self(value.to_owned()))
+    }
+}
+
+/// Why an opaque provider observation was rejected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderFactError {
+    /// The supplied fact was empty.
+    Empty,
+    /// The supplied fact exceeded the bounded representation.
+    TooLong,
+    /// The supplied fact contained whitespace, control, or unsupported characters.
+    InvalidCharacter,
+}
+
+impl From<OpaqueValueError> for ProviderFactError {
+    fn from(error: OpaqueValueError) -> Self {
+        match error {
+            OpaqueValueError::Empty => Self::Empty,
+            OpaqueValueError::TooLong => Self::TooLong,
+            OpaqueValueError::InvalidCharacter => Self::InvalidCharacter,
+        }
+    }
+}
+
+impl fmt::Display for ProviderFactError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Empty => "provider fact is empty",
+            Self::TooLong => "provider fact is too long",
+            Self::InvalidCharacter => "provider fact contains unsupported characters",
+        })
+    }
+}
+
+impl Error for ProviderFactError {}
+
+#[derive(Clone, Eq, PartialEq)]
+enum DomainScopeKind {
+    Shared(ProviderDomainId),
     Independent,
-    /// No safe scope conclusion is available.
     Unknown,
 }
 
+/// The provider's declared coupling domain for a request.
+#[derive(Clone, Eq, PartialEq)]
+pub struct RateLimitDomainScope(DomainScopeKind);
+
+impl RateLimitDomainScope {
+    /// Construct a shared scope bound to one opaque provider-domain identity.
+    pub fn shared(provider_domain: ProviderDomainId) -> Self {
+        Self(DomainScopeKind::Shared(provider_domain))
+    }
+
+    /// Construct the provider-declared independent scope.
+    pub fn independent() -> Self {
+        Self(DomainScopeKind::Independent)
+    }
+
+    /// Construct the fail-closed unknown scope.
+    pub fn unknown() -> Self {
+        Self(DomainScopeKind::Unknown)
+    }
+}
+
+impl fmt::Debug for RateLimitDomainScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            DomainScopeKind::Shared(_) => formatter
+                .debug_tuple("RateLimitDomainScope::Shared")
+                .field(&"<redacted>")
+                .finish(),
+            DomainScopeKind::Independent => {
+                formatter.write_str("RateLimitDomainScope::Independent")
+            }
+            DomainScopeKind::Unknown => formatter.write_str("RateLimitDomainScope::Unknown"),
+        }
+    }
+}
+
 /// Facts known locally when a request was made. These are not provider claims.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct LocalRequestFacts {
-    /// Exact request correlation supplied by the caller.
-    pub request_id: String,
-    /// Optional caller-supplied model identity; it is never used to infer scope.
-    pub model: Option<String>,
-    /// Optional caller-supplied thread identity; it is never used to infer scope.
-    pub thread_id: Option<String>,
+    request_id: String,
+    model: Option<String>,
+    thread_id: Option<String>,
+}
+
+impl LocalRequestFacts {
+    /// Capture caller facts without making any scope inference from them.
+    pub fn new(
+        request_id: impl Into<String>,
+        model: Option<String>,
+        thread_id: Option<String>,
+    ) -> Self {
+        Self {
+            request_id: request_id.into(),
+            model,
+            thread_id,
+        }
+    }
+}
+
+impl fmt::Debug for LocalRequestFacts {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalRequestFacts")
+            .field("request_id", &"<redacted>")
+            .field("model", &self.model.as_ref().map(|_| "<redacted>"))
+            .field("thread_id", &self.thread_id.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Facts observed from the provider, retained as opaque values for provenance.
-#[derive(Clone, Debug, Eq, PartialEq, Default)]
+#[derive(Clone, Eq, PartialEq, Default)]
 pub struct ProviderObservedFacts {
-    pub provider_scope: Option<String>,
-    pub eligible: Option<bool>,
-    pub deadline: Option<String>,
-    pub budget: Option<String>,
-    pub freshness: Option<String>,
+    provider_scope: Option<ProviderDomainId>,
+    eligible: Option<bool>,
+    deadline: Option<OpaqueProviderFact>,
+    budget: Option<OpaqueProviderFact>,
+    freshness: Option<OpaqueProviderFact>,
 }
 
-/// Immutable, correlated evidence joining local request facts to observations.
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl ProviderObservedFacts {
+    /// Construct provider observations after validating opaque fact values.
+    ///
+    /// A missing provider scope or eligibility is valid evidence, but remains
+    /// dormant at the admission-capable boundary. This constructor preserves
+    /// caller-supplied observations but does not itself attest their source.
+    pub fn try_from_provider(
+        provider_scope: Option<ProviderDomainId>,
+        eligible: Option<bool>,
+        deadline: Option<&str>,
+        budget: Option<&str>,
+        freshness: Option<&str>,
+    ) -> Result<Self, ProviderFactError> {
+        Ok(Self {
+            provider_scope,
+            eligible,
+            deadline: deadline.map(OpaqueProviderFact::try_new).transpose()?,
+            budget: budget.map(OpaqueProviderFact::try_new).transpose()?,
+            freshness: freshness.map(OpaqueProviderFact::try_new).transpose()?,
+        })
+    }
+}
+
+impl fmt::Debug for ProviderObservedFacts {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderObservedFacts")
+            .field(
+                "provider_scope",
+                &self.provider_scope.as_ref().map(|_| "<redacted>"),
+            )
+            .field("eligible", &self.eligible)
+            .field("deadline", &self.deadline.as_ref().map(|_| "<redacted>"))
+            .field("budget", &self.budget.as_ref().map(|_| "<redacted>"))
+            .field("freshness", &self.freshness.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// Immutable, provider-correlated evidence joining local request facts to observations.
+#[derive(Clone, Eq, PartialEq)]
 pub struct RateLimitEvidence {
-    pub local: LocalRequestFacts,
-    pub observed: ProviderObservedFacts,
-    pub scope: RateLimitDomainScope,
+    local: LocalRequestFacts,
+    observed: ProviderObservedFacts,
+    scope: RateLimitDomainScope,
 }
 
 impl RateLimitEvidence {
+    /// Join facts only when a shared scope is bound to the same provider identity.
+    pub fn try_new(
+        local: LocalRequestFacts,
+        observed: ProviderObservedFacts,
+        scope: RateLimitDomainScope,
+    ) -> Result<Self, RateLimitEvidenceError> {
+        if let DomainScopeKind::Shared(expected_domain) = &scope.0
+            && observed.provider_scope.as_ref() != Some(expected_domain)
+        {
+            return Err(RateLimitEvidenceError::SharedScopeMismatch);
+        }
+
+        Ok(Self {
+            local,
+            observed,
+            scope,
+        })
+    }
+
     /// G2: enough provider attribution exists to retain evidence, without
     /// asserting that admission is safe. Unknown provider scope or eligibility
     /// is deliberately retainable evidence; use `is_dormant` and G3 for the
@@ -65,111 +311,233 @@ impl RateLimitEvidence {
 
     /// Unknown provider scope or eligibility is fail-closed and remains dormant.
     pub fn is_dormant(&self) -> bool {
-        matches!(self.scope, RateLimitDomainScope::Unknown)
+        matches!(&self.scope.0, DomainScopeKind::Unknown)
             || self.observed.provider_scope.is_none()
             || self.observed.eligible.is_none()
     }
 }
+
+impl fmt::Debug for RateLimitEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RateLimitEvidence")
+            .field("local", &self.local)
+            .field("observed", &self.observed)
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
+/// Why provider-correlated evidence could not be constructed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RateLimitEvidenceError {
+    /// A shared scope did not carry the exact provider identity observed for the request.
+    SharedScopeMismatch,
+}
+
+impl fmt::Display for RateLimitEvidenceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("shared rate-limit scope does not match provider observation")
+    }
+}
+
+impl Error for RateLimitEvidenceError {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn local(request_id: &str, model: Option<&str>, thread_id: Option<&str>) -> LocalRequestFacts {
-        LocalRequestFacts {
-            request_id: request_id.into(),
-            model: model.map(str::to_owned),
-            thread_id: thread_id.map(str::to_owned),
-        }
+        LocalRequestFacts::new(
+            request_id,
+            model.map(str::to_owned),
+            thread_id.map(str::to_owned),
+        )
+    }
+
+    fn provider_domain() -> ProviderDomainId {
+        ProviderDomainId::try_new("opaque-provider-domain").unwrap()
     }
 
     fn observed_complete() -> ProviderObservedFacts {
-        ProviderObservedFacts {
-            provider_scope: Some("opaque-provider-domain".into()),
-            eligible: Some(true),
-            deadline: Some("opaque-deadline".into()),
-            budget: Some("opaque-budget".into()),
-            freshness: Some("opaque-freshness".into()),
-        }
+        ProviderObservedFacts::try_from_provider(
+            Some(provider_domain()),
+            Some(true),
+            Some("opaque-deadline"),
+            Some("opaque-budget"),
+            Some("opaque-freshness"),
+        )
+        .unwrap()
+    }
+
+    fn evidence(
+        observed: ProviderObservedFacts,
+        scope: RateLimitDomainScope,
+    ) -> Result<RateLimitEvidence, RateLimitEvidenceError> {
+        RateLimitEvidence::try_new(
+            local("request-1", Some("model-a"), Some("thread-a")),
+            observed,
+            scope,
+        )
     }
 
     #[test]
     fn scope_equality_is_explicit_and_does_not_infer_from_model_or_thread() {
+        let same = provider_domain();
         assert_eq!(
-            RateLimitDomainScope::Shared("same".into()),
-            RateLimitDomainScope::Shared("same".into())
+            RateLimitDomainScope::shared(same.clone()),
+            RateLimitDomainScope::shared(same)
         );
         assert_ne!(
-            RateLimitDomainScope::Shared("a".into()),
-            RateLimitDomainScope::Shared("b".into())
+            RateLimitDomainScope::shared(ProviderDomainId::try_new("a").unwrap()),
+            RateLimitDomainScope::shared(ProviderDomainId::try_new("b").unwrap())
         );
         let a = local("r1", Some("model-a"), Some("thread-a"));
         let b = local("r2", Some("model-a"), Some("thread-b"));
         assert_ne!(a, b);
-        assert_eq!(RateLimitDomainScope::Unknown, RateLimitDomainScope::Unknown);
-    }
-
-    #[test]
-    fn local_and_provider_provenance_remain_separate() {
-        let evidence = RateLimitEvidence {
-            local: local("request-1", Some("model-a"), /*thread_id*/ None),
-            observed: observed_complete(),
-            scope: RateLimitDomainScope::Independent,
-        };
-        assert_eq!(evidence.local.request_id, "request-1");
         assert_eq!(
-            evidence.observed.provider_scope.as_deref(),
-            Some("opaque-provider-domain")
+            RateLimitDomainScope::unknown(),
+            RateLimitDomainScope::unknown()
         );
     }
 
     #[test]
-    fn missing_provider_scope_or_eligibility_is_dormant() {
-        for observed in [
-            ProviderObservedFacts {
-                provider_scope: None,
-                eligible: Some(true),
-                ..observed_complete()
-            },
-            ProviderObservedFacts {
-                eligible: None,
-                ..observed_complete()
-            },
-        ] {
-            let evidence = RateLimitEvidence {
-                local: local("r", /*model*/ None, /*thread_id*/ None),
-                observed,
-                scope: RateLimitDomainScope::Independent,
-            };
-            assert!(evidence.is_dormant());
-            assert!(evidence.g2_evidence_only_ready());
-            assert!(!evidence.g3_admission_capable_ready());
-        }
+    fn local_and_provider_provenance_remain_separate() {
+        let evidence = evidence(observed_complete(), RateLimitDomainScope::independent()).unwrap();
+        assert!(evidence.g2_evidence_only_ready());
+        assert!(evidence.g3_admission_capable_ready());
+    }
 
-        let unknown_scope = RateLimitEvidence {
-            local: local(
-                "r-unknown-scope",
-                /*model*/ None,
-                /*thread_id*/ None,
-            ),
-            observed: observed_complete(),
-            scope: RateLimitDomainScope::Unknown,
-        };
+    #[test]
+    fn mismatched_provider_domains_are_rejected() {
+        let mismatched_scope = RateLimitDomainScope::shared(
+            ProviderDomainId::try_new("other-provider-domain").unwrap(),
+        );
+        assert_eq!(
+            evidence(observed_complete(), mismatched_scope),
+            Err(RateLimitEvidenceError::SharedScopeMismatch)
+        );
+    }
+
+    #[test]
+    fn malformed_provider_domain_identity_is_rejected() {
+        assert_eq!(
+            ProviderDomainId::try_new(""),
+            Err(ProviderDomainIdError::Empty)
+        );
+        assert_eq!(
+            ProviderDomainId::try_new("provider domain"),
+            Err(ProviderDomainIdError::InvalidCharacter)
+        );
+        assert_eq!(
+            ProviderDomainId::try_new("provider/domain"),
+            Err(ProviderDomainIdError::InvalidCharacter)
+        );
+        assert_eq!(
+            ProviderDomainId::try_new("provider\n-domain"),
+            Err(ProviderDomainIdError::InvalidCharacter)
+        );
+        assert_eq!(
+            ProviderDomainId::try_new("x".repeat(MAX_OPAQUE_VALUE_LENGTH + 1)),
+            Err(ProviderDomainIdError::TooLong)
+        );
+    }
+
+    #[test]
+    fn secret_safe_debug_does_not_render_raw_values() {
+        let evidence = evidence(observed_complete(), RateLimitDomainScope::independent()).unwrap();
+        let rendered = format!("{evidence:?}");
+        for secret in [
+            "request-1",
+            "model-a",
+            "thread-a",
+            "opaque-provider-domain",
+            "opaque-deadline",
+            "opaque-budget",
+            "opaque-freshness",
+        ] {
+            assert!(!rendered.contains(secret), "debug output leaked {secret}");
+        }
+        assert!(rendered.contains("<redacted>"));
+    }
+
+    #[test]
+    fn missing_provider_scope_or_eligibility_is_dormant() {
+        let missing_scope = ProviderObservedFacts::try_from_provider(
+            /*provider_scope*/ None,
+            Some(true),
+            Some("opaque-deadline"),
+            Some("opaque-budget"),
+            Some("opaque-freshness"),
+        )
+        .unwrap();
+        let missing_scope_evidence =
+            evidence(missing_scope, RateLimitDomainScope::unknown()).unwrap();
+        assert!(missing_scope_evidence.is_dormant());
+        assert!(missing_scope_evidence.g2_evidence_only_ready());
+        assert!(!missing_scope_evidence.g3_admission_capable_ready());
+
+        let missing_eligibility = ProviderObservedFacts::try_from_provider(
+            Some(provider_domain()),
+            /*eligible*/ None,
+            Some("opaque-deadline"),
+            Some("opaque-budget"),
+            Some("opaque-freshness"),
+        )
+        .unwrap();
+        let missing_eligibility_evidence =
+            evidence(missing_eligibility, RateLimitDomainScope::independent()).unwrap();
+        assert!(missing_eligibility_evidence.is_dormant());
+        assert!(missing_eligibility_evidence.g2_evidence_only_ready());
+        assert!(!missing_eligibility_evidence.g3_admission_capable_ready());
+
+        let unknown_scope = evidence(observed_complete(), RateLimitDomainScope::unknown()).unwrap();
         assert!(unknown_scope.is_dormant());
         assert!(unknown_scope.g2_evidence_only_ready());
         assert!(!unknown_scope.g3_admission_capable_ready());
     }
 
     #[test]
-    fn g3_requires_all_provider_facts() {
-        let mut evidence = RateLimitEvidence {
-            local: local("r", /*model*/ None, /*thread_id*/ None),
-            observed: observed_complete(),
-            scope: RateLimitDomainScope::Shared("key".into()),
-        };
+    fn g3_requires_all_provider_facts_and_true_eligibility() {
+        let missing_freshness = ProviderObservedFacts::try_from_provider(
+            Some(provider_domain()),
+            Some(true),
+            Some("opaque-deadline"),
+            Some("opaque-budget"),
+            /*freshness*/ None,
+        )
+        .unwrap();
+        let missing_freshness_evidence =
+            evidence(missing_freshness, RateLimitDomainScope::independent()).unwrap();
+        assert!(missing_freshness_evidence.g2_evidence_only_ready());
+        assert!(!missing_freshness_evidence.g3_admission_capable_ready());
+
+        let ineligible = ProviderObservedFacts::try_from_provider(
+            Some(provider_domain()),
+            Some(false),
+            Some("opaque-deadline"),
+            Some("opaque-budget"),
+            Some("opaque-freshness"),
+        )
+        .unwrap();
+        let ineligible_evidence =
+            evidence(ineligible, RateLimitDomainScope::independent()).unwrap();
+        assert!(!ineligible_evidence.g3_admission_capable_ready());
+    }
+
+    #[test]
+    fn valid_provider_correlated_shared_construction_is_admission_ready() {
+        let domain = provider_domain();
+        let observed = ProviderObservedFacts::try_from_provider(
+            Some(domain.clone()),
+            Some(true),
+            Some("opaque-deadline"),
+            Some("opaque-budget"),
+            Some("opaque-freshness"),
+        )
+        .unwrap();
+        let evidence = evidence(observed, RateLimitDomainScope::shared(domain)).unwrap();
         assert!(evidence.g2_evidence_only_ready());
         assert!(evidence.g3_admission_capable_ready());
-        evidence.observed.freshness = None;
-        assert!(!evidence.g3_admission_capable_ready());
     }
 }
