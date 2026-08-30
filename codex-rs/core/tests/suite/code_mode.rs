@@ -1599,7 +1599,7 @@ async fn code_mode_update_plan_nested_tool_result_is_empty_object() -> Result<()
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn(
+    let (_test, second_mock) = run_code_mode_turn_with_config(
         &server,
         "use exec to run update_plan",
         r#"
@@ -1608,6 +1608,7 @@ const result = await tools.update_plan({
 });
 text(JSON.stringify(result));
 "#,
+        |config| config.update_plan_enabled = true,
     )
     .await?;
 
@@ -5805,6 +5806,7 @@ async fn code_mode_excludes_configured_nested_tool_namespaces() -> Result<()> {
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex().with_config(|config| {
+        config.update_plan_enabled = true;
         let _ = config.features.enable(Feature::CodeMode);
         config.code_mode.excluded_tool_namespaces = vec!["excluded".to_string()];
     });
@@ -5907,6 +5909,7 @@ async fn code_mode_omits_configured_mcp_server_tools() -> Result<()> {
             model.supports_search_tool = false;
         })
         .with_config(move |config| {
+            config.update_plan_enabled = true;
             let _ = config.features.enable(Feature::CodeMode);
             let mut servers = config.mcp_servers.get().clone();
             servers.insert(

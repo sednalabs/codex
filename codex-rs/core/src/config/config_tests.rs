@@ -565,21 +565,24 @@ async fn load_config_resolves_non_prefixed_mcp_tool_servers() -> std::io::Result
 #[tokio::test]
 async fn load_config_resolves_update_plan_enabled() -> std::io::Result<()> {
     let codex_home = tempdir()?;
-    let config_toml = toml::from_str(
-        r#"
-[tools.update_plan]
-enabled = false
-"#,
-    )
-    .expect("TOML deserialization should succeed");
-    let config = Config::load_from_base_config_with_overrides(
-        config_toml,
-        ConfigOverrides::default(),
-        codex_home.abs(),
-    )
-    .await?;
+    for (config_toml, expected_enabled) in [
+        ("", true),
+        ("[tools.update_plan]", true),
+        ("[tools.update_plan]\nenabled = false", false),
+        ("[tools.update_plan]\nenabled = true", true),
+    ] {
+        let config = Config::load_from_base_config_with_overrides(
+            toml::from_str(config_toml).expect("TOML deserialization should succeed"),
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
 
-    assert!(!config.update_plan_enabled);
+        assert_eq!(
+            config.update_plan_enabled, expected_enabled,
+            "{config_toml}"
+        );
+    }
     Ok(())
 }
 

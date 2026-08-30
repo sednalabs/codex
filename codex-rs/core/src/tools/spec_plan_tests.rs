@@ -1917,6 +1917,7 @@ async fn strict_tool_collisions_reject_external_and_synthetic_duplicates() {
         let (_session, mut turn) = make_session_and_context().await;
         update_config(&mut turn, |config| {
             config.tool_registry.error_on_tool_collisions = true;
+            config.update_plan_enabled = true;
         });
         if code_mode_enabled {
             set_feature(&mut turn, Feature::CodeMode, /*enabled*/ true);
@@ -2587,6 +2588,7 @@ async fn code_mode_only_exposes_default_namespace_tools_directly() {
     let plan = probe(|turn| {
         set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
         update_config(turn, |config| {
+            config.update_plan_enabled = true;
             config.code_mode.direct_only_tool_namespaces = vec!["functions".to_string()];
         });
     })
@@ -2644,6 +2646,7 @@ async fn code_mode_excludes_default_namespace_tools() {
     let plan = probe(|turn| {
         set_feature(turn, Feature::CodeMode, /*enabled*/ true);
         update_config(turn, |config| {
+            config.update_plan_enabled = true;
             config.code_mode.excluded_tool_namespaces = vec!["functions".to_string()];
         });
     })

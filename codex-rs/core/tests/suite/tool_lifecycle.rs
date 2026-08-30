@@ -160,6 +160,7 @@ async fn tool_start_receives_conversation_history() -> Result<()> {
     extensions.tool_lifecycle_contributor(recorder.clone());
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
+        .with_config(|config| config.update_plan_enabled = true)
         .build_with_auto_env(&server)
         .await?;
 
@@ -600,6 +601,7 @@ async fn tool_start_receives_rewritten_payload_and_post_hook_history() -> Result
                 .expect("write pre-tool hook fixture");
         })
         .with_config(trust_discovered_hooks)
+        .with_config(|config| config.update_plan_enabled = true)
         .build_with_auto_env(&server)
         .await?;
 
@@ -690,6 +692,7 @@ async fn tool_start_is_not_called_when_pre_tool_hook_prevents_execution() -> Res
                     .expect("write pre-tool hook fixture");
             })
             .with_config(trust_discovered_hooks)
+            .with_config(|config| config.update_plan_enabled = true)
             .build_with_auto_env(&server)
             .await?;
 

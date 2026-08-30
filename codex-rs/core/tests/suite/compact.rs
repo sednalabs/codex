@@ -2137,6 +2137,7 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_model(previous_model)
         .with_config(move |config| {
+            config.update_plan_enabled = true;
             config.model_provider = model_provider;
             set_test_compact_prompt(config);
         });
@@ -3909,6 +3910,7 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
     let model_provider = non_openai_model_provider(&server);
 
     let mut builder = test_codex().with_config(move |config| {
+        config.update_plan_enabled = true;
         config.model_provider = model_provider;
         set_test_compact_prompt(config);
     });
@@ -4232,6 +4234,7 @@ async fn snapshot_request_shape_mid_turn_continuation_compaction() {
     let model_provider = non_openai_model_provider(&server);
 
     let mut builder = test_codex().with_config(move |config| {
+        config.update_plan_enabled = true;
         config.model_provider = model_provider;
         set_test_compact_prompt(config);
         config.model_context_window = Some(context_window);
@@ -4831,6 +4834,7 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
     let model_provider = non_openai_model_provider(&server);
     let codex = test_codex()
         .with_config(move |config| {
+            config.update_plan_enabled = true;
             config.model_provider = model_provider;
             set_test_compact_prompt(config);
             config.model_auto_compact_token_limit = Some(200);
@@ -4946,6 +4950,7 @@ async fn snapshot_request_shape_pre_turn_compaction_strips_incoming_model_switch
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_model(previous_model)
         .with_config(move |config| {
+            config.update_plan_enabled = true;
             config.model_provider = model_provider;
             set_test_compact_prompt(config);
             let _ = config.features.enable(Feature::RemoteModels);
@@ -5043,6 +5048,7 @@ async fn snapshot_request_shape_pre_turn_compaction_context_window_exceeded() {
     model_provider.stream_max_retries = Some(0);
     let codex = test_codex()
         .with_config(move |config| {
+            config.update_plan_enabled = true;
             config.model_provider = model_provider;
             set_test_compact_prompt(config);
             config.model_auto_compact_token_limit = Some(200);
@@ -5117,6 +5123,7 @@ async fn snapshot_request_shape_manual_compact_without_previous_user_messages() 
     let model_provider = non_openai_model_provider(&server);
     let codex = test_codex()
         .with_config(move |config| {
+            config.update_plan_enabled = true;
             config.model_provider = model_provider;
             set_test_compact_prompt(config);
         })

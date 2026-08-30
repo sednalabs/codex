@@ -3594,6 +3594,7 @@ async fn fork_startup_context_then_first_turn_diff_snapshot() -> anyhow::Result<
     .await;
 
     let mut builder = test_codex().with_config(|config| {
+        config.update_plan_enabled = true;
         config.permissions.approval_policy =
             codex_config::Constrained::allow_any(AskForApproval::OnRequest);
     });

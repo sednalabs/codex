@@ -316,6 +316,7 @@ fn response_completed_chunks(response_id: &str) -> Vec<StreamingSseChunk> {
 
 async fn build_codex(server: &StreamingSseServer) -> Arc<CodexThread> {
     test_codex()
+        .with_config(|config| config.update_plan_enabled = true)
         .with_model("gpt-5.4")
         .build_with_streaming_server(server)
         .await
