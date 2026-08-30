@@ -10108,6 +10108,36 @@ impl SessionTask for CompletingTask {
     }
 }
 
+struct FinishingTask {
+    started: async_channel::Sender<()>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl SessionTask for FinishingTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+
+    fn span_name(&self) -> &'static str {
+        "session_task.finishing"
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        _session: Arc<SessionTaskContext>,
+        _ctx: Arc<TurnContext>,
+        _input: Vec<TurnInput>,
+        _cancellation_token: CancellationToken,
+    ) -> crate::tasks::SessionTaskResult {
+        self.started
+            .send(())
+            .await
+            .expect("finishing task receiver open");
+        self.release.notified().await;
+        Ok(None)
+    }
+}
+
 struct TurnLocalContinuationTask {
     initial_ready: async_channel::Sender<Vec<TurnInput>>,
     release: Arc<tokio::sync::Notify>,
@@ -11018,6 +11048,153 @@ async fn abort_during_stopped_prompt_hook_preserves_stop_and_exact_lifecycle_imp
         "stopped prompt hook abort must emit one terminal lifecycle event",
     )
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_start_task_finalization_abort_is_bounded_and_ordered() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    install_user_prompt_stop_test_hook(&sess).await;
+    let hook_barrier = Arc::new(crate::session::turn::PendingInputHookBarrier::new());
+    crate::session::turn::set_pending_input_hook_barrier(
+        sess.thread_id(),
+        Some(Arc::clone(&hook_barrier)),
+    );
+    let (started_tx, started_rx) = async_channel::bounded(1);
+    let release = Arc::new(tokio::sync::Notify::new());
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        FinishingTask {
+            started: started_tx,
+            release: Arc::clone(&release),
+        },
+    )
+    .await;
+    started_rx.recv().await.expect("real task should start");
+    sess.steer_input(
+        vec![UserInput::Text {
+            text: "held finalizer prompt".to_string(),
+            text_elements: Vec::new(),
+        }],
+        /*additional_context*/ Default::default(),
+        Some(&tc.sub_id),
+        /*client_user_message_id*/ None,
+        /*responsesapi_client_metadata*/ None,
+    )
+    .await
+    .expect("steer should be accepted before finalization");
+    release.notify_one();
+    hook_barrier.wait_until_entered().await;
+    assert_eq!(
+        RunningTaskPhase::Finalizing,
+        active_task_details(&sess).await.2,
+        "the real RunningTask must retain finalization ownership while hooks run"
+    );
+
+    let abort_started = std::time::Instant::now();
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+    assert!(
+        abort_started.elapsed() < StdDuration::from_secs(1),
+        "forced finalization abort must not wait for the held hook"
+    );
+    assert!(sess.active_turn.lock().await.is_none());
+    recv_terminal_event(&rx, TerminalEventKind::TurnAborted).await;
+    assert_no_terminal_event(
+        &rx,
+        "forced finalization must publish one terminal lifecycle event",
+    )
+    .await;
+
+    hook_barrier.release();
+    timeout(StdDuration::from_secs(2), async {
+        while sess.active_turn.lock().await.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("detached finalizer should settle after hook release");
+    crate::session::turn::set_pending_input_hook_barrier(sess.thread_id(), None);
+
+    let tc2 = sess.new_default_turn().await;
+    let (started2_tx, started2_rx) = async_channel::bounded(1);
+    let release2 = Arc::new(tokio::sync::Notify::new());
+    sess.spawn_task(
+        Arc::clone(&tc2),
+        Vec::new(),
+        FinishingTask {
+            started: started2_tx,
+            release: Arc::clone(&release2),
+        },
+    )
+    .await;
+    started2_rx.recv().await.expect("replacement task should start");
+    release2.notify_one();
+    recv_terminal_event(&rx, TerminalEventKind::TurnComplete).await;
+    crate::session::turn::set_pending_input_hook_barrier(sess.thread_id(), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_start_task_finalization_claim_captures_post_drain_steer() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    install_user_prompt_test_hook(&sess).await;
+    let hook_barrier = Arc::new(crate::session::turn::PendingInputHookBarrier::new());
+    crate::session::turn::set_pending_input_hook_barrier(
+        sess.thread_id(),
+        Some(Arc::clone(&hook_barrier)),
+    );
+    let (started_tx, started_rx) = async_channel::bounded(1);
+    let release = Arc::new(tokio::sync::Notify::new());
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        FinishingTask {
+            started: started_tx,
+            release: Arc::clone(&release),
+        },
+    )
+    .await;
+    started_rx.recv().await.expect("real task should start");
+    sess.steer_input(
+        vec![UserInput::Text {
+            text: "A".to_string(),
+            text_elements: Vec::new(),
+        }],
+        /*additional_context*/ Default::default(),
+        Some(&tc.sub_id),
+        /*client_user_message_id*/ None,
+        /*responsesapi_client_metadata*/ None,
+    )
+    .await
+    .expect("A steer should be accepted");
+    release.notify_one();
+    hook_barrier.wait_until_entered().await;
+    sess.steer_input(
+        vec![UserInput::Text {
+            text: "B".to_string(),
+            text_elements: Vec::new(),
+        }],
+        /*additional_context*/ Default::default(),
+        Some(&tc.sub_id),
+        /*client_user_message_id*/ None,
+        /*responsesapi_client_metadata*/ None,
+    )
+    .await
+    .expect("post-drain B steer should remain in the owned turn");
+    hook_barrier.release();
+    hook_barrier.wait_until_entered().await;
+    hook_barrier.release();
+
+    recv_terminal_event(&rx, TerminalEventKind::TurnComplete).await;
+    crate::session::turn::set_pending_input_hook_barrier(sess.thread_id(), None);
+    let texts = user_input_texts(sess.clone_history().await.raw_items());
+    assert_eq!(
+        vec!["A", "B"],
+        texts
+            .into_iter()
+            .filter(|text| *text == "A" || *text == "B")
+            .collect::<Vec<_>>(),
+        "post-drain input must be recorded exactly once by the captured finalizer"
+    );
 }
 
 #[derive(Clone, Copy)]

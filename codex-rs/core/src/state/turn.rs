@@ -96,6 +96,10 @@ pub(crate) struct TaskIdentity(pub(crate) uuid::Uuid);
 pub(crate) enum RunningTaskPhase {
     Preparing,
     Running,
+    /// The task has returned and its terminal hooks/disposition are still owned by the
+    /// task-finalization path.  Keeping this phase published in the active slot prevents a
+    /// replacement from orphaning the finalizer or observing a stale terminal event.
+    Finalizing,
 }
 
 pub(crate) struct RunningTask {
@@ -106,7 +110,11 @@ pub(crate) struct RunningTask {
     pub(crate) task: Arc<dyn AnySessionTask>,
     pub(crate) initial_input: Option<Vec<TurnInput>>,
     pub(crate) cancellation_token: CancellationToken,
-    pub(crate) handle: AbortOnDropHandle<()>,
+    /// The drop-aborts wrapper is detached when finalization begins.  The remote abort handle is
+    /// retained so forced resolution can stop the detached task without making its drop race with
+    /// HookProcessing.
+    pub(crate) handle: Option<AbortOnDropHandle<()>>,
+    pub(crate) abort_handle: Option<tokio::task::AbortHandle>,
     pub(crate) turn_context: Arc<TurnContext>,
     pub(crate) turn_extension_data: Arc<ExtensionData>,
     /// The exact turn state this task owns. Set during publication so completion and
@@ -133,6 +141,8 @@ pub(crate) struct TurnState {
     turn_local_continuation_input: Option<Vec<TurnInput>>,
     turn_local_continuation_input_state: TurnLocalContinuationInputState,
     turn_local_continuation_input_changed: Arc<Notify>,
+    finalization_state: TurnFinalizationState,
+    finalization_changed: Arc<Notify>,
     mailbox_delivery_phase: MailboxDeliveryPhase,
     granted_permissions_by_environment_id: HashMap<String, AdditionalPermissionProfile>,
     compaction_events_in_turn: u32,
@@ -140,6 +150,22 @@ pub(crate) struct TurnState {
     pub(crate) tool_calls: u64,
     pub(crate) has_memory_citation: bool,
     pub(crate) token_usage_at_turn_start: TokenUsage,
+}
+
+/// Ownership protocol for the one terminal finalizer associated with a turn.
+///
+/// `Owned` is held from task completion through the final hook/disposition commit.  An aborting
+/// replacement first requests that owner to stop, then moves it to `ForcedAbort` after a bounded
+/// wait.  Once the state is terminal, a stale completion path cannot publish `TurnComplete`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum TurnFinalizationState {
+    #[default]
+    Open,
+    Owned,
+    AbortRequested,
+    ForcedAbort,
+    Published,
+    Aborted,
 }
 
 impl Default for TurnState {
@@ -156,6 +182,8 @@ impl Default for TurnState {
             turn_local_continuation_input: None,
             turn_local_continuation_input_state: TurnLocalContinuationInputState::None,
             turn_local_continuation_input_changed: Arc::new(Notify::new()),
+            finalization_state: TurnFinalizationState::Open,
+            finalization_changed: Arc::new(Notify::new()),
             mailbox_delivery_phase: MailboxDeliveryPhase::CurrentTurn,
             granted_permissions_by_environment_id: HashMap::new(),
             compaction_events_in_turn: 0,
@@ -174,6 +202,95 @@ pub(crate) struct PendingRequestPermissions {
 }
 
 impl TurnState {
+    /// Claims terminal finalization for the task that is currently active.
+    pub(crate) fn claim_finalization(&mut self) -> bool {
+        if self.finalization_state != TurnFinalizationState::Open {
+            return false;
+        }
+        self.finalization_state = TurnFinalizationState::Owned;
+        self.finalization_changed.notify_waiters();
+        true
+    }
+
+    /// Requests that the current finalizer stop before publishing completion.
+    pub(crate) fn request_finalization_abort(&mut self) -> bool {
+        match self.finalization_state {
+            TurnFinalizationState::Owned => {
+                self.finalization_state = TurnFinalizationState::AbortRequested;
+                self.finalization_changed.notify_waiters();
+                true
+            }
+            TurnFinalizationState::AbortRequested
+            | TurnFinalizationState::ForcedAbort
+            | TurnFinalizationState::Aborted => true,
+            TurnFinalizationState::Open | TurnFinalizationState::Published => false,
+        }
+    }
+
+    /// Terminally settles an uncooperative finalizer after the bounded abort grace period.
+    pub(crate) fn force_finalization_abort(&mut self) -> bool {
+        match self.finalization_state {
+            TurnFinalizationState::Owned | TurnFinalizationState::AbortRequested => {
+                self.finalization_state = TurnFinalizationState::ForcedAbort;
+                self.finalization_changed.notify_waiters();
+                true
+            }
+            TurnFinalizationState::ForcedAbort | TurnFinalizationState::Aborted => true,
+            TurnFinalizationState::Open | TurnFinalizationState::Published => false,
+        }
+    }
+
+    /// Commits a terminal completion publication.  An abort request wins if it arrived first.
+    pub(crate) fn publish_finalization(&mut self) -> bool {
+        if self.finalization_state != TurnFinalizationState::Owned {
+            return false;
+        }
+        self.finalization_state = TurnFinalizationState::Published;
+        self.finalization_changed.notify_waiters();
+        true
+    }
+
+    /// Commits the aborted terminal disposition and prevents a later stale completion.
+    pub(crate) fn commit_finalization_abort(&mut self) -> bool {
+        match self.finalization_state {
+            TurnFinalizationState::Owned
+            | TurnFinalizationState::AbortRequested
+            | TurnFinalizationState::ForcedAbort => {
+                self.finalization_state = TurnFinalizationState::Aborted;
+                self.finalization_changed.notify_waiters();
+                true
+            }
+            TurnFinalizationState::Aborted => true,
+            TurnFinalizationState::Open | TurnFinalizationState::Published => false,
+        }
+    }
+
+    pub(crate) fn finalization_changed(&self) -> Arc<Notify> {
+        Arc::clone(&self.finalization_changed)
+    }
+
+    pub(crate) fn finalization_allows_progress(&self) -> bool {
+        self.finalization_state == TurnFinalizationState::Owned
+    }
+
+    pub(crate) fn finalization_is_forced_abort(&self) -> bool {
+        matches!(
+            self.finalization_state,
+            TurnFinalizationState::ForcedAbort | TurnFinalizationState::Aborted
+        )
+    }
+
+    pub(crate) fn finalization_is_terminal(&self) -> bool {
+        matches!(
+            self.finalization_state,
+            TurnFinalizationState::Published | TurnFinalizationState::Aborted
+        )
+    }
+
+    pub(crate) fn finalization_is_published(&self) -> bool {
+        self.finalization_state == TurnFinalizationState::Published
+    }
+
     pub(crate) fn insert_pending_approval(
         &mut self,
         key: String,

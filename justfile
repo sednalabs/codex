@@ -133,6 +133,8 @@ core-turn-admission-custody-targeted:
     cargo test -p codex-core session::tests::stale_regular_continuation_cannot_drain_replacement_sources --lib -- --exact --test-threads=1
     cargo test -p codex-core session::tests::abort_after_continuation_restore_preserves_claim_and_newer_input --lib -- --exact --test-threads=1
     cargo test -p codex-core session::tests::abort_during_stopped_prompt_hook_preserves_stop_and_exact_lifecycle --lib -- --exact --test-threads=1
+    cargo test -p codex-core session::tests::real_start_task_finalization_abort_is_bounded_and_ordered --lib -- --exact --test-threads=1
+    cargo test -p codex-core session::tests::real_start_task_finalization_claim_captures_post_drain_steer --lib -- --exact --test-threads=1
     cargo test -p codex-core session::input_queue::tests::drained_continuation_claim_is_restored_once_after_pre_record_exit --lib -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::pre_turn_steer suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::pre_turn_mail suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::pre_turn_triggering_mail suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::mid_turn_steer suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::mid_turn_mail suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::mid_turn_triggering_mail --exact
 

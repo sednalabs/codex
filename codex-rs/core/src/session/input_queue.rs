@@ -536,7 +536,10 @@ impl InputQueue {
         let active_turn = active.as_mut()?;
         let task = active_turn.task.as_ref()?;
         if task.identity != continuation.task_identity
-            || task.phase != RunningTaskPhase::Running
+            || !matches!(
+                task.phase,
+                RunningTaskPhase::Running | RunningTaskPhase::Finalizing
+            )
             || task.cancellation_token.is_cancelled()
             || task
                 .turn_state
@@ -592,7 +595,10 @@ impl InputQueue {
         let active_turn = active.as_ref()?;
         let task = active_turn.task.as_ref()?;
         if task.identity != continuation.task_identity
-            || task.phase != RunningTaskPhase::Running
+            || !matches!(
+                task.phase,
+                RunningTaskPhase::Running | RunningTaskPhase::Finalizing
+            )
             || task.cancellation_token.is_cancelled()
             || task
                 .turn_state
