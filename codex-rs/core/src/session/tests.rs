@@ -10229,7 +10229,7 @@ impl SessionTask for DelayedRegularContinuationTask {
                 .await
                 .expect("continuation receiver open");
             self.continuation_release.notified().await;
-            self.regular
+            Arc::clone(&self.regular)
                 .run_pending_input_continuation(
                     session,
                     ctx,
