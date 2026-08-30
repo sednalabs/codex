@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::client::ModelClientSession;
 use tokio_util::sync::CancellationToken;
 
 use crate::session::TurnInput;
@@ -9,6 +10,7 @@ use crate::session::turn_context::TurnContext;
 use crate::session_startup_prewarm::SessionStartupPrewarmResolution;
 use crate::state::TaskKind;
 use codex_extension_api::OwnerContinuationDeferred;
+use codex_extension_api::OwnerContinuationPending;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
 use tracing::Instrument;
@@ -19,11 +21,87 @@ use super::SessionTaskContext;
 use super::SessionTaskResult;
 
 #[derive(Default)]
-pub(crate) struct RegularTask;
+pub(crate) struct RegularTask {
+    client_session: tokio::sync::Mutex<Option<ModelClientSession>>,
+}
 
 impl RegularTask {
     pub(crate) fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    async fn run_turn_local_continuation(
+        &self,
+        sess: Arc<crate::session::session::Session>,
+        ctx: Arc<TurnContext>,
+        turn_extension_data: Arc<codex_extension_api::ExtensionData>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> SessionTaskResult {
+        self.run_turn_loop(
+            sess,
+            ctx,
+            turn_extension_data,
+            input,
+            cancellation_token,
+            None,
+        )
+        .await
+    }
+
+    async fn run_turn_loop(
+        &self,
+        sess: Arc<crate::session::session::Session>,
+        ctx: Arc<TurnContext>,
+        turn_extension_data: Arc<codex_extension_api::ExtensionData>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+        prewarmed_client_session: Option<ModelClientSession>,
+    ) -> SessionTaskResult {
+        let run_turn_span = trace_span!("run_turn");
+        let mut next_input = input;
+        let mut client_session = self.client_session.lock().await;
+        if client_session.is_none() {
+            *client_session = Some(
+                prewarmed_client_session
+                    .unwrap_or_else(|| sess.services.model_client.new_session()),
+            );
+        }
+        let client_session = client_session
+            .as_mut()
+            .expect("regular task client session initialized");
+        loop {
+            let last_agent_message = run_turn(
+                Arc::clone(&sess),
+                Arc::clone(&ctx),
+                Arc::clone(&turn_extension_data),
+                next_input,
+                client_session,
+                cancellation_token.child_token(),
+            )
+            .instrument(run_turn_span.clone())
+            .await?;
+            if ctx.terminal_error.lock().await.is_some() {
+                return Ok(last_agent_message);
+            }
+            if ctx
+                .extension_data
+                .get::<OwnerContinuationDeferred>()
+                .is_some()
+                || ctx
+                    .extension_data
+                    .get::<OwnerContinuationPending>()
+                    .is_some()
+            {
+                // Keep queued steer/input work in custody, but never let the same task make a
+                // second provider request after a dormant or exhausted admission decision.
+                return Ok(last_agent_message);
+            }
+            if !sess.input_queue.has_pending_input(&sess.active_turn).await {
+                return Ok(last_agent_message);
+            }
+            next_input = Vec::new();
+        }
     }
 }
 
@@ -40,6 +118,29 @@ impl SessionTask for RegularTask {
         "session_task.turn"
     }
 
+    fn supports_turn_local_continuation(&self) -> bool {
+        true
+    }
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> impl std::future::Future<Output = SessionTaskResult> + Send {
+        async move {
+            self.run_turn_local_continuation(
+                session.clone_session(),
+                ctx,
+                session.turn_extension_data(),
+                input,
+                cancellation_token,
+            )
+            .await
+        }
+    }
+
     async fn run(
         self: Arc<Self>,
         session: Arc<SessionTaskContext>,
@@ -49,7 +150,6 @@ impl SessionTask for RegularTask {
     ) -> SessionTaskResult {
         let sess = session.clone_session();
         let turn_extension_data = session.turn_extension_data();
-        let run_turn_span = trace_span!("run_turn");
         ctx.reset_provider_usage().await;
         // Regular turns emit `TurnStarted` inline so first-turn lifecycle does
         // not wait on startup prewarm resolution.
@@ -78,38 +178,14 @@ impl SessionTask for RegularTask {
                 Some(*prewarmed_client_session)
             }
         };
-        let mut next_input = input;
-        let mut client_session =
-            prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
-        loop {
-            let last_agent_message = run_turn(
-                Arc::clone(&sess),
-                Arc::clone(&ctx),
-                Arc::clone(&turn_extension_data),
-                next_input,
-                &mut client_session,
-                cancellation_token.child_token(),
-            )
-            .instrument(run_turn_span.clone())
-            .await?;
-            // Terminal errors are already reported. Let task completion preserve pending
-            // input instead of restarting the failed turn for that same input.
-            if ctx.terminal_error.lock().await.is_some() {
-                return Ok(last_agent_message);
-            }
-            if ctx
-                .extension_data
-                .get::<OwnerContinuationDeferred>()
-                .is_some()
-            {
-                // Keep queued steer/input work in custody, but never let the same task make a
-                // second provider request after a dormant or exhausted admission decision.
-                return Ok(last_agent_message);
-            }
-            if !sess.input_queue.has_pending_input(&sess.active_turn).await {
-                return Ok(last_agent_message);
-            }
-            next_input = Vec::new();
-        }
+        self.run_turn_loop(
+            sess,
+            ctx,
+            turn_extension_data,
+            input,
+            cancellation_token,
+            prewarmed_client_session,
+        )
+        .await
     }
 }

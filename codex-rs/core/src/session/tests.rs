@@ -10067,6 +10067,240 @@ impl SessionTask for CompletingTask {
     }
 }
 
+struct TurnLocalContinuationTask {
+    initial_ready: async_channel::Sender<Vec<TurnInput>>,
+    release: Arc<tokio::sync::Notify>,
+    continuation_input: async_channel::Sender<Vec<TurnInput>>,
+    continuation_lock_released: async_channel::Sender<()>,
+}
+
+impl SessionTask for TurnLocalContinuationTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+
+    fn span_name(&self) -> &'static str {
+        "session_task.turn_local_continuation"
+    }
+
+    fn supports_turn_local_continuation(&self) -> bool {
+        true
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        _cancellation_token: CancellationToken,
+    ) -> crate::tasks::SessionTaskResult {
+        session
+            .clone_session()
+            .send_event(
+                ctx.as_ref(),
+                EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: ctx.sub_id.clone(),
+                    trace_id: ctx.trace_id.clone(),
+                    started_at: ctx.turn_timing_state.started_at_unix_secs().await,
+                    model_context_window: ctx.model_context_window(),
+                    collaboration_mode_kind: ctx.mode,
+                }),
+            )
+            .await;
+        self.initial_ready
+            .send(input)
+            .await
+            .expect("initial task receiver open");
+        self.release.notified().await;
+        Ok(None)
+    }
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<SessionTaskContext>,
+        _ctx: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        _cancellation_token: CancellationToken,
+    ) -> impl std::future::Future<Output = crate::tasks::SessionTaskResult> + Send {
+        async move {
+            // This lock acquisition would deadlock if finalization invoked the continuation
+            // before releasing its decision guards.
+            let active_turn_guard = session.clone_session().active_turn.lock().await;
+            drop(active_turn_guard);
+            self.continuation_lock_released
+                .send(())
+                .await
+                .expect("continuation lock receiver open");
+            self.continuation_input
+                .send(input)
+                .await
+                .expect("continuation receiver open");
+            Ok(None)
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn successful_late_steer_reopens_same_turn_without_duplicate_lifecycle() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    let (initial_tx, initial_rx) = async_channel::bounded(1);
+    let (continuation_tx, continuation_rx) = async_channel::bounded(1);
+    let (lock_tx, lock_rx) = async_channel::bounded(1);
+    let release = Arc::new(tokio::sync::Notify::new());
+    sess.spawn_task(
+        Arc::clone(&tc),
+        test_input("initial", None),
+        TurnLocalContinuationTask {
+            initial_ready: initial_tx,
+            release: Arc::clone(&release),
+            continuation_input: continuation_tx,
+            continuation_lock_released: lock_tx,
+        },
+    )
+    .await;
+    initial_rx.recv().await.expect("initial task should run");
+
+    let steered = test_input("late steer", Some("late-steer"));
+    sess.steer_input(
+        vec![UserInput::Text {
+            text: "late steer".to_string(),
+            text_elements: Vec::new(),
+        }],
+        /*additional_context*/ Default::default(),
+        Some(&tc.sub_id),
+        Some("late-steer".to_string()),
+        /*responsesapi_client_metadata*/ None,
+    )
+    .await
+    .expect("late steer should be accepted");
+    release.notify_one();
+
+    let continuation = timeout(StdDuration::from_secs(2), continuation_rx.recv())
+        .await
+        .expect("continuation should run")
+        .expect("continuation receiver open");
+    assert_eq!(steered, continuation);
+    timeout(StdDuration::from_secs(2), lock_rx.recv())
+        .await
+        .expect("continuation should acquire released active-turn lock")
+        .expect("continuation lock receiver open");
+
+    let mut started = 0;
+    let mut completed = 0;
+    loop {
+        let event = timeout(StdDuration::from_secs(2), rx.recv())
+            .await
+            .expect("terminal lifecycle event")
+            .expect("event receiver open");
+        match event.msg {
+            EventMsg::TurnStarted(_) => started += 1,
+            EventMsg::TurnComplete(_) => {
+                completed += 1;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(1, started, "late steer must not emit a second TurnStarted");
+    assert_eq!(1, completed, "late steer must emit one TurnComplete");
+    assert!(sess.active_turn.lock().await.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn turn_local_continuation_preserves_custody_for_owner_markers() {
+    for owner_marker_is_pending in [true, false] {
+        let (sess, tc, rx) = make_session_and_context_with_rx().await;
+        if owner_marker_is_pending {
+            tc.extension_data
+                .insert(codex_extension_api::OwnerContinuationPending);
+        } else {
+            tc.extension_data
+                .insert(codex_extension_api::OwnerContinuationDeferred);
+        }
+        let (initial_tx, initial_rx) = async_channel::bounded(1);
+        let (continuation_tx, continuation_rx) = async_channel::bounded(1);
+        let release = Arc::new(tokio::sync::Notify::new());
+        sess.spawn_task(
+            Arc::clone(&tc),
+            test_input("initial", None),
+            TurnLocalContinuationTask {
+                initial_ready: initial_tx,
+                release: Arc::clone(&release),
+                continuation_input: continuation_tx,
+                continuation_lock_released: async_channel::bounded(1).0,
+            },
+        )
+        .await;
+        initial_rx.recv().await.expect("initial task should run");
+        sess.steer_input(
+            vec![UserInput::Text {
+                text: "preserve me".to_string(),
+                text_elements: Vec::new(),
+            }],
+            /*additional_context*/ Default::default(),
+            Some(&tc.sub_id),
+            /*client_user_message_id*/ None,
+            /*responsesapi_client_metadata*/ None,
+        )
+        .await
+        .expect("steer should be accepted");
+        release.notify_one();
+        recv_terminal_event(&rx, TerminalEventKind::TurnComplete).await;
+        assert!(
+            continuation_rx.try_recv().is_err(),
+            "owner continuation markers must prevent same-task provider work"
+        );
+        assert_eq!(
+            vec!["preserve me"],
+            user_input_texts(sess.clone_history().await.raw_items())
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_turn_local_continuation_preserves_pending_input() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    let (initial_tx, initial_rx) = async_channel::bounded(1);
+    let (continuation_tx, continuation_rx) = async_channel::bounded(1);
+    let release = Arc::new(tokio::sync::Notify::new());
+    sess.spawn_task(
+        Arc::clone(&tc),
+        test_input("initial", None),
+        TurnLocalContinuationTask {
+            initial_ready: initial_tx,
+            release: Arc::clone(&release),
+            continuation_input: continuation_tx,
+            continuation_lock_released: async_channel::bounded(1).0,
+        },
+    )
+    .await;
+    initial_rx.recv().await.expect("initial task should run");
+    sess.steer_input(
+        vec![UserInput::Text {
+            text: "preserve after cancellation".to_string(),
+            text_elements: Vec::new(),
+        }],
+        /*additional_context*/ Default::default(),
+        Some(&tc.sub_id),
+        /*client_user_message_id*/ None,
+        /*responsesapi_client_metadata*/ None,
+    )
+    .await
+    .expect("steer should be accepted");
+    let (task_identity, cancellation_token, _, _) = active_task_details(&sess).await;
+    cancellation_token.cancel();
+    sess.on_task_finished(task_identity, Arc::clone(&tc), Ok(None))
+        .await;
+    release.notify_one();
+
+    recv_terminal_event(&rx, TerminalEventKind::TurnComplete).await;
+    assert!(continuation_rx.try_recv().is_err());
+    assert_eq!(
+        vec!["preserve after cancellation"],
+        user_input_texts(sess.clone_history().await.raw_items())
+    );
+}
+
 #[derive(Clone, Copy)]
 struct SelfAbortingTask;
 

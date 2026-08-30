@@ -92,6 +92,9 @@ pub(crate) struct RunningTask {
     pub(crate) handle: AbortOnDropHandle<()>,
     pub(crate) turn_context: Arc<TurnContext>,
     pub(crate) turn_extension_data: Arc<ExtensionData>,
+    /// The exact turn state this task owns. Set during publication so completion and
+    /// continuation paths can reject stale task/state pairs.
+    pub(crate) turn_state: Option<Arc<Mutex<TurnState>>>,
     pub(crate) _agent_execution_guard: Option<AgentExecutionGuard>,
     // Timer recorded when the task drops to capture the full turn duration.
     pub(crate) _timer: Option<codex_otel::Timer>,
@@ -250,6 +253,16 @@ impl TurnState {
 
     pub(crate) fn accepts_mailbox_delivery_for_current_turn(&self) -> bool {
         self.mailbox_delivery_phase == MailboxDeliveryPhase::CurrentTurn
+    }
+
+    pub(crate) fn take_turn_local_continuation_input(&mut self) -> Option<Vec<TurnInput>> {
+        let has_eligible_input = self.mailbox_delivery_phase == MailboxDeliveryPhase::CurrentTurn
+            && self.pending_input.has_non_empty_user_input();
+        has_eligible_input.then(|| self.pending_input.take_for_turn_local_continuation())
+    }
+
+    pub(crate) fn restore_turn_local_continuation_input(&mut self, input: Vec<TurnInput>) {
+        self.pending_input.restore_turn_local_continuation(input);
     }
 
     pub(crate) fn set_mailbox_delivery_phase(&mut self, phase: MailboxDeliveryPhase) {
