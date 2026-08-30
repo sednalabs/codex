@@ -713,6 +713,94 @@ async fn regular_task_run_boundary_observer_known_good_turn_finalization() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn outer_reentry_reuses_turn_client_session_state() {
+    const TURN_STATE: &str = "x-codex-turn-state";
+    let server = responses::start_websocket_server_with_headers(vec![
+        responses::WebSocketConnectionConfig {
+            requests: vec![
+                vec![
+                    responses::ev_response_created("warmup"),
+                    responses::ev_completed("warmup"),
+                ],
+                vec![
+                    json!({
+                        "type": "response.metadata",
+                        "headers": {(TURN_STATE): "outer-reentry-state"},
+                    }),
+                    responses::ev_assistant_message("msg-1", "first answer"),
+                    responses::ev_completed("resp-1"),
+                ],
+                vec![
+                    responses::ev_assistant_message("msg-2", "second answer"),
+                    responses::ev_completed("resp-2"),
+                ],
+                vec![
+                    responses::ev_assistant_message("msg-3", "third answer"),
+                    responses::ev_completed("resp-3"),
+                ],
+            ],
+            response_headers: Vec::new(),
+            accept_delay: None,
+            close_after_requests: true,
+        },
+    ])
+    .await;
+
+    let test = test_codex()
+        .with_model("gpt-5.4")
+        .with_pre_build_hook(write_blocking_stop_hook)
+        .with_config(trust_discovered_hooks)
+        .build_with_websocket_server(&server)
+        .await
+        .expect("build websocket Codex test session");
+    let codex = test.codex.clone();
+
+    submit_user_input(&codex, "first prompt").await;
+    wait_for_agent_message(&codex, "first answer").await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !test.codex_home_path().join("started_stop_hook").exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("stop hook command did not start");
+
+    steer_user_input(&codex, "second prompt").await;
+    fs::write(test.codex_home_path().join("release_stop_hook"), b"release")
+        .expect("release blocking stop hook");
+    wait_for_agent_message(&codex, "second answer").await;
+    wait_for_turn_complete(&codex).await;
+
+    submit_user_input(&codex, "third prompt").await;
+    wait_for_agent_message(&codex, "third answer").await;
+    wait_for_turn_complete(&codex).await;
+
+    let requests = server.single_connection();
+    assert_eq!(requests.len(), 4);
+    let turn_states = requests
+        .iter()
+        .map(|request| request.body_json()["client_metadata"][TURN_STATE].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        turn_states,
+        vec![json!(null), json!(null), json!("outer-reentry-state"), json!(null)]
+    );
+
+    let outer_reentry_user_texts = message_input_texts(&requests[2].body_json(), "user");
+    assert!(
+        outer_reentry_user_texts.iter().any(|text| text == "second prompt"),
+        "pending input should be handled by same logical turn outer re-entry"
+    );
+    let next_turn_user_texts = message_input_texts(&requests[3].body_json(), "user");
+    assert!(
+        next_turn_user_texts.iter().any(|text| text == "third prompt"),
+        "a new logical turn should still accept its own input"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_tasks_keep_creation_dispatcher_for_external_idle_start() {
     let (server, _completions) =
         start_streaming_sse_server(vec![response_completed_chunks("resp-dispatch")]).await;
