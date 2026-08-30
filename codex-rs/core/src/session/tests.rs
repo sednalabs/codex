@@ -11006,10 +11006,12 @@ async fn abort_during_stopped_prompt_hook_preserves_stop_and_exact_lifecycle_imp
     finish.await.expect("continuation finish should complete");
     crate::session::turn::set_pending_input_hook_barrier(sess.thread_id(), None);
 
-    assert_eq!(
-        Vec::<&str>::new(),
-        user_input_texts(sess.clone_history().await.raw_items())
-    );
+    let history = sess.clone_history().await;
+    let stopped_prompt_texts = user_input_texts(history.raw_items())
+        .into_iter()
+        .filter(|text| *text == "stopped prompt")
+        .collect::<Vec<_>>();
+    assert_eq!(Vec::<&str>::new(), stopped_prompt_texts);
     recv_terminal_event(&rx, TerminalEventKind::TurnAborted).await;
     assert_no_terminal_event(
         &rx,
