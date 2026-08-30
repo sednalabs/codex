@@ -130,6 +130,7 @@ core-turn-admission-custody-targeted:
     cargo test -p codex-core session::tests::cancelled_turn_local_continuation_preserves_pending_input_after_replacement --lib -- --exact --test-threads=1
     cargo test -p codex-core session::tests::aborted_turn_local_continuation_preserves_claimed_input_after_forced_abort --lib -- --exact --test-threads=1
     cargo test -p codex-core session::tests::compact_session_start_stop_preserves_claimed_late_steer --lib -- --exact --test-threads=1
+    cargo test -p codex-core session::input_queue::tests::drained_continuation_claim_is_restored_once_after_pre_record_exit --lib -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::pre_turn_steer suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::pre_turn_mail suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::pre_turn_triggering_mail suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::mid_turn_steer suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::mid_turn_mail suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::mid_turn_triggering_mail --exact
 
 # Focused post-run boundary observer controls for the late-input follow-up seam.
