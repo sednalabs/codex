@@ -10834,15 +10834,36 @@ async fn stale_regular_continuation_cannot_drain_replacement_sources() {
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn abort_after_continuation_restore_preserves_claim_and_newer_input() {
+#[test]
+fn abort_after_continuation_restore_preserves_claim_and_newer_input() {
+    std::thread::Builder::new()
+        .name("abort_after_continuation_restore_preserves_claim_and_newer_input".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime should build")
+                .block_on(
+                    abort_after_continuation_restore_preserves_claim_and_newer_input_impl(),
+                );
+        })
+        .expect("test thread should spawn")
+        .join()
+        .expect("test thread should complete");
+}
+
+async fn abort_after_continuation_restore_preserves_claim_and_newer_input_impl() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
     install_compact_session_start_stop_test_hook(&sess).await;
     sess.state.lock().await.queue_pending_session_start_source(
         codex_hooks::SessionStartSource::Compact,
     );
     let restore_barrier = Arc::new(crate::tasks::ContinuationRestoreBarrier::new());
-    crate::tasks::set_continuation_restore_barrier(sess.thread_id(), Some(Arc::clone(&restore_barrier)));
+    crate::tasks::set_continuation_restore_barrier(
+        sess.thread_id(),
+        Some(Arc::clone(&restore_barrier)),
+    );
 
     let (initial_tx, initial_rx) = async_channel::bounded(1);
     sess.spawn_task(
@@ -10907,8 +10928,26 @@ async fn abort_after_continuation_restore_preserves_claim_and_newer_input() {
     .await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn abort_during_stopped_prompt_hook_preserves_stop_and_exact_lifecycle() {
+#[test]
+fn abort_during_stopped_prompt_hook_preserves_stop_and_exact_lifecycle() {
+    std::thread::Builder::new()
+        .name("abort_during_stopped_prompt_hook_preserves_stop_and_exact_lifecycle".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime should build")
+                .block_on(
+                    abort_during_stopped_prompt_hook_preserves_stop_and_exact_lifecycle_impl(),
+                );
+        })
+        .expect("test thread should spawn")
+        .join()
+        .expect("test thread should complete");
+}
+
+async fn abort_during_stopped_prompt_hook_preserves_stop_and_exact_lifecycle_impl() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
     install_user_prompt_stop_test_hook(&sess).await;
     let hook_barrier = Arc::new(crate::session::turn::PendingInputHookBarrier::new());
