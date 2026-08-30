@@ -208,6 +208,7 @@ pub(crate) async fn run_turn(
             LifecycleRetryAfterPolicy::Suppress,
         )
         .await;
+        run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
         error!("Failed to run pre-sampling compact");
         return Ok(None);
     }
@@ -222,7 +223,10 @@ pub(crate) async fn run_turn(
             run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
             return Err(err);
         }
-        Err(err) => return Err(err),
+        Err(err) => {
+            run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
+            return Err(err);
+        }
     };
     // Keep the exact model-visible state used by this turn and its inline compactions.
     let (mut world_state, display_roots) = tokio::join!(
@@ -238,10 +242,12 @@ pub(crate) async fn run_turn(
     )
     .await
     else {
+        run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
         return Ok(None);
     };
 
     if run_pending_session_start_hooks(&sess, &turn_context).await {
+        run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
         return Ok(None);
     }
     let mut can_drain_pending_input = input.is_empty();
@@ -293,6 +299,9 @@ pub(crate) async fn run_turn(
         if run_hooks_and_record_inputs(&sess, &turn_context, &pending_input).await {
             break;
         }
+        sess.input_queue
+            .mark_turn_local_continuation_input_consumed(&sess.active_turn)
+            .await;
 
         let window_id = sess.current_window_id().await;
         super::rollout_budget::maybe_record_reminder(
