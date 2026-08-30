@@ -555,7 +555,7 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
         agent_nickname: None,
         agent_role: Some("worker".to_string()),
     }));
-    let child_thread_id = control
+    let child = control
         .spawn_agent_with_communication(
             config,
             test_communication("queue-only spawned child", /*trigger_turn*/ false),
@@ -565,6 +565,7 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
         )
         .await
         .expect("V2 child spawn should succeed");
+    let child_thread_id = child.thread_id;
     let child = manager
         .get_thread(child_thread_id)
         .await
