@@ -293,6 +293,9 @@ pub(crate) async fn run_turn(
         if run_hooks_and_record_inputs(&sess, &turn_context, &pending_input).await {
             break;
         }
+        sess.input_queue
+            .mark_turn_local_continuation_input_consumed(&sess.active_turn)
+            .await;
 
         let window_id = sess.current_window_id().await;
         super::rollout_budget::maybe_record_reminder(

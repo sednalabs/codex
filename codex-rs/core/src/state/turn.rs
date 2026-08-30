@@ -56,6 +56,15 @@ pub(crate) enum MailboxDeliveryPhase {
     NextTurn,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum TurnLocalContinuationInputState {
+    #[default]
+    None,
+    Held,
+    Requeued,
+    Consumed,
+}
+
 impl Default for ActiveTurn {
     fn default() -> Self {
         Self {
@@ -111,6 +120,7 @@ pub(crate) struct TurnState {
     pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pending_computer_use: HashMap<String, oneshot::Sender<ComputerUseResponse>>,
     pub(crate) pending_input: TurnInputQueue,
+    turn_local_continuation_input_state: TurnLocalContinuationInputState,
     mailbox_delivery_phase: MailboxDeliveryPhase,
     granted_permissions_by_environment_id: HashMap<String, AdditionalPermissionProfile>,
     compaction_events_in_turn: u32,
@@ -258,11 +268,40 @@ impl TurnState {
     pub(crate) fn take_turn_local_continuation_input(&mut self) -> Option<Vec<TurnInput>> {
         let has_eligible_input = self.mailbox_delivery_phase == MailboxDeliveryPhase::CurrentTurn
             && self.pending_input.has_non_empty_user_input();
-        has_eligible_input.then(|| self.pending_input.take_for_turn_local_continuation())
+        has_eligible_input.then(|| {
+            self.turn_local_continuation_input_state = TurnLocalContinuationInputState::Held;
+            self.pending_input.take_for_turn_local_continuation()
+        })
+    }
+
+    pub(crate) fn requeue_turn_local_continuation_input(&mut self, input: Vec<TurnInput>) {
+        self.pending_input.restore_turn_local_continuation(input);
+        self.turn_local_continuation_input_state = TurnLocalContinuationInputState::Requeued;
     }
 
     pub(crate) fn restore_turn_local_continuation_input(&mut self, input: Vec<TurnInput>) {
-        self.pending_input.restore_turn_local_continuation(input);
+        if self.turn_local_continuation_input_state != TurnLocalContinuationInputState::Requeued {
+            self.pending_input.restore_turn_local_continuation(input);
+        }
+        self.turn_local_continuation_input_state = TurnLocalContinuationInputState::None;
+    }
+
+    pub(crate) fn finish_turn_local_continuation_input(&mut self) {
+        self.turn_local_continuation_input_state = TurnLocalContinuationInputState::None;
+    }
+
+    pub(crate) fn mark_turn_local_continuation_input_consumed(&mut self) {
+        if self.turn_local_continuation_input_state == TurnLocalContinuationInputState::Requeued {
+            self.turn_local_continuation_input_state = TurnLocalContinuationInputState::Consumed;
+        }
+    }
+
+    pub(crate) fn turn_local_continuation_input_was_requeued(&self) -> bool {
+        self.turn_local_continuation_input_state == TurnLocalContinuationInputState::Requeued
+    }
+
+    pub(crate) fn turn_local_continuation_input_was_consumed(&self) -> bool {
+        self.turn_local_continuation_input_state == TurnLocalContinuationInputState::Consumed
     }
 
     pub(crate) fn set_mailbox_delivery_phase(&mut self, phase: MailboxDeliveryPhase) {

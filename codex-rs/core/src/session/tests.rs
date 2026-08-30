@@ -85,6 +85,7 @@ use crate::state::RunningTaskPhase;
 use crate::state::TaskIdentity;
 use crate::state::TaskKind;
 use crate::state::TurnState;
+use crate::tasks::RegularTask;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskContext;
 use crate::tasks::UserShellCommandMode;
@@ -744,6 +745,26 @@ async fn install_user_prompt_test_hook(sess: &Session) {
         .expect("test hook config"),
     )
     .expect("test hook layer");
+    sess.services.hooks.store(Arc::new(Hooks::new(HooksConfig {
+        feature_enabled: true,
+        bypass_hook_trust: true,
+        config_layer_stack: Some(stack),
+        ..HooksConfig::default()
+    })));
+}
+
+async fn install_compact_session_start_stop_test_hook(sess: &Session) {
+    let config = sess.get_config().await;
+    let stack = config.config_layer_stack.with_user_config(
+        &config.codex_home.join(CONFIG_TOML_FILE),
+        toml::from_str(
+            r#"[hooks]
+SessionStart = [{ hooks = [{ type = "command", command = "printf '%s' '{\"continue\":false,\"stopReason\":\"compact stop\"}'" }] }]
+"#,
+        )
+        .expect("session-start hook config"),
+    )
+    .expect("session-start hook layer");
     sess.services.hooks.store(Arc::new(Hooks::new(HooksConfig {
         feature_enabled: true,
         bypass_hook_trust: true,
@@ -10074,6 +10095,113 @@ struct TurnLocalContinuationTask {
     continuation_lock_released: async_channel::Sender<()>,
 }
 
+struct CancellationDuringContinuationTask {
+    initial_ready: async_channel::Sender<Vec<TurnInput>>,
+    continuation_started: async_channel::Sender<()>,
+}
+
+struct RegularContinuationHarnessTask(Arc<RegularTask>, async_channel::Sender<Vec<TurnInput>>);
+
+impl SessionTask for RegularContinuationHarnessTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+
+    fn span_name(&self) -> &'static str {
+        "session_task.regular_continuation_harness"
+    }
+
+    fn supports_turn_local_continuation(&self) -> bool {
+        true
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        _session: Arc<SessionTaskContext>,
+        _ctx: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> crate::tasks::SessionTaskResult {
+        self.1
+            .send(input)
+            .await
+            .expect("initial task receiver open");
+        cancellation_token.cancelled().await;
+        Ok(None)
+    }
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+        task_identity: crate::state::TaskIdentity,
+        turn_state: Arc<Mutex<TurnState>>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> impl std::future::Future<Output = crate::tasks::SessionTaskContinuationResult> + Send {
+        async move {
+            Arc::clone(&self.0)
+                .run_pending_input_continuation(
+                    session,
+                    ctx,
+                    task_identity,
+                    turn_state,
+                    input,
+                    cancellation_token,
+                )
+                .await
+        }
+    }
+}
+
+impl SessionTask for CancellationDuringContinuationTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+
+    fn span_name(&self) -> &'static str {
+        "session_task.cancellation_during_continuation"
+    }
+
+    fn supports_turn_local_continuation(&self) -> bool {
+        true
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        _session: Arc<SessionTaskContext>,
+        _ctx: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> crate::tasks::SessionTaskResult {
+        self.initial_ready
+            .send(input)
+            .await
+            .expect("initial task receiver open");
+        cancellation_token.cancelled().await;
+        Ok(None)
+    }
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        _session: Arc<SessionTaskContext>,
+        _ctx: Arc<TurnContext>,
+        _task_identity: crate::state::TaskIdentity,
+        _turn_state: Arc<Mutex<TurnState>>,
+        _input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> impl std::future::Future<Output = crate::tasks::SessionTaskContinuationResult> + Send {
+        async move {
+            self.continuation_started
+                .send(())
+                .await
+                .expect("continuation receiver open");
+            cancellation_token.cancelled().await;
+            crate::tasks::SessionTaskContinuationResult::retained(Ok(None))
+        }
+    }
+}
+
 impl SessionTask for TurnLocalContinuationTask {
     fn kind(&self) -> TaskKind {
         TaskKind::Regular
@@ -10119,9 +10247,11 @@ impl SessionTask for TurnLocalContinuationTask {
         self: Arc<Self>,
         session: Arc<SessionTaskContext>,
         _ctx: Arc<TurnContext>,
+        _task_identity: crate::state::TaskIdentity,
+        _turn_state: Arc<Mutex<TurnState>>,
         input: Vec<TurnInput>,
         _cancellation_token: CancellationToken,
-    ) -> impl std::future::Future<Output = crate::tasks::SessionTaskResult> + Send {
+    ) -> impl std::future::Future<Output = crate::tasks::SessionTaskContinuationResult> + Send {
         async move {
             // This lock acquisition would deadlock if finalization invoked the continuation
             // before releasing its decision guards.
@@ -10136,7 +10266,7 @@ impl SessionTask for TurnLocalContinuationTask {
                 .send(input)
                 .await
                 .expect("continuation receiver open");
-            Ok(None)
+            crate::tasks::SessionTaskContinuationResult::consumed(Ok(None))
         }
     }
 }
@@ -10205,6 +10335,12 @@ async fn successful_late_steer_reopens_same_turn_without_duplicate_lifecycle() {
     assert_eq!(1, started, "late steer must not emit a second TurnStarted");
     assert_eq!(1, completed, "late steer must emit one TurnComplete");
     assert!(sess.active_turn.lock().await.is_none());
+    assert!(
+        timeout(StdDuration::from_millis(250), rx.recv())
+            .await
+            .is_err(),
+        "late steer must not emit a second terminal lifecycle event"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -10298,6 +10434,97 @@ async fn cancelled_turn_local_continuation_preserves_pending_input() {
     assert!(continuation_rx.try_recv().is_err());
     assert_eq!(
         vec!["preserve after cancellation"],
+        user_input_texts(sess.clone_history().await.raw_items())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_turn_local_continuation_preserves_pending_input_after_replacement() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let (initial_tx, initial_rx) = async_channel::bounded(1);
+    let (continuation_started_tx, continuation_started_rx) = async_channel::bounded(1);
+    sess.spawn_task(
+        Arc::clone(&tc),
+        test_input("initial", None),
+        CancellationDuringContinuationTask {
+            initial_ready: initial_tx,
+            continuation_started: continuation_started_tx,
+        },
+    )
+    .await;
+    initial_rx.recv().await.expect("initial task should run");
+    sess.steer_input(
+        vec![UserInput::Text {
+            text: "preserve after replacement".to_string(),
+            text_elements: Vec::new(),
+        }],
+        /*additional_context*/ Default::default(),
+        Some(&tc.sub_id),
+        /*client_user_message_id*/ None,
+        /*responsesapi_client_metadata*/ None,
+    )
+    .await
+    .expect("steer should be accepted");
+    let (task_identity, _, _, _) = active_task_details(&sess).await;
+    let finish = tokio::spawn({
+        let sess = Arc::clone(&sess);
+        let tc = Arc::clone(&tc);
+        async move {
+            sess.on_task_finished(task_identity, tc, Ok(None)).await;
+        }
+    });
+    continuation_started_rx
+        .recv()
+        .await
+        .expect("continuation should start before replacement");
+
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+    finish.await.expect("finish task should complete");
+
+    assert!(sess.active_turn.lock().await.is_none());
+    assert_eq!(
+        vec!["preserve after replacement"],
+        user_input_texts(sess.clone_history().await.raw_items())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_session_start_stop_preserves_claimed_late_steer() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    install_compact_session_start_stop_test_hook(&sess).await;
+    sess.state
+        .lock()
+        .await
+        .queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
+
+    let (initial_tx, initial_rx) = async_channel::bounded(1);
+    sess.spawn_task(
+        Arc::clone(&tc),
+        test_input("initial", None),
+        RegularContinuationHarnessTask(Arc::new(RegularTask::new()), initial_tx),
+    )
+    .await;
+    initial_rx.recv().await.expect("initial task should run");
+    sess.steer_input(
+        vec![UserInput::Text {
+            text: "preserve after compact hook stop".to_string(),
+            text_elements: Vec::new(),
+        }],
+        /*additional_context*/ Default::default(),
+        Some(&tc.sub_id),
+        /*client_user_message_id*/ None,
+        /*responsesapi_client_metadata*/ None,
+    )
+    .await
+    .expect("steer should be accepted");
+    let (task_identity, task_token, _, _) = active_task_details(&sess).await;
+    sess.on_task_finished(task_identity, Arc::clone(&tc), Ok(None))
+        .await;
+    task_token.cancel();
+
+    recv_terminal_event(&rx, TerminalEventKind::TurnComplete).await;
+    assert_eq!(
+        vec!["preserve after compact hook stop"],
         user_input_texts(sess.clone_history().await.raw_items())
     );
 }

@@ -124,6 +124,11 @@ core-turn-admission-custody-targeted:
     cargo test -p codex-core session::tests::generic_reserved_start_remains_available_in_plan_mode --lib -- --exact --test-threads=1
     cargo test -p codex-core session::tests::stale_reserved_start_preserves_replacement_and_input --lib -- --exact --test-threads=1
     cargo test -p codex-core session::tests::pending_wake_stale_reservation_preserves_replacement_and_sources --lib -- --exact --test-threads=1
+    cargo test -p codex-core session::tests::successful_late_steer_reopens_same_turn_without_duplicate_lifecycle --lib -- --exact --test-threads=1
+    cargo test -p codex-core session::tests::turn_local_continuation_preserves_custody_for_owner_markers --lib -- --exact --test-threads=1
+    cargo test -p codex-core session::tests::cancelled_turn_local_continuation_preserves_pending_input --lib -- --exact --test-threads=1
+    cargo test -p codex-core session::tests::cancelled_turn_local_continuation_preserves_pending_input_after_replacement --lib -- --exact --test-threads=1
+    cargo test -p codex-core session::tests::compact_session_start_stop_preserves_claimed_late_steer --lib -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::pre_turn_steer suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::pre_turn_mail suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::pre_turn_triggering_mail suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::mid_turn_steer suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::mid_turn_mail suite::pending_input::terminal_compaction_error_does_not_retry_pending_input::mid_turn_triggering_mail --exact
 
 # Focused post-run boundary observer controls for the late-input follow-up seam.
