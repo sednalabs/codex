@@ -30,9 +30,6 @@ use crate::codex_thread::BackgroundTerminalInfo;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
 use crate::config::Config;
 use crate::context::ContextualUserFragment;
-use crate::hook_runtime::inspect_pending_input;
-use crate::hook_runtime::record_additional_contexts;
-use crate::hook_runtime::record_pending_input;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::turn::run_hooks_and_record_inputs;
@@ -1595,27 +1592,7 @@ impl Session {
             if next_input.is_empty() && !next_processing_claim {
                 break;
             }
-            let mut pending_input = next_input;
-            for pending_input_item in pending_input.drain(..) {
-                let hook_outcome =
-                    inspect_pending_input(self, &turn_context, &pending_input_item).await;
-                if hook_outcome.should_stop {
-                    record_additional_contexts(
-                        self,
-                        &turn_context,
-                        hook_outcome.additional_contexts,
-                    )
-                    .await;
-                } else {
-                    record_pending_input(
-                        self,
-                        &turn_context,
-                        pending_input_item,
-                        hook_outcome.additional_contexts,
-                    )
-                    .await;
-                }
-            }
+            run_hooks_and_record_inputs(self, &turn_context, &next_input).await;
             if next_processing_claim {
                 turn_state
                     .lock()
