@@ -78,6 +78,17 @@ const TASK_COMPACT_METRIC: &str = "codex.task.compact";
 
 pub(crate) type SessionTaskResult = CodexResult<Option<String>>;
 
+/// Captured identity and turn state for a same-task continuation.
+///
+/// Continuations may outlive the active-turn slot while an abort or replacement is in flight, so
+/// every queue access must validate this pair instead of consulting the current session-global
+/// task state.
+#[derive(Clone)]
+pub(crate) struct TaskContinuationContext {
+    pub(crate) task_identity: TaskIdentity,
+    pub(crate) turn_state: Arc<tokio::sync::Mutex<TurnState>>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ContinuationInputDisposition {
     Consumed,
