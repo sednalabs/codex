@@ -463,7 +463,9 @@ impl InputQueue {
                     let accepts_mailbox_delivery =
                         turn_state.accepts_mailbox_delivery_for_current_turn();
                     let pending_input = if accepts_mailbox_delivery {
-                        turn_state.pending_input.items.split_off(0)
+                        let pending_input = turn_state.pending_input.items.split_off(0);
+                        turn_state.mark_turn_local_continuation_input_drained();
+                        pending_input
                     } else {
                         Vec::new()
                     };
@@ -486,6 +488,24 @@ impl InputQueue {
             pending_input.extend(mailbox_items);
             pending_input.extend(terminal_items);
             pending_input
+        }
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "continuation custody is committed only after hooks record the drained input"
+    )]
+    pub(crate) async fn mark_turn_local_continuation_input_consumed(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+    ) {
+        let mut active = active_turn.lock().await;
+        if let Some(active_turn) = active.as_mut() {
+            active_turn
+                .turn_state
+                .lock()
+                .await
+                .mark_turn_local_continuation_input_consumed();
         }
     }
 
@@ -874,5 +894,65 @@ mod tests {
             ))
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
+    }
+
+    #[tokio::test]
+    async fn drained_continuation_claim_is_restored_once_after_pre_record_exit() {
+        let input_queue = InputQueue::new();
+        let turn_state = Arc::new(Mutex::new(TurnState::default()));
+        let active_turn = Mutex::new(Some(ActiveTurn {
+            task: None,
+            turn_state: Arc::clone(&turn_state),
+        }));
+        let input = vec![TurnInput::UserInput {
+            content: vec![UserInput::Text {
+                text: "restore after hook exit".to_string(),
+                text_elements: Vec::new(),
+            }],
+            client_id: None,
+        }];
+
+        turn_state
+            .lock()
+            .await
+            .requeue_turn_local_continuation_input(input.clone());
+        assert_eq!(input, input_queue.get_pending_input(&active_turn).await);
+
+        // The continuation has drained the claim but exited before input recording. Restoration
+        // must put the claim back even if a newer steer arrived in the meantime.
+        let newer_input = vec![TurnInput::UserInput {
+            content: vec![UserInput::Text {
+                text: "newer steer".to_string(),
+                text_elements: Vec::new(),
+            }],
+            client_id: None,
+        }];
+        input_queue
+            .extend_pending_input_for_turn_state(&turn_state, newer_input.clone())
+            .await;
+        turn_state
+            .lock()
+            .await
+            .restore_turn_local_continuation_input(input.clone());
+        let mut expected = input.clone();
+        expected.extend(newer_input);
+        assert_eq!(
+            expected,
+            input_queue
+                .clone_pending_input_for_turn_state(&turn_state)
+                .await
+        );
+
+        // A second cleanup notification must not duplicate a claim that was already restored.
+        turn_state
+            .lock()
+            .await
+            .restore_turn_local_continuation_input(input.clone());
+        assert_eq!(
+            input,
+            input_queue
+                .clone_pending_input_for_turn_state(&turn_state)
+                .await
+        );
     }
 }
