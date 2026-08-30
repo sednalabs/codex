@@ -590,9 +590,9 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
 
     // Let the watcher poll its sleep future before advancing paused time. Without this handoff,
     // the test can advance past the deadline before the newly armed timer is registered.
-    yield_now().await;
+    settle_terminal_idle_watcher().await;
     advance(Duration::from_millis(99)).await;
-    yield_now().await;
+    settle_terminal_idle_watcher().await;
     let before_deadline = manager
         .get_thread(child_thread_id)
         .await
@@ -600,9 +600,16 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
     assert!(Arc::ptr_eq(&before_deadline, &child));
     assert_eq!(control.v2_residency.resident_count(), 1);
 
-    yield_now().await;
     advance(Duration::from_millis(1)).await;
-    wait_for_thread_to_unload_after_terminal_idle_deadline(&manager, child_thread_id).await;
+    // The watcher may only observe the paused-clock deadline after this task yields. Advance
+    // bounded idle intervals so a deferred unload is retried without relying on wall-clock sleeps.
+    assert_thread_unloads_within_terminal_idle_intervals(
+        &manager,
+        child_thread_id,
+        Duration::from_millis(100),
+        /*max_intervals*/ 2,
+    )
+    .await;
     assert_eq!(control.v2_residency.resident_count(), 0);
 }
 
@@ -1015,6 +1022,7 @@ async fn assert_thread_unloads_within_terminal_idle_intervals(
     max_intervals: usize,
 ) {
     for _ in 0..max_intervals {
+        settle_terminal_idle_watcher().await;
         advance(interval).await;
         if thread_unloads_after_terminal_idle_deadline(manager, thread_id).await {
             return;
