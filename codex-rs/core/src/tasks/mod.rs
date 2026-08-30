@@ -78,6 +78,33 @@ const TASK_COMPACT_METRIC: &str = "codex.task.compact";
 
 pub(crate) type SessionTaskResult = CodexResult<Option<String>>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ContinuationInputDisposition {
+    Consumed,
+    Retained,
+}
+
+pub(crate) struct SessionTaskContinuationResult {
+    pub(crate) result: SessionTaskResult,
+    pub(crate) input_disposition: ContinuationInputDisposition,
+}
+
+impl SessionTaskContinuationResult {
+    pub(crate) fn consumed(result: SessionTaskResult) -> Self {
+        Self {
+            result,
+            input_disposition: ContinuationInputDisposition::Consumed,
+        }
+    }
+
+    pub(crate) fn retained(result: SessionTaskResult) -> Self {
+        Self {
+            result,
+            input_disposition: ContinuationInputDisposition::Retained,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RejectedInitialInputDisposition {
     Discard,
@@ -101,6 +128,7 @@ struct LateSteerContinuation {
     task: Arc<dyn AnySessionTask>,
     turn_extension_data: Arc<ExtensionData>,
     cancellation_token: CancellationToken,
+    turn_state: Arc<tokio::sync::Mutex<TurnState>>,
     input: Vec<TurnInput>,
 }
 
@@ -403,12 +431,22 @@ pub(crate) trait SessionTask: Send + Sync + 'static {
         self: Arc<Self>,
         session: Arc<SessionTaskContext>,
         ctx: Arc<TurnContext>,
+        task_identity: TaskIdentity,
+        turn_state: Arc<tokio::sync::Mutex<TurnState>>,
         input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
-    ) -> impl std::future::Future<Output = SessionTaskResult> + Send {
+    ) -> impl std::future::Future<Output = SessionTaskContinuationResult> + Send {
         async move {
-            let _ = (self, session, ctx, input, cancellation_token);
-            Ok(None)
+            let _ = (
+                self,
+                session,
+                ctx,
+                task_identity,
+                turn_state,
+                input,
+                cancellation_token,
+            );
+            SessionTaskContinuationResult::retained(Ok(None))
         }
     }
 
@@ -471,9 +509,11 @@ pub(crate) trait AnySessionTask: Send + Sync + 'static {
         self: Arc<Self>,
         session: Arc<SessionTaskContext>,
         ctx: Arc<TurnContext>,
+        task_identity: TaskIdentity,
+        turn_state: Arc<tokio::sync::Mutex<TurnState>>,
         input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
-    ) -> BoxFuture<'static, SessionTaskResult>;
+    ) -> BoxFuture<'static, SessionTaskContinuationResult>;
 }
 
 impl<T> AnySessionTask for T
@@ -520,13 +560,17 @@ where
         self: Arc<Self>,
         session: Arc<SessionTaskContext>,
         ctx: Arc<TurnContext>,
+        task_identity: TaskIdentity,
+        turn_state: Arc<tokio::sync::Mutex<TurnState>>,
         input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
-    ) -> BoxFuture<'static, SessionTaskResult> {
+    ) -> BoxFuture<'static, SessionTaskContinuationResult> {
         Box::pin(SessionTask::run_pending_input_continuation(
             self,
             session,
             ctx,
+            task_identity,
+            turn_state,
             input,
             cancellation_token,
         ))
@@ -1005,14 +1049,19 @@ impl Session {
             }
         }
 
-        if let Some(turn_context) = turn_context.as_deref() {
-            self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
-                .await;
-        }
         if let Some(active_turn) = active_turn_to_clear {
+            self.record_interrupted_turn_local_continuation_input(
+                turn_context.as_ref(),
+                &active_turn.turn_state,
+            )
+            .await;
             // Let interrupted tasks observe cancellation before dropping pending approvals, or an
             // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
             self.input_queue.clear_pending(&active_turn).await;
+        }
+        if let Some(turn_context) = turn_context.as_deref() {
+            self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
+                .await;
         }
         if reason == TurnAbortReason::Interrupted && restart_pending_work && aborted_turn {
             self.maybe_start_turn_for_pending_work().await;
@@ -1046,19 +1095,41 @@ impl Session {
         if let Some(task) = task {
             self.handle_task_abort(task, reason.clone()).await;
         }
+        self.record_interrupted_turn_local_continuation_input(
+            turn_context.as_ref(),
+            &active_turn.turn_state,
+        )
+        .await;
+        // Let interrupted tasks observe cancellation before dropping pending approvals, or an
+        // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+        self.input_queue.clear_pending(&active_turn).await;
         if let Some(turn_context) = turn_context.as_deref() {
             self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
                 .await;
         }
-        // Let interrupted tasks observe cancellation before dropping pending approvals, or an
-        // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
-        self.input_queue.clear_pending(&active_turn).await;
 
         if reason == TurnAbortReason::Interrupted {
             self.maybe_start_turn_for_pending_work().await;
         }
 
         true
+    }
+
+    async fn record_interrupted_turn_local_continuation_input(
+        self: &Arc<Self>,
+        turn_context: Option<&Arc<TurnContext>>,
+        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+    ) {
+        let Some(turn_context) = turn_context else {
+            return;
+        };
+        let input = turn_state
+            .lock()
+            .await
+            .take_turn_local_continuation_input_for_abort();
+        if let Some(input) = input {
+            run_hooks_and_record_inputs(self, turn_context, &input).await;
+        }
     }
 
     pub async fn on_task_finished(
@@ -1096,24 +1167,45 @@ impl Session {
                     .get::<OwnerContinuationDeferred>()
                     .is_some()
             {
-                self.restore_turn_local_continuation_input(
+                self.restore_or_record_turn_local_continuation_input(
                     task_identity,
                     &turn_context,
+                    Arc::clone(&continuation.turn_state),
                     continuation.input,
                 )
                 .await;
                 break;
             }
-            task_result = continuation
+            let continuation_result = continuation
                 .task
                 .run_pending_input_continuation(
                     continuation_context,
                     Arc::clone(&turn_context),
-                    continuation.input,
+                    task_identity,
+                    Arc::clone(&continuation.turn_state),
+                    continuation.input.clone(),
                     continuation.cancellation_token.child_token(),
                 )
                 .await;
-            if continuation.cancellation_token.is_cancelled() {
+            let input_consumed =
+                continuation_result.input_disposition == ContinuationInputDisposition::Consumed;
+            if input_consumed {
+                continuation
+                    .turn_state
+                    .lock()
+                    .await
+                    .finish_turn_local_continuation_input();
+            } else {
+                self.restore_or_record_turn_local_continuation_input(
+                    task_identity,
+                    &turn_context,
+                    Arc::clone(&continuation.turn_state),
+                    continuation.input,
+                )
+                .await;
+            }
+            task_result = continuation_result.result;
+            if !input_consumed || continuation.cancellation_token.is_cancelled() {
                 break;
             }
         }
@@ -1457,45 +1549,105 @@ impl Session {
             return None;
         }
         let input = turn_state_guard.take_turn_local_continuation_input()?;
+        drop(terminal_error);
+        drop(turn_state_guard);
         Some(LateSteerContinuation {
             task: Arc::clone(&task.task),
             turn_extension_data: Arc::clone(&task.turn_extension_data),
             cancellation_token: task.cancellation_token.clone(),
+            turn_state,
             input,
         })
     }
 
     #[expect(
         clippy::await_holding_invalid_type,
-        reason = "continuation custody is restored for the exact active task"
+        reason = "continuation input is requeued for the exact active task"
     )]
-    async fn restore_turn_local_continuation_input(
+    pub(crate) async fn requeue_turn_local_continuation_input(
         &self,
         task_identity: TaskIdentity,
         turn_context: &Arc<TurnContext>,
+        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
         input: Vec<TurnInput>,
-    ) {
+    ) -> bool {
         let _transition = self.input_queue.lock_task_transition().await;
         let mut active = self.active_turn.lock().await;
         let Some(active_turn) = active.as_mut() else {
-            return;
+            return false;
         };
         let exact_task = active_turn.task.as_ref().is_some_and(|task| {
             task.identity == task_identity
                 && task.phase == RunningTaskPhase::Running
+                && !task.cancellation_token.is_cancelled()
                 && Arc::ptr_eq(&task.turn_context, turn_context)
                 && task.turn_context.sub_id == turn_context.sub_id
                 && task
                     .turn_state
                     .as_ref()
-                    .is_some_and(|task_state| Arc::ptr_eq(task_state, &active_turn.turn_state))
+                    .is_some_and(|task_state| Arc::ptr_eq(task_state, turn_state))
+                && Arc::ptr_eq(&active_turn.turn_state, turn_state)
         });
-        if exact_task {
-            active_turn
-                .turn_state
+        if !exact_task {
+            return false;
+        }
+        turn_state
+            .lock()
+            .await
+            .requeue_turn_local_continuation_input(input);
+        true
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "continuation custody is restored for the exact active task"
+    )]
+    async fn restore_or_record_turn_local_continuation_input(
+        self: &Arc<Self>,
+        task_identity: TaskIdentity,
+        turn_context: &Arc<TurnContext>,
+        turn_state: Arc<tokio::sync::Mutex<TurnState>>,
+        input: Vec<TurnInput>,
+    ) {
+        let restored_to_active_task = {
+            let _transition = self.input_queue.lock_task_transition().await;
+            let mut active = self.active_turn.lock().await;
+            match active.as_mut() {
+                Some(active_turn)
+                    if active_turn.task.as_ref().is_some_and(|task| {
+                        task.identity == task_identity
+                            && task.phase == RunningTaskPhase::Running
+                            && Arc::ptr_eq(&task.turn_context, turn_context)
+                            && task.turn_context.sub_id == turn_context.sub_id
+                            && task
+                                .turn_state
+                                .as_ref()
+                                .is_some_and(|task_state| Arc::ptr_eq(task_state, &turn_state))
+                            && Arc::ptr_eq(&active_turn.turn_state, &turn_state)
+                    }) =>
+                {
+                    turn_state
+                        .lock()
+                        .await
+                        .restore_turn_local_continuation_input(input.clone());
+                    true
+                }
+                _ => false,
+            }
+        };
+        if !restored_to_active_task {
+            // The active task may have been removed while the continuation was in flight. Do
+            // not resurrect or contaminate a replacement task; persist the exact claimed input
+            // against its original turn context instead.
+            let claimed_input = turn_state
                 .lock()
                 .await
-                .restore_turn_local_continuation_input(input);
+                .take_turn_local_continuation_input_for_abort();
+            if let Some(claimed_input) = claimed_input {
+                for input_item in claimed_input {
+                    record_pending_input(self, turn_context, input_item, Vec::new()).await;
+                }
+            }
         }
     }
 

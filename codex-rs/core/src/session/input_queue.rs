@@ -491,6 +491,24 @@ impl InputQueue {
 
     #[expect(
         clippy::await_holding_invalid_type,
+        reason = "continuation custody is committed only after hooks record the drained input"
+    )]
+    pub(crate) async fn mark_turn_local_continuation_input_consumed(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+    ) {
+        let mut active = active_turn.lock().await;
+        if let Some(active_turn) = active.as_mut() {
+            active_turn
+                .turn_state
+                .lock()
+                .await
+                .mark_turn_local_continuation_input_consumed();
+        }
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state reads must remain atomic"
     )]
     pub(crate) async fn has_pending_input(&self, active_turn: &Mutex<Option<ActiveTurn>>) -> bool {
