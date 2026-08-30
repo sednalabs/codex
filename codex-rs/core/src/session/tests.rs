@@ -11186,7 +11186,8 @@ async fn real_start_task_finalization_claim_captures_post_drain_steer() {
 
     recv_terminal_event(&rx, TerminalEventKind::TurnComplete).await;
     crate::session::turn::set_pending_input_hook_barrier(sess.thread_id(), None);
-    let texts = user_input_texts(sess.clone_history().await.raw_items());
+    let history = sess.clone_history().await;
+    let texts = user_input_texts(history.raw_items());
     assert_eq!(
         vec!["A", "B"],
         texts
