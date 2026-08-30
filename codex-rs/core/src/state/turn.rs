@@ -506,7 +506,7 @@ impl TurnState {
     }
 
     /// Takes the input still owned by a continuation that was interrupted before it committed a
-    /// disposition. The pending-input queue is cleared separately by abort cleanup.
+    /// disposition and removes only its mirrored prefix from the pending-input queue.
     pub(crate) fn take_turn_local_continuation_input_for_abort(
         &mut self,
     ) -> Option<Vec<TurnInput>> {
@@ -519,7 +519,16 @@ impl TurnState {
             return None;
         }
         self.turn_local_continuation_input_state = TurnLocalContinuationInputState::None;
-        self.turn_local_continuation_input.take()
+        let input = self.turn_local_continuation_input.take();
+        // A requeued claim is mirrored at the front of the pending queue. Once abort cleanup
+        // takes ownership of the captured claim, remove only that mirror so any newer pending
+        // input remains available for the separate abort cleanup drain.
+        if let Some(input) = input.as_ref()
+            && self.pending_input.items.starts_with(input)
+        {
+            self.pending_input.items.drain(..input.len());
+        }
+        input
     }
 
     pub(crate) fn turn_local_continuation_input_is_hook_processing(&self) -> bool {
