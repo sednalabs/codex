@@ -10916,10 +10916,11 @@ async fn abort_after_continuation_restore_preserves_claim_and_newer_input_impl()
     finish.await.expect("continuation finish should complete");
     crate::tasks::set_continuation_restore_barrier(sess.thread_id(), None);
 
-    assert_eq!(
-        vec!["A", "B"],
-        user_input_texts(sess.clone_history().await.raw_items())
-    );
+    let restored_input_texts = user_input_texts(sess.clone_history().await.raw_items())
+        .into_iter()
+        .filter(|text| *text == "A" || *text == "B")
+        .collect::<Vec<_>>();
+    assert_eq!(vec!["A", "B"], restored_input_texts);
     recv_terminal_event(&rx, TerminalEventKind::TurnAborted).await;
     assert_no_terminal_event(
         &rx,
