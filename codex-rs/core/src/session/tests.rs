@@ -10646,9 +10646,14 @@ async fn compact_session_start_stop_preserves_claimed_late_steer() {
         "session-start hook stop must not emit a second terminal lifecycle event",
     )
     .await;
+    let history = sess.clone_history().await;
+    let preserved_late_steer_count = user_input_texts(history.raw_items())
+        .into_iter()
+        .filter(|text| *text == "preserve after compact hook stop")
+        .count();
     assert_eq!(
-        vec!["preserve after compact hook stop"],
-        user_input_texts(sess.clone_history().await.raw_items())
+        1, preserved_late_steer_count,
+        "compact session-start stop must record the claimed late steer exactly once"
     );
 }
 
