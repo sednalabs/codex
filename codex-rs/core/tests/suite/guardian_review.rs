@@ -685,6 +685,7 @@ async fn guardian_node_repl_policy_follows_production_approval_path(
             let repl: McpServerConfig = serde_json::from_value(json!({
                 "command": mcp_server_bin,
                 "environment_id": remote_aware_environment_id(),
+                "cwd": config.cwd,
                 "default_tools_approval_mode": "prompt",
                 "env": { "MCP_TEST_ENABLE_NODE_REPL_JS": "1" }
             }))

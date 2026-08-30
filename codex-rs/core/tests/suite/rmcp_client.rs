@@ -96,6 +96,7 @@ use core_test_support::stdio_server_bin;
 use core_test_support::submit_thread_settings;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
+use core_test_support::test_codex::test_env;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::test_docker_container_name;
 use core_test_support::wait_for_event;
@@ -342,9 +343,17 @@ fn stdio_transport_with_cwd(
 fn insert_mcp_server(
     config: &mut Config,
     server_name: &str,
-    transport: McpServerTransportConfig,
+    mut transport: McpServerTransportConfig,
     options: TestMcpServerOptions,
 ) {
+    // Executor stdio has no host-local cwd fallback. Use the fixture's selected
+    // workspace unless this test supplied a more specific server directory.
+    if options.environment_id == REMOTE_MCP_ENVIRONMENT
+        && let McpServerTransportConfig::Stdio { cwd, .. } = &mut transport
+        && cwd.is_none()
+    {
+        *cwd = Some(LegacyAppPathString::from_path(config.cwd.as_path()));
+    }
     let mut servers = config.mcp_servers.get().clone();
     servers.insert(
         server_name.to_string(),
@@ -699,12 +708,14 @@ async fn environment_mcp_policy_filters_runtime_config_and_model_tools(
     let command = remote_aware_stdio_server_bin()?;
     let allowed_command = command.clone();
     let codex_home = Arc::new(tempdir()?);
+    let test_env = test_env().await?;
     if from_plugin {
         let plugin_root =
             super::plugins::write_sample_plugin_manifest_and_config(codex_home.as_ref());
         let plugin_server = json!({
             "command": command,
             "environment_id": remote_aware_environment_id(),
+            "cwd": test_env.cwd(),
         });
         fs::write(
             plugin_root.join(".mcp.json"),
@@ -743,7 +754,7 @@ async fn environment_mcp_policy_filters_runtime_config_and_model_tools(
                 },
             );
         })
-        .build_with_auto_env(&server)
+        .build_with_environment(&server, test_env)
         .await?;
 
     let selection = fixture

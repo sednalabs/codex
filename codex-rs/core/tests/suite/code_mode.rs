@@ -915,6 +915,7 @@ async fn code_mode_excludes_mcp_servers_using_their_configured_identity() -> Res
                         serde_json::from_value(serde_json::json!({
                             "command": rmcp_test_server_bin,
                             "environment_id": environment_id,
+                            "cwd": config.cwd,
                             "omit_tools_from": omit_tools_from,
                         }))
                         .expect("test MCP server config should be valid"),
@@ -1149,6 +1150,7 @@ async fn mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure() -> 
                         serde_json::from_value(serde_json::json!({
                             "command": rmcp_test_server_bin,
                             "environment_id": environment_id,
+                            "cwd": config.cwd,
                             "omit_tools_from": omit_tools_from,
                         }))
                         .expect("test MCP server config should be valid"),
@@ -4348,6 +4350,7 @@ async fn code_mode_node_repl_screenshots_can_be_captured_without_guardian_transc
         let mcp = serde_json::from_value(serde_json::json!({
             "command": mcp_server_bin,
             "environment_id": remote_aware_environment_id(),
+            "cwd": config.cwd,
             "env": { "MCP_TEST_ENABLE_NODE_REPL_JS": "1" },
             "omit_tools_from": ["deferred"],
         }))
@@ -4441,6 +4444,7 @@ async fn code_mode_node_repl_image_flag_without_enhanced_stays_disabled(
             let mcp = serde_json::from_value(serde_json::json!({
                 "command": mcp_server_bin,
                 "environment_id": remote_aware_environment_id(),
+                "cwd": config.cwd,
                 "env": { "MCP_TEST_ENABLE_NODE_REPL_JS": "1" },
                 "omit_tools_from": ["deferred"],
             }))
@@ -4603,6 +4607,7 @@ async fn code_mode_node_repl_text_evidence_is_visible_only_to_guardian(
             let mcp: McpServerConfig = serde_json::from_value(serde_json::json!({
                 "command": mcp_server_bin,
                 "environment_id": remote_aware_environment_id(),
+                "cwd": config.cwd,
                 "env": {
                     "MCP_TEST_ENABLE_NODE_REPL_JS": "1",
                     "MCP_TEST_IMAGE_DATA_URL": format!("data:image/png;base64,{}", BASE64_STANDARD.encode(large_image.into_inner())),
@@ -5917,6 +5922,7 @@ async fn code_mode_omits_configured_mcp_server_tools() -> Result<()> {
                 serde_json::from_value(serde_json::json!({
                     "command": rmcp_test_server_bin,
                     "environment_id": environment_id,
+                    "cwd": config.cwd,
                     "omit_tools_from": ["code_mode"],
                 }))
                 .expect("test MCP server config should be valid"),
@@ -6008,6 +6014,7 @@ async fn code_mode_only_keeps_mcp_tools_direct_when_nested_exposure_is_omitted()
                 serde_json::from_value(serde_json::json!({
                     "command": rmcp_test_server_bin,
                     "environment_id": environment_id,
+                    "cwd": config.cwd,
                     "omit_tools_from": ["code_mode"],
                 }))
                 .expect("test MCP server config should be valid"),
@@ -6101,6 +6108,7 @@ async fn code_mode_only_can_call_mcp_tools_hidden_from_direct_and_deferred_expos
                 serde_json::from_value(serde_json::json!({
                     "command": rmcp_test_server_bin,
                     "environment_id": environment_id,
+                    "cwd": config.cwd,
                     "omit_tools_from": ["direct", "deferred"],
                     "supports_parallel_tool_calls": true,
                 }))
