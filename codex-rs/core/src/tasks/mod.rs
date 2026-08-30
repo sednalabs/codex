@@ -1145,6 +1145,7 @@ impl Session {
             task.abort_handle = Some(handle.abort_handle());
             drop(handle.detach());
         }
+        drop(turn_state_guard);
         Some(turn_state)
     }
 
@@ -1559,8 +1560,6 @@ impl Session {
                 (None, None)
             }
         };
-        let mut pending_input = Vec::new();
-        let mut processing_claim = false;
         loop {
             let (next_input, next_processing_claim) = {
                 let _transition = self.input_queue.lock_task_transition().await;
@@ -1596,8 +1595,7 @@ impl Session {
             if next_input.is_empty() && !next_processing_claim {
                 break;
             }
-            pending_input = next_input;
-            processing_claim = next_processing_claim;
+            let mut pending_input = next_input;
             for pending_input_item in pending_input.drain(..) {
                 let hook_outcome =
                     inspect_pending_input(self, &turn_context, &pending_input_item).await;
@@ -1618,12 +1616,11 @@ impl Session {
                     .await;
                 }
             }
-            if processing_claim {
+            if next_processing_claim {
                 turn_state
                     .lock()
                     .await
                     .mark_turn_local_continuation_input_consumed();
-                processing_claim = false;
             }
         }
         if !turn_state.lock().await.finalization_allows_progress() {
