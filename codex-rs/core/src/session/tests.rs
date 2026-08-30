@@ -10125,7 +10125,8 @@ impl SessionTask for TurnLocalContinuationTask {
         async move {
             // This lock acquisition would deadlock if finalization invoked the continuation
             // before releasing its decision guards.
-            let active_turn_guard = session.clone_session().active_turn.lock().await;
+            let session = session.clone_session();
+            let active_turn_guard = session.active_turn.lock().await;
             drop(active_turn_guard);
             self.continuation_lock_released
                 .send(())
