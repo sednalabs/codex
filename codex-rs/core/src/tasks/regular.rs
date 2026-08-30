@@ -8,7 +8,9 @@ use crate::session::turn::run_hooks_and_record_inputs;
 use crate::session::turn::run_turn;
 use crate::session::turn_context::TurnContext;
 use crate::session_startup_prewarm::SessionStartupPrewarmResolution;
+use crate::state::TaskIdentity;
 use crate::state::TaskKind;
+use crate::state::TurnState;
 use codex_extension_api::OwnerContinuationDeferred;
 use codex_extension_api::OwnerContinuationPending;
 use codex_protocol::protocol::EventMsg;
@@ -18,6 +20,7 @@ use tracing::trace_span;
 
 use super::SessionTask;
 use super::SessionTaskContext;
+use super::SessionTaskContinuationResult;
 use super::SessionTaskResult;
 
 #[derive(Default)]
@@ -35,18 +38,37 @@ impl RegularTask {
         sess: Arc<crate::session::session::Session>,
         ctx: Arc<TurnContext>,
         turn_extension_data: Arc<codex_extension_api::ExtensionData>,
+        task_identity: TaskIdentity,
+        turn_state: Arc<tokio::sync::Mutex<TurnState>>,
         input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
-    ) -> SessionTaskResult {
-        self.run_turn_loop(
-            sess,
-            ctx,
-            turn_extension_data,
-            input,
-            cancellation_token,
-            None,
-        )
-        .await
+    ) -> SessionTaskContinuationResult {
+        if !sess
+            .requeue_turn_local_continuation_input(task_identity, &ctx, &turn_state, input)
+            .await
+        {
+            return SessionTaskContinuationResult::retained(Ok(None));
+        }
+        let result = self
+            .run_turn_loop(
+                sess,
+                ctx,
+                turn_extension_data,
+                Vec::new(),
+                cancellation_token,
+                None,
+                Some(Arc::clone(&turn_state)),
+            )
+            .await;
+        if turn_state
+            .lock()
+            .await
+            .turn_local_continuation_input_was_consumed()
+        {
+            SessionTaskContinuationResult::consumed(result)
+        } else {
+            SessionTaskContinuationResult::retained(result)
+        }
     }
 
     async fn run_turn_loop(
@@ -57,6 +79,7 @@ impl RegularTask {
         input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
         prewarmed_client_session: Option<ModelClientSession>,
+        continuation_turn_state: Option<Arc<tokio::sync::Mutex<TurnState>>>,
     ) -> SessionTaskResult {
         let run_turn_span = trace_span!("run_turn");
         let mut next_input = input;
@@ -81,6 +104,14 @@ impl RegularTask {
             )
             .instrument(run_turn_span.clone())
             .await?;
+            if let Some(turn_state) = continuation_turn_state.as_ref()
+                && turn_state
+                    .lock()
+                    .await
+                    .turn_local_continuation_input_was_requeued()
+            {
+                return Ok(last_agent_message);
+            }
             if ctx.terminal_error.lock().await.is_some() {
                 return Ok(last_agent_message);
             }
@@ -126,14 +157,18 @@ impl SessionTask for RegularTask {
         self: Arc<Self>,
         session: Arc<SessionTaskContext>,
         ctx: Arc<TurnContext>,
+        task_identity: TaskIdentity,
+        turn_state: Arc<tokio::sync::Mutex<TurnState>>,
         input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
-    ) -> impl std::future::Future<Output = SessionTaskResult> + Send {
+    ) -> impl std::future::Future<Output = SessionTaskContinuationResult> + Send {
         async move {
             self.run_turn_local_continuation(
                 session.clone_session(),
                 ctx,
                 session.turn_extension_data(),
+                task_identity,
+                turn_state,
                 input,
                 cancellation_token,
             )
@@ -185,6 +220,7 @@ impl SessionTask for RegularTask {
             input,
             cancellation_token,
             prewarmed_client_session,
+            None,
         )
         .await
     }
