@@ -1133,6 +1133,7 @@ impl Session {
             let Some(active_turn) = active.as_mut() else {
                 return;
             };
+            let current_turn_state = Arc::clone(&active_turn.turn_state);
             let task = active_turn.task.take_if(|task| {
                 task.identity == task_identity
                     && task.phase == RunningTaskPhase::Running
