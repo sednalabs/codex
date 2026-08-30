@@ -9,7 +9,6 @@ use crate::session::turn::run_turn;
 use crate::session::turn_context::TurnContext;
 use crate::session_startup_prewarm::SessionStartupPrewarmResolution;
 use crate::state::TaskIdentity;
-use crate::state::TaskContinuationContext;
 use crate::state::TaskKind;
 use crate::state::TurnState;
 use codex_extension_api::OwnerContinuationDeferred;
@@ -23,6 +22,7 @@ use super::SessionTask;
 use super::SessionTaskContext;
 use super::SessionTaskContinuationResult;
 use super::SessionTaskResult;
+use super::TaskContinuationContext;
 
 #[derive(Default)]
 pub(crate) struct RegularTask {

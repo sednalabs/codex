@@ -92,17 +92,6 @@ pub(crate) enum TaskKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TaskIdentity(pub(crate) uuid::Uuid);
 
-/// Captured identity and turn state for a same-task continuation.
-///
-/// Continuations may outlive the active-turn slot while an abort or replacement is in flight, so
-/// every queue access must validate this pair instead of consulting the current session-global
-/// task state.
-#[derive(Clone)]
-pub(crate) struct TaskContinuationContext {
-    pub(crate) task_identity: TaskIdentity,
-    pub(crate) turn_state: Arc<Mutex<TurnState>>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RunningTaskPhase {
     Preparing,

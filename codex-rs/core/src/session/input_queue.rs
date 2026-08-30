@@ -3,7 +3,7 @@ use crate::context::TerminalCompletionNotification;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::RunningTaskPhase;
-use crate::state::TaskContinuationContext;
+use crate::tasks::TaskContinuationContext;
 use crate::state::TurnState;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
