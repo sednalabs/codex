@@ -57,6 +57,7 @@ use crate::stream_events_utils::mark_thread_memory_mode_polluted_if_external_con
 use crate::stream_events_utils::raw_assistant_output_text_from_item;
 use crate::stream_events_utils::record_completed_response_item_with_finalized_facts;
 use crate::tasks::emit_compact_metric;
+use crate::state::TaskContinuationContext;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
@@ -127,6 +128,8 @@ use codex_utils_stream_parser::strip_citations;
 use futures::future::BoxFuture;
 use futures::prelude::*;
 use futures::stream::FuturesOrdered;
+#[cfg(test)]
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing::error;
@@ -164,6 +167,71 @@ struct PreSamplingCompactFailure {
     issuing_turn_context: Arc<TurnContext>,
 }
 
+#[cfg(test)]
+pub(crate) struct PendingInputHookBarrier {
+    entered: Notify,
+    release: Notify,
+}
+
+#[cfg(test)]
+impl PendingInputHookBarrier {
+    pub(crate) fn new() -> Self {
+        Self {
+            entered: Notify::new(),
+            release: Notify::new(),
+        }
+    }
+
+    pub(crate) async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+#[cfg(test)]
+static PENDING_INPUT_HOOK_BARRIERS: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<ThreadId, Arc<PendingInputHookBarrier>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn set_pending_input_hook_barrier(
+    thread_id: ThreadId,
+    barrier: Option<Arc<PendingInputHookBarrier>>,
+) {
+    let mut barriers = PENDING_INPUT_HOOK_BARRIERS
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+        .lock()
+        .expect("pending input hook barrier lock");
+    match barrier {
+        Some(barrier) => {
+            barriers.insert(thread_id, barrier);
+        }
+        None => {
+            barriers.remove(&thread_id);
+        }
+    }
+}
+
+#[cfg(test)]
+async fn wait_for_pending_input_hook_barrier(sess: &Session, input: &TurnInput) {
+    if !matches!(input, TurnInput::UserInput { .. }) {
+        return;
+    }
+    let barrier = PENDING_INPUT_HOOK_BARRIERS
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+        .lock()
+        .expect("pending input hook barrier lock")
+        .get(&sess.thread_id())
+        .cloned();
+    if let Some(barrier) = barrier {
+        barrier.entered.notify_one();
+        barrier.release.notified().await;
+    }
+}
+
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
 ///
@@ -185,6 +253,7 @@ pub(crate) async fn run_turn(
     input: Vec<TurnInput>,
     client_session: &mut ModelClientSession,
     cancellation_token: CancellationToken,
+    continuation: Option<&TaskContinuationContext>,
 ) -> CodexResult<Option<String>> {
     turn_context.reset_terminal_response_model_identity().await;
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
@@ -291,17 +360,63 @@ pub(crate) async fn run_turn(
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
         let pending_input = if can_drain_pending_input {
-            sess.input_queue.get_pending_input(&sess.active_turn).await
+            if let Some(continuation) = continuation {
+                let Some(pending_input) = sess
+                    .input_queue
+                    .get_pending_input_for_continuation(
+                        &sess.active_turn,
+                        continuation,
+                        &cancellation_token,
+                    )
+                    .await
+                else {
+                    // A continuation that lost its active task during replacement/abort must not
+                    // inspect or drain the replacement task's state or either global input queue.
+                    return Ok(None);
+                };
+                let claim_owned = pending_input.claim_owned;
+                let pending_input = pending_input.input;
+                if claim_owned {
+                    let processing_claim = continuation
+                        .turn_state
+                        .lock()
+                        .await
+                        .begin_turn_local_continuation_input_processing(pending_input.clone());
+                    if !processing_claim {
+                        // Abort cleanup won the claim while the continuation was between queue
+                        // transfer and hook processing. It is now responsible for recovery.
+                        return Ok(None);
+                    }
+                }
+                pending_input
+            } else {
+                sess.input_queue.get_pending_input(&sess.active_turn).await
+            }
         } else {
             Vec::new()
         };
 
-        if run_hooks_and_record_inputs(&sess, &turn_context, &pending_input).await {
+        let blocked_pending_input = run_hooks_and_record_inputs(&sess, &turn_context, &pending_input).await;
+        if let Some(continuation) = continuation {
+            let processing_claim = continuation
+                .turn_state
+                .lock()
+                .await
+                .turn_local_continuation_input_is_hook_processing();
+            if processing_claim {
+                // Hook completion is the disposition commit for the captured claim. A blocked
+                // UserPromptSubmit is consumed as a denied prompt and is never re-recorded by a
+                // stale fallback; successful input is committed exactly once as well.
+                continuation
+                    .turn_state
+                    .lock()
+                    .await
+                    .mark_turn_local_continuation_input_consumed();
+            }
+        }
+        if blocked_pending_input {
             break;
         }
-        sess.input_queue
-            .mark_turn_local_continuation_input_consumed(&sess.active_turn)
-            .await;
 
         let window_id = sess.current_window_id().await;
         super::rollout_budget::maybe_record_reminder(
@@ -605,6 +720,8 @@ pub(crate) async fn run_hooks_and_record_inputs(
     let mut blocked_input = false;
     let mut accepted_user_input = false;
     for input_item in input {
+        #[cfg(test)]
+        wait_for_pending_input_hook_barrier(sess, input_item).await;
         let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;
         if hook_outcome.should_stop {
             blocked_input = true;

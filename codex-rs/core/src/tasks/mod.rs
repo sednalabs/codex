@@ -141,6 +141,72 @@ static PENDING_WAKE_RESERVATION_HOOKS: std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 
 #[cfg(test)]
+pub(crate) struct ContinuationRestoreBarrier {
+    entered: Notify,
+    release: Notify,
+}
+
+#[cfg(test)]
+impl ContinuationRestoreBarrier {
+    pub(crate) fn new() -> Self {
+        Self {
+            entered: Notify::new(),
+            release: Notify::new(),
+        }
+    }
+
+    pub(crate) async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+#[cfg(test)]
+static CONTINUATION_RESTORE_BARRIERS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<ThreadId, Arc<ContinuationRestoreBarrier>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn set_continuation_restore_barrier(
+    thread_id: ThreadId,
+    barrier: Option<Arc<ContinuationRestoreBarrier>>,
+) {
+    let mut barriers = CONTINUATION_RESTORE_BARRIERS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .expect("continuation restore barrier lock");
+    match barrier {
+        Some(barrier) => {
+            barriers.insert(thread_id, barrier);
+        }
+        None => {
+            barriers.remove(&thread_id);
+        }
+    }
+}
+
+#[cfg(test)]
+fn continuation_restore_barrier(session: &Session) -> Option<Arc<ContinuationRestoreBarrier>> {
+    CONTINUATION_RESTORE_BARRIERS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .expect("continuation restore barrier lock")
+        .get(&session.thread_id)
+        .cloned()
+}
+
+#[cfg(test)]
+async fn wait_for_continuation_restore_barrier(session: &Session) {
+    if let Some(barrier) = continuation_restore_barrier(session) {
+        barrier.entered.notify_one();
+        barrier.release.notified().await;
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn set_pending_wake_reservation_hook(thread_id: ThreadId, hook: Option<Arc<Notify>>) {
     let mut hooks = PENDING_WAKE_RESERVATION_HOOKS
         .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
@@ -1123,10 +1189,24 @@ impl Session {
         let Some(turn_context) = turn_context else {
             return;
         };
-        let input = turn_state
-            .lock()
-            .await
-            .take_turn_local_continuation_input_for_abort();
+        let input = loop {
+            let (input, changed) = {
+                let mut turn_state = turn_state.lock().await;
+                if turn_state.turn_local_continuation_input_is_hook_processing() {
+                    (None, Some(turn_state.turn_local_continuation_input_changed()))
+                } else {
+                    (
+                        turn_state.take_turn_local_continuation_input_for_abort(),
+                        None,
+                    )
+                }
+            };
+            if let Some(changed) = changed {
+                changed.notified().await;
+                continue;
+            }
+            break input;
+        };
         if let Some(input) = input {
             run_hooks_and_record_inputs(self, turn_context, &input).await;
         }
@@ -1219,7 +1299,7 @@ impl Session {
                 (None, None)
             }
         };
-        let turn_state = {
+        let (turn_state, pending_input, processing_claim) = {
             let _transition = self.input_queue.lock_task_transition().await;
             let mut active = self.active_turn.lock().await;
             let Some(active_turn) = active.as_mut() else {
@@ -1240,15 +1320,18 @@ impl Session {
                 return;
             };
             task.handle.detach();
-            Arc::clone(&active_turn.turn_state)
+            let turn_state = Arc::clone(&active_turn.turn_state);
+            let (pending_input, processing_claim) = self
+                .input_queue
+                .take_pending_input_for_turn_state_and_begin_continuation_processing(
+                    turn_state.as_ref(),
+                )
+                .await;
+            (turn_state, pending_input, processing_claim)
         };
         turn_context
             .turn_metadata_state
             .cancel_git_enrichment_task();
-        let pending_input = self
-            .input_queue
-            .take_pending_input_for_turn_state(turn_state.as_ref())
-            .await;
         let (turn_had_memory_citation, turn_tool_calls, token_usage_at_turn_start) = {
             let ts = turn_state.lock().await;
             (
@@ -1278,6 +1361,12 @@ impl Session {
                     .await;
                 }
             }
+        }
+        if processing_claim {
+            turn_state
+                .lock()
+                .await
+                .mark_turn_local_continuation_input_consumed();
         }
         // Emit token usage metrics.
         {
@@ -1636,19 +1725,13 @@ impl Session {
             }
         };
         if !restored_to_active_task {
-            // The active task may have been removed while the continuation was in flight. Do
-            // not resurrect or contaminate a replacement task; persist the exact claimed input
-            // against its original turn context instead.
-            let claimed_input = turn_state
-                .lock()
-                .await
-                .take_turn_local_continuation_input_for_abort();
-            if let Some(claimed_input) = claimed_input {
-                for input_item in claimed_input {
-                    record_pending_input(self, turn_context, input_item, Vec::new()).await;
-                }
-            }
+            // Abort/replacement cleanup owns the captured claim. Never fall back to direct
+            // recording here: doing so bypasses UserPromptSubmit hooks and can race cleanup into
+            // duplicate history or a stopped prompt.
+            return;
         }
+        #[cfg(test)]
+        wait_for_continuation_restore_barrier(self).await;
     }
 
     pub(crate) async fn close_unified_exec_processes(&self) {
@@ -1694,7 +1777,17 @@ impl Session {
             }
         }
 
-        task.handle.abort();
+        let continuation_hook_processing = if let Some(turn_state) = task.turn_state.as_ref() {
+            turn_state
+                .lock()
+                .await
+                .turn_local_continuation_input_is_hook_processing()
+        } else {
+            false
+        };
+        if !continuation_hook_processing {
+            task.handle.abort();
+        }
 
         let session_ctx = Arc::new(SessionTaskContext::new(
             Arc::clone(self),

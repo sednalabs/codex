@@ -9,6 +9,7 @@ use crate::session::turn::run_turn;
 use crate::session::turn_context::TurnContext;
 use crate::session_startup_prewarm::SessionStartupPrewarmResolution;
 use crate::state::TaskIdentity;
+use crate::state::TaskContinuationContext;
 use crate::state::TaskKind;
 use crate::state::TurnState;
 use codex_extension_api::OwnerContinuationDeferred;
@@ -57,7 +58,10 @@ impl RegularTask {
                 Vec::new(),
                 cancellation_token,
                 None,
-                Some(Arc::clone(&turn_state)),
+                Some(TaskContinuationContext {
+                    task_identity,
+                    turn_state: Arc::clone(&turn_state),
+                }),
             )
             .await;
         if turn_state
@@ -79,7 +83,7 @@ impl RegularTask {
         input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
         prewarmed_client_session: Option<ModelClientSession>,
-        continuation_turn_state: Option<Arc<tokio::sync::Mutex<TurnState>>>,
+        continuation: Option<TaskContinuationContext>,
     ) -> SessionTaskResult {
         let run_turn_span = trace_span!("run_turn");
         let mut next_input = input;
@@ -101,10 +105,13 @@ impl RegularTask {
                 next_input,
                 client_session,
                 cancellation_token.child_token(),
+                continuation.as_ref(),
             )
             .instrument(run_turn_span.clone())
             .await?;
-            if let Some(turn_state) = continuation_turn_state.as_ref()
+            if let Some(turn_state) = continuation
+                .as_ref()
+                .map(|continuation| &continuation.turn_state)
                 && turn_state
                     .lock()
                     .await
@@ -128,7 +135,20 @@ impl RegularTask {
                 // second provider request after a dormant or exhausted admission decision.
                 return Ok(last_agent_message);
             }
-            if !sess.input_queue.has_pending_input(&sess.active_turn).await {
+            if let Some(continuation) = continuation.as_ref() {
+                match sess
+                    .input_queue
+                    .has_pending_input_for_continuation(
+                        &sess.active_turn,
+                        continuation,
+                        &cancellation_token,
+                    )
+                    .await
+                {
+                    Some(true) => {}
+                    Some(false) | None => return Ok(last_agent_message),
+                }
+            } else if !sess.input_queue.has_pending_input(&sess.active_turn).await {
                 return Ok(last_agent_message);
             }
             next_input = Vec::new();

@@ -67,6 +67,9 @@ pub(crate) enum TurnLocalContinuationInputState {
     /// lets an ordinary pre-record exit restore the claim without duplicating an item that is
     /// still in the pending-input queue.
     Drained,
+    /// The continuation (or its finalization path) is running input hooks. Abort cleanup waits
+    /// for this state to commit so it cannot process the same claim concurrently.
+    HookProcessing,
     Consumed,
 }
 
@@ -88,6 +91,17 @@ pub(crate) enum TaskKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TaskIdentity(pub(crate) uuid::Uuid);
+
+/// Captured identity and turn state for a same-task continuation.
+///
+/// Continuations may outlive the active-turn slot while an abort or replacement is in flight, so
+/// every queue access must validate this pair instead of consulting the current session-global
+/// task state.
+#[derive(Clone)]
+pub(crate) struct TaskContinuationContext {
+    pub(crate) task_identity: TaskIdentity,
+    pub(crate) turn_state: Arc<Mutex<TurnState>>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RunningTaskPhase {
@@ -115,7 +129,6 @@ pub(crate) struct RunningTask {
 }
 
 /// Mutable state for a single turn.
-#[derive(Default)]
 pub(crate) struct TurnState {
     pending_approvals: HashMap<String, oneshot::Sender<ReviewDecision>>,
     pending_request_permissions: HashMap<String, PendingRequestPermissions>,
@@ -130,6 +143,7 @@ pub(crate) struct TurnState {
     /// future is cancelled before it can return a disposition to the completion path.
     turn_local_continuation_input: Option<Vec<TurnInput>>,
     turn_local_continuation_input_state: TurnLocalContinuationInputState,
+    turn_local_continuation_input_changed: Arc<Notify>,
     mailbox_delivery_phase: MailboxDeliveryPhase,
     granted_permissions_by_environment_id: HashMap<String, AdditionalPermissionProfile>,
     compaction_events_in_turn: u32,
@@ -137,6 +151,31 @@ pub(crate) struct TurnState {
     pub(crate) tool_calls: u64,
     pub(crate) has_memory_citation: bool,
     pub(crate) token_usage_at_turn_start: TokenUsage,
+}
+
+impl Default for TurnState {
+    fn default() -> Self {
+        Self {
+            pending_approvals: HashMap::new(),
+            pending_request_permissions: HashMap::new(),
+            pending_user_input: HashMap::new(),
+            pending_elicitations: HashMap::new(),
+            mcp_tool_approval_metadata: HashMap::new(),
+            pending_dynamic_tools: HashMap::new(),
+            pending_computer_use: HashMap::new(),
+            pending_input: TurnInputQueue::default(),
+            turn_local_continuation_input: None,
+            turn_local_continuation_input_state: TurnLocalContinuationInputState::None,
+            turn_local_continuation_input_changed: Arc::new(Notify::new()),
+            mailbox_delivery_phase: MailboxDeliveryPhase::CurrentTurn,
+            granted_permissions_by_environment_id: HashMap::new(),
+            compaction_events_in_turn: 0,
+            strict_auto_review_enabled: false,
+            tool_calls: 0,
+            has_memory_citation: false,
+            token_usage_at_turn_start: TokenUsage::default(),
+        }
+    }
 }
 
 pub(crate) struct PendingRequestPermissions {
@@ -298,13 +337,18 @@ impl TurnState {
         match self.turn_local_continuation_input_state {
             TurnLocalContinuationInputState::Held | TurnLocalContinuationInputState::Drained => {
                 self.pending_input.restore_turn_local_continuation(input);
+                // The claim includes any newer input that was already queued behind the original
+                // continuation input. Keeping that complete claim here lets abort cleanup recover
+                // A+B atomically even after the active task has been removed.
+                self.turn_local_continuation_input = Some(self.pending_input.clone_items());
+                self.turn_local_continuation_input_state =
+                    TurnLocalContinuationInputState::Requeued;
             }
             TurnLocalContinuationInputState::None
             | TurnLocalContinuationInputState::Requeued
+            | TurnLocalContinuationInputState::HookProcessing
             | TurnLocalContinuationInputState::Consumed => {}
         }
-        self.turn_local_continuation_input = None;
-        self.turn_local_continuation_input_state = TurnLocalContinuationInputState::None;
     }
 
     pub(crate) fn finish_turn_local_continuation_input(&mut self) {
@@ -315,16 +359,44 @@ impl TurnState {
     pub(crate) fn mark_turn_local_continuation_input_consumed(&mut self) {
         if matches!(
             self.turn_local_continuation_input_state,
-            TurnLocalContinuationInputState::Requeued | TurnLocalContinuationInputState::Drained
+            TurnLocalContinuationInputState::Requeued
+                | TurnLocalContinuationInputState::Drained
+                | TurnLocalContinuationInputState::HookProcessing
         ) {
             self.turn_local_continuation_input_state = TurnLocalContinuationInputState::Consumed;
+            self.turn_local_continuation_input_changed.notify_one();
         }
     }
 
-    pub(crate) fn mark_turn_local_continuation_input_drained(&mut self) {
-        if self.turn_local_continuation_input_state == TurnLocalContinuationInputState::Requeued {
-            self.turn_local_continuation_input_state = TurnLocalContinuationInputState::Drained;
+    pub(crate) fn mark_turn_local_continuation_input_drained(
+        &mut self,
+        input: Vec<TurnInput>,
+    ) -> bool {
+        let has_claim = input.iter().any(|input| {
+            matches!(input, TurnInput::UserInput { content, .. } if !content.is_empty())
+        }) || self.turn_local_continuation_input_state == TurnLocalContinuationInputState::Requeued;
+        if !has_claim {
+            return false;
         }
+        self.turn_local_continuation_input = Some(input);
+        self.turn_local_continuation_input_state = TurnLocalContinuationInputState::Drained;
+        true
+    }
+
+    pub(crate) fn begin_turn_local_continuation_input_processing(
+        &mut self,
+        input: Vec<TurnInput>,
+    ) -> bool {
+        if !matches!(
+            self.turn_local_continuation_input_state,
+            TurnLocalContinuationInputState::Requeued | TurnLocalContinuationInputState::Drained
+        ) {
+            return false;
+        }
+        self.turn_local_continuation_input = Some(input);
+        self.turn_local_continuation_input_state =
+            TurnLocalContinuationInputState::HookProcessing;
+        true
     }
 
     /// Takes the input still owned by a continuation that was interrupted before it committed a
@@ -344,10 +416,32 @@ impl TurnState {
         self.turn_local_continuation_input.take()
     }
 
+    pub(crate) fn turn_local_continuation_input_is_hook_processing(&self) -> bool {
+        self.turn_local_continuation_input_state
+            == TurnLocalContinuationInputState::HookProcessing
+    }
+
+    pub(crate) fn turn_local_continuation_input_changed(&self) -> Arc<Notify> {
+        Arc::clone(&self.turn_local_continuation_input_changed)
+    }
+
+    pub(crate) fn turn_local_continuation_input_is_claimed(&self) -> bool {
+        !matches!(
+            self.turn_local_continuation_input_state,
+            TurnLocalContinuationInputState::None | TurnLocalContinuationInputState::Consumed
+        )
+    }
+
+    pub(crate) fn turn_local_continuation_input_is_requeued(&self) -> bool {
+        self.turn_local_continuation_input_state == TurnLocalContinuationInputState::Requeued
+    }
+
     pub(crate) fn turn_local_continuation_input_was_requeued(&self) -> bool {
         matches!(
             self.turn_local_continuation_input_state,
-            TurnLocalContinuationInputState::Requeued | TurnLocalContinuationInputState::Drained
+            TurnLocalContinuationInputState::Requeued
+                | TurnLocalContinuationInputState::Drained
+                | TurnLocalContinuationInputState::HookProcessing
         )
     }
 

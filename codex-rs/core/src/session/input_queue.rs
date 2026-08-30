@@ -2,6 +2,8 @@ use crate::context::ContextualUserFragment;
 use crate::context::TerminalCompletionNotification;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
+use crate::state::RunningTaskPhase;
+use crate::state::TaskContinuationContext;
 use crate::state::TurnState;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -19,6 +21,7 @@ use tokio::sync::MutexGuard;
 use tokio::sync::Notify;
 use tokio::sync::OwnedMutexGuard;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum TurnInput {
@@ -35,6 +38,11 @@ pub(crate) enum InputQueueActivity {
     Mailbox,
     Steer,
     TerminalCompletion,
+}
+
+pub(crate) struct ContinuationPendingInput {
+    pub(crate) input: Vec<TurnInput>,
+    pub(crate) claim_owned: bool,
 }
 
 /// Turn-local pending input storage owned by the input queue flow.
@@ -447,6 +455,17 @@ impl InputQueue {
         turn_state.lock().await.pending_input.items.split_off(0)
     }
 
+    pub(crate) async fn take_pending_input_for_turn_state_and_begin_continuation_processing(
+        &self,
+        turn_state: &Mutex<TurnState>,
+    ) -> (Vec<TurnInput>, bool) {
+        let mut turn_state = turn_state.lock().await;
+        let pending_input = turn_state.pending_input.items.split_off(0);
+        let processing_claim = turn_state
+            .begin_turn_local_continuation_input_processing(pending_input.clone());
+        (pending_input, processing_claim)
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"
@@ -464,7 +483,10 @@ impl InputQueue {
                         turn_state.accepts_mailbox_delivery_for_current_turn();
                     let pending_input = if accepts_mailbox_delivery {
                         let pending_input = turn_state.pending_input.items.split_off(0);
-                        turn_state.mark_turn_local_continuation_input_drained();
+                        if turn_state.turn_local_continuation_input_is_requeued() {
+                            turn_state
+                                .mark_turn_local_continuation_input_drained(pending_input.clone());
+                        }
                         pending_input
                     } else {
                         Vec::new()
@@ -491,22 +513,100 @@ impl InputQueue {
         }
     }
 
+    /// Drains input for one captured continuation only after atomically validating that its task
+    /// still owns the active turn. Mailbox and terminal queues are locked first to preserve the
+    /// same order used by task publication, then the task-transition lock prevents replacement
+    /// between validation and the canonical queue drain.
     #[expect(
         clippy::await_holding_invalid_type,
-        reason = "continuation custody is committed only after hooks record the drained input"
+        reason = "captured continuation validation and input transfer remain atomic"
     )]
-    pub(crate) async fn mark_turn_local_continuation_input_consumed(
+    pub(crate) async fn get_pending_input_for_continuation(
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
-    ) {
-        let mut active = active_turn.lock().await;
-        if let Some(active_turn) = active.as_mut() {
-            active_turn
-                .turn_state
-                .lock()
-                .await
-                .mark_turn_local_continuation_input_consumed();
+        continuation: &TaskContinuationContext,
+        cancellation_token: &CancellationToken,
+    ) -> Option<ContinuationPendingInput> {
+        let mut transfer = self.pending_turn_input_transfer().await;
+        if cancellation_token.is_cancelled() {
+            return None;
         }
+        let _transition = self.lock_task_transition().await;
+        let mut active = active_turn.lock().await;
+        let active_turn = active.as_mut()?;
+        let task = active_turn.task.as_ref()?;
+        if task.identity != continuation.task_identity
+            || task.phase != RunningTaskPhase::Running
+            || task.cancellation_token.is_cancelled()
+            || task
+                .turn_state
+                .as_ref()
+                .is_none_or(|task_state| !Arc::ptr_eq(task_state, &continuation.turn_state))
+            || !Arc::ptr_eq(&active_turn.turn_state, &continuation.turn_state)
+        {
+            return None;
+        }
+
+        let mut turn_state = continuation.turn_state.lock().await;
+        if !turn_state.accepts_mailbox_delivery_for_current_turn() {
+            return Some(ContinuationPendingInput {
+                input: Vec::new(),
+                claim_owned: false,
+            });
+        }
+        let mut input = turn_state.pending_input.items.split_off(0);
+        input.extend(
+            transfer
+                .mailbox
+                .drain(..)
+                .map(TurnInput::InterAgentCommunication),
+        );
+        input.extend(
+            transfer.terminal.drain(..).map(|completion| {
+                TurnInput::ResponseItem(ContextualUserFragment::into(completion))
+            }),
+        );
+        let claim_owned = turn_state.mark_turn_local_continuation_input_drained(input.clone());
+        Some(ContinuationPendingInput { input, claim_owned })
+    }
+
+    /// Checks pending input for one captured continuation without consulting a replacement
+    /// task's state or consuming either canonical session queue.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "captured continuation validation and input inspection remain atomic"
+    )]
+    pub(crate) async fn has_pending_input_for_continuation(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+        continuation: &TaskContinuationContext,
+        cancellation_token: &CancellationToken,
+    ) -> Option<bool> {
+        let mailbox = self.mailbox_pending_mails.lock().await;
+        let terminal = self.terminal_completions.lock().await;
+        if cancellation_token.is_cancelled() {
+            return None;
+        }
+        let _transition = self.lock_task_transition().await;
+        let active = active_turn.lock().await;
+        let active_turn = active.as_ref()?;
+        let task = active_turn.task.as_ref()?;
+        if task.identity != continuation.task_identity
+            || task.phase != RunningTaskPhase::Running
+            || task.cancellation_token.is_cancelled()
+            || task
+                .turn_state
+                .as_ref()
+                .is_none_or(|task_state| !Arc::ptr_eq(task_state, &continuation.turn_state))
+            || !Arc::ptr_eq(&active_turn.turn_state, &continuation.turn_state)
+        {
+            return None;
+        }
+        let turn_state = continuation.turn_state.lock().await;
+        if !turn_state.accepts_mailbox_delivery_for_current_turn() {
+            return Some(false);
+        }
+        Some(!turn_state.pending_input.items.is_empty() || !mailbox.is_empty() || !terminal.is_empty())
     }
 
     #[expect(
@@ -561,6 +661,10 @@ impl PendingTurnInputTransfer<'_> {
 }
 
 impl TurnInputQueue {
+    pub(crate) fn clone_items(&self) -> Vec<TurnInput> {
+        self.items.clone()
+    }
+
     fn has_user_input(&self) -> bool {
         self.items
             .iter()
