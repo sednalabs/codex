@@ -783,17 +783,26 @@ async fn outer_reentry_reuses_turn_client_session_state() {
         .collect::<Vec<_>>();
     assert_eq!(
         turn_states,
-        vec![json!(null), json!(null), json!("outer-reentry-state"), json!(null)]
+        vec![
+            json!(null),
+            json!(null),
+            json!("outer-reentry-state"),
+            json!(null)
+        ]
     );
 
     let outer_reentry_user_texts = message_input_texts(&requests[2].body_json(), "user");
     assert!(
-        outer_reentry_user_texts.iter().any(|text| text == "second prompt"),
+        outer_reentry_user_texts
+            .iter()
+            .any(|text| text == "second prompt"),
         "pending input should be handled by same logical turn outer re-entry"
     );
     let next_turn_user_texts = message_input_texts(&requests[3].body_json(), "user");
     assert!(
-        next_turn_user_texts.iter().any(|text| text == "third prompt"),
+        next_turn_user_texts
+            .iter()
+            .any(|text| text == "third prompt"),
         "a new logical turn should still accept its own input"
     );
 

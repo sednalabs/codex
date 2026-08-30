@@ -79,8 +79,8 @@ impl SessionTask for RegularTask {
             }
         };
         let mut next_input = input;
-        let mut client_session = prewarmed_client_session
-            .unwrap_or_else(|| sess.services.model_client.new_session());
+        let mut client_session =
+            prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
         loop {
             let last_agent_message = run_turn(
                 Arc::clone(&sess),
