@@ -965,7 +965,8 @@ impl Session {
             done,
             identity: task_identity,
             phase: RunningTaskPhase::Preparing,
-            handle: AbortOnDropHandle::new(handle),
+            abort_handle: None,
+            handle: Some(AbortOnDropHandle::new(handle)),
             kind: task_kind,
             task,
             initial_input: Some(input),
@@ -1106,13 +1107,103 @@ impl Session {
         .await;
     }
 
+    /// Claims the one terminal finalizer while retaining the task in the active slot.  The
+    /// drop-aborts wrapper is detached at this boundary, but its remote abort handle remains in
+    /// the active task so a forced abort cannot accidentally abort the finalizer merely by
+    /// dropping its ownership record.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "finalizer claim validates task, turn context, and captured state atomically"
+    )]
+    async fn claim_task_finalization(
+        &self,
+        task_identity: TaskIdentity,
+        turn_context: &Arc<TurnContext>,
+    ) -> Option<Arc<tokio::sync::Mutex<TurnState>>> {
+        let _transition = self.input_queue.lock_task_transition().await;
+        let mut active = self.active_turn.lock().await;
+        let active_turn = active.as_mut()?;
+        let turn_state = Arc::clone(&active_turn.turn_state);
+        let task = active_turn.task.as_mut()?;
+        if task.identity != task_identity
+            || task.phase != RunningTaskPhase::Running
+            || !Arc::ptr_eq(&task.turn_context, turn_context)
+            || task.turn_context.sub_id != turn_context.sub_id
+            || task
+                .turn_state
+                .as_ref()
+                .is_none_or(|task_state| !Arc::ptr_eq(task_state, &turn_state))
+        {
+            return None;
+        }
+        let mut turn_state_guard = turn_state.lock().await;
+        if !turn_state_guard.claim_finalization() {
+            return None;
+        }
+        task.phase = RunningTaskPhase::Finalizing;
+        if let Some(handle) = task.handle.take() {
+            task.abort_handle = Some(handle.abort_handle());
+            drop(handle.detach());
+        }
+        Some(turn_state)
+    }
+
+    async fn wait_for_finalization_resolution(
+        &self,
+        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+    ) -> bool {
+        let changed = turn_state.lock().await.finalization_changed();
+        let wait = async {
+            loop {
+                let notified = changed.notified();
+                if turn_state.lock().await.finalization_is_terminal() {
+                    return true;
+                }
+                notified.await;
+            }
+        };
+        tokio::time::timeout(
+            Duration::from_millis(GRACEFULL_INTERRUPTION_TIMEOUT_MS),
+            wait,
+        )
+        .await
+        .unwrap_or(false)
+    }
+
     async fn abort_tasks(self: &Arc<Self>, reason: TurnAbortReason, restart_pending_work: bool) {
         let mut aborted_turn = false;
         let mut active_turn_to_clear = None;
         let mut turn_context = None;
-        let active_turn = {
+        let (active_turn, finalizing_turn_state) = {
             let _transition = self.input_queue.lock_task_transition().await;
-            self.active_turn.lock().await.take()
+            let mut active = self.active_turn.lock().await;
+            let finalizing = active.as_ref().and_then(|active_turn| {
+                active_turn
+                    .task
+                    .as_ref()
+                    .filter(|task| task.phase == RunningTaskPhase::Finalizing)
+                    .map(|_| Arc::clone(&active_turn.turn_state))
+            });
+            if let Some(turn_state) = finalizing {
+                if let Some(task) = active
+                    .as_ref()
+                    .and_then(|active_turn| active_turn.task.as_ref())
+                {
+                    turn_state
+                        .lock()
+                        .await
+                        .request_finalization_abort();
+                    task.cancellation_token.cancel();
+                }
+                (None, Some(turn_state))
+            } else if active
+                .as_ref()
+                .is_some_and(|active_turn| active_turn.task.is_some())
+            {
+                (active.take(), None)
+            } else {
+                (None, None)
+            }
         };
         if let Some(mut active_turn) = active_turn {
             let task = active_turn.task.take();
@@ -1123,6 +1214,61 @@ impl Session {
             }
             if aborted_turn {
                 active_turn_to_clear = Some(active_turn);
+            }
+        }
+
+        if let Some(turn_state) = finalizing_turn_state {
+            let resolved = self.wait_for_finalization_resolution(&turn_state).await;
+            let (active_turn, publish_abort) = {
+                let _transition = self.input_queue.lock_task_transition().await;
+                let mut active = self.active_turn.lock().await;
+                let exact_finalizer = active.as_ref().is_some_and(|active_turn| {
+                    Arc::ptr_eq(&active_turn.turn_state, &turn_state)
+                        && active_turn
+                            .task
+                            .as_ref()
+                            .is_some_and(|task| task.phase == RunningTaskPhase::Finalizing)
+                });
+                if !exact_finalizer {
+                    (None, false)
+                } else {
+                    let mut state = turn_state.lock().await;
+                    let published = resolved && state.finalization_is_published();
+                    if !published {
+                        state.force_finalization_abort();
+                        state.commit_finalization_abort();
+                    }
+                    (active.take(), !published)
+                }
+            };
+            if let Some(mut active_turn) = active_turn {
+                let task = active_turn.task.take();
+                if publish_abort {
+                    turn_context = task.as_ref().map(|task| Arc::clone(&task.turn_context));
+                    aborted_turn = task.is_some();
+                    if let Some(task) = task {
+                        self.handle_task_abort(task, reason.clone()).await;
+                    }
+                    self.record_interrupted_turn_local_continuation_input(
+                        turn_context.as_ref(),
+                        &active_turn.turn_state,
+                    )
+                    .await;
+                    let pending_input = self
+                        .input_queue
+                        .take_pending_input_for_turn_state(&active_turn.turn_state)
+                        .await;
+                    if !pending_input.is_empty()
+                        && let Some(turn_context) = turn_context.as_ref()
+                    {
+                        run_hooks_and_record_inputs(self, turn_context, &pending_input).await;
+                    }
+                    self.input_queue.clear_pending(&active_turn).await;
+                } else {
+                    // A completed finalizer already published its terminal event.  Remove its
+                    // ownership record without emitting a second abort lifecycle.
+                    self.input_queue.clear_pending(&active_turn).await;
+                }
             }
         }
 
@@ -1150,45 +1296,127 @@ impl Session {
         turn_id: &str,
         reason: TurnAbortReason,
     ) -> bool {
+        let (active_turn, finalizing_turn_state) = {
+            let _transition = self.input_queue.lock_task_transition().await;
+            let mut active = self.active_turn.lock().await;
+            let matches_turn = active.as_ref().is_some_and(|active_turn| {
+                active_turn
+                    .task
+                    .as_ref()
+                    .is_some_and(|task| task.turn_context.sub_id == turn_id)
+            });
+            if !matches_turn {
+                (None, None)
+            } else if active
+                .as_ref()
+                .and_then(|active_turn| active_turn.task.as_ref())
+                .is_some_and(|task| task.phase == RunningTaskPhase::Finalizing)
+            {
+                let turn_state = Arc::clone(
+                    &active
+                        .as_ref()
+                        .expect("matching active turn")
+                        .turn_state,
+                );
+                turn_state
+                    .lock()
+                    .await
+                    .request_finalization_abort();
+                if let Some(task) = active
+                    .as_ref()
+                    .and_then(|active_turn| active_turn.task.as_ref())
+                {
+                    task.cancellation_token.cancel();
+                }
+                (None, Some(turn_state))
+            } else {
+                (active.take(), None)
+            }
+        };
+        if let Some(mut active_turn) = active_turn {
+            let task = active_turn.task.take();
+            let turn_context = task.as_ref().map(|task| Arc::clone(&task.turn_context));
+            if let Some(task) = task {
+                self.handle_task_abort(task, reason.clone()).await;
+            }
+            self.record_interrupted_turn_local_continuation_input(
+                turn_context.as_ref(),
+                &active_turn.turn_state,
+            )
+            .await;
+            // Let interrupted tasks observe cancellation before dropping pending approvals, or an
+            // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+            self.input_queue.clear_pending(&active_turn).await;
+            if let Some(turn_context) = turn_context.as_deref() {
+                self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
+                    .await;
+            }
+
+            if reason == TurnAbortReason::Interrupted {
+                self.maybe_start_turn_for_pending_work().await;
+            }
+
+            return true;
+        }
+
+        let Some(turn_state) = finalizing_turn_state else {
+            return false;
+        };
+        let resolved = self.wait_for_finalization_resolution(&turn_state).await;
         let active_turn = {
             let _transition = self.input_queue.lock_task_transition().await;
             let mut active = self.active_turn.lock().await;
-            if active
-                .as_ref()
-                .and_then(|active_turn| active_turn.task.as_ref())
-                .is_some_and(|task| task.turn_context.sub_id == turn_id)
-            {
-                active.take()
-            } else {
+            let exact = active.as_ref().is_some_and(|active_turn| {
+                Arc::ptr_eq(&active_turn.turn_state, &turn_state)
+                    && active_turn.task.as_ref().is_some_and(|task| {
+                        task.turn_context.sub_id == turn_id
+                            && task.phase == RunningTaskPhase::Finalizing
+                    })
+            });
+            if !exact {
                 None
+            } else {
+                let mut state = turn_state.lock().await;
+                if !(resolved && state.finalization_is_published()) {
+                    state.force_finalization_abort();
+                    state.commit_finalization_abort();
+                }
+                active.take()
             }
         };
         let Some(mut active_turn) = active_turn else {
-            return false;
+            return true;
         };
-
         let task = active_turn.task.take();
         let turn_context = task.as_ref().map(|task| Arc::clone(&task.turn_context));
-        if let Some(task) = task {
-            self.handle_task_abort(task, reason.clone()).await;
-        }
-        self.record_interrupted_turn_local_continuation_input(
-            turn_context.as_ref(),
-            &active_turn.turn_state,
-        )
-        .await;
-        // Let interrupted tasks observe cancellation before dropping pending approvals, or an
-        // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
-        self.input_queue.clear_pending(&active_turn).await;
-        if let Some(turn_context) = turn_context.as_deref() {
-            self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
+        let published = turn_state.lock().await.finalization_is_published();
+        if !published {
+            if let Some(task) = task {
+                self.handle_task_abort(task, reason.clone()).await;
+            }
+            self.record_interrupted_turn_local_continuation_input(
+                turn_context.as_ref(),
+                &active_turn.turn_state,
+            )
+            .await;
+            let pending_input = self
+                .input_queue
+                .take_pending_input_for_turn_state(&active_turn.turn_state)
                 .await;
+            if !pending_input.is_empty()
+                && let Some(turn_context) = turn_context.as_ref()
+            {
+                run_hooks_and_record_inputs(self, turn_context, &pending_input).await;
+            }
+            self.input_queue.clear_pending(&active_turn).await;
+            if let Some(turn_context) = turn_context.as_deref() {
+                self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
+                    .await;
+            }
         }
-
-        if reason == TurnAbortReason::Interrupted {
+        if reason == TurnAbortReason::Interrupted && !published {
             self.maybe_start_turn_for_pending_work().await;
         }
-
         true
     }
 
@@ -1203,8 +1431,15 @@ impl Session {
         let input = loop {
             let (input, changed) = {
                 let mut turn_state = turn_state.lock().await;
-                if turn_state.turn_local_continuation_input_is_hook_processing() {
+                if turn_state.turn_local_continuation_input_is_hook_processing()
+                    && !turn_state.finalization_is_forced_abort()
+                {
                     (None, Some(turn_state.turn_local_continuation_input_changed()))
+                } else if turn_state.turn_local_continuation_input_is_hook_processing() {
+                    // Forced finalization has already settled ownership.  The detached hook
+                    // future remains the sole writer for this claim; waiting here would make
+                    // shutdown dependent on an uncooperative hook.
+                    (None, None)
                 } else {
                     (
                         turn_state.take_turn_local_continuation_input_for_abort(),
@@ -1229,6 +1464,15 @@ impl Session {
         turn_context: Arc<TurnContext>,
         task_result: SessionTaskResult,
     ) {
+        let Some(turn_state) = self
+            .claim_task_finalization(task_identity, &turn_context)
+            .await
+        else {
+            // Abort/replacement either owns this task or a previous completion path already
+            // claimed its finalizer.  In both cases this stale caller must not publish lifecycle
+            // output or inspect the replacement turn's state.
+            return;
+        };
         let mut task_result = task_result;
         loop {
             if !task_result.is_ok() {
@@ -1280,7 +1524,12 @@ impl Session {
                 .await;
             let input_consumed =
                 continuation_result.input_disposition == ContinuationInputDisposition::Consumed;
-            if input_consumed {
+            let finalization_allows_progress = continuation
+                .turn_state
+                .lock()
+                .await
+                .finalization_allows_progress();
+            if input_consumed && finalization_allows_progress {
                 continuation
                     .turn_state
                     .lock()
@@ -1310,49 +1559,46 @@ impl Session {
                 (None, None)
             }
         };
-        let (turn_state, pending_input, processing_claim) = {
-            let _transition = self.input_queue.lock_task_transition().await;
-            let mut active = self.active_turn.lock().await;
-            let Some(active_turn) = active.as_mut() else {
-                return;
-            };
-            let current_turn_state = Arc::clone(&active_turn.turn_state);
-            let task = active_turn.task.take_if(|task| {
-                task.identity == task_identity
-                    && task.phase == RunningTaskPhase::Running
-                    && Arc::ptr_eq(&task.turn_context, &turn_context)
-                    && task.turn_context.sub_id == turn_context.sub_id
-                    && task
+        let mut pending_input = Vec::new();
+        let mut processing_claim = false;
+        loop {
+            let (next_input, next_processing_claim) = {
+                let _transition = self.input_queue.lock_task_transition().await;
+                let active = self.active_turn.lock().await;
+                let Some(active_turn) = active.as_ref() else {
+                    return;
+                };
+                let Some(task) = active_turn.task.as_ref() else {
+                    return;
+                };
+                if task.identity != task_identity
+                    || task.phase != RunningTaskPhase::Finalizing
+                    || !Arc::ptr_eq(&task.turn_context, &turn_context)
+                    || task.turn_context.sub_id != turn_context.sub_id
+                    || task
                         .turn_state
                         .as_ref()
-                        .is_some_and(|task_state| Arc::ptr_eq(task_state, &current_turn_state))
-            });
-            let Some(task) = task else {
-                return;
+                        .is_none_or(|task_state| !Arc::ptr_eq(task_state, &turn_state))
+                    || !Arc::ptr_eq(&active_turn.turn_state, &turn_state)
+                {
+                    return;
+                }
+                if !turn_state.lock().await.finalization_allows_progress() {
+                    (Vec::new(), false)
+                } else {
+                    self.input_queue
+                        .take_pending_input_for_turn_state_and_begin_continuation_processing(
+                            turn_state.as_ref(),
+                        )
+                        .await
+                }
             };
-            task.handle.detach();
-            let turn_state = Arc::clone(&active_turn.turn_state);
-            let (pending_input, processing_claim) = self
-                .input_queue
-                .take_pending_input_for_turn_state_and_begin_continuation_processing(
-                    turn_state.as_ref(),
-                )
-                .await;
-            (turn_state, pending_input, processing_claim)
-        };
-        turn_context
-            .turn_metadata_state
-            .cancel_git_enrichment_task();
-        let (turn_had_memory_citation, turn_tool_calls, token_usage_at_turn_start) = {
-            let ts = turn_state.lock().await;
-            (
-                ts.has_memory_citation,
-                ts.tool_calls,
-                ts.token_usage_at_turn_start.clone(),
-            )
-        };
-        if !pending_input.is_empty() {
-            for pending_input_item in pending_input {
+            if next_input.is_empty() && !next_processing_claim {
+                break;
+            }
+            pending_input = next_input;
+            processing_claim = next_processing_claim;
+            for pending_input_item in pending_input.drain(..) {
                 let hook_outcome =
                     inspect_pending_input(self, &turn_context, &pending_input_item).await;
                 if hook_outcome.should_stop {
@@ -1372,13 +1618,28 @@ impl Session {
                     .await;
                 }
             }
+            if processing_claim {
+                turn_state
+                    .lock()
+                    .await
+                    .mark_turn_local_continuation_input_consumed();
+                processing_claim = false;
+            }
         }
-        if processing_claim {
-            turn_state
-                .lock()
-                .await
-                .mark_turn_local_continuation_input_consumed();
+        if !turn_state.lock().await.finalization_allows_progress() {
+            return;
         }
+        turn_context
+            .turn_metadata_state
+            .cancel_git_enrichment_task();
+        let (turn_had_memory_citation, turn_tool_calls, token_usage_at_turn_start) = {
+            let ts = turn_state.lock().await;
+            (
+                ts.has_memory_citation,
+                ts.tool_calls,
+                ts.token_usage_at_turn_start.clone(),
+            )
+        };
         // Emit token usage metrics.
         {
             // TODO(jif): drop this
@@ -1527,6 +1788,22 @@ impl Session {
                 turn_id: turn_context.sub_id.clone(),
                 profile,
             });
+        // Serialize terminal publication with replacement/abort admission.  The active task and
+        // its captured state remain owned until the event has been sent, so a successor cannot
+        // start and then observe a stale T1 completion.
+        let terminal_publish = self.input_queue.lock_task_transition().await;
+        let terminal_state_committed = {
+            let mut turn_state = turn_state.lock().await;
+            if abort_reason.is_some() {
+                turn_state.commit_finalization_abort()
+            } else {
+                turn_state.publish_finalization()
+            }
+        };
+        if !terminal_state_committed {
+            drop(terminal_publish);
+            return;
+        }
         let event = if let Some(reason) = abort_reason {
             self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
                 .await;
@@ -1547,19 +1824,10 @@ impl Session {
                 last_agent_message,
                 error,
                 compaction_events_in_turn: {
-                    let turn_state = {
-                        self.active_turn
-                            .lock()
-                            .await
-                            .as_ref()
-                            .map(|active_turn| Arc::clone(&active_turn.turn_state))
-                    };
-                    if let Some(turn_state) = turn_state {
-                        let mut turn_state = turn_state.lock().await;
-                        turn_state.take_compaction_events_in_turn()
-                    } else {
-                        0
-                    }
+                    turn_state
+                        .lock()
+                        .await
+                        .take_compaction_events_in_turn()
                 },
                 final_model: terminal_response_model_identity.final_model,
                 model_snapshot: terminal_response_model_identity.model_snapshot,
@@ -1571,6 +1839,7 @@ impl Session {
             })
         };
         self.send_event(turn_context.as_ref(), event).await;
+        drop(terminal_publish);
         self.services
             .guardian_rejection_circuit_breaker
             .lock()
@@ -1580,11 +1849,14 @@ impl Session {
         let residency_transition = self.input_queue.begin_residency_activity().await;
         let cleared_active_turn = {
             let mut active = self.active_turn.lock().await;
-            if let Some(active_turn) = active.as_ref()
-                && active_turn.task.is_none()
-                && Arc::ptr_eq(&active_turn.turn_state, &turn_state)
-            {
-                *active = None;
+            if active.as_ref().is_some_and(|active_turn| {
+                Arc::ptr_eq(&active_turn.turn_state, &turn_state)
+                    && active_turn.task.as_ref().is_some_and(|task| {
+                        task.identity == task_identity
+                            && task.phase == RunningTaskPhase::Finalizing
+                    })
+            }) {
+                active.take();
                 true
             } else {
                 false
@@ -1630,11 +1902,12 @@ impl Session {
             .as_ref()
             .is_some_and(|task_state| Arc::ptr_eq(task_state, &turn_state));
         let eligible = task.identity == task_identity
-            && task.phase == RunningTaskPhase::Running
+            && task.phase == RunningTaskPhase::Finalizing
             && exact_context
             && exact_turn_state
             && task.turn_state.is_some()
             && !task.cancellation_token.is_cancelled()
+            && turn_state_guard.finalization_allows_progress()
             && task.task.supports_turn_local_continuation()
             && terminal_error.is_none()
             && task
@@ -1678,7 +1951,7 @@ impl Session {
         };
         let exact_task = active_turn.task.as_ref().is_some_and(|task| {
             task.identity == task_identity
-                && task.phase == RunningTaskPhase::Running
+                && task.phase == RunningTaskPhase::Finalizing
                 && !task.cancellation_token.is_cancelled()
                 && Arc::ptr_eq(&task.turn_context, turn_context)
                 && task.turn_context.sub_id == turn_context.sub_id
@@ -1716,7 +1989,7 @@ impl Session {
                 Some(active_turn)
                     if active_turn.task.as_ref().is_some_and(|task| {
                         task.identity == task_identity
-                            && task.phase == RunningTaskPhase::Running
+                            && task.phase == RunningTaskPhase::Finalizing
                             && Arc::ptr_eq(&task.turn_context, turn_context)
                             && task.turn_context.sub_id == turn_context.sub_id
                             && task
@@ -1726,11 +1999,15 @@ impl Session {
                             && Arc::ptr_eq(&active_turn.turn_state, &turn_state)
                     }) =>
                 {
-                    turn_state
-                        .lock()
-                        .await
-                        .restore_turn_local_continuation_input(input.clone());
-                    true
+                    if !turn_state.lock().await.finalization_allows_progress() {
+                        false
+                    } else {
+                        turn_state
+                            .lock()
+                            .await
+                            .restore_turn_local_continuation_input(input.clone());
+                        true
+                    }
                 }
                 _ => false,
             }
@@ -1765,12 +2042,11 @@ impl Session {
 
     async fn handle_task_abort(self: &Arc<Self>, mut task: RunningTask, reason: TurnAbortReason) {
         let sub_id = task.turn_context.sub_id.clone();
-        if task.cancellation_token.is_cancelled() {
-            return;
-        }
 
         trace!(task_kind = ?task.kind, sub_id, "aborting running task");
-        task.cancellation_token.cancel();
+        if !task.cancellation_token.is_cancelled() {
+            task.cancellation_token.cancel();
+        }
         task.turn_context
             .turn_metadata_state
             .cancel_git_enrichment_task();
@@ -1793,11 +2069,19 @@ impl Session {
                 .lock()
                 .await
                 .turn_local_continuation_input_is_hook_processing()
-        } else {
-            false
-        };
+            } else {
+                false
+            };
+        // The drop-aborts wrapper was detached at finalization claim.  If a hook owns the input
+        // claim, leave that detached future alive so it can commit the disposition exactly once;
+        // the forced finalization state already prevents it from publishing TurnComplete.
         if !continuation_hook_processing {
-            task.handle.abort();
+            if let Some(abort_handle) = task.abort_handle.as_ref() {
+                abort_handle.abort();
+            }
+            if let Some(handle) = task.handle.as_ref() {
+                handle.abort();
+            }
         }
 
         let session_ctx = Arc::new(SessionTaskContext::new(
