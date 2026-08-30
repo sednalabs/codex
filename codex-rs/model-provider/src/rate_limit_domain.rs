@@ -23,10 +23,7 @@ fn validate_opaque_value(value: &str) -> Result<(), OpaqueValueError> {
     if value.len() > MAX_OPAQUE_VALUE_LENGTH {
         return Err(OpaqueValueError::TooLong);
     }
-    if !value
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
-    {
+    if value.chars().any(char::is_control) {
         return Err(OpaqueValueError::InvalidCharacter);
     }
     Ok(())
@@ -35,8 +32,8 @@ fn validate_opaque_value(value: &str) -> Result<(), OpaqueValueError> {
 /// An opaque, provider-issued non-secret identity for a rate-limit domain.
 ///
 /// The value is intentionally not exposed after construction. Callers must
-/// provide a bounded, printable provider-domain identifier; credentials,
-/// headers, and unrestricted identity strings are not valid inputs.
+/// provide a bounded, control-character-free provider-domain identifier and
+/// remain responsible for withholding secrets.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ProviderDomainId(String);
 
@@ -68,7 +65,7 @@ pub enum ProviderDomainIdError {
     Empty,
     /// The supplied identity exceeded the bounded representation.
     TooLong,
-    /// The supplied identity contained whitespace, control, or unsupported characters.
+    /// The supplied identity contained a control character.
     InvalidCharacter,
 }
 
@@ -87,7 +84,7 @@ impl fmt::Display for ProviderDomainIdError {
         formatter.write_str(match self {
             Self::Empty => "provider domain identity is empty",
             Self::TooLong => "provider domain identity is too long",
-            Self::InvalidCharacter => "provider domain identity contains unsupported characters",
+            Self::InvalidCharacter => "provider domain identity contains control characters",
         })
     }
 }
@@ -111,7 +108,7 @@ pub enum ProviderFactError {
     Empty,
     /// The supplied fact exceeded the bounded representation.
     TooLong,
-    /// The supplied fact contained whitespace, control, or unsupported characters.
+    /// The supplied fact contained a control character.
     InvalidCharacter,
 }
 
@@ -130,7 +127,7 @@ impl fmt::Display for ProviderFactError {
         formatter.write_str(match self {
             Self::Empty => "provider fact is empty",
             Self::TooLong => "provider fact is too long",
-            Self::InvalidCharacter => "provider fact contains unsupported characters",
+            Self::InvalidCharacter => "provider fact contains control characters",
         })
     }
 }
@@ -420,18 +417,10 @@ mod tests {
     }
 
     #[test]
-    fn malformed_provider_domain_identity_is_rejected() {
+    fn malformed_opaque_values_are_rejected() {
         assert_eq!(
             ProviderDomainId::try_new(""),
             Err(ProviderDomainIdError::Empty)
-        );
-        assert_eq!(
-            ProviderDomainId::try_new("provider domain"),
-            Err(ProviderDomainIdError::InvalidCharacter)
-        );
-        assert_eq!(
-            ProviderDomainId::try_new("provider/domain"),
-            Err(ProviderDomainIdError::InvalidCharacter)
         );
         assert_eq!(
             ProviderDomainId::try_new("provider\n-domain"),
@@ -441,10 +430,83 @@ mod tests {
             ProviderDomainId::try_new("x".repeat(MAX_OPAQUE_VALUE_LENGTH + 1)),
             Err(ProviderDomainIdError::TooLong)
         );
+
+        assert_eq!(
+            ProviderObservedFacts::try_from_provider(
+                /*provider_scope*/ None,
+                /*eligible*/ None,
+                Some("provider\n-fact"),
+                /*budget*/ None,
+                /*freshness*/ None,
+            ),
+            Err(ProviderFactError::InvalidCharacter)
+        );
+        assert_eq!(
+            ProviderObservedFacts::try_from_provider(
+                /*provider_scope*/ None,
+                /*eligible*/ None,
+                Some(&"x".repeat(MAX_OPAQUE_VALUE_LENGTH + 1)),
+                /*budget*/ None,
+                /*freshness*/ None,
+            ),
+            Err(ProviderFactError::TooLong)
+        );
+    }
+
+    #[test]
+    fn printable_provider_punctuation_is_accepted() {
+        for value in [
+            "provider domain / shared+scope = test@example",
+            "2026-08-30T12:34:56+10:00",
+            "arn:aws:iam::123456789012:role/provider+reader@example",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ==+/",
+        ] {
+            assert!(
+                ProviderDomainId::try_new(value).is_ok(),
+                "rejected {value:?}"
+            );
+        }
+
+        ProviderObservedFacts::try_from_provider(
+            Some(ProviderDomainId::try_new("provider / scope+1@example").unwrap()),
+            Some(true),
+            Some("2026-08-30T12:34:56+10:00"),
+            Some("budget=100 / minute"),
+            Some("freshness@example +00:00"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn shared_scope_requires_provider_scope_observation() {
+        let observed = ProviderObservedFacts::try_from_provider(
+            /*provider_scope*/ None,
+            Some(true),
+            Some("opaque-deadline"),
+            Some("opaque-budget"),
+            Some("opaque-freshness"),
+        )
+        .unwrap();
+        assert_eq!(
+            evidence(observed, RateLimitDomainScope::shared(provider_domain())),
+            Err(RateLimitEvidenceError::SharedScopeMismatch)
+        );
     }
 
     #[test]
     fn secret_safe_debug_does_not_render_raw_values() {
+        let provider_domain = provider_domain();
+        let provider_domain_debug = format!("{provider_domain:?}");
+        assert!(!provider_domain_debug.contains("opaque-provider-domain"));
+        assert!(provider_domain_debug.contains("<redacted>"));
+
+        let shared_scope_debug = format!(
+            "{:?}",
+            RateLimitDomainScope::shared(provider_domain.clone())
+        );
+        assert!(!shared_scope_debug.contains("opaque-provider-domain"));
+        assert!(shared_scope_debug.contains("<redacted>"));
+
         let evidence = evidence(observed_complete(), RateLimitDomainScope::independent()).unwrap();
         let rendered = format!("{evidence:?}");
         for secret in [
