@@ -3623,6 +3623,7 @@ dependencies = [
  "codex-utils-path-uri",
  "codex-utils-plugins",
  "futures",
+ "insta",
  "lru",
  "pretty_assertions",
  "regex-lite",

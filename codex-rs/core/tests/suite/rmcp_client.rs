@@ -864,9 +864,11 @@ async fn environment_mcp_policy_filters_runtime_config_and_model_tools(
     Ok(())
 }
 
+#[test_case("rmcp", "mcp__rmcp"; "simple name")]
+#[test_case("npm:@scope/package.name", "mcp__npm__scope_package_name"; "npm name")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(mcp_test_value)]
-async fn stdio_server_round_trip() -> anyhow::Result<()> {
+async fn stdio_server_round_trip(server_name: &'static str, namespace: &str) -> anyhow::Result<()> {
     // TODO(anp): Remove after packaging a Windows stdio test server for Wine exec.
     skip_if_wine_exec!(
         Ok(()),
@@ -878,8 +880,7 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
 
     let call_id = "call-123";
     let search_call_id = "search-rmcp-echo";
-    let server_name = "rmcp";
-    let namespace = format!("mcp__{server_name}");
+    let namespace = namespace.to_string();
 
     let search_mock = mount_sse_once(
         &server,
@@ -1013,7 +1014,7 @@ async fn stdio_server_round_trip() -> anyhow::Result<()> {
         search_description.len() < 513 * 1024,
         "the complete tool search description must remain bounded"
     );
-    assert!(search_description.contains(&format!("- rmcp: {expected_description}")));
+    assert!(search_description.contains(&format!("- {server_name}: {expected_description}")));
     assert!(search_description.contains("🦀keep the complete MCP metadata"));
 
     let search_output = call_mock
