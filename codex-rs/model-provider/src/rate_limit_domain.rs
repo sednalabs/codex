@@ -500,10 +500,7 @@ mod tests {
         assert!(!provider_domain_debug.contains("opaque-provider-domain"));
         assert!(provider_domain_debug.contains("<redacted>"));
 
-        let shared_scope_debug = format!(
-            "{:?}",
-            RateLimitDomainScope::shared(provider_domain.clone())
-        );
+        let shared_scope_debug = format!("{:?}", RateLimitDomainScope::shared(provider_domain));
         assert!(!shared_scope_debug.contains("opaque-provider-domain"));
         assert!(shared_scope_debug.contains("<redacted>"));
 
