@@ -949,7 +949,7 @@ mod tests {
             .await
             .restore_turn_local_continuation_input(input.clone());
         assert_eq!(
-            input,
+            expected,
             input_queue
                 .clone_pending_input_for_turn_state(&turn_state)
                 .await
