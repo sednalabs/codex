@@ -112,12 +112,15 @@ mod tests {
     #[test]
     fn local_and_provider_provenance_remain_separate() {
         let evidence = RateLimitEvidence {
-            local: local("request-1", Some("model-a"), None),
+            local: local("request-1", Some("model-a"), /*thread_id*/ None),
             observed: observed_complete(),
             scope: RateLimitDomainScope::Independent,
         };
         assert_eq!(evidence.local.request_id, "request-1");
-        assert_eq!(evidence.observed.provider_scope.as_deref(), Some("opaque-provider-domain"));
+        assert_eq!(
+            evidence.observed.provider_scope.as_deref(),
+            Some("opaque-provider-domain")
+        );
     }
 
     #[test]
@@ -134,7 +137,7 @@ mod tests {
             },
         ] {
             let evidence = RateLimitEvidence {
-                local: local("r", None, None),
+                local: local("r", /*model*/ None, /*thread_id*/ None),
                 observed,
                 scope: RateLimitDomainScope::Independent,
             };
@@ -144,7 +147,11 @@ mod tests {
         }
 
         let unknown_scope = RateLimitEvidence {
-            local: local("r-unknown-scope", None, None),
+            local: local(
+                "r-unknown-scope",
+                /*model*/ None,
+                /*thread_id*/ None,
+            ),
             observed: observed_complete(),
             scope: RateLimitDomainScope::Unknown,
         };
@@ -156,7 +163,7 @@ mod tests {
     #[test]
     fn g3_requires_all_provider_facts() {
         let mut evidence = RateLimitEvidence {
-            local: local("r", None, None),
+            local: local("r", /*model*/ None, /*thread_id*/ None),
             observed: observed_complete(),
             scope: RateLimitDomainScope::Shared("key".into()),
         };
