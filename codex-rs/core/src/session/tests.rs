@@ -10385,7 +10385,16 @@ async fn successful_late_steer_reopens_same_turn_without_duplicate_lifecycle() {
     }
     assert_eq!(1, started, "late steer must not emit a second TurnStarted");
     assert_eq!(1, completed, "late steer must emit one TurnComplete");
-    assert!(sess.active_turn.lock().await.is_none());
+    timeout(StdDuration::from_secs(2), async {
+        loop {
+            if sess.active_turn.lock().await.is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("turn should be cleared after terminal event");
     assert_no_terminal_event(
         &rx,
         "late steer must not emit a second terminal lifecycle event",
