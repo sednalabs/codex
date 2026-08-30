@@ -10158,8 +10158,10 @@ impl SessionTask for RegularContinuationHarnessTask {
             .send(input)
             .await
             .expect("initial task receiver open");
-        cancellation_token.cancelled().await;
-        Ok(None)
+        // Keep the manually driven continuation test from producing a second completion path
+        // when abort cleanup cancels the initial task while that continuation is paused.
+        let _ = cancellation_token;
+        std::future::pending::<crate::tasks::SessionTaskResult>().await
     }
 
     fn run_pending_input_continuation(
