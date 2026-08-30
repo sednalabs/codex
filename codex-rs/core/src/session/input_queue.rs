@@ -1064,5 +1064,30 @@ mod tests {
                 .clone_pending_input_for_turn_state(&turn_state)
                 .await
         );
+
+        // Input arriving after restoration is not part of the captured claim. Abort cleanup must
+        // remove only the mirrored claim prefix and leave this newer item for its own drain.
+        let newer_after_restore = vec![TurnInput::UserInput {
+            content: vec![UserInput::Text {
+                text: "newer after restore".to_string(),
+                text_elements: Vec::new(),
+            }],
+            client_id: None,
+        }];
+        input_queue
+            .extend_pending_input_for_turn_state(&turn_state, newer_after_restore.clone())
+            .await;
+        let captured = turn_state
+            .lock()
+            .await
+            .take_turn_local_continuation_input_for_abort()
+            .expect("restored claim should be recoverable by abort cleanup");
+        assert_eq!(expected, captured);
+        assert_eq!(
+            newer_after_restore,
+            input_queue
+                .clone_pending_input_for_turn_state(&turn_state)
+                .await
+        );
     }
 }
