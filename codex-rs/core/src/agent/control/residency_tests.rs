@@ -2,7 +2,7 @@ use crate::StartThreadOptions;
 use crate::ThreadManager;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
-use crate::agent::SpawnAgentOptions;
+use crate::agent::control::SpawnAgentOptions;
 use crate::agent::registry::AgentMetadata;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
