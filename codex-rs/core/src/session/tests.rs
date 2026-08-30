@@ -753,6 +753,26 @@ async fn install_user_prompt_test_hook(sess: &Session) {
     })));
 }
 
+async fn install_user_prompt_stop_test_hook(sess: &Session) {
+    let config = sess.get_config().await;
+    let stack = config.config_layer_stack.with_user_config(
+        &config.codex_home.join(CONFIG_TOML_FILE),
+        toml::from_str(
+            r#"[hooks]
+UserPromptSubmit = [{ hooks = [{ type = "command", command = "printf '%s' '{\"continue\":false,\"stopReason\":\"prompt stop\"}'" }] }]
+"#,
+        )
+        .expect("test hook config"),
+    )
+    .expect("test hook layer");
+    sess.services.hooks.store(Arc::new(Hooks::new(HooksConfig {
+        feature_enabled: true,
+        bypass_hook_trust: true,
+        config_layer_stack: Some(stack),
+        ..HooksConfig::default()
+    })));
+}
+
 async fn install_compact_session_start_stop_test_hook(sess: &Session) {
     let config = sess.get_config().await;
     let stack = config.config_layer_stack.with_user_config(
@@ -10107,6 +10127,13 @@ struct UncooperativeContinuationTask {
 
 struct RegularContinuationHarnessTask(Arc<RegularTask>, async_channel::Sender<Vec<TurnInput>>);
 
+struct DelayedRegularContinuationTask {
+    regular: Arc<RegularTask>,
+    initial_ready: async_channel::Sender<Vec<TurnInput>>,
+    continuation_started: async_channel::Sender<()>,
+    continuation_release: Arc<tokio::sync::Notify>,
+}
+
 impl SessionTask for RegularContinuationHarnessTask {
     fn kind(&self) -> TaskKind {
         TaskKind::Regular
@@ -10146,6 +10173,63 @@ impl SessionTask for RegularContinuationHarnessTask {
     ) -> impl std::future::Future<Output = crate::tasks::SessionTaskContinuationResult> + Send {
         async move {
             Arc::clone(&self.0)
+                .run_pending_input_continuation(
+                    session,
+                    ctx,
+                    task_identity,
+                    turn_state,
+                    input,
+                    cancellation_token,
+                )
+                .await
+        }
+    }
+}
+
+impl SessionTask for DelayedRegularContinuationTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+
+    fn span_name(&self) -> &'static str {
+        "session_task.delayed_regular_continuation"
+    }
+
+    fn supports_turn_local_continuation(&self) -> bool {
+        true
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        _session: Arc<SessionTaskContext>,
+        _ctx: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> crate::tasks::SessionTaskResult {
+        self.initial_ready
+            .send(input)
+            .await
+            .expect("initial task receiver open");
+        cancellation_token.cancelled().await;
+        Ok(None)
+    }
+
+    fn run_pending_input_continuation(
+        self: Arc<Self>,
+        session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+        task_identity: crate::state::TaskIdentity,
+        turn_state: Arc<Mutex<TurnState>>,
+        input: Vec<TurnInput>,
+        cancellation_token: CancellationToken,
+    ) -> impl std::future::Future<Output = crate::tasks::SessionTaskContinuationResult> + Send {
+        async move {
+            self.continuation_started
+                .send(())
+                .await
+                .expect("continuation receiver open");
+            self.continuation_release.notified().await;
+            self.regular
                 .run_pending_input_continuation(
                     session,
                     ctx,
@@ -10677,6 +10761,218 @@ fn compact_session_start_stop_preserves_claimed_late_steer() {
         .expect("test thread should spawn")
         .join()
         .expect("test thread should complete");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_regular_continuation_cannot_drain_replacement_sources() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    let (initial_tx, initial_rx) = async_channel::bounded(1);
+    let (continuation_started_tx, continuation_started_rx) = async_channel::bounded(1);
+    let continuation_release = Arc::new(tokio::sync::Notify::new());
+    sess.spawn_task(
+        Arc::clone(&tc),
+        test_input("t1", None),
+        DelayedRegularContinuationTask {
+            regular: Arc::new(RegularTask::new()),
+            initial_ready: initial_tx,
+            continuation_started: continuation_started_tx,
+            continuation_release: Arc::clone(&continuation_release),
+        },
+    )
+    .await;
+    initial_rx.recv().await.expect("t1 should run");
+    sess.steer_input(
+        vec![UserInput::Text {
+            text: "t1 steer".to_string(),
+            text_elements: Vec::new(),
+        }],
+        /*additional_context*/ Default::default(),
+        Some(&tc.sub_id),
+        /*client_user_message_id*/ None,
+        /*responsesapi_client_metadata*/ None,
+    )
+    .await
+    .expect("t1 steer should be accepted");
+    let (task_identity, _, _, _) = active_task_details(&sess).await;
+    let finish = tokio::spawn({
+        let sess = Arc::clone(&sess);
+        let tc = Arc::clone(&tc);
+        async move {
+            sess.on_task_finished(task_identity, tc, Ok(None)).await;
+        }
+    });
+    continuation_started_rx
+        .recv()
+        .await
+        .expect("t1 continuation should start before replacement");
+
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+
+    let tc2 = sess.new_default_turn().await;
+    let (t2_initial_tx, t2_initial_rx) = async_channel::bounded(1);
+    sess.spawn_task(
+        Arc::clone(&tc2),
+        Vec::new(),
+        DelayedRegularContinuationTask {
+            regular: Arc::new(RegularTask::new()),
+            initial_ready: t2_initial_tx,
+            continuation_started: async_channel::bounded(1).0,
+            continuation_release: Arc::new(tokio::sync::Notify::new()),
+        },
+    )
+    .await;
+    t2_initial_rx.recv().await.expect("t2 should run");
+    enqueue_test_sources(&sess).await;
+
+    continuation_release.notify_one();
+    finish.await.expect("stale continuation should finish");
+
+    assert!(sess.input_queue.has_pending_mailbox_items().await);
+    assert!(sess.input_queue.has_pending_terminal_completions().await);
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn abort_after_continuation_restore_preserves_claim_and_newer_input() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    install_compact_session_start_stop_test_hook(&sess).await;
+    sess.state.lock().await.queue_pending_session_start_source(
+        codex_hooks::SessionStartSource::Compact,
+    );
+    let restore_barrier = Arc::new(crate::tasks::ContinuationRestoreBarrier::new());
+    crate::tasks::set_continuation_restore_barrier(sess.thread_id(), Some(Arc::clone(&restore_barrier)));
+
+    let (initial_tx, initial_rx) = async_channel::bounded(1);
+    sess.spawn_task(
+        Arc::clone(&tc),
+        test_input("initial", None),
+        RegularContinuationHarnessTask(Arc::new(RegularTask::new()), initial_tx),
+    )
+    .await;
+    initial_rx.recv().await.expect("initial task should run");
+    for text in ["A", "B"] {
+        sess.steer_input(
+            vec![UserInput::Text {
+                text: text.to_string(),
+                text_elements: Vec::new(),
+            }],
+            /*additional_context*/ Default::default(),
+            Some(&tc.sub_id),
+            /*client_user_message_id*/ None,
+            /*responsesapi_client_metadata*/ None,
+        )
+        .await
+        .expect("steer should be accepted");
+    }
+    let (task_identity, _, _, _) = active_task_details(&sess).await;
+    let finish = tokio::spawn({
+        let sess = Arc::clone(&sess);
+        let tc = Arc::clone(&tc);
+        async move {
+            sess.on_task_finished(task_identity, tc, Ok(None)).await;
+        }
+    });
+    restore_barrier.wait_until_entered().await;
+
+    let abort = tokio::spawn({
+        let sess = Arc::clone(&sess);
+        async move { sess.abort_all_tasks(TurnAbortReason::Replaced).await }
+    });
+    timeout(StdDuration::from_secs(2), async {
+        loop {
+            if sess.active_turn.lock().await.is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("abort should remove the replaced task before restore release");
+    restore_barrier.release();
+    abort.await.expect("abort should complete");
+    finish.await.expect("continuation finish should complete");
+    crate::tasks::set_continuation_restore_barrier(sess.thread_id(), None);
+
+    assert_eq!(
+        vec!["A", "B"],
+        user_input_texts(sess.clone_history().await.raw_items())
+    );
+    recv_terminal_event(&rx, TerminalEventKind::TurnAborted).await;
+    assert_no_terminal_event(
+        &rx,
+        "restore/abort interleaving must emit one terminal lifecycle event",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn abort_during_stopped_prompt_hook_preserves_stop_and_exact_lifecycle() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    install_user_prompt_stop_test_hook(&sess).await;
+    let hook_barrier = Arc::new(crate::session::turn::PendingInputHookBarrier::new());
+    crate::session::turn::set_pending_input_hook_barrier(
+        sess.thread_id(),
+        Some(Arc::clone(&hook_barrier)),
+    );
+    let (initial_tx, initial_rx) = async_channel::bounded(1);
+    sess.spawn_task(
+        Arc::clone(&tc),
+        test_input("initial", None),
+        RegularContinuationHarnessTask(Arc::new(RegularTask::new()), initial_tx),
+    )
+    .await;
+    initial_rx.recv().await.expect("initial task should run");
+    sess.steer_input(
+        vec![UserInput::Text {
+            text: "stopped prompt".to_string(),
+            text_elements: Vec::new(),
+        }],
+        /*additional_context*/ Default::default(),
+        Some(&tc.sub_id),
+        /*client_user_message_id*/ None,
+        /*responsesapi_client_metadata*/ None,
+    )
+    .await
+    .expect("steer should be accepted");
+    let (task_identity, _, _, _) = active_task_details(&sess).await;
+    let finish = tokio::spawn({
+        let sess = Arc::clone(&sess);
+        let tc = Arc::clone(&tc);
+        async move {
+            sess.on_task_finished(task_identity, tc, Ok(None)).await;
+        }
+    });
+    hook_barrier.wait_until_entered().await;
+
+    let abort = tokio::spawn({
+        let sess = Arc::clone(&sess);
+        async move { sess.abort_all_tasks(TurnAbortReason::Replaced).await }
+    });
+    timeout(StdDuration::from_secs(2), async {
+        loop {
+            if sess.active_turn.lock().await.is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("abort should remove the task while the hook is held");
+    hook_barrier.release();
+    abort.await.expect("abort should complete after hook commit");
+    finish.await.expect("continuation finish should complete");
+    crate::session::turn::set_pending_input_hook_barrier(sess.thread_id(), None);
+
+    assert_eq!(
+        Vec::<&str>::new(),
+        user_input_texts(sess.clone_history().await.raw_items())
+    );
+    recv_terminal_event(&rx, TerminalEventKind::TurnAborted).await;
+    assert_no_terminal_event(
+        &rx,
+        "stopped prompt hook abort must emit one terminal lifecycle event",
+    )
+    .await;
 }
 
 #[derive(Clone, Copy)]
