@@ -201,6 +201,7 @@ use crate::config::PermissionProfileState;
 use crate::config::StartedNetworkProxy;
 use crate::config::resolve_web_search_mode_for_turn;
 use crate::context_manager::ContextManager;
+use crate::context_manager::HistoryReplacement;
 use crate::thread_rollout_truncation::initial_history_has_prior_user_turns;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerSource;
@@ -1533,7 +1534,11 @@ impl Session {
             .collect();
         {
             let mut state = self.state.lock().await;
-            state.replace_annotated_history(history, reference_context_item);
+            state.replace_annotated_history(
+                history,
+                reference_context_item,
+                HistoryReplacement::Reset,
+            );
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
             }
@@ -3641,7 +3646,11 @@ impl Session {
         let mut world_state_item = None;
         {
             let mut state = self.state.lock().await;
-            state.replace_annotated_history(items, reference_context_item.clone());
+            state.replace_annotated_history(
+                items,
+                reference_context_item.clone(),
+                HistoryReplacement::Compaction,
+            );
             if let Some(world_state) = world_state_baseline {
                 let snapshot = world_state.snapshot();
                 world_state_item = Some(WorldStateItem::full(snapshot.clone().into_object()));

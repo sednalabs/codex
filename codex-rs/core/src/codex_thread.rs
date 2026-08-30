@@ -176,13 +176,11 @@ impl GuardianRootMessage {
     }
 }
 
-/// Authorization state that changes on history rewrites or genuine user input.
+/// Authorization state that changes on genuine user input or history resets.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuardianAuthorizationVersion {
-    /// Conversation-history rewrite generation.
-    pub history_version: u64,
-    /// Number of genuine user messages in the conversation snapshot.
-    pub user_message_count: usize,
+    /// User-message/reset revision, preserved across compaction and internal context.
+    pub user_message_revision: u64,
     /// Number of successful, host-produced answers to genuine user-input requests.
     pub user_input_response_count: usize,
 }
@@ -191,11 +189,7 @@ impl GuardianAuthorizationVersion {
     /// Captures history replacement and genuine user input from the same snapshot.
     pub fn from_history(history: &dyn ConversationHistorySnapshot) -> Self {
         Self {
-            history_version: history.history_version(),
-            user_message_count: history
-                .items()
-                .filter(|item| item.is_user_message())
-                .count(),
+            user_message_revision: history.user_message_revision(),
             user_input_response_count: 0,
         }
     }
@@ -831,7 +825,7 @@ impl CodexThread {
         self.session.multi_agent_version()
     }
 
-    /// Returns the current history generation and genuine user-input counts for Guardian.
+    /// Returns the current user-authorization revision for Guardian.
     pub async fn guardian_authorization_version(&self) -> GuardianAuthorizationVersion {
         let history = self.session.conversation_history_snapshot().await;
         self.thread_extension_data()

@@ -56,6 +56,7 @@ pub(crate) use codex_context_fragments::AdditionalContextUserFragment;
 pub use codex_context_fragments::ContextualUserFragment;
 pub(crate) use compaction_summary::CompactionSummary;
 pub(crate) use contextual_user_message::is_contextual_user_fragment;
+pub(crate) use contextual_user_message::is_user_authorization_message;
 pub(crate) use contextual_user_message::parse_visible_hook_prompt_message;
 pub(crate) use current_time_reminder::CurrentTimeReminder;
 pub(crate) use developer_instructions::DeveloperInstructions;
