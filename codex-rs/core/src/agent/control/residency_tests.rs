@@ -730,7 +730,10 @@ async fn terminal_idle_unload_defers_for_finalizer_then_retries() {
 
     first.thread.session.input_queue.finish_terminal_finalizer();
     advance(Duration::from_millis(100)).await;
-    wait_for_thread_to_unload_after_terminal_idle_deadline(&manager, first.thread_id).await;
+    control
+        .v2_residency
+        .wait_for_terminal_idle_unload(&manager, first.thread_id)
+        .await;
     assert!(
         manager.get_thread(first.thread_id).await.is_err(),
         "the watcher should retry after the terminal finalizer completes"
