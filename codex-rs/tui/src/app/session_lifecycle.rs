@@ -77,8 +77,8 @@ fn accept_loaded_thread_page(
     {
         return Err(LoadedThreadPageRejection::ThreadBudgetExceeded);
     }
-    loaded_thread_ids.extend(response.data);
     let Some(next_cursor) = response.next_cursor else {
+        loaded_thread_ids.extend(response.data);
         return Ok(None);
     };
     if next_cursor.trim().is_empty() {
@@ -87,6 +87,7 @@ fn accept_loaded_thread_page(
     if !seen_cursors.insert(next_cursor.clone()) {
         return Err(LoadedThreadPageRejection::RepeatedCursor);
     }
+    loaded_thread_ids.extend(response.data);
     Ok(Some(next_cursor))
 }
 
@@ -142,7 +143,7 @@ mod loaded_thread_page_tests {
             page(/*data_len*/ 1, Some("cursor-1")),
         );
         assert_eq!(result, Err(LoadedThreadPageRejection::RepeatedCursor));
-        assert_eq!(ids, vec!["00000000-0000-0000-0000-000000000001"]);
+        assert!(ids.is_empty());
     }
 
     #[test]
@@ -183,7 +184,7 @@ mod loaded_thread_page_tests {
             accept_loaded_thread_page(&mut ids, &mut cursors, page(/*data_len*/ 1, Some("  ")),),
             Err(LoadedThreadPageRejection::MalformedCursor)
         );
-        assert_eq!(ids.len(), 1);
+        assert!(ids.is_empty());
     }
 }
 
