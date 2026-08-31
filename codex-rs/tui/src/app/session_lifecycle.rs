@@ -134,16 +134,23 @@ mod loaded_thread_page_tests {
 
     #[test]
     fn rejects_pages_that_exceed_the_total_thread_budget() {
-        let existing_id =
-            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread");
-        let mut ids = vec![existing_id; AGENT_PICKER_LOADED_MAX_THREADS];
-        let mut seen_ids = HashSet::from([existing_id]);
+        let mut ids: Vec<_> = (0..AGENT_PICKER_LOADED_MAX_THREADS)
+            .map(|index| {
+                ThreadId::from_string(&format!("00000000-0000-0000-0000-{:012x}", index + 1))
+                    .expect("valid thread")
+            })
+            .collect();
+        let mut seen_ids: HashSet<_> = ids.iter().copied().collect();
         let mut cursors = HashSet::new();
         let result = accept_loaded_thread_page(
             &mut ids,
             &mut seen_ids,
             &mut cursors,
-            page(/*data_len*/ 1, /*next_cursor*/ None),
+            page_from(
+                /*start_index*/ AGENT_PICKER_LOADED_MAX_THREADS,
+                /*data_len*/ 1,
+                /*next_cursor*/ None,
+            ),
         );
         assert_eq!(result, Err(LoadedThreadPageRejection::ThreadBudgetExceeded));
         assert_eq!(ids.len(), AGENT_PICKER_LOADED_MAX_THREADS);
