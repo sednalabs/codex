@@ -98,9 +98,17 @@ mod loaded_thread_page_tests {
     use super::*;
 
     fn page(data_len: usize, next_cursor: Option<&str>) -> ThreadLoadedListResponse {
+        page_from(0, data_len, next_cursor)
+    }
+
+    fn page_from(
+        start_index: usize,
+        data_len: usize,
+        next_cursor: Option<&str>,
+    ) -> ThreadLoadedListResponse {
         ThreadLoadedListResponse {
             data: (0..data_len)
-                .map(|index| format!("00000000-0000-0000-0000-{:012x}", index + 1))
+                .map(|index| format!("00000000-0000-0000-0000-{:012x}", start_index + index + 1))
                 .collect(),
             next_cursor: next_cursor.map(str::to_owned),
         }
@@ -167,7 +175,11 @@ mod loaded_thread_page_tests {
                 &mut ids,
                 &mut seen_ids,
                 &mut cursors,
-                page(/*data_len*/ 1, Some(&format!("cursor-{index}"))),
+                page_from(
+                    /*start_index*/ index,
+                    /*data_len*/ 1,
+                    Some(&format!("cursor-{index}")),
+                ),
             )
             .expect("unique cursor should remain within the thread budget");
         }

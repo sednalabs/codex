@@ -435,7 +435,7 @@ fn loaded_thread_backfill_paginates_without_losing_lineage() -> Result<()> {
                                 parent_thread_id: root_thread_id,
                                 depth: 1,
                                 agent_path: Some(
-                                    AgentPath::try_from(format!("/root/worker-{index}"))
+                                    AgentPath::try_from(format!("/root/worker_{index}"))
                                         .expect("valid agent path"),
                                 ),
                                 agent_nickname: Some(format!("worker-{index}")),
@@ -528,7 +528,7 @@ fn loaded_thread_backfill_rejects_semantic_duplicate_before_reads() -> Result<()
                             parent_thread_id: root_thread_id,
                             depth: 1,
                             agent_path: Some(
-                                AgentPath::try_from("/root/dedupe-worker")
+                                AgentPath::try_from("/root/dedupe_worker")
                                     .expect("valid agent path"),
                             ),
                             agent_nickname: Some("dedupe-worker".to_string()),
