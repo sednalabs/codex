@@ -378,7 +378,8 @@ fn loaded_thread_backfill_paginates_without_losing_lineage() -> Result<()> {
                     "pagination root",
                     Some(app.config.model_provider_id.as_str()),
                     /*git_info*/ None,
-                )?)?;
+                )
+                .expect("create root rollout"))?;
                 let mut child_thread_ids = Vec::with_capacity(CHILD_COUNT);
                 for index in 0..CHILD_COUNT {
                     let timestamp = format!("2026-01-02T00-00-{second:02}", second = index + 1);
@@ -401,7 +402,8 @@ fn loaded_thread_backfill_paginates_without_losing_lineage() -> Result<()> {
                         }),
                         root_thread_id.into(),
                         root_thread_id,
-                    )?)?;
+                    )
+                    .expect("create child rollout"))?;
                     child_thread_ids.push(child_thread_id);
                 }
 
