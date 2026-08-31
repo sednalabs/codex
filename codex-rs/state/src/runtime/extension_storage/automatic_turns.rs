@@ -325,7 +325,7 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
                 &actual_thread_id,
                 trigger_turn_id,
                 generation,
-                1,
+                /*attempt*/ 1,
             )
             .await?;
             tx.commit().await?;

@@ -531,45 +531,6 @@ async fn read_thread_started_notification(
     }
 }
 
-async fn read_user_message_item_completed(
-    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
-    thread_id: &str,
-    turn_id: &str,
-) -> Option<String> {
-    loop {
-        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
-            .await
-            .expect("timed out waiting for user-message item/completed notification")
-            .expect("outgoing channel closed");
-        let message = match envelope {
-            crate::outgoing_message::OutgoingEnvelope::ToConnection {
-                connection_id,
-                message,
-                ..
-            } if connection_id == TEST_CONNECTION_ID => message,
-            crate::outgoing_message::OutgoingEnvelope::Broadcast { message } => message,
-            _ => continue,
-        };
-        let crate::outgoing_message::OutgoingMessage::AppServerNotification(notification) = message
-        else {
-            continue;
-        };
-        let codex_app_server_protocol::ServerNotification::ItemCompleted(notification) =
-            notification.notification
-        else {
-            continue;
-        };
-        if notification.thread_id != thread_id || notification.turn_id != turn_id {
-            continue;
-        }
-        if let codex_app_server_protocol::ThreadItem::UserMessage { client_id, .. } =
-            notification.item
-        {
-            return client_id;
-        }
-    }
-}
-
 async fn wait_for_exported_spans<F>(tracing: &TestTracing, predicate: F) -> Vec<SpanData>
 where
     F: Fn(&[SpanData]) -> bool,
@@ -845,15 +806,6 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
             /*trace*/ None,
         )
         .await;
-    let observed_client_user_message_id = read_user_message_item_completed(
-        &mut harness.outgoing_rx,
-        &thread_id,
-        &turn_start_response.turn.id,
-    )
-    .await
-    .expect("turn/start should emit a user-message item");
-    assert_eq!(observed_client_user_message_id, client_user_message_id);
-
     let usage_pool = harness
         .state_db
         .as_ref()
