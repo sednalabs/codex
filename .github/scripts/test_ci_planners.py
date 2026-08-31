@@ -4912,6 +4912,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         steps = analyze_job.get("steps") or []
 
         self.assertIn("workflow_dispatch", trigger)
+        self.assertEqual(
+            (trigger.get("push") or {}).get("branches"),
+            ["main", "upstream-main"],
+        )
+        self.assertEqual(
+            (trigger.get("pull_request") or {}).get("branches"),
+            ["main", "upstream-main", "integration/**"],
+        )
         self.assertEqual(trigger.get("merge_group"), {"types": ["checks_requested"]})
         self.assertEqual(payload.get("permissions"), {"contents": "read"})
         concurrency = payload.get("concurrency") or {}

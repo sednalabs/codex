@@ -4,7 +4,7 @@ on:
   push:
     branches: ["main", "upstream-main"]
   pull_request:
-    branches: ["main", "upstream-main"]
+    branches: ["main", "upstream-main", "integration/**"]
   merge_group:
     types: [checks_requested]
   schedule:
