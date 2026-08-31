@@ -2449,7 +2449,10 @@ async fn handle_realtime_server_event(
         | RealtimeEvent::OutputTranscriptDelta(_)
         | RealtimeEvent::OutputTranscriptDone(_)
         | RealtimeEvent::ConversationItemAdded(_)
-        | RealtimeEvent::ConversationItemDone { .. } => false,
+        | RealtimeEvent::ConversationItemDone { .. }
+        | RealtimeEvent::HistoryItemStarted(_)
+        | RealtimeEvent::HistoryTranscriptDelta { .. }
+        | RealtimeEvent::HistoryItemCompleted(_) => false,
     };
 
     if events_tx.send(event).await.is_err() {

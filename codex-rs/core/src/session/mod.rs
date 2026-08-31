@@ -40,6 +40,7 @@ use crate::image_preparation::prepare_response_items as prepare_image_response_i
 use crate::image_preparation::unified_image_budget_enabled;
 use crate::parse_turn_item;
 use crate::realtime_conversation::RealtimeConversationManager;
+use crate::realtime_history::RealtimeEventOrder;
 use crate::session::step_context::StepContext;
 use crate::session::step_settings::ResolvedStepSettings;
 use crate::session::step_settings::StepSettings;
@@ -227,6 +228,7 @@ mod mcp_prewarm;
 mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
+mod realtime_history;
 mod review;
 mod rollout_budget;
 mod rollout_reconstruction;
@@ -2339,7 +2341,32 @@ impl Session {
     }
 
     async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {
+        // Keep realtime reduction, canonical append, and delivery in the same order.
+        // This lock must not acquire SessionState or ActiveTurn: event producers can
+        // already hold those locks. Host presentation policies are synchronous.
+        let mut realtime_history = match &self.realtime_history {
+            Some(history) => {
+                let history = history.lock().await;
+                history.should_observe(&event.msg).then_some(history)
+            }
+            None => None,
+        };
         self.services.mcp_runtime.observe_event(&event.msg);
+        let (before_event, after_event) = match realtime_history.as_mut() {
+            Some(history) => {
+                let effects = history.observe(&event.msg);
+                match effects.order {
+                    RealtimeEventOrder::BeforeEvent => (Some(effects), None),
+                    RealtimeEventOrder::AfterEvent => (None, Some(effects)),
+                }
+            }
+            None => (None, None),
+        };
+        if let Some(effects) = before_event
+            && let Err(error) = self.send_realtime_history_effects(&event.id, effects).await
+        {
+            warn!("failed to persist realtime history: {error}");
+        }
         // Persist the event into rollout storage; the store applies its persistence policy.
         if persist {
             let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
@@ -2348,6 +2375,11 @@ impl Session {
         self.services
             .rollout_thread_trace
             .record_protocol_event(&event.msg);
+        if let Some(effects) = after_event
+            && let Err(error) = self.send_realtime_history_effects(&event.id, effects).await
+        {
+            warn!("failed to persist realtime history: {error}");
+        }
         self.deliver_event_raw(event).await;
     }
 

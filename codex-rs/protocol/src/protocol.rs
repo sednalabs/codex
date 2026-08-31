@@ -448,6 +448,13 @@ pub enum RealtimeEvent {
     ConversationItemDone {
         item_id: String,
     },
+    /// Canonical display history produced by Core, separate from provider events.
+    HistoryItemStarted(crate::realtime::RealtimeItem),
+    HistoryTranscriptDelta {
+        item_id: String,
+        delta: String,
+    },
+    HistoryItemCompleted(crate::realtime::RealtimeItem),
     HandoffRequested(RealtimeHandoffRequested),
     NoopRequested(RealtimeNoopRequested),
     Error(String),

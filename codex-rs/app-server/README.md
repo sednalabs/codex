@@ -1709,6 +1709,8 @@ Event notifications are the server-initiated event stream for thread lifecycles,
 
 Thread realtime publishes thread-scoped timeline item lifecycle notifications for paginated threads alongside its existing realtime notifications. Completed timeline items are durably interleaved with ordinary turn items by `thread/timeline/list`. Neither surface changes `ThreadItem`, `thread/read`, `thread/resume`, or `thread/fork`; clients ignore notification methods they do not recognize.
 
+Core records transcript segments, session boundaries, and backing-agent artifact promotions through its injected thread store, even without an app-server event listener. Presentation selection uses the same rules for every Core host. App-server translates Core's history events into the notifications below; it does not append those items again. Recording remains limited to paginated threads. A completed notification follows acceptance by the thread store, not an additional flush or power-loss durability barrier.
+
 Each realtime item has an `id`, a `realtimeSessionId`, and one of four types: `realtimeSessionStarted`, `transcriptSegment`, `bemItemPromoted`, or `realtimeSessionClosed`. A `bemItemPromoted` item references an existing backing-agent item by `turnId` and `itemId`; its `presentation` is `wholeItem`, `inlineMarkdown`, or `inlineVisualization` with an `index`.
 
 Recoverable configuration and initialization warnings use the existing `configWarning` notification: `{ summary, details?, path?, range? }`. App-server may emit it during initialization for config parsing and related setup diagnostics, or to the requesting connection during `thread/start` when that thread's exec-policy rules fail to parse.
