@@ -4043,6 +4043,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-realtime-webrtc"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "codex-response-debug-context"
 version = "0.0.0"
 dependencies = [
@@ -4798,6 +4806,18 @@ version = "0.0.0"
 dependencies = [
  "pretty_assertions",
  "v8",
+]
+
+[[package]]
+name = "codex-voice-host"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-process-hardening",
+ "codex-realtime-webrtc",
+ "codex-utils-cargo-bin",
+ "pretty_assertions",
+ "tokio",
 ]
 
 [[package]]
