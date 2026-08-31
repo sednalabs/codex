@@ -156,9 +156,9 @@ mod tests {
         let valid = AutomaticTurnProvenance::policy_retry(
             thread_id,
             "turn-trigger",
-            1,
-            3,
-            "server-capability",
+            /*attempt*/ 1,
+            /*max_attempts*/ 3,
+            /*capability*/ "server-capability",
         )
         .expect("valid provenance")
         .to_client_user_message_id()
