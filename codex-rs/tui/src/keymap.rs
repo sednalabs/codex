@@ -210,6 +210,7 @@ pub(crate) struct VimNormalKeymap {
     pub(crate) start_delete_operator: Vec<KeyBinding>,
     pub(crate) start_yank_operator: Vec<KeyBinding>,
     pub(crate) start_change_operator: Vec<KeyBinding>,
+    pub(crate) undo: Vec<KeyBinding>,
     pub(crate) cancel_operator: Vec<KeyBinding>,
 }
 
@@ -757,6 +758,7 @@ impl RuntimeKeymap {
                 vim_normal,
                 start_change_operator
             ),
+            undo: resolve_local!(keymap, defaults, vim_normal, undo),
             cancel_operator: resolve_local!(keymap, defaults, vim_normal, cancel_operator),
         };
 
@@ -889,6 +891,7 @@ impl RuntimeKeymap {
                 keymap.vim_normal.start_change_operator.as_ref(),
                 vim_normal.start_change_operator.as_slice(),
             ),
+            (keymap.vim_normal.undo.as_ref(), vim_normal.undo.as_slice()),
             (
                 keymap.vim_normal.cancel_operator.as_ref(),
                 vim_normal.cancel_operator.as_slice(),
@@ -959,7 +962,6 @@ impl RuntimeKeymap {
                 });
             }
         }
-
         let mut vim_operator = VimOperatorKeymap {
             delete_line: resolve_local!(keymap, defaults, vim_operator, delete_line),
             yank_line: resolve_local!(keymap, defaults, vim_operator, yank_line),
@@ -1350,7 +1352,12 @@ impl RuntimeKeymap {
             editor,
             vim_normal,
             vim_operator,
-            vim_search: VimSearchKeymap::default(),
+            vim_search: VimSearchKeymap {
+                forward: resolve_local!(keymap, defaults, vim_search, forward),
+                backward: resolve_local!(keymap, defaults, vim_search, backward),
+                next: resolve_local!(keymap, defaults, vim_search, next),
+                previous: resolve_local!(keymap, defaults, vim_search, previous),
+            },
             vim_text_object,
             pager,
             list,
@@ -1358,6 +1365,23 @@ impl RuntimeKeymap {
             approval,
         };
 
+        if keymap.vim_normal.undo.is_none() {
+            let configured: Vec<_> = runtime_action_bindings(&resolved)
+                .filter(|action| {
+                    action.id.context.overlaps(KeymapContext::VimNormal)
+                        && bindings::configured_binding_for_action(keymap, action.id)
+                            .is_some_and(Option::is_some)
+                })
+                .flat_map(|action| action.bindings.iter().copied())
+                .collect();
+            resolved.vim_normal.undo.retain(|binding| {
+                !configured.contains(binding)
+                    && !resolved.chords.bindings.iter().any(|chord| {
+                        chord.action.context.overlaps(KeymapContext::VimNormal)
+                            && chord.chord.prefix.parts() == binding.parts()
+                    })
+            });
+        }
         resolved.configure_vim_search(keymap)?;
         resolved.validate_conflicts()?;
         chords::validate_chord_conflicts(&resolved)?;
@@ -1534,6 +1558,7 @@ impl RuntimeKeymap {
                 start_delete_operator: default_bindings![plain(KeyCode::Char('d'))],
                 start_yank_operator: default_bindings![plain(KeyCode::Char('y'))],
                 start_change_operator: default_bindings![plain(KeyCode::Char('c'))],
+                undo: default_bindings![plain(KeyCode::Char('u'))],
                 cancel_operator: default_bindings![plain(KeyCode::Esc)],
             },
             vim_search: VimSearchKeymap::default(),
@@ -2953,6 +2978,47 @@ mod tests {
             binding.action.context == KeymapContext::VimNormal
                 && binding.chord.prefix == key_hint::plain(KeyCode::Char('.'))
         }));
+    }
+
+    #[test]
+    fn configured_legacy_bindings_prune_new_history_defaults() {
+        for (context, action, binding) in [
+            ("vim_normal", "move_left", "u"),
+            ("vim_normal", "move_left", "u g"),
+            ("vim_search", "forward", "u"),
+            ("vim_search", "forward", "u g"),
+            ("composer", "submit", "u"),
+            ("global", "submit", "u"),
+            ("global", "queue", "u"),
+            ("global", "toggle_shortcuts", "u"),
+        ] {
+            let keymap = serde_json::from_value(serde_json::json!({
+                (context): { (action): binding }
+            }))
+            .expect("config should deserialize");
+
+            let runtime = RuntimeKeymap::from_config(&keymap).expect("config should parse");
+
+            assert_eq!(runtime.vim_normal.undo, Vec::new());
+        }
+    }
+
+    #[test]
+    fn explicit_vim_history_bindings_still_conflict_with_legacy_bindings() {
+        let mut keymap = TuiKeymap::default();
+        keymap.vim_normal.move_left = Some(one("u"));
+        keymap.vim_normal.undo = Some(one("u"));
+        expect_conflict(&keymap, "move_left", "undo");
+    }
+
+    #[test]
+    fn explicit_empty_arrays_unbind_vim_history_actions() {
+        let mut keymap = TuiKeymap::default();
+        keymap.vim_normal.undo = Some(KeybindingsSpec::Many(vec![]));
+
+        let runtime = RuntimeKeymap::from_config(&keymap).expect("config should parse");
+
+        assert!(runtime.vim_normal.undo.is_empty());
     }
 
     #[test]

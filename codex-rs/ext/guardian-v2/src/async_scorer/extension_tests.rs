@@ -1446,7 +1446,7 @@ max_recent_non_user_entries = 8
             .latest_scored_tool_call
             .load(Ordering::Acquire)
             == 0
-            || metrics.0.lock().unwrap().len() < 10
+            || metrics.0.lock().unwrap().len() < 14
         {
             tokio::task::yield_now().await;
         }

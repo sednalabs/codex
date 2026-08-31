@@ -3902,6 +3902,7 @@
               "substitute_char": null,
               "till_backward": null,
               "till_forward": null,
+              "undo": null,
               "yank_line": null
             },
             "vim_operator": {
@@ -4728,6 +4729,7 @@
             "substitute_char": null,
             "till_backward": null,
             "till_forward": null,
+            "undo": null,
             "yank_line": null
           }
         },
@@ -5245,6 +5247,14 @@
             }
           ],
           "description": "Stop before the next character on the current line (`t`)."
+        },
+        "undo": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Undo the last complete edit (`u`)."
         },
         "yank_line": {
           "allOf": [
