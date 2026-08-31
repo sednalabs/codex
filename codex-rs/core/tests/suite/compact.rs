@@ -506,9 +506,17 @@ fn format_labeled_requests_snapshot(
     )
 }
 
+#[test_case::test_case(false, false; "checklist disabled")]
+#[test_case::test_case(true, false; "checklist enabled")]
+#[test_case::test_case(false, true; "custom instructions with checklist disabled")]
+#[test_case::test_case(true, true; "custom instructions with checklist enabled")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn summarize_context_three_requests_and_instructions() {
-    skip_if_no_network!();
+async fn summarize_context_three_requests_and_instructions(
+    enable_plan: bool,
+    custom_instructions: bool,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    const CUSTOM_INSTRUCTIONS: &str = "## Plan tool\nNever deploy without explicit approval.\n";
 
     // Set up a mock server that we can inspect after the run.
     let server = start_mock_server().await;
@@ -535,11 +543,16 @@ async fn summarize_context_three_requests_and_instructions() {
     // Build config pointing to the mock server and spawn Codex.
     let model_provider = non_openai_model_provider(&server);
     let mut builder = test_codex().with_config(move |config| {
+        config.model = Some("gpt-5.2".to_string());
+        config.update_plan_enabled = enable_plan;
+        if custom_instructions {
+            config.base_instructions = Some(CUSTOM_INSTRUCTIONS.to_string());
+        }
         config.model_provider = model_provider;
         set_test_compact_prompt(config);
         config.model_auto_compact_token_limit = Some(200_000);
     });
-    let test = builder.build(&server).await.unwrap();
+    let test = builder.build(&server).await?;
     let codex = test.codex.clone();
     let rollout_path = test.session_configured.rollout_path.expect("rollout path");
 
@@ -555,12 +568,11 @@ async fn summarize_context_three_requests_and_instructions() {
                 text_elements: Vec::new(),
             },
         ]))
-        .await
-        .unwrap();
+        .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     // 2) Summarize – second hit should include the summarization prompt.
-    codex.submit(Op::Compact).await.unwrap();
+    codex.submit(Op::Compact).await?;
     let warning_event = wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
     let EventMsg::Warning(WarningEvent { message }) = warning_event else {
         panic!("expected warning event after compact");
@@ -574,45 +586,51 @@ async fn summarize_context_three_requests_and_instructions() {
             text: THIRD_USER_MSG.into(),
             text_elements: Vec::new(),
         }]))
-        .await
-        .unwrap();
+        .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     // Inspect the three captured requests.
     let requests = request_log.requests();
     assert_eq!(requests.len(), 3, "expected exactly three requests");
-    let body1 = requests[0].body_json();
     let body2 = requests[1].body_json();
     let body3 = requests[2].body_json();
 
     // Manual compact should keep the baseline developer instructions.
-    let instr1 = body1.get("instructions").and_then(|v| v.as_str()).unwrap();
-    let instr2 = body2.get("instructions").and_then(|v| v.as_str()).unwrap();
+    let instr1 = requests[0].instructions_text();
+    let instr2 = requests[1].instructions_text();
+    if custom_instructions {
+        assert_eq!(instr1, CUSTOM_INSTRUCTIONS);
+    } else {
+        assert_eq!(instr1.contains("update_plan"), enable_plan);
+    }
     assert_eq!(
         instr1, instr2,
         "manual compact should keep the standard developer instructions"
     );
+    assert_eq!(requests[2].instructions_text(), instr1);
 
     // The summarization request should include the injected user input marker.
     let body2_str = body2.to_string();
-    let input2 = body2.get("input").and_then(|v| v.as_array()).unwrap();
+    let input2 = body2["input"].as_array().expect("compaction input array");
     let has_compact_prompt = body_contains_text(&body2_str, SUMMARIZATION_PROMPT);
     assert!(
         has_compact_prompt,
         "compaction request should include the summarize trigger"
     );
     // The last item is the user message created from the injected input.
-    let last2 = input2.last().unwrap();
-    assert_eq!(last2.get("type").unwrap().as_str().unwrap(), "message");
-    assert_eq!(last2.get("role").unwrap().as_str().unwrap(), "user");
-    let text2 = last2["content"][0]["text"].as_str().unwrap();
+    let last2 = input2.last().expect("summarization prompt");
+    assert_eq!(last2["type"], "message");
+    assert_eq!(last2["role"], "user");
+    let text2 = last2["content"][0]["text"]
+        .as_str()
+        .expect("summarization prompt text");
     assert_eq!(
         text2, SUMMARIZATION_PROMPT,
         "expected summarize trigger, got `{text2}`"
     );
 
     // Third request must contain the refreshed instructions, compacted user history, and new user message.
-    let input3 = body3.get("input").and_then(|v| v.as_array()).unwrap();
+    let input3 = body3["input"].as_array().expect("follow-up input array");
 
     assert!(
         input3.len() >= 3,
@@ -670,7 +688,7 @@ async fn summarize_context_three_requests_and_instructions() {
     );
 
     // Shut down Codex to flush rollout entries before inspecting the file.
-    codex.submit(Op::Shutdown).await.unwrap();
+    codex.submit(Op::Shutdown).await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 
     let replacement_history = replacement_history_from_rollout(&rollout_path)
@@ -750,6 +768,7 @@ async fn summarize_context_three_requests_and_instructions() {
         saw_compacted_summary,
         "expected a Compacted entry containing the summarizer output"
     );
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

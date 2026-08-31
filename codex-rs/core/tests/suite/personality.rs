@@ -543,6 +543,7 @@ async fn user_turn_personality_skips_if_feature_disabled() -> anyhow::Result<()>
     let mut builder = test_codex()
         .with_model("exp-codex-personality")
         .with_config(|config| {
+            config.update_plan_enabled = true;
             config
                 .features
                 .disable(Feature::Personality)

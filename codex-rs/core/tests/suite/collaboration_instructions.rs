@@ -170,8 +170,8 @@ async fn catalog_collaboration_messages_track_mode_changes() -> Result<()> {
     .await;
 
     let model_slug = "catalog-collaboration-model";
-    let default_text = "catalog default instructions";
-    let plan_text = "catalog plan instructions";
+    let default_text = "## Plan tool\nPreserve the custom default policy.\n";
+    let plan_text = "## `update_plan`\nPreserve the custom Plan Mode policy.\n";
     let model = model_with_collaboration_messages(model_slug, Some(default_text), Some(plan_text));
     let mut builder = test_codex()
         .with_model(model_slug)

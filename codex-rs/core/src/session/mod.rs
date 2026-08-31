@@ -1314,6 +1314,26 @@ impl Session {
         }
     }
 
+    /// Render the request copy without changing instructions persisted or inherited by forks.
+    pub(crate) async fn get_prompt_base_instructions(&self) -> BaseInstructions {
+        let config = self.get_config().await;
+        let instructions = self.get_base_instructions().await;
+        if !config.update_plan_enabled
+            && config.model_catalog.is_none()
+            && matches!(
+                instructions.provenance,
+                Some(BaseInstructionsProvenance::Model { .. })
+            )
+        {
+            BaseInstructions {
+                text: crate::context::without_update_plan_instructions(&instructions.text),
+                ..instructions
+            }
+        } else {
+            instructions
+        }
+    }
+
     // Merges connector IDs into the session-level explicit connector selection.
     #[tracing::instrument(
         level = "trace",
