@@ -31,6 +31,7 @@ filegroup(
 filegroup(
     name = "build_inputs",
     srcs = [
+        "assemble_package.py",
         "build_native.py",
         ":source_inputs",
     ],

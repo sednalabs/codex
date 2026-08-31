@@ -17,6 +17,8 @@ codex-realtime-webrtc = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+codex-install-context = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
 pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }
