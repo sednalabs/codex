@@ -3345,6 +3345,7 @@ dependencies = [
  "codex-core",
  "codex-extension-api",
  "codex-features",
+ "codex-guardian-context",
  "codex-history",
  "codex-http-client",
  "codex-login",
