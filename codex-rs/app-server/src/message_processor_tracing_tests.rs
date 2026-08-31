@@ -571,6 +571,34 @@ where
     spans.into_iter().skip(baseline_len).collect()
 }
 
+async fn wait_for_automatic_turn_row(
+    pool: &sqlx::SqlitePool,
+    thread_id: &str,
+    client_user_message_id: &str,
+) -> Result<(String, String, String, String, i64, i64, String)> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(/*secs*/ 5);
+    loop {
+        let row = sqlx::query_as::<_, (String, String, String, String, i64, i64, String)>(
+            "SELECT thread_id, client_user_message_id, trigger_turn_id, turn_id, attempt, max_attempts, outcome FROM usage_automatic_turns WHERE thread_id = ? AND client_user_message_id = ? ORDER BY id",
+        )
+        .bind(thread_id)
+        .bind(client_user_message_id)
+        .fetch_optional(pool)
+        .await?;
+        if let Some(row) = row {
+            return Ok(row);
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(anyhow::anyhow!(
+                "timed out waiting for automatic-turn state projection"
+            ));
+        }
+        tokio::time::sleep((deadline - now).min(std::time::Duration::from_millis(/*millis*/ 50)))
+            .await;
+    }
+}
+
 #[test]
 #[serial(app_server_tracing)]
 fn thread_start_jsonrpc_span_exports_server_span_and_parents_children() -> Result<()> {
@@ -811,19 +839,15 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
         .as_ref()
         .expect("state db enabled for this harness")
         .usage_pool();
-    let row = sqlx::query_as::<_, (String, String, String, i64, i64, String)>(
-        "SELECT thread_id, client_user_message_id, trigger_turn_id, attempt, max_attempts, outcome FROM usage_automatic_turns WHERE thread_id = ? AND turn_id = ? ORDER BY id",
-    )
-    .bind(&thread_id)
-    .bind(&turn_start_response.turn.id)
-    .fetch_one(usage_pool.as_ref())
-    .await?;
+    let row = wait_for_automatic_turn_row(usage_pool.as_ref(), &thread_id, &client_user_message_id)
+        .await?;
     assert_eq!(
         row,
         (
             thread_id,
             client_user_message_id,
             trigger_turn_id.to_string(),
+            turn_start_response.turn.id,
             1,
             3,
             "started".to_string(),
