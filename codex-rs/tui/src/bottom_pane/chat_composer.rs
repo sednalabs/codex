@@ -23,6 +23,8 @@
 //! popup-specific handler if a popup is visible and otherwise to
 //! [`ChatComposer::handle_key_event_without_popup`]. After every handled key, we call
 //! [`ChatComposer::sync_popups`] so UI state follows the latest buffer/cursor.
+//! Fresh Vim drafts start in Insert; Normal `/` and `?` search the composer.
+//! Backspace on an empty Vim search query cancels search and any pending operator.
 //!
 //! # Completion and Popup Dismissal
 //!
@@ -3134,7 +3136,7 @@ impl ChatComposer {
                 | InputResult::ServiceTierCommand(_)
                 | InputResult::CommandWithArgs(_, _, _)
         ) {
-            self.draft.textarea.enter_vim_normal_mode();
+            self.draft.textarea.enter_vim_insert_mode();
         }
     }
 
@@ -3394,6 +3396,7 @@ impl ChatComposer {
             slash_input::args_elements(prepared_rest, prepared_rest_offset, &prepared_elements);
         let trimmed_rest = prepared_rest.trim();
         args_elements = Self::trim_text_elements(prepared_rest, trimmed_rest, args_elements);
+        self.draft.textarea.enter_vim_insert_mode();
         Some((trimmed_rest.to_string(), args_elements))
     }
 
@@ -3484,26 +3487,6 @@ impl ChatComposer {
         if self.draft.textarea.is_vim_normal_mode() && self.draft.textarea.is_vim_operator_pending()
         {
             return self.handle_input_basic(key_event);
-        }
-        if self.draft.textarea.is_vim_normal_mode()
-            && self.is_empty()
-            && matches!(
-                key_event,
-                KeyEvent {
-                    code: KeyCode::Char('/'),
-                    modifiers: KeyModifiers::NONE,
-                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
-                    ..
-                }
-            )
-        {
-            self.footer.mode = reset_mode_after_activity(self.footer.mode);
-            self.draft.textarea.set_text_clearing_elements("/");
-            self.draft
-                .textarea
-                .set_cursor(self.draft.textarea.text().len());
-            self.draft.textarea.enter_vim_insert_mode();
-            return (InputResult::None, true);
         }
         if self.draft.textarea.is_vim_normal_mode()
             && self.is_empty()
@@ -6148,13 +6131,13 @@ mod tests {
         assert!(composer.is_empty());
         assert_eq!(
             composer.vim_mode_indicator_span(),
-            Some("Vim: Normal".magenta())
+            Some("Vim: Insert".green())
         );
         assert!(matches!(result, InputResult::Command(SlashCommand::Diff)));
     }
 
     #[test]
-    fn inline_slash_command_dispatch_resets_vim_mode_to_normal() {
+    fn inline_slash_command_dispatch_resets_vim_mode_to_insert() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -6180,7 +6163,7 @@ mod tests {
         assert!(needs_redraw);
         assert_eq!(
             composer.vim_mode_indicator_span(),
-            Some("Vim: Normal".magenta())
+            Some("Vim: Insert".green())
         );
         match result {
             InputResult::CommandWithArgs(cmd, args, text_elements) => {
@@ -6190,6 +6173,13 @@ mod tests {
             }
             _ => panic!("expected CommandWithArgs"),
         }
+        composer
+            .prepare_inline_args_submission(/*record_history*/ false)
+            .unwrap();
+        for code in [KeyCode::Char('x'), KeyCode::Esc, KeyCode::Char('.')] {
+            composer.handle_key_event(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        assert_eq!(composer.current_text(), "xx");
     }
 
     #[test]
@@ -6400,7 +6390,7 @@ mod tests {
     }
 
     #[test]
-    fn vim_mode_resets_to_normal_after_submission() {
+    fn vim_mode_resets_to_insert_after_submission() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -6431,7 +6421,7 @@ mod tests {
         assert!(composer.draft.textarea.is_vim_enabled());
         assert_eq!(
             composer.vim_mode_indicator_span(),
-            Some("Vim: Normal".magenta())
+            Some("Vim: Insert".green())
         );
         assert!(composer.is_empty());
         match result {
@@ -6441,7 +6431,7 @@ mod tests {
     }
 
     #[test]
-    fn vim_mode_resets_to_normal_after_queued_submission() {
+    fn vim_mode_resets_to_insert_after_queued_submission() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -6465,7 +6455,7 @@ mod tests {
 
         assert_eq!(
             composer.vim_mode_indicator_span(),
-            Some("Vim: Normal".magenta())
+            Some("Vim: Insert".green())
         );
         assert!(composer.is_empty());
         match result {
