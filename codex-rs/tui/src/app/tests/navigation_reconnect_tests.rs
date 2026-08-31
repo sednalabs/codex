@@ -377,12 +377,8 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
                 app.chat_widget.composer_text_with_pending(),
                 "latest draft!"
             );
-            app.handle_tui_event(
-                &mut tui,
-                &mut session,
-                TuiEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT)),
-            )
-            .await?;
+            app.handle_event(&mut tui, &mut session, AppEvent::OpenAgentsOverview)
+                .await?;
             assert!(app.chat_widget.has_active_view());
             app.handle_tui_event(
                 &mut tui,
