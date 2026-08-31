@@ -69,16 +69,39 @@ jobs:
               "c-cpp": ("none", "./.github/codeql/codeql-config.yml"),
               "javascript-typescript": ("none", "./.github/codeql/codeql-config.yml"),
               "python": ("none", "./.github/codeql/codeql-config.yml"),
-              "rust": ("none", "./.github/codeql/codeql-rust.yml"),
           }
-          include = [
-              {
-                  "language": language,
-                  "build-mode": configs[language][0],
-                  "config_file": configs[language][1],
-              }
-              for language in languages
-          ]
+          include = []
+          for language in languages:
+              if language == "rust":
+                  # Rust's built-in security-and-quality suite has one summary
+                  # query whose evaluation can dominate the standard runner's
+                  # six-hour job limit. Keep the complete suite, but evaluate
+                  # disjoint, collectively exhaustive source scopes in separate
+                  # databases so no one query sees the monolithic workspace.
+                  for scope in (
+                      "codex-rs-core",
+                      "codex-rs-tui",
+                      "codex-rs-services",
+                      "codex-rs-rest",
+                      "tools",
+                  ):
+                      include.append(
+                          {
+                              "language": language,
+                              "build-mode": "none",
+                              "config_file": f"./.codeql-runtime/codeql-rust-{scope}.yml",
+                              "scope": scope,
+                          }
+                      )
+              else:
+                  include.append(
+                      {
+                          "language": language,
+                          "build-mode": configs[language][0],
+                          "config_file": configs[language][1],
+                          "scope": "",
+                      }
+                  )
           if not include:
               # Keep the matrix structurally non-empty even though the analyze
               # job is disabled by run_analysis. This avoids empty-matrix edge
@@ -88,6 +111,7 @@ jobs:
                       "language": "not-applicable",
                       "build-mode": "none",
                       "config_file": "./.github/codeql/codeql-config.yml",
+                      "scope": "",
                   }
               )
           matrix = {"include": include}
@@ -143,6 +167,7 @@ jobs:
     needs: plan
     if: ${{ needs.plan.outputs.run_analysis == 'true' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 360
     permissions:
       actions: read
       contents: read
@@ -226,6 +251,103 @@ jobs:
           cargo fetch --locked --manifest-path codex-rs/Cargo.toml
           cargo fetch --locked --manifest-path tools/argument-comment-lint/Cargo.toml
 
+      - name: Prepare scoped Rust CodeQL config
+        if: ${{ matrix.language == 'rust' }}
+        shell: bash
+        env:
+          RUST_SCOPE: ${{ matrix.scope }}
+          RUST_CONFIG: ${{ matrix.config_file }}
+        run: |
+          set -euo pipefail
+          case "${RUST_SCOPE}" in
+            codex-rs-core)
+              scope_paths=(codex-rs/core)
+              scope_ignores=()
+              ;;
+            codex-rs-tui)
+              scope_paths=(codex-rs/tui)
+              scope_ignores=()
+              ;;
+            codex-rs-services)
+              scope_paths=(
+                codex-rs/app-server
+                codex-rs/app-server-client
+                codex-rs/app-server-daemon
+                codex-rs/app-server-protocol
+                codex-rs/app-server-test-client
+                codex-rs/app-server-transport
+                codex-rs/bwrap
+                codex-rs/exec
+                codex-rs/exec-server
+                codex-rs/file-watcher
+                codex-rs/http-client
+                codex-rs/linux-sandbox
+                codex-rs/network-proxy
+                codex-rs/process-hardening
+                codex-rs/sandboxing
+                codex-rs/shell-command
+                codex-rs/shell-escalation
+                codex-rs/terminal-detection
+                codex-rs/windows-sandbox-rs
+              )
+              scope_ignores=()
+              ;;
+            codex-rs-rest)
+              scope_paths=(codex-rs)
+              scope_ignores=(
+                'codex-rs/core/**'
+                'codex-rs/tui/**'
+                'codex-rs/app-server/**'
+                'codex-rs/app-server-client/**'
+                'codex-rs/app-server-daemon/**'
+                'codex-rs/app-server-protocol/**'
+                'codex-rs/app-server-test-client/**'
+                'codex-rs/app-server-transport/**'
+                'codex-rs/bwrap/**'
+                'codex-rs/exec/**'
+                'codex-rs/exec-server/**'
+                'codex-rs/file-watcher/**'
+                'codex-rs/http-client/**'
+                'codex-rs/linux-sandbox/**'
+                'codex-rs/network-proxy/**'
+                'codex-rs/process-hardening/**'
+                'codex-rs/sandboxing/**'
+                'codex-rs/shell-command/**'
+                'codex-rs/shell-escalation/**'
+                'codex-rs/terminal-detection/**'
+                'codex-rs/windows-sandbox-rs/**'
+              )
+              ;;
+            tools)
+              scope_paths=(tools)
+              scope_ignores=()
+              ;;
+            *)
+              echo "Unsupported Rust CodeQL scope: ${RUST_SCOPE}" >&2
+              exit 1
+              ;;
+          esac
+          mkdir -p "$(dirname "${RUST_CONFIG}")"
+          {
+            cat <<EOF
+          name: codex-codeql-rust-${RUST_SCOPE}
+          queries:
+            - uses: security-and-quality
+          paths:
+          EOF
+            printf '  - %s\n' "${scope_paths[@]}"
+            cat <<'EOF'
+          paths-ignore:
+            - .github/codeql/rust-computer-use-contract/test/**
+          EOF
+            if ((${#scope_ignores[@]})); then
+              printf '  - %s\n' "${scope_ignores[@]}"
+            fi
+            cat <<'EOF'
+          threat-models: local
+          EOF
+          } > "${RUST_CONFIG}"
+
       - name: Prepare Actions CodeQL query pack config
         if: ${{ matrix.language == 'actions' }}
         shell: bash
@@ -260,6 +382,19 @@ jobs:
             echo "threat-models: local"
           } > .codeql-runtime/codeql-actions.yml
 
+      - name: Record CodeQL analysis resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### CodeQL analysis resources"
+            echo "- language: \`${{ matrix.language }}\`"
+            echo "- scope: \`${{ matrix.scope || 'all' }}\`"
+            echo "- runner OS/arch: \`${RUNNER_OS}/${RUNNER_ARCH}\`"
+            echo "- CPUs: \`$(nproc)\`"
+            echo "- memory: \`$(awk '/MemTotal:/ {print $2 " kB"}' /proc/meminfo)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4.37.3
         with:
@@ -286,7 +421,7 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4.37.3
         with:
-          category: "/language:${{ matrix.language }}"
+          category: ${{ matrix.scope != '' && format('/language:{0}/{1}', matrix.language, matrix.scope) || format('/language:{0}', matrix.language) }}
 
       - name: Save Rust dependency cache for CodeQL
         if: ${{ always() && !cancelled() && matrix.language == 'rust' && steps.cache_codeql_rust_cargo_home_restore.outputs.cache-hit != 'true' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream-main') }}

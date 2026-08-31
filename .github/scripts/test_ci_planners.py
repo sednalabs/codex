@@ -4974,6 +4974,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("Unable to classify PR paths; running every CodeQL language.", select_run)
         self.assertIn('["codeql_languages"]', select_run)
         self.assertIn('"language": "not-applicable"', select_run)
+        for rust_scope in (
+            '"codex-rs-core"',
+            '"codex-rs-tui"',
+            '"codex-rs-services"',
+            '"codex-rs-rest"',
+            '"tools"',
+        ):
+            self.assertIn(rust_scope, select_run)
+        self.assertIn('"scope": scope', select_run)
+        self.assertIn("codeql-rust-{scope}.yml", select_run)
 
         self.assertEqual(analyze_job.get("needs"), "plan")
         self.assertEqual(
@@ -4981,6 +4991,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "${{ needs.plan.outputs.run_analysis == 'true' }}",
         )
         self.assertEqual(analyze_job.get("runs-on"), "ubuntu-24.04")
+        self.assertEqual(analyze_job.get("timeout-minutes"), "360")
         self.assertEqual(
             analyze_job.get("permissions") or {},
             {
@@ -5049,6 +5060,119 @@ class ValidationPlanScriptTests(unittest.TestCase):
             prefetch_run,
         )
 
+        scoped_rust_config_step = next(
+            step for step in steps if step.get("name") == "Prepare scoped Rust CodeQL config"
+        )
+        self.assertEqual(scoped_rust_config_step.get("if"), "${{ matrix.language == 'rust' }}")
+        self.assertEqual(
+            scoped_rust_config_step.get("env") or {},
+            {
+                "RUST_SCOPE": "${{ matrix.scope }}",
+                "RUST_CONFIG": "${{ matrix.config_file }}",
+            },
+        )
+        scoped_rust_config_run = scoped_rust_config_step.get("run") or ""
+        for rust_scope in (
+            "codex-rs-core",
+            "codex-rs-tui",
+            "codex-rs-services",
+            "codex-rs-rest",
+            "tools",
+        ):
+            self.assertIn(f"{rust_scope})", scoped_rust_config_run)
+        service_paths = (
+            "codex-rs/app-server",
+            "codex-rs/app-server-client",
+            "codex-rs/app-server-daemon",
+            "codex-rs/app-server-protocol",
+            "codex-rs/app-server-test-client",
+            "codex-rs/app-server-transport",
+            "codex-rs/bwrap",
+            "codex-rs/exec",
+            "codex-rs/exec-server",
+            "codex-rs/file-watcher",
+            "codex-rs/http-client",
+            "codex-rs/linux-sandbox",
+            "codex-rs/network-proxy",
+            "codex-rs/process-hardening",
+            "codex-rs/sandboxing",
+            "codex-rs/shell-command",
+            "codex-rs/shell-escalation",
+            "codex-rs/terminal-detection",
+            "codex-rs/windows-sandbox-rs",
+        )
+        for service_path in service_paths:
+            self.assertIn(service_path, scoped_rust_config_run)
+            self.assertIn(f"{service_path}/**", scoped_rust_config_run)
+        service_case = re.search(
+            r"codex-rs-services\)\s+scope_paths=\(\s*(.*?)\s*\)\s+scope_ignores=\(\)",
+            scoped_rust_config_run,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(service_case)
+        self.assertEqual(tuple(service_case.group(1).split()), service_paths)
+        rest_case = re.search(
+            r"codex-rs-rest\)\s+scope_paths=\(codex-rs\)\s+scope_ignores=\(\s*(.*?)\s*\)",
+            scoped_rust_config_run,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(rest_case)
+        self.assertEqual(
+            {item.strip("'\"") for item in rest_case.group(1).split()},
+            {"codex-rs/core/**", "codex-rs/tui/**"}
+            | {f"{service_path}/**" for service_path in service_paths},
+        )
+        self.assertIn("scope_paths=(codex-rs)", scoped_rust_config_run)
+        self.assertIn("codex-rs/core/**", scoped_rust_config_run)
+        self.assertIn("codex-rs/tui/**", scoped_rust_config_run)
+        self.assertIn("security-and-quality", scoped_rust_config_run)
+        self.assertIn("paths-ignore:", scoped_rust_config_run)
+        self.assertIn('> "${RUST_CONFIG}"', scoped_rust_config_run)
+
+        expected_scope_paths = {
+            "codex-rs-core": ["codex-rs/core"],
+            "codex-rs-tui": ["codex-rs/tui"],
+            "codex-rs-services": list(service_paths),
+            "codex-rs-rest": ["codex-rs"],
+            "tools": ["tools"],
+        }
+        expected_rest_ignores = [
+            ".github/codeql/rust-computer-use-contract/test/**",
+            "codex-rs/core/**",
+            "codex-rs/tui/**",
+            *(f"{service_path}/**" for service_path in service_paths),
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for rust_scope, expected_paths in expected_scope_paths.items():
+                config_path = Path(tmp_dir) / f"{rust_scope}.yml"
+                subprocess.run(
+                    ["bash", "-c", scoped_rust_config_run],
+                    cwd=REPO_ROOT,
+                    env={
+                        **os.environ,
+                        "RUST_SCOPE": rust_scope,
+                        "RUST_CONFIG": str(config_path),
+                    },
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                generated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    generated,
+                    {
+                        "name": f"codex-codeql-rust-{rust_scope}",
+                        "queries": [{"uses": "security-and-quality"}],
+                        "paths": expected_paths,
+                        "paths-ignore": (
+                            expected_rest_ignores
+                            if rust_scope == "codex-rs-rest"
+                            else [".github/codeql/rust-computer-use-contract/test/**"]
+                        ),
+                        "threat-models": "local",
+                    },
+                )
+
         actions_config_step = next(
             step for step in steps if step.get("name") == "Prepare Actions CodeQL query pack config"
         )
@@ -5095,6 +5219,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertLess(steps.index(init_step), steps.index(diff_ranges_step))
         analyze_step = next(step for step in steps if step.get("name") == "Perform CodeQL Analysis")
         self.assertLess(steps.index(diff_ranges_step), steps.index(analyze_step))
+        self.assertEqual(
+            (analyze_step.get("with") or {}).get("category"),
+            "${{ matrix.scope != '' && format('/language:{0}/{1}', matrix.language, matrix.scope) || format('/language:{0}', matrix.language) }}",
+        )
 
         save_rust_cache_step = next(
             step for step in steps if step.get("name") == "Save Rust dependency cache for CodeQL"
