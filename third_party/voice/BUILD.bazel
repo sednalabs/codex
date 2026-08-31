@@ -27,3 +27,12 @@ filegroup(
     tags = ["manual"],
     visibility = ["//visibility:public"],
 )
+
+filegroup(
+    name = "build_inputs",
+    srcs = [
+        "build_native.py",
+        ":source_inputs",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -46,3 +46,32 @@ Checksums establish input identity, not security or license approval. Native
 compilation, final Cargo/Bazel linking, installed packages, minimum OS support
 and duplex audio validation remain separate stages. These inputs do not establish
 a shared Opus build with Rust consumers or a reduced dependency count.
+
+Rust `opus` 0.4.0 is available through Socket. Adding Rust transport dependencies
+and establishing a shared Opus build remain separate integration work.
+
+## Native build recipe
+
+`build_native.py` runs the unmodified upstream build systems in a new output
+directory, using the same archives. Specify the target and existing compiler,
+CMake, make, pkg-config and shell paths explicitly. It requires a matching
+native host: GNU Linux, macOS, or Windows MSVC, on x64 or ARM64.
+
+On macOS, specify the existing release deployment target with
+`--deployment-target`; the host OS version is not an acceptable default.
+Windows requires the normal Visual Studio SDK environment, GNU make and a
+POSIX shell for upstream libffi, and `--bootstrap-make` pointing to NMake.
+The recipe does not install these build prerequisites or patch upstream sources.
+
+Outputs are under `prefix/`, build tools under `tools/`, and logs beside them.
+`build-state.json` records completed commands and failures; `built.json` exists
+only when every build/install command succeeds. Failed builds retain their logs
+and must use a new output directory on retry. CMake compiler-identification logs
+and the recorded tool/configuration inputs remain part of the build provenance.
+
+The recipe disables optional plugins and Meson fallback dependency resolution,
+with pkg-config restricted to this prefix. Only system ABI libraries/frameworks
+may remain external; runtime closure inspection must verify that independently.
+`//third_party/voice:build_inputs` exposes the recipe and source inputs to Bazel.
+Neither this filegroup nor a successful prefix build proves final Cargo/Bazel
+linkage, safe private runtime loading, or an installed voice-capable Codex package.
