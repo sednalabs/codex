@@ -40,9 +40,10 @@ pub struct ProviderDomainId(String);
 impl ProviderDomainId {
     /// Construct an opaque provider-domain identity after validating its shape.
     ///
-    /// Shape validation does not attest provider authority; callers should only
-    /// pass a non-secret identity obtained from the provider.
-    pub fn try_new(value: impl AsRef<str>) -> Result<Self, ProviderDomainIdError> {
+    /// This crate-private boundary keeps admission evidence construction under
+    /// provider integration control; shape validation alone does not attest
+    /// provider authority.
+    pub(crate) fn try_new(value: impl AsRef<str>) -> Result<Self, ProviderDomainIdError> {
         let value = value.as_ref();
         validate_opaque_value(value).map_err(ProviderDomainIdError::from)?;
         Ok(Self(value.to_owned()))
@@ -147,12 +148,12 @@ pub struct RateLimitDomainScope(DomainScopeKind);
 
 impl RateLimitDomainScope {
     /// Construct a shared scope bound to one opaque provider-domain identity.
-    pub fn shared(provider_domain: ProviderDomainId) -> Self {
+    pub(crate) fn shared(provider_domain: ProviderDomainId) -> Self {
         Self(DomainScopeKind::Shared(provider_domain))
     }
 
     /// Construct the provider-declared independent scope.
-    pub fn independent() -> Self {
+    pub(crate) fn independent() -> Self {
         Self(DomainScopeKind::Independent)
     }
 
@@ -226,8 +227,9 @@ impl ProviderObservedFacts {
     ///
     /// A missing provider scope or eligibility is valid evidence, but remains
     /// dormant at the admission-capable boundary. This constructor preserves
-    /// caller-supplied observations but does not itself attest their source.
-    pub fn try_from_provider(
+    /// caller-supplied observations but does not itself attest their source;
+    /// the crate-private boundary is reserved for provider integrations.
+    pub(crate) fn try_from_provider(
         provider_scope: Option<ProviderDomainId>,
         eligible: Option<bool>,
         deadline: Option<&str>,
@@ -275,10 +277,16 @@ impl RateLimitEvidence {
         observed: ProviderObservedFacts,
         scope: RateLimitDomainScope,
     ) -> Result<Self, RateLimitEvidenceError> {
-        if let DomainScopeKind::Shared(expected_domain) = &scope.0
-            && observed.provider_scope.as_ref() != Some(expected_domain)
-        {
-            return Err(RateLimitEvidenceError::SharedScopeMismatch);
+        match &scope.0 {
+            DomainScopeKind::Shared(expected_domain)
+                if observed.provider_scope.as_ref() != Some(expected_domain) =>
+            {
+                return Err(RateLimitEvidenceError::SharedScopeMismatch);
+            }
+            DomainScopeKind::Independent if observed.provider_scope.is_none() => {
+                return Err(RateLimitEvidenceError::IndependentScopeMissingProviderObservation);
+            }
+            _ => {}
         }
 
         Ok(Self {
@@ -330,11 +338,20 @@ impl fmt::Debug for RateLimitEvidence {
 pub enum RateLimitEvidenceError {
     /// A shared scope did not carry the exact provider identity observed for the request.
     SharedScopeMismatch,
+    /// An independent scope was asserted without a provider scope observation.
+    IndependentScopeMissingProviderObservation,
 }
 
 impl fmt::Display for RateLimitEvidenceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("shared rate-limit scope does not match provider observation")
+        formatter.write_str(match self {
+            Self::SharedScopeMismatch => {
+                "shared rate-limit scope does not match provider observation"
+            }
+            Self::IndependentScopeMissingProviderObservation => {
+                "independent rate-limit scope requires provider scope observation"
+            }
+        })
     }
 }
 
@@ -535,6 +552,19 @@ mod tests {
         assert!(missing_scope_evidence.is_dormant());
         assert!(missing_scope_evidence.g2_evidence_only_ready());
         assert!(!missing_scope_evidence.g3_admission_capable_ready());
+
+        let missing_scope = ProviderObservedFacts::try_from_provider(
+            /*provider_scope*/ None,
+            Some(true),
+            Some("opaque-deadline"),
+            Some("opaque-budget"),
+            Some("opaque-freshness"),
+        )
+        .unwrap();
+        assert_eq!(
+            evidence(missing_scope, RateLimitDomainScope::independent()),
+            Err(RateLimitEvidenceError::IndependentScopeMissingProviderObservation)
+        );
 
         let missing_eligibility = ProviderObservedFacts::try_from_provider(
             Some(provider_domain()),
