@@ -129,7 +129,6 @@ pub(crate) struct TurnMetadataState {
     turn_started_at_unix_ms: RwLock<Option<i64>>,
     responses_api_metadata: RwLock<BTreeMap<String, String>>,
     responsesapi_client_metadata: RwLock<BTreeMap<String, String>>,
-    root_turn_ambiguous: AtomicBool,
     user_input_requested_during_turn: AtomicBool,
     enrichment_task: Mutex<Option<JoinHandle<()>>>,
     git_enrichment_complete: watch::Sender<bool>,
@@ -199,7 +198,6 @@ impl TurnMetadataState {
             turn_started_at_unix_ms: RwLock::new(None),
             responses_api_metadata: RwLock::new(BTreeMap::new()),
             responsesapi_client_metadata: RwLock::new(BTreeMap::new()),
-            root_turn_ambiguous: AtomicBool::new(false),
             user_input_requested_during_turn: AtomicBool::new(false),
             enrichment_task: Mutex::new(None),
             git_enrichment_complete: watch::channel(/*init*/ true).0,
@@ -311,14 +309,7 @@ impl TurnMetadataState {
     }
 
     pub(crate) fn root_turn_id(&self) -> Option<String> {
-        self.root_turn_id
-            .get()
-            .filter(|_| !self.root_turn_ambiguous.load(Ordering::Relaxed))
-            .cloned()
-    }
-
-    pub(crate) fn mark_root_turn_ambiguous(&self) {
-        self.root_turn_ambiguous.store(true, Ordering::Relaxed);
+        self.root_turn_id.get().cloned()
     }
 
     pub(crate) fn can_start_root_turn(&self, session_source: &SessionSource) -> bool {

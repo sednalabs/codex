@@ -729,6 +729,7 @@ fn agent_message(message: &str) -> RolloutItem {
 fn turn_context(root: &Path, turn_id: &str) -> RolloutItem {
     RolloutItem::TurnContext(TurnContextItem {
         turn_id: Some(turn_id.to_string()),
+        root_turn_id: None,
         cwd: serde_json::from_value(serde_json::json!(root)).expect("absolute cwd"),
         workspace_roots: None,
         current_date: None,
@@ -763,5 +764,7 @@ fn compacted(message: &str, replacement_history: Option<Vec<ResponseItem>>) -> R
         first_window_id: None,
         previous_window_id: None,
         window_id: None,
+        compaction_response_id: None,
+        latest_token_usage_record: None,
     })
 }

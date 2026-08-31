@@ -3544,8 +3544,6 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
             )
             .await;
 
-        // A conflicting input removes the known root while the trunk review is in flight.
-        turn.turn_metadata_state.mark_root_turn_ambiguous();
         let third_decision = review_approval_request(
             &session,
             &turn,
@@ -3570,8 +3568,8 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
         for (body, expected_root) in [
             (&first_request_body, Some("causal-root-turn")),
             (&second_request_body, Some("causal-root-turn")),
-            (&failed_ephemeral_request_body, None),
-            (&retried_ephemeral_request_body, None),
+            (&failed_ephemeral_request_body, Some("causal-root-turn")),
+            (&retried_ephemeral_request_body, Some("causal-root-turn")),
         ] {
             assert_parent_turn(body, Some(turn.sub_id.as_str()))?;
             assert_root_turn(body, expected_root)?;

@@ -770,11 +770,12 @@ impl Session {
             }
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
         };
-        // Legacy subagent rollouts synthesize session_id from their own thread id.
+        // Legacy subagent rollouts synthesized session_id from their own thread ID.
         let resumed_session_id = resumed_session_id.filter(|session_id| {
             !session_configuration.session_source.is_non_root_agent()
                 || *session_id != SessionId::from(thread_id)
         });
+        // session_id is equal to the root thread's ID.
         let session_id = resumed_session_id.unwrap_or_else(|| {
             if session_configuration.session_source.is_non_root_agent() {
                 agent_control.session_id()
@@ -1357,6 +1358,7 @@ impl Session {
                     | RolloutItem::TurnContext(_)
                     | RolloutItem::WorldState(_)
                     | RolloutItem::RealtimeItem(_)
+                    | RolloutItem::TokenUsageRecord(_)
                     | RolloutItem::SecurityRiskScore(_) => {}
                 }
             }

@@ -265,6 +265,7 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
     let previous_model = "previous-rollout-model";
     let previous_context_item = TurnContextItem {
         turn_id: Some(turn_context.sub_id.clone()),
+        root_turn_id: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         workspace_roots: None,
@@ -314,6 +315,7 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
     let previous_model = "previous-rollout-model";
     let mut previous_context_item = TurnContextItem {
         turn_id: Some(turn_context.sub_id.clone()),
+        root_turn_id: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         workspace_roots: None,
@@ -1064,6 +1066,8 @@ async fn record_initial_history_resumed_rollback_drops_incomplete_user_turn_comp
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
             codex_protocol::protocol::ThreadRolledBackEvent { num_turns: 1 },
@@ -1124,6 +1128,8 @@ async fn record_initial_history_requires_surviving_full_snapshot_without_user_tu
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
+                compaction_response_id: None,
+                latest_token_usage_record: None,
             }),
         ],
     };
@@ -1156,6 +1162,8 @@ async fn record_initial_history_resumed_does_not_seed_reference_context_item_aft
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
     ];
 
@@ -1226,6 +1234,8 @@ async fn reconstruct_history_prefers_compacted_window_over_session_meta() {
             first_window_id: Some(compacted_first_window_id.to_string()),
             previous_window_id: Some(compacted_previous_window_id.to_string()),
             window_id: Some(compacted_window_id.to_string()),
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
     ];
 
@@ -1262,6 +1272,8 @@ async fn reconstruct_history_replays_world_state_from_latest_compaction_window()
                 first_window_id: None,
                 previous_window_id: None,
                 window_id: None,
+                compaction_response_id: None,
+                latest_token_usage_record: None,
             }),
             RolloutItem::WorldState(WorldStateItem::full(object!({
                 "environment": {"status": "starting", "cwd": "/workspace"}
@@ -1324,6 +1336,8 @@ async fn bounded_replay_matches_full_replay_after_empty_turn_compactions() {
                     first_window_id: Some(window_ids[0].to_string()),
                     previous_window_id: Some(window_ids[window_number - 1].to_string()),
                     window_id: Some(window_ids[window_number].to_string()),
+                    compaction_response_id: None,
+                    latest_token_usage_record: None,
                 }),
                 RolloutItem::WorldState(WorldStateItem::full(object!({
                     "environment": {"window": window_number, "status": "starting"}
@@ -1420,6 +1434,8 @@ async fn reconstruct_history_preserves_legacy_compaction_count_with_session_meta
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
     ];
 
@@ -1448,6 +1464,8 @@ async fn reconstruct_history_legacy_compaction_without_replacement_history_does_
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
     ];
 
@@ -1484,6 +1502,8 @@ async fn reconstruct_history_legacy_compaction_without_replacement_history_clear
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
         RolloutItem::EventMsg(EventMsg::TurnStarted(
             codex_protocol::protocol::TurnStartedEvent {
@@ -1532,6 +1552,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
     let previous_model = "previous-rollout-model";
     let previous_context_item = TurnContextItem {
         turn_id: Some(turn_context.sub_id.clone()),
+        root_turn_id: Some("root-turn".to_string()),
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         workspace_roots: None,
@@ -1588,6 +1609,8 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
         RolloutItem::TurnContext(previous_context_item),
         RolloutItem::EventMsg(EventMsg::TurnComplete(
@@ -1624,6 +1647,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             .expect("serialize seeded reference context item"),
         serde_json::to_value(Some(TurnContextItem {
             turn_id: Some(turn_context.sub_id.clone()),
+            root_turn_id: Some("root-turn".to_string()),
             #[allow(deprecated)]
             cwd: turn_context.cwd.clone(),
             workspace_roots: None,
@@ -1658,6 +1682,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
     let previous_model = "previous-rollout-model";
     let previous_context_item = TurnContextItem {
         turn_id: Some(turn_context.sub_id.clone()),
+        root_turn_id: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         workspace_roots: None,
@@ -1755,6 +1780,8 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
     ];
 
@@ -1791,6 +1818,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
     let unmatched_abort_turn_id = "other-turn".to_string();
     let current_context_item = TurnContextItem {
         turn_id: Some(current_turn_id.clone()),
+        root_turn_id: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         workspace_roots: None,
@@ -1920,6 +1948,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
     let previous_model = "previous-rollout-model";
     let previous_context_item = TurnContextItem {
         turn_id: Some(turn_context.sub_id.clone()),
+        root_turn_id: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         workspace_roots: None,
@@ -2008,6 +2037,8 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
     ];
 
@@ -2093,6 +2124,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
     let previous_model = "previous-rollout-model";
     let previous_context_item = TurnContextItem {
         turn_id: Some(turn_context.sub_id.clone()),
+        root_turn_id: None,
         #[allow(deprecated)]
         cwd: turn_context.cwd.clone(),
         workspace_roots: None,
@@ -2182,6 +2214,8 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
             first_window_id: None,
             previous_window_id: None,
             window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
         }),
         // A newer TurnStarted replaces the incomplete compacted turn without a matching
         // completion/abort for the old one.

@@ -160,7 +160,8 @@ impl ModelContextScan {
             | RolloutItem::SessionMeta(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::RealtimeItem(_)
-            | RolloutItem::SecurityRiskScore(_) => {}
+            | RolloutItem::SecurityRiskScore(_)
+            | RolloutItem::TokenUsageRecord(_) => {}
         }
 
         if self.has_bounded_cutoff() {
