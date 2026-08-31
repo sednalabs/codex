@@ -1447,6 +1447,21 @@ impl FileSystemSandboxPolicy {
                 })
     }
 
+    /// Reports configured writable roots for diagnostics without inspecting the filesystem.
+    ///
+    /// Unlike runtime root resolution, this includes configured roots even if they
+    /// do not currently exist (including `/tmp`). Do not use this result to authorize
+    /// filesystem access or replace the resolution needed for sandbox enforcement.
+    pub fn has_configured_writable_roots_with_cwd(&self, cwd: &Path) -> bool {
+        !self.has_full_disk_write_access()
+            && with_local_policy_context(cwd, cwd, |_, context| {
+                self.resolved_entries(context)
+                    .into_iter()
+                    .any(|(path, access)| access.can_write() && self.can_write_path(&path, context))
+            })
+            .unwrap_or(false)
+    }
+
     /// Returns writable roots without following attacker-mutable path components.
     ///
     /// Trusted top-level aliases such as `/tmp -> /private/tmp` are still
@@ -2519,6 +2534,10 @@ mod tests {
         for policy in policies {
             assert_eq!(
                 policy.has_writable_roots_with_cwd(cwd.path()),
+                !policy.get_writable_roots_with_cwd(cwd.path()).is_empty()
+            );
+            assert_eq!(
+                policy.has_configured_writable_roots_with_cwd(cwd.path()),
                 !policy.get_writable_roots_with_cwd(cwd.path()).is_empty()
             );
         }
