@@ -8,6 +8,7 @@ use anyhow::anyhow;
 use codex_protocol::mcp::Resource;
 use codex_protocol::mcp::ResourceContent;
 use codex_rmcp_client::CancellableEventStreamRequest;
+use codex_rmcp_client::RmcpClient;
 use rmcp::model::GetMeta;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ReadResourceRequestParams;
@@ -22,7 +23,6 @@ use tokio::sync::watch;
 
 use crate::McpRuntime;
 use crate::connection_manager::McpConnectionSet;
-use crate::connection_manager::McpServerConnection;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 
 /// One page of resources returned by an MCP server.
@@ -69,11 +69,34 @@ pub struct McpEventNotification {
 pub struct McpEventStream {
     request: Option<CancellableEventStreamRequest>,
     runtime_handle: Handle,
-    connection: Option<Arc<McpServerConnection>>,
+    client: Option<Arc<RmcpClient>>,
     hosted_event_server_removals: watch::Receiver<()>,
 }
 
 impl McpEventStream {
+    pub(crate) async fn open(
+        client: Arc<RmcpClient>,
+        hosted_event_server_removals: watch::Receiver<()>,
+        event_name: &str,
+        arguments: &Value,
+        request_meta: Option<&Map<String, Value>>,
+    ) -> Result<Self> {
+        let mut params = json!({ "name": event_name, "arguments": arguments });
+        if let Some(request_meta) = request_meta {
+            params["_meta"] = Value::Object(request_meta.clone());
+        }
+        let request = client
+            .send_event_stream_request(Some(params))
+            .await
+            .context("events/stream request failed")?;
+        Ok(Self {
+            request: Some(request),
+            runtime_handle: Handle::current(),
+            client: Some(client),
+            hosted_event_server_removals,
+        })
+    }
+
     /// Receives the next raw lifecycle notification for this subscription.
     pub async fn recv(&mut self) -> Result<Option<McpEventNotification>> {
         let Some(request) = self.request.as_mut() else {
@@ -100,7 +123,7 @@ impl McpEventStream {
             }
             response = &mut request.handle.rx => {
                 self.request = None;
-                self.connection = None;
+                self.client = None;
 
                 match response {
                     Ok(Ok(_))
@@ -120,14 +143,14 @@ impl McpEventStream {
         }) = self.request.take()
         {
             drop(notifications);
-            let connection = self.connection.take();
+            let client = self.client.take();
             self.runtime_handle.spawn(async move {
                 let _ = tokio::time::timeout(
                     Duration::from_secs(30),
                     handle.cancel(Some("event subscription closed".to_string())),
                 )
                 .await;
-                drop(connection);
+                drop(client);
             });
         }
     }
@@ -229,7 +252,7 @@ impl McpResourceClient {
         Ok(McpResourceReadResult { contents })
     }
 
-    /// Lists the events advertised by the hosted Plugin Runtime.
+    /// Lists the events advertised by the MCP event server.
     pub async fn list_events(&self) -> Result<McpEventCatalogSnapshot> {
         let (connections, _) = self
             .runtime
@@ -242,7 +265,7 @@ impl McpResourceClient {
             .client
             .send_custom_request_with_timeout("events/list", /*params*/ None, request_timeout)
             .await
-            .context("events/list failed for hosted Plugin Runtime")?;
+            .context("events/list request failed")?;
         let ServerResult::CustomResult(result) = result else {
             return Err(anyhow!("events/list returned an unexpected MCP result"));
         };
@@ -263,32 +286,20 @@ impl McpResourceClient {
         arguments: &Value,
         request_meta: Option<&Map<String, Value>>,
     ) -> Result<McpEventStream> {
-        let mut params = json!({
-            "name": event_name,
-            "arguments": arguments,
-        });
-        if let Some(request_meta) = request_meta {
-            params["_meta"] = Value::Object(request_meta.clone());
-        }
-
         let (connections, hosted_event_server_removals) = self
             .runtime
             .latest_connections_for_event_server(CODEX_APPS_MCP_SERVER_NAME)?;
-        let (managed, _, connection) = connections
-            .client_with_connection_by_name(CODEX_APPS_MCP_SERVER_NAME)
+        let (managed, _) = connections
+            .client_by_name(CODEX_APPS_MCP_SERVER_NAME)
             .await?;
-        let request = managed
-            .client
-            .send_event_stream_request(Some(params))
-            .await
-            .context("events/stream failed for hosted Plugin Runtime")?;
-
-        Ok(McpEventStream {
-            request: Some(request),
-            runtime_handle: Handle::current(),
-            connection: Some(connection),
+        McpEventStream::open(
+            managed.client,
             hosted_event_server_removals,
-        })
+            event_name,
+            arguments,
+            request_meta,
+        )
+        .await
     }
 }
 
