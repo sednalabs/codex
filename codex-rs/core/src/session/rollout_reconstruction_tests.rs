@@ -19,6 +19,8 @@ use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::WorldStateItem;
 use codex_protocol::security_risk::SecurityRiskScore;
+use codex_rollout::ModelContextScan;
+use codex_rollout::ModelContextScanProgress;
 use core_test_support::responses::strip_metadata_from_items;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -1280,6 +1282,116 @@ async fn reconstruct_history_replays_world_state_from_latest_compaction_window()
         json!({
             "environment": {"status": "ready", "cwd": "/workspace"}
         })
+    );
+}
+
+#[tokio::test]
+async fn bounded_replay_matches_full_replay_after_empty_turn_compactions() {
+    let (session, turn_context) = make_session_and_context().await;
+    let session_meta = SessionMetaLine {
+        meta: SessionMeta {
+            history_mode: ThreadHistoryMode::Paginated,
+            ..Default::default()
+        },
+        git: None,
+    };
+    let initial_context = turn_context.to_turn_context_item();
+    let mut rollout_items = vec![RolloutItem::SessionMeta(session_meta.clone())];
+    rollout_items.extend(completed_user_turn_rollout(
+        initial_context.clone(),
+        vec![RolloutItem::ResponseItem(
+            user_message("original task").into(),
+        )],
+    ));
+    let window_ids = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
+    let mut latest_wake_start = 0;
+    for window_number in 1..=2 {
+        let mut context = initial_context.clone();
+        context.turn_id = Some(format!("wake-{window_number}"));
+        context.model = format!("model-{window_number}");
+        context.comp_hash = Some(format!("hash-{window_number}"));
+        context.realtime_active = Some(window_number == 2);
+        let mut wake_items = completed_user_turn_rollout(
+            context.clone(),
+            vec![
+                RolloutItem::Compacted(CompactedItem {
+                    message: String::new(),
+                    replacement_history: Some(annotated(vec![assistant_message(&format!(
+                        "summary-{window_number}"
+                    ))])),
+                    mcp_resource_origins: None,
+                    window_number: Some(window_number as u64),
+                    first_window_id: Some(window_ids[0].to_string()),
+                    previous_window_id: Some(window_ids[window_number - 1].to_string()),
+                    window_id: Some(window_ids[window_number].to_string()),
+                }),
+                RolloutItem::WorldState(WorldStateItem::full(object!({
+                    "environment": {"window": window_number, "status": "starting"}
+                }))),
+                RolloutItem::TurnContext(context),
+                RolloutItem::ResponseItem(assistant_message("continued working").into()),
+                RolloutItem::WorldState(WorldStateItem::patch(object!({
+                    "environment": {"status": "ready"}
+                }))),
+            ],
+        );
+        // Clock wakes have no user-message boundary, and the next wait interrupts the turn.
+        wake_items.retain(|item| {
+            !matches!(
+                item,
+                RolloutItem::EventMsg(EventMsg::UserMessage(_) | EventMsg::TurnComplete(_))
+            )
+        });
+        wake_items.push(RolloutItem::EventMsg(EventMsg::TurnAborted(
+            codex_protocol::protocol::TurnAbortedEvent {
+                turn_id: Some(format!("wake-{window_number}")),
+                reason: TurnAbortReason::Interrupted,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            },
+        )));
+        latest_wake_start = rollout_items.len();
+        rollout_items.extend(wake_items);
+    }
+
+    let mut scan = ModelContextScan::default();
+    let cutoff = rollout_items
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, item)| {
+            matches!(scan.push(item.clone()), ModelContextScanProgress::Complete).then_some(index)
+        });
+    assert_eq!(cutoff, Some(latest_wake_start));
+    let bounded_items = scan.finish(session_meta);
+    let full = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+    let bounded = session
+        .reconstruct_history_from_rollout(&turn_context, &bounded_items)
+        .await;
+    assert_eq!(
+        (
+            bounded.history,
+            bounded.previous_turn_settings,
+            bounded.reference_context_item,
+            bounded.world_state_baseline,
+            bounded.window_number,
+            bounded.first_window_id,
+            bounded.previous_window_id,
+            bounded.window_id,
+        ),
+        (
+            full.history,
+            full.previous_turn_settings,
+            full.reference_context_item,
+            full.world_state_baseline,
+            full.window_number,
+            full.first_window_id,
+            full.previous_window_id,
+            full.window_id,
+        ),
     );
 }
 
