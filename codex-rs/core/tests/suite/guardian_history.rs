@@ -1,6 +1,8 @@
-//! Exercises retained review history through compaction, eviction, and rollback.
+//! Exercises retained review history through compaction, eviction, large images, and rollback.
 
 use anyhow::Result;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_core::TurnInputRequest;
 use codex_core::config::Constrained;
 use codex_features::Feature;
@@ -22,9 +24,15 @@ use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
+use image::DynamicImage;
+use image::RgbImage;
 use pretty_assertions::assert_eq;
+use rand::RngCore;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use serde_json::json;
 use std::collections::HashMap;
+use std::io::Cursor;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guardian_history_survives_compaction_and_eviction_but_not_rollback() -> Result<()> {
@@ -116,9 +124,22 @@ async fn guardian_history_survives_compaction_and_eviction_but_not_rollback() ->
     })
     .await;
 
+    // A valid, supported-size image whose encoded bytes exceed the retention budget.
+    let (width, height) = (1200, 1200);
+    let mut pixels = vec![0; (width * height * 3) as usize];
+    let seed = 42;
+    StdRng::seed_from_u64(seed).fill_bytes(&mut pixels);
+    let image = RgbImage::from_raw(width, height, pixels).unwrap();
+    let mut image_data = Cursor::new(Vec::new());
+    DynamicImage::ImageRgb8(image).write_to(&mut image_data, image::ImageFormat::Png)?;
+    let image_url = format!(
+        "data:image/png;base64,{}",
+        BASE64_STANDARD.encode(image_data.into_inner())
+    );
+    assert!(image_url.len() > 4 * 1024 * 1024);
     let command = r#"{"cmd":"echo publish","sandbox_permissions":"require_escalated","justification":"Publish the inspected change."}"#;
     for (prompt, retained) in [
-        ("Now publish.", true),
+        ("Do not publish the attached image.", true),
         ("Inspect a different repository.", false),
     ] {
         let review = mount_sse_sequence(
@@ -136,8 +157,33 @@ async fn guardian_history_survives_compaction_and_eviction_but_not_rollback() ->
             ],
         )
         .await;
-        test.submit_text_turn(prompt).await?;
+        test.codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![
+                UserInput::Text {
+                    text: prompt.to_owned(),
+                    text_elements: Vec::new(),
+                },
+                UserInput::Image {
+                    image_url: image_url.clone(),
+                    detail: None,
+                },
+            ]))
+            .await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
         let requests = review.requests();
+        assert!(
+            requests[0]
+                .input()
+                .iter()
+                .filter_map(|item| item["content"].as_array())
+                .flatten()
+                .any(|item| item["image_url"]
+                    .as_str()
+                    .is_some_and(|url| url.len() > 4 * 1024 * 1024))
+        );
         let guardian = requests
             .iter()
             .find(|request| {
@@ -159,7 +205,7 @@ async fn guardian_history_survives_compaction_and_eviction_but_not_rollback() ->
                 "Only publish to a private repository.",
                 "tool update_plan call",
                 "tool update_plan result",
-                "Now publish.",
+                "Do not publish the attached image.",
             ]
             .map(|text| {
                 transcript
