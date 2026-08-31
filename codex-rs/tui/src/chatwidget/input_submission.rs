@@ -100,12 +100,11 @@ impl ChatWidget {
             return None;
         }
 
-        let trigger_turn_id = self
-            .last_non_retry_error
-            .as_ref()
-            .map(|(turn_id, _)| turn_id.as_str())
-            .or(self.turn_lifecycle.last_turn_id.as_deref())?;
-        self.automatic_turn_client_id(trigger_turn_id)
+        let trigger_turn_id = self.automatic_turn_trigger_id.as_deref()?;
+        // The app-server carries this opaque capability in the internal error-details marker. It
+        // is intentionally required before a retry envelope can be constructed.
+        let capability = self.automatic_turn_capability.as_deref()?;
+        self.automatic_turn_client_id(trigger_turn_id, capability)
     }
 
     pub(super) fn submit_user_message_with_history_record_and_client_id(

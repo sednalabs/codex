@@ -41,4 +41,5 @@ async fn automatic_retry_submission_carries_bounded_transport_metadata() {
     assert_eq!(provenance.trigger_turn_id, "policy-trigger");
     assert_eq!(provenance.attempt, 1);
     assert_eq!(provenance.max_attempts, 3);
+    assert_eq!(provenance.capability, "test-capability");
 }

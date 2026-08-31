@@ -810,11 +810,23 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
             },
         )
         .await;
-    let client_user_message_id =
-        AutomaticTurnProvenance::policy_retry(thread_id_value, trigger_turn_id, 1, 3)
-            .expect("valid automatic-turn provenance")
-            .to_client_user_message_id()
-            .expect("valid automatic-turn provenance");
+    let capability = harness
+        .state_db
+        .as_ref()
+        .expect("state db enabled for this harness")
+        .automatic_turn_capability(thread_id_value, trigger_turn_id)
+        .await
+        .expect("policy event should issue a server capability");
+    let client_user_message_id = AutomaticTurnProvenance::policy_retry(
+        thread_id_value,
+        trigger_turn_id,
+        /*attempt*/ 1,
+        /*max_attempts*/ 3,
+        capability,
+    )
+    .expect("valid automatic-turn provenance")
+    .to_client_user_message_id()
+    .expect("valid automatic-turn provenance");
 
     let turn_start_response: TurnStartResponse = harness
         .request(

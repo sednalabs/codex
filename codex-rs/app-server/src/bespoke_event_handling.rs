@@ -92,6 +92,7 @@ use codex_app_server_protocol::item_event_to_server_notification;
 use codex_core::CodexThread;
 use codex_core::ThreadManager;
 use codex_protocol::ThreadId;
+use codex_protocol::automatic_turn::AutomaticTurnProvenance;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::models::AdditionalPermissionProfile as CoreAdditionalPermissionProfile;
@@ -1023,10 +1024,34 @@ pub(crate) async fn apply_bespoke_event_handling(
                 return;
             }
 
+            let additional_details = if ev
+                .codex_error_info
+                .as_ref()
+                .is_some_and(|info| matches!(info, &CoreCodexErrorInfo::CyberPolicy))
+            {
+                // The state projection has already armed the ticket before this event is
+                // delivered. Read the exact server-selected trigger/capability pair and carry it
+                // through the existing internal details channel. Missing state fails closed.
+                match conversation.state_db() {
+                    Some(state_db) => state_db
+                        .automatic_turn_capability_for_turn(conversation_id, &event_turn_id)
+                        .await
+                        .and_then(|(trigger_turn_id, capability)| {
+                            AutomaticTurnProvenance::capability_details(
+                                &trigger_turn_id,
+                                &capability,
+                            )
+                        }),
+                    None => None,
+                }
+            } else {
+                None
+            };
+
             let turn_error = TurnError {
                 message: ev.message,
                 codex_error_info: ev.codex_error_info.map(V2CodexErrorInfo::from),
-                additional_details: None,
+                additional_details,
             };
             handle_error_notification(
                 conversation_id,
@@ -1716,7 +1741,12 @@ async fn handle_error_notification(
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
-    handle_error(conversation_id, error.clone(), thread_state).await;
+    // Keep the one-shot retry capability on the immediate Error notification only. It must not
+    // be copied into the later TurnCompleted summary, where it would be replayed to clients that
+    // cannot participate in the automatic operation.
+    let mut summary_error = error.clone();
+    summary_error.additional_details = None;
+    handle_error(conversation_id, summary_error, thread_state).await;
     outgoing
         .send_server_notification(ServerNotification::Error(ErrorNotification {
             error,

@@ -248,6 +248,8 @@ impl ChatWidget {
             external_editor_state: ExternalEditorState::Closed,
             last_rendered_user_message_display: None,
             last_non_retry_error: None,
+            automatic_turn_capability: None,
+            automatic_turn_trigger_id: None,
         };
 
         widget.prefetch_rate_limits();
