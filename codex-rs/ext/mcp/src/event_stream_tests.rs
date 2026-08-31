@@ -70,6 +70,7 @@ pub(super) struct Fixture {
     _home: tempfile::TempDir,
     _server: tokio_util::task::AbortOnDropHandle<std::io::Result<()>>,
     pub runtime: Arc<McpRuntime>,
+    pub runtime_input: McpRuntimeInput,
     pub auth: Arc<AuthManager>,
     pub opened: mpsc::UnboundedReceiver<TestStream>,
 }
@@ -153,7 +154,7 @@ impl Fixture {
         ));
         config.mcp_server_catalog = catalog.build();
         let config = Arc::new(config);
-        let runtime_input = McpRuntimeInput {
+        let runtime_input = || McpRuntimeInput {
             startup_policy: McpStartupPolicy::Eager,
             config: Arc::clone(&config),
             plugins_available: false,
@@ -178,7 +179,8 @@ impl Fixture {
             elicitation_reviewer: None,
             elicitation_lifecycle: None,
         };
-        let runtime = Arc::new(McpRuntime::new(runtime_input).await);
+        let runtime = Arc::new(McpRuntime::new(runtime_input()).await);
+        let runtime_input = runtime_input();
         assert!(
             runtime
                 .latest_wait_for_server_ready(CODEX_APPS_MCP_SERVER_NAME, WAIT)
@@ -188,6 +190,7 @@ impl Fixture {
             _home: home,
             _server: tokio_util::task::AbortOnDropHandle::new(server),
             runtime,
+            runtime_input,
             auth,
             opened,
         })
