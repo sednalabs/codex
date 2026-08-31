@@ -1617,6 +1617,10 @@ class RouteSelectionTests(unittest.TestCase):
             "--extra_execution_platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm",
             analysis_run,
         )
+        self.assertIn(
+            "--extra_toolchains=//:windows_aarch64_gnullvm_rust_toolchain_for_health",
+            analysis_run,
+        )
         self.assertIn("--include_artifacts=true", analysis_run)
         self.assertIn("//codex-rs/otel:otel", analysis_run)
         self.assertIn(
@@ -1625,6 +1629,39 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertIn("--target //codex-rs/otel:otel", analysis_run)
         self.assertNotIn("grep", analysis_run)
+        build_bazel = (REPO_ROOT / "BUILD.bazel").read_text(encoding="utf-8")
+        self.assertIn(
+            'name = "windows_aarch64_gnullvm_rust_toolchain_for_health"',
+            build_bazel,
+        )
+        self.assertIn(
+            'toolchain = "@default_rust_toolchains//:windows_aarch64_gnullvm_1_95_0_rust_toolchain"',
+            build_bazel,
+        )
+        selector_match = re.search(
+            r'toolchain\(\n    name = "windows_aarch64_gnullvm_rust_toolchain_for_health",'
+            r'.*?\n\)\n',
+            build_bazel,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(
+            selector_match, "ARM64 health selector declaration not found"
+        )
+        selector = selector_match.group(0)
+        for constraint in (
+            '"@platforms//cpu:aarch64"',
+            '"@platforms//os:windows"',
+            '"@llvm//constraints/windows/abi:gnullvm"',
+            '"@llvm//constraints/windows/crt:msvcrt"',
+        ):
+            with self.subTest(constraint=constraint):
+                self.assertIn(constraint, selector)
+        self.assertIn(
+            'toolchain_type = "@rules_rust//rust:toolchain_type"', selector
+        )
+        self.assertIn('"@rules_rs//rs/toolchains:non_bpf_targets"', selector)
+        self.assertNotIn('"@rules_rs//rs/toolchains:bpf_targets"', selector)
+        self.assertNotIn("target_compatible_with", selector)
         analysis_cache_save = next(
             (
                 step
