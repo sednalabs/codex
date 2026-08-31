@@ -9,6 +9,7 @@ use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
+use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::openai_models::ModelInfo;
@@ -266,6 +267,17 @@ impl TurnContext {
             .unwrap_or_else(|| "default".to_string())
     }
 
+    /// Remote compaction omits the service tier for direct API-key requests.
+    /// Keep identity metadata on the same auth-specific request contract.
+    pub(crate) fn service_tier_for_remote_compaction(&self) -> Option<String> {
+        remote_compaction_service_tier(
+            self.auth_manager
+                .as_deref()
+                .and_then(AuthManager::auth_mode),
+            self.config.service_tier.clone(),
+        )
+    }
+
     pub(crate) fn model_context_window(&self) -> Option<i64> {
         let effective_context_window_percent = self.model_info.effective_context_window_percent;
         self.model_info
@@ -481,6 +493,39 @@ impl TurnContext {
                 .and_then(codex_config::NetworkDomainPermissionsToml::denied_domains)
                 .unwrap_or_default(),
         })
+    }
+}
+
+fn remote_compaction_service_tier(
+    auth_mode: Option<AuthMode>,
+    configured_service_tier: Option<String>,
+) -> Option<String> {
+    if auth_mode == Some(AuthMode::ApiKey) {
+        None
+    } else {
+        configured_service_tier
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remote_compaction_service_tier;
+    use codex_protocol::auth::AuthMode;
+
+    #[test]
+    fn api_key_compaction_omits_configured_service_tier() {
+        assert_eq!(
+            remote_compaction_service_tier(Some(AuthMode::ApiKey), Some("priority".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn codex_backend_compaction_preserves_configured_service_tier() {
+        assert_eq!(
+            remote_compaction_service_tier(Some(AuthMode::Chatgpt), Some("priority".to_string())),
+            Some("priority".to_string())
+        );
     }
 }
 

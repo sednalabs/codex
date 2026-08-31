@@ -324,6 +324,7 @@ async fn run_remote_compact_task_inner_impl(
         });
     }
     sess.replace_compacted_history(
+        compaction_turn_context,
         new_history,
         reference_context_item,
         world_state_baseline,
@@ -371,7 +372,7 @@ async fn run_remote_compaction_request_v2(
                 &turn_context.session_telemetry,
                 turn_context.reasoning_effort.clone(),
                 turn_context.reasoning_summary,
-                turn_context.config.service_tier.clone(),
+                turn_context.service_tier_for_remote_compaction(),
                 responses_metadata,
                 &InferenceTraceContext::disabled(),
             )

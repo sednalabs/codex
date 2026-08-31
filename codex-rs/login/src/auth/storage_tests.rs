@@ -9,6 +9,8 @@ use codex_secrets::SecretsManager;
 use codex_secrets::compute_keyring_account;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::sync::Arc;
+use std::sync::mpsc;
 use tempfile::tempdir;
 
 use codex_keyring_store::tests::MockKeyringStore;
@@ -37,6 +39,16 @@ async fn file_storage_load_returns_auth_dot_json() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn empty_auth_read_does_not_create_codex_home_files() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let storage = FileAuthStorage::new(codex_home.path().to_path_buf());
+
+    assert_eq!(storage.load()?, None);
+    assert_eq!(std::fs::read_dir(codex_home.path())?.count(), 0);
+    Ok(())
+}
+
 #[tokio::test]
 async fn file_storage_save_persists_auth_dot_json() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
@@ -61,6 +73,291 @@ async fn file_storage_save_persists_auth_dot_json() -> anyhow::Result<()> {
         .context("failed to read auth file after save")?;
     assert_eq!(auth_dot_json, same_auth_dot_json);
     Ok(())
+}
+
+#[test]
+fn conditional_delete_cannot_erase_concurrent_replacement() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let storage = Arc::new(FileAuthStorage::new(codex_home.path().to_path_buf()));
+    let rejected = auth_with_prefix("rejected");
+    let replacement = auth_with_prefix("replacement");
+    storage.save(&rejected)?;
+
+    let (compared_tx, compared_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let delete_storage = Arc::clone(&storage);
+    let rejected_for_delete = rejected.clone();
+    let delete_thread = std::thread::spawn(move || {
+        delete_storage.delete_if(&|current| {
+            compared_tx.send(()).expect("signal comparison");
+            release_rx.recv().expect("release conditional delete");
+            current == &rejected_for_delete
+        })
+    });
+
+    compared_rx
+        .recv()
+        .expect("conditional delete compared auth");
+    let (saving_tx, saving_rx) = mpsc::channel();
+    let save_storage = Arc::clone(&storage);
+    let replacement_for_save = replacement.clone();
+    let save_thread = std::thread::spawn(move || {
+        saving_tx.send(()).expect("signal replacement save");
+        save_storage.save(&replacement_for_save)
+    });
+    saving_rx.recv().expect("replacement save attempted");
+    release_tx.send(()).expect("release conditional delete");
+
+    assert!(delete_thread.join().expect("conditional delete thread")?);
+    save_thread.join().expect("replacement save thread")?;
+    assert_eq!(storage.load()?, Some(replacement));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn canonical_storage_identity_unifies_symlink_alias_and_absent_child() -> anyhow::Result<()> {
+    let root = tempdir()?;
+    let home = root.path().join("real-home");
+    std::fs::create_dir(&home)?;
+    let alias = root.path().join("home-alias");
+    std::os::unix::fs::symlink(&home, &alias)?;
+
+    assert_eq!(
+        canonical_storage_identity(&home)?,
+        canonical_storage_identity(&alias)?
+    );
+    assert_eq!(
+        canonical_storage_identity(&home.join("not-created"))?,
+        canonical_storage_identity(&alias.join("not-created"))?
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn auth_lock_rejects_symlinked_or_foreign_permission_lock_roots() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempdir()?;
+    let codex_home = root.path().join("home");
+    std::fs::create_dir(&codex_home)?;
+    let lock_dir = root.path().join("locks");
+    let redirected = root.path().join("redirected");
+    std::fs::create_dir(&redirected)?;
+    std::os::unix::fs::symlink(&redirected, &lock_dir)?;
+
+    assert!(lock_auth_storage_at(&codex_home, &lock_dir).is_err());
+
+    std::fs::remove_file(&lock_dir)?;
+    std::fs::create_dir(&lock_dir)?;
+    let mut permissions = std::fs::metadata(&lock_dir)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&lock_dir, permissions)?;
+    let lock = lock_auth_storage_at(&codex_home, &lock_dir)?;
+    assert_eq!(
+        std::fs::metadata(&lock_dir)?.permissions().mode() & 0o777,
+        0o700
+    );
+    drop(lock);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn auth_lock_roots_isolate_precreated_user_components() -> anyhow::Result<()> {
+    let root = tempdir()?;
+    let codex_home = root.path().join("home");
+    std::fs::create_dir(&codex_home)?;
+    let precreated_uid_root = lock_root_for_uid(root.path(), 1001);
+    let active_uid_root = lock_root_for_uid(root.path(), 1002);
+    let redirected = root.path().join("redirected");
+    std::fs::create_dir(&redirected)?;
+    std::os::unix::fs::symlink(&redirected, &precreated_uid_root)?;
+
+    // A pre-created path for one UID must not affect another UID's isolated
+    // lock namespace, while the unsafe path itself remains rejected.
+    assert!(lock_auth_storage_at(&codex_home, &precreated_uid_root).is_err());
+    let lock = lock_auth_storage_at(&codex_home, &active_uid_root)?;
+    drop(lock);
+    assert_ne!(precreated_uid_root, active_uid_root);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn auth_lock_rejects_world_writable_creation_anchor() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempdir()?;
+    let world_writable = root.path().join("world-writable");
+    std::fs::create_dir(&world_writable)?;
+    let mut permissions = std::fs::metadata(&world_writable)?.permissions();
+    permissions.set_mode(0o777);
+    std::fs::set_permissions(&world_writable, permissions)?;
+    let precreated = lock_root_for_uid(
+        &world_writable,
+        // Model another user pre-creating the victim's old predictable root.
+        unsafe { libc::geteuid() as u64 },
+    );
+    let redirected = root.path().join("redirected");
+    std::fs::create_dir(&redirected)?;
+    std::os::unix::fs::symlink(&redirected, &precreated)?;
+
+    assert!(validate_private_lock_anchor(&world_writable).is_err());
+    assert!(precreated.is_symlink());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn auth_lock_anchor_resolves_symlinked_home_alias() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = dirs::home_dir().context("home directory should be available")?;
+    let root = tempfile::tempdir_in(home)?;
+    let mut root_permissions = std::fs::metadata(root.path())?.permissions();
+    root_permissions.set_mode(0o700);
+    std::fs::set_permissions(root.path(), root_permissions)?;
+    let real_home = root.path().join("real-home");
+    std::fs::create_dir(&real_home)?;
+    let mut permissions = std::fs::metadata(&real_home)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&real_home, permissions)?;
+    let alias_home = root.path().join("home-alias");
+    std::os::unix::fs::symlink(&real_home, &alias_home)?;
+
+    let real_codex_home = real_home.join(".codex");
+    let alias_codex_home = alias_home.join(".codex");
+    let expected_anchor = std::fs::canonicalize(&real_home)?;
+    assert_eq!(validate_private_lock_anchor(&real_home)?, expected_anchor);
+    assert_eq!(private_lock_anchor(&alias_codex_home)?, expected_anchor);
+    assert_eq!(
+        canonical_storage_identity(&real_codex_home)?,
+        canonical_storage_identity(&alias_codex_home)?
+    );
+
+    let real_lock = lock_auth_storage(&real_codex_home)?;
+    drop(real_lock);
+    let alias_lock = lock_auth_storage(&alias_codex_home)?;
+    drop(alias_lock);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn auth_lock_anchor_uses_stable_passwd_home_for_unsafe_codex_home() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let passwd_home = passwd_home_dir().context("passwd home should be available")?;
+    validate_private_lock_anchor(&passwd_home)
+        .context("passwd home should satisfy the private-anchor contract")?;
+
+    let root = tempdir()?;
+    let mut root_permissions = std::fs::metadata(root.path())?.permissions();
+    root_permissions.set_mode(0o777);
+    std::fs::set_permissions(root.path(), root_permissions)?;
+    let codex_home = root.path().join("shared-codex-home");
+    std::fs::create_dir(&codex_home)?;
+    let mut home_permissions = std::fs::metadata(&codex_home)?.permissions();
+    home_permissions.set_mode(0o700);
+    std::fs::set_permissions(&codex_home, home_permissions)?;
+
+    // An unsafe CODEX_HOME parent cannot be used as a lock anchor. The
+    // effective-UID passwd home is the deterministic fallback, independent of
+    // each process's HOME environment.
+    assert_eq!(private_lock_anchor(&codex_home)?, passwd_home);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn auth_lock_anchor_rejects_unsafe_parent_chain() -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempdir()?;
+    let unsafe_parent = root.path().join("unsafe-parent");
+    std::fs::create_dir(&unsafe_parent)?;
+    let mut permissions = std::fs::metadata(&unsafe_parent)?.permissions();
+    permissions.set_mode(0o777);
+    std::fs::set_permissions(&unsafe_parent, permissions)?;
+    let private_child = unsafe_parent.join("private-child");
+    std::fs::create_dir(&private_child)?;
+    let mut child_permissions = std::fs::metadata(&private_child)?.permissions();
+    child_permissions.set_mode(0o700);
+    std::fs::set_permissions(&private_child, child_permissions)?;
+
+    assert!(validate_private_lock_anchor(&private_child).is_err());
+    let codex_home = private_child.join(".codex");
+    let selected_anchor = private_lock_anchor(&codex_home)?;
+    assert_ne!(selected_anchor, std::fs::canonicalize(&private_child)?);
+    assert!(validate_private_lock_anchor(&selected_anchor).is_ok());
+    Ok(())
+}
+
+#[cfg(not(unix))]
+#[test]
+fn portable_auth_lock_root_is_derived_from_codex_home() -> anyhow::Result<()> {
+    let root = tempdir()?;
+    let codex_home = root.path().join("codex-home");
+    assert_eq!(
+        portable_lock_root(&codex_home)?,
+        root.path().join(".codex-auth-locks")
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn absent_symlink_aliases_share_conditional_delete_identity() -> anyhow::Result<()> {
+    let root = tempdir()?;
+    let home = root.path().join("real-home");
+    std::fs::create_dir(&home)?;
+    let alias = root.path().join("home-alias");
+    std::os::unix::fs::symlink(&home, &alias)?;
+    let real_absent = home.join("not-created");
+    let alias_absent = alias.join("not-created");
+    let auth = auth_with_prefix("alias");
+
+    let ephemeral_real = EphemeralAuthStorage::new(real_absent.clone());
+    let ephemeral_alias = EphemeralAuthStorage::new(alias_absent.clone());
+    ephemeral_real.save(&auth)?;
+    assert_eq!(ephemeral_alias.load()?, Some(auth.clone()));
+    assert!(ephemeral_alias.delete_if(&|current| current == &auth)?);
+    assert_eq!(ephemeral_real.load()?, None);
+
+    let keyring = MockKeyringStore::default();
+    let direct_real = DirectKeyringAuthStorage::new(real_absent, Arc::new(keyring.clone()));
+    let direct_alias = DirectKeyringAuthStorage::new(alias_absent, Arc::new(keyring.clone()));
+    direct_real.save(&auth)?;
+    assert_eq!(direct_alias.load()?, Some(auth.clone()));
+    assert!(direct_alias.delete_if(&|current| current == &auth)?);
+    assert_eq!(direct_real.load()?, None);
+    Ok(())
+}
+
+#[test]
+fn jwt_identity_match_requires_decodable_matching_credential() {
+    let record = AgentIdentityAuthRecord {
+        agent_runtime_id: "runtime".to_string(),
+        agent_private_key: "private-key".to_string(),
+        account_id: "account".to_string(),
+        chatgpt_user_id: "user".to_string(),
+        email: None,
+        plan_type: AccountPlanType::Pro,
+        chatgpt_account_is_fedramp: false,
+        task_id: Some("runtime-only-task".to_string()),
+    };
+    let jwt = jwt_with_payload(json!({
+        "agent_runtime_id": "runtime",
+        "agent_private_key": "private-key",
+        "account_id": "account",
+        "chatgpt_user_id": "user",
+        "plan_type": "pro",
+        "chatgpt_account_is_fedramp": false,
+    }));
+    assert!(AgentIdentityStorage::Jwt(jwt).matches_record(&record));
+    assert!(!AgentIdentityStorage::Jwt("malformed".to_string()).matches_record(&record));
 }
 
 #[tokio::test]
@@ -471,7 +768,11 @@ fn keyring_auth_storage_compute_store_key_for_home_directory() -> anyhow::Result
 
     let key = compute_store_key(codex_home.as_path())?;
 
-    assert_eq!(key, "cli|940db7b1d0e4eb40");
+    let canonical = canonical_storage_identity(codex_home.as_path())?;
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.to_string_lossy().as_bytes());
+    let digest = digest_hex(hasher.finalize());
+    assert_eq!(key, format!("cli|{}", &digest[..16]));
     Ok(())
 }
 
@@ -723,6 +1024,71 @@ fn auto_auth_storage_load_falls_back_when_keyring_errors() -> anyhow::Result<()>
 
     let loaded = storage.load()?;
     assert_eq!(loaded, Some(expected));
+    Ok(())
+}
+
+#[test]
+fn auto_auth_storage_delete_falls_back_to_file_when_keyring_errors() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let mock_keyring = MockKeyringStore::default();
+    let storage = AutoAuthStorage::new(
+        codex_home.path().to_path_buf(),
+        Arc::new(mock_keyring.clone()),
+        AuthKeyringBackendKind::Secrets,
+    );
+    let key = compute_keyring_account(codex_home.path());
+    mock_keyring.set_error(&key, KeyringError::Invalid("error".into(), "delete".into()));
+
+    let expected = auth_with_prefix("delete-fallback");
+    storage.file_storage.save(&expected)?;
+    assert_eq!(storage.load()?, Some(expected));
+
+    assert!(storage.delete()?);
+    assert!(!get_auth_file(codex_home.path()).exists());
+    Ok(())
+}
+
+#[test]
+fn auto_auth_storage_delete_if_falls_back_to_file_when_keyring_errors() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let mock_keyring = MockKeyringStore::default();
+    let storage = AutoAuthStorage::new(
+        codex_home.path().to_path_buf(),
+        Arc::new(mock_keyring.clone()),
+        AuthKeyringBackendKind::Secrets,
+    );
+    let key = compute_keyring_account(codex_home.path());
+    mock_keyring.set_error(
+        &key,
+        KeyringError::Invalid("error".into(), "delete_if".into()),
+    );
+
+    let expected = auth_with_prefix("delete-if-fallback");
+    storage.file_storage.save(&expected)?;
+
+    assert!(storage.delete_if(&|current| current == &expected)?);
+    assert!(!get_auth_file(codex_home.path()).exists());
+    Ok(())
+}
+
+#[test]
+fn auto_auth_storage_delete_if_preserves_distinct_file_fallback() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let mock_keyring = MockKeyringStore::default();
+    let storage = AutoAuthStorage::new(
+        codex_home.path().to_path_buf(),
+        Arc::new(mock_keyring.clone()),
+        AuthKeyringBackendKind::Secrets,
+    );
+    let keyring_auth = auth_with_prefix("keyring-a");
+    seed_secrets_backend_with_auth(&mock_keyring, codex_home.path(), &keyring_auth)?;
+    let fallback_auth = auth_with_prefix("file-b");
+    storage.file_storage.save(&fallback_auth)?;
+
+    assert_eq!(storage.load()?, Some(keyring_auth.clone()));
+    assert!(storage.delete_if(&|current| current == &keyring_auth)?);
+    assert_eq!(storage.load()?, Some(fallback_auth.clone()));
+    assert_eq!(storage.file_storage.load()?, Some(fallback_auth));
     Ok(())
 }
 

@@ -11,7 +11,6 @@ use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
-use codex_protocol::auth::AuthMode;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_rollout_trace::CompactionTraceContext;
@@ -92,13 +91,7 @@ pub(super) async fn run_remote_compact_attempt(
                 CompactConversationRequestSettings {
                     effort: turn_context.reasoning_effort.clone(),
                     summary: turn_context.reasoning_summary,
-                    service_tier: if sess.services.auth_manager.auth_mode()
-                        == Some(AuthMode::ApiKey)
-                    {
-                        None
-                    } else {
-                        turn_context.config.service_tier.clone()
-                    },
+                    service_tier: turn_context.service_tier_for_remote_compaction(),
                 },
                 &turn_context.session_telemetry,
                 compaction_trace,

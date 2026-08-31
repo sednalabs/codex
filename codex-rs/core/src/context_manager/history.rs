@@ -206,6 +206,15 @@ impl ContextManager {
         self.world_state_baseline = None;
     }
 
+    /// Replace history while retaining the world-state snapshot owned by the current
+    /// model-visible context. Identity cleanup is a history rewrite, but it does not invalidate
+    /// the world-state fragments that remain in the replacement history.
+    pub(crate) fn replace_preserving_world_state_baseline(&mut self, items: Vec<ResponseItem>) {
+        let world_state_baseline = self.world_state_baseline.clone();
+        self.replace(items);
+        self.world_state_baseline = world_state_baseline;
+    }
+
     /// Drop the last `num_turns` instruction turns from this history.
     ///
     /// Instruction turns are history messages that should behave like a new prompt boundary:

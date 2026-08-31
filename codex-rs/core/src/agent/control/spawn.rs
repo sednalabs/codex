@@ -3,6 +3,7 @@ use super::residency::is_v2_resident_session_source;
 use super::*;
 use crate::agent::role::apply_role_to_config;
 use crate::config::PermissionProfileSnapshot;
+use crate::context::SubagentRuntimeIdentity;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
@@ -1312,7 +1313,8 @@ impl AgentControl {
 
         let parent_thread_id = *parent_thread_id;
         let parent_thread = state.get_thread(parent_thread_id).await?;
-        let parent_history_mode = parent_thread.config_snapshot().await.history_mode;
+        let parent_snapshot = parent_thread.config_snapshot().await;
+        let parent_history_mode = parent_snapshot.history_mode;
         // `record_conversation_items` only queues persistence writes asynchronously.
         // Flush before snapshotting store history for a fork.
         parent_thread.ensure_rollout_materialized().await;
@@ -1372,6 +1374,14 @@ impl AgentControl {
                             &multi_agent_v2_usage_hint_texts_to_filter,
                         )
                 )
+                && !matches!(
+                    item,
+                    RolloutItem::ResponseItem(response_item)
+                        if SubagentRuntimeIdentity::matches_response_item(
+                            response_item,
+                            &parent_snapshot,
+                        )
+                )
         });
         if destination_history_mode == Some(ThreadHistoryMode::Paginated) {
             forked_rollout_items.retain(|item| {
@@ -1394,6 +1404,9 @@ impl AgentControl {
                     !is_multi_agent_v2_usage_hint_message(
                         response_item,
                         &multi_agent_v2_usage_hint_texts_to_filter,
+                    ) && !SubagentRuntimeIdentity::matches_response_item(
+                        response_item,
+                        &parent_snapshot,
                     )
                 });
             }

@@ -11,7 +11,13 @@ use std::fs::OpenOptions;
 use std::io::Read;
 use std::io::Write;
 #[cfg(unix)]
+use std::os::unix::fs::DirBuilderExt;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -84,6 +90,18 @@ impl AgentIdentityStorage {
             Self::Record(record) => Some(record),
         }
     }
+
+    /// Compare persisted identity material with a live identity without treating an
+    /// undecodable JWT as an authorization to delete it. JWTs are intentionally
+    /// normalized through the same claims-to-record conversion used at load time.
+    pub(crate) fn matches_record(&self, record: &AgentIdentityAuthRecord) -> bool {
+        match self {
+            Self::Jwt(jwt) => AgentIdentityAuthRecord::from_agent_identity_jwt(jwt)
+                .ok()
+                .is_some_and(|stored| stored.same_credential(record)),
+            Self::Record(stored) => stored.same_credential(record),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
@@ -130,6 +148,16 @@ impl AgentIdentityAuthRecord {
 
         Ok(claims.into())
     }
+
+    /// Task registration is deliberately excluded: it is runtime state, not the
+    /// credential that authorizes an agent identity. The remaining fields bind the
+    /// private key to the issued account identity.
+    pub(crate) fn same_credential(&self, other: &Self) -> bool {
+        self.agent_runtime_id == other.agent_runtime_id
+            && self.agent_private_key == other.agent_private_key
+            && self.account_id == other.account_id
+            && self.chatgpt_user_id == other.chatgpt_user_id
+    }
 }
 
 impl From<AgentIdentityJwtClaims> for AgentIdentityAuthRecord {
@@ -161,9 +189,346 @@ pub(super) fn delete_file_if_exists(codex_home: &Path) -> std::io::Result<bool> 
 }
 
 pub(super) trait AuthStorageBackend: Debug + Send + Sync {
-    fn load(&self) -> std::io::Result<Option<AuthDotJson>>;
-    fn save(&self, auth: &AuthDotJson) -> std::io::Result<()>;
-    fn delete(&self) -> std::io::Result<bool>;
+    fn codex_home(&self) -> &Path;
+    fn load_unlocked(&self) -> std::io::Result<Option<AuthDotJson>>;
+    fn save_unlocked(&self, auth: &AuthDotJson) -> std::io::Result<()>;
+    fn delete_unlocked(&self) -> std::io::Result<bool>;
+
+    fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
+        let _guard = AUTH_STORAGE_TRANSACTION_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("failed to lock auth storage"))?;
+        let _file_guard = lock_auth_storage(self.codex_home())?;
+        self.load_unlocked()
+    }
+
+    fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        let _guard = AUTH_STORAGE_TRANSACTION_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("failed to lock auth storage"))?;
+        let _file_guard = lock_auth_storage(self.codex_home())?;
+        self.save_unlocked(auth)
+    }
+
+    fn delete(&self) -> std::io::Result<bool> {
+        let _guard = AUTH_STORAGE_TRANSACTION_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("failed to lock auth storage"))?;
+        let _file_guard = lock_auth_storage(self.codex_home())?;
+        self.delete_unlocked()
+    }
+
+    fn delete_unlocked_if(
+        &self,
+        should_delete: &dyn Fn(&AuthDotJson) -> bool,
+    ) -> std::io::Result<bool> {
+        let Some(auth) = self.load_unlocked()? else {
+            return Ok(false);
+        };
+        if !should_delete(&auth) {
+            return Ok(false);
+        }
+        self.delete_unlocked()
+    }
+
+    fn delete_unlocked_preserving_file(&self) -> std::io::Result<bool> {
+        self.delete_unlocked()
+    }
+
+    fn delete_if(&self, should_delete: &dyn Fn(&AuthDotJson) -> bool) -> std::io::Result<bool> {
+        let _guard = AUTH_STORAGE_TRANSACTION_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("failed to lock auth storage"))?;
+        let _file_guard = lock_auth_storage(self.codex_home())?;
+        self.delete_unlocked_if(should_delete)
+    }
+}
+
+// Auth backends do not all expose compare-and-delete primitives. Serialize storage
+// transactions both in-process and across cooperating Codex processes so rejection
+// cleanup cannot erase a credential saved after the value comparison.
+static AUTH_STORAGE_TRANSACTION_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+fn lock_auth_storage(codex_home: &Path) -> std::io::Result<File> {
+    // The lock root must not follow TMPDIR; cooperating Codex processes may have
+    // different temporary-directory environments while sharing one CODEX_HOME.
+    #[cfg(unix)]
+    let lock_dir = lock_root_for_uid(
+        &private_lock_anchor(codex_home)?,
+        // Keep the lock namespace private to the effective user. A different
+        // unprivileged user must not be able to pre-create our shared root and
+        // deny auth operations before ownership validation runs.
+        unsafe { libc::geteuid() as u64 },
+    );
+    #[cfg(not(unix))]
+    let lock_dir = portable_lock_root(codex_home)?;
+    lock_auth_storage_at(codex_home, &lock_dir)
+}
+
+#[cfg(not(unix))]
+fn portable_lock_root(codex_home: &Path) -> std::io::Result<PathBuf> {
+    let canonical_home = canonical_storage_identity(codex_home)?;
+    let parent = canonical_home.parent().unwrap_or(canonical_home.as_path());
+    Ok(parent.join(".codex-auth-locks"))
+}
+
+fn lock_root_for_uid(base: &Path, uid: u64) -> PathBuf {
+    base.join(format!("codex-auth-locks-{uid}"))
+}
+
+#[cfg(unix)]
+fn private_lock_anchor(codex_home: &Path) -> std::io::Result<PathBuf> {
+    let absolute = std::path::absolute(codex_home)?;
+    let mut anchor = absolute.parent().unwrap_or(absolute.as_path());
+    while !anchor.exists() {
+        let Some(parent) = anchor.parent() else {
+            break;
+        };
+        anchor = parent;
+    }
+    if let Ok(private_anchor) = validate_private_lock_anchor(anchor) {
+        return Ok(private_anchor);
+    }
+
+    // `dirs::home_dir` follows environment overrides such as HOME. Two
+    // cooperating processes can therefore select different lock roots for the
+    // same CODEX_HOME when their environments differ. Resolve the passwd
+    // entry for the effective UID instead so the fallback is stable across
+    // processes while retaining the private-anchor checks below.
+    if let Some(home) = passwd_home_dir()
+        && let Ok(private_anchor) = validate_private_lock_anchor(&home)
+    {
+        return Ok(private_anchor);
+    }
+    validate_private_lock_anchor(anchor)
+}
+
+#[cfg(unix)]
+fn passwd_home_dir() -> Option<PathBuf> {
+    use std::ffi::CStr;
+    use std::mem::MaybeUninit;
+    use std::ptr;
+
+    let uid = unsafe { libc::geteuid() };
+    let suggested_buffer_len = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+    let buffer_len = usize::try_from(suggested_buffer_len)
+        .ok()
+        .filter(|len| *len > 0)
+        .unwrap_or(1024);
+    let mut buffer = vec![0; buffer_len];
+    let mut passwd = MaybeUninit::<libc::passwd>::uninit();
+
+    loop {
+        let mut result = ptr::null_mut();
+        let status = unsafe {
+            libc::getpwuid_r(
+                uid,
+                passwd.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if status == 0 {
+            if result.is_null() {
+                return None;
+            }
+            let passwd = unsafe { passwd.assume_init_ref() };
+            if passwd.pw_dir.is_null() {
+                return None;
+            }
+            return Some(PathBuf::from(
+                unsafe { CStr::from_ptr(passwd.pw_dir) }
+                    .to_string_lossy()
+                    .into_owned(),
+            ));
+        }
+        if status != libc::ERANGE {
+            return None;
+        }
+        let new_len = buffer.len().checked_mul(2)?;
+        if new_len > 1024 * 1024 {
+            return None;
+        }
+        buffer.resize(new_len, 0);
+    }
+}
+
+#[cfg(unix)]
+fn validate_private_lock_anchor(anchor: &Path) -> std::io::Result<PathBuf> {
+    let canonical_anchor = std::fs::canonicalize(anchor)?;
+    let mut current = canonical_anchor.as_path();
+    loop {
+        let metadata = std::fs::symlink_metadata(current)?;
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            return Err(std::io::Error::other(format!(
+                "auth lock anchor is not a directory: {}",
+                current.display()
+            )));
+        }
+        if metadata.permissions().mode() & 0o022 != 0 {
+            return Err(std::io::Error::other(format!(
+                "auth lock anchor has an unsafe writable parent: {}",
+                current.display()
+            )));
+        }
+        if current == Path::new("/") {
+            break;
+        }
+        current = current.parent().ok_or_else(|| {
+            std::io::Error::other(format!(
+                "auth lock anchor has no canonical parent: {}",
+                canonical_anchor.display()
+            ))
+        })?;
+    }
+
+    let metadata = std::fs::symlink_metadata(&canonical_anchor)?;
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other(format!(
+            "auth lock anchor is not owned by the current user: {}",
+            canonical_anchor.display()
+        )));
+    }
+    Ok(canonical_anchor)
+}
+
+fn lock_auth_storage_at(codex_home: &Path, lock_dir: &Path) -> std::io::Result<File> {
+    let canonical_identity = canonical_storage_identity(codex_home)?;
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_identity.to_string_lossy().as_bytes());
+    let lock_key = digest_hex(hasher.finalize());
+    ensure_secure_lock_dir(&lock_dir)?;
+    let lock_path = lock_dir.join(lock_key);
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+        // The lock root is private, but also refuse a final-component symlink if
+        // an attacker manages to replace a lock file between metadata checks.
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let lock_file = options.open(&lock_path)?;
+    validate_lock_file(&lock_file, &lock_path)?;
+    lock_file.lock()?;
+    Ok(lock_file)
+}
+
+fn ensure_secure_lock_dir(lock_dir: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(lock_dir) {
+        Ok(metadata) => {
+            validate_lock_dir(&metadata, lock_dir)?;
+            #[cfg(unix)]
+            if metadata.permissions().mode() & 0o077 != 0 {
+                let mut permissions = metadata.permissions();
+                permissions.set_mode(0o700);
+                std::fs::set_permissions(lock_dir, permissions)?;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            builder.mode(0o700);
+            match builder.create(lock_dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+            let metadata = std::fs::symlink_metadata(lock_dir)?;
+            validate_lock_dir(&metadata, lock_dir)?;
+            #[cfg(unix)]
+            if metadata.permissions().mode() & 0o077 != 0 {
+                let mut permissions = metadata.permissions();
+                permissions.set_mode(0o700);
+                std::fs::set_permissions(lock_dir, permissions)?;
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_lock_dir(metadata: &std::fs::Metadata, lock_dir: &Path) -> std::io::Result<()> {
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(std::io::Error::other(format!(
+            "auth lock path is not a directory: {}",
+            lock_dir.display()
+        )));
+    }
+    // A shared lock directory must be owned by this process and private from
+    // other users. Existing directories are tightened to 0700 below.
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other(format!(
+            "auth lock directory has unexpected owner: {}",
+            lock_dir.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_lock_dir(metadata: &std::fs::Metadata, lock_dir: &Path) -> std::io::Result<()> {
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(std::io::Error::other(format!(
+            "auth lock path is not a directory: {}",
+            lock_dir.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_lock_file(file: &File, lock_path: &Path) -> std::io::Result<()> {
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::other(format!(
+            "auth lock path is not a private regular file: {}",
+            lock_path.display()
+        )));
+    }
+    if metadata.permissions().mode() & 0o077 != 0 {
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o600);
+        file.set_permissions(permissions)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_lock_file(file: &File, lock_path: &Path) -> std::io::Result<()> {
+    if !file.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::other(format!(
+            "auth lock path is not a regular file: {}",
+            lock_path.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Return a stable identity for an existing home, a symlink alias, or an absent
+/// configured home. For the latter, canonicalize the nearest existing ancestor
+/// and append the missing path suffix instead of failing before a first login.
+fn canonical_storage_identity(codex_home: &Path) -> std::io::Result<PathBuf> {
+    let absolute = std::path::absolute(codex_home)?;
+    let mut existing = absolute.as_path();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            return Ok(absolute);
+        };
+        missing.push(name.to_os_string());
+        let Some(parent) = existing.parent() else {
+            return Ok(absolute);
+        };
+        existing = parent;
+    }
+    let mut identity = std::fs::canonicalize(existing)?;
+    for component in missing.iter().rev() {
+        identity.push(component);
+    }
+    Ok(identity)
 }
 
 #[derive(Clone, Debug)]
@@ -189,7 +554,11 @@ impl FileAuthStorage {
 }
 
 impl AuthStorageBackend for FileAuthStorage {
-    fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
+    fn codex_home(&self) -> &Path {
+        &self.codex_home
+    }
+
+    fn load_unlocked(&self) -> std::io::Result<Option<AuthDotJson>> {
         let auth_file = get_auth_file(&self.codex_home);
         let auth_dot_json = match self.try_read_auth_json(&auth_file) {
             Ok(auth) => auth,
@@ -199,7 +568,7 @@ impl AuthStorageBackend for FileAuthStorage {
         Ok(Some(auth_dot_json))
     }
 
-    fn save(&self, auth_dot_json: &AuthDotJson) -> std::io::Result<()> {
+    fn save_unlocked(&self, auth_dot_json: &AuthDotJson) -> std::io::Result<()> {
         let auth_file = get_auth_file(&self.codex_home);
 
         if let Some(parent) = auth_file.parent() {
@@ -218,7 +587,7 @@ impl AuthStorageBackend for FileAuthStorage {
         Ok(())
     }
 
-    fn delete(&self) -> std::io::Result<bool> {
+    fn delete_unlocked(&self) -> std::io::Result<bool> {
         delete_file_if_exists(&self.codex_home)
     }
 }
@@ -232,9 +601,7 @@ const KEYRING_SERVICE: &str = "Codex Auth";
 
 // turns codex_home path into a stable, short key string
 fn compute_store_key(codex_home: &Path) -> std::io::Result<String> {
-    let canonical = codex_home
-        .canonicalize()
-        .unwrap_or_else(|_| codex_home.to_path_buf());
+    let canonical = canonical_storage_identity(codex_home)?;
     let path_str = canonical.to_string_lossy();
     let mut hasher = Sha256::new();
     hasher.update(path_str.as_bytes());
@@ -300,12 +667,16 @@ impl DirectKeyringAuthStorage {
 }
 
 impl AuthStorageBackend for DirectKeyringAuthStorage {
-    fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
+    fn codex_home(&self) -> &Path {
+        &self.codex_home
+    }
+
+    fn load_unlocked(&self) -> std::io::Result<Option<AuthDotJson>> {
         let key = compute_store_key(&self.codex_home)?;
         self.load_from_keyring(&key)
     }
 
-    fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+    fn save_unlocked(&self, auth: &AuthDotJson) -> std::io::Result<()> {
         let key = compute_store_key(&self.codex_home)?;
         // Simpler error mapping per style: prefer method reference over closure
         let serialized = serde_json::to_string(auth).map_err(std::io::Error::other)?;
@@ -316,16 +687,25 @@ impl AuthStorageBackend for DirectKeyringAuthStorage {
         Ok(())
     }
 
-    fn delete(&self) -> std::io::Result<bool> {
+    fn delete_unlocked(&self) -> std::io::Result<bool> {
+        let keyring_removed = self.delete_keyring_unlocked()?;
+        let file_removed = delete_file_if_exists(&self.codex_home)?;
+        Ok(keyring_removed || file_removed)
+    }
+
+    fn delete_unlocked_preserving_file(&self) -> std::io::Result<bool> {
+        self.delete_keyring_unlocked()
+    }
+}
+
+impl DirectKeyringAuthStorage {
+    fn delete_keyring_unlocked(&self) -> std::io::Result<bool> {
         let key = compute_store_key(&self.codex_home)?;
-        let keyring_removed = self
-            .keyring_store
+        self.keyring_store
             .delete(KEYRING_SERVICE, &key)
             .map_err(|err| {
                 std::io::Error::other(format!("failed to delete auth from keyring: {err}"))
-            })?;
-        let file_removed = delete_file_if_exists(&self.codex_home)?;
-        Ok(keyring_removed || file_removed)
+            })
     }
 }
 
@@ -363,7 +743,11 @@ impl SecretsKeyringAuthStorage {
 }
 
 impl AuthStorageBackend for SecretsKeyringAuthStorage {
-    fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
+    fn codex_home(&self) -> &Path {
+        &self.codex_home
+    }
+
+    fn load_unlocked(&self) -> std::io::Result<Option<AuthDotJson>> {
         match self
             .secrets_manager
             .get(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME)
@@ -381,7 +765,7 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
         }
     }
 
-    fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+    fn save_unlocked(&self, auth: &AuthDotJson) -> std::io::Result<()> {
         let serialized = serde_json::to_string(auth).map_err(std::io::Error::other)?;
         self.secrets_manager
             .set(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME, &serialized)
@@ -397,7 +781,19 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
         Ok(())
     }
 
-    fn delete(&self) -> std::io::Result<bool> {
+    fn delete_unlocked(&self) -> std::io::Result<bool> {
+        let keyring_removed = self.delete_keyring_unlocked()?;
+        let file_removed = delete_file_if_exists(&self.codex_home)?;
+        Ok(keyring_removed || file_removed)
+    }
+
+    fn delete_unlocked_preserving_file(&self) -> std::io::Result<bool> {
+        self.delete_keyring_unlocked()
+    }
+}
+
+impl SecretsKeyringAuthStorage {
+    fn delete_keyring_unlocked(&self) -> std::io::Result<bool> {
         let keyring_removed = self
             .secrets_manager
             .delete(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME)
@@ -406,9 +802,8 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
                     "failed to delete auth from encrypted auth storage: {err}"
                 ))
             })?;
-        let file_removed = delete_file_if_exists(&self.codex_home)?;
-        let direct_removed = self.direct_storage.delete()?;
-        Ok(keyring_removed || file_removed || direct_removed)
+        let direct_removed = self.direct_storage.delete_keyring_unlocked()?;
+        Ok(keyring_removed || direct_removed)
     }
 }
 
@@ -436,30 +831,70 @@ impl AutoAuthStorage {
 }
 
 impl AuthStorageBackend for AutoAuthStorage {
-    fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
-        match self.keyring_storage.load() {
+    fn codex_home(&self) -> &Path {
+        self.file_storage.codex_home()
+    }
+
+    fn load_unlocked(&self) -> std::io::Result<Option<AuthDotJson>> {
+        match self.keyring_storage.load_unlocked() {
             Ok(Some(auth)) => Ok(Some(auth)),
-            Ok(None) => self.file_storage.load(),
+            Ok(None) => self.file_storage.load_unlocked(),
             Err(err) => {
                 warn!("failed to load CLI auth from keyring, falling back to file storage: {err}");
-                self.file_storage.load()
+                self.file_storage.load_unlocked()
             }
         }
     }
 
-    fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
-        match self.keyring_storage.save(auth) {
+    fn save_unlocked(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+        match self.keyring_storage.save_unlocked(auth) {
             Ok(()) => Ok(()),
             Err(err) => {
                 warn!("failed to save auth to keyring, falling back to file storage: {err}");
-                self.file_storage.save(auth)
+                self.file_storage.save_unlocked(auth)
             }
         }
     }
 
-    fn delete(&self) -> std::io::Result<bool> {
-        // Keyring storage will delete from disk as well
-        self.keyring_storage.delete()
+    fn delete_unlocked(&self) -> std::io::Result<bool> {
+        match self.keyring_storage.delete_unlocked() {
+            Ok(keyring_removed) => {
+                // Keyring backends normally remove the fallback file themselves, but
+                // keep Auto semantics aligned with load: a file fallback is never
+                // retained merely because keyring deletion returned no value.
+                let file_removed = self.file_storage.delete_unlocked()?;
+                Ok(keyring_removed || file_removed)
+            }
+            Err(err) => {
+                warn!(
+                    "failed to delete CLI auth from keyring, falling back to file storage: {err}"
+                );
+                self.file_storage.delete_unlocked()
+            }
+        }
+    }
+
+    fn delete_unlocked_if(
+        &self,
+        should_delete: &dyn Fn(&AuthDotJson) -> bool,
+    ) -> std::io::Result<bool> {
+        match self.keyring_storage.load_unlocked() {
+            Ok(Some(keyring_auth)) => {
+                if !should_delete(&keyring_auth) {
+                    return Ok(false);
+                }
+                let keyring_removed = self.keyring_storage.delete_unlocked_preserving_file()?;
+                let file_removed = self
+                    .file_storage
+                    .delete_unlocked_if(&|current| current == &keyring_auth)?;
+                Ok(keyring_removed || file_removed)
+            }
+            Ok(None) => self.file_storage.delete_unlocked_if(should_delete),
+            Err(err) => {
+                warn!("failed to load CLI auth from keyring, falling back to file storage: {err}");
+                self.file_storage.delete_unlocked_if(should_delete)
+            }
+        }
     }
 }
 
@@ -490,18 +925,22 @@ impl EphemeralAuthStorage {
 }
 
 impl AuthStorageBackend for EphemeralAuthStorage {
-    fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
+    fn codex_home(&self) -> &Path {
+        &self.codex_home
+    }
+
+    fn load_unlocked(&self) -> std::io::Result<Option<AuthDotJson>> {
         self.with_store(|store, key| Ok(store.get(&key).cloned()))
     }
 
-    fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
+    fn save_unlocked(&self, auth: &AuthDotJson) -> std::io::Result<()> {
         self.with_store(|store, key| {
             store.insert(key, auth.clone());
             Ok(())
         })
     }
 
-    fn delete(&self) -> std::io::Result<bool> {
+    fn delete_unlocked(&self) -> std::io::Result<bool> {
         self.with_store(|store, key| Ok(store.remove(&key).is_some()))
     }
 }
