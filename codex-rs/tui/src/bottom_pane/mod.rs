@@ -249,6 +249,8 @@ pub(crate) struct BottomPane {
     /// Inline status indicator shown above the composer while a task is running.
     status: Option<StatusIndicatorWidget>,
     inline_banner: Option<actionable_banner::InlineBanner>,
+    /// Streaming may drop the row without losing its elapsed time or modal pause.
+    status_timer: crate::status_indicator_widget::StatusTimer,
     /// Unified exec session summary source.
     ///
     /// When a status row exists, this summary is mirrored inline in that row;
@@ -320,6 +322,7 @@ impl BottomPane {
             is_task_running: false,
             status: None,
             inline_banner: None,
+            status_timer: crate::status_indicator_widget::StatusTimer::default(),
             unified_exec_footer: UnifiedExecFooter::new(),
             pending_input_preview: PendingInputPreview::new(),
             pending_thread_approvals: PendingThreadApprovals::new(),
@@ -544,6 +547,15 @@ impl BottomPane {
 
     pub fn status_widget(&self) -> Option<&StatusIndicatorWidget> {
         self.status.as_ref()
+    }
+
+    pub(crate) fn status_elapsed(&self) -> Option<Duration> {
+        self.is_task_running
+            .then(|| self.status_timer.elapsed_at(Instant::now()))
+    }
+
+    pub(crate) fn reset_status_timer(&mut self, elapsed: Duration) {
+        self.status_timer.reset(elapsed);
     }
 
     pub fn skills(&self) -> Option<&Vec<SkillMetadata>> {
@@ -1054,7 +1066,7 @@ impl BottomPane {
 
     #[cfg(test)]
     pub(crate) fn status_indicator_visible(&self) -> bool {
-        self.status.is_some()
+        self.status_widget().is_some()
     }
 
     #[cfg(test)]
@@ -1085,6 +1097,7 @@ impl BottomPane {
 
         if running {
             if !was_running {
+                self.status_timer.reset(Duration::ZERO);
                 if self.status.is_none() {
                     self.status = Some(StatusIndicatorWidget::new(
                         self.app_event_tx.clone(),
@@ -1121,11 +1134,13 @@ impl BottomPane {
 
     pub(crate) fn ensure_status_indicator(&mut self) {
         if self.status.is_none() {
-            self.status = Some(StatusIndicatorWidget::new(
-                self.app_event_tx.clone(),
-                self.frame_requester.clone(),
-                self.animations_enabled,
-            ));
+            self.status.get_or_insert_with(|| {
+                StatusIndicatorWidget::new(
+                    self.app_event_tx.clone(),
+                    self.frame_requester.clone(),
+                    self.animations_enabled,
+                )
+            });
             if let Some(status) = self.status.as_mut() {
                 status.set_interrupt_binding(
                     self.keymap
@@ -1453,7 +1468,7 @@ impl BottomPane {
             && !(is_agent_command && key_event.code == KeyCode::Esc)
             && self.no_modal_or_popup_active()
             && !self.composer_should_handle_vim_insert_escape(key_event)
-            && self.status.is_some()
+            && self.status_widget().is_some()
     }
 
     pub(crate) fn terminal_title_requires_action(&self) -> bool {
@@ -1714,15 +1729,12 @@ impl BottomPane {
     }
 
     fn pause_status_timer_for_modal(&mut self) {
-        if let Some(status) = self.status.as_mut() {
-            status.pause_timer();
-        }
+        self.status_timer.pause_at(Instant::now());
     }
 
     fn resume_status_timer_after_modal(&mut self) {
-        if let Some(status) = self.status.as_mut() {
-            status.resume_timer();
-        }
+        self.status_timer.resume_at(Instant::now());
+        self.request_redraw();
     }
 
     /// Height (terminal rows) required by the current bottom pane.
@@ -1854,12 +1866,15 @@ impl BottomPane {
             {
                 flex.push(/*flex*/ 0, RenderableItem::Borrowed(banner));
             }
-            if let Some(status) = &self.status {
-                flex.push(/*flex*/ 0, RenderableItem::Borrowed(status));
+            if let Some(status) = self.status_widget() {
+                flex.push(
+                    /*flex*/ 0,
+                    RenderableItem::Owned(Box::new(status.with_timer(&self.status_timer))),
+                );
             }
             // Avoid double-surfacing the same summary and avoid adding an extra
             // row while the status line is already visible.
-            if self.status.is_none() && !self.unified_exec_footer.is_empty() {
+            if self.status_widget().is_none() && !self.unified_exec_footer.is_empty() {
                 flex.push(
                     /*flex*/ 0,
                     RenderableItem::Borrowed(&self.unified_exec_footer),
@@ -1870,7 +1885,7 @@ impl BottomPane {
                 || !self.pending_input_preview.pending_steers.is_empty()
                 || !self.pending_input_preview.rejected_steers.is_empty();
             let has_status_or_footer =
-                self.status.is_some() || !self.unified_exec_footer.is_empty();
+                self.status_widget().is_some() || !self.unified_exec_footer.is_empty();
             let has_inline_previews = has_pending_thread_approvals || has_pending_input;
             if has_inline_previews && has_status_or_footer {
                 flex.push(/*flex*/ 0, RenderableItem::Owned("".into()));
@@ -2663,6 +2678,53 @@ mod tests {
 
         let bufs = snapshot_buffer(&buf);
         assert!(bufs.contains("• Working"), "expected Working header");
+
+        pane.reset_status_timer(Duration::from_secs(/*secs*/ 42));
+        pane.hide_status_indicator();
+        pane.pause_status_timer_for_modal();
+        let paused = pane.status_timer.elapsed_at(Instant::now());
+        pane.ensure_status_indicator();
+        assert_snapshot!(
+            "status_timer_survives_hidden_row",
+            render_snapshot(&pane, area)
+        );
+        assert_eq!(
+            pane.status_timer
+                .elapsed_at(Instant::now() + Duration::from_secs(/*secs*/ 10)),
+            paused
+        );
+        pane.resume_status_timer_after_modal();
+        assert!(
+            pane.status_timer
+                .elapsed_at(Instant::now() + Duration::from_secs(/*secs*/ 10))
+                >= paused + Duration::from_secs(/*secs*/ 10)
+        );
+        pane.set_task_running(/*running*/ false);
+        pane.set_task_running(/*running*/ true);
+        assert!(pane.status_timer.elapsed_at(Instant::now()) < paused);
+    }
+
+    #[test]
+    fn turn_start_keeps_an_outstanding_approval_paused() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let mut pane = test_pane(AppEventSender::new(tx));
+        // MCP startup can already own the running row when an agent turn starts.
+        pane.set_task_running(/*running*/ true);
+        pane.push_approval_request(exec_request(), &Features::default());
+        pane.hide_status_indicator();
+        pane.set_task_running(/*running*/ true);
+        pane.reset_status_timer(Duration::ZERO);
+        pane.ensure_status_indicator();
+        let later = Instant::now() + Duration::from_secs(/*secs*/ 120);
+        assert_eq!(pane.status_timer.elapsed_at(later), Duration::ZERO);
+
+        pane.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(pane.no_modal_or_popup_active());
+        assert!(
+            pane.status_timer
+                .elapsed_at(Instant::now() + Duration::from_secs(/*secs*/ 10))
+                >= Duration::from_secs(/*secs*/ 10)
+        );
     }
 
     #[test]

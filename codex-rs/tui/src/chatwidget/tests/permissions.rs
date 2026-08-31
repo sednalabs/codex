@@ -599,6 +599,28 @@ async fn fragmented_terminal_response_cannot_acknowledge_world_writable_warning(
 }
 
 #[tokio::test]
+async fn windows_sandbox_setup_starts_a_fresh_status_clock() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.bottom_pane
+        .reset_status_timer(Duration::from_secs(/*secs*/ 125));
+
+    chat.show_windows_sandbox_setup_status();
+    let setup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(setup.contains("Setting up sandbox"));
+    assert!(setup.contains("(0s"));
+    assert_chatwidget_snapshot!(
+        "windows_sandbox_setup_fresh_clock",
+        setup.replace(&chat.config.cwd.display().to_string(), "[CWD]")
+    );
+
+    chat.clear_windows_sandbox_setup_status();
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    let working = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(working.contains("Working"));
+    assert!(!working.contains("Setting up sandbox"));
+}
+
+#[tokio::test]
 async fn required_windows_sandbox_setup_defers_configured_initial_prompt() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let initial_prompt = "fix required sandbox startup".to_string();

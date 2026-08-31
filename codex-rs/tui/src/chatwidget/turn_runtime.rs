@@ -82,6 +82,7 @@ impl ChatWidget {
         self.quit_shortcut_expires_at = None;
         self.quit_shortcut_key = None;
         self.update_task_running_state();
+        self.bottom_pane.reset_status_timer(Duration::ZERO);
         self.status_state.retry_status_header = None;
         self.clear_active_hook_cell();
         self.status_state.pending_status_indicator_restore = false;
@@ -156,8 +157,8 @@ impl ChatWidget {
                         .map(|duration_ms| duration_ms / 1_000)
                         .or_else(|| {
                             self.bottom_pane
-                                .status_widget()
-                                .map(crate::status_indicator_widget::StatusIndicatorWidget::elapsed_seconds)
+                                .status_elapsed()
+                                .map(|elapsed| elapsed.as_secs())
                         })
                 } else {
                     None
