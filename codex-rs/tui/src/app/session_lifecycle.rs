@@ -98,7 +98,7 @@ mod loaded_thread_page_tests {
     use super::*;
 
     fn page(data_len: usize, next_cursor: Option<&str>) -> ThreadLoadedListResponse {
-        page_from(0, data_len, next_cursor)
+        page_from(/*start_index*/ 0, data_len, next_cursor)
     }
 
     fn page_from(
