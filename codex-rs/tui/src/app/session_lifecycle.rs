@@ -44,7 +44,8 @@ impl std::fmt::Display for LoadedThreadPageRejection {
 }
 
 fn accept_loaded_thread_page(
-    loaded_thread_ids: &mut Vec<String>,
+    loaded_thread_ids: &mut Vec<ThreadId>,
+    seen_thread_ids: &mut HashSet<ThreadId>,
     seen_cursors: &mut HashSet<String>,
     response: ThreadLoadedListResponse,
 ) -> std::result::Result<Option<String>, LoadedThreadPageRejection> {
@@ -54,31 +55,32 @@ fn accept_loaded_thread_page(
     if response.data.is_empty() && response.next_cursor.is_some() {
         return Err(LoadedThreadPageRejection::MalformedCursor);
     }
-    if response
+    let page_thread_ids: Vec<_> = response
         .data
         .iter()
-        .any(|thread_id| ThreadId::from_string(thread_id).is_err())
-    {
-        return Err(LoadedThreadPageRejection::InvalidThreadId);
-    }
-    let page_ids: HashSet<_> = response.data.iter().collect();
-    if page_ids.len() != response.data.len()
-        || response
-            .data
+        .map(|thread_id| {
+            ThreadId::from_string(thread_id)
+                .map_err(|_| LoadedThreadPageRejection::InvalidThreadId)
+        })
+        .collect::<std::result::Result<_, _>>()?;
+    let page_ids: HashSet<_> = page_thread_ids.iter().copied().collect();
+    if page_ids.len() != page_thread_ids.len()
+        || page_thread_ids
             .iter()
-            .any(|thread_id| loaded_thread_ids.contains(thread_id))
+            .any(|thread_id| seen_thread_ids.contains(thread_id))
     {
         return Err(LoadedThreadPageRejection::DuplicateThreadId);
     }
     if loaded_thread_ids
         .len()
-        .checked_add(response.data.len())
+        .checked_add(page_thread_ids.len())
         .map_or(true, |count| count > AGENT_PICKER_LOADED_MAX_THREADS)
     {
         return Err(LoadedThreadPageRejection::ThreadBudgetExceeded);
     }
     let Some(next_cursor) = response.next_cursor else {
-        loaded_thread_ids.extend(response.data);
+        loaded_thread_ids.extend(page_thread_ids.iter().copied());
+        seen_thread_ids.extend(page_thread_ids);
         return Ok(None);
     };
     if next_cursor.trim().is_empty() {
@@ -87,7 +89,8 @@ fn accept_loaded_thread_page(
     if !seen_cursors.insert(next_cursor.clone()) {
         return Err(LoadedThreadPageRejection::RepeatedCursor);
     }
-    loaded_thread_ids.extend(response.data);
+    loaded_thread_ids.extend(page_thread_ids.iter().copied());
+    seen_thread_ids.extend(page_thread_ids);
     Ok(Some(next_cursor))
 }
 
@@ -107,9 +110,11 @@ mod loaded_thread_page_tests {
     #[test]
     fn rejects_oversized_pages_before_registering_ids() {
         let mut ids = Vec::new();
+        let mut seen_ids = HashSet::new();
         let mut cursors = HashSet::new();
         let result = accept_loaded_thread_page(
             &mut ids,
+            &mut seen_ids,
             &mut cursors,
             page(
                 /*data_len*/ AGENT_PICKER_LOADED_PAGE_SIZE as usize + 1,
@@ -122,10 +127,14 @@ mod loaded_thread_page_tests {
 
     #[test]
     fn rejects_pages_that_exceed_the_total_thread_budget() {
-        let mut ids = vec!["existing".to_string(); AGENT_PICKER_LOADED_MAX_THREADS];
+        let existing_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid thread");
+        let mut ids = vec![existing_id; AGENT_PICKER_LOADED_MAX_THREADS];
+        let mut seen_ids = HashSet::from([existing_id]);
         let mut cursors = HashSet::new();
         let result = accept_loaded_thread_page(
             &mut ids,
+            &mut seen_ids,
             &mut cursors,
             page(/*data_len*/ 1, /*next_cursor*/ None),
         );
@@ -136,9 +145,11 @@ mod loaded_thread_page_tests {
     #[test]
     fn rejects_repeated_cursors_without_following_the_cycle() {
         let mut ids = Vec::new();
+        let mut seen_ids = HashSet::new();
         let mut cursors = HashSet::from(["cursor-1".to_string()]);
         let result = accept_loaded_thread_page(
             &mut ids,
+            &mut seen_ids,
             &mut cursors,
             page(/*data_len*/ 1, Some("cursor-1")),
         );
@@ -149,11 +160,13 @@ mod loaded_thread_page_tests {
     #[test]
     fn finite_page_budget_rejects_an_unexhausted_scan() {
         let mut ids = Vec::new();
+        let mut seen_ids = HashSet::new();
         let mut cursors = HashSet::new();
         let mut cursor = None;
         for index in 0..AGENT_PICKER_LOADED_MAX_PAGES {
             cursor = accept_loaded_thread_page(
                 &mut ids,
+                &mut seen_ids,
                 &mut cursors,
                 page(/*data_len*/ 1, Some(&format!("cursor-{index}"))),
             )
@@ -166,10 +179,12 @@ mod loaded_thread_page_tests {
     #[test]
     fn rejects_malformed_ids_and_cursors_before_backfill() {
         let mut ids = Vec::new();
+        let mut seen_ids = HashSet::new();
         let mut cursors = HashSet::new();
         assert_eq!(
             accept_loaded_thread_page(
                 &mut ids,
+                &mut seen_ids,
                 &mut cursors,
                 ThreadLoadedListResponse {
                     data: vec!["not-a-thread-id".to_string()],
@@ -181,10 +196,47 @@ mod loaded_thread_page_tests {
         assert!(ids.is_empty());
 
         assert_eq!(
-            accept_loaded_thread_page(&mut ids, &mut cursors, page(/*data_len*/ 1, Some("  ")),),
+            accept_loaded_thread_page(
+                &mut ids,
+                &mut seen_ids,
+                &mut cursors,
+                page(/*data_len*/ 1, Some("  ")),
+            ),
             Err(LoadedThreadPageRejection::MalformedCursor)
         );
         assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn rejects_semantic_duplicate_ids_across_pages() {
+        let mut ids = Vec::new();
+        let mut seen_ids = HashSet::new();
+        let mut cursors = HashSet::new();
+        let canonical = "00000000-0000-0000-0000-000000000001";
+        let first = accept_loaded_thread_page(
+            &mut ids,
+            &mut seen_ids,
+            &mut cursors,
+            ThreadLoadedListResponse {
+                data: vec![canonical.to_string()],
+                next_cursor: Some("cursor-1".to_string()),
+            },
+        )
+        .expect("first page should be accepted");
+        assert_eq!(first.as_deref(), Some("cursor-1"));
+
+        let result = accept_loaded_thread_page(
+            &mut ids,
+            &mut seen_ids,
+            &mut cursors,
+            ThreadLoadedListResponse {
+                data: vec![canonical.replace('-', "").to_uppercase()],
+                next_cursor: None,
+            },
+        );
+        assert_eq!(result, Err(LoadedThreadPageRejection::DuplicateThreadId));
+        assert_eq!(ids, vec![ThreadId::from_string(canonical).expect("valid thread")]);
+        assert_eq!(seen_ids.len(), 1);
     }
 }
 
@@ -1028,6 +1080,7 @@ impl App {
         let mut cursor = None;
         let mut seen_cursors = HashSet::new();
         let mut loaded_thread_ids = Vec::new();
+        let mut seen_thread_ids = HashSet::new();
         for _ in 0..AGENT_PICKER_LOADED_MAX_PAGES {
             let response = match app_server
                 .thread_loaded_list(ThreadLoadedListParams {
@@ -1044,6 +1097,7 @@ impl App {
             };
             let next_cursor = match accept_loaded_thread_page(
                 &mut loaded_thread_ids,
+                &mut seen_thread_ids,
                 &mut seen_cursors,
                 response,
             ) {
@@ -1067,11 +1121,6 @@ impl App {
         let mut threads = Vec::new();
         let mut had_read_error = false;
         for thread_id in loaded_thread_ids {
-            let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
-                tracing::warn!("ignoring loaded thread with invalid id during subagent backfill");
-                continue;
-            };
-
             if thread_id == primary_thread_id {
                 continue;
             }
