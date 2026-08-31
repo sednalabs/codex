@@ -610,9 +610,9 @@ impl App {
         thread_id: ThreadId,
         event: FeedbackThreadEvent,
     ) {
-        let (sender, store) = {
+        let store = {
             let channel = self.ensure_thread_channel(thread_id);
-            (channel.sender.clone(), Arc::clone(&channel.store))
+            Arc::clone(&channel.store)
         };
 
         let should_send = {
@@ -632,18 +632,9 @@ impl App {
         };
 
         if should_send {
-            match sender.try_send(ThreadBufferedEvent::FeedbackSubmission(event)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(event)) => {
-                    tokio::spawn(async move {
-                        if let Err(err) = sender.send(event).await {
-                            tracing::warn!("thread {thread_id} event channel closed: {err}");
-                        }
-                    });
-                }
-                Err(TrySendError::Closed(_)) => {
-                    tracing::warn!("thread {thread_id} event channel closed");
-                }
+            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                channel
+                    .try_send_or_queue(ThreadBufferedEvent::FeedbackSubmission(event), thread_id);
             }
         }
     }

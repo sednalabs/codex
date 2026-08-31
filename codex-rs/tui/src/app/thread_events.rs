@@ -6,6 +6,7 @@
 //! together with the replay behavior that consumes them.
 
 use super::*;
+use crate::app_event::HistoryBatchEntryResponse;
 use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,195 @@ pub(super) enum ThreadBufferedEvent {
     Request(ServerRequest),
     HistoryEntryResponse(HistoryLookupResponse),
     FeedbackSubmission(FeedbackThreadEvent),
+}
+
+const PENDING_DELIVERY_MAX_EVENTS: usize = 256;
+const PENDING_DELIVERY_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LiveDeliveryKind {
+    RawResponseItemCompleted,
+    FileChangePatchUpdated,
+    ServerRequestResolved,
+    McpToolCallProgress,
+    ThreadRealtimeItemAdded,
+    ThreadRealtimeOutputAudioDelta,
+    ThreadRealtimeSdp,
+    ThreadRealtimeTranscriptDelta,
+    ThreadRealtimeTranscriptDone,
+    CommandExecOutputDelta,
+    ProcessOutputDelta,
+    ProcessExited,
+}
+
+#[derive(Debug, Default)]
+struct PendingDeliveryQueue {
+    events: VecDeque<ThreadBufferedEvent>,
+    bytes: usize,
+}
+
+impl PendingDeliveryQueue {
+    fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn push_if_bounded(&mut self, event: ThreadBufferedEvent) {
+        let event_bytes = event.estimated_bytes();
+        if event_bytes > PENDING_DELIVERY_MAX_BYTES
+            || self.events.len() >= PENDING_DELIVERY_MAX_EVENTS
+            || self.bytes.saturating_add(event_bytes) > PENDING_DELIVERY_MAX_BYTES
+        {
+            if let Some(kind) = event.live_delivery_kind() {
+                if let Some(existing_index) = self
+                    .events
+                    .iter()
+                    .position(|existing| existing.live_delivery_kind() == Some(kind))
+                {
+                    let existing_bytes = self.events[existing_index].estimated_bytes();
+                    let replacement_bytes = self
+                        .bytes
+                        .saturating_sub(existing_bytes)
+                        .saturating_add(event_bytes);
+                    if replacement_bytes <= PENDING_DELIVERY_MAX_BYTES {
+                        self.events[existing_index] = event;
+                        self.bytes = replacement_bytes;
+                    } else {
+                        tracing::warn!(
+                            ?kind,
+                            event_bytes,
+                            max_bytes = PENDING_DELIVERY_MAX_BYTES,
+                            "dropping oversized live-only notification delivery copy"
+                        );
+                    }
+                    return;
+                }
+
+                // Live-only notifications have no store-backed recovery path. Reserve room for
+                // the newest notification by evicting oldest delivery copies; ordinary copies
+                // remain recoverable from the store at the next snapshot boundary.
+                while !self.events.is_empty()
+                    && (self.events.len() >= PENDING_DELIVERY_MAX_EVENTS
+                        || self.bytes.saturating_add(event_bytes) > PENDING_DELIVERY_MAX_BYTES)
+                {
+                    let _ = self.pop_front();
+                }
+                if event_bytes <= PENDING_DELIVERY_MAX_BYTES {
+                    self.bytes = self.bytes.saturating_add(event_bytes);
+                    self.events.push_back(event);
+                } else {
+                    tracing::warn!(
+                        ?kind,
+                        event_bytes,
+                        max_bytes = PENDING_DELIVERY_MAX_BYTES,
+                        "dropping oversized live-only notification delivery copy"
+                    );
+                }
+                return;
+            }
+            // The event is already retained by ThreadEventStore. Drop only this live-delivery
+            // copy when the explicit safety budget is exhausted. Replay can recover ordinary
+            // events from the store; live-only notifications are coalesced above by kind and are
+            // otherwise dropped with bounded fail-closed behavior because they have no replay
+            // representation.
+            return;
+        }
+        self.bytes = self.bytes.saturating_add(event_bytes);
+        self.events.push_back(event);
+    }
+
+    fn pop_front(&mut self) -> Option<ThreadBufferedEvent> {
+        let event = self.events.pop_front()?;
+        self.bytes = self.bytes.saturating_sub(event.estimated_bytes());
+        Some(event)
+    }
+
+    fn push_front(&mut self, event: ThreadBufferedEvent) {
+        self.bytes = self.bytes.saturating_add(event.estimated_bytes());
+        self.events.push_front(event);
+    }
+
+    fn clear(&mut self) {
+        self.events.clear();
+        self.bytes = 0;
+    }
+}
+
+impl ThreadBufferedEvent {
+    fn live_delivery_kind(&self) -> Option<LiveDeliveryKind> {
+        let Self::Notification(notification) = self else {
+            return None;
+        };
+        Some(match notification {
+            ServerNotification::RawResponseItemCompleted(_) => {
+                LiveDeliveryKind::RawResponseItemCompleted
+            }
+            ServerNotification::FileChangePatchUpdated(_) => {
+                LiveDeliveryKind::FileChangePatchUpdated
+            }
+            ServerNotification::ServerRequestResolved(_) => LiveDeliveryKind::ServerRequestResolved,
+            ServerNotification::McpToolCallProgress(_) => LiveDeliveryKind::McpToolCallProgress,
+            ServerNotification::ThreadRealtimeItemAdded(_) => {
+                LiveDeliveryKind::ThreadRealtimeItemAdded
+            }
+            ServerNotification::ThreadRealtimeOutputAudioDelta(_) => {
+                LiveDeliveryKind::ThreadRealtimeOutputAudioDelta
+            }
+            ServerNotification::ThreadRealtimeSdp(_) => LiveDeliveryKind::ThreadRealtimeSdp,
+            ServerNotification::ThreadRealtimeTranscriptDelta(_) => {
+                LiveDeliveryKind::ThreadRealtimeTranscriptDelta
+            }
+            ServerNotification::ThreadRealtimeTranscriptDone(_) => {
+                LiveDeliveryKind::ThreadRealtimeTranscriptDone
+            }
+            ServerNotification::CommandExecOutputDelta(_) => {
+                LiveDeliveryKind::CommandExecOutputDelta
+            }
+            ServerNotification::ProcessOutputDelta(_) => LiveDeliveryKind::ProcessOutputDelta,
+            ServerNotification::ProcessExited(_) => LiveDeliveryKind::ProcessExited,
+            _ => return None,
+        })
+    }
+
+    fn estimated_bytes(&self) -> usize {
+        match self {
+            Self::Notification(notification) => serde_json::to_vec(notification)
+                .map(|bytes| bytes.len())
+                .unwrap_or(PENDING_DELIVERY_MAX_BYTES.saturating_add(1)),
+            Self::Request(request) => serde_json::to_vec(request)
+                .map(|bytes| bytes.len())
+                .unwrap_or(PENDING_DELIVERY_MAX_BYTES.saturating_add(1)),
+            Self::HistoryEntryResponse(response) => match response {
+                HistoryLookupResponse::Entry { entry, .. } => {
+                    std::mem::size_of::<HistoryLookupResponse>()
+                        .saturating_add(entry.as_ref().map_or(0, String::len))
+                }
+                HistoryLookupResponse::Batch { entries, .. } => std::mem::size_of::<
+                    HistoryLookupResponse,
+                >()
+                .saturating_add(entries.iter().fold(0usize, |bytes, entry| {
+                    bytes.saturating_add(
+                        std::mem::size_of::<HistoryBatchEntryResponse>()
+                            .saturating_add(entry.entry.as_ref().map_or(0, String::len)),
+                    )
+                })),
+                HistoryLookupResponse::BatchError { .. } => {
+                    std::mem::size_of::<HistoryLookupResponse>()
+                }
+            },
+            Self::FeedbackSubmission(feedback) => std::mem::size_of::<FeedbackThreadEvent>()
+                .saturating_add(match &feedback.result {
+                    Ok(thread_id) | Err(thread_id) => thread_id.len(),
+                }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +231,7 @@ pub(super) enum ThreadEventAttachment {
 #[derive(Debug)]
 pub(super) struct ThreadEventStore {
     pub(super) session: Option<ThreadSessionState>,
+    hydrated_snapshot: bool,
     pub(super) turns: Vec<Turn>,
     pub(super) buffer: VecDeque<ThreadBufferedEvent>,
     pub(super) pending_interactive_replay: PendingInteractiveReplayState,
@@ -59,6 +250,7 @@ impl ThreadEventStore {
                 | ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::HookCompleted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::McpServerStatusUpdated(_))
+                | ThreadBufferedEvent::HistoryEntryResponse(_)
                 | ThreadBufferedEvent::FeedbackSubmission(_)
         )
     }
@@ -66,6 +258,7 @@ impl ThreadEventStore {
     pub(super) fn new(capacity: usize) -> Self {
         Self {
             session: None,
+            hydrated_snapshot: false,
             turns: Vec::new(),
             buffer: VecDeque::new(),
             pending_interactive_replay: PendingInteractiveReplayState::default(),
@@ -84,14 +277,22 @@ impl ThreadEventStore {
         turns: Vec<Turn>,
     ) -> Self {
         let mut store = Self::new(capacity);
-        store.session = Some(session);
-        store.set_turns(turns);
+        store.set_session(session, turns);
         store
+    }
+
+    pub(super) fn set_inferred_session(&mut self, session: ThreadSessionState) {
+        self.session = Some(session);
     }
 
     pub(super) fn set_session(&mut self, session: ThreadSessionState, turns: Vec<Turn>) {
         self.session = Some(session);
+        self.hydrated_snapshot = true;
         self.set_turns(turns);
+    }
+
+    pub(super) fn has_hydrated_snapshot(&self) -> bool {
+        self.hydrated_snapshot
     }
 
     pub(super) fn rebase_buffer_after_session_refresh(&mut self) {
@@ -321,6 +522,10 @@ pub(super) struct ThreadEventChannel {
     pub(super) sender: mpsc::Sender<ThreadBufferedEvent>,
     pub(super) receiver: Option<mpsc::Receiver<ThreadBufferedEvent>>,
     pub(super) store: Arc<Mutex<ThreadEventStore>>,
+    /// Delivery copies that could not enter the bounded receiver immediately. The store remains
+    /// the sole owner of replay state; this queue is only a live-delivery retry lane and is
+    /// discarded whenever a receiver is drained for a snapshot boundary.
+    pub(super) pending_delivery: Arc<std::sync::Mutex<PendingDeliveryQueue>>,
     attachment: ThreadEventAttachment,
 }
 
@@ -331,6 +536,7 @@ impl ThreadEventChannel {
             sender,
             receiver: Some(receiver),
             store: Arc::new(Mutex::new(ThreadEventStore::new(capacity))),
+            pending_delivery: Arc::new(std::sync::Mutex::new(PendingDeliveryQueue::default())),
             attachment: ThreadEventAttachment::Live,
         }
     }
@@ -341,6 +547,75 @@ impl ThreadEventChannel {
 
     pub(super) fn attachment(&self) -> ThreadEventAttachment {
         self.attachment
+    }
+
+    pub(super) fn rebase_receiver_after_session_refresh(&mut self) {
+        self.clear_pending_delivery();
+        let Some(receiver) = self.receiver.as_mut() else {
+            return;
+        };
+        Self::discard_event_receiver_after_session_refresh(receiver);
+    }
+
+    /// The event store is the sole owner of events that existed before a refreshed session
+    /// snapshot. Routing records every event in that store before attempting to notify an active
+    /// receiver, so receiver entries are delivery copies, not a second recovery source. Dropping
+    /// those copies avoids both duplicate replay and a drain-and-requeue `Full`/`Closed` loss
+    /// boundary; arrivals after this drain remain in the receiver for normal live delivery.
+    pub(super) fn discard_event_receiver_after_session_refresh(
+        receiver: &mut mpsc::Receiver<ThreadBufferedEvent>,
+    ) {
+        while receiver.try_recv().is_ok() {}
+    }
+
+    pub(super) fn clear_pending_delivery(&self) {
+        self.pending_delivery_guard().clear();
+    }
+
+    /// Delivers a live copy without spawning a sender that can cross a receiver/snapshot boundary.
+    /// If the bounded channel is full, retain the copy in the channel-local retry lane; the event
+    /// itself has already been recorded by `ThreadEventStore`, which is the exactly-once replay
+    /// owner.
+    pub(super) fn try_send_or_queue(&self, event: ThreadBufferedEvent, thread_id: ThreadId) {
+        let mut pending = self.pending_delivery_guard();
+        if !pending.is_empty() {
+            pending.push_if_bounded(event);
+            return;
+        }
+        match self.sender.try_send(event) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(event)) => pending.push_if_bounded(event),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::warn!("thread {thread_id} event channel closed");
+            }
+        }
+    }
+
+    /// Moves as many queued live-delivery copies as capacity permits into the receiver. This is
+    /// called only after the active receiver has been drained, so no asynchronous sender can race
+    /// a picker refresh or snapshot replay.
+    pub(super) fn flush_pending_delivery(&self) {
+        let mut pending = self.pending_delivery_guard();
+        while let Some(event) = pending.pop_front() {
+            match self.sender.try_send(event) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(event)) => {
+                    pending.push_front(event);
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    pending.clear();
+                    break;
+                }
+            }
+        }
+    }
+
+    fn pending_delivery_guard(&self) -> std::sync::MutexGuard<'_, PendingDeliveryQueue> {
+        match self.pending_delivery.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -356,6 +631,7 @@ impl ThreadEventChannel {
             store: Arc::new(Mutex::new(ThreadEventStore::new_with_session(
                 capacity, session, turns,
             ))),
+            pending_delivery: Arc::new(std::sync::Mutex::new(PendingDeliveryQueue::default())),
             attachment: ThreadEventAttachment::Live,
         }
     }
@@ -580,6 +856,20 @@ mod tests {
     }
 
     #[test]
+    fn inferred_session_is_not_a_hydrated_snapshot() {
+        let thread_id = ThreadId::new();
+        let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+
+        store.set_inferred_session(session.clone());
+        assert!(store.session.is_some());
+        assert!(!store.has_hydrated_snapshot());
+
+        store.set_session(session, Vec::new());
+        assert!(store.has_hydrated_snapshot());
+    }
+
+    #[test]
     fn thread_event_store_clear_active_turn_id_resets_cached_turn() {
         let mut store = ThreadEventStore::new(/*capacity*/ 8);
         let thread_id = ThreadId::new();
@@ -712,5 +1002,231 @@ mod tests {
             serde_json::to_value(actual).expect("MCP notification should serialize"),
             serde_json::to_value(notification).expect("MCP notification should serialize"),
         );
+    }
+
+    #[test]
+    fn session_refresh_uses_the_store_as_the_exactly_once_survivor_owner() {
+        let thread_id = ThreadId::new();
+        let request = exec_approval_request(
+            thread_id,
+            "turn-approval",
+            "call-approval",
+            /*approval_id*/ None,
+        );
+        let hook = hook_started_notification(thread_id, "turn-hook");
+        let mut channel = ThreadEventChannel::new(/*capacity*/ 2);
+        {
+            let mut store = channel.store.blocking_lock();
+            store.push_request(request.clone());
+            store.push_notification(hook.clone());
+            store.rebase_buffer_after_session_refresh();
+        }
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Request(request))
+            .expect("receiver has capacity for delivery copy");
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Notification(hook))
+            .expect("receiver has capacity for delivery copy");
+
+        channel.rebase_receiver_after_session_refresh();
+        let receiver = channel.receiver.as_mut().expect("receiver is retained");
+        assert!(
+            receiver.try_recv().is_err(),
+            "delivery copies were discarded"
+        );
+
+        let snapshot = channel.store.blocking_lock().snapshot();
+        assert_eq!(
+            snapshot.events.len(),
+            2,
+            "survivors replay from the store once"
+        );
+        assert!(matches!(
+            snapshot.events[0],
+            ThreadBufferedEvent::Request(_)
+        ));
+        assert!(matches!(
+            snapshot.events[1],
+            ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
+        ));
+    }
+
+    #[test]
+    fn blocked_live_delivery_is_discarded_at_snapshot_boundary() {
+        let thread_id = ThreadId::new();
+        let request = exec_approval_request(
+            thread_id,
+            "turn-blocked",
+            "call-blocked",
+            /*approval_id*/ None,
+        );
+        let mut channel = ThreadEventChannel::new(/*capacity*/ 1);
+        {
+            let mut store = channel.store.blocking_lock();
+            store.push_request(request.clone());
+        }
+
+        // Occupy the bounded receiver, then queue the delivery copy that used to be held by an
+        // async `sender.send`. A picker/session snapshot must discard that copy and replay the
+        // store-owned request exactly once.
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Notification(
+                hook_started_notification(thread_id, "turn-blocked"),
+            ))
+            .expect("receiver should accept the blocking event");
+        channel.try_send_or_queue(ThreadBufferedEvent::Request(request), thread_id);
+        assert_eq!(
+            channel
+                .pending_delivery
+                .lock()
+                .expect("pending delivery mutex")
+                .len(),
+            1
+        );
+
+        channel.rebase_receiver_after_session_refresh();
+        let snapshot = channel.store.blocking_lock().snapshot();
+        assert_eq!(snapshot.events.len(), 1);
+        assert!(matches!(
+            snapshot.events[0],
+            ThreadBufferedEvent::Request(_)
+        ));
+        assert!(
+            channel
+                .pending_delivery
+                .lock()
+                .expect("pending delivery mutex")
+                .is_empty()
+        );
+        assert!(
+            channel
+                .receiver
+                .as_mut()
+                .expect("receiver is retained")
+                .try_recv()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn active_history_batch_survives_pending_delivery_boundary() {
+        let thread_id = ThreadId::new();
+        let batch = HistoryLookupResponse::Batch {
+            cursor: codex_message_history::HistoryBatchCursor::new(/*end_offset*/ 4),
+            log_id: 7,
+            entries: vec![HistoryBatchEntryResponse {
+                offset: 3,
+                entry: Some("history batch survives detach".to_string()),
+            }],
+            next_older_cursor: None,
+        };
+        let mut channel = ThreadEventChannel::new(/*capacity*/ 1);
+        {
+            let mut store = channel.store.blocking_lock();
+            store
+                .buffer
+                .push_back(ThreadBufferedEvent::HistoryEntryResponse(batch.clone()));
+        }
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Notification(
+                hook_started_notification(thread_id, "turn-batch"),
+            ))
+            .expect("receiver should accept the blocking event");
+        channel.try_send_or_queue(ThreadBufferedEvent::HistoryEntryResponse(batch), thread_id);
+
+        channel.rebase_receiver_after_session_refresh();
+        channel
+            .store
+            .blocking_lock()
+            .rebase_buffer_after_session_refresh();
+        let snapshot = channel.store.blocking_lock().snapshot();
+        assert!(matches!(
+            snapshot.events.as_slice(),
+            [ThreadBufferedEvent::HistoryEntryResponse(
+                HistoryLookupResponse::Batch { .. }
+            )]
+        ));
+    }
+
+    #[test]
+    fn pending_delivery_is_bounded_under_sustained_full_receiver() {
+        let thread_id = ThreadId::new();
+        let mut channel = ThreadEventChannel::new(/*capacity*/ 1);
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Notification(
+                hook_started_notification(thread_id, "turn-full"),
+            ))
+            .expect("receiver should accept the blocking event");
+
+        for index in 0..(PENDING_DELIVERY_MAX_EVENTS * 4) {
+            channel.try_send_or_queue(
+                ThreadBufferedEvent::Notification(hook_started_notification(
+                    thread_id,
+                    &format!("turn-{index}"),
+                )),
+                thread_id,
+            );
+        }
+
+        let pending = channel
+            .pending_delivery
+            .lock()
+            .expect("pending delivery mutex");
+        assert!(pending.len() <= PENDING_DELIVERY_MAX_EVENTS);
+        assert!(pending.bytes() <= PENDING_DELIVERY_MAX_BYTES);
+    }
+
+    #[test]
+    fn full_receiver_coalesces_live_only_notifications_instead_of_losing_latest() {
+        let thread_id = ThreadId::new();
+        let mut channel = ThreadEventChannel::new(/*capacity*/ 1);
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Notification(
+                hook_started_notification(thread_id, "turn-full"),
+            ))
+            .expect("receiver should accept the blocking event");
+
+        let live_notification = |message: &str| {
+            ThreadBufferedEvent::Notification(ServerNotification::McpToolCallProgress(
+                McpToolCallProgressNotification {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-full".to_string(),
+                    item_id: "mcp-1".to_string(),
+                    message: message.to_string(),
+                },
+            ))
+        };
+        channel.try_send_or_queue(live_notification("first"), thread_id);
+        for offset in 0..(PENDING_DELIVERY_MAX_EVENTS.saturating_sub(1)) {
+            channel.try_send_or_queue(
+                ThreadBufferedEvent::HistoryEntryResponse(HistoryLookupResponse::Entry {
+                    offset,
+                    log_id: offset as u64,
+                    entry: Some("replayable".to_string()),
+                }),
+                thread_id,
+            );
+        }
+        channel.try_send_or_queue(live_notification("latest"), thread_id);
+
+        let pending = channel
+            .pending_delivery
+            .lock()
+            .expect("pending delivery mutex");
+        assert_eq!(pending.len(), PENDING_DELIVERY_MAX_EVENTS);
+        assert!(pending.events.iter().any(|event| {
+            matches!(
+                event,
+                ThreadBufferedEvent::Notification(
+                    ServerNotification::McpToolCallProgress(notification)
+                ) if notification.message == "latest"
+            )
+        }));
     }
 }

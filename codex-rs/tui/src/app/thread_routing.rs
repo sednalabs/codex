@@ -72,6 +72,22 @@ impl App {
         self.refresh_pending_thread_approvals().await;
     }
 
+    pub(super) fn rebase_thread_event_receiver_after_session_refresh(
+        &mut self,
+        thread_id: ThreadId,
+    ) {
+        if self.active_thread_id == Some(thread_id) {
+            if let Some(receiver) = self.active_thread_rx.as_mut() {
+                ThreadEventChannel::discard_event_receiver_after_session_refresh(receiver);
+            }
+            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                channel.clear_pending_delivery();
+            }
+        } else if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+            channel.rebase_receiver_after_session_refresh();
+        }
+    }
+
     pub(super) async fn store_active_thread_receiver(&mut self) {
         let Some(active_id) = self.active_thread_id else {
             return;
@@ -82,6 +98,7 @@ impl App {
             let mut store = channel.store.lock().await;
             store.active = false;
             store.input_state = input_state;
+            channel.clear_pending_delivery();
             if let Some(receiver) = receiver {
                 channel.receiver = Some(receiver);
             }
@@ -93,8 +110,13 @@ impl App {
         thread_id: ThreadId,
     ) -> Option<(mpsc::Receiver<ThreadBufferedEvent>, ThreadEventSnapshot)> {
         let channel = self.thread_event_channels.get_mut(&thread_id)?;
-        let receiver = channel.receiver.take()?;
+        let mut receiver = channel.receiver.take()?;
         let mut store = channel.store.lock().await;
+        // A rebuilt view replays the store snapshot. Its queued receiver entries were already
+        // recorded there by the routing path, so retaining them would render every survivor
+        // twice. Events arriving after this boundary remain queued for normal live delivery.
+        ThreadEventChannel::discard_event_receiver_after_session_refresh(&mut receiver);
+        channel.clear_pending_delivery();
         store.active = true;
         let snapshot = store.snapshot();
         Some((receiver, snapshot))
@@ -973,16 +995,16 @@ impl App {
             .await;
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
-        let (sender, store) = {
+        let store = {
             let channel = self.ensure_thread_channel(thread_id);
-            (channel.sender.clone(), Arc::clone(&channel.store))
+            Arc::clone(&channel.store)
         };
         let (notification, pending_status, turn_stopped) = {
             let mut guard = store.lock().await;
             if guard.session.is_none()
                 && let Some(session) = inferred_session
             {
-                guard.session = Some(session);
+                guard.set_inferred_session(session);
             }
             let turn_stopped = match &notification {
                 ServerNotification::TurnCompleted(notification) => {
@@ -1011,18 +1033,9 @@ impl App {
         }
 
         if let Some(notification) = notification {
-            match sender.try_send(ThreadBufferedEvent::Notification(notification)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(event)) => {
-                    tokio::spawn(async move {
-                        if let Err(err) = sender.send(event).await {
-                            tracing::warn!("thread {thread_id} event channel closed: {err}");
-                        }
-                    });
-                }
-                Err(TrySendError::Closed(_)) => {
-                    tracing::warn!("thread {thread_id} event channel closed");
-                }
+            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                channel
+                    .try_send_or_queue(ThreadBufferedEvent::Notification(notification), thread_id);
             }
         }
         if let Some(status) = pending_status {
@@ -1121,14 +1134,26 @@ impl App {
         session.reasoning_effort = model_settings.reasoning_effort;
         session.message_history = None;
         session.rollout_path = rollout_path;
+        let cached_entry = self.agent_navigation.get(&thread_id);
+        let agent_path = source_agent_path(&notification.thread.source)
+            .or_else(|| cached_entry.and_then(|entry| entry.agent_path.clone()));
+        let agent_nickname = notification
+            .thread
+            .agent_nickname
+            .clone()
+            .or_else(|| cached_entry.and_then(|entry| entry.agent_nickname.clone()));
+        let agent_role = notification
+            .thread
+            .agent_role
+            .clone()
+            .or_else(|| cached_entry.and_then(|entry| entry.agent_role.clone()));
         self.upsert_agent_picker_thread(
             thread_id,
-            notification.thread.agent_nickname.clone(),
-            notification.thread.agent_role.clone(),
+            agent_nickname,
+            agent_role,
             /*is_closed*/ false,
         );
-        self.agent_navigation
-            .set_agent_path(thread_id, source_agent_path(&notification.thread.source));
+        self.agent_navigation.set_agent_path(thread_id, agent_path);
         self.agent_navigation.update_identity(
             thread_id,
             notification
@@ -1164,9 +1189,9 @@ impl App {
         } else {
             None
         };
-        let (sender, store) = {
+        let store = {
             let channel = self.ensure_thread_channel(thread_id);
-            (channel.sender.clone(), Arc::clone(&channel.store))
+            Arc::clone(&channel.store)
         };
 
         let (should_send, pending_status) = {
@@ -1177,18 +1202,8 @@ impl App {
         let request_status = SideParentStatus::for_request(&request);
 
         if should_send {
-            match sender.try_send(ThreadBufferedEvent::Request(request)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(event)) => {
-                    tokio::spawn(async move {
-                        if let Err(err) = sender.send(event).await {
-                            tracing::warn!("thread {thread_id} event channel closed: {err}");
-                        }
-                    });
-                }
-                Err(TrySendError::Closed(_)) => {
-                    tracing::warn!("thread {thread_id} event channel closed");
-                }
+            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                channel.try_send_or_queue(ThreadBufferedEvent::Request(request), thread_id);
             }
         } else if self.active_side_parent_thread_id().is_none()
             && let Some(request) = inactive_interactive_request
@@ -1207,46 +1222,35 @@ impl App {
         thread_id: ThreadId,
         event: HistoryLookupResponse,
     ) -> Result<()> {
-        let (sender, store) = {
+        let store = {
             let channel = self.ensure_thread_channel(thread_id);
-            (channel.sender.clone(), Arc::clone(&channel.store))
+            Arc::clone(&channel.store)
         };
 
         let should_send = {
             let mut guard = store.lock().await;
             let should_send = guard.active;
-            // Active batch responses remain queued in the receiver across a concurrent detach, so
-            // retaining another deep copy for thread replay only accumulates already-delivered
-            // history data. Inactive responses still need the buffer because they are not sent.
-            if !should_send || !matches!(&event, HistoryLookupResponse::Batch { .. }) {
+            // History batches are authoritative replay data too. Retaining active batches in the
+            // store prevents a queued delivery copy from being lost when a picker detach drains
+            // the receiver or clears the pending-delivery retry lane.
+            guard
+                .buffer
+                .push_back(ThreadBufferedEvent::HistoryEntryResponse(event.clone()));
+            if guard.buffer.len() > guard.capacity
+                && let Some(removed) = guard.buffer.pop_front()
+                && let ThreadBufferedEvent::Request(request) = &removed
+            {
                 guard
-                    .buffer
-                    .push_back(ThreadBufferedEvent::HistoryEntryResponse(event.clone()));
-                if guard.buffer.len() > guard.capacity
-                    && let Some(removed) = guard.buffer.pop_front()
-                    && let ThreadBufferedEvent::Request(request) = &removed
-                {
-                    guard
-                        .pending_interactive_replay
-                        .note_evicted_server_request(request);
-                }
+                    .pending_interactive_replay
+                    .note_evicted_server_request(request);
             }
             should_send
         };
 
         if should_send {
-            match sender.try_send(ThreadBufferedEvent::HistoryEntryResponse(event)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(event)) => {
-                    tokio::spawn(async move {
-                        if let Err(err) = sender.send(event).await {
-                            tracing::warn!("thread {thread_id} event channel closed: {err}");
-                        }
-                    });
-                }
-                Err(TrySendError::Closed(_)) => {
-                    tracing::warn!("thread {thread_id} event channel closed");
-                }
+            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                channel
+                    .try_send_or_queue(ThreadBufferedEvent::HistoryEntryResponse(event), thread_id);
             }
         }
         Ok(())
@@ -1447,6 +1451,11 @@ impl App {
         }
 
         if !disconnected {
+            if let Some(thread_id) = self.active_thread_id
+                && let Some(channel) = self.thread_event_channels.get(&thread_id)
+            {
+                channel.flush_pending_delivery();
+            }
             self.active_thread_rx = Some(rx);
         } else {
             self.clear_active_thread().await;
@@ -1456,6 +1465,17 @@ impl App {
             tui.frame_requester().schedule_frame();
         }
         Ok(())
+    }
+
+    /// Retries delivery copies after the active receiver consumes one event. The main event loop
+    /// reads the receiver directly, so picker/session drains are not the only points where a full
+    /// channel can make room for the bounded pending-delivery lane.
+    pub(super) fn flush_active_thread_pending_delivery(&self) {
+        if let Some(thread_id) = self.active_thread_id
+            && let Some(channel) = self.thread_event_channels.get(&thread_id)
+        {
+            channel.flush_pending_delivery();
+        }
     }
 
     /// Returns `(closed_thread_id, primary_thread_id)` when a non-primary active

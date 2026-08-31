@@ -39,8 +39,9 @@ pub(crate) struct LoadedSubagentThread {
 /// Walks the spawn tree rooted at `primary_thread_id` and returns every descendant subagent.
 ///
 /// The walk is breadth-first over `SessionSource::SubAgent(ThreadSpawn { parent_thread_id })` edges.
-/// Threads whose `source` is not a `ThreadSpawn`, or whose `parent_thread_id` does not chain back
-/// to `primary_thread_id`, are excluded. The primary thread itself is never included.
+/// Threads whose `source` is not a `ThreadSpawn`, or whose source-embedded parent does not agree
+/// with the top-level `Thread.parent_thread_id`, are excluded. The primary thread itself is never
+/// included.
 ///
 /// Results are sorted by stringified thread id for deterministic output in tests and in the
 /// navigation cache. Callers should not rely on this ordering for anything semantic; it exists
@@ -73,6 +74,16 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
             else {
                 continue;
             };
+            let Some(metadata_parent_thread_id) = thread
+                .parent_thread_id
+                .as_deref()
+                .and_then(|parent| ThreadId::from_string(parent).ok())
+            else {
+                continue;
+            };
+            if source_parent_thread_id != metadata_parent_thread_id {
+                continue;
+            }
 
             if source_parent_thread_id != parent_thread_id {
                 continue;
@@ -129,17 +140,24 @@ mod tests {
     use codex_app_server_protocol::Thread;
     use codex_app_server_protocol::ThreadStatus;
     use codex_protocol::ThreadId;
+    use codex_protocol::protocol::SubAgentSource;
     use codex_utils_absolute_path::test_support::PathBufExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
 
     fn test_thread(thread_id: ThreadId, source: SessionSource) -> Thread {
+        let parent_thread_id = match &source {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }) => Some(parent_thread_id.to_string()),
+            _ => None,
+        };
         Thread {
             id: thread_id.to_string(),
             extra: None,
             session_id: thread_id.to_string(),
             forked_from_id: None,
-            parent_thread_id: None,
+            parent_thread_id,
             preview: String::new(),
             ephemeral: false,
             is_pinned: false,
@@ -253,6 +271,23 @@ mod tests {
                     is_closed: true,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn rejects_loaded_descendants_with_cross_root_lineage() {
+        let primary_thread_id = ThreadId::new();
+        let foreign_parent_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let mut contradictory = test_thread(
+            child_thread_id,
+            thread_spawn_source(primary_thread_id, /*depth*/ 1, "Scout", "explorer"),
+        );
+        contradictory.parent_thread_id = Some(foreign_parent_id.to_string());
+
+        assert!(
+            find_loaded_subagent_threads_for_primary(vec![contradictory], primary_thread_id,)
+                .is_empty()
         );
     }
 }

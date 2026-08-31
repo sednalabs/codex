@@ -195,7 +195,6 @@ use tokio::select;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::JoinHandle;
 use toml::Value as TomlValue;
@@ -1211,6 +1210,7 @@ See the Codex keymap documentation for supported actions and examples."
                             if let Err(err) = app.handle_active_thread_event(tui, &mut app_server, event).await {
                                 break Err(err);
                             }
+                            app.flush_active_thread_pending_delivery();
                         } else {
                             app.clear_active_thread().await;
                         }
