@@ -147,6 +147,8 @@ impl ChatWidget {
             codex_rate_limit_reached_type: None,
             codex_spend_control_reached: None,
             rate_limit_warnings: RateLimitWarningState::default(),
+            backend_banner_state: backend_banners::BackendBannerState::default(),
+            backend_banner_notice_model: None,
             warning_display_state: WarningDisplayState::default(),
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             add_credits_nudge_email_in_flight: None,

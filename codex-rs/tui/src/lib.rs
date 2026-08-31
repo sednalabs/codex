@@ -106,6 +106,7 @@ mod app_server_approval_conversions;
 mod app_server_session;
 mod approval_events;
 mod ascii_animation;
+mod backend_banners;
 mod bottom_pane;
 mod branch_summary;
 mod chatwidget;
