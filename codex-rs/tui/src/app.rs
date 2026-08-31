@@ -423,7 +423,7 @@ const COMMIT_ANIMATION_TICK: Duration = tui::TARGET_FRAME_INTERVAL;
 pub struct AppExitInfo {
     pub token_usage: TokenUsage,
     pub thread_id: Option<ThreadId>,
-    pub resume_hint: Option<String>,
+    pub resume_hint: Option<ResumableThread>,
     pub disconnect_info: Option<DisconnectInfo>,
     pub update_action: Option<UpdateAction>,
     pub exit_reason: ExitReason,
@@ -443,6 +443,7 @@ impl AppExitInfo {
 }
 
 pub use exit_summary::DisconnectInfo;
+pub use exit_summary::ResumableThread;
 
 #[derive(Debug)]
 pub(crate) enum AppRunControl {
@@ -477,12 +478,6 @@ fn session_summary(
         usage_line,
         resume_hint,
     })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ResumableThread {
-    thread_id: ThreadId,
-    thread_name: Option<String>,
 }
 
 fn resumable_thread(
