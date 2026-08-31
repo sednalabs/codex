@@ -676,7 +676,10 @@ async fn terminal_idle_unload_rearms_after_accepted_send_input_invalidates_deadl
     );
 
     advance(Duration::from_millis(1)).await;
-    wait_for_thread_to_unload_after_terminal_idle_deadline(&manager, first.thread_id).await;
+    control
+        .v2_residency
+        .wait_for_terminal_idle_unload(&manager, first.thread_id)
+        .await;
     assert_eq!(control.v2_residency.resident_count(), 0);
 }
 
@@ -730,7 +733,10 @@ async fn terminal_idle_unload_defers_for_finalizer_then_retries() {
 
     first.thread.session.input_queue.finish_terminal_finalizer();
     advance(Duration::from_millis(100)).await;
-    wait_for_thread_to_unload_after_terminal_idle_deadline(&manager, first.thread_id).await;
+    control
+        .v2_residency
+        .wait_for_terminal_idle_unload(&manager, first.thread_id)
+        .await;
     assert!(
         manager.get_thread(first.thread_id).await.is_err(),
         "the watcher should retry after the terminal finalizer completes"
@@ -1032,16 +1038,6 @@ async fn assert_thread_unloads_within_terminal_idle_intervals(
         }
     }
     panic!("thread {thread_id} should unload within {max_intervals} terminal idle intervals");
-}
-
-async fn wait_for_thread_to_unload_after_terminal_idle_deadline(
-    manager: &ThreadManager,
-    thread_id: ThreadId,
-) {
-    assert!(
-        thread_unloads_after_terminal_idle_deadline(manager, thread_id).await,
-        "the watcher should unload after its terminal idle deadline"
-    );
 }
 
 async fn thread_unloads_after_terminal_idle_deadline(

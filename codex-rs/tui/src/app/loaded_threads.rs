@@ -54,32 +54,41 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
     primary_thread_id: ThreadId,
 ) -> Vec<LoadedSubagentThread> {
     let mut threads_by_id = HashMap::new();
+    let mut children_by_parent = HashMap::<ThreadId, Vec<ThreadId>>::new();
     for thread in threads {
         let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
             continue;
         };
+        if let Some(parent_thread_id) = thread_spawn_parent_thread_id(&thread.source) {
+            children_by_parent
+                .entry(parent_thread_id)
+                .or_default()
+                .push(thread_id);
+        }
         threads_by_id.insert(thread_id, thread);
     }
 
     let mut included = HashSet::new();
     let mut pending = vec![primary_thread_id];
     while let Some(parent_thread_id) = pending.pop() {
-        for (thread_id, thread) in &threads_by_id {
-            if included.contains(thread_id) {
+        for thread_id in children_by_parent
+            .get(&parent_thread_id)
+            .into_iter()
+            .flatten()
+            .copied()
+        {
+            if included.contains(&thread_id) {
                 continue;
             }
 
-            let Some(source_parent_thread_id) = thread_spawn_parent_thread_id(&thread.source)
-            else {
-                continue;
-            };
-
-            if source_parent_thread_id != parent_thread_id {
+            // The primary thread is never a picker entry, even if malformed metadata claims that
+            // it was spawned by one of its descendants.
+            if thread_id == primary_thread_id {
                 continue;
             }
 
-            included.insert(*thread_id);
-            pending.push(*thread_id);
+            included.insert(thread_id);
+            pending.push(thread_id);
         }
     }
 
@@ -253,6 +262,55 @@ mod tests {
                     is_closed: true,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn only_thread_spawn_sources_are_picker_eligible_and_must_chain_to_primary() {
+        let primary_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000011").expect("valid thread");
+        let eligible_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000012").expect("valid thread");
+        let review_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000013").expect("valid thread");
+        let orphan_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000014").expect("valid thread");
+        let mut review = test_thread(
+            review_id,
+            SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::Review),
+        );
+        review.parent_thread_id = Some(primary_thread_id.to_string());
+        let mut orphan = test_thread(
+            orphan_id,
+            thread_spawn_source(
+                ThreadId::from_string("00000000-0000-0000-0000-000000000099")
+                    .expect("valid thread"),
+                /*depth*/ 1,
+                "orphan",
+                "worker",
+            ),
+        );
+        orphan.parent_thread_id = Some(primary_thread_id.to_string());
+
+        let loaded = find_loaded_subagent_threads_for_primary(
+            vec![
+                test_thread(primary_thread_id, SessionSource::Cli),
+                test_thread(
+                    eligible_id,
+                    thread_spawn_source(primary_thread_id, /*depth*/ 1, "eligible", "worker"),
+                ),
+                review,
+                orphan,
+            ],
+            primary_thread_id,
+        );
+
+        assert_eq!(
+            loaded
+                .into_iter()
+                .map(|thread| thread.thread_id)
+                .collect::<Vec<_>>(),
+            vec![eligible_id]
         );
     }
 }
