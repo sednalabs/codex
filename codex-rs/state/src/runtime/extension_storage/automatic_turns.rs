@@ -339,8 +339,8 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
         .bind(generation)
         .fetch_optional(&mut *tx)
         .await?;
-        let next_attempt = match previous {
-            Some((attempt, outcome, _, _)) if outcome == OUTCOME_REBLOCKED => attempt + 1,
+        let next_attempt = match previous.as_ref() {
+            Some((attempt, outcome, _, _)) if outcome == OUTCOME_REBLOCKED => *attempt + 1,
             Some((_, outcome, _, _)) if outcome == OUTCOME_EXHAUSTED => MAX_ATTEMPTS + 1,
             _ => 1,
         };
