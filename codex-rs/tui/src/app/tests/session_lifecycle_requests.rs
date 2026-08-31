@@ -110,26 +110,27 @@ async fn start_recording_app_server_with_loaded_list_pages(
                     let request_id = request.id.clone();
                     let request =
                         serde_json::from_value::<ClientRequest>(serde_json::to_value(request)?)?;
-                    let response_result = if matches!(&request, ClientRequest::ThreadLoadedList { .. }) {
-                        if let Some(page) = loaded_list_pages_sink
-                            .lock()
-                            .expect("loaded-list page lock")
-                            .pop()
-                        {
-                            match serde_json::to_value(page) {
-                                Ok(value) => Ok(value),
-                                Err(error) => Err(JSONRPCErrorError {
-                                    code: -32603,
-                                    message: error.to_string(),
-                                    data: None,
-                                }),
+                    let response_result =
+                        if matches!(&request, ClientRequest::ThreadLoadedList { .. }) {
+                            if let Some(page) = loaded_list_pages_sink
+                                .lock()
+                                .expect("loaded-list page lock")
+                                .pop()
+                            {
+                                match serde_json::to_value(page) {
+                                    Ok(value) => Ok(value),
+                                    Err(error) => Err(JSONRPCErrorError {
+                                        code: -32603,
+                                        message: error.to_string(),
+                                        data: None,
+                                    }),
+                                }
+                            } else {
+                                embedded.request(request).await?
                             }
                         } else {
                             embedded.request(request).await?
-                        }
-                    } else {
-                        embedded.request(request).await
-                    };
+                        };
                     let response = match response_result {
                         Ok(result) => JSONRPCMessage::Response(JSONRPCResponse {
                             id: request_id,
@@ -408,39 +409,43 @@ fn loaded_thread_backfill_paginates_without_losing_lineage() -> Result<()> {
                 app.config.codex_home = codex_home.path().to_path_buf().abs();
                 app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
 
-                let root_thread_id = ThreadId::from_string(&create_fake_rollout(
-                    codex_home.path(),
-                    "2026-01-02T00-00-00",
-                    "2026-01-02T00:00:00Z",
-                    "pagination root",
-                    Some(app.config.model_provider_id.as_str()),
-                    /*git_info*/ None,
-                )
-                .expect("create root rollout"))?;
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-02T00-00-00",
+                        "2026-01-02T00:00:00Z",
+                        "pagination root",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
                 let mut child_thread_ids = Vec::with_capacity(CHILD_COUNT);
                 for index in 0..CHILD_COUNT {
                     let timestamp = format!("2026-01-02T00-00-{second:02}", second = index + 1);
-                    let child_thread_id = ThreadId::from_string(&create_fake_parented_rollout_with_source(
-                        codex_home.path(),
-                        &timestamp,
-                        "2026-01-02T00:00:01Z",
-                        &format!("pagination child {index}"),
-                        Some(app.config.model_provider_id.as_str()),
-                        /*git_info*/ None,
-                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                            parent_thread_id: root_thread_id,
-                            depth: 1,
-                            agent_path: Some(
-                                AgentPath::try_from(format!("/root/worker-{index}"))
-                                    .expect("valid agent path"),
-                            ),
-                            agent_nickname: Some(format!("worker-{index}")),
-                            agent_role: Some("worker".to_string()),
-                        }),
-                        root_thread_id.into(),
-                        root_thread_id,
-                    )
-                    .expect("create child rollout"))?;
+                    let child_thread_id = ThreadId::from_string(
+                        &create_fake_parented_rollout_with_source(
+                            codex_home.path(),
+                            &timestamp,
+                            "2026-01-02T00:00:01Z",
+                            &format!("pagination child {index}"),
+                            Some(app.config.model_provider_id.as_str()),
+                            /*git_info*/ None,
+                            RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                                parent_thread_id: root_thread_id,
+                                depth: 1,
+                                agent_path: Some(
+                                    AgentPath::try_from(format!("/root/worker-{index}"))
+                                        .expect("valid agent path"),
+                                ),
+                                agent_nickname: Some(format!("worker-{index}")),
+                                agent_role: Some("worker".to_string()),
+                            }),
+                            root_thread_id.into(),
+                            root_thread_id,
+                        )
+                        .expect("create child rollout"),
+                    )?;
                     child_thread_ids.push(child_thread_id);
                 }
 
@@ -500,35 +505,40 @@ fn loaded_thread_backfill_rejects_semantic_duplicate_before_reads() -> Result<()
                 let codex_home = tempdir()?;
                 app.config.codex_home = codex_home.path().to_path_buf().abs();
                 app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
-                let root_thread_id = ThreadId::from_string(&create_fake_rollout(
-                    codex_home.path(),
-                    "2026-01-03T00-00-00",
-                    "2026-01-03T00:00:00Z",
-                    "dedupe root",
-                    Some(app.config.model_provider_id.as_str()),
-                    /*git_info*/ None,
-                )
-                .expect("create root rollout"))?;
-                let child_thread_id = ThreadId::from_string(&create_fake_parented_rollout_with_source(
-                    codex_home.path(),
-                    "2026-01-03T00-00-01",
-                    "2026-01-03T00:00:01Z",
-                    "dedupe child",
-                    Some(app.config.model_provider_id.as_str()),
-                    /*git_info*/ None,
-                    RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                        parent_thread_id: root_thread_id,
-                        depth: 1,
-                        agent_path: Some(
-                            AgentPath::try_from("/root/dedupe-worker").expect("valid agent path"),
-                        ),
-                        agent_nickname: Some("dedupe-worker".to_string()),
-                        agent_role: Some("worker".to_string()),
-                    }),
-                    root_thread_id.into(),
-                    root_thread_id,
-                )
-                .expect("create child rollout"))?;
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-03T00-00-00",
+                        "2026-01-03T00:00:00Z",
+                        "dedupe root",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-03T00-00-01",
+                        "2026-01-03T00:00:01Z",
+                        "dedupe child",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/dedupe-worker")
+                                    .expect("valid agent path"),
+                            ),
+                            agent_nickname: Some("dedupe-worker".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create child rollout"),
+                )?;
 
                 let canonical = child_thread_id.to_string();
                 let alias = canonical.replace('-', "").to_uppercase();

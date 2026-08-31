@@ -59,8 +59,7 @@ fn accept_loaded_thread_page(
         .data
         .iter()
         .map(|thread_id| {
-            ThreadId::from_string(thread_id)
-                .map_err(|_| LoadedThreadPageRejection::InvalidThreadId)
+            ThreadId::from_string(thread_id).map_err(|_| LoadedThreadPageRejection::InvalidThreadId)
         })
         .collect::<std::result::Result<_, _>>()?;
     let page_ids: HashSet<_> = page_thread_ids.iter().copied().collect();
@@ -127,8 +126,8 @@ mod loaded_thread_page_tests {
 
     #[test]
     fn rejects_pages_that_exceed_the_total_thread_budget() {
-        let existing_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
-            .expect("valid thread");
+        let existing_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread");
         let mut ids = vec![existing_id; AGENT_PICKER_LOADED_MAX_THREADS];
         let mut seen_ids = HashSet::from([existing_id]);
         let mut cursors = HashSet::new();
@@ -235,7 +234,10 @@ mod loaded_thread_page_tests {
             },
         );
         assert_eq!(result, Err(LoadedThreadPageRejection::DuplicateThreadId));
-        assert_eq!(ids, vec![ThreadId::from_string(canonical).expect("valid thread")]);
+        assert_eq!(
+            ids,
+            vec![ThreadId::from_string(canonical).expect("valid thread")]
+        );
         assert_eq!(seen_ids.len(), 1);
     }
 }
