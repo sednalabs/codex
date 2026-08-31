@@ -162,23 +162,16 @@ pub(crate) async fn run_turn(
     turn_context: Arc<TurnContext>,
     turn_extension_data: Arc<codex_extension_api::ExtensionData>,
     input: Vec<TurnInput>,
-    prewarmed_client_session: Option<ModelClientSession>,
+    client_session: &mut ModelClientSession,
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
     turn_context.reset_terminal_response_model_identity().await;
-    let mut client_session =
-        prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
-    if let Err(err) = run_pre_sampling_compact(
-        &sess,
-        &turn_context,
-        &mut client_session,
-        &cancellation_token,
-    )
-    .await
+    if let Err(err) =
+        run_pre_sampling_compact(&sess, &turn_context, client_session, &cancellation_token).await
     {
         if matches!(err.details(), CodexErrorDetails::TurnAborted) {
             run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
@@ -320,7 +313,7 @@ pub(crate) async fn run_turn(
                 Arc::clone(&step_context),
                 Arc::clone(&turn_extension_data),
                 Arc::clone(&turn_diff_tracker),
-                &mut client_session,
+                client_session,
                 &responses_metadata,
                 sampling_request_input,
                 cancellation_token.child_token(),
@@ -408,7 +401,7 @@ pub(crate) async fn run_turn(
                         &sess,
                         Arc::clone(&step_context),
                         /*fallback_step_context*/ None,
-                        &mut client_session,
+                        client_session,
                         InitialContextInjection::BeforeLastUserMessage {
                             world_state: Arc::clone(&world_state),
                             step_context: Arc::clone(&step_context),
