@@ -337,7 +337,7 @@ impl ChatWidget {
                             error.message,
                             error.codex_error_info,
                             replay_kind.is_some(),
-                            None,
+                            /*capability*/ None,
                         );
                     }
                 } else {
