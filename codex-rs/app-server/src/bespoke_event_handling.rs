@@ -1059,8 +1059,12 @@ pub(crate) async fn apply_bespoke_event_handling(
                                 .as_deref()
                                 .and_then(parse_automatic_turn_connection_principal)
                                 .filter(|connection_id| subscribed.contains(connection_id));
-                            let owner =
-                                parsed_principal.or_else(|| subscribed.iter().copied().min());
+                            let owner = parsed_principal.or_else(|| {
+                                subscribed
+                                    .iter()
+                                    .copied()
+                                    .min_by_key(|connection_id| connection_id.0)
+                            });
                             if principal
                                 .as_deref()
                                 .and_then(parse_automatic_turn_connection_principal)

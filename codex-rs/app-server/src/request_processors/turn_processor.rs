@@ -411,7 +411,7 @@ impl TurnRequestProcessor {
         let elected_connection = subscribed
             .iter()
             .copied()
-            .min()
+            .min_by_key(|connection_id| connection_id.0)
             .unwrap_or(request_id.connection_id);
         let previous_connection = expected_principal
             .as_deref()

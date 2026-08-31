@@ -887,12 +887,7 @@ mod tests {
             .await;
         let cap = capability(runtime.as_ref(), thread_id, "trigger").await;
         let mut sibling_attempt = automatic_user_message(
-            thread_id,
-            "trigger",
-            "turn",
-            /*attempt*/ 1,
-            /*max_attempts*/ 3,
-            &cap,
+            thread_id, "trigger", "turn", /*attempt*/ 1, /*max_attempts*/ 3, &cap,
         );
         sibling_attempt.id = "turn".to_string();
         runtime
