@@ -67,7 +67,6 @@ pub fn normalize_additional_permissions_with_context(
             if path.infer_path_convention().is_none()
                 || path.infer_path_convention() != context.cwd.infer_path_convention()
                 || path.join(".").is_err()
-                || context.cwd.join(".").is_err()
             {
                 return Err(format!(
                     "permission path `{path}` does not match executor cwd `{}`",

@@ -18,6 +18,8 @@ use codex_protocol::permissions::FileSystemSandboxPolicyContext;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::LegacyAppPathString;
+use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
 use dunce::canonicalize;
 use pretty_assertions::assert_eq;
@@ -162,8 +164,28 @@ fn normalize_additional_permissions_only_checks_convention_with_context() {
         temporary_directories: None,
     };
     assert!(
-        normalize_additional_permissions_with_context(permissions, &context).is_err(),
+        normalize_additional_permissions_with_context(permissions.clone(), &context).is_err(),
         "context-aware normalization should reject mismatched conventions"
+    );
+
+    let cwd = LegacyAppPathString::from_string(
+        r"\\?\Volume{00000000-0000-0000-0000-000000000000}\workspace",
+    )
+    .to_path_uri(PathConvention::Windows)
+    .expect("opaque Windows cwd");
+    assert!(cwd.is_opaque(), "volume GUID cwd should stay opaque");
+    let workspace_roots = [cwd.clone()];
+    let context = FileSystemSandboxPolicyContext {
+        cwd: &cwd,
+        workspace_roots: &workspace_roots,
+        user_home_dir: None,
+        temporary_directories: None,
+    };
+
+    assert_eq!(
+        normalize_additional_permissions_with_context(permissions.clone(), &context)
+            .expect("absolute path with opaque cwd"),
+        permissions
     );
 }
 
