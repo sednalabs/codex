@@ -32,6 +32,7 @@ use codex_login::AuthManager;
 use codex_mcp::McpRuntime;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_otel::SessionTelemetry;
+use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::protocol::Event;
 use codex_rollout::state_db::StateDbHandle;
@@ -98,7 +99,11 @@ impl SessionServices {
         clippy::await_holding_invalid_type,
         reason = "usage logger event handling mutates ordered in-memory snapshots around async ledger writes"
     )]
-    pub(crate) async fn log_usage_event(&self, event: &Event) {
+    pub(crate) async fn log_usage_event(&self, thread_id: ThreadId, event: &Event) {
+        if let Some(state_db) = &self.state_db {
+            state_db.record_automatic_turn_event(thread_id, event).await;
+        }
+
         let Some(usage_logger) = &self.usage_logger else {
             return;
         };

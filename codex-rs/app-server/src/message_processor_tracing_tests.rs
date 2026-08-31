@@ -30,8 +30,16 @@ use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
 use codex_login::AuthManager;
+use codex_protocol::ThreadId;
+use codex_protocol::automatic_turn::AutomaticTurnProvenance;
+use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::ErrorEvent;
+use codex_protocol::protocol::Event;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_state::StateRuntime;
+use codex_utils_absolute_path::test_support::PathExt;
 use opentelemetry::global;
 use opentelemetry::trace::SpanId;
 use opentelemetry::trace::SpanKind;
@@ -112,14 +120,34 @@ struct TracingHarness {
     outgoing_rx: mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
     session: Arc<ConnectionSessionState>,
     tracing: &'static TestTracing,
+    state_db: Option<codex_rollout::StateDbHandle>,
 }
 
 impl TracingHarness {
     async fn new() -> Result<Self> {
+        Self::new_inner(/*with_state_db*/ false).await
+    }
+
+    async fn new_with_state_db() -> Result<Self> {
+        Self::new_inner(/*with_state_db*/ true).await
+    }
+
+    async fn new_inner(with_state_db: bool) -> Result<Self> {
         let server = create_mock_responses_server_repeating_assistant("Done").await;
         let codex_home = TempDir::new()?;
         let config = Arc::new(build_test_config(codex_home.path(), &server.uri()).await?);
-        let (processor, outgoing_rx) = build_test_processor(config).await;
+        let state_db = if with_state_db {
+            Some(
+                StateRuntime::init(
+                    codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+                    "mock_provider".to_string(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let (processor, outgoing_rx) = build_test_processor(config, state_db.clone()).await;
         let tracing = init_test_tracing();
         tracing.exporter.reset();
         tracing::callsite::rebuild_interest_cache();
@@ -130,6 +158,7 @@ impl TracingHarness {
             outgoing_rx,
             session: Arc::new(ConnectionSessionState::new()),
             tracing,
+            state_db,
         };
 
         let _: InitializeResponse = harness
@@ -228,6 +257,7 @@ async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config
 
 async fn build_test_processor(
     config: Arc<Config>,
+    state_db: Option<codex_rollout::StateDbHandle>,
 ) -> (
     Arc<MessageProcessor>,
     mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
@@ -259,7 +289,7 @@ async fn build_test_processor(
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         feedback: CodexFeedback::new(),
         log_db: None,
-        state_db: None,
+        state_db,
         config_warnings: Vec::new(),
         session_source: SessionSource::VSCode,
         auth_manager,
@@ -501,6 +531,45 @@ async fn read_thread_started_notification(
     }
 }
 
+async fn read_user_message_item_completed(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    thread_id: &str,
+    turn_id: &str,
+) -> Option<String> {
+    loop {
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
+            .await
+            .expect("timed out waiting for user-message item/completed notification")
+            .expect("outgoing channel closed");
+        let message = match envelope {
+            crate::outgoing_message::OutgoingEnvelope::ToConnection {
+                connection_id,
+                message,
+                ..
+            } if connection_id == TEST_CONNECTION_ID => message,
+            crate::outgoing_message::OutgoingEnvelope::Broadcast { message } => message,
+            _ => continue,
+        };
+        let crate::outgoing_message::OutgoingMessage::AppServerNotification(notification) = message
+        else {
+            continue;
+        };
+        let codex_app_server_protocol::ServerNotification::ItemCompleted(notification) =
+            notification.notification
+        else {
+            continue;
+        };
+        if notification.thread_id != thread_id || notification.turn_id != turn_id {
+            continue;
+        }
+        if let codex_app_server_protocol::ThreadItem::UserMessage { client_id, .. } =
+            notification.item
+        {
+            return client_id;
+        }
+    }
+}
+
 async fn wait_for_exported_spans<F>(tracing: &TestTracing, predicate: F) -> Vec<SpanData>
 where
     F: Fn(&[SpanData]) -> bool,
@@ -709,5 +778,94 @@ async fn turn_start_jsonrpc_span_parents_core_turn_spans() -> Result<()> {
     assert_span_descends_from(&spans, core_turn_span, server_request_span);
     harness.shutdown().await;
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial(app_server_tracing)]
+async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
+    let mut harness = TracingHarness::new_with_state_db().await?;
+    let thread_start_response = harness
+        .start_thread(/*request_id*/ 30_001, /*trace*/ None)
+        .await;
+    let thread_id = thread_start_response.thread.id.clone();
+    let thread_id_value = ThreadId::from_string(&thread_id)?;
+    let trigger_turn_id = "trigger-turn";
+
+    // A policy event creates the server-owned eligibility ticket. The request below then travels
+    // through the real app-server turn/start and core session event path before the state
+    // projection accepts the client envelope.
+    harness
+        .state_db
+        .as_ref()
+        .expect("state db enabled for this harness")
+        .record_automatic_turn_event(
+            thread_id_value,
+            &Event {
+                id: trigger_turn_id.to_string(),
+                msg: EventMsg::Error(ErrorEvent {
+                    message: "blocked".to_string(),
+                    codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                }),
+            },
+        )
+        .await;
+    let client_user_message_id =
+        AutomaticTurnProvenance::policy_retry(thread_id_value, trigger_turn_id, 1, 3)
+            .expect("valid automatic-turn provenance")
+            .to_client_user_message_id()
+            .expect("valid automatic-turn provenance");
+
+    let turn_start_response: TurnStartResponse = harness
+        .request(
+            ClientRequest::TurnStart {
+                request_id: RequestId::Integer(30_002),
+                params: TurnStartParams {
+                    thread_id: thread_id.clone(),
+                    client_user_message_id: Some(client_user_message_id.clone()),
+                    input: vec![UserInput::Text {
+                        text: "continue".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                    ..TurnStartParams::default()
+                },
+            },
+            /*trace*/ None,
+        )
+        .await;
+    let observed_client_user_message_id = read_user_message_item_completed(
+        &mut harness.outgoing_rx,
+        &thread_id,
+        &turn_start_response.turn.id,
+    )
+    .await
+    .expect("turn/start should emit a user-message item");
+    assert_eq!(observed_client_user_message_id, client_user_message_id);
+
+    let usage_pool = harness
+        .state_db
+        .as_ref()
+        .expect("state db enabled for this harness")
+        .usage_pool();
+    let row = sqlx::query_as::<_, (String, String, String, i64, i64, String)>(
+        "SELECT thread_id, client_user_message_id, trigger_turn_id, attempt, max_attempts, outcome FROM usage_automatic_turns WHERE thread_id = ? AND turn_id = ? ORDER BY id",
+    )
+    .bind(&thread_id)
+    .bind(&turn_start_response.turn.id)
+    .fetch_one(usage_pool.as_ref())
+    .await?;
+    assert_eq!(
+        row,
+        (
+            thread_id,
+            client_user_message_id,
+            trigger_turn_id.to_string(),
+            1,
+            3,
+            "started".to_string(),
+        )
+    );
+
+    harness.shutdown().await;
     Ok(())
 }
