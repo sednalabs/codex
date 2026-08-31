@@ -352,3 +352,95 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
         .join()
         .expect("session lifecycle request test thread")
 }
+
+#[test]
+fn loaded_thread_backfill_paginates_without_losing_lineage() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+    const CHILD_COUNT: usize = 51;
+
+    std::thread::Builder::new()
+        .name("tui-loaded-thread-pagination".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+
+                let root_thread_id = ThreadId::from_string(&create_fake_rollout(
+                    codex_home.path(),
+                    "2026-01-02T00-00-00",
+                    "2026-01-02T00:00:00Z",
+                    "pagination root",
+                    Some(app.config.model_provider_id.as_str()),
+                    /*git_info*/ None,
+                )?)?;
+                let mut child_thread_ids = Vec::with_capacity(CHILD_COUNT);
+                for index in 0..CHILD_COUNT {
+                    let timestamp = format!("2026-01-02T00-00-{second:02}", second = index + 1);
+                    let child_thread_id = ThreadId::from_string(&create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        &timestamp,
+                        "2026-01-02T00:00:01Z",
+                        &format!("pagination child {index}"),
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from(format!("/root/worker-{index}"))
+                                    .expect("valid agent path"),
+                            ),
+                            agent_nickname: Some(format!("worker-{index}")),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )?)?;
+                    child_thread_ids.push(child_thread_id);
+                }
+
+                let (mut app_server, requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+                for child_thread_id in child_thread_ids.iter().copied() {
+                    app_server
+                        .resume_thread(
+                            app.config.clone(),
+                            child_thread_id,
+                            app.resume_model_settings(),
+                        )
+                        .await?;
+                }
+                take_backfill_counts(&requests);
+
+                let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+
+                assert!(backfill.completed);
+                assert_eq!(backfill.refreshed_thread_ids.len(), CHILD_COUNT);
+                assert_eq!(take_backfill_counts(&requests), (2, CHILD_COUNT));
+                for child_thread_id in child_thread_ids {
+                    assert!(app.agent_navigation.get(&child_thread_id).is_some());
+                }
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("loaded-thread pagination test thread")
+}
