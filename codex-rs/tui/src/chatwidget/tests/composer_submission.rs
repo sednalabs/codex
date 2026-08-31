@@ -2413,3 +2413,40 @@ async fn interrupt_prepends_queued_messages_before_existing_composer_text() {
 
     let _ = drain_insert_history(&mut rx);
 }
+
+#[tokio::test]
+async fn reconnect_holds_only_recovered_input_until_manually_edited() {
+    for (recovered, pending_start) in [
+        (None, false),
+        (Some("review this old input"), false),
+        (Some("unacknowledged prompt"), true),
+    ] {
+        let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+        if let Some(text) = recovered {
+            if pending_start {
+                chat.input_queue.user_turn_pending_start = true;
+                chat.safety_buffering_prompt = Some(UserMessage::from(text));
+            } else {
+                chat.input_queue
+                    .queued_user_messages
+                    .push_back(UserMessage::from(text).into());
+            }
+        }
+        chat.pause_for_disconnect();
+        let input = chat.capture_thread_input_state();
+        let (mut chat, _rx, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.thread_id = Some(ThreadId::new());
+        chat.restore_reconnected_input(input);
+        chat.set_queue_autosend_suppressed(/*suppressed*/ false);
+        if let Some(text) = recovered {
+            assert!(!chat.maybe_send_next_queued_input());
+            assert_eq!(chat.pop_latest_queued_composer_state().unwrap().text, text);
+            assert_no_submit_op(&mut ops);
+        }
+        chat.input_queue
+            .queued_user_messages
+            .push_back(UserMessage::from("new follow-up").into());
+        assert!(chat.maybe_send_next_queued_input());
+        assert_matches!(next_submit_op(&mut ops), Op::UserTurn { .. });
+    }
+}

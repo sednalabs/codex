@@ -683,6 +683,7 @@ See the Codex keymap documentation for supported actions and examples."
         }
 
         let mut listen_for_app_server_events = true;
+        let mut reconnect = None;
         let mut waiting_for_initial_session_configured = wait_for_initial_session_configured;
         let mut waiting_for_initial_session_header = true;
 
@@ -711,6 +712,20 @@ See the Codex keymap documentation for supported actions and examples."
             Ok(exit_reason)
         } else {
             loop {
+                if app.reconnect.offline
+                    && !app.reconnect.failed
+                    && reconnect.is_none()
+                    && app.reconnect.presentation == reconnect::ReconnectPresentation::Conversation
+                {
+                    reconnect = Some(Box::pin(reconnect::reconnect(
+                        app.app_server_target.clone(),
+                        app.config.clone(),
+                        app.current_displayed_thread_id(),
+                        app_server.remote_cwd_override().map(Path::to_path_buf),
+                        app_server.thread_tool_transport(),
+                        app.reconnect.presentation,
+                    )));
+                }
                 // Replay queues history and operations. A buffered closure must not switch
                 // widgets before those app events have been applied.
                 let has_pending_app_events = !app_event_rx.is_empty();
@@ -811,6 +826,25 @@ See the Codex keymap documentation for supported actions and examples."
                                 listen_for_app_server_events = false;
                                 app.begin_reconnect();
                                 tracing::warn!("app-server event stream closed");
+                            }
+                        }
+                        AppRunControl::Continue
+                    }
+                    result = async { match reconnect.as_mut() { Some(future) => future.await, None => std::future::pending().await } }, if reconnect.is_some() && !has_pending_app_events => {
+                        reconnect = None;
+                        match result {
+                            Ok(connected) => {
+                                app.finish_reconnect(tui, &mut app_server, &mut app_event_rx, connected).await?;
+                                listen_for_app_server_events = true;
+                                waiting_for_initial_session_configured = false;
+                            }
+                            Err(error) => {
+                                app.reconnect.failed = true;
+                                app.chat_widget.reconnect_failed();
+                                app.chat_widget.add_error_message(error.to_string());
+                                if let Ok(mut state) = app.agents_overview.view_state.lock() {
+                                    state.connection_notice = Some("Reconnect failed — agent list is stale; relaunch to retry");
+                                }
                             }
                         }
                         AppRunControl::Continue

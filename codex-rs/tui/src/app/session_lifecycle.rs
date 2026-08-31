@@ -487,6 +487,7 @@ impl App {
             .agent_navigation
             .get(&thread_id)
             .is_some_and(|entry| entry.is_closed);
+        is_replay_only |= self.thread_unavailable(thread_id);
         let mut attached_replay_only = false;
         if self.should_attach_live_thread_for_selection(thread_id) {
             match self
@@ -495,9 +496,7 @@ impl App {
             {
                 Ok(live_attached) => {
                     attached_replay_only = !live_attached;
-                    if attached_replay_only {
-                        is_replay_only = true;
-                    }
+                    is_replay_only |= attached_replay_only;
                 }
                 Err(err) => {
                     self.chat_widget.add_error_message(format!(
@@ -542,7 +541,6 @@ impl App {
         if snapshot.input_state.is_none() {
             snapshot.input_state = self.agents_overview.input_states.remove(&thread_id);
         }
-        let blocks_direct_input = self.agent_navigation.is_parent_owned(thread_id);
 
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = Some(receiver);
@@ -558,23 +556,9 @@ impl App {
         self.recap
             .schedule_check(thread_id, self.app_event_tx.clone(), now);
 
-        let init = self.chatwidget_init_for_forked_or_resumed_thread(
-            tui,
-            self.config.clone(),
-            /*initial_user_message*/ None,
-        );
-        self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-        self.chat_widget
-            .set_task_mentions_enabled(app_server.task_tools_available(thread_id));
-        self.chat_widget
-            .note_rendered_width(tui.terminal.last_known_screen_size.width);
-        if blocks_direct_input {
-            self.chat_widget.set_parent_owned_thread();
-        }
-
-        self.reset_for_thread_switch(tui)?;
-        self.replay_thread_snapshot(snapshot, !is_replay_only);
+        self.render_thread_snapshot(tui, app_server, thread_id, snapshot, !is_replay_only)?;
         if is_replay_only {
+            self.chat_widget.pause_unavailable_thread();
             let message = if attached_replay_only {
                 format!(
                     "Agent thread {thread_id} could not be resumed live. Replaying saved transcript."
@@ -586,6 +570,32 @@ impl App {
         }
         self.refresh_pending_thread_approvals().await;
 
+        Ok(())
+    }
+
+    pub(super) fn render_thread_snapshot(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &AppServerSession,
+        thread_id: ThreadId,
+        snapshot: ThreadEventSnapshot,
+        resume_restored_queue: bool,
+    ) -> Result<()> {
+        let init = self.chatwidget_init_for_forked_or_resumed_thread(
+            tui,
+            self.config.clone(),
+            /*initial_user_message*/ None,
+        );
+        self.replace_chat_widget(ChatWidget::new_with_app_event(init));
+        self.chat_widget
+            .set_task_mentions_enabled(app_server.task_tools_available(thread_id));
+        self.chat_widget
+            .note_rendered_width(tui.terminal.last_known_screen_size.width);
+        if self.agent_navigation.is_parent_owned(thread_id) {
+            self.chat_widget.set_parent_owned_thread();
+        }
+        self.reset_for_thread_switch(tui)?;
+        self.replay_thread_snapshot(snapshot, resume_restored_queue);
         Ok(())
     }
 

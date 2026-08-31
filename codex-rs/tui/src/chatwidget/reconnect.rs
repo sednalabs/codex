@@ -13,9 +13,47 @@ impl ChatWidget {
         self.bottom_pane.ensure_status_indicator();
         self.bottom_pane
             .set_interrupt_hint_visible(/*visible*/ false);
-        self.set_status_header("Connection lost — copy your draft, then relaunch".to_string());
+        self.set_status_header("Reconnecting to app-server…".to_string());
         self.set_footer_hint_override(Some(vec![("ctrl+c".into(), "quit".into())]));
-        self.add_error_message("Connection lost.".into());
+        self.add_error_message("Connection lost. Attempting to reconnect…".into());
+    }
+
+    /// Restore local input only after replay, which can otherwise move interrupted queues into the draft.
+    pub(crate) fn restore_reconnected_input(&mut self, input: Option<ThreadInputState>) {
+        let running = self.turn_lifecycle.agent_turn_running;
+        if let Some(mut input) = input {
+            // Its acceptance is unknown. Keep a local copy for manual recovery without
+            // comparing against partial history or automatically submitting it again.
+            if input.user_turn_pending_start
+                && let Some(prompt) = input.safety_buffering_prompt.take()
+            {
+                input.queued_user_messages.push_front(prompt.into());
+                input
+                    .queued_user_message_history_records
+                    .push_front(UserMessageHistoryRecord::UserMessageText);
+                input.recovered_queue = true;
+            }
+            input.current_collaboration_mode = self.current_collaboration_mode.clone();
+            // Resume supplies model/effort, but not the user's selected collaboration mode.
+            if let Some(mask) = input.active_collaboration_mask.as_mut() {
+                mask.model = Some(self.current_model().to_string());
+                mask.reasoning_effort = Some(self.effective_reasoning_effort());
+            }
+            self.restore_thread_input_state(
+                Some(input),
+                ThreadInputStateRestoreMode {
+                    preserve_in_flight_turn: false,
+                },
+            );
+        }
+        self.turn_lifecycle.restore_running(running, Instant::now());
+        self.update_task_running_state();
+    }
+
+    pub(crate) fn pause_unavailable_thread(&mut self) {
+        self.turn_lifecycle
+            .restore_running(/*running*/ false, Instant::now());
+        self.update_task_running_state();
     }
 
     pub(crate) fn handle_disconnected_view_key(&mut self, key: KeyEvent) {
@@ -40,5 +78,12 @@ impl ChatWidget {
         } else {
             self.bottom_pane.handle_disconnected_key(key);
         }
+    }
+
+    pub(crate) fn reconnect_failed(&mut self) {
+        self.set_status_header("Reconnect failed — check the endpoint, then relaunch".into());
+        self.add_error_message(
+            "Automatic reconnect could not restore this session. Your draft is still editable. Copy it before quitting with Ctrl+C, then reconnect with the same command.".into(),
+        );
     }
 }

@@ -264,7 +264,7 @@ where
         methods.push(request.method.clone());
         let request_id = request.id.clone();
         let response = match request.method.as_str() {
-            "initialize" => Some(json!({"result": {"userAgent": "reconnect-test"}})),
+            "initialize" => Some(json!({"result": {"userAgent": "reconnect-test/2.0.0"}})),
             "account/read" => {
                 Some(json!({"result": {"account": null, "requiresOpenaiAuth": false}}))
             }

@@ -1,4 +1,4 @@
-//! Drives disconnect handling through the real binary and terminal event loop.
+//! Drives automatic reconnect through the real binary and terminal event loop.
 
 use super::focus_palette::PtyCodex;
 use super::focus_palette::write_test_config;
@@ -15,7 +15,7 @@ use tokio::net::UnixListener;
 use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn disconnect_preserves_editable_draft_in_terminal() -> Result<()> {
+async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Result<()> {
     let repo_root = codex_utils_cargo_bin::repo_root()?;
     // macOS's default temporary directory leaves too little room for the control socket path.
     let codex_home = tempfile::tempdir_in("/tmp")?;
@@ -24,9 +24,11 @@ async fn disconnect_preserves_editable_draft_in_terminal() -> Result<()> {
     std::fs::create_dir_all(socket.parent().unwrap())?;
     let listener = UnixListener::bind(socket.as_path())?;
     let (disconnect_tx, mut disconnect_rx) = tokio::sync::oneshot::channel();
+    let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
     let server_cwd = repo_root.clone();
     let server = tokio::spawn(async move {
         let mut methods = Vec::new();
+        let mut restore_rx = Some(restore_rx);
         let id = "00000000-0000-0000-0000-000000000001";
         let thread = json!({
             "id": id, "sessionId": id, "preview": "", "ephemeral": false,
@@ -34,7 +36,7 @@ async fn disconnect_preserves_editable_draft_in_terminal() -> Result<()> {
             "status": {"type": "active", "activeFlags": []}, "cwd": server_cwd,
             "cliVersion": "0.0.0", "source": "cli", "turns": [{"id": "running", "items": [], "status": "inProgress", "error": null}]
         });
-        for connection in 0..1 {
+        for connection in 0..2 {
             let mut socket = loop {
                 let (stream, _) = listener.accept().await?;
                 // Startup probes the default daemon socket before opening its WebSocket.
@@ -57,6 +59,9 @@ async fn disconnect_preserves_editable_draft_in_terminal() -> Result<()> {
                     continue;
                 };
                 methods.push(request.method.clone());
+                if connection == 1 && request.method == "initialize" {
+                    restore_rx.take().unwrap().await?;
+                }
                 let result = match request.method.as_str() {
                     "initialize" => json!({"userAgent": "reconnect-pty"}),
                     "account/read" => {
@@ -92,6 +97,22 @@ async fn disconnect_preserves_editable_draft_in_terminal() -> Result<()> {
                             .into(),
                     ))
                     .await?;
+                if connection == 1 && request.method == "thread/resume" {
+                    // Keep the recovered turn running: its output must appear without waiting
+                    // for turn/completed or rebuilding the transcript.
+                    socket
+                        .send(Message::Text(
+                            json!({
+                                "method": "item/agentMessage/delta", "params": {
+                                    "threadId": id, "turnId": "running", "itemId": "live-item",
+                                    "delta": "fresh-notification-after-reconnect\n"
+                                }
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .await?;
+                }
             }
         }
         Ok::<_, anyhow::Error>(methods)
@@ -99,11 +120,13 @@ async fn disconnect_preserves_editable_draft_in_terminal() -> Result<()> {
     let mut terminal = PtyCodex::start(&repo_root, codex_home)?;
     terminal.wait_for_startup()?;
     let mut disconnect_tx = Some(disconnect_tx);
+    let mut restore_tx = Some(restore_tx);
     for expected in [
         "gpt-5.6-terra",
         "preserved-draft",
-        "Connection lost",
+        "Reconnecting",
         "preserved-draft!",
+        "fresh-notification-after-reconnect",
     ] {
         let deadline = Instant::now() + Duration::from_secs(/*secs*/ 30);
         while !terminal.screen_contains(expected) && Instant::now() < deadline {
@@ -119,7 +142,10 @@ async fn disconnect_preserves_editable_draft_in_terminal() -> Result<()> {
             "preserved-draft" => {
                 disconnect_tx.take().unwrap().send(()).unwrap();
             }
-            "Connection lost" => terminal.write_input(b"!")?,
+            "Reconnecting" => terminal.write_input(b"!")?,
+            "preserved-draft!" => {
+                restore_tx.take().unwrap().send(()).unwrap();
+            }
             _ => {}
         }
     }
@@ -134,7 +160,7 @@ async fn disconnect_preserves_editable_draft_in_terminal() -> Result<()> {
             .iter()
             .filter(|method| *method == "thread/resume")
             .count(),
-        0
+        1
     );
     assert!(!methods.iter().any(|method| method == "turn/start"));
     Ok(())
