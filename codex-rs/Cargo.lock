@@ -2638,6 +2638,7 @@ dependencies = [
 name = "codex-code-mode-runtime"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "codex-code-mode-protocol",
  "codex-protocol",
  "deno_core_icudata",

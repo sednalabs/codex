@@ -13,6 +13,7 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 codex-code-mode-protocol = { workspace = true }
 codex-protocol = { workspace = true }
 deno_core_icudata = { workspace = true }
