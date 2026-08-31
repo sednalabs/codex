@@ -532,7 +532,10 @@ mod tests {
             "opaque-budget",
             "opaque-freshness",
         ] {
-            assert!(!rendered.contains(secret), "debug output leaked a sentinel value");
+            assert!(
+                !rendered.contains(secret),
+                "debug output leaked a sentinel value"
+            );
         }
         assert!(rendered.contains("<redacted>"));
     }
