@@ -716,11 +716,7 @@ See the Codex keymap documentation for supported actions and examples."
             Ok(exit_reason)
         } else {
             loop {
-                if app.reconnect.offline
-                    && !app.reconnect.failed
-                    && reconnect.is_none()
-                    && app.reconnect.presentation == reconnect::ReconnectPresentation::Conversation
-                {
+                if app.reconnect.offline && !app.reconnect.failed && reconnect.is_none() {
                     reconnect = Some(Box::pin(reconnect::reconnect(
                         app.app_server_target.clone(),
                         app.config.clone(),

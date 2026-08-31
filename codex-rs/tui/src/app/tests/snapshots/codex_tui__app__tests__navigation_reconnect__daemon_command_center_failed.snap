@@ -1,10 +1,20 @@
 ---
-source: tui/src/app/tests/disconnect_tests.rs
+source: tui/src/app/tests/navigation_reconnect_tests.rs
 expression: "render_bottom_popup(&app.chat_widget, 100)"
 ---
   Agent command center
-  Reconnecting — agent list is stale
+  Reconnect failed — agent list is stale; relaunch to retry
   ────────────────────────────────────────────────────────────────────────────────────────────────
+  /tmp/project  2                                         │ Task details
+  › ● Selected task  Working                              │
+    ○ Vanished task  Ready                                │ Selected task
+                                                          │ ● Working
+                                                          │
+                                                          │ Project
+                                                          │ /tmp/project
+                                                          │
+                                                          │ Latest activity
+                                                          │ Selected task
                                                           │
                                                           │
                                                           │
@@ -14,15 +24,5 @@ expression: "render_bottom_popup(&app.chat_widget, 100)"
                                                           │
                                                           │
                                                           │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-  New task › task draft!
+  New task › Keep this task draft!
   ctrl+c quit · actions paused until the list is refreshed

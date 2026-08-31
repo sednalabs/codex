@@ -367,7 +367,11 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> Result<bool> {
-        if self.thread_event_channels.contains_key(&thread_id) {
+        if self
+            .thread_event_channels
+            .get(&thread_id)
+            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live)
+        {
             return Ok(true);
         }
 
@@ -380,6 +384,14 @@ impl App {
             .await
         {
             Ok(started) => {
+                if let Some(entry) = self.agent_navigation.get(&thread_id).cloned() {
+                    self.upsert_agent_picker_thread(
+                        thread_id,
+                        entry.agent_nickname,
+                        entry.agent_role,
+                        /*is_closed*/ false,
+                    );
+                }
                 if started.blocks_direct_input {
                     self.agent_navigation.mark_parent_owned(thread_id);
                 }
@@ -417,18 +429,40 @@ impl App {
                     ));
                 }
                 let mut session = self.session_state_for_thread_read(thread_id, &thread).await;
+                // Reads have no settings. Keep this cached thread's permissions rather than
+                // inferring them from the conversation that is currently displayed.
+                if let Some(channel) = self.thread_event_channels.get(&thread_id)
+                    && let Some(cached) = channel.store.lock().await.session.as_ref()
+                {
+                    session.approval_policy = cached.approval_policy;
+                    session.permission_profile = cached.permission_profile.clone();
+                    session.active_permission_profile = cached.active_permission_profile.clone();
+                    session.approvals_reviewer = cached.approvals_reviewer;
+                }
                 // `thread/read` can seed replay state, but it does not attach the app-server
                 // listener that `thread/resume` establishes, so treat this path as replay-only.
                 session.model.clear();
                 (session, turns, false)
             }
         };
+        let recap_progress =
+            if live_attached && let Some(channel) = self.thread_event_channels.remove(&thread_id) {
+                let store = channel.store.lock().await;
+                if let Some(input) = store.input_state.clone() {
+                    self.agents_overview.input_states.insert(thread_id, input);
+                }
+                store.recap_progress()
+            } else {
+                Default::default()
+            };
         let channel = self.ensure_thread_channel(thread_id);
         if !live_attached {
             channel.mark_replay_only();
         }
         let mut store = channel.store.lock().await;
         store.set_session(session, turns);
+        store.merge_recap_progress(recap_progress);
+        store.rebase_buffer_after_session_refresh();
         Ok(live_attached)
     }
 
@@ -471,8 +505,22 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> Result<()> {
+        let cached_session = if self.thread_unavailable(thread_id) {
+            self.thread_event_channels[&thread_id]
+                .store
+                .lock()
+                .await
+                .session
+                .clone()
+        } else {
+            None
+        };
         if self.active_thread_id == Some(thread_id) {
-            return Ok(());
+            if !self.thread_unavailable(thread_id) {
+                return Ok(());
+            }
+            // Detach the cached receiver before a successful attachment replaces its channel.
+            self.store_active_thread_receiver().await;
         }
 
         // A tracked side thread stays loaded until it is explicitly discarded and already has a
@@ -491,7 +539,6 @@ impl App {
             .agent_navigation
             .get(&thread_id)
             .is_some_and(|entry| entry.is_closed);
-        is_replay_only |= self.thread_unavailable(thread_id);
         let mut attached_replay_only = false;
         if self.should_attach_live_thread_for_selection(thread_id) {
             match self
@@ -500,7 +547,11 @@ impl App {
             {
                 Ok(live_attached) => {
                     attached_replay_only = !live_attached;
-                    is_replay_only |= attached_replay_only;
+                    is_replay_only = attached_replay_only;
+                }
+                Err(_) if self.thread_event_channels.contains_key(&thread_id) => {
+                    is_replay_only = true;
+                    attached_replay_only = true;
                 }
                 Err(err) => {
                     self.chat_widget.add_error_message(format!(
@@ -541,10 +592,22 @@ impl App {
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
             return Ok(());
         };
-        let recap_progress = channel.store.lock().await.recap_progress();
-        if snapshot.input_state.is_none() {
-            snapshot.input_state = self.agents_overview.input_states.remove(&thread_id);
-        }
+        let recap_progress = {
+            let mut store = channel.store.lock().await;
+            if let (Some(cached), Some(session)) =
+                (cached_session.as_ref(), snapshot.session.as_mut())
+            {
+                self.restore_runtime_permissions(session, cached);
+                store.session = Some(session.clone());
+                if !is_replay_only && self.primary_thread_id == Some(thread_id) {
+                    self.primary_session_configured = Some(session.clone());
+                }
+            }
+            store.recap_progress()
+        };
+        snapshot.input_state = snapshot
+            .input_state
+            .or(self.agents_overview.input_states.remove(&thread_id));
 
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = Some(receiver);
@@ -604,11 +667,13 @@ impl App {
     }
 
     pub(super) fn should_attach_live_thread_for_selection(&self, thread_id: ThreadId) -> bool {
-        !self.thread_event_channels.contains_key(&thread_id)
+        self.thread_event_channels
+            .get(&thread_id)
+            .is_none_or(|channel| channel.attachment() != ThreadEventAttachment::Live)
             && self
                 .agent_navigation
                 .get(&thread_id)
-                .is_none_or(|entry| !entry.is_closed)
+                .is_none_or(|entry| !entry.is_closed || self.thread_unavailable(thread_id))
     }
 
     pub(super) fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {

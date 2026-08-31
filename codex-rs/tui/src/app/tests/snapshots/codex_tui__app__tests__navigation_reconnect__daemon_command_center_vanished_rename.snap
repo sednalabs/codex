@@ -1,10 +1,20 @@
 ---
-source: tui/src/app/tests/disconnect_tests.rs
+source: tui/src/app/tests/navigation_reconnect_tests.rs
 expression: "render_bottom_popup(&app.chat_widget, 100)"
 ---
   Agent command center
-  Reconnecting — agent list is stale
+  0 need input   1 working   1 ready
   ────────────────────────────────────────────────────────────────────────────────────────────────
+  /tmp/project  2                                         │ Task details
+  › ● New task  Working                                   │
+    ○ Selected task  Ready                                │ New task
+                                                          │ ● Working
+                                                          │
+                                                          │ Project
+                                                          │ /tmp/project
+                                                          │
+                                                          │ Latest activity
+                                                          │ New task
                                                           │
                                                           │
                                                           │
@@ -14,15 +24,5 @@ expression: "render_bottom_popup(&app.chat_widget, 100)"
                                                           │
                                                           │
                                                           │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-                                                          │
-  New task › task draft!
-  ctrl+c quit · actions paused until the list is refreshed
+  New task › Describe a task and press enter to dispatch it
+  ↑↓ navigate  enter open  ctrl+f search  ctrl+s group  ctrl+r rename  ctrl+x stop  esc back

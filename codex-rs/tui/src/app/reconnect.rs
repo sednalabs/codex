@@ -1,7 +1,6 @@
 //! TUI-only out-of-process reconnection. Each attempt initializes a fresh client and rejoins existing
 //! threads using ordinary resume/history semantics; no user operation is retried.
-//! Offline input and old async completions are quarantined. Cached conversations stay read-only
-//! until they can be reattached; command-center recovery is handled separately.
+//! Offline input and old async completions are quarantined.
 
 use super::*;
 use crate::app_server_session::ResumeModelSettings;
@@ -113,6 +112,36 @@ pub(super) async fn reconnect(
 }
 
 impl App {
+    // Preserve local choices for future input, without replaying failed settings writes or
+    // changing the server's authorization for work that was already admitted.
+    pub(super) fn restore_runtime_permissions(
+        &self,
+        session: &mut ThreadSessionState,
+        cached: &ThreadSessionState,
+    ) {
+        if self.current_displayed_thread_id() != Some(session.thread_id)
+            && self.primary_thread_id != Some(session.thread_id)
+        {
+            return;
+        }
+        // Side conversations can replace the app-wide overrides. Only copy choices
+        // that still match this conversation's own cached settings.
+        if let Some(policy) = self.runtime_approval_policy_override
+            && policy == cached.approval_policy
+        {
+            session.approval_policy = policy;
+        }
+        if let Some(profile) = &self.runtime_permission_profile_override
+            && profile.permission_profile == cached.permission_profile
+            && profile.active_permission_profile == cached.active_permission_profile
+            && self.config.approvals_reviewer == cached.approvals_reviewer
+        {
+            session.permission_profile = profile.permission_profile.clone();
+            session.active_permission_profile = profile.active_permission_profile.clone();
+            session.approvals_reviewer = self.config.approvals_reviewer;
+        }
+    }
+
     pub(super) fn thread_unavailable(&self, id: ThreadId) -> bool {
         !matches!(self.app_server_target, AppServerTarget::Embedded)
             && self
@@ -146,7 +175,7 @@ impl App {
                 .is_some()
             {
                 if let Ok(mut state) = self.agents_overview.view_state.lock() {
-                    state.connection_notice = Some("Disconnected — agent list is stale");
+                    state.connection_notice = Some("Reconnecting — agent list is stale");
                     if let Some(task) = state.refresh_task.take() {
                         task.abort();
                     }
@@ -181,6 +210,10 @@ impl App {
             bootstrap,
             thread,
         } = connected;
+        let selected = self
+            .chat_widget
+            .selected_index_for_present_view(agents_overview::AGENTS_OVERVIEW_VIEW_ID)
+            .and_then(|index| self.agents_overview.visible_thread_ids.get(index).copied());
         let displayed = self.current_displayed_thread_id();
         let mut input = self.chat_widget.capture_thread_input_state();
         if let Some(input) = input.as_mut() {
@@ -249,29 +282,10 @@ impl App {
         }
         if let Some(mut started) = thread {
             let id = started.session.thread_id;
-            // A lost settings response can leave the server snapshot behind the user's choice.
-            // Side conversations can replace the app-wide overrides, so only restore choices
-            // that still match this conversation's own cached settings.
-            if (self.current_displayed_thread_id() == Some(id)
-                || self.primary_thread_id == Some(id))
-                && let Some(channel) = self.thread_event_channels.get(&id)
+            if let Some(channel) = self.thread_event_channels.get(&id)
                 && let Some(cached) = channel.store.lock().await.session.as_ref()
             {
-                if let Some(policy) = self.runtime_approval_policy_override
-                    && policy == cached.approval_policy
-                {
-                    started.session.approval_policy = policy;
-                }
-                if let Some(profile) = &self.runtime_permission_profile_override
-                    && profile.permission_profile == cached.permission_profile
-                    && profile.active_permission_profile == cached.active_permission_profile
-                    && self.config.approvals_reviewer == cached.approvals_reviewer
-                {
-                    started.session.permission_profile = profile.permission_profile.clone();
-                    started.session.active_permission_profile =
-                        profile.active_permission_profile.clone();
-                    started.session.approvals_reviewer = self.config.approvals_reviewer;
-                }
+                self.restore_runtime_permissions(&mut started.session, cached);
             }
             self.agents_overview.input_states.remove(&id);
             if started
@@ -328,6 +342,14 @@ impl App {
             );
             self.replace_chat_widget(ChatWidget::new_with_app_event(init));
             self.chat_widget.restore_reconnected_input(input);
+        }
+        if self.reconnect.presentation == ReconnectPresentation::Overview {
+            if let Ok(mut state) = self.agents_overview.view_state.lock() {
+                state.connection_notice = None;
+            }
+            let view = self.agents_overview_view(self.agents_overview.threads.clone(), selected);
+            self.chat_widget.show_bottom_pane_view(Box::new(view));
+            self.refresh_agents_overview_threads(app_server);
         }
         // Only accept fresh task-tool calls once this connection and its event queue are adopted.
         if let ThreadToolTransport::Mcp(server) = app_server.thread_tool_transport() {

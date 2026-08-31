@@ -8638,3 +8638,7 @@ async fn start_config_write_test_app_server(app: &App) -> Result<AppServerSessio
 
 #[path = "tests/active_reconnect_tests.rs"]
 mod active_reconnect;
+
+#[cfg(unix)]
+#[path = "tests/navigation_reconnect_tests.rs"]
+mod navigation_reconnect;
