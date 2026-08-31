@@ -64,8 +64,10 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::server::Request;
+use tokio_tungstenite::tungstenite::handshake::server::Response;
 use uuid::Uuid;
 use wiremock::Match;
 use wiremock::Mock;
@@ -514,7 +516,7 @@ async fn conversation_start_defaults_to_v2_and_gpt_realtime_1_5() -> Result<()> 
 }
 
 #[test_matrix(
-    [ConversationStartTransport::Websocket, ConversationStartTransport::ExistingCall { call_id: "rtc_existing".to_string() }],
+    [ConversationStartTransport::Websocket, ConversationStartTransport::ExistingCall { call_id: "rtc_existing".to_string(), sideband_base_url: None }],
     [None, Some(ThreadSource::User)]
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1034,22 +1036,29 @@ async fn conversation_webrtc_start_posts_generated_session() -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum SidebandReconnectTransport {
+    Webrtc,
+    ExistingCallConfiguredEndpoint,
+    ExistingCallPerCallEndpoint,
+}
+
+#[test_case(SidebandReconnectTransport::Webrtc; "core-created webrtc")]
 #[test_case(
-    ConversationStartTransport::Webrtc { sdp: "v=offer\r\n".to_string() };
-    "core-created webrtc"
+    SidebandReconnectTransport::ExistingCallConfiguredEndpoint;
+    "client-created existing call"
 )]
 #[test_case(
-    ConversationStartTransport::ExistingCall { call_id: "rtc_reconnect".to_string() };
-    "client-created existing call"
+    SidebandReconnectTransport::ExistingCallPerCallEndpoint;
+    "client-created existing call with per-call endpoint"
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conversation_webrtc_live_reconnects_sideband_after_unclean_disconnect(
-    transport: ConversationStartTransport,
+    transport: SidebandReconnectTransport,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let attaches_existing_call =
-        matches!(&transport, ConversationStartTransport::ExistingCall { .. });
+    let attaches_existing_call = !matches!(transport, SidebandReconnectTransport::Webrtc);
     let server = start_mock_server().await;
     Mock::given(method("POST"))
         .and(path("/v1/live"))
@@ -1072,10 +1081,41 @@ async fn conversation_webrtc_live_reconnects_sideband_after_unclean_disconnect(
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let realtime_ws_base_url = format!("ws://{}", listener.local_addr()?);
+    let unused_endpoint = start_websocket_server(vec![vec![]]).await;
+    let configured_base_url = match transport {
+        SidebandReconnectTransport::Webrtc
+        | SidebandReconnectTransport::ExistingCallConfiguredEndpoint => {
+            realtime_ws_base_url.clone()
+        }
+        SidebandReconnectTransport::ExistingCallPerCallEndpoint => {
+            unused_endpoint.uri().to_string()
+        }
+    };
+    let transport = match transport {
+        SidebandReconnectTransport::Webrtc => ConversationStartTransport::Webrtc {
+            sdp: "v=offer\r\n".to_string(),
+        },
+        SidebandReconnectTransport::ExistingCallConfiguredEndpoint => {
+            ConversationStartTransport::ExistingCall {
+                call_id: "rtc_reconnect".to_string(),
+                sideband_base_url: None,
+            }
+        }
+        SidebandReconnectTransport::ExistingCallPerCallEndpoint => {
+            ConversationStartTransport::ExistingCall {
+                call_id: "rtc_reconnect".to_string(),
+                sideband_base_url: Some(realtime_ws_base_url),
+            }
+        }
+    };
     let (inbound_flood_started_tx, inbound_flood_started_rx) = oneshot::channel();
     let sideband_server = tokio::spawn(async move {
+        let validate_handshake = |request: &Request, response: Response| {
+            assert_eq!(request.uri().to_string(), "/v1/live/rtc_reconnect");
+            Ok(response)
+        };
         let (stream, _) = listener.accept().await?;
-        let mut websocket = accept_async(stream).await?;
+        let mut websocket = accept_hdr_async(stream, validate_handshake).await?;
         websocket
             .send(Message::Text(
                 json!({
@@ -1139,7 +1179,7 @@ async fn conversation_webrtc_live_reconnects_sideband_after_unclean_disconnect(
         drop(websocket_rx);
 
         let (stream, _) = listener.accept().await?;
-        let mut websocket = accept_async(stream).await?;
+        let mut websocket = accept_hdr_async(stream, validate_handshake).await?;
         websocket
             .send(Message::Text(
                 json!({
@@ -1180,8 +1220,8 @@ async fn conversation_webrtc_live_reconnects_sideband_after_unclean_disconnect(
         let (mut stream, _) = listener.accept().await?;
         let mut request = vec![0_u8; 4096];
         let request_len = stream.read(&mut request).await?;
-        if !request[..request_len].starts_with(b"GET ") {
-            anyhow::bail!("expected reconnect websocket handshake");
+        if !request[..request_len].starts_with(b"GET /v1/live/rtc_reconnect HTTP/1.1\r\n") {
+            anyhow::bail!("expected reconnect websocket handshake for the same call");
         }
         stream
             .write_all(b"HTTP/1.1 410 Gone\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -1199,7 +1239,7 @@ async fn conversation_webrtc_live_reconnects_sideband_after_unclean_disconnect(
         config.experimental_realtime_ws_backend_prompt = Some("backend prompt".to_string());
         config.experimental_realtime_ws_model = Some("realtime-test-model".to_string());
         config.experimental_realtime_ws_startup_context = Some(String::new());
-        config.experimental_realtime_ws_base_url = Some(realtime_ws_base_url);
+        config.experimental_realtime_ws_base_url = Some(configured_base_url);
         config.realtime.version = RealtimeWsVersion::V3;
     });
     let test = builder.build_with_auto_env(&server).await?;
@@ -1315,6 +1355,9 @@ async fn conversation_webrtc_live_reconnects_sideband_after_unclean_disconnect(
     timeout(Duration::from_secs(10), sideband_server)
         .await
         .context("timed out waiting for sideband server")???;
+    assert!(unused_endpoint.handshakes().is_empty());
+    test.codex.shutdown_and_wait().await?;
+    unused_endpoint.shutdown().await;
     Ok(())
 }
 

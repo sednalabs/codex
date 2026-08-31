@@ -1272,7 +1272,10 @@ impl TurnRequestProcessor {
                         ConversationStartTransport::Webrtc { sdp }
                     }
                     ThreadRealtimeStartTransport::ExistingCall { call_id } => {
-                        ConversationStartTransport::ExistingCall { call_id }
+                        ConversationStartTransport::ExistingCall {
+                            call_id,
+                            sideband_base_url: None,
+                        }
                     }
                 }),
                 version: params.version,

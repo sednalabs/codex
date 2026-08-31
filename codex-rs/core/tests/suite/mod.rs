@@ -126,6 +126,7 @@ mod prompt_debug_tests;
 mod quota_exceeded;
 mod realtime_conversation;
 mod realtime_initial_items;
+mod realtime_sideband_endpoint;
 mod remote_env;
 mod remote_models;
 mod request_compression;
