@@ -586,7 +586,9 @@ async fn wait_for_automatic_turn_row(
         .fetch_optional(pool)
         .await?;
         if let Some(row) = row {
-            return Ok(row);
+            if row.6 != "started" {
+                return Ok(row);
+            }
         }
         let now = tokio::time::Instant::now();
         if now >= deadline {
