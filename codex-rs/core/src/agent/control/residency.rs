@@ -17,8 +17,12 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use std::collections::VecDeque;
+#[cfg(test)]
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::Mutex;
+#[cfg(test)]
+use std::task::Poll;
 use std::time::Duration;
 #[cfg(test)]
 use tokio::sync::Notify;
@@ -29,6 +33,8 @@ pub(super) struct V2Residency {
     state: Mutex<V2ResidencyState>,
     #[cfg(test)]
     terminal_idle_unload_completed: Notify,
+    #[cfg(test)]
+    terminal_idle_unload_deadline_polled: Notify,
 }
 
 #[derive(Default)]
@@ -152,9 +158,25 @@ impl AgentControl {
                         };
                         let runtime_activity_generation =
                             thread.session.input_queue.residency_activity_generation();
+                        let sleep = tokio::time::sleep(Duration::from_millis(timeout_ms));
+                        tokio::pin!(sleep);
+                        #[cfg(test)]
+                        {
+                            // Register the paused timer before tests advance virtual time. The
+                            // lifecycle generation is published before Tokio first polls Sleep,
+                            // so observing the generation alone is not an ordering guarantee.
+                            std::future::poll_fn(|cx| {
+                                let _ = sleep.as_mut().poll(cx);
+                                control
+                                    .v2_residency
+                                    .notify_terminal_idle_unload_deadline_polled();
+                                Poll::Ready(())
+                            })
+                            .await;
+                        }
                         let deadline_elapsed = tokio::select! {
                             () = watcher_cancellation.cancelled() => return,
-                            () = tokio::time::sleep(Duration::from_millis(timeout_ms)) => true,
+                            () = &mut sleep => true,
                             changed = status_rx.changed() => {
                                 if changed.is_err() {
                                     return;
@@ -674,8 +696,21 @@ impl V2Residency {
     }
 
     #[cfg(test)]
+    async fn wait_for_terminal_idle_unload_deadline_polled(&self) {
+        let notified = self.terminal_idle_unload_deadline_polled.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        notified.await;
+    }
+
+    #[cfg(test)]
     fn notify_terminal_idle_unload_complete(&self) {
         self.terminal_idle_unload_completed.notify_waiters();
+    }
+
+    #[cfg(test)]
+    fn notify_terminal_idle_unload_deadline_polled(&self) {
+        self.terminal_idle_unload_deadline_polled.notify_one();
     }
 
     #[cfg(test)]
