@@ -601,15 +601,10 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
     assert_eq!(control.v2_residency.resident_count(), 1);
 
     advance(Duration::from_millis(1)).await;
-    // The watcher may only observe the paused-clock deadline after this task yields. Advance
-    // bounded idle intervals so a deferred unload is retried without relying on wall-clock sleeps.
-    assert_thread_unloads_within_terminal_idle_intervals(
-        &manager,
-        child_thread_id,
-        Duration::from_millis(100),
-        /*max_intervals*/ 2,
-    )
-    .await;
+    control
+        .v2_residency
+        .wait_for_terminal_idle_unload(&manager, child_thread_id)
+        .await;
     assert_eq!(control.v2_residency.resident_count(), 0);
 }
 
