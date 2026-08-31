@@ -2,6 +2,7 @@ use crate::StartThreadOptions;
 use crate::ThreadManager;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
+use crate::agent::control::SpawnAgentOptions;
 use crate::agent::registry::AgentMetadata;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
@@ -543,25 +544,28 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
         .await
         .expect("start V2 root thread");
     let control = manager.agent_control();
-    let child_thread_id = control
-        .spawn_agent(
+    let child_source = Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(
+            AgentPath::root()
+                .join("idle_worker")
+                .expect("child agent path"),
+        ),
+        agent_nickname: None,
+        agent_role: Some("worker".to_string()),
+    }));
+    let child = control
+        .spawn_agent_with_communication(
             config,
-            // Keep initial delivery queue-only: this test controls the terminal transition below.
-            Vec::new(),
-            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: root.thread_id,
-                depth: 1,
-                agent_path: Some(
-                    AgentPath::root()
-                        .join("idle_worker")
-                        .expect("child agent path"),
-                ),
-                agent_nickname: None,
-                agent_role: Some("worker".to_string()),
-            })),
+            test_communication("queue-only spawned child", /*trigger_turn*/ false),
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, ThreadId::new()),
+            child_source,
+            SpawnAgentOptions::default(),
         )
         .await
         .expect("V2 child spawn should succeed");
+    let child_thread_id = child.thread_id;
     let child = manager
         .get_thread(child_thread_id)
         .await
@@ -584,8 +588,11 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
     .await;
     wait_for_terminal_idle_deadline_after(&metadata, prior_generation).await;
 
+    // Let the watcher poll its sleep future before advancing paused time. Without this handoff,
+    // the test can advance past the deadline before the newly armed timer is registered.
+    settle_terminal_idle_watcher().await;
     advance(Duration::from_millis(99)).await;
-    yield_now().await;
+    settle_terminal_idle_watcher().await;
     let before_deadline = manager
         .get_thread(child_thread_id)
         .await
@@ -594,7 +601,10 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
     assert_eq!(control.v2_residency.resident_count(), 1);
 
     advance(Duration::from_millis(1)).await;
-    wait_for_thread_to_unload_after_terminal_idle_deadline(&manager, child_thread_id).await;
+    control
+        .v2_residency
+        .wait_for_terminal_idle_unload(&manager, child_thread_id)
+        .await;
     assert_eq!(control.v2_residency.resident_count(), 0);
 }
 
@@ -1007,6 +1017,7 @@ async fn assert_thread_unloads_within_terminal_idle_intervals(
     max_intervals: usize,
 ) {
     for _ in 0..max_intervals {
+        settle_terminal_idle_watcher().await;
         advance(interval).await;
         if thread_unloads_after_terminal_idle_deadline(manager, thread_id).await {
             return;

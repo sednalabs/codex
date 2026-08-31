@@ -6,6 +6,8 @@ use crate::agent::registry::AgentRegistry;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::thread_manager::RemoveThreadIfSameResult;
+#[cfg(test)]
+use crate::thread_manager::ThreadManager;
 use crate::thread_manager::ThreadManagerState;
 use crate::thread_manager::V2ThreadUnloadResult;
 use codex_protocol::ThreadId;
@@ -18,11 +20,15 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
+#[cfg(test)]
+use tokio::sync::Notify;
 use tracing::warn;
 
 #[derive(Default)]
 pub(super) struct V2Residency {
     state: Mutex<V2ResidencyState>,
+    #[cfg(test)]
+    terminal_idle_unload_completed: Notify,
 }
 
 #[derive(Default)]
@@ -178,6 +184,8 @@ impl AgentControl {
                             TerminalIdleUnloadAttempt::Unloaded
                             | TerminalIdleUnloadAttempt::Missing => {
                                 control.forget_v2_residency(thread_id);
+                                #[cfg(test)]
+                                control.v2_residency.notify_terminal_idle_unload_complete();
                                 return;
                             }
                             TerminalIdleUnloadAttempt::SupersededIdentity => return,
@@ -647,6 +655,37 @@ impl V2Residency {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .residents
             .len()
+    }
+
+    #[cfg(test)]
+    async fn wait_for_terminal_idle_unload(&self, manager: &ThreadManager, thread_id: ThreadId) {
+        loop {
+            let notified = self.terminal_idle_unload_completed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            let manager_missing = manager.get_thread(thread_id).await.is_err();
+            let residency_missing = !self.contains_resident(thread_id);
+            if manager_missing && residency_missing {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    #[cfg(test)]
+    fn notify_terminal_idle_unload_complete(&self) {
+        self.terminal_idle_unload_completed.notify_waiters();
+    }
+
+    #[cfg(test)]
+    fn contains_resident(&self, thread_id: ThreadId) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .residents
+            .iter()
+            .any(|resident_thread_id| *resident_thread_id == thread_id)
     }
 
     fn pop_lru_candidate(&self, protected_thread_id: Option<ThreadId>) -> Option<ThreadId> {
