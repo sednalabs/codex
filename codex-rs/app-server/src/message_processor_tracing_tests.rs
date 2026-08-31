@@ -850,7 +850,7 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
             turn_start_response.turn.id,
             1,
             3,
-            "started".to_string(),
+            "recovered".to_string(),
         )
     );
 
