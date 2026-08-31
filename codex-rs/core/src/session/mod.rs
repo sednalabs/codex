@@ -668,6 +668,10 @@ impl Session {
         let model_info = models_manager
             .get_model_info(model.as_str(), &config.to_models_manager_config())
             .await;
+        // Intentionally resolve `enabled` and `use_history_notes_extension` only at
+        // thread startup. Both activation flags stay fixed for this thread runtime,
+        // even if the selected model changes later.
+        token_budget::apply_model_defaults(Arc::make_mut(&mut config), &model_info);
         let configured_config = Arc::clone(&config);
         let multi_agent_version = config.multi_agent_version_override().or_else(|| {
             resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version)
