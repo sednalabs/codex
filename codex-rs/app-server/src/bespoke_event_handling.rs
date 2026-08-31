@@ -1,6 +1,7 @@
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
 use crate::outgoing_message::ClientRequestResult;
+use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
 use crate::request_processors::populate_thread_turns_from_history;
 use crate::request_processors::thread_from_stored_thread;
@@ -129,6 +130,18 @@ use tracing::error;
 enum CommandExecutionApprovalPresentation {
     Network(V2NetworkApprovalContext),
     Command(CommandExecutionCompletionItem),
+}
+
+fn automatic_turn_connection_principal(connection_id: ConnectionId) -> String {
+    format!("connection:{}", connection_id.0)
+}
+
+fn parse_automatic_turn_connection_principal(principal: &str) -> Option<ConnectionId> {
+    principal
+        .strip_prefix("connection:")?
+        .parse()
+        .ok()
+        .map(ConnectionId)
 }
 
 #[derive(Debug, PartialEq)]
@@ -1024,7 +1037,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 return;
             }
 
-            let additional_details = if ev
+            let (additional_details, capability_owner) = if ev
                 .codex_error_info
                 .as_ref()
                 .is_some_and(|info| matches!(info, &CoreCodexErrorInfo::CyberPolicy))
@@ -1033,19 +1046,50 @@ pub(crate) async fn apply_bespoke_event_handling(
                 // delivered. Read the exact server-selected trigger/capability pair and carry it
                 // through the existing internal details channel. Missing state fails closed.
                 match conversation.state_db() {
-                    Some(state_db) => state_db
-                        .automatic_turn_capability_for_turn(conversation_id, &event_turn_id)
+                    Some(state_db) => match state_db
+                        .automatic_turn_capability_for_turn_with_principal(
+                            conversation_id,
+                            &event_turn_id,
+                        )
                         .await
-                        .and_then(|(trigger_turn_id, capability)| {
-                            AutomaticTurnProvenance::capability_details(
-                                &trigger_turn_id,
-                                &capability,
+                    {
+                        Some((trigger_turn_id, capability, principal)) => {
+                            let subscribed = outgoing.connection_ids();
+                            let parsed_principal = principal
+                                .as_deref()
+                                .and_then(parse_automatic_turn_connection_principal)
+                                .filter(|connection_id| subscribed.contains(connection_id));
+                            let owner =
+                                parsed_principal.or_else(|| subscribed.iter().copied().min());
+                            if principal
+                                .as_deref()
+                                .and_then(parse_automatic_turn_connection_principal)
+                                != owner
+                                && let Some(owner) = owner
+                            {
+                                let _ = state_db
+                                    .rebind_automatic_turn_capability_principal(
+                                        conversation_id,
+                                        &trigger_turn_id,
+                                        &capability,
+                                        &automatic_turn_connection_principal(owner),
+                                    )
+                                    .await;
+                            }
+                            (
+                                AutomaticTurnProvenance::capability_details(
+                                    &trigger_turn_id,
+                                    &capability,
+                                ),
+                                owner,
                             )
-                        }),
-                    None => None,
+                        }
+                        None => (None, None),
+                    },
+                    None => (None, None),
                 }
             } else {
-                None
+                (None, None)
             };
 
             let turn_error = TurnError {
@@ -1053,14 +1097,47 @@ pub(crate) async fn apply_bespoke_event_handling(
                 codex_error_info: ev.codex_error_info.map(V2CodexErrorInfo::from),
                 additional_details,
             };
-            handle_error_notification(
-                conversation_id,
-                &event_turn_id,
-                turn_error,
-                &outgoing,
-                &thread_state,
-            )
-            .await;
+            if let Some(owner) = capability_owner {
+                let non_owners = outgoing
+                    .connection_ids()
+                    .iter()
+                    .copied()
+                    .filter(|connection_id| *connection_id != owner)
+                    .collect::<Vec<_>>();
+                if !non_owners.is_empty() {
+                    let mut non_owner_error = turn_error.clone();
+                    non_owner_error.additional_details = None;
+                    handle_error_notification(
+                        conversation_id,
+                        &event_turn_id,
+                        non_owner_error,
+                        &outgoing.for_connections(non_owners),
+                        &thread_state,
+                    )
+                    .await;
+                }
+                handle_error_notification(
+                    conversation_id,
+                    &event_turn_id,
+                    turn_error,
+                    &outgoing.for_connections(vec![owner]),
+                    &thread_state,
+                )
+                .await;
+            } else {
+                // Without a server-selected owner, fail closed and never broadcast a bearer
+                // capability. The event itself remains visible to all subscribers.
+                let mut redacted_error = turn_error;
+                redacted_error.additional_details = None;
+                handle_error_notification(
+                    conversation_id,
+                    &event_turn_id,
+                    redacted_error,
+                    &outgoing,
+                    &thread_state,
+                )
+                .await;
+            }
         }
         EventMsg::StreamError(ev) => {
             // We don't need to update the turn summary store for stream errors as they are intermediate error states for retries,

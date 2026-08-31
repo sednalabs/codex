@@ -1,7 +1,9 @@
 use super::*;
+use crate::outgoing_message::ConnectionId;
 use codex_agent_extension::AgentInvocation;
 use codex_agent_extension::AgentRun;
 use codex_agent_extension::AgentRunner;
+use codex_protocol::automatic_turn::AutomaticTurnProvenance;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -18,6 +20,18 @@ use crate::image_url::is_remote_image_url;
 
 const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
     "direct app-server input is not allowed for multi-agent v2 sub-agents";
+
+fn automatic_turn_connection_principal(connection_id: ConnectionId) -> String {
+    format!("connection:{}", connection_id.0)
+}
+
+fn parse_automatic_turn_connection_principal(principal: &str) -> Option<ConnectionId> {
+    principal
+        .strip_prefix("connection:")?
+        .parse()
+        .ok()
+        .map(ConnectionId)
+}
 
 /// Mirrors the direct-input policy in both request validation and thread capability responses.
 pub(super) fn can_accept_direct_input(
@@ -352,6 +366,83 @@ impl TurnRequestProcessor {
         Ok(())
     }
 
+    async fn validate_automatic_turn_capability(
+        &self,
+        request_id: &ConnectionRequestId,
+        thread_id: ThreadId,
+        thread: &CodexThread,
+        client_user_message_id: Option<&str>,
+    ) -> Result<(), JSONRPCErrorError> {
+        let Some(client_user_message_id) = client_user_message_id else {
+            return Ok(());
+        };
+        let Some(provenance) =
+            AutomaticTurnProvenance::decode_client_user_message_id(client_user_message_id)
+        else {
+            // Preserve ordinary client-message compatibility. The state projection will ignore
+            // malformed or unknown envelopes and never treat them as trusted provenance.
+            return Ok(());
+        };
+        if provenance.thread_id != thread_id.to_string() {
+            return Err(invalid_request(
+                "automatic turn capability belongs to another thread",
+            ));
+        }
+        let Some(state_db) = thread.state_db() else {
+            return Ok(());
+        };
+
+        let principal = automatic_turn_connection_principal(request_id.connection_id);
+        let expected_principal = state_db
+            .automatic_turn_capability_principal(
+                thread_id,
+                &provenance.trigger_turn_id,
+                &provenance.capability,
+            )
+            .await;
+        let Some(expected_principal) = expected_principal else {
+            return Err(invalid_request("automatic turn capability is not pending"));
+        };
+
+        let subscribed = self
+            .thread_state_manager
+            .subscribed_connection_ids(thread_id)
+            .await;
+        let elected_connection = subscribed
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or(request_id.connection_id);
+        let previous_connection = expected_principal
+            .as_deref()
+            .and_then(parse_automatic_turn_connection_principal);
+        let previous_connection_is_live =
+            previous_connection.is_some_and(|connection_id| subscribed.contains(&connection_id));
+        if previous_connection_is_live && expected_principal.as_deref() != Some(principal.as_str())
+        {
+            return Err(invalid_request(
+                "automatic turn capability is bound to another connection",
+            ));
+        }
+        if !previous_connection_is_live && request_id.connection_id != elected_connection {
+            return Err(invalid_request(
+                "automatic turn capability requires the elected connection",
+            ));
+        }
+        if expected_principal.as_deref() != Some(principal.as_str()) {
+            state_db
+                .rebind_automatic_turn_capability_principal(
+                    thread_id,
+                    &provenance.trigger_turn_id,
+                    &provenance.capability,
+                    principal.as_str(),
+                )
+                .await
+                .map_err(|_| internal_error("failed to bind automatic turn capability"))?;
+        }
+        Ok(())
+    }
+
     fn normalize_collaboration_mode(
         &self,
         mut collaboration_mode: CollaborationMode,
@@ -489,6 +580,13 @@ impl TurnRequestProcessor {
                 .inspect_err(|error| {
                     self.track_error_response(&request_id, error, /*error_type*/ None);
                 })?;
+        self.validate_automatic_turn_capability(
+            &request_id,
+            thread_id,
+            thread.as_ref(),
+            params.client_user_message_id.as_deref(),
+        )
+        .await?;
         self.ensure_direct_input_allowed(&request_id, thread.as_ref())
             .await?;
         if let Err(error) = Self::validate_v2_input_limit(&params.input) {
@@ -577,10 +675,13 @@ impl TurnRequestProcessor {
             thread_settings,
         };
         let turn_id = thread
-            .submit_user_input_with_client_user_message_id(
+            .submit_user_input_with_client_user_message_id_and_principal(
                 turn_op,
                 self.request_trace_context(&request_id).await,
                 client_user_message_id,
+                Some(automatic_turn_connection_principal(
+                    request_id.connection_id,
+                )),
             )
             .await
             .map_err(|err| {
@@ -944,12 +1045,19 @@ impl TurnRequestProcessor {
         request_id: &ConnectionRequestId,
         params: TurnSteerParams,
     ) -> Result<TurnSteerResponse, JSONRPCErrorError> {
-        let (_, thread) = self
-            .load_thread(&params.thread_id)
-            .await
-            .inspect_err(|error| {
-                self.track_error_response(request_id, error, /*error_type*/ None);
-            })?;
+        let (thread_id, thread) =
+            self.load_thread(&params.thread_id)
+                .await
+                .inspect_err(|error| {
+                    self.track_error_response(request_id, error, /*error_type*/ None);
+                })?;
+        self.validate_automatic_turn_capability(
+            request_id,
+            thread_id,
+            thread.as_ref(),
+            params.client_user_message_id.as_deref(),
+        )
+        .await?;
         self.ensure_direct_input_allowed(request_id, thread.as_ref())
             .await?;
 
@@ -976,12 +1084,15 @@ impl TurnRequestProcessor {
         let additional_context = map_additional_context(params.additional_context);
 
         let turn_id = thread
-            .steer_input(
+            .steer_input_with_principal(
                 mapped_items,
                 additional_context,
                 Some(&params.expected_turn_id),
                 params.client_user_message_id,
                 params.responsesapi_client_metadata,
+                Some(automatic_turn_connection_principal(
+                    request_id.connection_id,
+                )),
             )
             .await
             .map_err(|err| {

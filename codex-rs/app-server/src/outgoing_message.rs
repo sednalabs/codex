@@ -171,6 +171,18 @@ impl ThreadScopedOutgoingMessageSender {
             .await;
     }
 
+    pub(crate) fn for_connections(&self, connection_ids: Vec<ConnectionId>) -> Self {
+        Self {
+            outgoing: Arc::clone(&self.outgoing),
+            connection_ids: Arc::new(connection_ids),
+            thread_id: self.thread_id,
+        }
+    }
+
+    pub(crate) fn connection_ids(&self) -> &[ConnectionId] {
+        self.connection_ids.as_slice()
+    }
+
     pub(crate) async fn send_global_server_notification(&self, notification: ServerNotification) {
         self.outgoing.send_server_notification(notification).await;
     }

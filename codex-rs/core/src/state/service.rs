@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -92,6 +93,9 @@ pub(crate) struct SessionServices {
     pub(crate) usage_logger: Option<Mutex<UsageLogger>>,
     pub(crate) tool_search_handler_cache: ToolSearchHandlerCache,
     pub(crate) turn_environments: Arc<ThreadEnvironments>,
+    /// Server-authenticated principals for submissions whose events are still in flight. The
+    /// app-server supplies these through the internal thread bridge; they are never client data.
+    pub(crate) automatic_turn_principals: Mutex<HashMap<String, String>>,
 }
 
 impl SessionServices {
@@ -100,8 +104,38 @@ impl SessionServices {
         reason = "usage logger event handling mutates ordered in-memory snapshots around async ledger writes"
     )]
     pub(crate) async fn log_usage_event(&self, thread_id: ThreadId, event: &Event) {
-        if let Some(state_db) = &self.state_db {
-            state_db.record_automatic_turn_event(thread_id, event).await;
+        let relevant_to_automatic_turns = matches!(
+            &event.msg,
+            codex_protocol::protocol::EventMsg::Error(_)
+                | codex_protocol::protocol::EventMsg::ItemCompleted(_)
+                | codex_protocol::protocol::EventMsg::TurnComplete(_)
+        );
+        if relevant_to_automatic_turns {
+            if let Some(state_db) = &self.state_db {
+                let principal = self
+                    .automatic_turn_principals
+                    .lock()
+                    .await
+                    .get(&event.id)
+                    .cloned();
+                state_db
+                    .record_automatic_turn_event_with_principal(
+                        thread_id,
+                        event,
+                        principal.as_deref(),
+                    )
+                    .await;
+            }
+
+            if matches!(
+                &event.msg,
+                codex_protocol::protocol::EventMsg::TurnComplete(_)
+            ) {
+                self.automatic_turn_principals
+                    .lock()
+                    .await
+                    .remove(&event.id);
+            }
         }
 
         let Some(usage_logger) = &self.usage_logger else {
@@ -109,5 +143,17 @@ impl SessionServices {
         };
 
         usage_logger.lock().await.record_event(event).await;
+    }
+
+    pub(crate) async fn register_automatic_turn_principal(
+        &self,
+        event_occurrence_id: impl Into<String>,
+        principal: impl Into<String>,
+    ) {
+        self.automatic_turn_principals
+            .lock()
+            .await
+            .entry(event_occurrence_id.into())
+            .or_insert_with(|| principal.into());
     }
 }

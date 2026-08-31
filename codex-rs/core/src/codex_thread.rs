@@ -366,12 +366,36 @@ impl CodexThread {
         trace: Option<W3cTraceContext>,
         client_user_message_id: Option<String>,
     ) -> CodexResult<String> {
+        self.submit_user_input_with_client_user_message_id_and_principal(
+            op,
+            trace,
+            client_user_message_id,
+            None,
+        )
+        .await
+    }
+
+    /// Submit user input while retaining a server-authenticated operation principal for the
+    /// resulting event occurrence. The principal is internal provenance and never client data.
+    pub async fn submit_user_input_with_client_user_message_id_and_principal(
+        &self,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+        client_user_message_id: Option<String>,
+        principal: Option<String>,
+    ) -> CodexResult<String> {
         self.session
             .services
             .agent_control
             .ensure_execution_capacity_for_op(self.session.thread_id(), &op)
             .await?;
         let id = new_submission_id();
+        if let Some(principal) = principal {
+            self.session
+                .services
+                .register_automatic_turn_principal(id.clone(), principal)
+                .await;
+        }
         self.submit_tracked(Submission {
             id: id.clone(),
             op,
@@ -395,6 +419,33 @@ impl CodexThread {
         client_user_message_id: Option<String>,
         responsesapi_client_metadata: Option<HashMap<String, String>>,
     ) -> Result<String, SteerInputError> {
+        self.steer_input_with_principal(
+            input,
+            additional_context,
+            expected_turn_id,
+            client_user_message_id,
+            responsesapi_client_metadata,
+            None,
+        )
+        .await
+    }
+
+    /// Steer a turn while retaining a server-authenticated principal for its event occurrence.
+    pub async fn steer_input_with_principal(
+        &self,
+        input: Vec<UserInput>,
+        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        expected_turn_id: Option<&str>,
+        client_user_message_id: Option<String>,
+        responsesapi_client_metadata: Option<HashMap<String, String>>,
+        principal: Option<String>,
+    ) -> Result<String, SteerInputError> {
+        if let (Some(expected_turn_id), Some(principal)) = (expected_turn_id, principal) {
+            self.session
+                .services
+                .register_automatic_turn_principal(expected_turn_id.to_string(), principal)
+                .await;
+        }
         let _residency_transition = self.session.input_queue.begin_residency_activity().await;
         self.session
             .steer_input(

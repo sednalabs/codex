@@ -35,11 +35,24 @@ impl StateRuntime {
         thread_id: ThreadId,
         event: &Event,
     ) -> Option<String> {
+        self.record_automatic_turn_event_with_principal(thread_id, event, None)
+            .await
+    }
+
+    /// Project one event with a server-authenticated principal associated with its submission.
+    /// The principal is optional for legacy callers and direct state-runtime tests; app-server
+    /// submissions always provide it before entering the session event loop.
+    pub async fn record_automatic_turn_event_with_principal(
+        &self,
+        thread_id: ThreadId,
+        event: &Event,
+        principal: Option<&str>,
+    ) -> Option<String> {
         if self.usage_ledger_pool().is_closed() {
             return None;
         }
         match self
-            .record_automatic_turn_event_inner(thread_id, event)
+            .record_automatic_turn_event_inner(thread_id, event, principal)
             .await
         {
             Ok(capability) => capability,
@@ -72,6 +85,79 @@ impl StateRuntime {
         .flatten()
     }
 
+    /// Return the principal bound to a pending capability. `None` in the outer option means no
+    /// pending capability; a row with a null principal is a legacy unbound ticket.
+    pub async fn automatic_turn_capability_principal(
+        &self,
+        thread_id: ThreadId,
+        trigger_turn_id: &str,
+        capability: &str,
+    ) -> Option<Option<String>> {
+        if trigger_turn_id.is_empty()
+            || capability.is_empty()
+            || self.usage_ledger_pool().is_closed()
+        {
+            return None;
+        }
+        sqlx::query_scalar(
+            "SELECT connection_principal FROM usage_automatic_turn_eligibility WHERE thread_id = ? AND trigger_turn_id = ? AND capability = ?",
+        )
+        .bind(thread_id.to_string())
+        .bind(trigger_turn_id)
+        .bind(capability)
+        .fetch_optional(self.usage_ledger_pool().as_ref())
+        .await
+        .ok()
+    }
+
+    /// Atomically claim an unbound pending capability for a server-selected principal.
+    pub async fn claim_automatic_turn_capability_principal(
+        &self,
+        thread_id: ThreadId,
+        trigger_turn_id: &str,
+        capability: &str,
+        principal: &str,
+    ) -> anyhow::Result<bool> {
+        if trigger_turn_id.is_empty() || capability.is_empty() || principal.is_empty() {
+            return Ok(false);
+        }
+        let result = sqlx::query(
+            "UPDATE usage_automatic_turn_eligibility SET connection_principal = ? WHERE thread_id = ? AND trigger_turn_id = ? AND capability = ? AND connection_principal IS NULL",
+        )
+        .bind(principal)
+        .bind(thread_id.to_string())
+        .bind(trigger_turn_id)
+        .bind(capability)
+        .execute(self.usage_ledger_pool().as_ref())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Rebind a pending capability after its previous connection principal has disconnected and
+    /// the app-server has elected a replacement subscribed connection.
+    pub async fn rebind_automatic_turn_capability_principal(
+        &self,
+        thread_id: ThreadId,
+        trigger_turn_id: &str,
+        capability: &str,
+        principal: &str,
+    ) -> anyhow::Result<bool> {
+        if trigger_turn_id.is_empty() || capability.is_empty() || principal.is_empty() {
+            return Ok(false);
+        }
+        let result = sqlx::query(
+            "UPDATE usage_automatic_turn_eligibility SET connection_principal = ? WHERE thread_id = ? AND trigger_turn_id = ? AND capability = ? AND (connection_principal IS NULL OR connection_principal != ?)",
+        )
+        .bind(principal)
+        .bind(thread_id.to_string())
+        .bind(trigger_turn_id)
+        .bind(capability)
+        .bind(principal)
+        .execute(self.usage_ledger_pool().as_ref())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Return the server-selected trigger identity and capability for the current policy event.
     /// Trigger identities may carry an occurrence suffix when a regular turn id is reused.
     pub async fn automatic_turn_capability_for_turn(
@@ -79,11 +165,23 @@ impl StateRuntime {
         thread_id: ThreadId,
         turn_id: &str,
     ) -> Option<(String, String)> {
+        self.automatic_turn_capability_for_turn_with_principal(thread_id, turn_id)
+            .await
+            .map(|(trigger_turn_id, capability, _)| (trigger_turn_id, capability))
+    }
+
+    /// Return the server-selected trigger identity, capability, and bound principal for a
+    /// current policy event.
+    pub async fn automatic_turn_capability_for_turn_with_principal(
+        &self,
+        thread_id: ThreadId,
+        turn_id: &str,
+    ) -> Option<(String, String, Option<String>)> {
         if turn_id.is_empty() || self.usage_ledger_pool().is_closed() {
             return None;
         }
         sqlx::query_as(
-            "SELECT trigger_turn_id, capability FROM usage_automatic_turn_eligibility WHERE thread_id = ? AND (trigger_turn_id = ? OR trigger_turn_id LIKE ?) LIMIT 1",
+            "SELECT trigger_turn_id, capability, connection_principal FROM usage_automatic_turn_eligibility WHERE thread_id = ? AND (trigger_turn_id = ? OR trigger_turn_id LIKE ?) LIMIT 1",
         )
         .bind(thread_id.to_string())
         .bind(turn_id)
@@ -98,12 +196,19 @@ impl StateRuntime {
         &self,
         thread_id: ThreadId,
         event: &Event,
+        principal: Option<&str>,
     ) -> anyhow::Result<Option<String>> {
         match &event.msg {
             EventMsg::ItemCompleted(item_event) => {
                 if let TurnItem::UserMessage(item) = &item_event.item {
-                    self.record_user_message(thread_id, &item_event.turn_id, item)
-                        .await?;
+                    self.record_user_message(
+                        thread_id,
+                        &event.id,
+                        &item_event.turn_id,
+                        item,
+                        principal,
+                    )
+                    .await?;
                 }
                 Ok(None)
             }
@@ -118,7 +223,12 @@ impl StateRuntime {
                     .map(Self::automatic_turn_error_outcome)
                     .unwrap_or(OUTCOME_RECOVERED);
                 let completed = self
-                    .complete_automatic_turn(thread_id, turn_complete.turn_id.as_str(), outcome)
+                    .complete_automatic_turn(
+                        thread_id,
+                        event.id.as_str(),
+                        turn_complete.turn_id.as_str(),
+                        outcome,
+                    )
                     .await?;
                 if let Some(error) = turn_complete.error.as_ref()
                     && error
@@ -127,7 +237,13 @@ impl StateRuntime {
                         .is_some_and(|info| matches!(info, &CodexErrorInfo::CyberPolicy))
                 {
                     return self
-                        .record_policy_trigger(thread_id, turn_complete.turn_id.as_str(), completed)
+                        .record_policy_trigger(
+                            thread_id,
+                            event.id.as_str(),
+                            turn_complete.turn_id.as_str(),
+                            completed,
+                            principal,
+                        )
                         .await;
                 }
                 Ok(None)
@@ -135,7 +251,12 @@ impl StateRuntime {
             EventMsg::Error(error) => {
                 let outcome = Self::automatic_turn_error_outcome(error);
                 let completed = self
-                    .complete_automatic_turn(thread_id, event.id.as_str(), outcome)
+                    .complete_automatic_turn(
+                        thread_id,
+                        event.id.as_str(),
+                        event.id.as_str(),
+                        outcome,
+                    )
                     .await?;
                 if error
                     .codex_error_info
@@ -143,7 +264,13 @@ impl StateRuntime {
                     .is_some_and(|info| matches!(info, &CodexErrorInfo::CyberPolicy))
                 {
                     return self
-                        .record_policy_trigger(thread_id, event.id.as_str(), completed)
+                        .record_policy_trigger(
+                            thread_id,
+                            event.id.as_str(),
+                            event.id.as_str(),
+                            completed,
+                            principal,
+                        )
                         .await;
                 }
                 Ok(None)
@@ -155,8 +282,10 @@ impl StateRuntime {
     async fn record_user_message(
         &self,
         thread_id: ThreadId,
+        event_occurrence_id: &str,
         turn_id: &str,
         item: &codex_protocol::items::UserMessageItem,
+        principal: Option<&str>,
     ) -> anyhow::Result<()> {
         let Some(client_id) = item.client_id.as_deref() else {
             return Ok(());
@@ -168,7 +297,15 @@ impl StateRuntime {
         // A decoded envelope is still untrusted. Invalid envelopes are deliberately ignored and
         // never treated as manual provenance.
         let _ = self
-            .insert_validated_automatic_turn(thread_id, turn_id, client_id, &provenance, item)
+            .insert_validated_automatic_turn(
+                thread_id,
+                event_occurrence_id,
+                turn_id,
+                client_id,
+                &provenance,
+                item,
+                principal,
+            )
             .await?;
         Ok(())
     }
@@ -176,10 +313,12 @@ impl StateRuntime {
     async fn insert_validated_automatic_turn(
         &self,
         thread_id: ThreadId,
+        event_occurrence_id: &str,
         turn_id: &str,
         client_id: &str,
         provenance: &AutomaticTurnProvenance,
         item: &codex_protocol::items::UserMessageItem,
+        principal: Option<&str>,
     ) -> anyhow::Result<bool> {
         if !is_expected_policy_retry_content(item) {
             return Ok(false);
@@ -202,9 +341,16 @@ impl StateRuntime {
             return Ok(true);
         }
 
-        let Some((trigger_turn_id, generation, expected_attempt, max_attempts, capability)) =
-            sqlx::query_as::<_, (String, i64, i64, i64, String)>(
-                "SELECT trigger_turn_id, generation, next_attempt, max_attempts, capability FROM usage_automatic_turn_eligibility WHERE thread_id = ?",
+        let Some((
+            trigger_turn_id,
+            trigger_occurrence_id,
+            generation,
+            expected_attempt,
+            max_attempts,
+            capability,
+            expected_principal,
+        )) = sqlx::query_as::<_, (String, Option<String>, i64, i64, i64, String, Option<String>)>(
+            "SELECT trigger_turn_id, event_occurrence_id, generation, next_attempt, max_attempts, capability, connection_principal FROM usage_automatic_turn_eligibility WHERE thread_id = ?",
             )
             .bind(&actual_thread_id)
             .fetch_optional(&mut *tx)
@@ -212,6 +358,8 @@ impl StateRuntime {
         else {
             return Ok(false);
         };
+        let trigger_occurrence_id =
+            trigger_occurrence_id.unwrap_or_else(|| trigger_turn_id.clone());
 
         // The parser only establishes that the envelope is well formed. These comparisons bind it
         // to server-owned state and prevent forged thread, trigger, attempt, max, capability, or
@@ -221,6 +369,9 @@ impl StateRuntime {
             || i64::from(provenance.attempt) != expected_attempt
             || i64::from(provenance.max_attempts) != max_attempts
             || provenance.capability != capability
+            || expected_principal
+                .as_deref()
+                .is_some_and(|expected| principal != Some(expected))
         {
             return Ok(false);
         }
@@ -231,7 +382,9 @@ INSERT INTO usage_automatic_turns (
     thread_id,
     client_user_message_id,
     trigger_turn_id,
+    event_occurrence_id,
     turn_id,
+    connection_principal,
     origin,
     generation,
     capability,
@@ -239,14 +392,16 @@ INSERT INTO usage_automatic_turns (
     max_attempts,
     provenance_source,
     outcome
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
 "#,
         )
         .bind(&actual_thread_id)
         .bind(client_id)
         .bind(&trigger_turn_id)
+        .bind(event_occurrence_id)
         .bind(turn_id)
+        .bind(principal)
         .bind(provenance.origin.as_str())
         .bind(generation)
         .bind(&capability)
@@ -260,21 +415,23 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
         // Consume the eligibility ticket atomically. A replay after this point has no ticket and
         // therefore cannot mint a second attempt or steal a later chain generation.
         sqlx::query(
-            "DELETE FROM usage_automatic_turn_eligibility WHERE thread_id = ? AND trigger_turn_id = ? AND generation = ? AND next_attempt = ? AND capability = ?",
+            "DELETE FROM usage_automatic_turn_eligibility WHERE thread_id = ? AND trigger_turn_id = ? AND event_occurrence_id = ? AND generation = ? AND next_attempt = ? AND capability = ?",
         )
         .bind(&actual_thread_id)
         .bind(&trigger_turn_id)
+        .bind(&trigger_occurrence_id)
         .bind(generation)
         .bind(expected_attempt)
         .bind(&capability)
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "UPDATE usage_automatic_turn_triggers SET outcome = ? WHERE thread_id = ? AND trigger_turn_id = ? AND generation = ? AND attempt = ?",
+            "UPDATE usage_automatic_turn_triggers SET outcome = ? WHERE thread_id = ? AND trigger_turn_id = ? AND event_occurrence_id = ? AND generation = ? AND attempt = ?",
         )
         .bind(OUTCOME_ACCEPTED)
         .bind(&actual_thread_id)
         .bind(&trigger_turn_id)
+        .bind(&trigger_occurrence_id)
         .bind(generation)
         .bind(expected_attempt)
         .execute(&mut *tx)
@@ -286,8 +443,10 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
     async fn record_policy_trigger(
         &self,
         thread_id: ThreadId,
+        event_occurrence_id: &str,
         trigger_turn_id: &str,
         completed: Option<CompletedAutomaticTurn>,
+        principal: Option<&str>,
     ) -> anyhow::Result<Option<String>> {
         if trigger_turn_id.is_empty() {
             return Ok(None);
@@ -324,6 +483,7 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
                 &mut tx,
                 &actual_thread_id,
                 trigger_turn_id,
+                event_occurrence_id,
                 generation,
                 /*attempt*/ 1,
             )
@@ -357,10 +517,11 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
         // turn has just completed, issue an occurrence-qualified trigger identity; otherwise the
         // exact previously seen identity is treated as a duplicate/stale event.
         let raw_trigger_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM usage_automatic_turn_triggers WHERE thread_id = ? AND trigger_turn_id = ?)",
+            "SELECT EXISTS(SELECT 1 FROM usage_automatic_turn_triggers WHERE thread_id = ? AND trigger_turn_id = ? AND generation = ?)",
         )
         .bind(&actual_thread_id)
         .bind(trigger_turn_id)
+        .bind(generation)
         .fetch_one(&mut *tx)
         .await?;
         if raw_trigger_exists && completed.is_none() {
@@ -368,6 +529,7 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
                 &mut tx,
                 &actual_thread_id,
                 trigger_turn_id,
+                event_occurrence_id,
                 generation,
                 next_attempt,
             )
@@ -376,7 +538,7 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
             return Ok(None);
         }
         let trigger_identity = if completed.is_some() && raw_trigger_exists {
-            format!("{trigger_turn_id}#{next_attempt}")
+            format!("{trigger_turn_id}#{event_occurrence_id}")
         } else {
             trigger_turn_id.to_string()
         };
@@ -384,10 +546,11 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
         // A trigger is seen before a ticket is issued. This closes the duplicate/stale path,
         // including events which arrive after a prior ticket was consumed.
         let trigger_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM usage_automatic_turn_triggers WHERE thread_id = ? AND trigger_turn_id = ? AND generation = ? AND attempt = ?)",
+            "SELECT EXISTS(SELECT 1 FROM usage_automatic_turn_triggers WHERE thread_id = ? AND trigger_turn_id = ? AND event_occurrence_id = ? AND generation = ? AND attempt = ?)",
         )
         .bind(&actual_thread_id)
         .bind(&trigger_identity)
+        .bind(event_occurrence_id)
         .bind(generation)
         .bind(next_attempt)
         .fetch_one(&mut *tx)
@@ -400,14 +563,16 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
         let capability = if next_attempt <= MAX_ATTEMPTS {
             let capability = Uuid::new_v4().to_string();
             sqlx::query(
-                "INSERT INTO usage_automatic_turn_eligibility (thread_id, trigger_turn_id, generation, next_attempt, max_attempts, capability) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO usage_automatic_turn_eligibility (thread_id, trigger_turn_id, event_occurrence_id, generation, next_attempt, max_attempts, capability, connection_principal) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&actual_thread_id)
             .bind(&trigger_identity)
+            .bind(event_occurrence_id)
             .bind(generation)
             .bind(next_attempt)
             .bind(MAX_ATTEMPTS)
             .bind(&capability)
+            .bind(principal)
             .execute(&mut *tx)
             .await?;
             Some(capability)
@@ -421,10 +586,11 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
             OUTCOME_EXHAUSTED
         };
         sqlx::query(
-            "INSERT INTO usage_automatic_turn_triggers (thread_id, trigger_turn_id, generation, attempt, outcome) VALUES (?, ?, ?, ?, ?) ON CONFLICT(thread_id, trigger_turn_id, generation, attempt) DO UPDATE SET outcome = excluded.outcome",
+            "INSERT INTO usage_automatic_turn_triggers (thread_id, trigger_turn_id, event_occurrence_id, generation, attempt, outcome) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(thread_id, trigger_turn_id, event_occurrence_id, generation, attempt) DO UPDATE SET outcome = excluded.outcome",
         )
         .bind(&actual_thread_id)
         .bind(&trigger_identity)
+        .bind(event_occurrence_id)
         .bind(generation)
         .bind(next_attempt)
         .bind(outcome)
@@ -449,6 +615,7 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
     async fn complete_automatic_turn(
         &self,
         thread_id: ThreadId,
+        event_occurrence_id: &str,
         turn_id: &str,
         outcome: &str,
     ) -> anyhow::Result<Option<CompletedAutomaticTurn>> {
@@ -457,12 +624,13 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
         }
         let pool = self.usage_ledger_pool();
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-        let Some((id, attempt, max_attempts, generation, trigger_turn_id)) =
-            sqlx::query_as::<_, (i64, i64, i64, i64, String)>(
-                "SELECT id, attempt, max_attempts, generation, trigger_turn_id FROM usage_automatic_turns WHERE thread_id = ? AND turn_id = ? AND outcome = 'started' ORDER BY id DESC LIMIT 1",
+        let Some((id, attempt, max_attempts, generation, trigger_turn_id, trigger_occurrence_id)) =
+            sqlx::query_as::<_, (i64, i64, i64, i64, String, String)>(
+                "SELECT id, attempt, max_attempts, generation, trigger_turn_id, event_occurrence_id FROM usage_automatic_turns WHERE thread_id = ? AND turn_id = ? AND event_occurrence_id = ? AND outcome = 'started' LIMIT 1",
             )
             .bind(thread_id.to_string())
             .bind(turn_id)
+            .bind(event_occurrence_id)
             .fetch_optional(&mut *tx)
             .await?
         else {
@@ -488,11 +656,12 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "UPDATE usage_automatic_turn_triggers SET outcome = ? WHERE thread_id = ? AND trigger_turn_id = ? AND generation = ? AND attempt = ?",
+            "UPDATE usage_automatic_turn_triggers SET outcome = ? WHERE thread_id = ? AND trigger_turn_id = ? AND event_occurrence_id = ? AND generation = ? AND attempt = ?",
         )
         .bind(outcome)
         .bind(thread_id.to_string())
         .bind(trigger_turn_id)
+        .bind(trigger_occurrence_id)
         .bind(generation)
         .bind(attempt)
         .execute(&mut *tx)
@@ -517,14 +686,16 @@ async fn insert_suppressed_trigger(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     thread_id: &str,
     trigger_turn_id: &str,
+    event_occurrence_id: &str,
     generation: i64,
     attempt: i64,
 ) -> anyhow::Result<bool> {
     let result = sqlx::query(
-        "INSERT INTO usage_automatic_turn_triggers (thread_id, trigger_turn_id, generation, attempt, outcome) VALUES (?, ?, ?, ?, ?) ON CONFLICT(thread_id, trigger_turn_id, generation, attempt) DO NOTHING",
+        "INSERT INTO usage_automatic_turn_triggers (thread_id, trigger_turn_id, event_occurrence_id, generation, attempt, outcome) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(thread_id, trigger_turn_id, event_occurrence_id, generation, attempt) DO NOTHING",
     )
     .bind(thread_id)
     .bind(trigger_turn_id)
+    .bind(event_occurrence_id)
     .bind(generation)
     .bind(attempt)
     .bind(OUTCOME_SUPPRESSED)
@@ -704,6 +875,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn trusted_projection_requires_the_server_principal() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        runtime
+            .record_automatic_turn_event_with_principal(
+                thread_id,
+                &policy_error("trigger"),
+                Some("connection:1"),
+            )
+            .await;
+        let cap = capability(runtime.as_ref(), thread_id, "trigger").await;
+        let mut sibling_attempt = automatic_user_message(
+            thread_id,
+            "trigger",
+            "turn",
+            /*attempt*/ 1,
+            /*max_attempts*/ 3,
+            &cap,
+        );
+        sibling_attempt.id = "turn".to_string();
+        runtime
+            .record_automatic_turn_event_with_principal(
+                thread_id,
+                &sibling_attempt,
+                Some("connection:2"),
+            )
+            .await;
+        assert!(rows(runtime.as_ref(), thread_id, "turn").await?.is_empty());
+
+        runtime
+            .record_automatic_turn_event_with_principal(
+                thread_id,
+                &sibling_attempt,
+                Some("connection:1"),
+            )
+            .await;
+        assert_eq!(rows(runtime.as_ref(), thread_id, "turn").await?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn duplicate_trigger_and_replay_are_ignored() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let thread_id = ThreadId::new();
@@ -862,6 +1074,135 @@ mod tests {
             .fetch_optional(runtime.usage_ledger_pool().as_ref())
             .await?
             .is_none()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn late_completion_cannot_complete_a_later_same_turn_occurrence() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let turn_id = "reused-turn";
+
+        runtime
+            .record_automatic_turn_event(
+                thread_id,
+                &Event {
+                    id: "occurrence-1".to_string(),
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: "blocked".to_string(),
+                        codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                    }),
+                },
+            )
+            .await;
+        let (trigger_1, capability_1) = runtime
+            .automatic_turn_capability_for_turn(thread_id, "occurrence-1")
+            .await
+            .expect("first occurrence should issue a capability");
+        let mut first_attempt = automatic_user_message(
+            thread_id,
+            &trigger_1,
+            turn_id,
+            /*attempt*/ 1,
+            /*max_attempts*/ 3,
+            &capability_1,
+        );
+        first_attempt.id = "occurrence-1".to_string();
+        runtime
+            .record_automatic_turn_event(thread_id, &first_attempt)
+            .await;
+        runtime
+            .record_automatic_turn_event(
+                thread_id,
+                &Event {
+                    id: "occurrence-1".to_string(),
+                    msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                        turn_id: turn_id.to_string(),
+                        last_agent_message: None,
+                        error: Some(ErrorEvent {
+                            message: "blocked".to_string(),
+                            codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                        }),
+                        started_at: None,
+                        compaction_events_in_turn: 0,
+                        final_model: None,
+                        model_snapshot: None,
+                        provider_usage: None,
+                        completed_at: None,
+                        duration_ms: None,
+                        time_to_first_token_ms: None,
+                    }),
+                },
+            )
+            .await;
+
+        runtime
+            .record_automatic_turn_event(
+                thread_id,
+                &Event {
+                    id: "occurrence-2".to_string(),
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: "blocked".to_string(),
+                        codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                    }),
+                },
+            )
+            .await;
+        let (trigger_2, capability_2) = runtime
+            .automatic_turn_capability_for_turn(thread_id, "occurrence-2")
+            .await
+            .expect("second occurrence should issue a capability");
+        let mut second_attempt = automatic_user_message(
+            thread_id,
+            &trigger_2,
+            turn_id,
+            /*attempt*/ 2,
+            /*max_attempts*/ 3,
+            &capability_2,
+        );
+        second_attempt.id = "occurrence-2".to_string();
+        runtime
+            .record_automatic_turn_event(thread_id, &second_attempt)
+            .await;
+
+        // A delayed completion from attempt one carries its immutable occurrence id and must not
+        // resolve the started attempt-two row or mint a third ticket.
+        runtime
+            .record_automatic_turn_event(
+                thread_id,
+                &Event {
+                    id: "occurrence-1".to_string(),
+                    msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                        turn_id: turn_id.to_string(),
+                        last_agent_message: None,
+                        error: Some(ErrorEvent {
+                            message: "blocked".to_string(),
+                            codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                        }),
+                        started_at: None,
+                        compaction_events_in_turn: 0,
+                        duration_ms: None,
+                        provider_usage: None,
+                        time_to_first_token_ms: None,
+                        final_model: None,
+                        model_snapshot: None,
+                        completed_at: None,
+                    }),
+                },
+            )
+            .await;
+
+        let projected = rows(runtime.as_ref(), thread_id, turn_id).await?;
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected[0].outcome, OUTCOME_REBLOCKED);
+        assert_eq!(projected[1].outcome, OUTCOME_STARTED);
+        assert_eq!(
+            runtime
+                .automatic_turn_capability_for_turn(thread_id, "occurrence-2")
+                .await
+                .map(|(_, capability)| capability),
+            Some(capability_2)
         );
         Ok(())
     }

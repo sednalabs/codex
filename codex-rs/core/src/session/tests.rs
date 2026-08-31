@@ -5703,6 +5703,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         usage_logger: None,
         tool_search_handler_cache: Default::default(),
         turn_environments: Arc::clone(&thread_environments),
+        automatic_turn_principals: Mutex::new(std::collections::HashMap::new()),
     };
 
     let plugins_input = per_turn_config.plugins_config_input();
@@ -7936,6 +7937,7 @@ where
         usage_logger: None,
         tool_search_handler_cache: Default::default(),
         turn_environments: Arc::clone(&thread_environments),
+        automatic_turn_principals: Mutex::new(std::collections::HashMap::new()),
     };
 
     let plugins_input = per_turn_config.plugins_config_input();
