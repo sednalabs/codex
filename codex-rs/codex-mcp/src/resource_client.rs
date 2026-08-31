@@ -21,6 +21,7 @@ use serde_json::json;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
+use crate::McpEventStreamOpener;
 use crate::McpRuntime;
 use crate::connection_manager::McpConnectionSet;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
@@ -70,13 +71,13 @@ pub struct McpEventStream {
     request: Option<CancellableEventStreamRequest>,
     runtime_handle: Handle,
     client: Option<Arc<RmcpClient>>,
-    hosted_event_server_removals: watch::Receiver<()>,
+    cancel_event_streams_on_server_removal: watch::Receiver<()>,
 }
 
 impl McpEventStream {
     pub(crate) async fn open(
         client: Arc<RmcpClient>,
-        hosted_event_server_removals: watch::Receiver<()>,
+        cancel_event_streams_on_server_removal: watch::Receiver<()>,
         event_name: &str,
         arguments: &Value,
         request_meta: Option<&Map<String, Value>>,
@@ -93,7 +94,7 @@ impl McpEventStream {
             request: Some(request),
             runtime_handle: Handle::current(),
             client: Some(client),
-            hosted_event_server_removals,
+            cancel_event_streams_on_server_removal,
         })
     }
 
@@ -106,7 +107,7 @@ impl McpEventStream {
         tokio::select! {
             biased;
 
-            Ok(()) = self.hosted_event_server_removals.changed() => {
+            Ok(()) = self.cancel_event_streams_on_server_removal.changed() => {
                 self.cancel();
                 Err(anyhow!("hosted MCP event server was removed"))
             }
@@ -286,7 +287,7 @@ impl McpResourceClient {
         arguments: &Value,
         request_meta: Option<&Map<String, Value>>,
     ) -> Result<McpEventStream> {
-        let (connections, hosted_event_server_removals) = self
+        let (connections, cancel_event_streams_on_server_removal) = self
             .runtime
             .latest_connections_for_event_server(CODEX_APPS_MCP_SERVER_NAME)?;
         let (managed, _) = connections
@@ -294,12 +295,22 @@ impl McpResourceClient {
             .await?;
         McpEventStream::open(
             managed.client,
-            hosted_event_server_removals,
+            cancel_event_streams_on_server_removal,
             event_name,
             arguments,
             request_meta,
         )
         .await
+    }
+
+    /// Creates an event stream opener using the task's event server settings.
+    pub fn event_stream_opener(&self) -> Result<McpEventStreamOpener> {
+        self.runtime.event_stream_opener()
+    }
+
+    /// Forwards event server removal to the owner of the task's subscriptions.
+    pub fn forward_event_server_removals_to(&self, cancellation: watch::Sender<()>) {
+        self.runtime.forward_event_server_removals_to(cancellation);
     }
 }
 
