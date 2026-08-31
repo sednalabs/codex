@@ -3349,15 +3349,14 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
 {
     const TEST_STACK_SIZE_BYTES: usize = 4 * 1024 * 1024;
 
-    let handle =
-        std::thread::Builder::new()
-            .name("guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history".to_string())
-            .stack_size(TEST_STACK_SIZE_BYTES)
-            .spawn(|| -> anyhow::Result<()> {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()?;
-                runtime.block_on(Box::pin(async {
+    let handle = std::thread::Builder::new()
+        .name("guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| -> anyhow::Result<()> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(Box::pin(async {
         let first_assessment = serde_json::json!({
             "risk_level": "low",
             "user_authorization": "high",
@@ -3421,7 +3420,11 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
         ])
         .await;
 
-        let (session, turn) = guardian_test_session_and_turn_with_base_url(server.uri()).await;
+        let (mut session, turn) = guardian_test_session_and_turn_with_base_url(server.uri()).await;
+        // Isolate feedback from other tests using the fixed parent session ID.
+        Arc::get_mut(&mut session)
+            .expect("session should be uniquely owned")
+            .thread_id = ThreadId::new();
         turn.turn_metadata_state
             .set_parent_turn_id("upstream-parent-turn".to_string());
         turn.turn_metadata_state
@@ -3616,11 +3619,30 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
             .send(())
             .expect("second guardian review gate should still be open");
         assert_eq!(second_review.await?, ReviewDecision::Approved);
+        let feedback = codex_feedback::guardian_review_failures_attachment(&[session.thread_id()])
+            .expect("failed ephemeral review survives cleanup and subsequent allowed reviews");
+        let record: serde_json::Value = serde_json::from_slice(&feedback.buffer)?;
+        assert_eq!(
+            serde_json::json!({
+                "reviewer_thread_id": record["reviewer_thread_id"],
+                "status": record["status"],
+                "decision": record["decision"],
+                "command": serde_json::from_str::<serde_json::Value>(
+                    record["action"].as_str().expect("reviewed action")
+                )?["command"],
+            }),
+            serde_json::json!({
+                "reviewer_thread_id": failed_ephemeral_request_body["client_metadata"]["thread_id"],
+                "status": "invalid_decision",
+                "decision": "not valid guardian json",
+                "command": ["git", "push"],
+            })
+        );
         server.shutdown().await;
 
         Ok(())
                 }))
-            })?;
+        })?;
 
     match handle.join() {
         Ok(result) => result,
