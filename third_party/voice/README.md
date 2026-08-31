@@ -59,9 +59,20 @@ native host: GNU Linux, macOS, or Windows MSVC, on x64 or ARM64.
 
 On macOS, specify the existing release deployment target with
 `--deployment-target`; the host OS version is not an acceptable default.
-Windows requires the normal Visual Studio SDK environment, GNU make and a
-POSIX shell for upstream libffi, and `--bootstrap-make` pointing to NMake.
+Windows requires the normal Visual Studio SDK environment, Cygwin GNU make,
+bash/cygpath and Automake 1.18's standard `ar-lib` for upstream libffi,
+native Windows pkgconf, and `--bootstrap-make` pointing to NMake.
 The recipe does not install these build prerequisites or patch upstream sources.
+The private CI bootstrap verifies the official Cygwin installer and native pkgconf
+MSI hashes before use. It also verifies a retained Cygwin package snapshot against
+pinned archive and member hashes before installing it offline using signed
+metadata. The installed package/version set must exactly match the snapshot
+manifest.
+The MSI is administratively extracted into job storage without a system install.
+Cygwin runs under x64 emulation on ARM64; the compiler probes and emitted DLLs
+must still match the real native target. Native pkgconf relocates libffi's POSIX
+prefix metadata; CI rejects residual Cygwin paths. These are build prerequisites,
+not shipped runtime components or evidence of working voice.
 
 Outputs are under `prefix/`, build tools under `tools/`, and logs beside them.
 `build-state.json` records completed commands and failures; `built.json` exists

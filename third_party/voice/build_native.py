@@ -96,6 +96,7 @@ class NativeBuild:
                 "HTTP_PROXY",
                 "NO_PROXY",
             )
+            or (self.windows and key == "USERPROFILE")
         }
         paths = [
             str(self.tools / "bin"),
@@ -156,6 +157,15 @@ class NativeBuild:
             json.dumps(self.record, indent=2) + "\n", encoding="utf-8"
         )
         result.check_returncode()
+
+    def posix_path(self, path):
+        if not self.windows:
+            return path.as_posix()
+        return subprocess.check_output(
+            [self.toolchain["shell"].with_name("cygpath.exe"), "-u", str(path)],
+            env=self.environment,
+            text=True,
+        ).strip()
 
     def cmake(self, name, options, *, bootstrap=False):
         directory = self.output / "build" / name
@@ -278,30 +288,58 @@ class NativeBuild:
         ffi_build = self.output / "build/libffi"
         ffi_build.mkdir()
         environment = self.environment.copy()
+        configure_options = []
         if self.windows:
-            wrapper = shlex.quote((self.sources["libffi"] / "msvcc.sh").as_posix())
+            wrapper = shlex.quote(self.posix_path(self.sources["libffi"] / "msvcc.sh"))
             architecture = (
                 "-m64" if self.args.target.startswith("x86_64-") else "-marm64"
             )
+            # Match upstream's MSVC recipe, including native ARM64 outputs
+            # from x64-emulated Cygwin tools. Never infer the target from uname.
+            host = self.args.target.partition("-")[0] + "-w64-mingw32"
+            configure_options = [f"--build={host}", f"--host={host}"]
+            automake = subprocess.check_output(
+                [
+                    self.toolchain["shell"],
+                    "--noprofile",
+                    "--norc",
+                    "-c",
+                    "automake-1.18 --print-libdir",
+                ],
+                env=environment,
+                text=True,
+            ).strip()
             environment.update(
                 {
                     "CC": f"{wrapper} {architecture}",
                     "CXX": f"{wrapper} {architecture}",
+                    "AR": f"{shlex.quote(automake + '/ar-lib')} lib",
+                    "RANLIB": ":",
                     "LD": "link",
+                    "NM": "dumpbin -symbols",
+                    "STRIP": ":",
+                    "LDFLAGS": "-no-undefined",
+                    # Libffi clears MAKEOVERRIDES. Use its recursion hook to
+                    # name the import library expected by libtool's installer.
+                    "AM_MAKEFLAGS": shlex.quote(
+                        "LTLDFLAGS=-no-undefined -Wc,-link,/IMPLIB:.libs/libffi.lib"
+                    ),
                     "CPP": "cl -nologo -EP",
                     "CXXCPP": "cl -nologo -EP",
                     "CPPFLAGS": "-DFFI_BUILDING_DLL",
+                    "CONFIG_SHELL": self.posix_path(self.toolchain["shell"]),
                 }
             )
         self.run(
             "libffi-configure",
             [
                 self.toolchain["shell"],
-                (self.sources["libffi"] / "configure").as_posix(),
-                f"--prefix={self.prefix.as_posix()}",
+                self.posix_path(self.sources["libffi"] / "configure"),
+                f"--prefix={self.posix_path(self.prefix)}",
                 "--enable-shared",
                 "--disable-static",
                 "--disable-docs",
+                *configure_options,
             ],
             cwd=ffi_build,
             environment=environment,
@@ -318,12 +356,25 @@ class NativeBuild:
             cwd=ffi_build,
             environment=environment,
         )
+        if self.windows:
+            self.run(
+                "libffi-pkg-config",
+                [self.toolchain["pkg_config"], "--cflags", "--libs", "libffi"],
+            )
+            if "/cygdrive/" in (self.output / "libffi-pkg-config.log").read_text():
+                raise ValueError("pkg-config did not relocate libffi to native paths")
         self.cmake(
             "opus",
             [
                 "-DOPUS_BUILD_SHARED_LIBRARY=ON",
                 "-DOPUS_BUILD_TESTING=OFF",
                 "-DOPUS_BUILD_PROGRAMS=OFF",
+                # Windows ARM64 guarantees NEON; upstream misses its ARM64 spelling.
+                *(
+                    ["-DOPUS_PRESUME_NEON=ON"]
+                    if self.args.target == "aarch64-pc-windows-msvc"
+                    else []
+                ),
             ],
         )
         self.meson("proxy-libintl", [])

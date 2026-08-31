@@ -180,3 +180,140 @@ class NativeBuildTests(unittest.TestCase):
                 shlex.split(build.environment["LDFLAGS"]),
                 [f"-L{build.prefix / 'lib'}", f"-Wl,-rpath,{build.prefix / 'lib'}"],
             )
+
+    def test_windows_paths_use_cygpath_and_propagate_failure(self):
+        build = NativeBuild(self.args, self.environment)
+        build.windows = True
+        path = Path("D:/build output/source")
+        with patch(
+            "build_native.subprocess.check_output",
+            return_value="/cygdrive/d/build output/source\n",
+        ) as convert:
+            self.assertEqual(build.posix_path(path), "/cygdrive/d/build output/source")
+        self.assertEqual(
+            convert.call_args.args[0],
+            [build.toolchain["shell"].with_name("cygpath.exe"), "-u", str(path)],
+        )
+        with patch(
+            "build_native.subprocess.check_output",
+            side_effect=subprocess.CalledProcessError(1, "cygpath"),
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
+                build.posix_path(path)
+
+    def test_windows_recipes_use_explicit_targets_and_posix_paths(self):
+        self.environment["USERPROFILE"] = str(self.root / "user profile")
+        for architecture, flag in (("x86_64", "-m64"), ("aarch64", "-marm64")):
+            with self.subTest(architecture=architecture):
+                self.args.target = f"{architecture}-pc-windows-msvc"
+                self.args.output = self.root / architecture
+                with patch(
+                    "build_native.platform.system", return_value="Windows"
+                ), patch("build_native.platform.machine", return_value=architecture):
+                    build = NativeBuild(self.args, self.environment)
+                self.assertEqual(
+                    build.environment["USERPROFILE"], self.environment["USERPROFILE"]
+                )
+                calls = {}
+
+                def record(name, command, **kwargs):
+                    calls[name] = (command, kwargs)
+                    (build.output / f"{name}.log").write_text(
+                        "-ID:/private/include -LD:/private/lib -lffi\n"
+                    )
+
+                with patch(
+                    "build_native.prepare_sources",
+                    side_effect=lambda *args: (build.output / "build").mkdir(),
+                ), patch.object(build, "cmake") as cmake, patch.object(
+                    build, "meson"
+                ), patch.object(
+                    build, "run", side_effect=record
+                ), patch.object(
+                    build,
+                    "posix_path",
+                    side_effect=lambda path: "/cygdrive/d/" + path.name,
+                ), patch(
+                    "build_native.subprocess.check_output",
+                    return_value="/usr/share/automake-1.18\n",
+                ):
+                    build.build()
+                opus_options = next(
+                    call.args[1]
+                    for call in cmake.call_args_list
+                    if call.args[0] == "opus"
+                )
+                self.assertEqual(
+                    "-DOPUS_PRESUME_NEON=ON" in opus_options, architecture == "aarch64"
+                )
+                command, kwargs = calls["libffi-configure"]
+                host = f"{architecture}-w64-mingw32"
+                linker_flags = "-no-undefined -Wc,-link,/IMPLIB:.libs/libffi.lib"
+                self.assertEqual(
+                    command,
+                    [
+                        build.toolchain["shell"],
+                        "/cygdrive/d/configure",
+                        "--prefix=/cygdrive/d/prefix",
+                        "--enable-shared",
+                        "--disable-static",
+                        "--disable-docs",
+                        f"--build={host}",
+                        f"--host={host}",
+                    ],
+                )
+                expected = {
+                    **build.environment,
+                    "CC": f"/cygdrive/d/msvcc.sh {flag}",
+                    "CXX": f"/cygdrive/d/msvcc.sh {flag}",
+                    "AR": "/usr/share/automake-1.18/ar-lib lib",
+                    "RANLIB": ":",
+                    "LD": "link",
+                    "NM": "dumpbin -symbols",
+                    "STRIP": ":",
+                    "LDFLAGS": "-no-undefined",
+                    "AM_MAKEFLAGS": shlex.quote(f"LTLDFLAGS={linker_flags}"),
+                    "CPP": "cl -nologo -EP",
+                    "CXXCPP": "cl -nologo -EP",
+                    "CPPFLAGS": "-DFFI_BUILDING_DLL",
+                    "CONFIG_SHELL": "/cygdrive/d/" + build.toolchain["shell"].name,
+                }
+                self.assertEqual(
+                    kwargs,
+                    {"cwd": build.output / "build/libffi", "environment": expected},
+                )
+                self.assertEqual(calls["libffi-install"][1]["environment"], expected)
+                if platform.system() == "Windows":
+                    cygwin = os.environ.get("VOICE_CYGWIN_ROOT")
+                    make = str(Path(cygwin) / "bin/make.exe") if cygwin else None
+                else:
+                    make = shutil.which("make")
+                if make is None:
+                    self.skipTest("GNU make is required for the recursive build check")
+                # Mirror libffi's MAKEOVERRIDES reset and recursive hook, without
+                # running a compiler or requiring the native source archives.
+                directory = build.output / "build/libffi"
+                (directory / "Makefile").write_text(
+                    "MAKEOVERRIDES =\nLTLDFLAGS = default\n"
+                    "all:\n\t@$(MAKE) --no-print-directory $(AM_MAKEFLAGS) nested\n"
+                    "nested:\n\t@$(MAKE) --no-print-directory $(AM_MAKEFLAGS) observe\n"
+                    "observe:\n\t@printf '%s\\n' \"$(LTLDFLAGS)\"\n"
+                )
+                result = subprocess.run(
+                    [make, "--no-print-directory"],
+                    cwd=directory,
+                    env={
+                        **os.environ,
+                        "AM_MAKEFLAGS": kwargs["environment"]["AM_MAKEFLAGS"],
+                        "PATH": os.pathsep.join(
+                            [str(Path(make).parent), os.environ.get("PATH", "")]
+                        ),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                self.assertEqual(
+                    result.stdout.strip(),
+                    linker_flags,
+                )
