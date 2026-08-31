@@ -45,3 +45,7 @@ WHERE event_occurrence_id = '';
 
 CREATE INDEX IF NOT EXISTS usage_automatic_turn_triggers_occurrence_idx
     ON usage_automatic_turn_triggers(thread_id, generation, attempt, event_occurrence_id);
+
+-- Preserve the legacy lookup path after rebuilding the table above.
+CREATE INDEX IF NOT EXISTS usage_automatic_turn_triggers_thread_idx
+    ON usage_automatic_turn_triggers(thread_id, generation, attempt, created_at);
