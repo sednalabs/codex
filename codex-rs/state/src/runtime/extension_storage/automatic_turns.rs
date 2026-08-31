@@ -141,6 +141,7 @@ impl StateRuntime {
                     .codex_error_info
                     .as_ref()
                     .is_some_and(|info| matches!(info, &CodexErrorInfo::CyberPolicy))
+                {
                     return self
                         .record_policy_trigger(thread_id, event.id.as_str(), completed)
                         .await;
@@ -438,6 +439,7 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
             .codex_error_info
             .as_ref()
             .is_some_and(|info| matches!(info, &CodexErrorInfo::CyberPolicy))
+        {
             OUTCOME_REBLOCKED
         } else {
             OUTCOME_FAILED
