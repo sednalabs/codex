@@ -180,6 +180,9 @@ mod tests {
             AutomaticTurnProvenance::trigger_and_capability_from_details(Some(&details)),
             Some(("same-turn#2".to_string(), "opaque-token".to_string(),))
         );
-        assert!(AutomaticTurnProvenance::trigger_and_capability_from_details(None).is_none());
+        assert!(
+            AutomaticTurnProvenance::trigger_and_capability_from_details(/*details*/ None)
+                .is_none()
+        );
     }
 }
