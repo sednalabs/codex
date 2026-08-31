@@ -5,8 +5,10 @@ use app_test_support::rollout_path;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::ThreadLoadedListResponse;
 use codex_protocol::AgentPath;
 use codex_state::SqliteConfig;
 use futures::SinkExt;
@@ -41,6 +43,19 @@ async fn start_recording_app_server(
     Arc<Mutex<Vec<String>>>,
     JoinHandle<Result<()>>,
 )> {
+    start_recording_app_server_with_loaded_list_pages(config, Vec::new()).await
+}
+
+/// Starts the recording server with optional deterministic loaded-list pages for malformed-page
+/// tests. An empty override preserves the embedded server's normal response behavior.
+async fn start_recording_app_server_with_loaded_list_pages(
+    config: &Config,
+    loaded_list_pages: Vec<ThreadLoadedListResponse>,
+) -> Result<(
+    AppServerSession,
+    Arc<Mutex<Vec<String>>>,
+    JoinHandle<Result<()>>,
+)> {
     let state_db =
         crate::init_state_db_for_app_server_target(config, &crate::AppServerTarget::Embedded)
             .await?;
@@ -60,6 +75,8 @@ async fn start_recording_app_server(
     let codex_home = config.codex_home.display().to_string();
     let requests = Arc::new(Mutex::new(Vec::new()));
     let request_sink = Arc::clone(&requests);
+    let loaded_list_pages = Arc::new(Mutex::new(loaded_list_pages));
+    let loaded_list_pages_sink = Arc::clone(&loaded_list_pages);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let websocket_url = format!("ws://{}", listener.local_addr()?);
     let proxy = tokio::spawn(async move {
@@ -93,7 +110,28 @@ async fn start_recording_app_server(
                     let request_id = request.id.clone();
                     let request =
                         serde_json::from_value::<ClientRequest>(serde_json::to_value(request)?)?;
-                    let response = match embedded.request(request).await? {
+                    let response_result =
+                        if matches!(&request, ClientRequest::ThreadLoadedList { .. }) {
+                            if let Some(page) = loaded_list_pages_sink
+                                .lock()
+                                .expect("loaded-list page lock")
+                                .pop()
+                            {
+                                match serde_json::to_value(page) {
+                                    Ok(value) => Ok(value),
+                                    Err(error) => Err(JSONRPCErrorError {
+                                        code: -32603,
+                                        message: error.to_string(),
+                                        data: None,
+                                    }),
+                                }
+                            } else {
+                                embedded.request(request).await?
+                            }
+                        } else {
+                            embedded.request(request).await?
+                        };
+                    let response = match response_result {
                         Ok(result) => JSONRPCMessage::Response(JSONRPCResponse {
                             id: request_id,
                             result,
@@ -351,4 +389,204 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
         })?
         .join()
         .expect("session lifecycle request test thread")
+}
+
+#[test]
+fn loaded_thread_backfill_paginates_without_losing_lineage() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+    const CHILD_COUNT: usize = 51;
+
+    std::thread::Builder::new()
+        .name("tui-loaded-thread-pagination".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-02T00-00-00",
+                        "2026-01-02T00:00:00Z",
+                        "pagination root",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let mut child_thread_ids = Vec::with_capacity(CHILD_COUNT);
+                for index in 0..CHILD_COUNT {
+                    let timestamp = format!("2026-01-02T00-00-{second:02}", second = index + 1);
+                    let child_thread_id = ThreadId::from_string(
+                        &create_fake_parented_rollout_with_source(
+                            codex_home.path(),
+                            &timestamp,
+                            "2026-01-02T00:00:01Z",
+                            &format!("pagination child {index}"),
+                            Some(app.config.model_provider_id.as_str()),
+                            /*git_info*/ None,
+                            RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                                parent_thread_id: root_thread_id,
+                                depth: 1,
+                                agent_path: Some(
+                                    AgentPath::try_from(format!("/root/worker_{index}"))
+                                        .expect("valid agent path"),
+                                ),
+                                agent_nickname: Some(format!("worker-{index}")),
+                                agent_role: Some("worker".to_string()),
+                            }),
+                            root_thread_id.into(),
+                            root_thread_id,
+                        )
+                        .expect("create child rollout"),
+                    )?;
+                    child_thread_ids.push(child_thread_id);
+                }
+
+                let (mut app_server, requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+                for child_thread_id in child_thread_ids.iter().copied() {
+                    app_server
+                        .resume_thread(
+                            app.config.clone(),
+                            child_thread_id,
+                            app.resume_model_settings(),
+                        )
+                        .await?;
+                }
+                take_backfill_counts(&requests);
+
+                let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+
+                assert!(backfill.completed);
+                assert_eq!(backfill.refreshed_thread_ids.len(), CHILD_COUNT);
+                assert_eq!(take_backfill_counts(&requests), (2, CHILD_COUNT));
+                for child_thread_id in child_thread_ids {
+                    assert!(app.agent_navigation.get(&child_thread_id).is_some());
+                }
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("loaded-thread pagination test thread")
+}
+
+#[test]
+fn loaded_thread_backfill_rejects_semantic_duplicate_before_reads() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-loaded-thread-semantic-dedupe".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-03T00-00-00",
+                        "2026-01-03T00:00:00Z",
+                        "dedupe root",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-03T00-00-01",
+                        "2026-01-03T00:00:01Z",
+                        "dedupe child",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/dedupe_worker")
+                                    .expect("valid agent path"),
+                            ),
+                            agent_nickname: Some("dedupe-worker".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create child rollout"),
+                )?;
+
+                let canonical = child_thread_id.to_string();
+                let alias = canonical.replace('-', "").to_uppercase();
+                let (mut app_server, requests, proxy) =
+                    start_recording_app_server_with_loaded_list_pages(
+                        &app.config,
+                        vec![
+                            ThreadLoadedListResponse {
+                                data: vec![alias],
+                                next_cursor: None,
+                            },
+                            ThreadLoadedListResponse {
+                                data: vec![canonical],
+                                next_cursor: Some("cursor-1".to_string()),
+                            },
+                        ],
+                    )
+                    .await?;
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+                app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        child_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                take_backfill_counts(&requests);
+
+                let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+
+                assert!(!backfill.completed);
+                assert!(backfill.refreshed_thread_ids.is_empty());
+                assert_eq!(take_backfill_counts(&requests), (2, 0));
+                assert!(app.agent_navigation.get(&child_thread_id).is_none());
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("loaded-thread semantic dedupe test thread")
 }
