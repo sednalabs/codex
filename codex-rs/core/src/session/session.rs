@@ -612,6 +612,12 @@ impl Session {
         CodexResponsesMetadata {
             window_number: Some(window_number),
             context_window_id: Some(context_window_id),
+            history_ingest_requested: turn_context
+                .config
+                .token_budget
+                .as_ref()
+                .is_some_and(|config| config.use_history_notes_extension)
+                .then_some(true),
             forked_from_ordinal_exclusive: self
                 .forked_from_ordinal_exclusive
                 .filter(|_| responses_metadata.forked_from_thread_id.is_some()),
