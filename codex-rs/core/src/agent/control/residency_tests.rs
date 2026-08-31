@@ -703,9 +703,17 @@ async fn terminal_idle_unload_defers_for_finalizer_then_retries() {
     .await;
     let initial_generation =
         wait_for_terminal_idle_deadline_after(&metadata, prior_generation).await;
+    control
+        .v2_residency
+        .wait_for_terminal_idle_unload_deadline_polled()
+        .await;
 
     advance(Duration::from_millis(100)).await;
     wait_for_terminal_idle_deadline_after(&metadata, initial_generation).await;
+    control
+        .v2_residency
+        .wait_for_terminal_idle_unload_deadline_polled()
+        .await;
     assert!(
         manager.get_thread(first.thread_id).await.is_ok(),
         "a pending terminal finalizer must defer watcher-triggered unload"
