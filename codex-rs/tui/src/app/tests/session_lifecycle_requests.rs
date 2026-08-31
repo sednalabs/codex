@@ -125,7 +125,7 @@ async fn start_recording_app_server_with_loaded_list_pages(
                                 }),
                             }
                         } else {
-                            embedded.request(request).await
+                            embedded.request(request).await?
                         }
                     } else {
                         embedded.request(request).await
