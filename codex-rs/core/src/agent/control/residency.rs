@@ -6,6 +6,8 @@ use crate::agent::registry::AgentRegistry;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::thread_manager::RemoveThreadIfSameResult;
+#[cfg(test)]
+use crate::thread_manager::ThreadManager;
 use crate::thread_manager::ThreadManagerState;
 use crate::thread_manager::V2ThreadUnloadResult;
 use codex_protocol::ThreadId;
@@ -183,9 +185,7 @@ impl AgentControl {
                             | TerminalIdleUnloadAttempt::Missing => {
                                 control.forget_v2_residency(thread_id);
                                 #[cfg(test)]
-                                control
-                                    .v2_residency
-                                    .notify_terminal_idle_unload_complete();
+                                control.v2_residency.notify_terminal_idle_unload_complete();
                                 return;
                             }
                             TerminalIdleUnloadAttempt::SupersededIdentity => return,
@@ -658,11 +658,7 @@ impl V2Residency {
     }
 
     #[cfg(test)]
-    async fn wait_for_terminal_idle_unload(
-        &self,
-        manager: &Arc<ThreadManagerState>,
-        thread_id: ThreadId,
-    ) {
+    async fn wait_for_terminal_idle_unload(&self, manager: &ThreadManager, thread_id: ThreadId) {
         loop {
             let notified = self.terminal_idle_unload_completed.notified();
             tokio::pin!(notified);
