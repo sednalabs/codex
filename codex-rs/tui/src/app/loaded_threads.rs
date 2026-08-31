@@ -54,38 +54,41 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
     primary_thread_id: ThreadId,
 ) -> Vec<LoadedSubagentThread> {
     let mut threads_by_id = HashMap::new();
+    let mut children_by_parent = HashMap::<ThreadId, Vec<ThreadId>>::new();
     for thread in threads {
         let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
             continue;
         };
+        if let Some(parent_thread_id) = thread_spawn_parent_thread_id(&thread.source) {
+            children_by_parent
+                .entry(parent_thread_id)
+                .or_default()
+                .push(thread_id);
+        }
         threads_by_id.insert(thread_id, thread);
     }
 
     let mut included = HashSet::new();
     let mut pending = vec![primary_thread_id];
     while let Some(parent_thread_id) = pending.pop() {
-        for (thread_id, thread) in &threads_by_id {
-            if included.contains(thread_id) {
+        for thread_id in children_by_parent
+            .get(&parent_thread_id)
+            .into_iter()
+            .flatten()
+            .copied()
+        {
+            if included.contains(&thread_id) {
                 continue;
             }
 
             // The primary thread is never a picker entry, even if malformed metadata claims that
             // it was spawned by one of its descendants.
-            if *thread_id == primary_thread_id {
+            if thread_id == primary_thread_id {
                 continue;
             }
 
-            let Some(source_parent_thread_id) = thread_spawn_parent_thread_id(&thread.source)
-            else {
-                continue;
-            };
-
-            if source_parent_thread_id != parent_thread_id {
-                continue;
-            }
-
-            included.insert(*thread_id);
-            pending.push(*thread_id);
+            included.insert(thread_id);
+            pending.push(thread_id);
         }
     }
 

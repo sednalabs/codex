@@ -66,7 +66,7 @@ fn accept_loaded_thread_page(
         || response
             .data
             .iter()
-            .any(|thread_id| loaded_thread_ids.iter().any(|loaded| loaded == thread_id))
+            .any(|thread_id| loaded_thread_ids.contains(thread_id))
     {
         return Err(LoadedThreadPageRejection::DuplicateThreadId);
     }
