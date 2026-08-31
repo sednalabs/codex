@@ -387,6 +387,19 @@ impl ChatWidget {
         true
     }
 
+    /// Reject an optimistic prompt when routing discovers that the selected thread is replay-only.
+    /// This runs through the normal error path so the pending flag, transcript cell, and composer
+    /// state are all reconciled without persisting a prompt that never reached the server.
+    pub(crate) fn handle_replay_only_submission_rejection(&mut self) {
+        if self.input_queue.user_turn_pending_start {
+            let submitted_message = self.safety_buffering_prompt.take();
+            self.on_error("Replay-only transcripts do not accept input.".to_string());
+            if let Some(submitted_message) = submitted_message {
+                self.restore_user_message_to_composer(submitted_message);
+            }
+        }
+    }
+
     pub(super) fn on_cyber_policy_error(&mut self, from_replay: bool) {
         // Policy enforcement remains server-side. These opt-in retries preserve the original
         // thread and context and use the normal submission path; do not rewrite or drop context,

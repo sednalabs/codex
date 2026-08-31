@@ -21,6 +21,7 @@ use crate::app_event::HistoryBatchEntryResponse;
 use codex_utils_absolute_path::test_support::PathExt;
 
 use crate::chatwidget::ChatWidgetInit;
+use crate::chatwidget::ThreadInputStateRestoreMode;
 use crate::chatwidget::create_initial_user_message;
 use crate::chatwidget::tests::helpers::render_bottom_popup;
 use crate::chatwidget::tests::helpers::set_active_cell;
@@ -597,6 +598,34 @@ async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
         .expect("timed out waiting for second event")
         .expect("channel closed unexpectedly");
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_closed_notification_immediately_gates_active_thread_mutations() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
+    app.thread_event_channels.insert(
+        thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            session.clone(),
+            Vec::new(),
+        ),
+    );
+    app.active_thread_id = Some(thread_id);
+    app.chat_widget.handle_thread_session(session);
+
+    app.enqueue_thread_notification(thread_id, thread_closed_notification(thread_id))
+        .await?;
+
+    assert!(app.is_replay_only_thread(thread_id));
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    app.submit_thread_op(&mut app_server, thread_id, Op::Interrupt)
+        .await?;
+    app_server.shutdown().await?;
     Ok(())
 }
 
@@ -1452,6 +1481,36 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
         })
     );
     assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
+
+    assert!(app.is_replay_only_thread(thread_id));
+    let op = AppCommand::user_turn(
+        vec![UserInput::Text {
+            text: "must not be submitted".to_string(),
+            text_elements: Vec::new(),
+        }],
+        app.config.cwd.to_path_buf(),
+        AskForApproval::OnRequest,
+        /*active_permission_profile*/ None,
+        get_model_offline_for_tests(app.config.model.as_deref()),
+        /*effort*/ None,
+        /*summary*/ None,
+        /*service_tier*/ None,
+        /*final_output_json_schema*/ None,
+        /*collaboration_mode*/ None,
+        /*personality*/ None,
+    );
+    app.submit_thread_op(&mut app_server, thread_id, op)
+        .await
+        .expect("closed cached thread should reject direct mutation locally");
+    let store = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("replay channel should remain")
+        .store
+        .lock()
+        .await;
+    assert!(store.active_turn_id().is_none());
+    assert!(store.turns.is_empty());
     Ok(())
 }
 
@@ -2074,6 +2133,302 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
     assert!(!app.should_attach_live_thread_for_selection(thread_id));
+
+    // A replay-only channel is stale local state, not proof that a thread is still closed. If the
+    // server reports the thread live again, selection must be allowed to re-establish a listener.
+    app.thread_event_channels
+        .get_mut(&thread_id)
+        .expect("thread channel should exist")
+        .mark_replay_only();
+    assert!(app.should_attach_live_thread_for_selection(thread_id));
+}
+
+#[tokio::test]
+async fn active_replay_only_thread_promotion_applies_session_and_drains_queue() -> Result<()> {
+    let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let authoritative_thread_id = app_test_support::create_fake_rollout(
+        app.config.codex_home.as_path(),
+        "2026-08-21T00-00-00",
+        "2026-08-21T00:00:00Z",
+        "authoritative resumed output",
+        Some(&app.config.model_provider_id),
+        /*git_info*/ None,
+    )
+    .expect("materialized rollout should be created");
+    let authoritative_path = app_test_support::rollout_path(
+        app.config.codex_home.as_path(),
+        "2026-08-21T00-00-00",
+        &authoritative_thread_id,
+    );
+    for item in [
+        RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "authoritative-turn".to_string(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::default(),
+        })),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "authoritative-turn".to_string(),
+            last_agent_message: None,
+            error: None,
+            started_at: None,
+            compaction_events_in_turn: 0,
+            final_model: None,
+            model_snapshot: None,
+            provider_usage: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        })),
+    ] {
+        codex_rollout::append_rollout_item_to_path(&authoritative_path, &item).await?;
+    }
+    let thread_id = ThreadId::from_string(&authoritative_thread_id)?;
+    let started = app_server
+        .resume_thread(
+            app.chat_widget.config_ref().clone(),
+            thread_id,
+            crate::app_server_session::ResumeModelSettings::OverrideFromCurrentConfig,
+        )
+        .await?;
+    assert!(
+        started.turns.iter().any(|turn| {
+            turn.items.iter().any(|item| {
+                matches!(
+                    item,
+                    ThreadItem::UserMessage { content, .. }
+                        if content.iter().any(|input| matches!(
+                            input,
+                            AppServerUserInput::Text { text, .. }
+                                if text == "authoritative resumed output"
+                        ))
+                )
+            })
+        }),
+        "resume should return the authoritative turn"
+    );
+
+    let mut channel = ThreadEventChannel::new_with_session(
+        THREAD_EVENT_CHANNEL_CAPACITY,
+        started.session.clone(),
+        started.turns.clone(),
+    );
+    channel.mark_replay_only();
+    app.thread_event_channels.insert(thread_id, channel);
+    app.activate_thread_channel(thread_id).await;
+    app.active_thread_id = Some(thread_id);
+    {
+        let channel = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("replay channel");
+        let mut store = channel.store.lock().await;
+        let stale_request = exec_approval_request(
+            thread_id,
+            "stale-turn",
+            "stale-approval",
+            /*approval_id*/ None,
+        );
+        store.push_request(stale_request.clone());
+        assert!(store.has_pending_thread_approvals());
+        channel
+            .sender
+            .try_send(ThreadBufferedEvent::Request(stale_request))
+            .expect("stale replay request should be queued");
+    }
+    app.chat_widget
+        .handle_thread_session(started.session.clone());
+    app.chat_widget.set_replay_only_thread(/*replay_only*/ true);
+
+    // Model the transcript already rendered while this channel was replay-only. Promotion must
+    // clear these app-owned cells before replaying the authoritative resumed snapshot; otherwise
+    // the old transcript is retained (and any matching resumed turns are duplicated).
+    app.chat_widget.replay_thread_turns(
+        vec![test_turn(
+            "stale-replay-turn",
+            TurnStatus::Completed,
+            vec![ThreadItem::UserMessage {
+                id: "stale-user".to_string(),
+                client_id: None,
+                content: vec![AppServerUserInput::Text {
+                    text: "stale replay output".to_string(),
+                    text_elements: Vec::new(),
+                }],
+            }],
+        )],
+        ReplayKind::ThreadSnapshot,
+    );
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            app.transcript_cells.push(cell.into());
+        }
+    }
+    assert!(app.transcript_cells.iter().any(|cell| {
+        cell.display_lines(/*width*/ 120)
+            .iter()
+            .any(|line| line.to_string().contains("stale replay output"))
+    }));
+
+    // Seed the same queued follow-up state that a replay-only snapshot restores.
+    app.chat_widget
+        .set_replay_only_thread(/*replay_only*/ false);
+    app.chat_widget
+        .set_queue_autosend_suppressed(/*suppressed*/ true);
+    app.chat_widget.submit_user_message_with_mode(
+        "queued during replay".to_string(),
+        CollaborationModeMask {
+            name: "Default".to_string(),
+            mode: None,
+            model: None,
+            reasoning_effort: None,
+            developer_instructions: None,
+        },
+    );
+    let input_state = app
+        .chat_widget
+        .capture_thread_input_state()
+        .expect("expected queued input state");
+    app.chat_widget.set_replay_only_thread(/*replay_only*/ true);
+    app.chat_widget.restore_thread_input_state(
+        Some(input_state),
+        ThreadInputStateRestoreMode {
+            preserve_in_flight_turn: true,
+        },
+    );
+    app.chat_widget
+        .set_queue_autosend_suppressed(/*suppressed*/ false);
+
+    let resumed_model = started.session.model.clone();
+    assert!(
+        app.attach_live_thread_for_selection(&mut app_server, thread_id)
+            .await?
+    );
+    {
+        let store = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("promoted channel")
+            .store
+            .lock()
+            .await;
+        assert!(!store.has_pending_thread_approvals());
+        assert!(
+            store
+                .buffer
+                .iter()
+                .all(|event| !matches!(event, ThreadBufferedEvent::Request(_)))
+        );
+    }
+    assert!(
+        app.active_thread_rx
+            .as_mut()
+            .expect("promoted thread receiver")
+            .try_recv()
+            .is_err(),
+        "promotion must fence requests queued by the prior replay attachment"
+    );
+    assert_eq!(app.chat_widget.current_model(), resumed_model);
+    let mut promoted_history = Vec::new();
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            promoted_history.push(lines_to_single_string(&cell.display_lines(/*width*/ 120)));
+            app.transcript_cells.push(cell.into());
+        }
+    }
+    assert!(
+        promoted_history
+            .iter()
+            .any(|transcript| transcript.contains("authoritative resumed output")),
+        "promotion should emit the authoritative resumed history"
+    );
+    assert!(app.transcript_cells.iter().all(|cell| {
+        !cell
+            .display_lines(/*width*/ 120)
+            .iter()
+            .any(|line| line.to_string().contains("stale replay output"))
+    }));
+    assert!(
+        matches!(next_user_turn_op(&mut op_rx), Op::UserTurn { .. }),
+        "promotion should drain the preserved queue after live session configuration"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn replay_promotion_fences_inactive_channel_receiver_before_activation() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let mut channel = ThreadEventChannel::new(/*capacity*/ 4);
+    channel.mark_replay_only();
+    channel
+        .sender
+        .try_send(ThreadBufferedEvent::Notification(
+            ServerNotification::ThreadClosed(ThreadClosedNotification {
+                thread_id: thread_id.to_string(),
+            }),
+        ))
+        .expect("stale replay notification should be queued");
+    app.thread_event_channels.insert(thread_id, channel);
+
+    app.replace_thread_event_queue(thread_id).await;
+    app.activate_thread_channel(thread_id).await;
+
+    assert!(
+        app.active_thread_rx
+            .as_mut()
+            .expect("activated thread receiver")
+            .try_recv()
+            .is_err(),
+        "activation must not drain events queued by the prior replay attachment"
+    );
+}
+
+#[tokio::test]
+async fn replay_only_thread_rejects_direct_user_turn_without_server_mutation() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let mut channel = ThreadEventChannel::new(/*capacity*/ 1);
+    channel.mark_replay_only();
+    app.thread_event_channels.insert(thread_id, channel);
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let model = get_model_offline_for_tests(app.config.model.as_deref());
+    let op = AppCommand::user_turn(
+        vec![UserInput::Text {
+            text: "must not be submitted".to_string(),
+            text_elements: Vec::new(),
+        }],
+        app.config.cwd.to_path_buf(),
+        AskForApproval::OnRequest,
+        /*active_permission_profile*/ None,
+        model,
+        /*effort*/ None,
+        /*summary*/ None,
+        /*service_tier*/ None,
+        /*final_output_json_schema*/ None,
+        /*collaboration_mode*/ None,
+        /*personality*/ None,
+    );
+
+    app.submit_thread_op(&mut app_server, thread_id, op)
+        .await
+        .expect("replay-only input should be handled as a local rejection");
+    assert_eq!(app.active_thread_id, None);
+    let store = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("replay channel should remain")
+        .store
+        .lock()
+        .await;
+    assert!(store.active_turn_id().is_none());
+    assert!(store.turns.is_empty());
 }
 
 #[tokio::test]
@@ -4454,6 +4809,39 @@ async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
 }
 
 #[tokio::test]
+async fn discard_replay_only_side_thread_removes_local_state_without_server_rpc() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let parent_thread_id = ThreadId::new();
+    let side_thread_id = ThreadId::new();
+    app.side_threads
+        .insert(side_thread_id, SideThreadState::new(parent_thread_id));
+    let mut channel = ThreadEventChannel::new(/*capacity*/ 4);
+    channel.mark_replay_only();
+    app.thread_event_channels.insert(side_thread_id, channel);
+    app.agent_navigation.upsert(
+        side_thread_id,
+        Some("Side".to_string()),
+        Some("side".to_string()),
+        /*is_closed*/ true,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+
+    assert!(
+        app.discard_side_thread(&mut app_server, side_thread_id)
+            .await
+    );
+
+    assert!(!app.side_threads.contains_key(&side_thread_id));
+    assert!(!app.thread_event_channels.contains_key(&side_thread_id));
+    assert_eq!(app.agent_navigation.get(&side_thread_id), None);
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn active_non_primary_shutdown_target_returns_none_for_non_shutdown_event() -> Result<()> {
     let mut app = make_test_app().await;
     app.active_thread_id = Some(ThreadId::new());
@@ -5061,6 +5449,61 @@ async fn replace_goal_confirmation_snapshot() {
         "replace_goal_confirmation",
         render_bottom_popup(&app.chat_widget, /*width*/ 80)
     );
+}
+
+#[tokio::test]
+async fn replay_only_config_toggle_completion_drops_queued_follow_up() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let mut app_server = start_config_write_test_app_server(&app).await?;
+    let thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            thread_id,
+            test_path_buf("/tmp/project"),
+        ));
+    let mut replay_channel = ThreadEventChannel::new(/*capacity*/ 1);
+    replay_channel.mark_replay_only();
+    app.thread_event_channels.insert(thread_id, replay_channel);
+    app.active_thread_id = Some(thread_id);
+    app.chat_widget.set_replay_only_thread(/*replay_only*/ true);
+    let cwd = app.chat_widget.config_ref().cwd.to_path_buf();
+
+    // Model two toggles: the first write is in flight and the second desired value is queued.
+    let plugin_id = "plugin.example".to_string();
+    app.pending_plugin_enabled_writes
+        .insert(plugin_id.clone(), Some(false));
+    app.pending_hook_enabled_writes
+        .insert("hook.example".to_string(), Some(false));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::PluginEnabledSet {
+            cwd: cwd.clone(),
+            plugin_id: plugin_id.clone(),
+            enabled: true,
+            result: Ok(()),
+        },
+    )
+    .await?;
+    assert!(!app.pending_plugin_enabled_writes.contains_key(&plugin_id));
+
+    let hook_key = "hook.example".to_string();
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::HookEnabledSet {
+            key: hook_key.clone(),
+            enabled: true,
+            result: Ok(()),
+        },
+    )
+    .await?;
+    assert!(!app.pending_hook_enabled_writes.contains_key(&hook_key));
+
+    app_server.shutdown().await?;
+    Ok(())
 }
 
 fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState {

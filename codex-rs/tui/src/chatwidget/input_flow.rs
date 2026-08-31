@@ -7,6 +7,9 @@
 use super::*;
 
 impl ChatWidget {
+    pub(crate) fn set_replay_only_thread(&mut self, replay_only: bool) {
+        self.replay_only = replay_only;
+    }
     pub(crate) fn set_parent_owned_thread(&mut self) {
         self.blocks_direct_input = true;
         self.bottom_pane.set_parent_owned_thread();
@@ -108,6 +111,11 @@ impl ChatWidget {
         action: QueuedInputAction,
         pending_pastes: Vec<(String, String)>,
     ) {
+        if self.replay_only {
+            self.restore_user_message_to_composer_with_pending_pastes(user_message, pending_pastes);
+            self.add_error_message("Replay-only transcripts do not accept input.".to_string());
+            return;
+        }
         if !self.is_session_configured()
             || self.is_user_turn_pending_or_running()
             || self.input_queue.suppress_queue_autosend
@@ -134,6 +142,9 @@ impl ChatWidget {
             return false;
         }
         if self.blocks_direct_input {
+            return false;
+        }
+        if self.replay_only {
             return false;
         }
         if self.is_user_turn_pending_or_running() {

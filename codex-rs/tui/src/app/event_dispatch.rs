@@ -15,12 +15,134 @@ use codex_config::types::WindowsSandboxModeToml;
 const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 
 impl App {
+    fn replay_only_event_is_mutating(event: &AppEvent) -> bool {
+        match event {
+            AppEvent::SelectAgentThread(_) => false,
+            AppEvent::SubmitThreadOp { op, .. } | AppEvent::CodexOp(op) => {
+                !Self::replay_safe_op(op)
+            }
+            AppEvent::RetrySafetyBufferedTurn { .. }
+            | AppEvent::Logout
+            | AppEvent::OpenExternalAgentConfigMigration
+            | AppEvent::AppendMessageHistoryEntry { .. }
+            | AppEvent::SyncThreadGitBranch { .. }
+            | AppEvent::ApproveRecentAutoReviewDenial { .. }
+            | AppEvent::ForkCurrentSession
+            | AppEvent::ForkSessionForPromptEdit { .. }
+            | AppEvent::StartSide { .. }
+            | AppEvent::ArchiveCurrentThread
+            | AppEvent::DeleteCurrentThread
+            | AppEvent::SetThreadGoalObjective { .. }
+            | AppEvent::SetThreadGoalDraft { .. }
+            | AppEvent::SetThreadGoalStatus { .. }
+            | AppEvent::ClearThreadGoal { .. }
+            | AppEvent::UpdateReasoningEffort(_)
+            | AppEvent::UpdateModel(_)
+            | AppEvent::UpdateCollaborationMode(_)
+            | AppEvent::UpdatePersonality(_)
+            | AppEvent::SelectModel { .. }
+            | AppEvent::ApplyAdvancedReasoning { .. }
+            | AppEvent::UpdateAskForApprovalPolicy(_)
+            | AppEvent::UpdateActivePermissionProfile(_)
+            | AppEvent::SelectPermissionProfile(_)
+            | AppEvent::UpdateApprovalsReviewer(_)
+            | AppEvent::UpdateFeatureFlags { .. }
+            | AppEvent::UpdateMemorySettings { .. }
+            | AppEvent::ResetMemories
+            | AppEvent::UpdateWorldWritableWarningAcknowledged(_)
+            | AppEvent::UpdateRateLimitSwitchPromptHidden(_)
+            | AppEvent::UpdatePlanModeReasoningEffort(_)
+            | AppEvent::SkipNextWorldWritableScan
+            | AppEvent::ConsumeRateLimitResetCredit { .. }
+            | AppEvent::SendAddCreditsNudgeEmail { .. }
+            | AppEvent::SubmitFeedback { .. }
+            | AppEvent::PetSelected { .. }
+            | AppEvent::PetDisabled
+            | AppEvent::PetSelectionLoaded { .. }
+            | AppEvent::FetchMarketplaceAdd { .. }
+            | AppEvent::FetchMarketplaceRemove { .. }
+            | AppEvent::FetchMarketplaceUpgrade { .. }
+            | AppEvent::FetchPluginInstall { .. }
+            | AppEvent::FetchPluginUninstall { .. }
+            | AppEvent::SetPluginEnabled { .. }
+            | AppEvent::SetSkillEnabled { .. }
+            | AppEvent::SetAppEnabled { .. }
+            | AppEvent::SetHookEnabled { .. }
+            | AppEvent::TrustHook { .. }
+            | AppEvent::TrustHooks { .. }
+            | AppEvent::BeginWindowsSandboxGrantReadRoot { .. }
+            | AppEvent::BeginWindowsSandboxElevatedSetup { .. }
+            | AppEvent::BeginWindowsSandboxLegacySetup { .. }
+            | AppEvent::EnableWindowsSandboxForAgentMode { .. }
+            | AppEvent::PersistModelSelection { .. }
+            | AppEvent::PersistPersonalitySelection { .. }
+            | AppEvent::PersistServiceTierSelection { .. }
+            | AppEvent::PersistRealtimeAudioDeviceSelection { .. }
+            | AppEvent::PersistWorldWritableWarningAcknowledged
+            | AppEvent::PersistRateLimitSwitchPromptHidden
+            | AppEvent::PersistPlanModeReasoningEffort(_)
+            | AppEvent::PersistModelMigrationPromptAcknowledged { .. }
+            | AppEvent::StatusLineSetup { .. }
+            | AppEvent::TerminalTitleSetup { .. }
+            | AppEvent::SyntaxThemeSelected { .. }
+            | AppEvent::KeymapCaptured { .. }
+            | AppEvent::KeymapCleared { .. }
+            | AppEvent::SubmitUserMessageWithMode { .. } => true,
+            _ => false,
+        }
+    }
+
+    fn replay_only_event_targets_thread(event: &AppEvent) -> Option<ThreadId> {
+        match event {
+            AppEvent::SubmitThreadOp { thread_id, .. }
+            | AppEvent::RetrySafetyBufferedTurn { thread_id, .. }
+            | AppEvent::AppendMessageHistoryEntry { thread_id, .. }
+            | AppEvent::SyncThreadGitBranch { thread_id, .. }
+            | AppEvent::ApproveRecentAutoReviewDenial { thread_id, .. }
+            | AppEvent::ForkSessionForPromptEdit { thread_id, .. }
+            | AppEvent::SetThreadGoalObjective { thread_id, .. }
+            | AppEvent::SetThreadGoalDraft { thread_id, .. }
+            | AppEvent::SetThreadGoalStatus { thread_id, .. }
+            | AppEvent::ClearThreadGoal { thread_id } => Some(*thread_id),
+            AppEvent::StartSide {
+                parent_thread_id, ..
+            } => Some(*parent_thread_id),
+            _ => None,
+        }
+    }
+
+    fn reject_replay_only_mutation(&mut self, event: &AppEvent) -> bool {
+        if !Self::replay_only_event_is_mutating(event) {
+            return false;
+        }
+        let active_replay_only = self
+            .chat_widget
+            .thread_id()
+            .is_some_and(|thread_id| self.is_replay_only_thread(thread_id));
+        let targeted_thread = Self::replay_only_event_targets_thread(event);
+        let replay_only = targeted_thread
+            .map(|thread_id| self.is_replay_only_thread(thread_id))
+            .unwrap_or(active_replay_only);
+        if replay_only {
+            if matches!(event, AppEvent::CodexOp(AppCommand::UserTurn { .. })) {
+                self.chat_widget.handle_replay_only_submission_rejection();
+            }
+            self.chat_widget
+                .add_error_message("Replay-only transcripts do not accept mutations.".to_string());
+            return true;
+        }
+        false
+    }
+
     pub(super) async fn handle_event(
         &mut self,
         tui: &mut tui::Tui,
         app_server: &mut AppServerSession,
         event: AppEvent,
     ) -> Result<AppRunControl> {
+        if self.reject_replay_only_mutation(&event) {
+            return Ok(AppRunControl::Continue);
+        }
         match event {
             AppEvent::NewSession { name } => {
                 self.start_fresh_session_with_summary_hint(
@@ -806,11 +928,16 @@ impl App {
                 enabled,
                 result,
             } => {
+                let replay_only = self
+                    .chat_widget
+                    .thread_id()
+                    .is_some_and(|thread_id| self.is_replay_only_thread(thread_id));
                 let queued_enabled = self
                     .pending_plugin_enabled_writes
                     .get_mut(&plugin_id)
                     .and_then(Option::take);
-                let should_apply_result = if let Some(queued_enabled) = queued_enabled
+                let should_apply_result = if !replay_only
+                    && let Some(queued_enabled) = queued_enabled
                     && (result.is_err() || queued_enabled != enabled)
                 {
                     self.spawn_plugin_enabled_write(
@@ -2140,11 +2267,16 @@ impl App {
                 enabled,
                 result,
             } => {
+                let replay_only = self
+                    .chat_widget
+                    .thread_id()
+                    .is_some_and(|thread_id| self.is_replay_only_thread(thread_id));
                 let queued_enabled = self
                     .pending_hook_enabled_writes
                     .get_mut(&key)
                     .and_then(Option::take);
-                let should_apply_result = if let Some(queued_enabled) = queued_enabled
+                let should_apply_result = if !replay_only
+                    && let Some(queued_enabled) = queued_enabled
                     && (result.is_err() || queued_enabled != enabled)
                 {
                     self.spawn_hook_enabled_write(app_server, key.clone(), queued_enabled);
@@ -2574,6 +2706,12 @@ impl App {
             );
             return AppRunControl::Continue;
         }
+        if self.is_replay_only_thread(thread_id) {
+            self.chat_widget.add_error_message(
+                "Agent thread is replay-only; '/archive' is unavailable.".to_string(),
+            );
+            return AppRunControl::Continue;
+        }
 
         match app_server.thread_archive(thread_id).await {
             Ok(()) => AppRunControl::Exit(ExitReason::UserRequested),
@@ -2601,6 +2739,12 @@ impl App {
             );
             return AppRunControl::Continue;
         }
+        if self.is_replay_only_thread(thread_id) {
+            self.chat_widget.add_error_message(
+                "Agent thread is replay-only; '/delete' is unavailable.".to_string(),
+            );
+            return AppRunControl::Continue;
+        }
 
         match app_server.thread_delete(thread_id).await {
             Ok(()) => AppRunControl::Exit(ExitReason::UserRequested),
@@ -2610,5 +2754,218 @@ impl App {
                 AppRunControl::Continue
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_event::RealtimeAudioDeviceKind;
+    use crate::app_event::WindowsSandboxEnableMode;
+    use crate::chatwidget::UserMessage;
+    use codex_protocol::config_types::CollaborationModeMask;
+
+    #[test]
+    fn replay_only_gate_classifies_direct_mutations_and_safe_events() {
+        assert!(App::replay_only_event_is_mutating(
+            &AppEvent::ForkCurrentSession
+        ));
+        assert!(App::replay_only_event_is_mutating(
+            &AppEvent::ForkSessionForPromptEdit {
+                thread_id: ThreadId::new(),
+                nth_user_message: 0,
+                prompt: UserMessage::from("edited"),
+            }
+        ));
+        assert!(App::replay_only_event_is_mutating(
+            &AppEvent::UpdateMemorySettings {
+                use_memories: true,
+                generate_memories: false,
+            }
+        ));
+        for event in [
+            AppEvent::PersistModelSelection {
+                model: "gpt-5.4".to_string(),
+                effort: None,
+            },
+            AppEvent::PersistPersonalitySelection {
+                personality: Personality::Friendly,
+            },
+            AppEvent::PersistServiceTierSelection { service_tier: None },
+            AppEvent::PersistRealtimeAudioDeviceSelection {
+                kind: RealtimeAudioDeviceKind::Microphone,
+                name: None,
+            },
+            AppEvent::PersistPlanModeReasoningEffort(None),
+            AppEvent::PersistWorldWritableWarningAcknowledged,
+            AppEvent::PersistRateLimitSwitchPromptHidden,
+            AppEvent::PersistModelMigrationPromptAcknowledged {
+                from_model: "gpt-4.1".to_string(),
+                to_model: "gpt-5.4".to_string(),
+            },
+            AppEvent::Logout,
+            AppEvent::OpenExternalAgentConfigMigration,
+            AppEvent::UpdateWorldWritableWarningAcknowledged(true),
+            AppEvent::UpdateRateLimitSwitchPromptHidden(true),
+            AppEvent::SkipNextWorldWritableScan,
+            AppEvent::ConsumeRateLimitResetCredit {
+                idempotency_key: "reset-1".to_string(),
+                credit_id: None,
+            },
+            AppEvent::SendAddCreditsNudgeEmail {
+                credit_type: codex_app_server_protocol::AddCreditsNudgeCreditType::Credits,
+            },
+            AppEvent::SubmitFeedback {
+                category: FeedbackCategory::Bug,
+                reason: None,
+                turn_id: None,
+                include_logs: false,
+            },
+            AppEvent::PetSelected {
+                pet_id: "chefito".to_string(),
+            },
+            AppEvent::PetDisabled,
+            AppEvent::PetSelectionLoaded {
+                request_id: 0,
+                pet_id: "chefito".to_string(),
+                result: Ok(None),
+            },
+            AppEvent::SetSkillEnabled {
+                path: codex_utils_absolute_path::AbsolutePathBuf::try_from("/skills/example")
+                    .expect("absolute skill path"),
+                enabled: true,
+            },
+            AppEvent::SetAppEnabled {
+                id: "example-app".to_string(),
+                enabled: true,
+            },
+            AppEvent::SetHookEnabled {
+                key: "example-hook".to_string(),
+                enabled: true,
+            },
+            AppEvent::TrustHook {
+                key: "example-hook".to_string(),
+                current_hash: "hash".to_string(),
+            },
+            AppEvent::TrustHooks {
+                updates: vec![crate::hooks_rpc::HookTrustUpdate {
+                    key: "example-hook".to_string(),
+                    current_hash: "hash".to_string(),
+                }],
+            },
+            AppEvent::FetchMarketplaceAdd {
+                cwd: std::path::PathBuf::from("/workspace"),
+                source: "https://example.com/marketplace.git".to_string(),
+            },
+            AppEvent::FetchMarketplaceRemove {
+                cwd: std::path::PathBuf::from("/workspace"),
+                marketplace_name: "example-marketplace".to_string(),
+                marketplace_display_name: "Example Marketplace".to_string(),
+            },
+            AppEvent::FetchMarketplaceUpgrade {
+                cwd: std::path::PathBuf::from("/workspace"),
+                marketplace_name: None,
+            },
+            AppEvent::FetchPluginInstall {
+                cwd: std::path::PathBuf::from("/workspace"),
+                location: PluginLocation::Remote {
+                    marketplace_name: "example-marketplace".to_string(),
+                },
+                plugin_name: "example-plugin".to_string(),
+                plugin_display_name: "Example Plugin".to_string(),
+            },
+            AppEvent::FetchPluginUninstall {
+                cwd: std::path::PathBuf::from("/workspace"),
+                plugin_id: "example-plugin".to_string(),
+                plugin_display_name: "Example Plugin".to_string(),
+            },
+            AppEvent::SetPluginEnabled {
+                cwd: std::path::PathBuf::from("/workspace"),
+                plugin_id: "example-plugin".to_string(),
+                enabled: true,
+            },
+            AppEvent::EnableWindowsSandboxForAgentMode {
+                preset: codex_utils_approval_presets::builtin_approval_presets()
+                    .into_iter()
+                    .next()
+                    .expect("built-in approval preset"),
+                mode: WindowsSandboxEnableMode::Legacy,
+                profile_selection: None,
+            },
+            AppEvent::BeginWindowsSandboxElevatedSetup {
+                preset: codex_utils_approval_presets::builtin_approval_presets()
+                    .into_iter()
+                    .next()
+                    .expect("built-in approval preset"),
+                profile_selection: None,
+            },
+            AppEvent::BeginWindowsSandboxLegacySetup {
+                preset: codex_utils_approval_presets::builtin_approval_presets()
+                    .into_iter()
+                    .next()
+                    .expect("built-in approval preset"),
+                profile_selection: None,
+            },
+            AppEvent::BeginWindowsSandboxGrantReadRoot {
+                path: "/workspace/shared".to_string(),
+            },
+            AppEvent::StatusLineSetup {
+                items: Vec::new(),
+                use_theme_colors: true,
+            },
+            AppEvent::TerminalTitleSetup { items: Vec::new() },
+            AppEvent::SyntaxThemeSelected {
+                name: "default".to_string(),
+            },
+            AppEvent::KeymapCaptured {
+                context: "global".to_string(),
+                action: "quit".to_string(),
+                key: "q".to_string(),
+                intent: crate::app_event::KeymapEditIntent::ReplaceAll,
+            },
+            AppEvent::KeymapCleared {
+                context: "global".to_string(),
+                action: "quit".to_string(),
+            },
+        ] {
+            assert!(App::replay_only_event_is_mutating(&event));
+        }
+        assert!(App::replay_only_event_is_mutating(&AppEvent::CodexOp(
+            AppCommand::set_thread_name("renamed".to_string())
+        )));
+        assert!(App::replay_only_event_is_mutating(
+            &AppEvent::SubmitUserMessageWithMode {
+                text: "turn".to_string(),
+                collaboration_mode: CollaborationModeMask {
+                    name: "default".to_string(),
+                    mode: None,
+                    model: None,
+                    reasoning_effort: None,
+                    developer_instructions: None,
+                },
+            }
+        ));
+
+        assert!(!App::replay_only_event_is_mutating(
+            &AppEvent::SelectAgentThread(ThreadId::new())
+        ));
+        for event in [
+            AppEvent::ExitSideConversation,
+            AppEvent::NewSession { name: None },
+            AppEvent::ClearUi { name: None },
+            AppEvent::ClearUiAndSubmitUserMessage {
+                text: "new prompt".to_string(),
+            },
+        ] {
+            assert!(!App::replay_only_event_is_mutating(&event));
+        }
+        assert!(!App::replay_only_event_is_mutating(
+            &AppEvent::OpenThreadGoalMenu {
+                thread_id: ThreadId::new(),
+            }
+        ));
+        assert!(!App::replay_only_event_is_mutating(&AppEvent::CodexOp(
+            AppCommand::list_skills(Vec::new(), /*force_reload*/ false)
+        )));
     }
 }

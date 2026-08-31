@@ -33,7 +33,9 @@ impl App {
         let backfill = self.backfill_loaded_subagent_threads(app_server).await;
         // V2 subagents are identified by canonical paths observed from activity events or loaded
         // thread metadata. A buffered active turn is positive liveness evidence; a completed
-        // snapshot is terminal evidence. An empty store does not clear a successful spawn hint.
+        // snapshot is terminal evidence. Replay-only channels have no live server attachment, so
+        // refresh those (and uncached threads) against authoritative server state before showing
+        // them in the picker.
         let path_backed_thread_ids: Vec<_> = self
             .agent_navigation
             .ordered_path_backed_subagent_threads(self.primary_thread_id)
@@ -323,6 +325,13 @@ impl App {
         self.sync_active_agent_label();
     }
 
+    pub(super) fn sync_active_thread_replay_only_state(&mut self, thread_id: ThreadId) {
+        if self.active_thread_id == Some(thread_id) {
+            self.chat_widget
+                .set_replay_only_thread(self.is_replay_only_thread(thread_id));
+        }
+    }
+
     pub(super) async fn refresh_agent_picker_thread_liveness(
         &mut self,
         app_server: &mut AppServerSession,
@@ -359,6 +368,13 @@ impl App {
                     }),
                     is_closed,
                 );
+                // A cached channel may still be attached live when the server reports that the
+                // thread is closed. Keep the attachment in sync with authoritative metadata so
+                // central mutation guards cannot submit operations to a replay-only transcript.
+                if is_closed && let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+                    channel.mark_replay_only();
+                }
+                self.sync_active_thread_replay_only_state(thread_id);
                 if is_parent_owned {
                     self.agent_navigation.mark_parent_owned(thread_id);
                 }
@@ -387,6 +403,7 @@ impl App {
             Err(err) => {
                 if Self::is_terminal_thread_read_error(&err) && !has_replay_channel {
                     self.agent_navigation.remove(thread_id);
+                    self.sync_active_thread_replay_only_state(thread_id);
                     return false;
                 }
                 let is_closed = Self::closed_state_for_thread_read_error(
@@ -406,6 +423,10 @@ impl App {
                         is_closed,
                     );
                 }
+                if is_closed && let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+                    channel.mark_replay_only();
+                }
+                self.sync_active_thread_replay_only_state(thread_id);
                 self.agent_navigation
                     .set_running(thread_id, /*is_running*/ false);
                 true
@@ -419,13 +440,37 @@ impl App {
     /// Resume-time backfill intentionally avoids creating empty placeholder channels, because those
     /// placeholders make stale `/agent` entries open blank transcripts. When a user later selects a
     /// still-live discovered thread, attach it on demand with a real resumed snapshot.
+    #[cfg(test)]
     pub(super) async fn attach_live_thread_for_selection(
         &mut self,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> Result<bool> {
-        if self.thread_event_channels.contains_key(&thread_id) {
+        self.attach_live_thread_for_selection_with_tui(app_server, thread_id, /*tui*/ None)
+            .await
+    }
+
+    async fn attach_live_thread_for_selection_with_tui(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+        tui: Option<&mut tui::Tui>,
+    ) -> Result<bool> {
+        if let Some(channel) = self.thread_event_channels.get(&thread_id)
+            && channel.attachment() == ThreadEventAttachment::Live
+        {
             return Ok(true);
+        }
+
+        // Fence requests and notifications from the prior replay attachment before resuming.
+        // The channel remains available to collect valid post-snapshot notifications that arrive
+        // while thread/resume is in flight.
+        if self.thread_event_channels.contains_key(&thread_id) {
+            self.replace_thread_event_queue(thread_id).await;
+            if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                let mut store = channel.store.lock().await;
+                store.clear_stale_replay_state();
+            }
         }
 
         let (session, turns, live_attached) = match app_server
@@ -474,13 +519,124 @@ impl App {
                 (session, turns, false)
             }
         };
+        let promote_active_thread = self.active_thread_id == Some(thread_id) && live_attached;
         let channel = self.ensure_thread_channel(thread_id);
-        if !live_attached {
+        if live_attached {
+            channel.mark_live();
+        } else {
             channel.mark_replay_only();
         }
         let mut store = channel.store.lock().await;
-        store.set_session(session, turns);
+        if live_attached {
+            store.set_session(session.clone(), turns.clone());
+        } else {
+            store.replace_with_authoritative_snapshot(session.clone(), turns.clone());
+        }
+        drop(store);
+
+        // A replay-only channel can be selected while its server-side thread is temporarily
+        // unavailable, then promoted in place when the thread becomes live again. Apply the
+        // resumed session to the existing widget before clearing the replay gate so model and
+        // session state are configured before any preserved queue is considered for delivery.
+        if promote_active_thread {
+            // The widget may still contain the transcript rendered while this channel was
+            // replay-only. `thread/resume` is authoritative when it supplies turns, so rebuild
+            // the app-owned transcript before reopening the gate and delivering queued input.
+            if let Some(tui) = tui {
+                self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
+            }
+            self.reset_transcript_state_after_clear();
+            self.chat_widget.handle_thread_session(session);
+            self.chat_widget
+                .replay_thread_turns(turns, ReplayKind::ThreadSnapshot);
+            self.chat_widget
+                .set_replay_only_thread(/*replay_only*/ false);
+            if self.agent_navigation.is_parent_owned(thread_id) {
+                self.chat_widget.set_parent_owned_thread();
+            }
+            self.chat_widget.maybe_send_next_queued_input();
+        }
         Ok(live_attached)
+    }
+
+    /// Hydrates a closed thread for transcript replay and reports whether the authoritative read
+    /// found a still-loaded server thread that should be reattached live.
+    ///
+    /// Closed metadata entries are not resumed until an authoritative read confirms that the
+    /// server still has the thread loaded: resuming an actually terminal thread could reopen it or
+    /// attach a listener where none is available. Fetch the saved turns with `thread/read`, seed a
+    /// replay-only channel, and fail closed when the server cannot provide a transcript. Any
+    /// existing channel snapshot is replaced with the authoritative persisted turns so a stale
+    /// replay cannot hide later transcript updates.
+    pub(super) async fn attach_closed_thread_for_selection(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> Result<bool> {
+        // Mark the channel replay-only before any async read so a stale live channel cannot
+        // submit mutations while its persisted transcript is being hydrated.
+        self.ensure_thread_channel(thread_id).mark_replay_only();
+        // Replace the receiver generation before the authoritative read so queued events from
+        // the prior live/replay attachment cannot drain after the persisted snapshot is installed.
+        self.replace_thread_event_queue(thread_id).await;
+
+        let thread = app_server
+            .thread_read(thread_id, /*include_turns*/ true)
+            .await?;
+        if thread.turns.is_empty() {
+            return Err(color_eyre::eyre::eyre!(
+                "Agent thread {thread_id} has no saved transcript for read-only replay."
+            ));
+        }
+
+        let thread_is_loaded = matches!(
+            &thread.status,
+            codex_app_server_protocol::ThreadStatus::Idle
+                | codex_app_server_protocol::ThreadStatus::Active { .. }
+        );
+        let turns = thread.turns.clone();
+        let session = self.session_state_for_thread_read(thread_id, &thread).await;
+        // Events that arrived while the read was in flight are not proven to follow its
+        // authoritative transcript, so fence that queue generation before replacing the store.
+        self.replace_thread_event_queue(thread_id).await;
+        let channel = self.ensure_thread_channel(thread_id);
+        channel.mark_replay_only();
+        let mut store = channel.store.lock().await;
+        store.replace_with_authoritative_snapshot(session, turns);
+        drop(store);
+
+        // A liveness read can race with this authoritative transcript read. If the server reports
+        // that the thread is loaded after the earlier read marked it closed, refresh picker state
+        // before routing through `thread/resume`; the channel stays replay-only until that live
+        // listener has been established.
+        if thread_is_loaded {
+            let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+            self.upsert_agent_picker_thread(
+                thread_id,
+                thread.agent_nickname.or_else(|| {
+                    existing_entry
+                        .as_ref()
+                        .and_then(|entry| entry.agent_nickname.clone())
+                }),
+                thread.agent_role.or_else(|| {
+                    existing_entry
+                        .as_ref()
+                        .and_then(|entry| entry.agent_role.clone())
+                }),
+                /*is_closed*/ false,
+            );
+            if matches!(
+                thread.status,
+                codex_app_server_protocol::ThreadStatus::Active { .. }
+            ) {
+                self.agent_navigation.mark_running(thread_id);
+            } else {
+                self.agent_navigation
+                    .set_running(thread_id, /*is_running*/ false);
+            }
+        }
+
+        Ok(thread_is_loaded)
     }
 
     /// Replaces the chat widget and re-seeds the new widget's collab metadata from the navigation
@@ -522,7 +678,45 @@ impl App {
         thread_id: ThreadId,
     ) -> Result<()> {
         if self.active_thread_id == Some(thread_id) {
+            // A replay channel can outlive the server-side closed state. Re-check liveness even
+            // when already selected so a thread that became live again is promoted in place.
+            self.refresh_agent_picker_thread_liveness(app_server, thread_id)
+                .await;
+            // The generic selection predicate is intentionally conservative around cached
+            // channels. For an already-selected thread, however, a successful liveness refresh
+            // is the authoritative transition: if it reopened a replay-only channel, explicitly
+            // resume it before reopening the composer gate. The closed row check prevents a
+            // terminal NotLoaded refresh from attempting to resume the thread.
+            let recovered_active_thread = self.is_replay_only_thread(thread_id)
+                && self
+                    .agent_navigation
+                    .get(&thread_id)
+                    .is_some_and(|entry| !entry.is_closed);
+            if recovered_active_thread || self.should_attach_live_thread_for_selection(thread_id) {
+                let live_attached = self
+                    .attach_live_thread_for_selection_with_tui(app_server, thread_id, Some(tui))
+                    .await?;
+                if live_attached {
+                    self.chat_widget
+                        .set_replay_only_thread(/*replay_only*/ false);
+                    if self.agent_navigation.is_parent_owned(thread_id) {
+                        self.chat_widget.set_parent_owned_thread();
+                    }
+                }
+            }
             return Ok(());
+        }
+
+        // A closed picker row can retain a live channel from before the server unloaded the
+        // thread. Fence that channel before the liveness read so no buffered mutation can cross
+        // the closed-thread selection boundary while the authoritative transcript is hydrated.
+        if self
+            .agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed)
+            && let Some(channel) = self.thread_event_channels.get_mut(&thread_id)
+        {
+            channel.mark_replay_only();
         }
 
         // A tracked side thread stays loaded until it is explicitly discarded and already has a
@@ -544,7 +738,7 @@ impl App {
         let mut attached_replay_only = false;
         if self.should_attach_live_thread_for_selection(thread_id) {
             match self
-                .attach_live_thread_for_selection(app_server, thread_id)
+                .attach_live_thread_for_selection_with_tui(app_server, thread_id, Some(tui))
                 .await
             {
                 Ok(live_attached) => {
@@ -560,10 +754,36 @@ impl App {
                     return Ok(());
                 }
             }
-        } else if !self.thread_event_channels.contains_key(&thread_id) && is_replay_only {
-            self.chat_widget
-                .add_error_message(format!("Agent thread {thread_id} is no longer available."));
-            return Ok(());
+        } else if is_replay_only {
+            let loaded = match self
+                .attach_closed_thread_for_selection(app_server, thread_id)
+                .await
+            {
+                Ok(loaded) => loaded,
+                Err(err) => {
+                    self.chat_widget.add_error_message(format!(
+                        "Failed to load the closed transcript for agent thread {thread_id}: {err}"
+                    ));
+                    return Ok(());
+                }
+            };
+            if loaded {
+                match self
+                    .attach_live_thread_for_selection_with_tui(app_server, thread_id, Some(tui))
+                    .await
+                {
+                    Ok(live_attached) => {
+                        attached_replay_only = !live_attached;
+                        is_replay_only = !live_attached;
+                    }
+                    Err(err) => {
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to attach to agent thread {thread_id}: {err}"
+                        ));
+                        return Ok(());
+                    }
+                }
+            }
         }
         let previous_thread_id = self.active_thread_id;
         self.store_active_thread_receiver().await;
@@ -599,6 +819,7 @@ impl App {
         if blocks_direct_input {
             self.chat_widget.set_parent_owned_thread();
         }
+        self.chat_widget.set_replay_only_thread(is_replay_only);
 
         self.reset_for_thread_switch(tui)?;
         self.replay_thread_snapshot(snapshot, !is_replay_only);
@@ -619,11 +840,13 @@ impl App {
     }
 
     pub(super) fn should_attach_live_thread_for_selection(&self, thread_id: ThreadId) -> bool {
-        !self.thread_event_channels.contains_key(&thread_id)
+        self.agent_navigation
+            .get(&thread_id)
+            .is_none_or(|entry| !entry.is_closed)
             && self
-                .agent_navigation
+                .thread_event_channels
                 .get(&thread_id)
-                .is_none_or(|entry| !entry.is_closed)
+                .is_none_or(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
     }
 
     pub(super) fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {
@@ -736,6 +959,9 @@ impl App {
         let tracked_thread_ids: Vec<ThreadId> =
             self.thread_event_channels.keys().copied().collect();
         for thread_id in tracked_thread_ids {
+            if self.is_replay_only_thread(thread_id) {
+                continue;
+            }
             if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
                 tracing::warn!("failed to unsubscribe tracked thread {thread_id}: {err}");
             }

@@ -21,7 +21,9 @@ impl App {
             self.discard_side_thread(app_server, side_thread_id).await;
         }
         if let Some(thread_id) = self.chat_widget.thread_id() {
-            if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
+            if !self.is_replay_only_thread(thread_id)
+                && let Err(err) = app_server.thread_unsubscribe(thread_id).await
+            {
                 tracing::warn!("failed to unsubscribe thread {thread_id}: {err}");
             }
             self.abort_thread_event_listener(thread_id);
@@ -70,6 +72,23 @@ impl App {
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = receiver;
         self.refresh_pending_thread_approvals().await;
+    }
+
+    /// Fence the channel queue at the start of a new resume/read attachment. Existing sender
+    /// clones retain the old, dropped queue; notifications sent after this point use the fresh
+    /// receiver and can be preserved as post-snapshot events.
+    pub(super) async fn replace_thread_event_queue(&mut self, thread_id: ThreadId) {
+        let active = self.active_thread_id == Some(thread_id);
+        let receiver = if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+            channel.replace_event_queue().await
+        } else {
+            return;
+        };
+        if active {
+            self.active_thread_rx = Some(receiver);
+        } else if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+            channel.receiver = Some(receiver);
+        }
     }
 
     pub(super) async fn store_active_thread_receiver(&mut self) {
@@ -440,6 +459,15 @@ impl App {
         thread_id: ThreadId,
         op: AppCommand,
     ) -> Result<()> {
+        if self.is_replay_only_thread(thread_id) && !Self::replay_safe_op(&op) {
+            self.chat_widget.add_error_message(format!(
+                "Agent thread {thread_id} is replay-only; this operation is unavailable."
+            ));
+            if matches!(op, AppCommand::UserTurn { .. }) {
+                self.chat_widget.handle_replay_only_submission_rejection();
+            }
+            return Ok(());
+        }
         crate::session_log::log_outbound_op(&op);
 
         if self
@@ -464,6 +492,19 @@ impl App {
         self.chat_widget
             .add_error_message(format!("Not available in TUI yet for thread {thread_id}."));
         Ok(())
+    }
+
+    pub(super) fn is_replay_only_thread(&self, thread_id: ThreadId) -> bool {
+        self.thread_event_channels
+            .get(&thread_id)
+            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
+    }
+
+    /// Only operations which inspect local/server state are valid while a transcript is detached.
+    /// Keep this allow-list deliberately narrow: approvals, context changes, and all turn/control
+    /// operations can mutate the underlying thread even when they look harmless in the UI.
+    pub(super) fn replay_safe_op(op: &AppCommand) -> bool {
+        matches!(op, AppCommand::ListSkills { .. })
     }
 
     /// Persist prompt text in the local cross-session message history.
@@ -971,10 +1012,14 @@ impl App {
         let inferred_session = self
             .infer_session_for_thread_notification(thread_id, &notification)
             .await;
-        let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
+        let is_turn_started = matches!(&notification, ServerNotification::TurnStarted(_));
+        let is_thread_closed = matches!(&notification, ServerNotification::ThreadClosed(_));
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
         let (sender, store) = {
             let channel = self.ensure_thread_channel(thread_id);
+            if is_thread_closed {
+                channel.mark_replay_only();
+            }
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
         let (notification, pending_status, turn_stopped) = {
@@ -1008,6 +1053,9 @@ impl App {
             self.agent_navigation.mark_running(thread_id);
         } else if turn_stopped {
             self.agent_navigation.mark_stopped(thread_id);
+        }
+        if is_thread_closed {
+            self.sync_active_thread_replay_only_state(thread_id);
         }
 
         if let Some(notification) = notification {

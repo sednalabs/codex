@@ -10,6 +10,64 @@ use pretty_assertions::assert_eq;
 use std::collections::VecDeque;
 
 #[tokio::test]
+async fn replay_only_rejects_queued_input_before_queue_or_history_mutation() {
+    let (mut chat, mut rx, mut op_rx) =
+        make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
+    chat.set_replay_only_thread(/*replay_only*/ true);
+    drain_insert_history(&mut rx);
+    chat.queue_user_message_with_options(
+        UserMessage::from("must not be queued"),
+        QueuedInputAction::ParseSlash,
+        vec![("pending paste".to_string(), "paste".to_string())],
+    );
+
+    assert!(chat.input_queue.queued_user_messages.is_empty());
+    assert!(
+        chat.input_queue
+            .queued_user_message_history_records
+            .is_empty()
+    );
+    assert_no_submit_op(&mut op_rx);
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .flatten()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Replay-only transcripts do not accept input."));
+}
+
+#[tokio::test]
+async fn replay_only_queued_rejection_restores_paste_mapping_losslessly() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
+    chat.set_replay_only_thread(/*replay_only*/ true);
+    let placeholder = "[Pasted Content 4 chars]".to_string();
+    let message = UserMessage {
+        text: format!("before {placeholder} after"),
+        text_elements: vec![TextElement::new(
+            (7..7 + placeholder.len()).into(),
+            Some(placeholder.clone()),
+        )],
+        local_images: Vec::new(),
+        remote_image_urls: Vec::new(),
+        mention_bindings: Vec::new(),
+    };
+    let pending_pastes = vec![(placeholder, "four".to_string())];
+
+    chat.queue_user_message_with_options(
+        message.clone(),
+        QueuedInputAction::ParseSlash,
+        pending_pastes.clone(),
+    );
+
+    assert_eq!(chat.bottom_pane.composer_text(), message.text);
+    let draft = chat.bottom_pane.composer_draft_snapshot();
+    assert_eq!(draft.text_elements, message.text_elements);
+    assert_eq!(draft.pending_pastes, pending_pastes);
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
 async fn parent_owned_thread_blocks_all_direct_input_entry_points() {
     let (mut chat, mut rx, mut op_rx) =
         make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
@@ -148,6 +206,53 @@ async fn parent_owned_thread_preserves_queued_input_before_draining() {
     assert_eq!(
         chat.input_queue.queued_user_message_history_records,
         VecDeque::from([history_record])
+    );
+    assert_no_submit_op(&mut op_rx);
+}
+
+#[tokio::test]
+async fn replay_only_thread_preserves_restored_queued_input_before_draining() {
+    let (mut live_chat, _rx, _op_rx) =
+        make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
+    live_chat.bottom_pane.set_task_running(/*running*/ true);
+    let queued_message = QueuedUserMessage {
+        user_message: UserMessage::from("keep this queued prompt"),
+        action: QueuedInputAction::ParseSlash,
+        pending_pastes: vec![(
+            "[Pasted Content 18 chars]".to_string(),
+            "pasted contents".to_string(),
+        )],
+    };
+    live_chat
+        .input_queue
+        .queued_user_messages
+        .push_back(queued_message.clone());
+    live_chat
+        .input_queue
+        .queued_user_message_history_records
+        .push_back(UserMessageHistoryRecord::UserMessageText);
+    let input_state = live_chat
+        .capture_thread_input_state()
+        .expect("thread input state");
+
+    let (mut restored_chat, _rx, mut op_rx) =
+        make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
+    restored_chat.restore_thread_input_state(
+        Some(input_state),
+        ThreadInputStateRestoreMode {
+            preserve_in_flight_turn: true,
+        },
+    );
+    restored_chat.set_replay_only_thread(/*replay_only*/ true);
+
+    assert!(!restored_chat.maybe_send_next_queued_input());
+    assert_eq!(
+        restored_chat.input_queue.queued_user_messages,
+        VecDeque::from([queued_message.clone()])
+    );
+    assert_eq!(
+        restored_chat.input_queue.queued_user_messages[0].pending_pastes,
+        queued_message.pending_pastes
     );
     assert_no_submit_op(&mut op_rx);
 }
@@ -1175,6 +1280,21 @@ async fn output_free_esc_interrupt_keeps_prompt_and_opens_blank_composer() {
     let (prompt_after_interrupt, _) = interrupted_history(&mut rx, prompt);
     assert!(saw_prompt || prompt_after_interrupt);
     assert!(chat.bottom_pane.composer_is_empty());
+}
+
+#[tokio::test]
+async fn replay_only_rejection_restores_optimistic_prompt_for_resend() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let prompt = "resend after close";
+    chat.thread_id = Some(ThreadId::new());
+    chat.submit_user_message(UserMessage::from(prompt));
+    assert_matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. });
+    assert!(chat.input_queue.user_turn_pending_start);
+
+    chat.handle_replay_only_submission_rejection();
+
+    assert_eq!(chat.bottom_pane.composer_text(), prompt);
+    assert!(!chat.input_queue.user_turn_pending_start);
 }
 
 #[tokio::test]
