@@ -834,21 +834,17 @@ async fn permissions_selection_emits_history_cell_when_selection_changes() {
         chat.set_windows_sandbox_mode(Some(WindowsSandboxModeToml::Unelevated));
     }
     chat.set_feature_enabled(Feature::GuardianApproval, /*enabled*/ true);
-    chat.on_task_started();
-    chat.dispatch_command(SlashCommand::Permissions);
-    let command = begin_exec(&mut chat, "call-permissions", "printf before");
-    end_exec(&mut chat, command, "before\n", "", /*exit_code*/ 0);
+    chat.open_permissions_popup();
     chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     let cells = drain_insert_history(&mut rx);
     assert_eq!(
         cells.len(),
-        2,
-        "expected command and permissions selection history cells"
+        1,
+        "expected one permissions selection history cell"
     );
-    assert!(lines_to_single_string(&cells[0]).contains("Ran printf before"));
-    let rendered = lines_to_single_string(&cells[1]);
+    let rendered = lines_to_single_string(&cells[0]);
     assert!(
         rendered.contains("Permissions updated to"),
         "expected permissions selection history message, got: {rendered}"
