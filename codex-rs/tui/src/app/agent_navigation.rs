@@ -19,6 +19,7 @@
 //! order. Once a thread id is observed it keeps its place in the cycle even if the entry is later
 //! updated or marked closed.
 
+use super::session_lifecycle::AGENT_PICKER_CURSOR_BUDGET;
 use crate::multi_agents::AgentPickerThreadEntry;
 use crate::multi_agents::SubAgentActivityDisplay;
 use crate::multi_agents::format_agent_picker_item_name;
@@ -48,6 +49,12 @@ pub(crate) struct AgentNavigationState {
     stopped_threads: HashSet<ThreadId>,
     /// Spawned child threads whose instructions are owned by their parent agent.
     parent_owned_threads: HashSet<ThreadId>,
+    /// Opaque continuation for the next bounded persisted-subagent page.
+    next_picker_page_cursor: Option<String>,
+    /// Cursors already offered within the active persisted-picker pagination sequence.
+    seen_picker_page_cursors: HashSet<String>,
+    /// Whether this session completed the bounded legacy relation repair fallback.
+    legacy_relation_fallback_checked: bool,
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -294,6 +301,47 @@ impl AgentNavigationState {
         self.order.clear();
         self.stopped_threads.clear();
         self.parent_owned_threads.clear();
+        self.next_picker_page_cursor = None;
+        self.seen_picker_page_cursors.clear();
+        self.legacy_relation_fallback_checked = false;
+    }
+
+    /// Starts a new persisted-picker pagination sequence without disturbing cached agent state.
+    ///
+    /// A freshly opened picker begins with `cursor = None`, so cursors observed by an earlier
+    /// open/load-more sequence must not consume this sequence's budget or look like cycles.
+    pub(crate) fn begin_picker_page_sequence(&mut self) {
+        self.next_picker_page_cursor = None;
+        self.seen_picker_page_cursors.clear();
+    }
+
+    pub(crate) fn set_next_picker_page_cursor(&mut self, next_cursor: Option<String>) -> bool {
+        let Some(next_cursor) = next_cursor else {
+            self.next_picker_page_cursor = None;
+            self.seen_picker_page_cursors.clear();
+            return true;
+        };
+        if self.seen_picker_page_cursors.len() >= AGENT_PICKER_CURSOR_BUDGET
+            || !self.seen_picker_page_cursors.insert(next_cursor.clone())
+        {
+            self.next_picker_page_cursor = None;
+            self.seen_picker_page_cursors.clear();
+            return false;
+        }
+        self.next_picker_page_cursor = Some(next_cursor);
+        true
+    }
+
+    pub(crate) fn next_picker_page_cursor(&self) -> Option<String> {
+        self.next_picker_page_cursor.clone()
+    }
+
+    pub(crate) fn needs_legacy_relation_fallback_check(&self) -> bool {
+        !self.legacy_relation_fallback_checked
+    }
+
+    pub(crate) fn mark_legacy_relation_fallback_checked(&mut self) {
+        self.legacy_relation_fallback_checked = true;
     }
 
     /// Removes a tracked thread entirely from picker metadata and traversal order.
@@ -784,6 +832,36 @@ mod tests {
         assert_eq!(
             state.active_agent_label(Some(main_thread_id), Some(main_thread_id)),
             Some("Main [default]".to_string())
+        );
+    }
+
+    #[test]
+    fn clear_drops_picker_page_cursor_and_reenables_legacy_fallback() {
+        let mut state = AgentNavigationState::default();
+        assert!(state.set_next_picker_page_cursor(Some("opaque-cursor".to_string())));
+        state.mark_legacy_relation_fallback_checked();
+
+        state.clear();
+
+        assert_eq!(state.next_picker_page_cursor(), None);
+        assert!(state.needs_legacy_relation_fallback_check());
+    }
+
+    #[test]
+    fn picker_page_cursor_budget_rejects_129th_and_resets_for_reuse() {
+        let mut state = AgentNavigationState::default();
+        for index in 0..AGENT_PICKER_CURSOR_BUDGET {
+            assert!(state.set_next_picker_page_cursor(Some(format!("cursor-{index}"))));
+        }
+
+        assert!(!state.set_next_picker_page_cursor(Some("cursor-over-budget".to_string())));
+        assert_eq!(state.next_picker_page_cursor(), None);
+
+        state.clear();
+        assert!(state.set_next_picker_page_cursor(Some("cursor-after-clear".to_string())));
+        assert_eq!(
+            state.next_picker_page_cursor().as_deref(),
+            Some("cursor-after-clear")
         );
     }
 
