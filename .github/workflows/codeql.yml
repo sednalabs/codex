@@ -76,9 +76,15 @@ jobs:
                   # Rust's built-in security-and-quality suite has one summary
                   # query whose evaluation can dominate the standard runner's
                   # six-hour job limit. Keep the complete suite, but evaluate
-                  # each production Rust root in its own database so the work
-                  # is bounded by source scope rather than one monolithic DB.
-                  for scope in ("codex-rs", "tools"):
+                  # disjoint, collectively exhaustive source scopes in separate
+                  # databases so no one query sees the monolithic workspace.
+                  for scope in (
+                      "codex-rs-core",
+                      "codex-rs-tui",
+                      "codex-rs-services",
+                      "codex-rs-rest",
+                      "tools",
+                  ):
                       include.append(
                           {
                               "language": language,
@@ -254,23 +260,93 @@ jobs:
         run: |
           set -euo pipefail
           case "${RUST_SCOPE}" in
-            codex-rs|tools) ;;
+            codex-rs-core)
+              scope_paths=(codex-rs/core)
+              scope_ignores=()
+              ;;
+            codex-rs-tui)
+              scope_paths=(codex-rs/tui)
+              scope_ignores=()
+              ;;
+            codex-rs-services)
+              scope_paths=(
+                codex-rs/app-server
+                codex-rs/app-server-client
+                codex-rs/app-server-daemon
+                codex-rs/app-server-protocol
+                codex-rs/app-server-test-client
+                codex-rs/app-server-transport
+                codex-rs/bwrap
+                codex-rs/exec
+                codex-rs/exec-server
+                codex-rs/file-watcher
+                codex-rs/http-client
+                codex-rs/linux-sandbox
+                codex-rs/network-proxy
+                codex-rs/process-hardening
+                codex-rs/sandboxing
+                codex-rs/shell-command
+                codex-rs/shell-escalation
+                codex-rs/terminal-detection
+                codex-rs/windows-sandbox-rs
+              )
+              scope_ignores=()
+              ;;
+            codex-rs-rest)
+              scope_paths=(codex-rs)
+              scope_ignores=(
+                'codex-rs/core/**'
+                'codex-rs/tui/**'
+                'codex-rs/app-server/**'
+                'codex-rs/app-server-client/**'
+                'codex-rs/app-server-daemon/**'
+                'codex-rs/app-server-protocol/**'
+                'codex-rs/app-server-test-client/**'
+                'codex-rs/app-server-transport/**'
+                'codex-rs/bwrap/**'
+                'codex-rs/exec/**'
+                'codex-rs/exec-server/**'
+                'codex-rs/file-watcher/**'
+                'codex-rs/http-client/**'
+                'codex-rs/linux-sandbox/**'
+                'codex-rs/network-proxy/**'
+                'codex-rs/process-hardening/**'
+                'codex-rs/sandboxing/**'
+                'codex-rs/shell-command/**'
+                'codex-rs/shell-escalation/**'
+                'codex-rs/terminal-detection/**'
+                'codex-rs/windows-sandbox-rs/**'
+              )
+              ;;
+            tools)
+              scope_paths=(tools)
+              scope_ignores=()
+              ;;
             *)
               echo "Unsupported Rust CodeQL scope: ${RUST_SCOPE}" >&2
               exit 1
               ;;
           esac
           mkdir -p "$(dirname "${RUST_CONFIG}")"
-          cat > "${RUST_CONFIG}" <<EOF
+          {
+            cat <<EOF
           name: codex-codeql-rust-${RUST_SCOPE}
           queries:
             - uses: security-and-quality
           paths:
-            - ${RUST_SCOPE}
+          EOF
+            printf '  - %s\n' "${scope_paths[@]}"
+            cat <<'EOF'
           paths-ignore:
             - .github/codeql/rust-computer-use-contract/test/**
+          EOF
+            if ((${#scope_ignores[@]})); then
+              printf '  - %s\n' "${scope_ignores[@]}"
+            fi
+            cat <<'EOF'
           threat-models: local
           EOF
+          } > "${RUST_CONFIG}"
 
       - name: Prepare Actions CodeQL query pack config
         if: ${{ matrix.language == 'actions' }}
