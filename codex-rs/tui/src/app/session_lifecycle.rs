@@ -449,6 +449,10 @@ impl App {
             chat_widget.last_terminal_title = previous_terminal_title;
         }
         chat_widget.remote_connection = self.chat_widget.remote_connection.clone();
+        chat_widget.set_agents_navigation_enabled(matches!(
+            self.app_server_target,
+            AppServerTarget::LocalDaemon { .. }
+        ));
         chat_widget.inherit_backend_banner_state(&mut self.chat_widget);
         for (thread_id, entry) in self.agent_navigation.ordered_threads() {
             chat_widget.set_collab_agent_metadata(

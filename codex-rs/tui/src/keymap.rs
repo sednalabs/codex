@@ -599,25 +599,12 @@ impl RuntimeKeymap {
                     || configured_context_alias_is_used(&keymap.list, alias)
                     || configured_context_alias_is_used(&keymap.approval, alias)
             });
-        let open_agents_default_is_shadowed = keymap.global.open_agents.is_none()
-            && (configured_main_surface_alias_is_used(keymap, "alt-a")
-                || configured_context_alias_is_used(&keymap.list, "alt-a")
-                || configured_context_alias_is_used(&keymap.approval, "alt-a")
-                || chords.bindings.iter().any(|binding| {
-                    binding.action.context.overlaps(KeymapContext::Global)
-                        && binding.chord.prefix.parts() == key_hint::alt(KeyCode::Char('a')).parts()
-                }));
-
         let app = AppKeymap {
-            open_agents: if open_agents_default_is_shadowed {
-                Vec::new()
-            } else {
-                resolve_bindings(
-                    keymap.global.open_agents.as_ref(),
-                    &defaults.app.open_agents,
-                    "tui.keymap.global.open_agents",
-                )?
-            },
+            open_agents: resolve_bindings(
+                keymap.global.open_agents.as_ref(),
+                &defaults.app.open_agents,
+                "tui.keymap.global.open_agents",
+            )?,
             open_transcript: resolve_bindings(
                 keymap.global.open_transcript.as_ref(),
                 &defaults.app.open_transcript,
@@ -1397,7 +1384,7 @@ impl RuntimeKeymap {
     fn built_in_defaults() -> Self {
         Self {
             app: AppKeymap {
-                open_agents: default_bindings![alt(KeyCode::Char('a'))],
+                open_agents: default_bindings![],
                 open_transcript: default_bindings![ctrl(KeyCode::Char('t'))],
                 open_external_editor: default_bindings![ctrl(KeyCode::Char('g'))],
                 copy: default_bindings![ctrl(KeyCode::Char('o'))],
@@ -3311,32 +3298,6 @@ mod tests {
             RuntimeKeymap::from_config(&keymap)
                 .expect_err("backspace is reserved for task input")
                 .contains("backspace")
-        );
-    }
-
-    #[test]
-    fn agents_overview_default_yields_to_existing_custom_shortcuts() {
-        let mut keymap = TuiKeymap::default();
-        keymap.global.open_transcript = Some(one("alt-a"));
-
-        let runtime = RuntimeKeymap::from_config(&keymap).expect("existing keymap remains valid");
-
-        assert_eq!(
-            runtime.app.open_transcript,
-            vec![key_hint::alt(KeyCode::Char('a'))]
-        );
-        assert!(runtime.app.open_agents.is_empty());
-
-        keymap.global.open_transcript = Some(one("alt-a ctrl-t"));
-        let runtime = RuntimeKeymap::from_config(&keymap).expect("existing chord remains valid");
-        assert!(runtime.app.open_agents.is_empty());
-
-        keymap.global.open_transcript = None;
-        keymap.pager.scroll_up = Some(one("alt-a page-up"));
-        let runtime = RuntimeKeymap::from_config(&keymap).expect("pager chord remains valid");
-        assert_eq!(
-            runtime.app.open_agents,
-            vec![key_hint::alt(KeyCode::Char('a'))]
         );
     }
 

@@ -380,6 +380,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_agents_navigation_enabled(&mut self, enabled: bool) {
+        self.composer.set_agents_navigation_enabled(enabled);
+        self.request_redraw();
+    }
+
     pub(crate) fn set_task_mentions_enabled(&mut self, enabled: bool) {
         self.composer.set_task_mentions_enabled(enabled);
         self.request_redraw();

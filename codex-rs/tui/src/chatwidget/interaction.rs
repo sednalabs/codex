@@ -4,6 +4,10 @@ use super::*;
 use crate::bottom_pane::BottomPaneView;
 
 impl ChatWidget {
+    pub(crate) fn set_agents_navigation_enabled(&mut self, enabled: bool) {
+        self.bottom_pane.set_agents_navigation_enabled(enabled);
+    }
+
     pub(crate) fn keymap_contexts(&self) -> crate::keymap::KeymapContextSet {
         self.bottom_pane.keymap_contexts()
     }

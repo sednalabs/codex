@@ -17,6 +17,8 @@
 //!
 //! # Key Event Routing
 //!
+//! Plain Left opens agents when the local-daemon composer is empty and available for input.
+//! Explicit editor remaps take precedence.
 //! Most key handling goes through [`ChatComposer::handle_key_event`], which dispatches to a
 //! popup-specific handler if a popup is visible and otherwise to
 //! [`ChatComposer::handle_key_event_without_popup`]. After every handled key, we call
@@ -290,6 +292,7 @@ use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::TextElement;
 
+mod agents_navigation;
 mod attachment_state;
 mod completion_target;
 mod draft_state;
@@ -494,6 +497,7 @@ pub(crate) struct ChatComposer {
     popups: PopupState,
     app_event_tx: AppEventSender,
     history: ChatComposerHistory,
+    agents_navigation_enabled: bool,
     footer: FooterState,
     has_focus: bool,
     frame_requester: Option<FrameRequester>,
@@ -634,6 +638,7 @@ impl ChatComposer {
             popups: PopupState::default(),
             app_event_tx,
             history: ChatComposerHistory::new(),
+            agents_navigation_enabled: false,
             footer: FooterState {
                 quit_shortcut_expires_at: None,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
@@ -2108,7 +2113,7 @@ impl ChatComposer {
 
     /// Handle key events when file search popup is visible.
     fn handle_key_event_with_file_popup(&mut self, key_event: KeyEvent) -> (InputResult, bool) {
-        if self.handle_shortcut_overlay_key(&key_event) {
+        if self.handle_empty_prompt_shortcut(&key_event) {
             return (InputResult::None, true);
         }
         if key_event.code == KeyCode::Esc {
@@ -2194,7 +2199,7 @@ impl ChatComposer {
 
     /// Handle key events when the legacy skill mention popup is visible.
     fn handle_key_event_with_skill_popup(&mut self, key_event: KeyEvent) -> (InputResult, bool) {
-        if self.handle_shortcut_overlay_key(&key_event) {
+        if self.handle_empty_prompt_shortcut(&key_event) {
             return (InputResult::None, true);
         }
         self.footer.mode = reset_mode_after_activity(self.footer.mode);
@@ -2276,7 +2281,7 @@ impl ChatComposer {
         &mut self,
         key_event: KeyEvent,
     ) -> (InputResult, bool) {
-        if self.handle_shortcut_overlay_key(&key_event) {
+        if self.handle_empty_prompt_shortcut(&key_event) {
             return (InputResult::None, true);
         }
         self.footer.mode = reset_mode_after_activity(self.footer.mode);
@@ -3461,7 +3466,7 @@ impl ChatComposer {
         if self.attachments.selected_remote_image_index.is_some() {
             self.attachments.clear_remote_image_selection();
         }
-        if self.handle_shortcut_overlay_key(&key_event) {
+        if self.handle_empty_prompt_shortcut(&key_event) {
             return (InputResult::None, true);
         }
         if self.draft.is_bash_mode && key_event.code == KeyCode::Esc {
@@ -3808,15 +3813,21 @@ impl ChatComposer {
             .remove_deleted_local_placeholders(&removed_payloads, &mut self.draft.textarea);
     }
 
-    /// Handle the dedicated shortcut-overlay toggle key(s).
+    /// Handle empty-prompt agents navigation and the shortcut-overlay toggle.
     ///
     /// This only toggles when the composer is empty and no paste burst is in
     /// progress, so typing/pasting `?` still inserts text instead of opening
     /// help. The bound key list intentionally supports terminal-variant
     /// modifier reporting (for example `?` vs `shift-?`).
-    fn handle_shortcut_overlay_key(&mut self, key_event: &KeyEvent) -> bool {
+    fn handle_empty_prompt_shortcut(&mut self, key_event: &KeyEvent) -> bool {
         if key_event.kind != KeyEventKind::Press {
             return false;
+        }
+
+        if key_hint::plain(KeyCode::Left).is_press(*key_event) && self.agents_navigation_available()
+        {
+            self.app_event_tx.send(AppEvent::OpenAgentsOverview);
+            return true;
         }
 
         let toggles = self.toggle_shortcuts_keys.is_pressed(*key_event)
@@ -3862,6 +3873,9 @@ impl ChatComposer {
             status_line_value: self.footer.status_line_value.clone(),
             status_line_enabled: self.footer.status_line_enabled,
             key_hints: FooterKeyHints {
+                agents: self
+                    .agents_navigation_available()
+                    .then_some(key_hint::plain(KeyCode::Left).into()),
                 toggle_shortcuts: self.footer.toggle_shortcuts_key,
                 queue: self.footer.queue_key,
                 insert_newline: self.footer.insert_newline_key,
@@ -4993,6 +5007,10 @@ impl ChatComposer {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "chat_composer/agents_navigation_tests.rs"]
+mod agents_navigation_tests;
 
 #[cfg(test)]
 #[path = "chat_composer_effort_tests.rs"]

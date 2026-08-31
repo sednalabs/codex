@@ -458,6 +458,10 @@ impl App {
         };
         chat_widget.note_rendered_width(tui.terminal.last_known_screen_size.width);
         chat_widget.remote_connection = remote_connection;
+        chat_widget.set_agents_navigation_enabled(matches!(
+            app_server_target,
+            AppServerTarget::LocalDaemon { .. }
+        ));
         let thread_and_widget_ms = thread_and_widget_started_at.elapsed().as_millis();
         chat_widget
             .maybe_prompt_windows_sandbox_enable(should_prompt_windows_sandbox_nux_at_startup);
