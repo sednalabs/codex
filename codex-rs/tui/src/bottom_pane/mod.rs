@@ -650,6 +650,16 @@ impl BottomPane {
         self.push_view(Box::new(modal));
     }
 
+    /// Edit the draft without invoking popups, submissions, or remote actions.
+    pub(crate) fn handle_disconnected_key(&mut self, key: KeyEvent) {
+        self.view_stack.clear();
+        self.delayed_approval_requests.clear();
+        self.composer
+            .set_input_enabled(/*enabled*/ true, /*placeholder*/ None);
+        self.composer.handle_disconnected_key(key);
+        self.request_redraw();
+    }
+
     /// Forward a key event to the active view or the composer.
     pub fn handle_key_event(&mut self, key_event: KeyEvent) -> InputResult {
         // If a modal/view is active, handle it here; otherwise forward to composer.
@@ -2374,6 +2384,11 @@ mod tests {
         assert_eq!(pane.composer_text(), "ya");
         assert!(pane.view_stack.is_empty());
         assert_eq!(pane.delayed_approval_requests.len(), 1);
+        pane.handle_disconnected_key(KeyEvent::new(KeyCode::Null, KeyModifiers::NONE));
+        pane.pre_draw_tick_at(Instant::now() + APPROVAL_PROMPT_TYPING_IDLE_DELAY);
+        pane.handle_paste(" kept".into());
+        assert_eq!(pane.composer_text(), "ya kept");
+        assert!(pane.view_stack.is_empty());
         while let Ok(event) = rx.try_recv() {
             assert!(
                 !matches!(event, AppEvent::SubmitThreadOp { .. }),

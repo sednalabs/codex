@@ -107,6 +107,10 @@
 //! navigation slash commands remain available so users can leave or manage the view. Transcript
 //! exports also remain available, including an explicit destination filename.
 //!
+//! During reconnection, `handle_disconnected_key` edits the draft directly without
+//! popup dispatch or submission. Enter and Tab leave the draft intact until reconnection succeeds.
+//! Collapsed pastes expand into editable text so the full draft can be copied before quitting.
+//!
 //! # Reasoning Effort Animations
 //!
 //! The composer observes the effective reasoning tier whenever model-dependent surfaces refresh.
@@ -292,6 +296,7 @@ mod draft_state;
 mod footer_state;
 mod history_search;
 mod popup_state;
+mod reconnect;
 mod slash_input;
 mod vim_search;
 

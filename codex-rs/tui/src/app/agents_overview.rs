@@ -257,7 +257,7 @@ impl App {
         }
     }
 
-    fn agents_overview_view(
+    pub(super) fn agents_overview_view(
         &self,
         mut threads: Vec<Thread>,
         selected_thread_id: Option<ThreadId>,

@@ -639,7 +639,7 @@ impl App {
     pub(super) async fn handle_startup_thread_started(
         &mut self,
         app_server: &mut AppServerSession,
-        result: Result<AppServerStartedThread, String>,
+        result: Result<AppServerStartedThread>,
     ) -> Result<()> {
         if !self.pending_startup_thread_start {
             if let Ok(started) = result {
@@ -718,6 +718,7 @@ impl App {
                 }
                 self.chat_widget.maybe_send_next_queued_input();
             }
+            Err(err) if self.recover_transport_error(&err) => {}
             Err(err) => {
                 return Err(color_eyre::eyre::eyre!(
                     "Failed to start a fresh session through the app server: {err}"
