@@ -5,8 +5,11 @@ use codex_analytics::GuardianReviewFailureReason;
 use codex_analytics::GuardianReviewTerminalStatus;
 use codex_analytics::GuardianReviewTrackContext;
 use codex_analytics::GuardianReviewedAction;
+use codex_analytics::GuardianV2Event;
+use codex_analytics::GuardianV2EventKind;
 use codex_async_utils::THREAD_STACK_SIZE_BYTES;
 use codex_core_plugins::PluginCommandAttribution;
+use codex_extension_api::GuardianV2Enabled;
 use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -362,6 +365,26 @@ async fn run_guardian_review(
             .await
     {
         if decision == ReviewDecision::Approved {
+            if session
+                .services
+                .thread_extension_data
+                .get::<GuardianV2Enabled>()
+                .is_some()
+            {
+                session
+                    .services
+                    .analytics_events_client
+                    .track_guardian_v2_event(GuardianV2Event {
+                        thread_id: session.thread_id.to_string(),
+                        turn_id: guardian_request_turn_id(&request, &turn.sub_id).to_owned(),
+                        item_id: guardian_request_target_item_id(&request).map(str::to_owned),
+                        model: Some(turn.model_info().slug.clone()),
+                        occurred_at_ms: codex_analytics::now_unix_millis(),
+                        kind: GuardianV2EventKind::FastDecision {
+                            decision: "approved",
+                        },
+                    });
+            }
             record_guardian_non_denial(&session, guardian_request_turn_id(&request, &turn.sub_id))
                 .await;
         }

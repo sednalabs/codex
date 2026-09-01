@@ -3382,6 +3382,7 @@ name = "codex-guardian-v2"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "codex-analytics",
  "codex-api",
  "codex-core",
  "codex-extension-api",
