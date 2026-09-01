@@ -69,6 +69,7 @@ impl Drop for ActiveLogin {
 #[derive(Clone)]
 pub(crate) struct AccountRequestProcessor {
     auth_manager: Arc<AuthManager>,
+    auth_admission: Arc<Mutex<()>>,
     thread_manager: Arc<ThreadManager>,
     outgoing: Arc<OutgoingMessageSender>,
     config: Arc<Config>,
@@ -80,6 +81,7 @@ pub(crate) struct AccountRequestProcessor {
 impl AccountRequestProcessor {
     pub(crate) fn new(
         auth_manager: Arc<AuthManager>,
+        auth_admission: Arc<Mutex<()>>,
         thread_manager: Arc<ThreadManager>,
         outgoing: Arc<OutgoingMessageSender>,
         config: Arc<Config>,
@@ -88,6 +90,7 @@ impl AccountRequestProcessor {
     ) -> Self {
         Self {
             auth_manager,
+            auth_admission,
             thread_manager,
             outgoing,
             config,
@@ -369,6 +372,7 @@ impl AccountRequestProcessor {
             }
         }
 
+        let _auth_admission = self.auth_admission.lock().await;
         self.invalidate_automatic_turn_capabilities().await?;
 
         match login_with_api_key(
@@ -436,6 +440,7 @@ impl AccountRequestProcessor {
                 }
             }
 
+            let _auth_admission = self.auth_admission.lock().await;
             self.invalidate_automatic_turn_capabilities().await?;
 
             set_user_model_provider_to_bedrock(&self.config_manager).await?;
@@ -565,6 +570,7 @@ impl AccountRequestProcessor {
         let config = Arc::clone(&self.config);
         let state_db = self.state_db.clone();
         let active_login = self.active_login.clone();
+        let auth_admission = self.auth_admission.clone();
         let auth_url = server.auth_url.clone();
         tokio::spawn(async move {
             let (success, error_msg) = match tokio::time::timeout(
@@ -587,6 +593,7 @@ impl AccountRequestProcessor {
                 thread_manager,
                 config,
                 state_db,
+                auth_admission,
                 login_id,
                 success,
                 error_msg,
@@ -646,6 +653,7 @@ impl AccountRequestProcessor {
         let config = Arc::clone(&self.config);
         let state_db = self.state_db.clone();
         let active_login = self.active_login.clone();
+        let auth_admission = self.auth_admission.clone();
         tokio::spawn(async move {
             let (success, error_msg) = tokio::select! {
                 _ = cancel.cancelled() => {
@@ -665,6 +673,7 @@ impl AccountRequestProcessor {
                 thread_manager,
                 config,
                 state_db,
+                auth_admission,
                 login_id,
                 success,
                 error_msg,
@@ -769,6 +778,7 @@ impl AccountRequestProcessor {
             chatgpt_plan_type.as_deref(),
         )
         .map_err(|err| internal_error(format!("failed to set external auth: {err}")))?;
+        let _auth_admission = self.auth_admission.lock().await;
         self.invalidate_automatic_turn_capabilities().await?;
         self.auth_manager
             .set_external_auth(Arc::new(ExternalAuthBridge::new(
@@ -821,18 +831,49 @@ impl AccountRequestProcessor {
         thread_manager: Arc<ThreadManager>,
         config: Arc<Config>,
         state_db: Option<StateDbHandle>,
+        auth_admission: Arc<Mutex<()>>,
         login_id: Uuid,
         mut success: bool,
         mut error_msg: Option<String>,
     ) {
-        if success
-            && let Some(state_db) = state_db
-            && let Err(error) = state_db.invalidate_all_automatic_turn_capabilities().await
-        {
-            success = false;
-            error_msg = Some(format!(
-                "failed to invalidate automatic turn capabilities after auth transition: {error}"
-            ));
+        let mut account_updated = None;
+        if success {
+            let _auth_admission = auth_admission.lock().await;
+            if let Some(state_db) = state_db
+                && let Err(error) = state_db.invalidate_all_automatic_turn_capabilities().await
+            {
+                success = false;
+                error_msg = Some(format!(
+                    "failed to invalidate automatic turn capabilities after auth transition: {error}"
+                ));
+            }
+            if success {
+                let auth_manager = thread_manager.auth_manager();
+                auth_manager.reload().await;
+                config_manager.replace_cloud_config_bundle_loader(
+                    auth_manager.clone(),
+                    config.chatgpt_base_url.clone(),
+                    config.http_client_factory(),
+                );
+                config_manager
+                    .sync_default_client_residency_requirement()
+                    .await;
+
+                let auth = auth_manager.auth_cached();
+                Self::maybe_refresh_plugin_caches_for_current_config(
+                    &config_manager,
+                    &thread_manager,
+                    auth.clone(),
+                )
+                .await;
+                account_updated = Some(AccountUpdatedNotification {
+                    auth_mode: auth
+                        .as_ref()
+                        .map(CodexAuth::api_auth_mode)
+                        .map(auth_mode_to_api),
+                    plan_type: auth.as_ref().and_then(CodexAuth::account_plan_type),
+                });
+            }
         }
         let payload_v2 = AccountLoginCompletedNotification {
             login_id: Some(login_id.to_string()),
@@ -842,33 +883,7 @@ impl AccountRequestProcessor {
         outgoing
             .send_server_notification(ServerNotification::AccountLoginCompleted(payload_v2))
             .await;
-
-        if success {
-            let auth_manager = thread_manager.auth_manager();
-            auth_manager.reload().await;
-            config_manager.replace_cloud_config_bundle_loader(
-                auth_manager.clone(),
-                config.chatgpt_base_url.clone(),
-                config.http_client_factory(),
-            );
-            config_manager
-                .sync_default_client_residency_requirement()
-                .await;
-
-            let auth = auth_manager.auth_cached();
-            Self::maybe_refresh_plugin_caches_for_current_config(
-                &config_manager,
-                &thread_manager,
-                auth.clone(),
-            )
-            .await;
-            let payload_v2 = AccountUpdatedNotification {
-                auth_mode: auth
-                    .as_ref()
-                    .map(CodexAuth::api_auth_mode)
-                    .map(auth_mode_to_api),
-                plan_type: auth.as_ref().and_then(CodexAuth::account_plan_type),
-            };
+        if let Some(payload_v2) = account_updated {
             outgoing
                 .send_server_notification(ServerNotification::AccountUpdated(payload_v2))
                 .await;
@@ -895,6 +910,7 @@ impl AccountRequestProcessor {
             }
         }
 
+        let _auth_admission = self.auth_admission.lock().await;
         self.invalidate_automatic_turn_capabilities().await?;
         match self.auth_manager.logout_with_revoke().await {
             Ok(_) => {}

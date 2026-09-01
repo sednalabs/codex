@@ -312,6 +312,7 @@ impl MessageProcessor {
         let skills_watcher = SkillsWatcher::new(thread_manager.skills_service(), outgoing.clone());
 
         let pending_thread_unloads = Arc::new(Mutex::new(HashSet::new()));
+        let auth_admission = Arc::new(Mutex::new(()));
         let thread_watch_manager =
             crate::thread_status::ThreadWatchManager::new_with_outgoing(outgoing.clone());
         let thread_list_state_permit = Arc::new(Semaphore::new(/*permits*/ 1));
@@ -335,6 +336,7 @@ impl MessageProcessor {
             );
         let account_processor = AccountRequestProcessor::new(
             auth_manager.clone(),
+            Arc::clone(&auth_admission),
             Arc::clone(&thread_manager),
             outgoing.clone(),
             Arc::clone(&config),
@@ -435,6 +437,7 @@ impl MessageProcessor {
         );
         let turn_processor = TurnRequestProcessor::new(
             auth_manager.clone(),
+            Arc::clone(&auth_admission),
             Arc::clone(&thread_manager),
             outgoing.clone(),
             analytics_events_client.clone(),

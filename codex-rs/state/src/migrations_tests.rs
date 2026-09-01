@@ -9,6 +9,7 @@ use sqlx::migrate::Migrator;
 
 use super::STATE_MIGRATOR;
 use super::THREAD_HISTORY_MIGRATOR;
+use super::USAGE_MIGRATOR;
 use super::repair_state_migration_version_collisions;
 
 const PRE_RECENCY_MIGRATION_VERSION: i64 = 42;
@@ -88,6 +89,24 @@ fn origin_main_migrator() -> Migrator {
             .cloned(),
     );
     Migrator::with_migrations(migrations)
+}
+
+fn usage_migrator_through(version: i64) -> Migrator {
+    Migrator {
+        migrations: Cow::Owned(
+            USAGE_MIGRATOR
+                .migrations
+                .iter()
+                .filter(|migration| migration.version <= version)
+                .cloned()
+                .collect(),
+        ),
+        ignore_missing: USAGE_MIGRATOR.ignore_missing,
+        locking: USAGE_MIGRATOR.locking,
+        table_name: USAGE_MIGRATOR.table_name.clone(),
+        create_schemas: USAGE_MIGRATOR.create_schemas.clone(),
+        no_tx: USAGE_MIGRATOR.no_tx,
+    }
 }
 
 fn upstream_external_agent_import_provider_migrator() -> Migrator {
@@ -1194,4 +1213,58 @@ async fn repair_state_migration_version_collisions_succeeds_while_writer_slot_is
     read_pool.close().await;
     pool.close().await;
     repair_result.expect("current migration history should not need the writer slot");
+}
+
+#[tokio::test]
+async fn usage_automatic_turn_epochs_backfills_legacy_abort_occurrences() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let usage_path = sqlite.usage_db_path();
+    let pool = sqlite
+        .open_read_write_pool(&usage_path)
+        .await
+        .expect("usage database should open");
+    usage_migrator_through(/*version*/ 11)
+        .run(&pool)
+        .await
+        .expect("pre-epochs usage migrations should apply");
+
+    sqlx::query(
+        "INSERT INTO usage_automatic_turns (thread_id, client_user_message_id, trigger_turn_id, turn_id, event_occurrence_id, origin, generation, capability, attempt, max_attempts, provenance_source, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("thread-legacy")
+    .bind("client-legacy")
+    .bind("trigger-legacy")
+    .bind("turn-legacy")
+    .bind("occurrence-legacy")
+    .bind("policy_retry")
+    .bind(0_i64)
+    .bind("capability-legacy")
+    .bind(1_i64)
+    .bind(3_i64)
+    .bind("server_validated_client_user_message_id")
+    .bind("aborted")
+    .execute(&pool)
+    .await
+    .expect("legacy aborted row should insert");
+
+    USAGE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("epochs migration should apply");
+    let abort_occurrence: String = sqlx::query_scalar(
+        "SELECT abort_event_occurrence_id FROM usage_automatic_turns WHERE client_user_message_id = ?",
+    )
+    .bind("client-legacy")
+    .fetch_one(&pool)
+    .await
+    .expect("backfilled abort occurrence should load");
+    assert_eq!(abort_occurrence, "occurrence-legacy");
+    pool.close().await;
 }

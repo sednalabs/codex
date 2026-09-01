@@ -93,6 +93,7 @@ fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONR
 pub(crate) struct TurnRequestProcessor {
     agent_runner: AgentRunner,
     auth_manager: Arc<AuthManager>,
+    auth_admission: Arc<Mutex<()>>,
     thread_manager: Arc<ThreadManager>,
     outgoing: Arc<OutgoingMessageSender>,
     analytics_events_client: AnalyticsEventsClient,
@@ -148,6 +149,7 @@ impl TurnRequestProcessor {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         auth_manager: Arc<AuthManager>,
+        auth_admission: Arc<Mutex<()>>,
         thread_manager: Arc<ThreadManager>,
         outgoing: Arc<OutgoingMessageSender>,
         analytics_events_client: AnalyticsEventsClient,
@@ -164,6 +166,7 @@ impl TurnRequestProcessor {
         Self {
             agent_runner,
             auth_manager,
+            auth_admission,
             thread_manager,
             outgoing,
             analytics_events_client,
@@ -753,7 +756,7 @@ impl TurnRequestProcessor {
                 environment_selections,
             )
             .await;
-        let thread_settings = self
+        let (thread_settings, settings_context_changed) = self
             .build_thread_settings_overrides(
                 thread.as_ref(),
                 ThreadSettingsBuildParams {
@@ -772,6 +775,18 @@ impl TurnRequestProcessor {
                 },
             )
             .await?;
+        if !automatic_turn && settings_context_changed {
+            if let Some(state_db) = thread.state_db() {
+                state_db
+                    .invalidate_automatic_turn_capabilities_for_thread(thread_id)
+                    .await
+                    .map_err(|err| {
+                        internal_error(format!(
+                            "failed to invalidate automatic turn capabilities before turn settings enqueue: {err}"
+                        ))
+                    })?;
+            }
+        }
         let parent_permission_profile_override =
             thread_settings.permission_profile.clone().or_else(|| {
                 thread_settings
@@ -787,6 +802,14 @@ impl TurnRequestProcessor {
             responsesapi_client_metadata: params.responsesapi_client_metadata,
             additional_context,
             thread_settings,
+        };
+        // Serialize automatic-ticket admission through auth transitions. Holding this guard
+        // through core submission closes the window where a ticket can be reserved before
+        // logout/login invalidation but submitted after the auth state changed.
+        let _auth_admission = if automatic_turn {
+            Some(self.auth_admission.lock().await)
+        } else {
+            None
         };
         let automatic_turn_admitted = if automatic_turn {
             self.reserve_automatic_turn_capability(
@@ -928,7 +951,7 @@ impl TurnRequestProcessor {
         &self,
         thread: &CodexThread,
         params: ThreadSettingsBuildParams,
-    ) -> Result<codex_protocol::protocol::ThreadSettingsOverrides, JSONRPCErrorError> {
+    ) -> Result<(codex_protocol::protocol::ThreadSettingsOverrides, bool), JSONRPCErrorError> {
         let ThreadSettingsBuildParams {
             method,
             environments,
@@ -1024,8 +1047,10 @@ impl TurnRequestProcessor {
             };
         let effort = effort.map(Some);
 
+        let mut settings_context_changed = false;
         if has_any_overrides {
-            thread
+            let before = thread.config_snapshot().await;
+            let after = thread
                 .preview_thread_settings_overrides(CodexThreadSettingsOverrides {
                     environments: environments.clone(),
                     approval_policy,
@@ -1046,24 +1071,29 @@ impl TurnRequestProcessor {
                 .map_err(|err| {
                     invalid_request(format!("invalid thread settings override: {err}"))
                 })?;
+            settings_context_changed = automatic_turn_context_fingerprint(&before)
+                != automatic_turn_context_fingerprint(&after);
         }
 
-        Ok(codex_protocol::protocol::ThreadSettingsOverrides {
-            environments,
-            profile_workspace_roots,
-            approval_policy,
-            approvals_reviewer,
-            sandbox_policy,
-            permission_profile,
-            active_permission_profile,
-            windows_sandbox_level: None,
-            model,
-            effort,
-            summary,
-            service_tier,
-            collaboration_mode,
-            personality,
-        })
+        Ok((
+            codex_protocol::protocol::ThreadSettingsOverrides {
+                environments,
+                profile_workspace_roots,
+                approval_policy,
+                approvals_reviewer,
+                sandbox_policy,
+                permission_profile,
+                active_permission_profile,
+                windows_sandbox_level: None,
+                model,
+                effort,
+                summary,
+                service_tier,
+                collaboration_mode,
+                personality,
+            },
+            settings_context_changed,
+        ))
     }
 
     async fn thread_settings_update_inner(
@@ -1081,7 +1111,7 @@ impl TurnRequestProcessor {
                 /*environment_selections*/ None,
             )
             .await;
-        let thread_settings = self
+        let (thread_settings, _settings_context_changed) = self
             .build_thread_settings_overrides(
                 thread.as_ref(),
                 ThreadSettingsBuildParams {
