@@ -75,7 +75,7 @@ def has_arm64_gnullvm_toolchain_inputs(action_block: str) -> bool:
     # rustc/cargo repositories.  Require the exact versioned gnullvm
     # toolchain root followed by its Rustc executable; generic gnullvm text
     # is not sufficient evidence of the selected compiler.
-    return ARM64_DEFAULT_GNULLVM_TOOLCHAIN_RE.search(action_block) is not None
+    return bool(ARM64_DEFAULT_GNULLVM_TOOLCHAIN_RE.search(action_block))
 
 
 def verify_selected_rust_action(aquery_output: str, target: str) -> None:
