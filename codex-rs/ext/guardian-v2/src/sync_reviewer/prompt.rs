@@ -22,8 +22,8 @@ use super::GuardianThreadContext;
 use crate::async_scorer::DEFAULT_MODEL_CONTEXT_ITEM_TOKENS;
 use crate::async_scorer::GuardianV2Config;
 use crate::async_scorer::MAX_TOOL_ENTRY_TOKENS;
+use crate::async_scorer::RenderedContext;
 use crate::async_scorer::RenderedImages;
-use crate::async_scorer::RenderedTranscript;
 use crate::async_scorer::TranscriptConfig;
 use crate::async_scorer::TranscriptSource;
 use crate::async_scorer::truncate_entry;
@@ -94,7 +94,11 @@ pub(super) fn build(
             _ => None,
         })
         .collect();
-    let transcript = transcript_config.build_snapshot(input.conversation_history.as_ref());
+    let transcript = transcript_config
+        .build_snapshot(input.conversation_history.as_ref())
+        .map_err(|error| {
+            ApprovalReviewError::Failed(format!("context collection failed: {error}"))
+        })?;
     let images = render_images(
         input.conversation_history.as_ref(),
         transcript_config,
@@ -178,7 +182,7 @@ impl PromptBuilder {
         &mut self,
         root_authorization: Option<GuardianRootSnapshot>,
         trusted_user_answers: Vec<String>,
-        transcript: RenderedTranscript,
+        transcript: RenderedContext,
         thread_id: ThreadId,
     ) {
         self.text(

@@ -3,16 +3,21 @@ use std::collections::VecDeque;
 use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ResponseItem;
 pub(crate) use codex_features::GuardianV2TranscriptSource as TranscriptSource;
+use codex_guardian_context::ContextSection;
+use codex_guardian_context::ContextTarget;
 use codex_guardian_context::ConversationTranscriptConfig;
 use codex_guardian_context::ConversationTranscriptEntry;
 use codex_guardian_context::ConversationTranscriptEntryKind;
 use codex_guardian_context::ConversationTranscriptOptions;
+use codex_guardian_context::GuardianRootMessage;
 #[cfg(test)]
 use codex_guardian_context::MANUAL_APPROVAL_DEVELOPER_PREFIX;
+use codex_guardian_context::SectionError;
 use codex_guardian_context::SectionHistory;
+use codex_guardian_context::SectionInput;
 use codex_guardian_context::TranscriptEntryLimits;
 use codex_guardian_context::TranscriptRetentionConfig;
-use codex_guardian_context::collect_transcript;
+use codex_guardian_context::default_registry;
 pub(crate) use codex_guardian_context::truncate_text as truncate_entry;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -47,7 +52,8 @@ struct TranscriptEntry {
     retained_bytes: usize,
 }
 
-pub(crate) struct RenderedTranscript {
+pub(crate) struct RenderedContext {
+    pub(crate) authorization: Vec<String>,
     pub(crate) entries: Vec<String>,
     pub(crate) truncations: Vec<TruncationObservation>,
 }
@@ -164,7 +170,16 @@ impl TranscriptConfig {
     pub(crate) fn build_snapshot(
         &self,
         history: &dyn ConversationHistorySnapshot,
-    ) -> RenderedTranscript {
+    ) -> Result<RenderedContext, SectionError> {
+        self.build_context(history, &[], &[])
+    }
+
+    pub(crate) fn build_context(
+        &self,
+        history: &dyn ConversationHistorySnapshot,
+        root_conversation: &[GuardianRootMessage],
+        trusted_user_answers: &[String],
+    ) -> Result<RenderedContext, SectionError> {
         let history = SnapshotHistory(history);
         let retention = TranscriptRetentionConfig {
             max_message_transcript_tokens: self.max_message_transcript_tokens,
@@ -183,14 +198,31 @@ impl TranscriptConfig {
                 node_repl_output_tokens: self.max_tool_entry_tokens,
             },
         };
-        let entries = collect_transcript(&history, &transcript);
-        Self::render(entries, &retention)
+        let sections = default_registry().collect(&SectionInput {
+            target: ContextTarget::Async,
+            history: &history,
+            transcript: &transcript,
+            root_conversation,
+            trusted_user_answers,
+        })?;
+        let mut authorization = Vec::new();
+        let mut entries = Vec::new();
+        for section in sections {
+            match section {
+                ContextSection::ConversationTranscript { items } => entries = items,
+                ContextSection::RootConversation { items }
+                | ContextSection::TrustedUserAnswers { items } => authorization.extend(items),
+            }
+        }
+        let mut rendered = Self::render(entries, &retention);
+        rendered.authorization = authorization;
+        Ok(rendered)
     }
 
     fn render(
         transcript_entries: impl IntoIterator<Item = ConversationTranscriptEntry>,
         retention: &TranscriptRetentionConfig,
-    ) -> RenderedTranscript {
+    ) -> RenderedContext {
         let mut entries = Vec::new();
 
         for entry in transcript_entries {
@@ -284,7 +316,8 @@ impl TranscriptConfig {
             })
             .collect();
 
-        RenderedTranscript {
+        RenderedContext {
+            authorization: Vec::new(),
             entries,
             truncations,
         }
