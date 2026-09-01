@@ -79,6 +79,7 @@ use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::FileSystemSandboxPolicyContext;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::ErrorEvent;
@@ -7244,6 +7245,13 @@ fn strict_auto_review_session_scope_grants_no_permissions() {
         ..RequestPermissionProfile::default()
     };
 
+    let cwd = PathUri::parse("file:///tmp").expect("test cwd should be valid");
+    let context = FileSystemSandboxPolicyContext {
+        cwd: &cwd,
+        workspace_roots: &[],
+        user_home_dir: None,
+        temporary_directories: None,
+    };
     let response = Session::normalize_request_permissions_response(
         requested_permissions.clone(),
         codex_protocol::request_permissions::RequestPermissionsResponse {
@@ -7251,7 +7259,7 @@ fn strict_auto_review_session_scope_grants_no_permissions() {
             scope: PermissionGrantScope::Session,
             strict_auto_review: true,
         },
-        std::path::Path::new("/tmp"),
+        &context,
     );
 
     assert_eq!(
@@ -7355,7 +7363,7 @@ async fn request_permissions_emits_event_when_granular_policy_allows_requests() 
 }
 
 #[tokio::test]
-async fn request_permissions_tool_resolves_relative_paths_against_selected_environment() {
+async fn request_permissions_tool_resolves_legacy_paths_against_selected_environment() {
     let (session, mut turn_context, rx) = make_session_and_context_with_rx().await;
     *session.active_turn.lock().await = Some(ActiveTurn::default());
     let environment_cwd = {
@@ -7363,6 +7371,7 @@ async fn request_permissions_tool_resolves_relative_paths_against_selected_envir
         let legacy_cwd = turn_context.cwd.clone();
         legacy_cwd.join("request-permissions-environment")
     };
+    let environment_home = environment_cwd.join("home");
     std::fs::create_dir_all(environment_cwd.as_path()).expect("create environment cwd");
     let turn_context_mut = Arc::get_mut(&mut turn_context).expect("single thread settings ref");
     Arc::make_mut(&mut turn_context_mut.config)
@@ -7382,8 +7391,9 @@ async fn request_permissions_tool_resolves_relative_paths_against_selected_envir
         .expect("primary environment")
         .clone();
     let current_environment_config = current_environment.config().clone();
-    turn_context_mut.environments.environments[0] =
-        TurnEnvironmentState::Ready(TurnEnvironment::new(
+    let environment = TurnEnvironment {
+        user_home_dir: Some(PathUri::from_abs_path(&environment_home)),
+        ..TurnEnvironment::new(
             TurnEnvironmentSelection {
                 environment_id: "remote".to_string(),
                 cwd: PathUri::from_abs_path(&environment_cwd),
@@ -7393,7 +7403,9 @@ async fn request_permissions_tool_resolves_relative_paths_against_selected_envir
             current_environment.config_origin,
             current_environment.environment,
             current_environment.shell,
-        ));
+        )
+    };
+    turn_context_mut.environments.environments[0] = TurnEnvironmentState::Ready(environment);
 
     let call_id = "call-1".to_string();
     let handler = RequestPermissionsHandler;
@@ -7422,13 +7434,8 @@ async fn request_permissions_tool_resolves_relative_paths_against_selected_envir
                             "reason": "need write",
                             "permissions": {
                                 "file_system": {
-                                    "entries": [{
-                                        "path": {
-                                            "type": "path",
-                                            "path": "relative.txt",
-                                        },
-                                        "access": "write",
-                                    }],
+                                    "read": null,
+                                    "write": ["relative.txt", "~/home-relative.txt"],
                                 },
                             },
                         })
@@ -7447,16 +7454,13 @@ async fn request_permissions_tool_resolves_relative_paths_against_selected_envir
         panic!("expected request_permissions event");
     };
     let expected_permissions = RequestPermissionProfile {
-        file_system: Some(FileSystemPermissions {
-            entries: vec![FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: environment_cwd.join("relative.txt").into(),
-                },
-                access: FileSystemAccessMode::Write,
-                missing_path_behavior: None,
-            }],
-            glob_scan_max_depth: None,
-        }),
+        file_system: Some(FileSystemPermissions::from_read_write_roots(
+            /*read*/ None,
+            Some(vec![
+                environment_cwd.join("relative.txt"),
+                environment_home.join("home-relative.txt"),
+            ]),
+        )),
         ..Default::default()
     };
     assert_eq!(request.environment_id.as_deref(), Some("remote"));
@@ -7479,9 +7483,22 @@ async fn request_permissions_tool_resolves_relative_paths_against_selected_envir
         .expect("request_permissions handler should succeed");
 }
 
+#[test_case("missing", "unknown turn environment id `missing`"; "unknown environment")]
+#[test_case("local", "permission path cannot be represented losslessly"; "lossy path")]
 #[tokio::test]
-async fn request_permissions_tool_rejects_unknown_environment_id() {
-    let (session, turn_context) = make_session_and_context().await;
+async fn request_permissions_tool_rejects_invalid_requests(
+    environment_id: &str,
+    expected_error: &str,
+) {
+    let (session, mut turn_context) = make_session_and_context().await;
+    Arc::make_mut(&mut turn_context.config)
+        .permissions
+        .approval_policy = codex_config::Constrained::allow_any(AskForApproval::Never);
+    let TurnEnvironmentState::Ready(environment) = &mut turn_context.environments.environments[0]
+    else {
+        panic!("turn environment should be ready");
+    };
+    environment.selection.cwd = PathUri::parse("file:///workspace/%FF").expect("non-UTF8 cwd");
     let turn_context = Arc::new(turn_context);
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
     let result = RequestPermissionsHandler
@@ -7496,10 +7513,10 @@ async fn request_permissions_tool_rejects_unknown_environment_id() {
             source: ToolCallSource::Direct,
             payload: ToolPayload::Function {
                 arguments: json!({
-                    "environment_id": "missing",
+                    "environment_id": environment_id,
                     "permissions": {
-                        "network": {
-                            "enabled": true,
+                        "file_system": {
+                            "write": ["relative"],
                         },
                     },
                 })
@@ -7509,9 +7526,9 @@ async fn request_permissions_tool_rejects_unknown_environment_id() {
         .await;
 
     let Err(FunctionCallError::RespondToModel(output)) = result else {
-        panic!("expected unknown environment id to be rejected");
+        panic!("expected invalid request to be rejected");
     };
-    assert_eq!(output, "unknown turn environment id `missing`");
+    assert_eq!(output, expected_error);
 }
 
 #[tokio::test]
