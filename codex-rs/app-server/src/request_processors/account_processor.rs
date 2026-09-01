@@ -73,6 +73,7 @@ pub(crate) struct AccountRequestProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     config: Arc<Config>,
     config_manager: ConfigManager,
+    state_db: Option<StateDbHandle>,
     active_login: Arc<Mutex<Option<ActiveLogin>>>,
 }
 
@@ -83,6 +84,7 @@ impl AccountRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         config: Arc<Config>,
         config_manager: ConfigManager,
+        state_db: Option<StateDbHandle>,
     ) -> Self {
         Self {
             auth_manager,
@@ -90,6 +92,7 @@ impl AccountRequestProcessor {
             outgoing,
             config,
             config_manager,
+            state_db,
             active_login: Arc::new(Mutex::new(None)),
         }
     }
@@ -181,6 +184,20 @@ impl AccountRequestProcessor {
         self.thread_manager
             .plugins_manager()
             .set_auth_mode(self.auth_manager.get_api_auth_mode());
+    }
+
+    async fn invalidate_automatic_turn_capabilities(&self) -> Result<(), JSONRPCErrorError> {
+        if let Some(state_db) = self.state_db.as_ref() {
+            state_db
+                .invalidate_all_automatic_turn_capabilities()
+                .await
+                .map_err(|error| {
+                    internal_error(format!(
+                        "failed to invalidate automatic turn capabilities after auth transition: {error}"
+                    ))
+                })?;
+        }
+        Ok(())
     }
 
     fn current_account_updated_notification(&self) -> AccountUpdatedNotification {
@@ -352,6 +369,8 @@ impl AccountRequestProcessor {
             }
         }
 
+        self.invalidate_automatic_turn_capabilities().await?;
+
         match login_with_api_key(
             &self.config.codex_home,
             &params.api_key,
@@ -416,6 +435,8 @@ impl AccountRequestProcessor {
                     drop(active);
                 }
             }
+
+            self.invalidate_automatic_turn_capabilities().await?;
 
             set_user_model_provider_to_bedrock(&self.config_manager).await?;
             login_with_bedrock_api_key(
@@ -542,6 +563,7 @@ impl AccountRequestProcessor {
         let config_manager = self.config_manager.clone();
         let thread_manager = Arc::clone(&self.thread_manager);
         let config = Arc::clone(&self.config);
+        let state_db = self.state_db.clone();
         let active_login = self.active_login.clone();
         let auth_url = server.auth_url.clone();
         tokio::spawn(async move {
@@ -564,6 +586,7 @@ impl AccountRequestProcessor {
                 config_manager,
                 thread_manager,
                 config,
+                state_db,
                 login_id,
                 success,
                 error_msg,
@@ -621,6 +644,7 @@ impl AccountRequestProcessor {
         let config_manager = self.config_manager.clone();
         let thread_manager = Arc::clone(&self.thread_manager);
         let config = Arc::clone(&self.config);
+        let state_db = self.state_db.clone();
         let active_login = self.active_login.clone();
         tokio::spawn(async move {
             let (success, error_msg) = tokio::select! {
@@ -640,6 +664,7 @@ impl AccountRequestProcessor {
                 config_manager,
                 thread_manager,
                 config,
+                state_db,
                 login_id,
                 success,
                 error_msg,
@@ -744,6 +769,7 @@ impl AccountRequestProcessor {
             chatgpt_plan_type.as_deref(),
         )
         .map_err(|err| internal_error(format!("failed to set external auth: {err}")))?;
+        self.invalidate_automatic_turn_capabilities().await?;
         self.auth_manager
             .set_external_auth(Arc::new(ExternalAuthBridge::new(
                 Arc::clone(&self.outgoing),
@@ -794,10 +820,20 @@ impl AccountRequestProcessor {
         config_manager: ConfigManager,
         thread_manager: Arc<ThreadManager>,
         config: Arc<Config>,
+        state_db: Option<StateDbHandle>,
         login_id: Uuid,
-        success: bool,
-        error_msg: Option<String>,
+        mut success: bool,
+        mut error_msg: Option<String>,
     ) {
+        if success
+            && let Some(state_db) = state_db
+            && let Err(error) = state_db.invalidate_all_automatic_turn_capabilities().await
+        {
+            success = false;
+            error_msg = Some(format!(
+                "failed to invalidate automatic turn capabilities after auth transition: {error}"
+            ));
+        }
         let payload_v2 = AccountLoginCompletedNotification {
             login_id: Some(login_id.to_string()),
             success,
@@ -859,6 +895,7 @@ impl AccountRequestProcessor {
             }
         }
 
+        self.invalidate_automatic_turn_capabilities().await?;
         match self.auth_manager.logout_with_revoke().await {
             Ok(_) => {}
             Err(err) => {
