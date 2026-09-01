@@ -1764,6 +1764,32 @@ decisions.
   the focused hosted proof; the app-server V2 slice also runs upstream's direct
   transport wire-shape regression.
 
+### In-Process Runtime Delivery Under Backpressure
+
+- Stage 1 covers only the low-level `codex-app-server` runtime. The
+  `codex-app-server-client` worker facade has a separate scheduling and
+  shutdown contract; do not infer its guarantees from this entry. Stage 2
+  must add the facade implementation and regressions before this carry is
+  described as end-to-end client behavior.
+- The low-level in-process runtime is the authority for its lossless
+  notification tier,
+  including reasoning summary-part boundaries alongside transcript deltas,
+  completed items, and terminal notifications.
+- The runtime queue retains required notifications and ordinary server requests
+  in their source FIFO. Best-effort losses are counted exactly and a single
+  aggregated `Lagged` marker is delivered before the next required event.
+  Stage 1 only produces these markers from dropped lower-layer events; marker
+  relaying and represented-count composition belong to Stage 2.
+- Response ingress remains on the independent bounded lane, so a stalled event
+  consumer cannot prevent ordinary success or error responses from completing.
+  Closing the runtime event consumer terminates its retained runtime task
+  instead of leaving request handles attached to an idle runtime.
+- Preserve `responses_bypass_saturated_in_process_event_router`,
+  `event_delivery_aggregates_loss_before_required_event_and_server_request_fifo`,
+  and `idle_event_consumer_closure_terminates_runtime_with_retained_sender`
+  until upstream owns an equivalent low-level classifier, FIFO, exact-loss,
+  response-liveness, and closure contract.
+
 ### Thread-store History And Metadata Ordering
 
 - A clone-shared asynchronous operation permit serializes each `LiveThread`
