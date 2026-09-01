@@ -1373,6 +1373,7 @@ const MCP_TOOL_APPROVAL_CANCEL: &str = "Cancel";
 struct McpToolApprovalKey {
     server: String,
     connector_id: Option<String>,
+    link_id: Option<String>,
     tool_name: String,
 }
 
@@ -1636,6 +1637,7 @@ fn session_mcp_tool_approval_key(
     Some(McpToolApprovalKey {
         server: invocation.server.clone(),
         connector_id,
+        link_id: metadata.and_then(|metadata| metadata.link_id.clone()),
         tool_name: invocation.tool.clone(),
     })
 }
