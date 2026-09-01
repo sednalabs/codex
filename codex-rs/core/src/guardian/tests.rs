@@ -925,17 +925,9 @@ fn collect_guardian_transcript_entries(
     history: &dyn codex_guardian_context::SectionHistory,
     node_repl_result_token_limit: usize,
 ) -> Vec<ConversationTranscriptEntry> {
-    let sections =
-        prompt::collect_guardian_sections(history, node_repl_result_token_limit, &[], &[])
-            .expect("collect Guardian sections");
-    sections
-        .into_iter()
-        .flat_map(|section| match section {
-            codex_guardian_context::ContextSection::ConversationTranscript { items } => items,
-            codex_guardian_context::ContextSection::RootConversation { .. }
-            | codex_guardian_context::ContextSection::TrustedUserAnswers { .. } => Vec::new(),
-        })
-        .collect()
+    prompt::collect_guardian_context(history, node_repl_result_token_limit, &[], &[])
+        .expect("collect Guardian context")
+        .transcript
 }
 
 #[test]

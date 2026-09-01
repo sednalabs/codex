@@ -1,5 +1,5 @@
 use codex_extension_api::ConversationHistorySnapshot;
-use codex_guardian_context::ContextSection;
+use codex_guardian_context::ComposedContext;
 use codex_guardian_context::ContextTarget;
 use codex_guardian_context::ConversationTranscriptConfig;
 use codex_guardian_context::ConversationTranscriptEntry;
@@ -129,21 +129,15 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         .get::<GuardianReviewEvidence>()
         .map(|evidence| evidence.user_input_fragments(history.as_ref()))
         .unwrap_or_default();
-    let sections = collect_guardian_sections(
+    let ComposedContext {
+        authorization,
+        transcript: transcript_entries,
+    } = collect_guardian_context(
         &GuardianReviewHistory(history.as_ref()),
         node_repl_result_token_limit,
         root_authorization.as_deref().unwrap_or_default(),
         &trusted_user_inputs,
     )?;
-    let mut authorization = Vec::new();
-    let mut transcript_entries = Vec::new();
-    for section in sections {
-        match section {
-            ContextSection::ConversationTranscript { items } => transcript_entries = items,
-            ContextSection::RootConversation { items }
-            | ContextSection::TrustedUserAnswers { items } => authorization.extend(items),
-        }
-    }
     let transcript_cursor = GuardianTranscriptCursor {
         parent_history_version: history.review_history_version(),
         transcript_entry_count: transcript_entries.len(),
@@ -476,12 +470,12 @@ fn render_guardian_transcript_entries_with_offset(
 /// decide whether the pending approval is justified.
 /// Per-entry truncation happens during collection, using the current review's
 /// Node REPL cap; the cursor still counts every non-empty evidence entry.
-pub(super) fn collect_guardian_sections(
+pub(super) fn collect_guardian_context(
     history: &dyn SectionHistory,
     node_repl_result_token_limit: usize,
     root_conversation: &[GuardianRootMessage],
     trusted_user_answers: &[String],
-) -> Result<Vec<ContextSection>, SectionError> {
+) -> Result<ComposedContext, SectionError> {
     let transcript = ConversationTranscriptConfig {
         options: ConversationTranscriptOptions::default(),
         entry_limits: TranscriptEntryLimits {
@@ -490,7 +484,7 @@ pub(super) fn collect_guardian_sections(
             node_repl_output_tokens: node_repl_result_token_limit,
         },
     };
-    default_registry().collect(&SectionInput {
+    default_registry().compose(&SectionInput {
         target: ContextTarget::Sync,
         history: &FilteredGuardianHistory(history),
         transcript: &transcript,

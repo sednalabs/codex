@@ -30,6 +30,7 @@ use codex_extension_api::ToolName;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
+use codex_guardian_context::ContextTarget;
 use codex_history::RolloutItem;
 use codex_login::AgentIdentityAuthPolicy;
 use codex_login::AuthManager;
@@ -597,6 +598,7 @@ impl GuardianV2Extension {
                 root: root_authorization_version,
             };
             let transcript = match guardian_config.transcript.build_context(
+                ContextTarget::Async,
                 history.as_ref(),
                 root_conversation.as_deref().unwrap_or_default(),
                 &trusted_user_inputs,

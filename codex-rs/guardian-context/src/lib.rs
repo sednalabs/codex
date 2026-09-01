@@ -19,6 +19,7 @@ use authorization::TrustedUserAnswersSection;
 use transcript::ConversationTranscriptSection;
 
 pub use authorization::GuardianRootMessage;
+pub use composition::ComposedContext;
 
 pub use entry::ConversationTranscriptEntry;
 pub use entry::ConversationTranscriptEntryKind;
@@ -35,6 +36,7 @@ pub use transcript::collect_transcript;
 pub use truncation::truncate_text;
 
 mod authorization;
+mod composition;
 mod entry;
 mod history;
 mod retention;

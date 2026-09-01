@@ -3,7 +3,6 @@ use std::collections::VecDeque;
 use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ResponseItem;
 pub(crate) use codex_features::GuardianV2TranscriptSource as TranscriptSource;
-use codex_guardian_context::ContextSection;
 use codex_guardian_context::ContextTarget;
 use codex_guardian_context::ConversationTranscriptConfig;
 use codex_guardian_context::ConversationTranscriptEntry;
@@ -167,15 +166,9 @@ impl TranscriptConfig {
         }
     }
 
-    pub(crate) fn build_snapshot(
-        &self,
-        history: &dyn ConversationHistorySnapshot,
-    ) -> Result<RenderedContext, SectionError> {
-        self.build_context(history, &[], &[])
-    }
-
     pub(crate) fn build_context(
         &self,
+        target: ContextTarget,
         history: &dyn ConversationHistorySnapshot,
         root_conversation: &[GuardianRootMessage],
         trusted_user_answers: &[String],
@@ -198,24 +191,15 @@ impl TranscriptConfig {
                 node_repl_output_tokens: self.max_tool_entry_tokens,
             },
         };
-        let sections = default_registry().collect(&SectionInput {
-            target: ContextTarget::Async,
+        let context = default_registry().compose(&SectionInput {
+            target,
             history: &history,
             transcript: &transcript,
             root_conversation,
             trusted_user_answers,
         })?;
-        let mut authorization = Vec::new();
-        let mut entries = Vec::new();
-        for section in sections {
-            match section {
-                ContextSection::ConversationTranscript { items } => entries = items,
-                ContextSection::RootConversation { items }
-                | ContextSection::TrustedUserAnswers { items } => authorization.extend(items),
-            }
-        }
-        let mut rendered = Self::render(entries, &retention);
-        rendered.authorization = authorization;
+        let mut rendered = Self::render(context.transcript, &retention);
+        rendered.authorization = context.authorization;
         Ok(rendered)
     }
 
