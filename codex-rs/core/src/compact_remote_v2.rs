@@ -1175,18 +1175,32 @@ mod tests {
                 }),
                 usage_metadata: Some(codex_protocol::ResponseUsageMetadata {
                     amount: Some("0.125".to_string()),
+                    metadata: Some(serde_json::json!({ "extra": { "label": "example" } })),
                 }),
                 end_turn: Some(true),
             }),
         ]);
 
-        let (sess, turn_context) = crate::session::tests::make_session_and_context().await;
+        let (sess, turn_context, rx) =
+            crate::session::tests::make_session_and_context_with_rx().await;
         let output = collect_compaction_output(&sess, &turn_context, stream)
             .await
             .expect("compaction should be collected");
 
         assert_eq!(output.compaction_output, compaction);
         assert_eq!(output.response_id, "resp-compact");
+        let event = rx.recv().await.expect("raw response completion");
+        let EventMsg::RawResponseCompleted(completed) = event.msg else {
+            panic!("expected raw response completion, got {:?}", event.msg);
+        };
+        assert_eq!(completed.response_id, "resp-compact");
+        assert_eq!(
+            completed.usage_metadata,
+            Some(codex_protocol::ResponseUsageMetadata {
+                amount: Some("0.125".to_string()),
+                metadata: Some(serde_json::json!({ "extra": { "label": "example" } })),
+            })
+        );
         assert_eq!(
             output.token_usage,
             Some(TokenUsage {
