@@ -2416,6 +2416,11 @@ Setting the app value to `"user"` routes its approval prompts to the user
 instead of Guardian; setting it to `"auto_review"` opts that app into Guardian
 review when allowed by configuration requirements.
 
+Per-account approval configuration uses `apps.<app_id>.links.<link_id>` with
+`approvals_reviewer` and `default_tools_approval_mode`. Like `tools`, `links` is
+an optional section: `config/read` returns `null` when it is absent, `{}` when
+it is explicitly empty, and a map keyed by link ID when accounts are configured.
+
 Use `apps._default.default_tools_approval_mode` to set the approval mode for
 tools without a per-app or per-tool override. Supported values are `"auto"`,
 `"prompt"`, `"writes"`, and `"approve"`. The `"writes"` mode prompts for tools
