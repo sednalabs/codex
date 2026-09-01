@@ -1536,6 +1536,7 @@ impl Session {
     ) -> Option<PreviousTurnSettings> {
         let rollout_reconstruction::RolloutReconstruction {
             mut history,
+            guardian_history,
             previous_turn_settings,
             reference_context_item,
             world_state_baseline,
@@ -1578,6 +1579,9 @@ impl Session {
                 reference_context_item,
                 HistoryReplacement::Reset,
             );
+            state
+                .history
+                .restore_guardian_history(guardian_history.as_ref());
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
             }
@@ -3711,9 +3715,10 @@ impl Session {
         for envelope in &mut items {
             Self::assign_missing_response_item_id(&mut envelope.item);
         }
-        let compacted_item = CompactedItem {
+        let mut compacted_item = CompactedItem {
             message: metadata.message,
             replacement_history: Some(items.clone()),
+            guardian_history: None,
             mcp_resource_origins: self.services.mcp_runtime.resource_origin_checkpoint(),
             window_number: Some(metadata.window_number),
             first_window_id: Some(metadata.window_ids.first_window_id.to_string()),
@@ -3737,6 +3742,7 @@ impl Session {
                 reference_context_item.clone(),
                 HistoryReplacement::Compaction,
             );
+            compacted_item.guardian_history = state.history.guardian_history_checkpoint();
             if let Some(world_state) = world_state_baseline {
                 let snapshot = world_state.snapshot();
                 world_state_item = Some(WorldStateItem::full(snapshot.clone().into_object()));
