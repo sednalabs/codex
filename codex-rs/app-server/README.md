@@ -318,6 +318,17 @@ Plugin activation and MCP settings use the existing merged configuration, includ
 system settings and trusted project overrides. `skills/list` resolves plugin skills
 independently for each requested working directory.
 
+Sites migration persists an account/backend-scoped list of excluded bundled plugin IDs, not
+remote installed metadata. Once remote Sites is installed and locally loadable, the shared
+marketplace and runtime loaders exclude `sites@openai-bundled`. The exclusion survives restarts;
+normal remote refresh remains authoritative and clears it when remote Sites is unavailable.
+The bundled files and preference remain available for account changes or a missing replacement.
+Direct local reads and installs of excluded bundled Sites return the existing plugin-not-found error.
+Plugin Service implicitly installs eligible Sites; migration does not call install, ensure, enable,
+or disable. Remote enablement stays authoritative, including when bundled preferences differ.
+A successful check that remote Sites is unavailable is throttled for 60 seconds. Catalog requests
+then skip blocking bundle synchronization; normal background synchronization continues unchanged.
+
 For local `plugin/list` and `plugin/installed` results, each requested cwd supplies
 its effective plugin state and plugin feature flag. When a plugin appears in multiple
 contexts, the first source wins and installed/enabled state is merged across contexts.
