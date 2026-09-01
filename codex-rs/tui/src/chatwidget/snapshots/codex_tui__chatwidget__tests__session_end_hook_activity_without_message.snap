@@ -1,35 +1,22 @@
 ---
 source: tui/src/chatwidget/tests/status_and_layout.rs
-expression: "format!(\"exec running:\\n{exec_running}\\nexec and hook running:\\n{exec_and_hook_running}\\nhistory after exec:\\n{history_after_exec}\\nhook running after exec:\\n{hook_running_after_exec}\\nquiet hook completed:\\n{quiet_hook_completed}\")"
+expression: "format!(\"before reveal:\\n{hidden}\\nrunning:\\n{running}\\ncompleted:\\n{}\",\nhook_status_frame(&chat, 80),)"
 ---
-exec running:
-• Running echo done
-
-exec and hook running:
-"                                                                                "
-"• Running echo done                                                             "
-"                                                                                "
-"• Working (0s • esc to interrupt) · checking output policy                      "
+before reveal:
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
 "  gpt-5.6-sol default · /tmp/project                                            "
-history after exec:
-• Ran echo done
-  └ done
-
-hook running after exec:
+running:
 "                                                                                "
-"• Working (0s • esc to interrupt) · checking output policy                      "
+"• Running hook                                                                  "
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
 "  gpt-5.6-sol default · /tmp/project                                            "
-quiet hook completed:
-"                                                                                "
-"• Working (0s • esc to interrupt)                                               "
+completed:
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
