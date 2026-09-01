@@ -89,8 +89,17 @@ pub async fn user_input_or_turn(
     op: Op,
     client_user_message_id: Option<String>,
 ) {
-    if let Some(expected_auth_revision) = sess.services.automatic_turn_auth_revision(&sub_id).await
-        && sess.services.auth_manager.auth_revision() != expected_auth_revision
+    if let Some(expected_authority) = sess
+        .services
+        .automatic_turn_provider_authority(&sub_id)
+        .await
+        && sess
+            .services
+            .model_client
+            .current_provider_authority()
+            .await
+            .ok()
+            != Some(expected_authority)
     {
         sess.send_event_raw(Event {
             id: sub_id.clone(),

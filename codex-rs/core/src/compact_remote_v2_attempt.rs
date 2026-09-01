@@ -99,14 +99,14 @@ pub(super) async fn run_remote_compact_v2_attempt(
     let client_session = match client_session {
         Some(client_session) => client_session,
         None => {
-            let expected_auth_revision = sess
+            let expected_authority = sess
                 .services
-                .automatic_turn_auth_revision(&turn_context.sub_id)
+                .automatic_turn_provider_authority(&turn_context.sub_id)
                 .await;
             owned_client_session.insert(
                 sess.services
                     .model_client
-                    .new_session_with_auth_revision(expected_auth_revision),
+                    .new_session_with_authority(expected_authority),
             )
         }
     };

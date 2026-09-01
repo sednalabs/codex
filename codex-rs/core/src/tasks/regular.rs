@@ -74,19 +74,19 @@ impl SessionTask for RegularTask {
             }
         };
         let mut next_input = input;
-        let auth_revision = sess
+        let provider_authority = sess
             .services
-            .automatic_turn_auth_revision(&ctx.sub_id)
+            .automatic_turn_provider_authority(&ctx.sub_id)
             .await;
         let mut client_session = match prewarmed_client_session {
             Some(mut client_session) => {
-                client_session.set_expected_auth_revision(auth_revision);
+                client_session.set_expected_authority(provider_authority);
                 client_session
             }
             None => sess
                 .services
                 .model_client
-                .new_session_with_auth_revision(auth_revision),
+                .new_session_with_authority(provider_authority),
         };
         loop {
             let last_agent_message = run_turn(

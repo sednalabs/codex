@@ -9,6 +9,7 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
+use super::through_request_initiation;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
@@ -28,6 +29,7 @@ use codex_login::CodexAuth;
 use codex_login::ExternalAuth;
 use codex_login::ExternalAuthFuture;
 use codex_login::ExternalAuthRefreshContext;
+use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::BearerAuthProvider;
 use codex_model_provider::SharedModelProvider;
@@ -62,7 +64,9 @@ use core_test_support::responses::start_websocket_server;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use serial_test::serial;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -123,7 +127,7 @@ fn test_model_client_with_thread_id(
 async fn automatic_turn_setup_rejects_stale_auth_revision_before_provider_capture() {
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test-key"));
     let client = ModelClient::new(
-        Some(auth_manager),
+        Some(Arc::clone(&auth_manager)),
         AgentIdentityAuthPolicy::JwtOnly,
         SessionId::new(),
         ThreadId::new(),
@@ -140,10 +144,17 @@ async fn automatic_turn_setup_rejects_stale_auth_revision_before_provider_captur
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     );
 
-    let error = match client
-        .current_client_setup(/*expected_auth_revision*/ Some(1))
+    let admitted_authority = client
+        .current_provider_authority()
         .await
-    {
+        .expect("initial provider authority");
+    auth_manager
+        .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
+            "replacement-key",
+        ))))
+        .await
+        .expect("credential transition");
+    let error = match client.current_client_setup(Some(admitted_authority)).await {
         Ok(_) => panic!("stale automatic-turn auth must fail before provider setup"),
         Err(error) => error,
     };
@@ -191,7 +202,11 @@ async fn automatic_turn_transition_at_provider_gate_sends_no_request() {
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     );
-    let admitted_revision = auth_manager.auth_revision();
+    let admitted_authority = client
+        .current_provider_authority()
+        .await
+        .expect("initial provider authority");
+    let admitted_revision = admitted_authority.revision.expect("managed auth revision");
     let boundary_barrier = auth_manager
         .provider_request_guard(admitted_revision)
         .await
@@ -203,7 +218,7 @@ async fn automatic_turn_transition_at_provider_gate_sends_no_request() {
     tokio::pin!(transition);
     assert!(matches!(futures::poll!(transition.as_mut()), Poll::Pending));
 
-    let mut session = client.new_session_with_auth_revision(Some(admitted_revision));
+    let mut session = client.new_session_with_authority(Some(admitted_authority));
     let prompt = Prompt {
         input: vec![ResponseItem::Message {
             id: None,
@@ -261,10 +276,158 @@ async fn automatic_turn_transition_at_provider_gate_sends_no_request() {
 }
 
 #[tokio::test]
+async fn external_auth_resolution_succeeds_without_provider_gate_deadlock() {
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("initial-key"));
+    auth_manager
+        .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
+            "external-key",
+        ))))
+        .await
+        .expect("install external auth");
+    let client = ModelClient::new(
+        Some(auth_manager),
+        AgentIdentityAuthPolicy::JwtOnly,
+        SessionId::new(),
+        ThreadId::new(),
+        TEST_INSTALLATION_ID.to_string(),
+        ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+
+    tokio::time::timeout(Duration::from_secs(1), client.current_provider_authority())
+        .await
+        .expect("external auth resolution must not deadlock")
+        .expect("external auth authority should resolve");
+}
+
+#[tokio::test]
+async fn provider_authority_releases_after_initiation_cancellation_and_error() {
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
+    let (_, guard) = auth_manager.current_provider_request_guard().await;
+    let pending_request = through_request_initiation(std::future::pending::<()>(), Some(guard));
+    tokio::pin!(pending_request);
+    assert!(matches!(
+        futures::poll!(pending_request.as_mut()),
+        Poll::Pending
+    ));
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        auth_manager.set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
+            "key-b",
+        )))),
+    )
+    .await
+    .expect("transition should not wait for response consumption")
+    .expect("transition after request initiation");
+    drop(pending_request);
+
+    let (_, guard) = auth_manager.current_provider_request_guard().await;
+    let request_error = through_request_initiation(
+        std::future::ready(Err::<(), &'static str>("request failed")),
+        Some(guard),
+    )
+    .await;
+    assert_eq!(request_error, Err("request failed"));
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        auth_manager.set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
+            "key-c",
+        )))),
+    )
+    .await
+    .expect("error path must release provider authority")
+    .expect("transition after request error");
+}
+
+#[tokio::test]
+#[serial(provider_authority_refresh_env)]
+async fn proactive_refresh_succeeds_without_provider_gate_deadlock() {
+    let refresh_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "refreshed-access-token",
+            "refresh_token": "refreshed-refresh-token"
+        })))
+        .mount(&refresh_server)
+        .await;
+    let old_refresh_endpoint = std::env::var_os(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR);
+    // SAFETY: this uniquely serialized test restores the process environment before returning.
+    unsafe { std::env::set_var(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, refresh_server.uri()) };
+
+    let codex_home = TempDir::new().expect("temporary codex home");
+    let auth_json = json!({
+        "tokens": {
+            "id_token": TEST_CHATGPT_ID_TOKEN,
+            "access_token": "stale-access-token",
+            "refresh_token": "stale-refresh-token",
+            "account_id": "account-123"
+        },
+        "last_refresh": "2000-01-01T00:00:00Z"
+    });
+    std::fs::write(
+        codex_home.path().join("auth.json"),
+        serde_json::to_vec(&auth_json).expect("serialize auth"),
+    )
+    .expect("write auth");
+    let auth_manager = AuthManager::shared(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        codex_login::test_support::transport_default_auth_route_config(),
+    )
+    .await;
+    let client = ModelClient::new(
+        Some(Arc::clone(&auth_manager)),
+        AgentIdentityAuthPolicy::JwtOnly,
+        SessionId::new(),
+        ThreadId::new(),
+        TEST_INSTALLATION_ID.to_string(),
+        ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+
+    tokio::time::timeout(Duration::from_secs(1), client.current_provider_authority())
+        .await
+        .expect("proactive refresh must not deadlock")
+        .expect("refreshed provider authority");
+    assert_eq!(auth_manager.auth_revision(), 1);
+
+    match old_refresh_endpoint {
+        Some(value) => {
+            // SAFETY: restoration is covered by the same serialized test boundary.
+            unsafe { std::env::set_var(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR, value) };
+        }
+        None => {
+            // SAFETY: restoration is covered by the same serialized test boundary.
+            unsafe { std::env::remove_var(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR) };
+        }
+    }
+}
+
+#[tokio::test]
 async fn legacy_remote_compaction_uses_automatic_turn_authority() {
     let server = MockServer::start().await;
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
-    let admitted_revision = auth_manager.auth_revision();
     let client = ModelClient::new(
         Some(Arc::clone(&auth_manager)),
         AgentIdentityAuthPolicy::JwtOnly,
@@ -282,6 +445,10 @@ async fn legacy_remote_compaction_uses_automatic_turn_authority() {
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     );
+    let admitted_authority = client
+        .current_provider_authority()
+        .await
+        .expect("initial provider authority");
     auth_manager
         .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
             "key-b",
@@ -316,7 +483,7 @@ async fn legacy_remote_compaction_uses_automatic_turn_authority() {
             &prompt,
             &test_model_info(),
             /*turn_state*/ None,
-            Some(admitted_revision),
+            Some(admitted_authority),
             CompactConversationRequestSettings {
                 effort: None,
                 summary: codex_protocol::config_types::ReasoningSummary::None,
@@ -395,10 +562,13 @@ async fn cached_websocket_reuse_is_bound_to_credential_revision() {
         /*parent_thread_id*/ None,
         TestCodexResponsesRequestKind::Turn,
     );
-    let revision_a = auth_manager.auth_revision();
+    let authority_a = client
+        .current_provider_authority()
+        .await
+        .expect("provider authority A");
 
     for _ in 0..2 {
-        let mut session = client.new_session_with_auth_revision(Some(revision_a));
+        let mut session = client.new_session_with_authority(Some(authority_a));
         let mut stream = session
             .stream(
                 &prompt,
@@ -435,8 +605,11 @@ async fn cached_websocket_reuse_is_bound_to_credential_revision() {
         ))))
         .await
         .expect("credential transition should complete");
-    let revision_b = auth_manager.auth_revision();
-    let mut session = client.new_session_with_auth_revision(Some(revision_b));
+    let authority_b = client
+        .current_provider_authority()
+        .await
+        .expect("provider authority B");
+    let mut session = client.new_session_with_authority(Some(authority_b));
     let mut stream = session
         .stream(
             &prompt,
@@ -465,6 +638,161 @@ async fn cached_websocket_reuse_is_bound_to_credential_revision() {
         "revision B must open a new socket"
     );
     server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn env_authority_change_rejects_automatic_and_never_reuses_stale_socket() {
+    const TOKEN_ENV: &str = "CODEX_TEST_PROVIDER_AUTHORITY_TOKEN_691";
+    const HEADER_ENV: &str = "CODEX_TEST_PROVIDER_AUTHORITY_HEADER_691";
+    // SAFETY: these test-only names are unique to this test and are removed before return.
+    unsafe {
+        std::env::set_var(TOKEN_ENV, "token-a-secret");
+        std::env::set_var(HEADER_ENV, "header-a-secret");
+    }
+    let server = start_websocket_server(vec![
+        vec![
+            vec![ev_response_created("resp-a1"), ev_completed("resp-a1")],
+            vec![ev_response_created("resp-a2"), ev_completed("resp-a2")],
+        ],
+        vec![vec![ev_response_created("resp-b"), ev_completed("resp-b")]],
+    ])
+    .await;
+    let mut provider = ModelProviderInfo::create_openai_provider(Some(server.uri()));
+    provider.requires_openai_auth = false;
+    provider.env_key = Some(TOKEN_ENV.to_string());
+    provider.env_http_headers = Some(HashMap::from([(
+        "x-provider-authority".to_string(),
+        HEADER_ENV.to_string(),
+    )]));
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("unused"));
+    let client = ModelClient::new(
+        Some(auth_manager),
+        AgentIdentityAuthPolicy::JwtOnly,
+        SessionId::new(),
+        ThreadId::new(),
+        TEST_INSTALLATION_ID.to_string(),
+        provider,
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+    let prompt = Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "continue".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }],
+        base_instructions: BaseInstructions {
+            text: "base instructions".to_string(),
+        },
+        ..Default::default()
+    };
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("automatic-turn"),
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let authority_a = client
+        .current_provider_authority()
+        .await
+        .expect("authority A");
+    assert!(!format!("{authority_a:?}").contains("token-a-secret"));
+    assert!(!format!("{authority_a:?}").contains("header-a-secret"));
+
+    for _ in 0..2 {
+        let mut session = client.new_session_with_authority(Some(authority_a));
+        let mut stream = session
+            .stream(
+                &prompt,
+                &test_model_info(),
+                &test_session_telemetry(),
+                /*effort*/ None,
+                codex_protocol::config_types::ReasoningSummary::None,
+                /*service_tier*/ None,
+                &responses_metadata,
+                &InferenceTraceContext::disabled(),
+            )
+            .await
+            .expect("authority A request");
+        while let Some(event) = stream.next().await {
+            if matches!(
+                event.expect("websocket event"),
+                ResponseEvent::Completed { .. }
+            ) {
+                break;
+            }
+        }
+        drop(stream);
+        drop(session);
+    }
+    assert_eq!(
+        server.connections().len(),
+        1,
+        "same complete identity reuses"
+    );
+
+    // SAFETY: these test-only names are unique to this test.
+    unsafe {
+        std::env::set_var(TOKEN_ENV, "token-b-secret");
+        std::env::set_var(HEADER_ENV, "header-b-secret");
+    }
+    let stale_error = match client.current_client_setup(Some(authority_a)).await {
+        Ok(_) => panic!("changed env authority must reject stale automatic work"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        stale_error.details(),
+        codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
+    ));
+    assert!(!stale_error.to_string().contains("token-b-secret"));
+    assert!(!stale_error.to_string().contains("header-b-secret"));
+
+    let authority_b = client
+        .current_provider_authority()
+        .await
+        .expect("authority B");
+    assert_ne!(authority_a, authority_b);
+    let mut session = client.new_session_with_authority(Some(authority_b));
+    let mut stream = session
+        .stream(
+            &prompt,
+            &test_model_info(),
+            &test_session_telemetry(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &responses_metadata,
+            &InferenceTraceContext::disabled(),
+        )
+        .await
+        .expect("authority B request");
+    while let Some(event) = stream.next().await {
+        if matches!(
+            event.expect("websocket event"),
+            ResponseEvent::Completed { .. }
+        ) {
+            break;
+        }
+    }
+    assert_eq!(server.connections().len(), 2, "socket A must not be reused");
+    // SAFETY: restore the unique test-only process environment.
+    unsafe {
+        std::env::remove_var(TOKEN_ENV);
+        std::env::remove_var(HEADER_ENV);
+    }
 }
 
 #[tokio::test]
@@ -540,7 +868,7 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
             &prompt,
             &test_model_info(),
             /*turn_state*/ None,
-            /*expected_auth_revision*/ None,
+            /*expected_authority*/ None,
             CompactConversationRequestSettings {
                 effort: None,
                 summary: codex_protocol::config_types::ReasoningSummary::None,

@@ -53,6 +53,23 @@ fn login_completion_is_active(active_login: Option<&ActiveLogin>, login_id: Uuid
     active_login.map(ActiveLogin::login_id) == Some(login_id)
 }
 
+async fn commit_staged_login_credentials(
+    active_login: Option<&ActiveLogin>,
+    login_id: Uuid,
+    auth_manager: &Arc<AuthManager>,
+    staged_auth: &AuthDotJson,
+) -> std::io::Result<bool> {
+    if !login_completion_is_active(active_login, login_id) {
+        return Ok(false);
+    }
+    auth_manager
+        .begin_credential_transition()
+        .await
+        .replace_persisted_auth(staged_auth)
+        .await?;
+    Ok(true)
+}
+
 #[derive(Clone, Copy, Debug)]
 enum CancelLoginError {
     NotFound,
@@ -379,18 +396,12 @@ impl AccountRequestProcessor {
         let _auth_admission = self.auth_admission.lock().await;
         self.invalidate_automatic_turn_capabilities().await?;
 
-        match login_with_api_key(
-            &self.config.codex_home,
-            &params.api_key,
-            self.config.cli_auth_credentials_store_mode,
-            self.config.auth_keyring_backend_kind(),
-        ) {
-            Ok(()) => {
-                self.auth_manager.reload().await;
-                Ok(())
-            }
-            Err(err) => Err(internal_error(format!("failed to save api key: {err}"))),
-        }
+        let staged_auth = api_key_auth_dot_json(&params.api_key);
+        let transition = self.auth_manager.begin_credential_transition().await;
+        transition
+            .replace_persisted_auth(&staged_auth)
+            .await
+            .map_err(|err| internal_error(format!("failed to save api key: {err}")))
     }
 
     async fn login_api_key_v2(&self, request_id: ConnectionRequestId, params: LoginApiKeyParams) {
@@ -447,16 +458,15 @@ impl AccountRequestProcessor {
             let _auth_admission = self.auth_admission.lock().await;
             self.invalidate_automatic_turn_capabilities().await?;
 
+            let staged_auth = bedrock_api_key_auth_dot_json(api_key, region);
+            let transition = self.auth_manager.begin_credential_transition().await;
             set_user_model_provider_to_bedrock(&self.config_manager).await?;
-            login_with_bedrock_api_key(
-                &self.config.codex_home,
-                api_key,
-                region,
-                self.config.cli_auth_credentials_store_mode,
-                self.config.auth_keyring_backend_kind(),
-            )
-            .map_err(|err| internal_error(format!("failed to save Amazon Bedrock auth: {err}")))?;
-            self.auth_manager.reload().await;
+            transition
+                .replace_persisted_auth(&staged_auth)
+                .await
+                .map_err(|err| {
+                    internal_error(format!("failed to save Amazon Bedrock auth: {err}"))
+                })?;
             Ok(LoginAccountResponse::AmazonBedrock {})
         }
         .await;
@@ -551,7 +561,7 @@ impl AccountRequestProcessor {
         let opts = self
             .login_chatgpt_common(codex_streamlined_login, login_success_page)
             .await?;
-        let server = run_login_server(opts)
+        let server = run_login_server_staged(opts)
             .map_err(|err| internal_error(format!("failed to start login server: {err}")))?;
         let login_id = Uuid::new_v4();
         let shutdown_handle = server.cancel_handle();
@@ -577,17 +587,17 @@ impl AccountRequestProcessor {
         let auth_admission = self.auth_admission.clone();
         let auth_url = server.auth_url.clone();
         tokio::spawn(async move {
-            let (success, error_msg) = match tokio::time::timeout(
+            let (staged_auth, error_msg) = match tokio::time::timeout(
                 LOGIN_CHATGPT_TIMEOUT,
-                server.block_until_done(),
+                server.block_until_staged(),
             )
             .await
             {
-                Ok(Ok(())) => (true, None),
-                Ok(Err(err)) => (false, Some(format!("Login server error: {err}"))),
+                Ok(Ok(auth)) => (Some(auth), None),
+                Ok(Err(err)) => (None, Some(format!("Login server error: {err}"))),
                 Err(_elapsed) => {
                     shutdown_handle.shutdown();
-                    (false, Some("Login timed out".to_string()))
+                    (None, Some("Login timed out".to_string()))
                 }
             };
 
@@ -600,7 +610,7 @@ impl AccountRequestProcessor {
                 auth_admission,
                 Arc::clone(&active_login),
                 login_id,
-                success,
+                staged_auth,
                 error_msg,
             )
             .await;
@@ -660,14 +670,14 @@ impl AccountRequestProcessor {
         let active_login = self.active_login.clone();
         let auth_admission = self.auth_admission.clone();
         tokio::spawn(async move {
-            let (success, error_msg) = tokio::select! {
+            let (staged_auth, error_msg) = tokio::select! {
                 _ = cancel.cancelled() => {
-                    (false, Some("Login was not completed".to_string()))
+                    (None, Some("Login was not completed".to_string()))
                 }
-                r = complete_device_code_login(opts, device_code) => {
+                r = complete_device_code_login_staged(opts, device_code) => {
                     match r {
-                        Ok(()) => (true, None),
-                        Err(err) => (false, Some(err.to_string())),
+                        Ok(auth) => (Some(auth), None),
+                        Err(err) => (None, Some(err.to_string())),
                     }
                 }
             };
@@ -681,7 +691,7 @@ impl AccountRequestProcessor {
                 auth_admission,
                 Arc::clone(&active_login),
                 login_id,
-                success,
+                staged_auth,
                 error_msg,
             )
             .await;
@@ -840,13 +850,14 @@ impl AccountRequestProcessor {
         auth_admission: Arc<Mutex<()>>,
         active_login: Arc<Mutex<Option<ActiveLogin>>>,
         login_id: Uuid,
-        mut success: bool,
+        staged_auth: Option<AuthDotJson>,
         mut error_msg: Option<String>,
     ) {
         // Linearize completion with cancellation, replacement, and teardown before applying any
         // newly persisted credential state. A stale successful task may report failure, but it
         // must not invalidate capabilities, reload auth, or update the active account.
         let active_login_guard = active_login.lock().await;
+        let mut success = staged_auth.is_some();
         if success && !login_completion_is_active(active_login_guard.as_ref(), login_id) {
             success = false;
             error_msg = Some("Login attempt is no longer active".to_string());
@@ -864,7 +875,29 @@ impl AccountRequestProcessor {
             }
             if success {
                 let auth_manager = thread_manager.auth_manager();
-                auth_manager.reload().await;
+                match commit_staged_login_credentials(
+                    active_login_guard.as_ref(),
+                    login_id,
+                    &auth_manager,
+                    staged_auth
+                        .as_ref()
+                        .expect("successful login completion has staged credentials"),
+                )
+                .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        success = false;
+                        error_msg = Some("Login attempt is no longer active".to_string());
+                    }
+                    Err(error) => {
+                        success = false;
+                        error_msg = Some(format!("failed to save login credentials: {error}"));
+                    }
+                }
+            }
+            if success {
+                let auth_manager = thread_manager.auth_manager();
                 config_manager.replace_cloud_config_bundle_loader(
                     auth_manager.clone(),
                     config.chatgpt_base_url.clone(),
@@ -928,7 +961,8 @@ impl AccountRequestProcessor {
 
         let _auth_admission = self.auth_admission.lock().await;
         self.invalidate_automatic_turn_capabilities().await?;
-        match self.auth_manager.logout_with_revoke().await {
+        let transition = self.auth_manager.begin_credential_transition().await;
+        match transition.logout_with_revoke().await {
             Ok(_) => {}
             Err(err) => {
                 return Err(internal_error(format!("logout failed: {err}")));
@@ -938,6 +972,7 @@ impl AccountRequestProcessor {
         if managed_bedrock_auth {
             clear_user_model_provider_if_bedrock(&self.config_manager).await?;
         }
+        drop(transition);
 
         Self::maybe_refresh_plugin_caches_for_current_config(
             &self.config_manager,
@@ -1374,6 +1409,22 @@ mod tests {
     use codex_backend_client::TokenUsageProfileDailyBucket;
     use codex_backend_client::TokenUsageProfileStats;
     use pretty_assertions::assert_eq;
+    use tempfile::tempdir;
+
+    async fn empty_auth_manager(codex_home: &Path) -> Arc<AuthManager> {
+        Arc::new(
+            AuthManager::new(
+                codex_home.to_path_buf(),
+                /*enable_codex_api_key_env*/ false,
+                codex_login::AuthCredentialsStoreMode::File,
+                /*forced_chatgpt_workspace_id*/ None,
+                /*chatgpt_base_url*/ None,
+                codex_login::AuthKeyringBackendKind::default(),
+                codex_login::test_support::transport_default_auth_route_config(),
+            )
+            .await,
+        )
+    }
 
     #[test]
     fn login_completion_requires_the_current_attempt() {
@@ -1390,6 +1441,106 @@ mod tests {
             replaced_id
         ));
         assert!(!login_completion_is_active(None, active_id));
+    }
+
+    #[tokio::test]
+    async fn cancelled_or_replaced_staged_login_never_commits_credentials() {
+        let codex_home = tempdir().expect("temporary codex home");
+        let auth_manager = empty_auth_manager(codex_home.path()).await;
+        let staged_auth = api_key_auth_dot_json("staged-secret");
+        let staged_id = Uuid::new_v4();
+        let replacement_id = Uuid::new_v4();
+        let replacement = ActiveLogin::DeviceCode {
+            cancel: CancellationToken::new(),
+            login_id: replacement_id,
+        };
+
+        assert!(
+            !commit_staged_login_credentials(
+                Some(&replacement),
+                staged_id,
+                &auth_manager,
+                &staged_auth,
+            )
+            .await
+            .expect("replacement check")
+        );
+        assert!(
+            !commit_staged_login_credentials(
+                /*active_login*/ None,
+                staged_id,
+                &auth_manager,
+                &staged_auth,
+            )
+            .await
+            .expect("cancellation check")
+        );
+        assert_eq!(replacement.login_id(), replacement_id);
+        assert!(auth_manager.auth_cached().is_none());
+        assert!(!codex_home.path().join("auth.json").exists());
+    }
+
+    #[tokio::test]
+    async fn active_staged_login_commits_exactly_one_credential_revision() {
+        let codex_home = tempdir().expect("temporary codex home");
+        let auth_manager = empty_auth_manager(codex_home.path()).await;
+        let staged_auth = api_key_auth_dot_json("committed-secret");
+        let login_id = Uuid::new_v4();
+        let active = ActiveLogin::DeviceCode {
+            cancel: CancellationToken::new(),
+            login_id,
+        };
+
+        assert!(
+            commit_staged_login_credentials(Some(&active), login_id, &auth_manager, &staged_auth,)
+                .await
+                .expect("active commit")
+        );
+        let committed_revision = auth_manager.auth_revision();
+        assert_eq!(committed_revision, 1);
+        assert_eq!(
+            auth_manager
+                .auth_cached()
+                .and_then(|auth| auth.get_token().ok()),
+            Some("committed-secret".to_string())
+        );
+
+        assert!(
+            commit_staged_login_credentials(Some(&active), login_id, &auth_manager, &staged_auth,)
+                .await
+                .expect("idempotent active commit")
+        );
+        assert_eq!(auth_manager.auth_revision(), committed_revision);
+    }
+
+    #[tokio::test]
+    async fn active_login_teardown_cancels_before_any_staged_commit() {
+        let codex_home = tempdir().expect("temporary codex home");
+        let auth_manager = empty_auth_manager(codex_home.path()).await;
+        let staged_auth = api_key_auth_dot_json("teardown-secret");
+        let cancel = CancellationToken::new();
+        let login_id = Uuid::new_v4();
+        let active = ActiveLogin::DeviceCode {
+            cancel: cancel.clone(),
+            login_id,
+        };
+
+        drop(active);
+        tokio::time::timeout(Duration::from_secs(1), cancel.cancelled())
+            .await
+            .expect("teardown should cancel the active login");
+        assert!(
+            !commit_staged_login_credentials(
+                /*active_login*/ None,
+                login_id,
+                &auth_manager,
+                &staged_auth,
+            )
+            .await
+            .expect("teardown completion must stay rejected")
+        );
+        assert!(auth_manager.auth_cached().is_none());
+        assert!(!codex_home.path().join("auth.json").exists());
     }
 
     #[test]

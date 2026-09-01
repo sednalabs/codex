@@ -398,6 +398,17 @@ impl CodexThread {
             .await?;
         let id = new_submission_id();
         let client_user_message_id_for_release = client_user_message_id.clone();
+        let provider_authority = if principal.is_some() {
+            Some(
+                self.session
+                    .services
+                    .model_client
+                    .current_provider_authority()
+                    .await?,
+            )
+        } else {
+            None
+        };
         if let Some(principal) = principal.as_deref() {
             self.session
                 .services
@@ -407,10 +418,12 @@ impl CodexThread {
                     client_user_message_id.as_deref(),
                 )
                 .await;
-            let auth_revision = self.session.services.auth_manager.auth_revision();
             self.session
                 .services
-                .set_automatic_turn_auth_revision(&id, auth_revision)
+                .set_automatic_turn_provider_authority(
+                    &id,
+                    provider_authority.expect("automatic provider authority was resolved"),
+                )
                 .await;
         }
         if let Err(error) = self
@@ -481,11 +494,8 @@ impl CodexThread {
                     client_user_message_id.as_deref(),
                 )
                 .await;
-            let auth_revision = self.session.services.auth_manager.auth_revision();
-            self.session
-                .services
-                .set_automatic_turn_auth_revision(expected_turn_id, auth_revision)
-                .await;
+            // Capability-bearing steer is rejected by the app-server admission contract. Do not
+            // manufacture a provider authority for this legacy internal-only seam.
         }
         let client_user_message_id_for_release = client_user_message_id.clone();
         let _residency_transition = self.session.input_queue.begin_residency_activity().await;

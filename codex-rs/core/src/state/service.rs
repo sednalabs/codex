@@ -8,6 +8,7 @@ use crate::agent::AgentControl;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::attestation::AttestationProvider;
 use crate::client::ModelClient;
+use crate::client::ProviderAuthority;
 use crate::config::NetworkProxyAuditMetadata;
 use crate::config::StartedNetworkProxy;
 use crate::current_time::TimeProvider;
@@ -102,7 +103,7 @@ pub(crate) struct SessionServices {
 pub(crate) struct AutomaticTurnPrincipal {
     pub(crate) principal: String,
     pub(crate) client_user_message_id: Option<String>,
-    pub(crate) auth_revision: Option<u64>,
+    pub(crate) provider_authority: Option<ProviderAuthority>,
 }
 
 impl SessionServices {
@@ -183,14 +184,14 @@ impl SessionServices {
             .or_insert_with(|| AutomaticTurnPrincipal {
                 principal,
                 client_user_message_id,
-                auth_revision: None,
+                provider_authority: None,
             });
     }
 
-    pub(crate) async fn set_automatic_turn_auth_revision(
+    pub(crate) async fn set_automatic_turn_provider_authority(
         &self,
         event_occurrence_id: &str,
-        auth_revision: u64,
+        provider_authority: ProviderAuthority,
     ) {
         if let Some(operation) = self
             .automatic_turn_principals
@@ -198,19 +199,19 @@ impl SessionServices {
             .await
             .get_mut(event_occurrence_id)
         {
-            operation.auth_revision = Some(auth_revision);
+            operation.provider_authority = Some(provider_authority);
         }
     }
 
-    pub(crate) async fn automatic_turn_auth_revision(
+    pub(crate) async fn automatic_turn_provider_authority(
         &self,
         event_occurrence_id: &str,
-    ) -> Option<u64> {
+    ) -> Option<ProviderAuthority> {
         self.automatic_turn_principals
             .lock()
             .await
             .get(event_occurrence_id)
-            .and_then(|operation| operation.auth_revision)
+            .and_then(|operation| operation.provider_authority)
     }
 
     pub(crate) async fn remove_automatic_turn_principal_if_matches(

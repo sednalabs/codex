@@ -24,7 +24,18 @@ pub fn login_with_bedrock_api_key(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<()> {
-    let auth_dot_json = AuthDotJson {
+    let auth_dot_json = bedrock_api_key_auth_dot_json(api_key, region);
+    save_auth(
+        codex_home,
+        &auth_dot_json,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    )
+}
+
+/// Builds managed Bedrock auth without mutating durable storage.
+pub fn bedrock_api_key_auth_dot_json(api_key: &str, region: &str) -> AuthDotJson {
+    AuthDotJson {
         auth_mode: Some(AuthMode::BedrockApiKey),
         openai_api_key: None,
         tokens: None,
@@ -35,13 +46,7 @@ pub fn login_with_bedrock_api_key(
             api_key: api_key.to_string(),
             region: region.to_string(),
         }),
-    };
-    save_auth(
-        codex_home,
-        &auth_dot_json,
-        auth_credentials_store_mode,
-        keyring_backend_kind,
-    )
+    }
 }
 
 #[cfg(test)]
