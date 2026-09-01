@@ -27,6 +27,7 @@ use crate::with_chatgpt_cloudflare_cookie_store;
 pub struct HttpClientBuilder {
     default_headers: Option<HeaderMap>,
     follow_redirects: bool,
+    retry_requests: bool,
     connect_timeout: Option<Duration>,
     chatgpt_cloudflare_cookie_store: bool,
     request_logging: RequestLogging,
@@ -75,6 +76,16 @@ impl HttpClientBuilder {
 
     pub fn without_redirects(mut self) -> Self {
         self.follow_redirects = false;
+        self
+    }
+
+    /// Disables transport-internal retries, including HTTP/2 protocol NACK retries.
+    ///
+    /// Credential-bound requests use the observable application retry loop, where each attempt
+    /// can acquire and validate fresh authority. A transport retry would instead clone the
+    /// already-authorized wire request after that authority has been released.
+    pub fn without_retries(mut self) -> Self {
+        self.retry_requests = false;
         self
     }
 
@@ -209,6 +220,7 @@ impl HttpClientBuilder {
             -> Result<reqwest::Client, BuildCustomCaTransportError>,
     ) -> HttpClient {
         let request_logging = self.request_logging;
+        let retry_requests = self.retry_requests;
         match build_with_custom_ca(self.clone().reqwest_builder(proxy_routing)) {
             Ok(inner) => HttpClient::from_parts(inner, request_logging),
             Err(error) => {
@@ -221,7 +233,19 @@ impl HttpClientBuilder {
                             error = %fallback_error,
                             "failed to build fallback HTTP client"
                         );
-                        HttpClient::from_parts(reqwest::Client::new(), request_logging)
+                        let inner = if retry_requests {
+                            reqwest::Client::new()
+                        } else {
+                            // `Client::new()` would silently restore protocol-NACK retries on the
+                            // credential-bound path, so its last-resort client must fail closed.
+                            reqwest::Client::builder()
+                                .retry(reqwest::retry::never())
+                                .build()
+                                .expect(
+                                    "minimal credential-bound HTTP client without retries should build",
+                                )
+                        };
+                        HttpClient::from_parts(inner, request_logging)
                     })
             }
         }
@@ -248,6 +272,9 @@ impl HttpClientBuilder {
         if !self.follow_redirects {
             builder = builder.redirect(reqwest::redirect::Policy::none());
         }
+        if !self.retry_requests {
+            builder = builder.retry(reqwest::retry::never());
+        }
         if let Some(connect_timeout) = self.connect_timeout {
             builder = builder.connect_timeout(connect_timeout);
         }
@@ -263,6 +290,7 @@ impl Default for HttpClientBuilder {
         Self {
             default_headers: None,
             follow_redirects: true,
+            retry_requests: true,
             connect_timeout: None,
             chatgpt_cloudflare_cookie_store: false,
             request_logging: RequestLogging::Enabled,

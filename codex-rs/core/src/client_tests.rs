@@ -59,6 +59,7 @@ use codex_rollout_trace::TraceWriter;
 use codex_rollout_trace::replay_bundle;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::sse;
 use core_test_support::responses::start_websocket_server;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
@@ -87,6 +88,7 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use wiremock::Mock;
 use wiremock::MockServer;
+use wiremock::Respond;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
@@ -178,6 +180,190 @@ impl ExternalAuth for StaticExternalAuth {
     fn refresh(&self, _context: ExternalAuthRefreshContext) -> ExternalAuthFuture<'_, CodexAuth> {
         Box::pin(async { Ok(self.0.clone()) })
     }
+}
+
+struct RetryOnceResponder {
+    calls: AtomicUsize,
+    first_attempt: Arc<Notify>,
+}
+
+impl Respond for RetryOnceResponder {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.first_attempt.notify_one();
+            ResponseTemplate::new(/*status*/ 500)
+        } else {
+            ResponseTemplate::new(/*status*/ 200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    sse(vec![
+                        ev_response_created("retry-success"),
+                        ev_completed("retry-success"),
+                    ]),
+                    "text/event-stream",
+                )
+        }
+    }
+}
+
+fn automatic_retry_prompt() -> Prompt {
+    Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "continue".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }],
+        base_instructions: BaseInstructions {
+            text: "base instructions".to_string(),
+        },
+        ..Default::default()
+    }
+}
+
+fn automatic_retry_client(server: &MockServer, auth_manager: Arc<AuthManager>) -> ModelClient {
+    let mut provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    provider.base_url = Some(format!("{}/v1", server.uri()));
+    provider.supports_websockets = false;
+    provider.request_max_retries = Some(1);
+    ModelClient::new(
+        Some(auth_manager),
+        AgentIdentityAuthPolicy::JwtOnly,
+        SessionId::new(),
+        ThreadId::new(),
+        TEST_INSTALLATION_ID.to_string(),
+        provider,
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    )
+}
+
+#[tokio::test]
+async fn automatic_http_retry_revalidates_same_authority_and_succeeds() {
+    let server = MockServer::start().await;
+    let first_attempt = Arc::new(Notify::new());
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(RetryOnceResponder {
+            calls: AtomicUsize::new(0),
+            first_attempt,
+        })
+        .expect(/*requests*/ 2)
+        .mount(&server)
+        .await;
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
+    let client = automatic_retry_client(&server, auth_manager);
+    let admitted_authority = client
+        .current_provider_authority()
+        .await
+        .expect("initial provider authority");
+    let mut session = client.new_session_with_authority(Some(admitted_authority));
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("automatic-retry"),
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+
+    let mut stream = session
+        .stream(
+            &automatic_retry_prompt(),
+            &test_model_info(),
+            &test_session_telemetry(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &responses_metadata,
+            &InferenceTraceContext::disabled(),
+        )
+        .await
+        .expect("same-authority retry should start a response stream");
+    while let Some(event) = stream.next().await {
+        if matches!(
+            event.expect("retry response event"),
+            ResponseEvent::Completed { .. }
+        ) {
+            break;
+        }
+    }
+    assert_eq!(
+        server.received_requests().await.expect("request log").len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn automatic_http_retry_rejects_changed_authority_before_second_wire_attempt() {
+    let server = MockServer::start().await;
+    let first_attempt = Arc::new(Notify::new());
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(RetryOnceResponder {
+            calls: AtomicUsize::new(0),
+            first_attempt: Arc::clone(&first_attempt),
+        })
+        .mount(&server)
+        .await;
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
+    let client = automatic_retry_client(&server, Arc::clone(&auth_manager));
+    let admitted_authority = client
+        .current_provider_authority()
+        .await
+        .expect("initial provider authority");
+    let mut session = client.new_session_with_authority(Some(admitted_authority));
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("automatic-retry"),
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let prompt = automatic_retry_prompt();
+    let model_info = test_model_info();
+    let session_telemetry = test_session_telemetry();
+    let inference_trace = InferenceTraceContext::disabled();
+    let retry = session.stream(
+        &prompt,
+        &model_info,
+        &session_telemetry,
+        /*effort*/ None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        /*service_tier*/ None,
+        &responses_metadata,
+        &inference_trace,
+    );
+    let transition = async {
+        first_attempt.notified().await;
+        auth_manager
+            .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
+                "key-b",
+            ))))
+            .await
+    };
+    let (retry_result, transition_result) = tokio::join!(retry, transition);
+    transition_result.expect("credential transition should complete during retry backoff");
+
+    let error = retry_result.expect_err("changed authority must stop the retry");
+    assert!(matches!(
+        error.details(),
+        codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
+    ));
+    assert_eq!(
+        server.received_requests().await.expect("request log").len(),
+        1
+    );
 }
 
 #[tokio::test]

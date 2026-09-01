@@ -5,6 +5,18 @@ use codex_protocol::protocol::RateLimitReachedType;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn map_api_error_preserves_automatic_turn_context_change() {
+    let err = map_api_error(ApiError::Transport(
+        TransportError::AutomaticTurnContextChanged,
+    ));
+
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::AutomaticTurnContextChanged
+    ));
+}
+
+#[test]
 fn map_api_error_maps_server_overloaded() {
     let err = map_api_error(ApiError::ServerOverloaded);
     assert!(matches!(err.details(), CodexErrorDetails::ServerOverloaded));

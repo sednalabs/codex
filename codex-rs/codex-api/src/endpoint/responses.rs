@@ -2,6 +2,7 @@ use crate::auth::SharedAuthProvider;
 use crate::common::ResponseStream;
 use crate::common::ResponsesApiRequest;
 use crate::endpoint::session::EndpointSession;
+use crate::endpoint::session::RequestInitiationFactory;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use crate::requests::Compression;
@@ -13,7 +14,6 @@ use crate::telemetry::SseTelemetry;
 use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
 use codex_client::RequestCompression;
-use codex_client::RequestInitiation;
 use codex_client::RequestTelemetry;
 use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
@@ -58,9 +58,12 @@ impl<T: HttpTransport> ResponsesClient<T> {
         }
     }
 
-    pub fn with_request_initiation(self, initiation: Option<RequestInitiation>) -> Self {
+    pub fn with_request_initiation_factory(
+        self,
+        factory: Option<RequestInitiationFactory>,
+    ) -> Self {
         Self {
-            session: self.session.with_request_initiation(initiation),
+            session: self.session.with_request_initiation_factory(factory),
             sse_telemetry: self.sse_telemetry,
         }
     }

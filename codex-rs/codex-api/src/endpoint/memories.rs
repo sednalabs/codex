@@ -2,10 +2,10 @@ use crate::auth::SharedAuthProvider;
 use crate::common::MemorySummarizeInput;
 use crate::common::MemorySummarizeOutput;
 use crate::endpoint::session::EndpointSession;
+use crate::endpoint::session::RequestInitiationFactory;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use codex_client::HttpTransport;
-use codex_client::RequestInitiation;
 use codex_client::RequestTelemetry;
 use http::HeaderMap;
 use http::Method;
@@ -30,9 +30,12 @@ impl<T: HttpTransport> MemoriesClient<T> {
         }
     }
 
-    pub fn with_request_initiation(self, initiation: Option<RequestInitiation>) -> Self {
+    pub fn with_request_initiation_factory(
+        self,
+        factory: Option<RequestInitiationFactory>,
+    ) -> Self {
         Self {
-            session: self.session.with_request_initiation(initiation),
+            session: self.session.with_request_initiation_factory(factory),
         }
     }
 

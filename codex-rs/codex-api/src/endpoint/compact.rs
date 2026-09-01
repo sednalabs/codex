@@ -1,10 +1,10 @@
 use crate::auth::SharedAuthProvider;
 use crate::common::CompactionInput;
 use crate::endpoint::session::EndpointSession;
+use crate::endpoint::session::RequestInitiationFactory;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use codex_client::HttpTransport;
-use codex_client::RequestInitiation;
 use codex_client::RequestTelemetry;
 use codex_protocol::models::ResponseItem;
 use http::HeaderMap;
@@ -33,9 +33,12 @@ impl<T: HttpTransport> CompactClient<T> {
         }
     }
 
-    pub fn with_request_initiation(self, initiation: Option<RequestInitiation>) -> Self {
+    pub fn with_request_initiation_factory(
+        self,
+        factory: Option<RequestInitiationFactory>,
+    ) -> Self {
         Self {
-            session: self.session.with_request_initiation(initiation),
+            session: self.session.with_request_initiation_factory(factory),
         }
     }
 
@@ -106,10 +109,26 @@ mod tests {
     use codex_client::TransportError;
     use http::StatusCode;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use tokio::sync::Notify;
     use tokio::sync::RwLock;
+
+    fn one_initiation_factory(initiation: RequestInitiation) -> RequestInitiationFactory {
+        let initiation = Arc::new(Mutex::new(Some(initiation)));
+        RequestInitiationFactory::new(move || {
+            let initiation = initiation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            async move {
+                initiation.ok_or_else(|| {
+                    TransportError::Build("test initiation already issued".to_string())
+                })
+            }
+        })
+    }
 
     #[derive(Clone, Default)]
     struct DummyTransport;
@@ -189,7 +208,9 @@ mod tests {
             test_provider(),
             Arc::new(NoAuth),
         )
-        .with_request_initiation(Some(RequestInitiation::new(authority)));
+        .with_request_initiation_factory(Some(one_initiation_factory(
+            RequestInitiation::new(authority),
+        )));
 
         let request = tokio::spawn(async move {
             client
@@ -215,14 +236,21 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct FailingTransport {
+    struct RetryThenSuccessTransport {
         attempts: Arc<AtomicUsize>,
     }
 
-    impl HttpTransport for FailingTransport {
+    impl HttpTransport for RetryThenSuccessTransport {
         async fn execute(&self, _req: Request) -> Result<Response, TransportError> {
-            self.attempts.fetch_add(1, Ordering::SeqCst);
-            Err(TransportError::Network("send failed".to_string()))
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                return Err(TransportError::Network("send failed".to_string()));
+            }
+            Ok(Response {
+                status: StatusCode::OK,
+                headers: HeaderMap::new(),
+                body: br#"{"output":[]}"#.as_slice().into(),
+            })
         }
 
         async fn stream(&self, _req: Request) -> Result<StreamResponse, TransportError> {
@@ -230,17 +258,76 @@ mod tests {
         }
     }
 
+    struct AttemptAuthority(Arc<AtomicUsize>);
+
+    impl Drop for AttemptAuthority {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     #[tokio::test]
-    async fn credential_bound_compaction_does_not_retry_with_stale_authority() {
+    async fn same_authority_retry_uses_one_fresh_initiation_per_wire_attempt() {
         let attempts = Arc::new(AtomicUsize::new(0));
+        let issued = Arc::new(AtomicUsize::new(0));
+        let released = Arc::new(AtomicUsize::new(0));
+        let factory = RequestInitiationFactory::new({
+            let issued = Arc::clone(&issued);
+            let released = Arc::clone(&released);
+            move || {
+                issued.fetch_add(1, Ordering::SeqCst);
+                let initiation = RequestInitiation::new(AttemptAuthority(Arc::clone(&released)));
+                async move { Ok(initiation) }
+            }
+        });
         let client = CompactClient::new(
-            FailingTransport {
+            RetryThenSuccessTransport {
                 attempts: Arc::clone(&attempts),
             },
             test_provider(),
             Arc::new(NoAuth),
         )
-        .with_request_initiation(Some(RequestInitiation::new(())));
+        .with_request_initiation_factory(Some(factory));
+
+        client
+            .compact(
+                serde_json::json!({"model": "test"}),
+                HeaderMap::new(),
+                Duration::from_secs(5),
+                None,
+            )
+            .await
+            .expect("second application attempt should succeed");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(issued.load(Ordering::SeqCst), 2);
+        assert_eq!(released.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn authority_change_before_retry_sends_no_second_wire_attempt() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let factory_calls = Arc::new(AtomicUsize::new(0));
+        let factory = RequestInitiationFactory::new({
+            let factory_calls = Arc::clone(&factory_calls);
+            move || {
+                let call = factory_calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if call == 0 {
+                        Ok(RequestInitiation::new(()))
+                    } else {
+                        Err(TransportError::AutomaticTurnContextChanged)
+                    }
+                }
+            }
+        });
+        let client = CompactClient::new(
+            RetryThenSuccessTransport {
+                attempts: Arc::clone(&attempts),
+            },
+            test_provider(),
+            Arc::new(NoAuth),
+        )
+        .with_request_initiation_factory(Some(factory));
 
         let error = client
             .compact(
@@ -250,11 +337,42 @@ mod tests {
                 None,
             )
             .await
-            .expect_err("transport failure should surface");
+            .expect_err("changed authority should stop the visible retry");
         assert!(matches!(
             error,
-            ApiError::Transport(TransportError::Network(_))
+            ApiError::Transport(TransportError::AutomaticTurnContextChanged)
         ));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn ordinary_compaction_preserves_application_retry_and_backoff() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut provider = test_provider();
+        provider.retry.base_delay = Duration::from_millis(20);
+        let client = CompactClient::new(
+            RetryThenSuccessTransport {
+                attempts: Arc::clone(&attempts),
+            },
+            provider,
+            Arc::new(NoAuth),
+        );
+        let started = tokio::time::Instant::now();
+
+        client
+            .compact(
+                serde_json::json!({"model": "test"}),
+                HeaderMap::new(),
+                Duration::from_secs(5),
+                None,
+            )
+            .await
+            .expect("ordinary retry should succeed");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(
+            started.elapsed() >= Duration::from_millis(15),
+            "configured backoff should remain observable"
+        );
     }
 }

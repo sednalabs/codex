@@ -260,14 +260,16 @@ pub fn create_client_for_route(
     )
 }
 
-/// Builds a route-aware model API client that returns redirects to the caller instead of replaying
-/// an already-authorized request at a different destination.
-pub fn create_client_for_route_without_redirects(
+/// Builds a route-aware model API client that neither redirects nor performs hidden transport
+/// retries with an already-authorized request.
+pub fn create_credential_bound_client_for_route(
     http_client_factory: &HttpClientFactory,
     request_url: &str,
     route_class: ClientRouteClass,
 ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
-    let builder = default_http_client_builder().without_redirects();
+    let builder = default_http_client_builder()
+        .without_redirects()
+        .without_retries();
     if matches!(
         http_client_factory.outbound_proxy_policy(),
         OutboundProxyPolicy::ReqwestDefault

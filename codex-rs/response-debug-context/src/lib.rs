@@ -67,6 +67,9 @@ pub fn telemetry_transport_error_message(error: &TransportError) -> String {
         TransportError::Timeout => "timeout".to_string(),
         TransportError::Network(err) => err.to_string(),
         TransportError::Build(err) => err.to_string(),
+        TransportError::AutomaticTurnContextChanged => {
+            "automatic turn context changed before provider request".to_string()
+        }
     }
 }
 

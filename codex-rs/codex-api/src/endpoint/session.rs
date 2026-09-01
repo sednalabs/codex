@@ -14,6 +14,8 @@ use codex_client::TransportError;
 use http::HeaderMap;
 use http::Method;
 use serde_json::Value;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -22,7 +24,38 @@ pub(crate) struct EndpointSession<T: HttpTransport> {
     provider: Provider,
     auth: SharedAuthProvider,
     request_telemetry: Option<Arc<dyn RequestTelemetry>>,
-    request_initiation: Option<RequestInitiation>,
+    request_initiation_factory: Option<RequestInitiationFactory>,
+}
+
+type RequestInitiationFuture =
+    Pin<Box<dyn Future<Output = Result<RequestInitiation, TransportError>> + Send>>;
+
+/// Produces one independently validated, single-use initiation for each application attempt.
+#[derive(Clone)]
+pub struct RequestInitiationFactory {
+    create: Arc<dyn Fn() -> RequestInitiationFuture + Send + Sync>,
+}
+
+impl std::fmt::Debug for RequestInitiationFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RequestInitiationFactory(<redacted>)")
+    }
+}
+
+impl RequestInitiationFactory {
+    pub fn new<F, Fut>(create: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<RequestInitiation, TransportError>> + Send + 'static,
+    {
+        Self {
+            create: Arc::new(move || Box::pin(create())),
+        }
+    }
+
+    async fn create(&self) -> Result<RequestInitiation, TransportError> {
+        (self.create)().await
+    }
 }
 
 impl<T: HttpTransport> EndpointSession<T> {
@@ -32,12 +65,15 @@ impl<T: HttpTransport> EndpointSession<T> {
             provider,
             auth,
             request_telemetry: None,
-            request_initiation: None,
+            request_initiation_factory: None,
         }
     }
 
-    pub(crate) fn with_request_initiation(mut self, initiation: Option<RequestInitiation>) -> Self {
-        self.request_initiation = initiation;
+    pub(crate) fn with_request_initiation_factory(
+        mut self,
+        factory: Option<RequestInitiationFactory>,
+    ) -> Self {
+        self.request_initiation_factory = factory;
         self
     }
 
@@ -103,19 +139,19 @@ impl<T: HttpTransport> EndpointSession<T> {
             req
         };
 
-        let mut retry_policy = self.provider.retry.to_policy();
-        if self.request_initiation.is_some() {
-            retry_policy.max_attempts = 0;
-        }
         let response = run_with_request_telemetry(
-            retry_policy,
+            self.provider.retry.to_policy(),
             self.request_telemetry.clone(),
             make_request,
             |req| {
                 let auth = self.auth.clone();
                 let transport = &self.transport;
-                let initiation = self.request_initiation.clone();
+                let initiation_factory = self.request_initiation_factory.clone();
                 async move {
+                    let initiation = match initiation_factory {
+                        Some(factory) => Some(factory.create().await?),
+                        None => None,
+                    };
                     let req = match auth.apply_auth(req).await {
                         Ok(req) => req,
                         Err(err) => {
@@ -165,19 +201,19 @@ impl<T: HttpTransport> EndpointSession<T> {
         let request = request.into_prepared().map_err(TransportError::Build)?;
         let make_request = || request.clone();
 
-        let mut retry_policy = self.provider.retry.to_policy();
-        if self.request_initiation.is_some() {
-            retry_policy.max_attempts = 0;
-        }
         let stream = run_with_request_telemetry(
-            retry_policy,
+            self.provider.retry.to_policy(),
             self.request_telemetry.clone(),
             make_request,
             |req| {
                 let auth = self.auth.clone();
                 let transport = &self.transport;
-                let initiation = self.request_initiation.clone();
+                let initiation_factory = self.request_initiation_factory.clone();
                 async move {
+                    let initiation = match initiation_factory {
+                        Some(factory) => Some(factory.create().await?),
+                        None => None,
+                    };
                     let req = match auth.apply_auth(req).await {
                         Ok(req) => req,
                         Err(err) => {
