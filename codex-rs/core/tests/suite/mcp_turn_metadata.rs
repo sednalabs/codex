@@ -22,6 +22,7 @@ use codex_protocol::protocol::ElicitationAction;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
@@ -34,6 +35,7 @@ use core_test_support::apps_test_server::SEARCH_CALENDAR_CREATE_TOOL;
 use core_test_support::apps_test_server::SEARCH_CALENDAR_LIST_TOOL;
 use core_test_support::apps_test_server::SEARCH_CALENDAR_NAMESPACE;
 use core_test_support::apps_test_server::recorded_apps_tool_call_by_call_id;
+use core_test_support::apps_test_server::recorded_apps_tool_calls;
 use core_test_support::apps_test_server::search_capable_apps_builder;
 use core_test_support::responses::assert_root_turn;
 use core_test_support::responses::ev_assistant_message;
@@ -46,14 +48,20 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
-use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
+use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
 use test_case::test_case;
+use wiremock::Mock;
+use wiremock::Request;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::body_partial_json;
+use wiremock::matchers::method;
+use wiremock::matchers::path_regex;
 
 fn set_calendar_approval_mode(config: &mut Config, approval_mode: AppToolApproval) {
     let approval_mode = match approval_mode {
@@ -119,7 +127,10 @@ async fn submit_user_turn(
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_selections(test.config.cwd.clone())),
+                environments: Some(TurnEnvironmentSelections::new(
+                    test.config.cwd.clone(),
+                    vec![test.executor_environment().selection().clone()],
+                )),
                 approval_policy: Some(approval_policy),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -489,6 +500,183 @@ async fn apps_default_prompt_with_auto_review_routes_actual_mcp_approval_to_guar
         Some(&json!("Lunch"))
     );
 
+    Ok(())
+}
+
+const INVALID_APP_SELECTOR_ERROR: &str =
+    "This app tool requires a non-empty string link_id argument";
+
+#[derive(Clone, Copy)]
+enum MissingAppLinkOutcome {
+    Execute,
+    Prompt,
+    Reject(&'static str),
+}
+
+#[test_case(Some(json!(false)), AppToolApproval::Approve, MissingAppLinkOutcome::Execute; "legacy_false_uses_connector_approval")]
+#[test_case(Some(json!(false)), AppToolApproval::Prompt, MissingAppLinkOutcome::Prompt; "legacy_false_uses_connector_prompt")]
+#[test_case(Some(json!(true)), AppToolApproval::Approve, MissingAppLinkOutcome::Reject(INVALID_APP_SELECTOR_ERROR); "required_selector_cannot_use_connector_approval")]
+#[test_case(None, AppToolApproval::Approve, MissingAppLinkOutcome::Execute; "legacy_absence_uses_connector_approval")]
+#[test_case(Some(json!("true")), AppToolApproval::Approve, MissingAppLinkOutcome::Execute; "string_true_uses_connector_approval")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apps_missing_link_respects_advertised_selector(
+    requires_explicit_link_id: Option<Value>,
+    connector_approval: AppToolApproval,
+    expected: MissingAppLinkOutcome,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let apps_server = AppsTestServer::mount(&server).await?;
+    let call_id = "calendar-missing-link";
+    let calendar_args = json!({ "title": "Lunch", "starts_at": "2026-03-10T12:00:00Z" });
+    let mut required = vec!["title", "starts_at"];
+    if matches!(&requires_explicit_link_id, Some(Value::Bool(true))) {
+        required.push("link_id");
+    }
+    let mut apps_meta = json!({
+        "resource_uri": "/calendar/link_calendar/create_event",
+        "contains_mcp_source": true
+    });
+    if let Some(requires_explicit_link_id) = requires_explicit_link_id {
+        apps_meta["requires_explicit_link_id"] = requires_explicit_link_id;
+    }
+    let tool = json!({
+        "name": "calendar_create_event",
+        "description": "Create a calendar event.",
+        "annotations": { "readOnlyHint": false },
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": { "type": "string" },
+                "starts_at": { "type": "string" },
+                "link_id": { "type": "string" }
+            },
+            "required": required
+        },
+        "_meta": {
+            "connector_id": "calendar",
+            "connector_name": "Calendar",
+            "_codex_apps": apps_meta
+        }
+    });
+    Mock::given(method("POST"))
+        .and(path_regex("^/api/codex/ps/mcp/?$"))
+        .and(body_partial_json(json!({ "method": "tools/list" })))
+        .respond_with(move |request: &Request| {
+            let body: Value = serde_json::from_slice(&request.body).expect("valid tools/list");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": body["id"], "result": { "tools": [tool] }
+            }))
+        })
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-calendar"),
+                ev_function_call_with_namespace(
+                    call_id,
+                    SEARCH_CALENDAR_NAMESPACE,
+                    SEARCH_CALENDAR_CREATE_TOOL,
+                    &calendar_args.to_string(),
+                ),
+                ev_completed("resp-calendar"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-done"),
+                ev_assistant_message("msg-done", "done"),
+                ev_completed("resp-done"),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder =
+        search_capable_apps_builder(apps_server.chatgpt_base_url).with_config(move |config| {
+            set_calendar_approval_mode(config, connector_approval);
+            config.approvals_reviewer = ApprovalsReviewer::User;
+            config
+                .features
+                .enable(Feature::ToolCallMcpElicitation)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    submit_user_turn(
+        &test,
+        "Use [$calendar](app://calendar) to create a calendar event.",
+        AskForApproval::OnRequest,
+        PermissionProfile::Disabled,
+        /*collaboration_mode*/ None,
+    )
+    .await?;
+
+    let mut completed_calls = Vec::new();
+    let mut record_call = |event: &EventMsg| {
+        if let EventMsg::ItemCompleted(event) = event
+            && let TurnItem::McpToolCall(item) = &event.item
+            && item.id == call_id
+        {
+            completed_calls.push((item.status, item.link_id.clone()));
+        }
+    };
+    let event = wait_for_event(&test.codex, |event| {
+        record_call(event);
+        matches!(
+            event,
+            EventMsg::ElicitationRequest(_)
+                | EventMsg::RequestUserInput(_)
+                | EventMsg::TurnComplete(_)
+        )
+    })
+    .await;
+    assert_eq!(
+        matches!(&event, EventMsg::ElicitationRequest(_)),
+        matches!(expected, MissingAppLinkOutcome::Prompt),
+    );
+    if let EventMsg::ElicitationRequest(request) = event {
+        assert_eq!(recorded_apps_tool_calls(&server).await, Vec::<Value>::new());
+        test.codex
+            .submit(Op::ResolveElicitation {
+                server_name: request.server_name,
+                request_id: request.id,
+                decision: ElicitationAction::Accept,
+                content: None,
+                meta: None,
+            })
+            .await?;
+        wait_for_event(&test.codex, |event| {
+            record_call(event);
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    } else {
+        assert!(
+            matches!(event, EventMsg::TurnComplete(_)),
+            "unexpected approval prompt"
+        );
+    }
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    let tool_calls = recorded_apps_tool_calls(&server).await;
+    match expected {
+        MissingAppLinkOutcome::Execute | MissingAppLinkOutcome::Prompt => {
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(tool_calls[0]["params"]["arguments"], calendar_args);
+            assert_eq!(completed_calls, vec![(McpToolCallStatus::Completed, None)]);
+        }
+        MissingAppLinkOutcome::Reject(message) => {
+            assert_eq!(tool_calls, Vec::<Value>::new());
+            assert_eq!(completed_calls, vec![(McpToolCallStatus::Failed, None)]);
+            assert!(
+                requests[1]
+                    .function_call_output(call_id)
+                    .to_string()
+                    .contains(message)
+            );
+        }
+    }
     Ok(())
 }
 
