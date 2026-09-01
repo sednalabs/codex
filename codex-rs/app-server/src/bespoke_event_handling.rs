@@ -94,6 +94,7 @@ use codex_app_server_protocol::guardian_auto_approval_review_notification;
 use codex_app_server_protocol::item_event_to_server_notification;
 use codex_core::CodexThread;
 use codex_core::ThreadManager;
+use codex_core::automatic_turn_context_fingerprint;
 use codex_protocol::ThreadId;
 use codex_protocol::automatic_turn::AutomaticTurnProvenance;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
@@ -1044,6 +1045,20 @@ pub(crate) async fn apply_bespoke_event_handling(
                         .await
                     {
                         Some((trigger_turn_id, capability, principal)) => {
+                            let context_fingerprint = automatic_turn_context_fingerprint(
+                                &conversation.config_snapshot().await,
+                            );
+                            let contract_bound = state_db
+                                .bind_automatic_turn_capability_contract(
+                                    conversation_id,
+                                    &trigger_turn_id,
+                                    &capability,
+                                    "start",
+                                    None,
+                                    &context_fingerprint,
+                                )
+                                .await
+                                .unwrap_or(false);
                             let subscribed = outgoing.connection_ids();
                             let owner = principal
                                 .as_deref()
@@ -1052,7 +1067,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                                 .map(|(_, connection_id)| connection_id)
                                 .filter(|connection_id| subscribed.contains(connection_id));
                             (
-                                owner.and_then(|_| {
+                                contract_bound.then(|| owner).flatten().and_then(|_| {
                                     AutomaticTurnProvenance::capability_details(
                                         &trigger_turn_id,
                                         &capability,

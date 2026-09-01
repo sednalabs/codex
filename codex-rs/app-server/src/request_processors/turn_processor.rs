@@ -6,6 +6,7 @@ use crate::outgoing_message::parse_automatic_turn_connection_principal;
 use codex_agent_extension::AgentInvocation;
 use codex_agent_extension::AgentRun;
 use codex_agent_extension::AgentRunner;
+use codex_core::automatic_turn_context_fingerprint;
 use codex_protocol::automatic_turn::AutomaticTurnProvenance;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
@@ -175,6 +176,15 @@ impl TurnRequestProcessor {
             thread_list_state_permit,
             skills_watcher,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn config_snapshot_for_test(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<ThreadConfigSnapshot> {
+        let thread = self.thread_manager.get_thread(thread_id).await.ok()?;
+        Some(thread.config_snapshot().await)
     }
 
     pub(crate) async fn turn_start(
@@ -363,6 +373,9 @@ impl TurnRequestProcessor {
         thread_id: ThreadId,
         thread: &CodexThread,
         client_user_message_id: Option<&str>,
+        operation_kind: &str,
+        expected_turn_id: Option<&str>,
+        request_settings_match: bool,
     ) -> Result<(), JSONRPCErrorError> {
         let Some(client_user_message_id) = client_user_message_id else {
             return Ok(());
@@ -384,16 +397,29 @@ impl TurnRequestProcessor {
         };
 
         let principal = automatic_turn_connection_principal(request_id.connection_id);
-        let expected_principal = state_db
-            .automatic_turn_capability_principal(
-                thread_id,
-                &provenance.trigger_turn_id,
-                &provenance.capability,
-            )
-            .await;
-        let Some(expected_principal) = expected_principal.flatten() else {
+        let Some((expected_principal, allowed_operation_kind, allowed_expected_turn_id, context)) =
+            state_db
+                .automatic_turn_capability_contract(
+                    thread_id,
+                    &provenance.trigger_turn_id,
+                    &provenance.capability,
+                )
+                .await
+        else {
             return Err(invalid_request("automatic turn capability is not pending"));
         };
+        let Some(expected_principal) = expected_principal else {
+            return Err(invalid_request(
+                "automatic turn capability has no server-selected owner",
+            ));
+        };
+        if allowed_operation_kind.as_deref() != Some(operation_kind)
+            || allowed_expected_turn_id.as_deref() != expected_turn_id
+        {
+            return Err(invalid_request(
+                "automatic turn capability does not authorize this operation",
+            ));
+        }
         if !is_current_automatic_turn_principal(&expected_principal) {
             return Err(invalid_request(
                 "automatic turn capability belongs to another app-server epoch",
@@ -409,6 +435,19 @@ impl TurnRequestProcessor {
         if previous_connection != request_id.connection_id || principal != expected_principal {
             return Err(invalid_request(
                 "automatic turn capability is bound to another connection",
+            ));
+        }
+        let current_context = automatic_turn_context_fingerprint(&thread.config_snapshot().await);
+        if context.as_deref() != Some(current_context.as_str()) || !request_settings_match {
+            let _ = state_db
+                .invalidate_automatic_turn_capability(
+                    thread_id,
+                    &provenance.trigger_turn_id,
+                    &provenance.capability,
+                )
+                .await;
+            return Err(invalid_request(
+                "automatic turn capability no longer matches the server-canonical context",
             ));
         }
         Ok(())
@@ -623,11 +662,20 @@ impl TurnRequestProcessor {
                     self.track_error_response(&request_id, error, /*error_type*/ None);
                 })?;
         let automatic_turn = validate_automatic_turn_start_shape(&params)?;
+        let request_settings_match = if automatic_turn {
+            let snapshot = thread.config_snapshot().await;
+            automatic_turn_start_settings_match_current(&params, &snapshot, self)
+        } else {
+            true
+        };
         self.validate_automatic_turn_capability(
             &request_id,
             thread_id,
             thread.as_ref(),
             params.client_user_message_id.as_deref(),
+            "start",
+            None,
+            request_settings_match,
         )
         .await?;
         self.ensure_direct_input_allowed(&request_id, thread.as_ref())
@@ -1125,6 +1173,9 @@ impl TurnRequestProcessor {
             thread_id,
             thread.as_ref(),
             params.client_user_message_id.as_deref(),
+            "steer",
+            Some(&params.expected_turn_id),
+            /*request_settings_match*/ true,
         )
         .await?;
         self.ensure_direct_input_allowed(request_id, thread.as_ref())
@@ -1758,20 +1809,7 @@ fn validate_automatic_turn_start_shape(
     let canonical = is_canonical_automatic_turn_input(&params.input)
         && params.responsesapi_client_metadata.is_none()
         && params.additional_context.is_none()
-        && params.environments.is_none()
-        && params.cwd.is_none()
-        && params.runtime_workspace_roots.is_none()
-        && params.approval_policy.is_none()
-        && params.approvals_reviewer.is_none()
-        && params.sandbox_policy.is_none()
-        && params.permissions.is_none()
-        && params.model.is_none()
-        && params.service_tier.is_none()
-        && params.effort.is_none()
-        && params.summary.is_none()
-        && params.personality.is_none()
         && params.output_schema.is_none()
-        && params.collaboration_mode.is_none()
         && params.multi_agent_mode.is_none();
     if !canonical {
         return Err(invalid_request(
@@ -1779,6 +1817,83 @@ fn validate_automatic_turn_start_shape(
         ));
     }
     Ok(true)
+}
+
+fn automatic_turn_start_settings_match_current(
+    params: &TurnStartParams,
+    snapshot: &ThreadConfigSnapshot,
+    processor: &TurnRequestProcessor,
+) -> bool {
+    let cwd_matches = params
+        .cwd
+        .as_ref()
+        .is_none_or(|cwd| cwd.as_path() == snapshot.cwd().as_path());
+    let roots_match = params
+        .runtime_workspace_roots
+        .as_ref()
+        .is_none_or(|roots| roots == &snapshot.workspace_roots);
+    let approval_matches = params
+        .approval_policy
+        .as_ref()
+        .is_none_or(|approval| approval.clone().to_core() == snapshot.approval_policy);
+    let reviewer_matches = params
+        .approvals_reviewer
+        .as_ref()
+        .is_none_or(|reviewer| reviewer.to_core() == snapshot.approvals_reviewer);
+    let sandbox_matches = params
+        .sandbox_policy
+        .as_ref()
+        .is_none_or(|sandbox| sandbox.to_core() == snapshot.sandbox_policy());
+    let permission_matches = params.permissions.as_ref().is_none_or(|permission| {
+        snapshot
+            .active_permission_profile
+            .as_ref()
+            .is_some_and(|active| active.id == *permission)
+    });
+    let model_matches = params
+        .model
+        .as_ref()
+        .is_none_or(|model| model == &snapshot.model);
+    let service_tier_matches = params
+        .service_tier
+        .as_ref()
+        .is_none_or(|service_tier| service_tier == &snapshot.service_tier);
+    let effort_matches = params
+        .effort
+        .as_ref()
+        .is_none_or(|effort| snapshot.reasoning_effort.as_ref() == Some(effort));
+    let summary_matches = params
+        .summary
+        .as_ref()
+        .is_none_or(|summary| snapshot.reasoning_summary.as_ref() == Some(summary));
+    let personality_matches = params
+        .personality
+        .as_ref()
+        .is_none_or(|personality| snapshot.personality.as_ref() == Some(personality));
+    let collaboration_matches = params.collaboration_mode.as_ref().is_none_or(|mode| {
+        processor.normalize_collaboration_mode(mode.clone()) == snapshot.collaboration_mode
+    });
+
+    // Environment selections and arbitrary context/output changes are not part of the retry
+    // contract. Omitted fields use the server's already-bound selections; supplied values are
+    // rejected unless they are one of the directly comparable current settings above.
+    params.environments.is_none()
+        && params.responsesapi_client_metadata.is_none()
+        && params.additional_context.is_none()
+        && params.output_schema.is_none()
+        && params.multi_agent_mode.is_none()
+        && cwd_matches
+        && roots_match
+        && approval_matches
+        && reviewer_matches
+        && sandbox_matches
+        && permission_matches
+        && model_matches
+        && service_tier_matches
+        && effort_matches
+        && summary_matches
+        && personality_matches
+        && collaboration_matches
 }
 
 fn validate_automatic_turn_steer_shape(
@@ -1821,7 +1936,7 @@ mod automatic_turn_validation_tests {
     }
 
     #[test]
-    fn automatic_turn_start_rejects_operation_overrides() {
+    fn automatic_turn_start_shape_allows_server_current_settings() {
         let mut params = TurnStartParams {
             client_user_message_id: Some(client_user_message_id()),
             input: vec![V2UserInput::Text {
@@ -1833,7 +1948,7 @@ mod automatic_turn_validation_tests {
         assert!(validate_automatic_turn_start_shape(&params).is_ok_and(|automatic| automatic));
 
         params.model = Some("different-model".to_string());
-        assert!(validate_automatic_turn_start_shape(&params).is_err());
+        assert!(validate_automatic_turn_start_shape(&params).is_ok_and(|automatic| automatic));
     }
 
     #[test]

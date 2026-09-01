@@ -171,7 +171,11 @@ impl SessionServices {
             .await
             .entry(event_occurrence_id.into())
             .and_modify(|operation| {
-                if operation.client_user_message_id.is_none() {
+                // A repeated same-turn steer is a new admitted attempt. Replace the complete
+                // identity whenever it carries a client message id; retaining the old id would
+                // let a later abort terminalize the wrong attempt.
+                if client_user_message_id.is_some() {
+                    operation.principal = principal.clone();
                     operation.client_user_message_id = client_user_message_id.clone();
                 }
             })
@@ -179,5 +183,23 @@ impl SessionServices {
                 principal,
                 client_user_message_id,
             });
+    }
+
+    pub(crate) async fn remove_automatic_turn_principal_if_matches(
+        &self,
+        event_occurrence_id: &str,
+        principal: &str,
+        client_user_message_id: Option<&str>,
+    ) {
+        let mut principals = self.automatic_turn_principals.lock().await;
+        let matches = principals
+            .get(event_occurrence_id)
+            .is_some_and(|operation| {
+                operation.principal == principal
+                    && operation.client_user_message_id.as_deref() == client_user_message_id
+            });
+        if matches {
+            principals.remove(event_occurrence_id);
+        }
     }
 }

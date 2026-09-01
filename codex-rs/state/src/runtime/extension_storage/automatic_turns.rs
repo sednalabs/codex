@@ -136,6 +136,109 @@ impl StateRuntime {
         .ok()
     }
 
+    /// Return the complete server-bound contract for a pending capability. The operation and
+    /// context fields are written when the policy event is delivered to its owning connection;
+    /// a ticket without them is intentionally not consumable by app-server requests.
+    pub async fn automatic_turn_capability_contract(
+        &self,
+        thread_id: ThreadId,
+        trigger_turn_id: &str,
+        capability: &str,
+    ) -> Option<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> {
+        if trigger_turn_id.is_empty()
+            || capability.is_empty()
+            || self.usage_ledger_pool().is_closed()
+        {
+            return None;
+        }
+        sqlx::query_as(
+            "SELECT connection_principal, allowed_operation_kind, allowed_expected_turn_id, trigger_context_fingerprint FROM usage_automatic_turn_eligibility WHERE thread_id = ? AND trigger_turn_id = ? AND capability = ?",
+        )
+        .bind(thread_id.to_string())
+        .bind(trigger_turn_id)
+        .bind(capability)
+        .fetch_optional(self.usage_ledger_pool().as_ref())
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Bind the operation, target precondition, and current thread context to a pending ticket.
+    /// Re-delivery of the exact same policy event is idempotent; a conflicting binding fails
+    /// closed and leaves the original contract intact.
+    pub async fn bind_automatic_turn_capability_contract(
+        &self,
+        thread_id: ThreadId,
+        trigger_turn_id: &str,
+        capability: &str,
+        operation_kind: &str,
+        expected_turn_id: Option<&str>,
+        context_fingerprint: &str,
+    ) -> anyhow::Result<bool> {
+        if trigger_turn_id.is_empty()
+            || capability.is_empty()
+            || operation_kind.is_empty()
+            || context_fingerprint.is_empty()
+            || self.usage_ledger_pool().is_closed()
+        {
+            return Ok(false);
+        }
+        let result = sqlx::query(
+            "UPDATE usage_automatic_turn_eligibility SET allowed_operation_kind = ?, allowed_expected_turn_id = ?, trigger_context_fingerprint = ? WHERE thread_id = ? AND trigger_turn_id = ? AND capability = ? AND (allowed_operation_kind IS NULL OR (allowed_operation_kind = ? AND allowed_expected_turn_id IS ? AND trigger_context_fingerprint = ?))",
+        )
+        .bind(operation_kind)
+        .bind(expected_turn_id)
+        .bind(context_fingerprint)
+        .bind(thread_id.to_string())
+        .bind(trigger_turn_id)
+        .bind(capability)
+        .bind(operation_kind)
+        .bind(expected_turn_id)
+        .bind(context_fingerprint)
+        .execute(self.usage_ledger_pool().as_ref())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Invalidate a ticket after its trigger-bound context or operation contract no longer
+    /// matches. Resetting the chain advances the generation so a stale request cannot consume a
+    /// replacement ticket minted from the old event.
+    pub async fn invalidate_automatic_turn_capability(
+        &self,
+        thread_id: ThreadId,
+        trigger_turn_id: &str,
+        capability: &str,
+    ) -> anyhow::Result<bool> {
+        if trigger_turn_id.is_empty()
+            || capability.is_empty()
+            || self.usage_ledger_pool().is_closed()
+        {
+            return Ok(false);
+        }
+        let mut tx = self
+            .usage_ledger_pool()
+            .begin_with("BEGIN IMMEDIATE")
+            .await?;
+        let result = sqlx::query(
+            "DELETE FROM usage_automatic_turn_eligibility WHERE thread_id = ? AND trigger_turn_id = ? AND capability = ?",
+        )
+        .bind(thread_id.to_string())
+        .bind(trigger_turn_id)
+        .bind(capability)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 1 {
+            reset_chain_in_transaction(&mut tx, &thread_id.to_string()).await?;
+        }
+        tx.commit().await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Atomically claim an unbound pending capability for a server-selected principal.
     pub async fn claim_automatic_turn_capability_principal(
         &self,
@@ -207,7 +310,7 @@ impl StateRuntime {
             return Ok(false);
         }
         let result = sqlx::query(
-            "UPDATE usage_automatic_turn_eligibility SET admitted_client_user_message_id = ?, admitted_operation_kind = ?, admitted_expected_turn_id = ? WHERE thread_id = ? AND trigger_turn_id = ? AND capability = ? AND connection_principal = ? AND admitted_client_user_message_id IS NULL",
+            "UPDATE usage_automatic_turn_eligibility SET admitted_client_user_message_id = ?, admitted_operation_kind = ?, admitted_expected_turn_id = ? WHERE thread_id = ? AND trigger_turn_id = ? AND capability = ? AND connection_principal = ? AND allowed_operation_kind = ? AND allowed_expected_turn_id IS ? AND admitted_client_user_message_id IS NULL",
         )
         .bind(client_user_message_id)
         .bind(operation_kind)
@@ -216,6 +319,8 @@ impl StateRuntime {
         .bind(trigger_turn_id)
         .bind(capability)
         .bind(principal)
+        .bind(operation_kind)
+        .bind(expected_turn_id)
         .execute(self.usage_ledger_pool().as_ref())
         .await?;
         Ok(result.rows_affected() == 1)
@@ -584,6 +689,24 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
         let pool = self.usage_ledger_pool();
         let actual_thread_id = thread_id.to_string();
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+        // An abort is a durable terminal boundary. Late or reordered policy terminals for that
+        // exact turn/event must remain idempotent after reset and may not mint a ticket in the
+        // next generation or reopen the aborted chain.
+        let aborted_tombstone: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM usage_automatic_turns WHERE thread_id = ? AND outcome = ? AND (turn_id = ? OR trigger_turn_id = ? OR event_occurrence_id = ?))",
+        )
+        .bind(&actual_thread_id)
+        .bind(OUTCOME_ABORTED)
+        .bind(trigger_turn_id)
+        .bind(trigger_turn_id)
+        .bind(event_occurrence_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if aborted_tombstone {
+            tx.commit().await?;
+            return Ok(None);
+        }
 
         sqlx::query(
             "INSERT INTO usage_automatic_turn_chains (thread_id) VALUES (?) ON CONFLICT(thread_id) DO NOTHING",
@@ -992,6 +1115,29 @@ mod tests {
             .expect("policy trigger should issue capability")
     }
 
+    async fn bind_contract(
+        runtime: &StateRuntime,
+        thread_id: ThreadId,
+        trigger: &str,
+        capability: &str,
+        operation_kind: &str,
+        expected_turn_id: Option<&str>,
+    ) -> Result<()> {
+        assert!(
+            runtime
+                .bind_automatic_turn_capability_contract(
+                    thread_id,
+                    trigger,
+                    capability,
+                    operation_kind,
+                    expected_turn_id,
+                    "test-context",
+                )
+                .await?
+        );
+        Ok(())
+    }
+
     fn automatic_user_message(
         thread_id: ThreadId,
         trigger_turn_id: &str,
@@ -1116,6 +1262,7 @@ mod tests {
             )
             .await;
         let cap = capability(runtime.as_ref(), thread_id, "trigger").await;
+        bind_contract(runtime.as_ref(), thread_id, "trigger", &cap, "start", None).await?;
         let mut sibling_attempt = automatic_user_message(
             thread_id, "trigger", "turn", /*attempt*/ 1, /*max_attempts*/ 3, &cap,
         );
@@ -1170,6 +1317,15 @@ mod tests {
             )
             .await;
         let capability = capability(runtime.as_ref(), thread_id, "trigger").await;
+        bind_contract(
+            runtime.as_ref(),
+            thread_id,
+            "trigger",
+            &capability,
+            "start",
+            None,
+        )
+        .await?;
         let first = runtime.clone();
         let second = runtime.clone();
         let (first, second) = tokio::join!(
@@ -1193,6 +1349,56 @@ mod tests {
             ),
         );
         assert_eq!(u8::from(first?) + u8::from(second?), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn automatic_turn_contract_binds_operation_target_and_context() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        runtime
+            .record_automatic_turn_event_with_principal(
+                thread_id,
+                &policy_error("trigger"),
+                Some("connection:1"),
+            )
+            .await;
+        let capability = capability(runtime.as_ref(), thread_id, "trigger").await;
+        assert!(
+            runtime
+                .bind_automatic_turn_capability_contract(
+                    thread_id,
+                    "trigger",
+                    &capability,
+                    "steer",
+                    Some("active-turn"),
+                    "context-v1",
+                )
+                .await?
+        );
+        assert_eq!(
+            runtime
+                .automatic_turn_capability_contract(thread_id, "trigger", &capability)
+                .await,
+            Some((
+                Some("connection:1".to_string()),
+                Some("steer".to_string()),
+                Some("active-turn".to_string()),
+                Some("context-v1".to_string()),
+            ))
+        );
+        assert!(
+            !runtime
+                .bind_automatic_turn_capability_contract(
+                    thread_id,
+                    "trigger",
+                    &capability,
+                    "start",
+                    None,
+                    "different-context",
+                )
+                .await?
+        );
         Ok(())
     }
 
@@ -1274,6 +1480,59 @@ mod tests {
             .await?,
             1
         );
+
+        // Reordered policy terminals for the aborted turn are tombstoned. Neither an Error nor a
+        // TurnComplete duplicate may reopen the chain or mint a ticket in the new generation.
+        runtime
+            .record_automatic_turn_event(thread_id, &policy_error("turn"))
+            .await;
+        runtime
+            .record_automatic_turn_event(
+                thread_id,
+                &Event {
+                    id: "turn".to_string(),
+                    msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                        turn_id: "turn".to_string(),
+                        last_agent_message: None,
+                        error: Some(ErrorEvent {
+                            message: "blocked".to_string(),
+                            codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                        }),
+                        started_at: None,
+                        compaction_events_in_turn: 0,
+                        final_model: None,
+                        model_snapshot: None,
+                        provider_usage: None,
+                        completed_at: None,
+                        duration_ms: None,
+                        time_to_first_token_ms: None,
+                    }),
+                },
+            )
+            .await;
+        let after_late_policy_generation: i64 = sqlx::query_scalar(
+            "SELECT generation FROM usage_automatic_turn_chains WHERE thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(runtime.usage_ledger_pool().as_ref())
+        .await?;
+        assert_eq!(generation, after_late_policy_generation);
+        assert!(
+            runtime
+                .automatic_turn_capability(thread_id, "turn")
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM usage_automatic_turns WHERE thread_id = ? AND outcome = ?",
+            )
+            .bind(thread_id.to_string())
+            .bind(OUTCOME_ABORTED)
+            .fetch_one(runtime.usage_ledger_pool().as_ref())
+            .await?,
+            1
+        );
         Ok(())
     }
 
@@ -1289,6 +1548,15 @@ mod tests {
             )
             .await;
         let capability = capability(runtime.as_ref(), thread_id, "trigger").await;
+        bind_contract(
+            runtime.as_ref(),
+            thread_id,
+            "trigger",
+            &capability,
+            "start",
+            None,
+        )
+        .await?;
         let client_id = AutomaticTurnProvenance::policy_retry(
             thread_id,
             "trigger",

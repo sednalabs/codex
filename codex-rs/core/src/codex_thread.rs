@@ -90,6 +90,13 @@ pub struct ThreadConfigSnapshot {
     pub originator: String,
 }
 
+/// Produces the process-local canonical identity of the settings/context used by an automatic
+/// retry. Keeping this in core makes trigger binding and request validation use the same complete
+/// snapshot, including thread lineage and environment selections.
+pub fn automatic_turn_context_fingerprint(snapshot: &ThreadConfigSnapshot) -> String {
+    format!("{snapshot:?}")
+}
+
 /// Explains why `CodexThread::try_start_turn_if_idle` rejected an automatic
 /// idle turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -390,23 +397,38 @@ impl CodexThread {
             .ensure_execution_capacity_for_op(self.session.thread_id(), &op)
             .await?;
         let id = new_submission_id();
-        if let Some(principal) = principal {
+        let client_user_message_id_for_release = client_user_message_id.clone();
+        if let Some(principal) = principal.as_deref() {
             self.session
                 .services
                 .register_automatic_turn_principal(
                     id.clone(),
-                    principal,
+                    principal.to_owned(),
                     client_user_message_id.as_deref(),
                 )
                 .await;
         }
-        self.submit_tracked(Submission {
-            id: id.clone(),
-            op,
-            client_user_message_id,
-            trace,
-        })
-        .await?;
+        if let Err(error) = self
+            .submit_tracked(Submission {
+                id: id.clone(),
+                op,
+                client_user_message_id,
+                trace,
+            })
+            .await
+        {
+            if let Some(principal) = principal.as_deref() {
+                self.session
+                    .services
+                    .remove_automatic_turn_principal_if_matches(
+                        &id,
+                        principal,
+                        client_user_message_id_for_release.as_deref(),
+                    )
+                    .await;
+            }
+            return Err(error);
+        }
         Ok(id)
     }
 
@@ -444,18 +466,21 @@ impl CodexThread {
         responsesapi_client_metadata: Option<HashMap<String, String>>,
         principal: Option<String>,
     ) -> Result<String, SteerInputError> {
-        if let (Some(expected_turn_id), Some(principal)) = (expected_turn_id, principal) {
+        if let (Some(expected_turn_id), Some(principal)) = (expected_turn_id, principal.as_deref())
+        {
             self.session
                 .services
                 .register_automatic_turn_principal(
                     expected_turn_id.to_string(),
-                    principal,
+                    principal.to_owned(),
                     client_user_message_id.as_deref(),
                 )
                 .await;
         }
+        let client_user_message_id_for_release = client_user_message_id.clone();
         let _residency_transition = self.session.input_queue.begin_residency_activity().await;
-        self.session
+        let result = self
+            .session
             .steer_input(
                 input,
                 additional_context,
@@ -463,7 +488,20 @@ impl CodexThread {
                 client_user_message_id,
                 responsesapi_client_metadata,
             )
-            .await
+            .await;
+        if result.is_err()
+            && let (Some(expected_turn_id), Some(principal)) = (expected_turn_id, principal)
+        {
+            self.session
+                .services
+                .remove_automatic_turn_principal_if_matches(
+                    expected_turn_id,
+                    &principal,
+                    client_user_message_id_for_release.as_deref(),
+                )
+                .await;
+        }
+        result
     }
 
     /// Injects model-visible items into the currently active turn.

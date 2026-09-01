@@ -650,6 +650,16 @@ impl MessageProcessor {
         self.thread_processor.thread_created_receiver()
     }
 
+    #[cfg(test)]
+    pub(crate) async fn config_snapshot_for_test(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<codex_core::ThreadConfigSnapshot> {
+        self.turn_processor
+            .config_snapshot_for_test(thread_id)
+            .await
+    }
+
     pub(crate) async fn send_initialize_notifications_to_connection(
         &self,
         connection_id: ConnectionId,

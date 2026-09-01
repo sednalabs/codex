@@ -782,6 +782,8 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
     let thread_id = thread_start_response.thread.id.clone();
     let thread_id_value = ThreadId::from_string(&thread_id)?;
     let trigger_turn_id = "trigger-turn";
+    let principal =
+        crate::outgoing_message::automatic_turn_connection_principal(TEST_CONNECTION_ID);
 
     // A policy event creates the server-owned eligibility ticket. The request below then travels
     // through the real app-server turn/start and core session event path before the state
@@ -790,7 +792,7 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
         .state_db
         .as_ref()
         .expect("state db enabled for this harness")
-        .record_automatic_turn_event(
+        .record_automatic_turn_event_with_principal(
             thread_id_value,
             &Event {
                 id: trigger_turn_id.to_string(),
@@ -799,6 +801,7 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
                     codex_error_info: Some(CodexErrorInfo::CyberPolicy),
                 }),
             },
+            Some(&principal),
         )
         .await;
     let capability = harness
@@ -813,11 +816,30 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
         trigger_turn_id,
         /*attempt*/ 1,
         /*max_attempts*/ 3,
-        capability,
+        capability.clone(),
     )
     .expect("valid automatic-turn provenance")
     .to_client_user_message_id()
     .expect("valid automatic-turn provenance");
+    let context_snapshot = harness
+        .processor
+        .config_snapshot_for_test(thread_id_value)
+        .await
+        .expect("thread should remain loaded");
+    let context_fingerprint = codex_core::automatic_turn_context_fingerprint(&context_snapshot);
+    harness
+        .state_db
+        .as_ref()
+        .expect("state db enabled for this harness")
+        .bind_automatic_turn_capability_contract(
+            thread_id_value,
+            trigger_turn_id,
+            &capability,
+            "start",
+            None,
+            &context_fingerprint,
+        )
+        .await?;
 
     let turn_start_response: TurnStartResponse = harness
         .request(
@@ -830,6 +852,19 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
                         text: "continue".to_string(),
                         text_elements: Vec::new(),
                     }],
+                    cwd: Some(context_snapshot.cwd().to_path_buf()),
+                    runtime_workspace_roots: Some(context_snapshot.workspace_roots.clone()),
+                    approval_policy: Some(context_snapshot.approval_policy.clone().into()),
+                    approvals_reviewer: Some(context_snapshot.approvals_reviewer.into()),
+                    model: Some(context_snapshot.model.clone()),
+                    service_tier: Some(context_snapshot.service_tier.clone()),
+                    effort: context_snapshot.reasoning_effort.clone(),
+                    summary: context_snapshot.reasoning_summary,
+                    personality: context_snapshot.personality,
+                    permissions: context_snapshot
+                        .active_permission_profile
+                        .as_ref()
+                        .map(|profile| profile.id.clone()),
                     ..TurnStartParams::default()
                 },
             },
