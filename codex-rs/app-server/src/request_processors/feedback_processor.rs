@@ -1,5 +1,6 @@
 use super::feedback_thread_index::FeedbackThreadIndex;
 use super::*;
+use crate::error_code::OVERLOADED_ERROR_CODE;
 use codex_connectors::ConnectorDirectoryCacheContext;
 use codex_connectors::ConnectorDirectoryCacheKey;
 use codex_connectors::connector_runtime_cache_path;
@@ -11,6 +12,7 @@ use codex_feedback::guardian_review_failures;
 use codex_rollout::RolloutRecorder;
 use sha2::Digest;
 use sha2::Sha256;
+use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 pub(crate) struct FeedbackRequestProcessor {
@@ -20,6 +22,7 @@ pub(crate) struct FeedbackRequestProcessor {
     feedback: CodexFeedback,
     log_db: Option<LogDbLayer>,
     state_db: Option<StateDbHandle>,
+    uploads: Arc<Semaphore>,
 }
 
 impl FeedbackRequestProcessor {
@@ -38,6 +41,7 @@ impl FeedbackRequestProcessor {
             feedback,
             log_db,
             state_db,
+            uploads: Arc::new(Semaphore::new(/*permits*/ 3)),
         }
     }
 
@@ -59,6 +63,17 @@ impl FeedbackRequestProcessor {
                 "sending feedback is disabled by configuration",
             ));
         }
+        let permit = self
+            .uploads
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| JSONRPCErrorError {
+                code: OVERLOADED_ERROR_CODE,
+                message:
+                    "Three feedback uploads are already in progress; try again after one finishes"
+                        .to_string(),
+                data: None,
+            })?;
 
         let FeedbackUploadParams {
             classification,
@@ -269,6 +284,8 @@ impl FeedbackRequestProcessor {
         let runtime_handle = tokio::runtime::Handle::current();
 
         let upload_result = tokio::task::spawn_blocking(move || {
+            // Cancelling the RPC waiter must not release a still-running upload's slot.
+            let _permit = permit;
             let tags = (!upload_tags.is_empty()).then_some(&upload_tags);
             runtime_handle.block_on(snapshot.upload_feedback(
                 FeedbackUploadOptions {
