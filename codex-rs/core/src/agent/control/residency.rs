@@ -54,6 +54,13 @@ enum TerminalIdleUnloadAttempt {
     Deferred,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TerminalIdleUnloadGenerations {
+    watcher_generation: u64,
+    timer_generation: u64,
+    runtime_activity_generation: u64,
+}
+
 pub(crate) struct V2ResidencySlot {
     residency: Arc<V2Residency>,
     active: bool,
@@ -158,6 +165,11 @@ impl AgentControl {
                         };
                         let runtime_activity_generation =
                             thread.session.input_queue.residency_activity_generation();
+                        let generations = TerminalIdleUnloadGenerations {
+                            watcher_generation,
+                            timer_generation,
+                            runtime_activity_generation,
+                        };
                         let sleep = tokio::time::sleep(Duration::from_millis(timeout_ms));
                         tokio::pin!(sleep);
                         #[cfg(test)]
@@ -197,9 +209,7 @@ impl AgentControl {
                                 control.state.as_ref(),
                                 &metadata,
                                 &thread,
-                                watcher_generation,
-                                timer_generation,
-                                runtime_activity_generation,
+                                generations,
                             )
                             .await
                         {
@@ -461,7 +471,7 @@ impl V2Residency {
                     manager,
                     registry,
                     metadata.as_ref(),
-                    lifecycle.as_mut().map(|guard| &mut **guard),
+                    lifecycle.as_deref_mut(),
                     candidate_thread,
                 )
                 .await
@@ -479,18 +489,16 @@ impl V2Residency {
         registry: &AgentRegistry,
         metadata: &crate::agent::registry::AgentMetadata,
         expected_thread: &Arc<CodexThread>,
-        watcher_generation: u64,
-        timer_generation: u64,
-        runtime_activity_generation: u64,
+        generations: TerminalIdleUnloadGenerations,
     ) -> TerminalIdleUnloadAttempt {
         let _reload = metadata.lifecycle.lock_reload().await;
         let mut lifecycle = metadata.lifecycle.lock().await;
         if !registry.metadata_is_current(expected_thread.session.thread_id(), metadata)
-            || !lifecycle.terminal_idle_unload_watcher_is_current(watcher_generation)
+            || !lifecycle.terminal_idle_unload_watcher_is_current(generations.watcher_generation)
         {
             return TerminalIdleUnloadAttempt::SupersededIdentity;
         }
-        if !lifecycle.terminal_idle_unload_is_current(timer_generation) {
+        if !lifecycle.terminal_idle_unload_is_current(generations.timer_generation) {
             return TerminalIdleUnloadAttempt::DeadlineInvalidated;
         }
         let Ok(thread) = manager
@@ -506,7 +514,8 @@ impl V2Residency {
             return TerminalIdleUnloadAttempt::Deferred;
         }
         let _residency_transition = thread.session.input_queue.lock_residency_transition().await;
-        if thread.session.input_queue.residency_activity_generation() != runtime_activity_generation
+        if thread.session.input_queue.residency_activity_generation()
+            != generations.runtime_activity_generation
         {
             return TerminalIdleUnloadAttempt::Deferred;
         }
