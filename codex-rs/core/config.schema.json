@@ -3944,6 +3944,7 @@
               "open_line_above": null,
               "open_line_below": null,
               "paste_after": null,
+              "redo": null,
               "repeat_last_change": null,
               "replace_char": null,
               "start_change_operator": null,
@@ -4771,6 +4772,7 @@
             "open_line_above": null,
             "open_line_below": null,
             "paste_after": null,
+            "redo": null,
             "repeat_last_change": null,
             "replace_char": null,
             "start_change_operator": null,
@@ -5233,6 +5235,14 @@
             }
           ],
           "description": "Paste after cursor (`p`)."
+        },
+        "redo": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Redo the last undone edit (`ctrl-r`)."
         },
         "repeat_last_change": {
           "allOf": [

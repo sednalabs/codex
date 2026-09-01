@@ -63,8 +63,11 @@
 //! `Ctrl+R` opens a reverse incremental search mode. The footer becomes the search input; once the
 //! query is non-empty, the composer body previews the current match. `Enter` accepts the preview as
 //! an editable draft and `Esc` restores the draft that was active when search started.
-//! Vim undo snapshots the complete draft and groups direct edits with active Vim transactions.
-//! Canceled history previews restore both; accepting another prompt resets undo history.
+//! Vim undo/redo snapshots complete drafts and groups direct edits with active Vim transactions.
+//! An active edit keeps one separately capped snapshot; canceling does not evict committed history.
+//! Canceled history previews restore history and active commands; accepting another prompt resets them.
+//! Normal-mode Ctrl+R redoes an edit, or does nothing when redo is empty. Insert-mode Ctrl+R
+//! keeps prompt-history search; explicitly configured keybindings retain precedence.
 //! Vim queries stay draft-local.
 //!
 //! Slash commands are staged for local history instead of being recorded immediately. Command

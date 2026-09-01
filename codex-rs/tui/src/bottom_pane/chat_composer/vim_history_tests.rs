@@ -1,4 +1,4 @@
-//! Composer undo transactions preserve rich draft data and active Vim commands.
+//! Composer undo/redo transactions preserve rich draft data and active Vim commands.
 
 use std::path::PathBuf;
 
@@ -46,7 +46,7 @@ fn ctrl_r(composer: &mut ChatComposer) {
 }
 
 #[test]
-fn undo_groups_complete_vim_edits() {
+fn undo_and_redo_group_complete_vim_edits() {
     for (original, command, edited) in [
         ("one two", "cwX", "X two"),
         ("abc", "iXYZ", "XYZabc"),
@@ -70,6 +70,8 @@ fn undo_groups_complete_vim_edits() {
             (composer.current_text(), composer.cursor()),
             (original.to_owned(), 0)
         );
+        ctrl_r(&mut composer);
+        assert_eq!(composer.current_text(), edited);
     }
 }
 
@@ -90,7 +92,7 @@ fn undo_preserves_repeat_and_pending_operator_bindings() {
 }
 
 #[test]
-fn undo_preserves_confirmed_vim_search() {
+fn undo_and_redo_preserve_confirmed_vim_search() {
     let mut composer = vim_composer("alpha beta alpha");
     keys(&mut composer, "/alpha\n0xun");
     assert_eq!(
@@ -105,6 +107,13 @@ fn undo_preserves_confirmed_vim_search() {
         (composer.current_text(), composer.cursor()),
         ("Zalpha beta alpha".to_owned(), 12)
     );
+    keys(&mut composer, "u");
+    ctrl_r(&mut composer);
+    keys(&mut composer, "n");
+    assert_eq!(
+        (composer.current_text(), composer.cursor()),
+        ("Zalpha beta alpha".to_owned(), 1)
+    );
 }
 
 #[test]
@@ -114,10 +123,12 @@ fn externally_canceled_search_operator_finishes_the_undo_transaction() {
     assert!(composer.cancel_vim_search());
     keys(&mut composer, "uxu");
     assert_eq!(composer.current_text(), "abc");
+    ctrl_r(&mut composer);
+    assert_eq!(composer.current_text(), "bc");
 }
 
 #[test]
-fn normal_mode_explicit_paste_is_its_own_undoable_edit() {
+fn normal_mode_explicit_paste_is_its_own_edit_and_replaces_stale_redo() {
     let mut composer = vim_composer("abc");
     keys(&mut composer, "x");
     composer.handle_paste("Z".to_owned());
@@ -126,23 +137,43 @@ fn normal_mode_explicit_paste_is_its_own_undoable_edit() {
     assert_eq!(composer.current_text(), "bc");
     keys(&mut composer, "u");
     assert_eq!(composer.current_text(), "abc");
+
+    composer.handle_paste("Z".to_owned());
+    assert_eq!(composer.current_text(), "Zabc");
+    assert!(composer.vim_history.redo.is_empty());
+    ctrl_r(&mut composer);
+    assert_eq!(composer.current_text(), "Zabc");
+    assert!(!composer.history_search_active());
+    keys(&mut composer, "u");
+    assert_eq!(composer.current_text(), "abc");
+    ctrl_r(&mut composer);
+    assert_eq!(composer.current_text(), "Zabc");
 }
 
 #[test]
 fn normal_mode_direct_insert_and_image_attachment_are_undoable() {
     let mut composer = vim_composer("abc");
+    keys(&mut composer, "xu");
     composer.insert_str("Z");
     assert_eq!(composer.current_text(), "Zabc");
+    assert!(composer.vim_history.redo.is_empty());
     keys(&mut composer, "u");
     assert_eq!(composer.current_text(), "abc");
+    ctrl_r(&mut composer);
+    assert_eq!(composer.current_text(), "Zabc");
+    keys(&mut composer, "u");
 
     let path = PathBuf::from("example.png");
     composer.attach_image(path.clone());
+    let with_image = composer.draft_snapshot();
     assert_eq!(composer.local_image_paths(), vec![path]);
+    assert!(composer.vim_history.redo.is_empty());
     keys(&mut composer, "u");
     assert_eq!(composer.current_text(), "abc");
     assert!(composer.local_image_paths().is_empty());
-    keys(&mut composer, "\nABC");
+    ctrl_r(&mut composer);
+    assert_eq!(composer.draft_snapshot(), with_image);
+    keys(&mut composer, "u\nABC");
     assert_eq!(composer.current_text(), "ABC");
     escape(&mut composer);
     keys(&mut composer, "u");
@@ -157,12 +188,18 @@ fn deleting_a_selected_remote_image_is_one_undoable_vim_edit() {
         let mut composer = vim_composer("abc");
         let url = "https://example.com/remote.png".to_owned();
         composer.set_remote_image_urls(vec![url.clone()]);
+        keys(&mut composer, "xu");
+        assert_eq!(composer.vim_history.redo.len(), 1);
         let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert!(composer.vim_history.pending.is_none());
         let _ = composer.handle_key_event(KeyEvent::new(key, KeyModifiers::NONE));
         assert!(composer.remote_image_urls().is_empty());
+        assert!(composer.vim_history.redo.is_empty());
         keys(&mut composer, "u");
         assert_eq!(composer.remote_image_urls(), vec![url]);
+        assert_eq!(composer.current_text(), "abc");
+        ctrl_r(&mut composer);
+        assert!(composer.remote_image_urls().is_empty());
         assert_eq!(composer.current_text(), "abc");
     }
 }
@@ -175,10 +212,89 @@ fn direct_edits_join_the_active_vim_insert_transaction() {
     composer.attach_image(PathBuf::from("example.png"));
     keys(&mut composer, "D");
     escape(&mut composer);
+    let edited = composer.draft_snapshot();
     assert_eq!(composer.vim_history.undo.len(), 1);
     keys(&mut composer, "u");
     assert_eq!(composer.current_text(), "abc");
     assert!(composer.local_image_paths().is_empty());
+    ctrl_r(&mut composer);
+    assert_eq!(composer.draft_snapshot(), edited);
+}
+
+#[test]
+fn vim_search_query_paste_does_not_invalidate_draft_redo() {
+    let mut composer = vim_composer("alpha beta alpha");
+    keys(&mut composer, "xu/");
+    composer.handle_paste("beta".to_owned());
+    assert_eq!(composer.current_text(), "alpha beta alpha");
+    assert_eq!(
+        composer.draft.textarea.vim_query().unwrap().editor.text(),
+        "beta"
+    );
+    assert!(composer.vim_history.pending.is_none());
+
+    escape(&mut composer);
+    ctrl_r(&mut composer);
+    assert_eq!(composer.current_text(), "lpha beta alpha");
+}
+
+#[test]
+fn vim_redo_keeps_its_binding_when_history_is_empty() {
+    let mut composer = vim_composer("abc");
+    let before = composer.draft_snapshot();
+    ctrl_r(&mut composer);
+    assert_eq!(composer.draft_snapshot(), before);
+    assert!(!composer.history_search_active());
+    keys(&mut composer, "xu");
+    assert_eq!(composer.current_text(), "abc");
+    ctrl_r(&mut composer);
+    assert_eq!(composer.current_text(), "bc");
+    assert!(!composer.history_search_active());
+    let after = composer.draft_snapshot();
+    ctrl_r(&mut composer);
+    assert_eq!(composer.draft_snapshot(), after);
+    assert!(composer.draft.textarea.is_vim_normal_mode());
+    assert!(!composer.history_search_active());
+    super::super::tests::snapshot_composer_state_with_width(
+        "vim_empty_redo_stays_normal",
+        /*width*/ 60,
+        /*enhanced_keys_supported*/ true,
+        |target| *target = composer,
+    );
+
+    let original = "a".repeat(super::MAX_VIM_UNDO_BYTES / 2 + 1);
+    let mut composer = vim_composer(&original);
+    keys(&mut composer, "xu");
+    for command in ["d", "i"] {
+        keys(&mut composer, command);
+        escape(&mut composer);
+        assert_eq!(composer.vim_history.redo.len(), 1);
+    }
+    ctrl_r(&mut composer);
+    assert_eq!(composer.current_text(), original[1..]);
+    assert!(!composer.history_search_active());
+
+    keys(&mut composer, "uiZ");
+    escape(&mut composer);
+    assert!(composer.vim_history.redo.is_empty());
+    keys(&mut composer, "x");
+    assert_eq!(composer.vim_history.undo.len(), 1);
+    keys(&mut composer, "u");
+    assert_eq!(composer.current_text(), format!("Z{original}"));
+}
+
+#[test]
+fn ctrl_r_searches_history_in_insert_and_non_vim_modes() {
+    let mut composer = vim_composer("draft");
+    keys(&mut composer, "i");
+    ctrl_r(&mut composer);
+    assert!(composer.history_search_active());
+    escape(&mut composer);
+    assert_eq!(composer.draft.textarea.vim_mode_label(), Some("Insert"));
+
+    composer.set_vim_enabled(/*enabled*/ false);
+    ctrl_r(&mut composer);
+    assert!(composer.history_search_active());
 }
 
 #[test]
@@ -197,6 +313,9 @@ fn removing_the_shell_prefix_is_its_own_undoable_edit() {
 #[test]
 fn canceled_reverse_history_preview_preserves_vim_undo_and_repeat() {
     let mut composer = vim_composer("alpha beta alpha");
+    let mut keymap = RuntimeKeymap::defaults();
+    keymap.vim_normal.redo.clear();
+    composer.set_keymap_bindings(&keymap);
     composer
         .history
         .record_local_submission(HistoryEntry::new("archived prompt".to_owned()));
@@ -252,18 +371,23 @@ fn accepted_reverse_history_preview_starts_a_fresh_vim_edit_history() {
 }
 
 #[test]
-fn undo_uses_configured_bindings_and_supports_unbinding() {
+fn undo_and_redo_use_configured_bindings_and_support_unbinding() {
     let mut composer = vim_composer("abc");
     let mut keymap = RuntimeKeymap::defaults();
     keymap.vim_normal.undo = vec![crate::key_hint::plain(KeyCode::Char('z'))];
+    keymap.vim_normal.redo = vec![crate::key_hint::plain(KeyCode::Char('v'))];
     composer.set_keymap_bindings(&keymap);
     keys(&mut composer, "xu");
     assert_eq!(composer.current_text(), "bc");
     keys(&mut composer, "z");
     assert_eq!(composer.current_text(), "abc");
+    keys(&mut composer, "v");
+    assert_eq!(composer.current_text(), "bc");
+    keys(&mut composer, "z");
     keymap.vim_normal.undo.clear();
+    keymap.vim_normal.redo.clear();
     composer.set_keymap_bindings(&keymap);
-    keys(&mut composer, "xz");
+    keys(&mut composer, "xzv");
     assert_eq!(composer.current_text(), "bc");
 
     let mut config = TuiKeymap::default();
@@ -276,6 +400,23 @@ fn undo_uses_configured_bindings_and_supports_unbinding() {
     config.vim_normal.undo = Some(KeybindingsSpec::One(KeybindingSpec("u".to_owned())));
     composer.set_keymap_bindings(&RuntimeKeymap::from_config(&config).unwrap());
     keys(&mut composer, "u");
+    assert!(!composer.history_search_active());
+
+    let mut composer = vim_composer("abc");
+    keys(&mut composer, "xu");
+    let mut config = TuiKeymap::default();
+    config.composer.history_search_previous =
+        Some(KeybindingsSpec::One(KeybindingSpec("ctrl-r".to_owned())));
+    composer.set_keymap_bindings(&RuntimeKeymap::from_config(&config).unwrap());
+    ctrl_r(&mut composer);
+    assert!(composer.history_search_active());
+    escape(&mut composer);
+    config.vim_normal.redo = Some(KeybindingsSpec::One(KeybindingSpec("ctrl-r".to_owned())));
+    composer.set_keymap_bindings(&RuntimeKeymap::from_config(&config).unwrap());
+    ctrl_r(&mut composer);
+    assert!(!composer.history_search_active());
+    assert_eq!(composer.current_text(), "bc");
+    ctrl_r(&mut composer);
     assert!(!composer.history_search_active());
 
     let mut composer = vim_composer("abc");
@@ -294,7 +435,7 @@ fn undo_uses_configured_bindings_and_supports_unbinding() {
 }
 
 #[test]
-fn undo_restores_deleted_large_paste_payload() {
+fn undo_and_redo_restore_deleted_large_paste_payload() {
     let mut composer = vim_composer("alpha ");
     composer.draft.textarea.set_cursor("alpha ".len());
     keys(&mut composer, "i");
@@ -311,10 +452,13 @@ fn undo_restores_deleted_large_paste_payload() {
         composer.current_text_with_pending(),
         format!("alpha {pasted}")
     );
+    ctrl_r(&mut composer);
+    assert_eq!(composer.current_text(), "alpha ");
+    assert!(composer.draft.pending_pastes.is_empty());
 }
 
 #[test]
-fn undo_restores_deleted_image_attachment() {
+fn undo_and_redo_restore_deleted_image_attachment() {
     let mut composer = vim_composer("alpha ");
     composer.draft.textarea.set_cursor("alpha ".len());
     composer.attach_image(PathBuf::from("example.png"));
@@ -325,6 +469,9 @@ fn undo_restores_deleted_image_attachment() {
     assert!(composer.local_image_paths().is_empty());
     keys(&mut composer, "u");
     assert_eq!(composer.draft_snapshot(), before);
+    ctrl_r(&mut composer);
+    assert_eq!(composer.current_text(), "alpha ");
+    assert!(composer.local_image_paths().is_empty());
 }
 
 #[test]
@@ -359,6 +506,9 @@ fn find_jump_and_search_navigation_never_snapshot_the_draft() {
         }
         assert_eq!(composer.current_text(), text);
     }
+    let mut keymap = RuntimeKeymap::defaults();
+    keymap.vim_normal.redo.clear();
+    composer.set_keymap_bindings(&keymap);
     composer
         .history
         .record_local_submission(HistoryEntry::new("alpha archived".to_owned()));

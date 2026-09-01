@@ -320,6 +320,7 @@ define_runtime_action_bindings! {
         start_yank_operator,
         start_change_operator,
         undo,
+        redo,
         cancel_operator,
     ],
     "vim_search" => VimSearch, vim_search, vim_search [forward, backward, next, previous],
