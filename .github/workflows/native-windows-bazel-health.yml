@@ -60,6 +60,7 @@ jobs:
             aquery \
             --platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm \
             --extra_execution_platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm \
+            --extra_toolchains=//:windows_aarch64_gnullvm_rust_toolchain_for_health \
             --include_artifacts=true \
             --output=text \
             //codex-rs/otel:otel \
@@ -70,6 +71,19 @@ jobs:
           python3 .github/scripts/verify_arm64_gnullvm_aquery.py \
             "${aquery_output}" \
             --target //codex-rs/otel:otel
+
+      # Preserve the exact action graph for diagnosis when verifier evidence
+      # is insufficient. The artifact is limited to this run's ARM64 aquery
+      # output and contains no environment, workspace, or secret material.
+      - name: Upload ARM64 gnullvm aquery evidence
+        if: always() && !cancelled()
+        continue-on-error: true
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: native-windows-arm64-aquery-${{ github.run_id }}-${{ github.sha }}
+          path: ${{ runner.temp }}/aarch64-windows-gnullvm-aquery.txt
+          if-no-files-found: error
+          retention-days: 1
 
       # Keep the ARM64 analysis cache independent from the native x86 health
       # cache. `repository-cache-write-enabled` is true only for trusted push
@@ -129,6 +143,9 @@ jobs:
             # Native gnullvm proc macros require the matching gnullvm Rust
             # execution toolchain so their DLL runtime remains loadable.
             --modify_execution_info=Rustc=+no-remote-cache
+            # Keep Windows test actions serialized; the host-global native
+            # runtime and timer-sensitive tests are not safe under fan-out.
+            --local_test_jobs=1
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
