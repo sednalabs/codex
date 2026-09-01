@@ -72,6 +72,19 @@ jobs:
             "${aquery_output}" \
             --target //codex-rs/otel:otel
 
+      # Preserve the exact action graph for diagnosis when verifier evidence
+      # is insufficient. The artifact is limited to this run's ARM64 aquery
+      # output and contains no environment, workspace, or secret material.
+      - name: Upload ARM64 gnullvm aquery evidence
+        if: always() && !cancelled()
+        continue-on-error: true
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: native-windows-arm64-aquery-${{ github.run_id }}-${{ github.sha }}
+          path: ${{ runner.temp }}/aarch64-windows-gnullvm-aquery.txt
+          if-no-files-found: error
+          retention-days: 1
+
       # Keep the ARM64 analysis cache independent from the native x86 health
       # cache. `repository-cache-write-enabled` is true only for trusted push
       # runs on main or upstream-main, never for dispatches or untrusted refs.

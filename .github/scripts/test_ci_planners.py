@@ -1629,6 +1629,34 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertIn("--target //codex-rs/otel:otel", analysis_run)
         self.assertNotIn("grep", analysis_run)
+        aquery_upload = next(
+            (
+                step
+                for step in analysis_steps
+                if step.get("name") == "Upload ARM64 gnullvm aquery evidence"
+            ),
+            None,
+        )
+        self.assertIsNotNone(aquery_upload, "ARM64 aquery evidence upload not found")
+        self.assertEqual(
+            aquery_upload.get("uses"),
+            "actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f",
+        )
+        self.assertEqual(aquery_upload.get("if"), "always() && !cancelled()")
+        self.assertEqual(aquery_upload.get("continue-on-error"), "true")
+        self.assertEqual(
+            (aquery_upload.get("with") or {}).get("name"),
+            "native-windows-arm64-aquery-${{ github.run_id }}-${{ github.sha }}",
+        )
+        self.assertEqual(
+            (aquery_upload.get("with") or {}).get("path"),
+            "${{ runner.temp }}/aarch64-windows-gnullvm-aquery.txt",
+        )
+        self.assertEqual(
+            (aquery_upload.get("with") or {}).get("if-no-files-found"),
+            "error",
+        )
+        self.assertEqual((aquery_upload.get("with") or {}).get("retention-days"), "1")
         build_bazel = (REPO_ROOT / "BUILD.bazel").read_text(encoding="utf-8")
         self.assertIn(
             'name = "windows_aarch64_gnullvm_rust_toolchain_for_health"',
