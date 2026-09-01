@@ -1,5 +1,6 @@
 use super::*;
 use base64::Engine;
+use codex_protocol::error::CodexErrSource;
 use codex_protocol::protocol::RateLimitReachedType;
 use pretty_assertions::assert_eq;
 
@@ -203,6 +204,10 @@ fn map_api_error_maps_usage_limit_limit_name_header() {
             .and_then(|snapshot| snapshot.limit_name.as_deref()),
         Some("codex_other")
     );
+    assert_eq!(
+        err.codex_source(),
+        Some(CodexErrSource::RecognizedHttpUsageLimit)
+    );
 }
 
 #[test]
@@ -330,6 +335,78 @@ fn map_api_error_ignores_unparseable_rate_limit_reached_type_headers() {
             panic!("expected CodexErrorDetails::UsageLimitReached, got {err:?}");
         };
         assert_eq!(usage_limit.rate_limit_reached_type, None);
+    }
+}
+
+#[test]
+fn map_api_error_marks_recognized_shape_without_url_or_headers() {
+    let body = serde_json::json!({
+        "error": {
+            "type": "usage_limit_reached",
+        }
+    })
+    .to_string();
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::TOO_MANY_REQUESTS,
+        url: None,
+        headers: None,
+        body: Some(body),
+    }));
+
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::UsageLimitReached(_)
+    ));
+    assert_eq!(
+        err.codex_source(),
+        Some(CodexErrSource::RecognizedHttpUsageLimit)
+    );
+}
+
+#[test]
+fn map_api_error_keeps_unrecognized_usage_limit_sources_unknown() {
+    let map = |status, body| {
+        map_api_error(ApiError::Transport(TransportError::Http {
+            status,
+            url: None,
+            headers: None,
+            body: Some(body),
+        }))
+    };
+
+    for (status, body, expected) in [
+        (
+            http::StatusCode::TOO_MANY_REQUESTS,
+            "not-json".to_string(),
+            "retry",
+        ),
+        (
+            http::StatusCode::TOO_MANY_REQUESTS,
+            serde_json::json!({"error": {"type": "other_error"}}).to_string(),
+            "retry",
+        ),
+        (
+            http::StatusCode::TOO_MANY_REQUESTS,
+            serde_json::json!({"error": {"type": "usage_not_included"}}).to_string(),
+            "not-included",
+        ),
+        (
+            http::StatusCode::BAD_REQUEST,
+            serde_json::json!({"error": {"type": "usage_limit_reached"}}).to_string(),
+            "invalid",
+        ),
+    ] {
+        let err = map(status, body);
+        assert_eq!(err.codex_source(), None);
+        match expected {
+            "retry" => assert!(matches!(err.details(), CodexErrorDetails::RetryLimit(_))),
+            "not-included" => assert!(matches!(err.details(), CodexErrorDetails::UsageNotIncluded)),
+            "invalid" => assert!(matches!(
+                err.details(),
+                CodexErrorDetails::InvalidRequest(_)
+            )),
+            _ => unreachable!(),
+        }
     }
 }
 
