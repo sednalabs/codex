@@ -7,7 +7,7 @@
 //! - Typed caller-provided startup identity (`SessionSource` + client name).
 //! - Typed and raw request/notification dispatch.
 //! - Server request resolution and rejection.
-//! - Ordered, lossless event consumption that cannot block request processing.
+//! - Ordered forwarding of received events that cannot block request processing.
 //! - Bounded graceful shutdown with abort fallback.
 //!
 //! The facade interposes a worker task between the caller and the underlying
@@ -124,8 +124,9 @@ impl From<InProcessServerEvent> for AppServerEvent {
 /// fired. Everything else (`CommandExecutionOutputDelta`, progress, etc.) is
 /// best-effort and may be dropped with only cosmetic impact.
 ///
-/// Both the in-process and remote transports delegate to this function so the
-/// classification stays in sync.
+/// The remote transport delegates to this function so its classification stays
+/// in sync with the remote event-forwarding policy. The in-process facade
+/// forwards events received from its lower-level runtime directly.
 pub(crate) fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     matches!(
         notification,
