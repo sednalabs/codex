@@ -60,7 +60,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
 
     pub fn with_request_attempt_factory(
         self,
-        factory: Option<ProviderRequestAttemptFactory>,
+        factory: Option<ProviderRequestAttemptFactory<T>>,
     ) -> Self {
         Self {
             session: self.session.with_request_attempt_factory(factory),

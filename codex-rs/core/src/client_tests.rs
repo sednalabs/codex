@@ -17,6 +17,10 @@ use crate::test_support::TestCodexResponsesRequestKind;
 use crate::test_support::responses_metadata as test_responses_metadata;
 use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
+use codex_api::RealtimeEventParser;
+use codex_api::RealtimeOutputModality;
+use codex_api::RealtimeSessionConfig;
+use codex_api::RealtimeSessionMode;
 use codex_api::ResponseEvent;
 use codex_api::TransportError;
 use codex_http_client::HttpClientFactory;
@@ -47,6 +51,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InternalSessionSource;
+use codex_protocol::protocol::RealtimeVoice;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_rollout_trace::CompactionTraceContext;
@@ -187,6 +192,24 @@ struct RetryOnceResponder {
     first_attempt: Arc<Notify>,
 }
 
+struct RealtimeRetryOnceResponder {
+    calls: AtomicUsize,
+    first_attempt: Arc<Notify>,
+}
+
+impl Respond for RealtimeRetryOnceResponder {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.first_attempt.notify_one();
+            ResponseTemplate::new(/*status*/ 500)
+        } else {
+            ResponseTemplate::new(/*status*/ 200)
+                .insert_header("location", "/v1/realtime/calls/rtc_auth_b")
+                .set_body_string("v=answer-b\r\n")
+        }
+    }
+}
+
 impl Respond for RetryOnceResponder {
     fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -301,6 +324,119 @@ async fn automatic_http_retry_revalidates_same_authority_and_succeeds() {
     assert_eq!(
         server.received_requests().await.expect("request log").len(),
         2
+    );
+}
+
+#[tokio::test]
+async fn realtime_override_retry_keeps_target_and_joins_with_successful_auth() {
+    let override_server = MockServer::start().await;
+    let ordinary_provider_server = MockServer::start().await;
+    let first_attempt = Arc::new(Notify::new());
+    Mock::given(method("POST"))
+        .and(path("/v1/realtime/calls"))
+        .respond_with(RealtimeRetryOnceResponder {
+            calls: AtomicUsize::new(0),
+            first_attempt: Arc::clone(&first_attempt),
+        })
+        .expect(/*requests*/ 2)
+        .mount(&override_server)
+        .await;
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
+    let mut provider = ModelProviderInfo::create_openai_provider(Some(format!(
+        "{}/v1",
+        ordinary_provider_server.uri()
+    )));
+    provider.request_max_retries = Some(1);
+    let client = ModelClient::new(
+        Some(Arc::clone(&auth_manager)),
+        AgentIdentityAuthPolicy::JwtOnly,
+        SessionId::new(),
+        ThreadId::new(),
+        TEST_INSTALLATION_ID.to_string(),
+        provider,
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+    let override_provider =
+        ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", override_server.uri())))
+            .to_api_provider(Some(AuthMode::ApiKey))
+            .expect("override provider should resolve");
+    let session_config = RealtimeSessionConfig {
+        instructions: "test realtime retry".to_string(),
+        initial_items: Vec::new(),
+        model: Some("gpt-realtime".to_string()),
+        session_id: Some("sess-retry".to_string()),
+        event_parser: RealtimeEventParser::V1,
+        session_mode: RealtimeSessionMode::Conversational,
+        output_modality: RealtimeOutputModality::Audio,
+        voice: RealtimeVoice::Cove,
+    };
+    let mut extra_headers = http::HeaderMap::new();
+    extra_headers.insert(
+        "x-sideband-shared",
+        http::HeaderValue::from_static("preserved"),
+    );
+    let call = client.create_realtime_call_with_headers(
+        "v=offer\r\n".to_string(),
+        session_config,
+        extra_headers,
+        Some(override_provider),
+    );
+    let transition = async {
+        first_attempt.notified().await;
+        auth_manager
+            .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
+                "key-b",
+            ))))
+            .await
+    };
+    let (call_result, transition_result) = tokio::join!(call, transition);
+    transition_result.expect("credential transition should complete during retry backoff");
+    let call = call_result.expect("the override retry should succeed");
+
+    assert_eq!(call.call_id, "rtc_auth_b");
+    assert_eq!(call.sdp, "v=answer-b\r\n");
+    assert_eq!(
+        call.sideband_headers
+            .get_all(http::header::AUTHORIZATION)
+            .iter()
+            .collect::<Vec<_>>(),
+        vec![&http::HeaderValue::from_static("Bearer key-b")]
+    );
+    assert_eq!(
+        call.sideband_headers.get("x-sideband-shared"),
+        Some(&http::HeaderValue::from_static("preserved"))
+    );
+    let override_requests = override_server
+        .received_requests()
+        .await
+        .expect("override request log");
+    assert_eq!(override_requests.len(), 2);
+    assert_eq!(override_requests[0].url, override_requests[1].url);
+    assert_eq!(override_requests[0].body, override_requests[1].body);
+    assert_eq!(
+        override_requests
+            .iter()
+            .map(|request| request.headers.get(http::header::AUTHORIZATION))
+            .collect::<Vec<_>>(),
+        vec![
+            Some(&http::HeaderValue::from_static("Bearer key-a")),
+            Some(&http::HeaderValue::from_static("Bearer key-b")),
+        ]
+    );
+    assert!(
+        ordinary_provider_server
+            .received_requests()
+            .await
+            .expect("ordinary provider request log")
+            .is_empty()
     );
 }
 

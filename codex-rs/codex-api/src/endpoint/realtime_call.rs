@@ -62,7 +62,7 @@ impl<T: HttpTransport> RealtimeCallClient<T> {
 
     pub fn with_request_attempt_factory(
         self,
-        factory: Option<ProviderRequestAttemptFactory>,
+        factory: Option<ProviderRequestAttemptFactory<T>>,
     ) -> Self {
         Self {
             session: self.session.with_request_attempt_factory(factory),
@@ -142,6 +142,19 @@ impl<T: HttpTransport> RealtimeCallClient<T> {
         session_config: RealtimeSessionConfig,
         extra_headers: HeaderMap,
     ) -> Result<RealtimeCallResponse, ApiError> {
+        self.create_with_session_and_headers_and_auth(sdp, session_config, extra_headers)
+            .await
+            .map(|(response, _auth)| response)
+    }
+
+    /// Creates a realtime call and returns the frozen auth implementation from the exact
+    /// application attempt that produced the successful response.
+    pub async fn create_with_session_and_headers_and_auth(
+        &self,
+        sdp: String,
+        session_config: RealtimeSessionConfig,
+        extra_headers: HeaderMap,
+    ) -> Result<(RealtimeCallResponse, SharedAuthProvider), ApiError> {
         trace!(target: "codex_api::realtime_websocket::wire", "realtime call request SDP: {sdp}");
         // WebRTC can begin inference as soon as the peer connection comes up, so the initial
         // session payload is sent with call creation. Legacy sidebands still send session.update
@@ -160,9 +173,9 @@ impl<T: HttpTransport> RealtimeCallClient<T> {
                 session: &session,
             })
             .map_err(|err| ApiError::Stream(format!("failed to encode realtime call: {err}")))?;
-            let resp = self
+            let (resp, auth) = self
                 .session
-                .execute_with(Method::POST, path, extra_headers, Some(body), |request| {
+                .execute_with_auth(Method::POST, path, extra_headers, Some(body), |request| {
                     configure_realtime_call_request(
                         request,
                         event_parser,
@@ -172,7 +185,7 @@ impl<T: HttpTransport> RealtimeCallClient<T> {
                 .await?;
             let sdp = decode_sdp_response(resp.body.as_ref())?;
             let call_id = decode_call_id_from_location(&resp.headers)?;
-            return Ok(RealtimeCallResponse { sdp, call_id });
+            return Ok((RealtimeCallResponse { sdp, call_id }, auth));
         }
 
         let session = to_string(&session).map_err(|err| ApiError::InvalidRequest {
@@ -191,9 +204,9 @@ impl<T: HttpTransport> RealtimeCallClient<T> {
         body.extend_from_slice(b"\r\n");
         body.extend_from_slice(format!("--{MULTIPART_BOUNDARY}--\r\n").as_bytes());
 
-        let resp = self
+        let (resp, auth) = self
             .session
-            .execute_with(
+            .execute_with_auth(
                 Method::POST,
                 path,
                 extra_headers,
@@ -216,7 +229,7 @@ impl<T: HttpTransport> RealtimeCallClient<T> {
         let sdp = decode_sdp_response(resp.body.as_ref())?;
         let call_id = decode_call_id_from_location(&resp.headers)?;
 
-        Ok(RealtimeCallResponse { sdp, call_id })
+        Ok((RealtimeCallResponse { sdp, call_id }, auth))
     }
 }
 
@@ -310,8 +323,10 @@ mod tests {
     use crate::endpoint::realtime_websocket::RealtimeEventParser;
     use crate::endpoint::realtime_websocket::RealtimeOutputModality;
     use crate::endpoint::realtime_websocket::RealtimeSessionMode;
+    use crate::endpoint::session::ProviderRequestAttempt;
     use crate::provider::RetryConfig;
     use codex_client::Request;
+    use codex_client::RequestInitiation;
     use codex_client::Response;
     use codex_client::StreamResponse;
     use codex_client::TransportError;
@@ -319,8 +334,11 @@ mod tests {
     use codex_protocol::protocol::ConversationTextRole;
     use codex_protocol::protocol::RealtimeVoice;
     use http::StatusCode;
+    use http::header::AUTHORIZATION;
     use pretty_assertions::assert_eq;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     #[derive(Clone)]
@@ -378,6 +396,49 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct NamedAuth(&'static str);
+
+    impl AuthProvider for NamedAuth {
+        fn add_auth_headers(&self, headers: &mut HeaderMap) {
+            headers.insert(AUTHORIZATION, HeaderValue::from_static(self.0));
+        }
+    }
+
+    #[derive(Clone)]
+    struct RoutedRetryTransport {
+        route: &'static str,
+        requests: Arc<Mutex<Vec<(&'static str, Request)>>>,
+    }
+
+    impl HttpTransport for RoutedRetryTransport {
+        async fn execute(&self, req: Request) -> Result<Response, TransportError> {
+            self.requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((self.route, req));
+            if self.route == "override-a-1" {
+                return Err(TransportError::Network(
+                    "first override attempt unavailable".to_string(),
+                ));
+            }
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                LOCATION,
+                HeaderValue::from_static("/v1/realtime/calls/rtc_auth_b"),
+            );
+            Ok(Response {
+                status: StatusCode::OK,
+                headers,
+                body: Bytes::from_static(b"v=answer-b\r\n"),
+            })
+        }
+
+        async fn stream(&self, _req: Request) -> Result<StreamResponse, TransportError> {
+            Err(TransportError::Build("stream should not run".to_string()))
+        }
+    }
+
     fn provider(base_url: &str) -> Provider {
         Provider {
             name: "test".to_string(),
@@ -421,6 +482,97 @@ mod tests {
             event_parser: RealtimeEventParser::FramelessBidi,
             ..realtime_session_config(session_id)
         }
+    }
+
+    #[tokio::test]
+    async fn override_retry_keeps_target_shape_and_returns_successful_attempt_auth() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let factory_calls = Arc::new(AtomicUsize::new(0));
+        let override_provider = provider("https://override-a.example/v1");
+        let factory = ProviderRequestAttemptFactory::new({
+            let requests = Arc::clone(&requests);
+            let factory_calls = Arc::clone(&factory_calls);
+            let override_provider = override_provider.clone();
+            move || {
+                let call = factory_calls.fetch_add(1, Ordering::SeqCst);
+                let requests = Arc::clone(&requests);
+                let override_provider = override_provider.clone();
+                async move {
+                    let (route, auth): (&'static str, SharedAuthProvider) = if call == 0 {
+                        ("override-a-1", Arc::new(NamedAuth("Bearer auth-a")))
+                    } else {
+                        ("override-a-2", Arc::new(NamedAuth("Bearer auth-b")))
+                    };
+                    Ok(ProviderRequestAttempt::new(
+                        RoutedRetryTransport { route, requests },
+                        override_provider,
+                        auth,
+                        call,
+                        RequestInitiation::new(call),
+                    ))
+                }
+            }
+        });
+        let client = RealtimeCallClient::new(
+            RoutedRetryTransport {
+                route: "ordinary-b",
+                requests: Arc::clone(&requests),
+            },
+            provider("https://ordinary-b.example/v1"),
+            Arc::new(NamedAuth("Bearer stale-auth")),
+        )
+        .with_request_attempt_factory(Some(factory));
+
+        let (response, successful_auth) = client
+            .create_with_session_and_headers_and_auth(
+                "v=offer\r\n".to_string(),
+                realtime_session_config("sess-override"),
+                HeaderMap::new(),
+            )
+            .await
+            .expect("the fixed override should succeed on its renewed attempt");
+
+        assert_eq!(response.call_id, "rtc_auth_b");
+        assert_eq!(response.sdp, "v=answer-b\r\n");
+        assert_eq!(
+            successful_auth.to_auth_headers().get(AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer auth-b"))
+        );
+        let requests = requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|(route, request)| (*route, request.url.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "override-a-1",
+                    "https://override-a.example/v1/realtime/calls?intent=quicksilver&architecture=avas",
+                ),
+                (
+                    "override-a-2",
+                    "https://override-a.example/v1/realtime/calls?intent=quicksilver&architecture=avas",
+                ),
+            ]
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .map(|(_route, request)| request.headers.get(AUTHORIZATION))
+                .collect::<Vec<_>>(),
+            vec![
+                Some(&HeaderValue::from_static("Bearer auth-a")),
+                Some(&HeaderValue::from_static("Bearer auth-b")),
+            ]
+        );
+        assert_eq!(requests[0].1.body, requests[1].1.body);
+        assert_eq!(
+            requests[0].1.headers.get(CONTENT_TYPE),
+            requests[1].1.headers.get(CONTENT_TYPE)
+        );
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

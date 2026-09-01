@@ -720,17 +720,20 @@ impl ModelClient {
             return Ok(Vec::new());
         }
         let client_setup = self.current_client_setup(expected_authority).await?;
+        let transport =
+            self.build_api_transport(&client_setup.api_provider, RESPONSES_COMPACT_ENDPOINT)?;
         let request_attempt_factory = self.provider_request_attempt_factory(
             expected_authority,
+            RESPONSES_COMPACT_ENDPOINT,
+            /*provider_override*/ None,
             ProviderRequestAttempt::new(
+                transport.clone(),
                 client_setup.api_provider.clone(),
                 client_setup.api_auth.clone(),
                 client_setup.authority,
                 client_setup.request_initiation,
             ),
         );
-        let transport =
-            self.build_api_transport(&client_setup.api_provider, RESPONSES_COMPACT_ENDPOINT)?;
         let request_telemetry = Self::build_request_telemetry(
             session_telemetry,
             AuthRequestTelemetryContext::new(
@@ -831,26 +834,34 @@ impl ModelClient {
         if let Some(header_value) = self.generate_attestation_header_for().await {
             extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
         }
-        let mut sideband_headers = extra_headers.clone();
-        sideband_headers.extend(sideband_websocket_auth_headers(
-            client_setup.api_auth.as_ref(),
-        ));
-        let api_provider = api_provider_override.unwrap_or(client_setup.api_provider);
+        let api_provider = api_provider_override
+            .clone()
+            .unwrap_or(client_setup.api_provider);
         let transport = self.build_api_transport(&api_provider, REALTIME_CALLS_ENDPOINT)?;
         let request_attempt_factory = self.provider_request_attempt_factory(
             /*expected_authority*/ None,
+            REALTIME_CALLS_ENDPOINT,
+            api_provider_override,
             ProviderRequestAttempt::new(
+                transport.clone(),
                 api_provider.clone(),
                 client_setup.api_auth.clone(),
                 client_setup.authority,
                 client_setup.request_initiation,
             ),
         );
-        let response = ApiRealtimeCallClient::new(transport, api_provider, client_setup.api_auth)
-            .with_request_attempt_factory(Some(request_attempt_factory))
-            .create_with_session_and_headers(sdp, session_config, extra_headers)
-            .await
-            .map_err(|error| self.state.provider.map_api_error(error))?;
+        let (response, successful_auth) =
+            ApiRealtimeCallClient::new(transport, api_provider, client_setup.api_auth)
+                .with_request_attempt_factory(Some(request_attempt_factory))
+                .create_with_session_and_headers_and_auth(
+                    sdp,
+                    session_config,
+                    extra_headers.clone(),
+                )
+                .await
+                .map_err(|error| self.state.provider.map_api_error(error))?;
+        let mut sideband_headers = extra_headers;
+        sideband_headers.extend(sideband_websocket_auth_headers(successful_auth.as_ref()));
         Ok(RealtimeWebrtcCallStart {
             sdp: response.sdp,
             call_id: response.call_id,
@@ -882,7 +893,10 @@ impl ModelClient {
             self.build_api_transport(&client_setup.api_provider, MEMORIES_SUMMARIZE_ENDPOINT)?;
         let request_attempt_factory = self.provider_request_attempt_factory(
             /*expected_authority*/ None,
+            MEMORIES_SUMMARIZE_ENDPOINT,
+            /*provider_override*/ None,
             ProviderRequestAttempt::new(
+                transport.clone(),
                 client_setup.api_provider.clone(),
                 client_setup.api_auth.clone(),
                 client_setup.authority,
@@ -1209,17 +1223,22 @@ impl ModelClient {
         Ok(authority)
     }
 
-    /// Returns a freshly resolved provider, frozen auth, and initiation for every visible retry.
+    /// Returns a freshly resolved provider, frozen auth, route, and initiation for every visible
+    /// retry.
     ///
     /// The initial setup already validated and pinned the admitted authority. Later attempts must
     /// repeat complete provider-authority resolution before receiving a new one-use token. Ordinary
     /// non-automatic requests retain the existing application retry behavior through the same
-    /// per-attempt gate, but only automatic work receives the automatic-context-change error.
+    /// per-attempt gate, but only automatic work receives the automatic-context-change error. An
+    /// explicit provider override remains the request target for every attempt while each attempt's
+    /// transport is rebuilt for that target.
     fn provider_request_attempt_factory(
         &self,
         expected_authority: Option<ProviderAuthority>,
-        initial: ProviderRequestAttempt,
-    ) -> ProviderRequestAttemptFactory {
+        endpoint: &'static str,
+        provider_override: Option<ApiProvider>,
+        initial: ProviderRequestAttempt<ReqwestTransport>,
+    ) -> ProviderRequestAttemptFactory<ReqwestTransport> {
         let initial = Arc::new(StdMutex::new(Some(initial)));
         let client = self.clone();
         ProviderRequestAttemptFactory::new(move || {
@@ -1228,21 +1247,14 @@ impl ModelClient {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
             let client = client.clone();
+            let provider_override = provider_override.clone();
             async move {
                 if let Some(initial) = initial {
                     return Ok(initial);
                 }
-                client
+                let setup = client
                     .current_client_setup(expected_authority)
                     .await
-                    .map(|setup| {
-                        ProviderRequestAttempt::new(
-                            setup.api_provider,
-                            setup.api_auth,
-                            setup.authority,
-                            setup.request_initiation,
-                        )
-                    })
                     .map_err(|error| {
                         if expected_authority.is_some()
                             && matches!(
@@ -1256,7 +1268,22 @@ impl ModelClient {
                                 "failed to renew provider request authority".to_string(),
                             )
                         }
-                    })
+                    })?;
+                let api_provider = provider_override.unwrap_or(setup.api_provider);
+                let transport = client
+                    .build_api_transport(&api_provider, endpoint)
+                    .map_err(|_| {
+                        TransportError::Build(
+                            "failed to renew provider request transport".to_string(),
+                        )
+                    })?;
+                Ok(ProviderRequestAttempt::new(
+                    transport,
+                    api_provider,
+                    setup.api_auth,
+                    setup.authority,
+                    setup.request_initiation,
+                ))
             }
         })
     }
@@ -1764,7 +1791,10 @@ impl ModelClientSession {
             inference_trace_attempt.record_started(&request);
             let request_attempt_factory = self.client.provider_request_attempt_factory(
                 self.expected_authority,
+                RESPONSES_ENDPOINT,
+                /*provider_override*/ None,
                 ProviderRequestAttempt::new(
+                    transport.clone(),
                     client_setup.api_provider.clone(),
                     client_setup.api_auth.clone(),
                     client_setup.authority,

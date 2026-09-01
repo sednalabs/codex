@@ -24,23 +24,26 @@ pub(crate) struct EndpointSession<T: HttpTransport> {
     provider: Provider,
     auth: SharedAuthProvider,
     request_telemetry: Option<Arc<dyn RequestTelemetry>>,
-    request_attempt_factory: Option<ProviderRequestAttemptFactory>,
+    request_attempt_factory: Option<ProviderRequestAttemptFactory<T>>,
 }
 
 /// Complete immutable setup for one credential-bearing application attempt.
 ///
-/// The provider, frozen auth implementation, and one-use initiation must be renewed as one bundle.
-/// Keeping them in this type prevents a retry from combining a renewed authority guard with the
-/// provider URL, provider headers, query parameters, or auth captured by the initial attempt.
-pub struct ProviderRequestAttempt {
+/// The transport, provider, frozen auth implementation, and one-use initiation must be renewed as
+/// one bundle. Keeping them in this type prevents a retry from combining a renewed authority guard
+/// with the route, provider URL, provider headers, query parameters, or auth captured by the
+/// initial attempt.
+pub struct ProviderRequestAttempt<T: HttpTransport> {
+    transport: T,
     provider: Provider,
     auth: SharedAuthProvider,
     _authority: Box<dyn Send + 'static>,
     initiation: RequestInitiation,
 }
 
-impl ProviderRequestAttempt {
+impl<T: HttpTransport> ProviderRequestAttempt<T> {
     pub fn new<A>(
+        transport: T,
         provider: Provider,
         auth: SharedAuthProvider,
         authority: A,
@@ -50,6 +53,7 @@ impl ProviderRequestAttempt {
         A: Send + 'static,
     {
         Self {
+            transport,
             provider,
             auth,
             _authority: Box::new(authority),
@@ -58,33 +62,40 @@ impl ProviderRequestAttempt {
     }
 }
 
-type ProviderRequestAttemptFuture =
-    Pin<Box<dyn Future<Output = Result<ProviderRequestAttempt, TransportError>> + Send>>;
+type ProviderRequestAttemptFuture<T: HttpTransport> =
+    Pin<Box<dyn Future<Output = Result<ProviderRequestAttempt<T>, TransportError>> + Send>>;
 
 /// Produces one independently resolved, immutable setup for each application attempt.
-#[derive(Clone)]
-pub struct ProviderRequestAttemptFactory {
-    create: Arc<dyn Fn() -> ProviderRequestAttemptFuture + Send + Sync>,
+pub struct ProviderRequestAttemptFactory<T: HttpTransport> {
+    create: Arc<dyn Fn() -> ProviderRequestAttemptFuture<T> + Send + Sync>,
 }
 
-impl std::fmt::Debug for ProviderRequestAttemptFactory {
+impl<T: HttpTransport> Clone for ProviderRequestAttemptFactory<T> {
+    fn clone(&self) -> Self {
+        Self {
+            create: Arc::clone(&self.create),
+        }
+    }
+}
+
+impl<T: HttpTransport> std::fmt::Debug for ProviderRequestAttemptFactory<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ProviderRequestAttemptFactory(<redacted>)")
     }
 }
 
-impl ProviderRequestAttemptFactory {
+impl<T: HttpTransport> ProviderRequestAttemptFactory<T> {
     pub fn new<F, Fut>(create: F) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<ProviderRequestAttempt, TransportError>> + Send + 'static,
+        Fut: Future<Output = Result<ProviderRequestAttempt<T>, TransportError>> + Send + 'static,
     {
         Self {
             create: Arc::new(move || Box::pin(create())),
         }
     }
 
-    async fn create(&self) -> Result<ProviderRequestAttempt, TransportError> {
+    async fn create(&self) -> Result<ProviderRequestAttempt<T>, TransportError> {
         (self.create)().await
     }
 }
@@ -102,7 +113,7 @@ impl<T: HttpTransport> EndpointSession<T> {
 
     pub(crate) fn with_request_attempt_factory(
         mut self,
-        factory: Option<ProviderRequestAttemptFactory>,
+        factory: Option<ProviderRequestAttemptFactory<T>>,
     ) -> Self {
         self.request_attempt_factory = factory;
         self
@@ -163,12 +174,49 @@ impl<T: HttpTransport> EndpointSession<T> {
     where
         C: Fn(&mut Request),
     {
+        self.execute_with_auth_inner(method, path, extra_headers, body, configure)
+            .await
+            .map(|(response, _auth)| response)
+    }
+
+    #[instrument(
+        name = "endpoint_session.execute_with",
+        level = "info",
+        skip_all,
+        fields(http.method = %method, api.path = path)
+    )]
+    pub(crate) async fn execute_with_auth<C>(
+        &self,
+        method: Method,
+        path: &str,
+        extra_headers: HeaderMap,
+        body: Option<Value>,
+        configure: C,
+    ) -> Result<(Response, SharedAuthProvider), ApiError>
+    where
+        C: Fn(&mut Request),
+    {
+        self.execute_with_auth_inner(method, path, extra_headers, body, configure)
+            .await
+    }
+
+    async fn execute_with_auth_inner<C>(
+        &self,
+        method: Method,
+        path: &str,
+        extra_headers: HeaderMap,
+        body: Option<Value>,
+        configure: C,
+    ) -> Result<(Response, SharedAuthProvider), ApiError>
+    where
+        C: Fn(&mut Request),
+    {
         let body = body.map(RequestBody::Json);
         let response = run_with_attempt_telemetry(
             self.provider.retry.to_policy(),
             self.request_telemetry.clone(),
             |_| {
-                let transport = &self.transport;
+                let static_transport = &self.transport;
                 let request_attempt_factory = self.request_attempt_factory.clone();
                 let static_provider = self.provider.clone();
                 let static_auth = self.auth.clone();
@@ -177,13 +225,19 @@ impl<T: HttpTransport> EndpointSession<T> {
                 let body = body.clone();
                 let configure = &configure;
                 async move {
-                    let (provider, auth, initiation) = match request_attempt_factory {
-                        Some(factory) => {
-                            let attempt = factory.create().await?;
-                            (attempt.provider, attempt.auth, Some(attempt.initiation))
-                        }
-                        None => (static_provider, static_auth, None),
-                    };
+                    let (attempt_transport, provider, auth, initiation) =
+                        match request_attempt_factory {
+                            Some(factory) => {
+                                let attempt = factory.create().await?;
+                                (
+                                    Some(attempt.transport),
+                                    attempt.provider,
+                                    attempt.auth,
+                                    Some(attempt.initiation),
+                                )
+                            }
+                            None => (None, static_provider, static_auth, None),
+                        };
                     let mut req =
                         Self::make_request(&provider, &method, path, &extra_headers, body.as_ref());
                     configure(&mut req);
@@ -200,11 +254,12 @@ impl<T: HttpTransport> EndpointSession<T> {
                         .map(|initiation| initiation.claim())
                         .transpose()
                         .map_err(TransportError::Build)?;
+                    let transport = attempt_transport.as_ref().unwrap_or(static_transport);
                     let response = transport.execute(req);
                     if let Some(claim) = claim {
                         claim.acknowledge();
                     }
-                    response.await
+                    response.await.map(|response| (response, auth))
                 }
             },
         )
@@ -235,7 +290,7 @@ impl<T: HttpTransport> EndpointSession<T> {
             self.provider.retry.to_policy(),
             self.request_telemetry.clone(),
             |_| {
-                let transport = &self.transport;
+                let static_transport = &self.transport;
                 let request_attempt_factory = self.request_attempt_factory.clone();
                 let static_provider = self.provider.clone();
                 let static_auth = self.auth.clone();
@@ -244,13 +299,19 @@ impl<T: HttpTransport> EndpointSession<T> {
                 let body = body.clone();
                 let configure = &configure;
                 async move {
-                    let (provider, auth, initiation) = match request_attempt_factory {
-                        Some(factory) => {
-                            let attempt = factory.create().await?;
-                            (attempt.provider, attempt.auth, Some(attempt.initiation))
-                        }
-                        None => (static_provider, static_auth, None),
-                    };
+                    let (attempt_transport, provider, auth, initiation) =
+                        match request_attempt_factory {
+                            Some(factory) => {
+                                let attempt = factory.create().await?;
+                                (
+                                    Some(attempt.transport),
+                                    attempt.provider,
+                                    attempt.auth,
+                                    Some(attempt.initiation),
+                                )
+                            }
+                            None => (None, static_provider, static_auth, None),
+                        };
                     let mut req =
                         Self::make_request(&provider, &method, path, &extra_headers, body.as_ref());
                     configure(&mut req);
@@ -276,6 +337,7 @@ impl<T: HttpTransport> EndpointSession<T> {
                         .map(|initiation| initiation.claim())
                         .transpose()
                         .map_err(TransportError::Build)?;
+                    let transport = attempt_transport.as_ref().unwrap_or(static_transport);
                     let response = transport.stream(req);
                     if let Some(claim) = claim {
                         claim.acknowledge();

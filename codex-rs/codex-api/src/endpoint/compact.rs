@@ -35,7 +35,7 @@ impl<T: HttpTransport> CompactClient<T> {
 
     pub fn with_request_attempt_factory(
         self,
-        factory: Option<ProviderRequestAttemptFactory>,
+        factory: Option<ProviderRequestAttemptFactory<T>>,
     ) -> Self {
         Self {
             session: self.session.with_request_attempt_factory(factory),
@@ -120,12 +120,14 @@ mod tests {
     use tokio::sync::Notify;
     use tokio::sync::RwLock;
 
-    fn one_attempt_factory(
+    fn one_attempt_factory<T: HttpTransport>(
+        transport: T,
         provider: Provider,
         auth: SharedAuthProvider,
         initiation: RequestInitiation,
-    ) -> ProviderRequestAttemptFactory {
+    ) -> ProviderRequestAttemptFactory<T> {
         let attempt = Arc::new(Mutex::new(Some(ProviderRequestAttempt::new(
+            transport,
             provider,
             auth,
             (),
@@ -223,6 +225,10 @@ mod tests {
             Arc::new(NoAuth),
         )
         .with_request_attempt_factory(Some(one_attempt_factory(
+            BarrierTransport {
+                started: Arc::clone(&started),
+                release_response: Arc::clone(&release_response),
+            },
             test_provider(),
             Arc::new(NoAuth),
             RequestInitiation::new(authority),
@@ -305,9 +311,10 @@ mod tests {
         provider
     }
 
-    #[derive(Clone, Default)]
+    #[derive(Clone)]
     struct CapturingRetryTransport {
-        requests: Arc<Mutex<Vec<Request>>>,
+        route: &'static str,
+        requests: Arc<Mutex<Vec<(&'static str, Request)>>>,
     }
 
     impl HttpTransport for CapturingRetryTransport {
@@ -316,8 +323,8 @@ mod tests {
                 .requests
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            requests.push(req);
-            if requests.len() == 1 {
+            requests.push((self.route, req));
+            if self.route == "route-a" {
                 return Err(TransportError::Network(
                     "first provider unavailable".to_string(),
                 ));
@@ -340,21 +347,30 @@ mod tests {
         let factory_calls = Arc::new(AtomicUsize::new(0));
         let factory = ProviderRequestAttemptFactory::new({
             let factory_calls = Arc::clone(&factory_calls);
+            let requests = Arc::clone(&requests);
             move || {
                 let call = factory_calls.fetch_add(1, Ordering::SeqCst);
+                let requests = Arc::clone(&requests);
                 async move {
-                    let (provider, auth): (Provider, SharedAuthProvider) = if call == 0 {
-                        (
-                            named_provider("a", "https://a.example/v1", "provider-a"),
-                            Arc::new(HeaderAuth("Bearer auth-a")),
-                        )
-                    } else {
-                        (
-                            named_provider("b", "https://b.example/v2", "provider-b"),
-                            Arc::new(HeaderAuth("Bearer auth-b")),
-                        )
-                    };
+                    let (route, provider, auth): (&'static str, Provider, SharedAuthProvider) =
+                        if call == 0 {
+                            (
+                                "route-a",
+                                named_provider("a", "https://a.example/v1", "provider-a"),
+                                Arc::new(HeaderAuth("Bearer auth-a")),
+                            )
+                        } else {
+                            (
+                                "route-b",
+                                named_provider("b", "https://b.example/v2", "provider-b"),
+                                Arc::new(HeaderAuth("Bearer auth-b")),
+                            )
+                        };
                     Ok(ProviderRequestAttempt::new(
+                        CapturingRetryTransport {
+                            route,
+                            requests: Arc::clone(&requests),
+                        },
                         provider,
                         auth,
                         call,
@@ -364,6 +380,7 @@ mod tests {
             }
         });
         let transport = CapturingRetryTransport {
+            route: "stale-route",
             requests: Arc::clone(&requests),
         };
         let mut request_headers = HeaderMap::new();
@@ -392,7 +409,7 @@ mod tests {
         assert_eq!(
             requests
                 .iter()
-                .map(|request| request.url.as_str())
+                .map(|(_route, request)| request.url.as_str())
                 .collect::<Vec<_>>(),
             vec![
                 "https://a.example/v1/responses/compact?deployment=a",
@@ -402,7 +419,7 @@ mod tests {
         assert_eq!(
             requests
                 .iter()
-                .map(|request| request.headers.get("x-provider"))
+                .map(|(_route, request)| request.headers.get("x-provider"))
                 .collect::<Vec<_>>(),
             vec![
                 Some(&HeaderValue::from_static("provider-a")),
@@ -412,18 +429,25 @@ mod tests {
         assert_eq!(
             requests
                 .iter()
-                .map(|request| request.headers.get(AUTHORIZATION))
+                .map(|(_route, request)| request.headers.get(AUTHORIZATION))
                 .collect::<Vec<_>>(),
             vec![
                 Some(&HeaderValue::from_static("Bearer auth-a")),
                 Some(&HeaderValue::from_static("Bearer auth-b")),
             ]
         );
-        assert!(requests.iter().all(|request| {
+        assert!(requests.iter().all(|(_route, request)| {
             request.headers.get("x-client-request-id")
                 == Some(&HeaderValue::from_static("request-1"))
         }));
-        assert_eq!(requests[0].body, requests[1].body);
+        assert_eq!(requests[0].1.body, requests[1].1.body);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|(route, _request)| *route)
+                .collect::<Vec<_>>(),
+            vec!["route-a", "route-b"]
+        );
         assert_eq!(factory_calls.load(Ordering::SeqCst), 2);
     }
 
@@ -435,11 +459,16 @@ mod tests {
         let factory = ProviderRequestAttemptFactory::new({
             let issued = Arc::clone(&issued);
             let released = Arc::clone(&released);
+            let attempts = Arc::clone(&attempts);
             move || {
                 issued.fetch_add(1, Ordering::SeqCst);
                 let initiation = RequestInitiation::new(AttemptAuthority(Arc::clone(&released)));
+                let transport = RetryThenSuccessTransport {
+                    attempts: Arc::clone(&attempts),
+                };
                 async move {
                     Ok(ProviderRequestAttempt::new(
+                        transport,
                         test_provider(),
                         Arc::new(NoAuth),
                         (),
@@ -495,12 +524,17 @@ mod tests {
         let factory = ProviderRequestAttemptFactory::new({
             let issued = Arc::clone(&issued);
             let released = Arc::clone(&released);
+            let attempts = Arc::clone(&attempts);
             move || {
                 let token_id = issued.fetch_add(1, Ordering::SeqCst);
                 let initiation =
                     RequestInitiation::new((token_id, AttemptAuthority(Arc::clone(&released))));
+                let transport = AlwaysFailTransport {
+                    attempts: Arc::clone(&attempts),
+                };
                 async move {
                     Ok(ProviderRequestAttempt::new(
+                        transport,
                         test_provider(),
                         Arc::new(NoAuth),
                         token_id,
@@ -544,11 +578,16 @@ mod tests {
         let factory_calls = Arc::new(AtomicUsize::new(0));
         let factory = ProviderRequestAttemptFactory::new({
             let factory_calls = Arc::clone(&factory_calls);
+            let attempts = Arc::clone(&attempts);
             move || {
                 let call = factory_calls.fetch_add(1, Ordering::SeqCst);
+                let transport = RetryThenSuccessTransport {
+                    attempts: Arc::clone(&attempts),
+                };
                 async move {
                     if call == 0 {
                         Ok(ProviderRequestAttempt::new(
+                            transport,
                             test_provider(),
                             Arc::new(NoAuth),
                             (),
