@@ -545,14 +545,15 @@ async fn prefetch_rate_limits_is_gated_on_chatgpt_auth_provider() {
 #[tokio::test]
 async fn rate_limit_warnings_emit_thresholds() {
     let mut state = RateLimitWarningState::default();
+    let plan = None;
     let mut warnings: Vec<String> = Vec::new();
 
-    warnings.extend(state.take_warnings(Some(10.0), Some(10079), Some(55.0), Some(299)));
-    warnings.extend(state.take_warnings(Some(55.0), Some(10081), Some(10.0), Some(299)));
-    warnings.extend(state.take_warnings(Some(10.0), Some(10081), Some(80.0), Some(299)));
-    warnings.extend(state.take_warnings(Some(80.0), Some(10081), Some(10.0), Some(299)));
-    warnings.extend(state.take_warnings(Some(10.0), Some(10081), Some(95.0), Some(299)));
-    warnings.extend(state.take_warnings(Some(95.0), Some(10079), Some(10.0), Some(299)));
+    warnings.extend(state.take_warnings(plan, Some(10.0), Some(10079), Some(55.0), Some(299)));
+    warnings.extend(state.take_warnings(plan, Some(55.0), Some(10081), Some(10.0), Some(299)));
+    warnings.extend(state.take_warnings(plan, Some(10.0), Some(10081), Some(80.0), Some(299)));
+    warnings.extend(state.take_warnings(plan, Some(80.0), Some(10081), Some(10.0), Some(299)));
+    warnings.extend(state.take_warnings(plan, Some(10.0), Some(10081), Some(95.0), Some(299)));
+    warnings.extend(state.take_warnings(plan, Some(95.0), Some(10079), Some(10.0), Some(299)));
 
     assert_eq!(
         warnings,
@@ -575,11 +576,58 @@ async fn rate_limit_warnings_emit_thresholds() {
 }
 
 #[tokio::test]
+async fn rate_limit_usage_warnings_early_threshold_is_scoped_and_deduplicated() {
+    for (plan_type, window_minutes, should_warn_early) in [
+        (Some(PlanType::Plus), Some(300), true),
+        (Some(PlanType::Team), Some(299), true),
+        (Some(PlanType::Pro), Some(300), false),
+        (Some(PlanType::Business), Some(300), false),
+        (Some(PlanType::SelfServeBusinessProLite), Some(300), false),
+        (None, Some(300), false),
+        (Some(PlanType::Plus), Some(10080), false),
+        (Some(PlanType::Team), None, false),
+    ] {
+        let (mut chat, mut rx, _) = make_chatwidget_manual(Some("gpt-5")).await;
+        let mut usage = snapshot(/*percent*/ 49.0);
+        usage.plan_type = plan_type;
+        usage.primary.as_mut().unwrap().window_duration_mins = window_minutes;
+        chat.on_rate_limit_snapshot(Some(usage.clone()));
+        assert!(drain_insert_history(&mut rx).is_empty());
+
+        // Rolling updates retain the plan learned from the account usage response.
+        usage.plan_type = None;
+        usage.primary.as_mut().unwrap().used_percent = 50;
+        chat.on_rolling_rate_limit_snapshot(usage.clone());
+        let warnings = drain_insert_history(&mut rx);
+        assert_eq!(!warnings.is_empty(), should_warn_early);
+        if should_warn_early {
+            insta::allow_duplicates! {
+                insta::assert_snapshot!(lines_to_single_string(&warnings.concat()), @r"
+                ⚠ Heads up, you have less than 50% of your 5h limit left. Run /status for a
+                  breakdown.
+                ");
+            }
+        }
+
+        chat.on_rolling_rate_limit_snapshot(usage.clone());
+        assert!(drain_insert_history(&mut rx).is_empty());
+        for used_percent in [75, 90, 95] {
+            usage.primary.as_mut().unwrap().used_percent = used_percent;
+            chat.on_rolling_rate_limit_snapshot(usage.clone());
+            assert_eq!(drain_insert_history(&mut rx).len(), 1);
+            chat.on_rolling_rate_limit_snapshot(usage.clone());
+            assert!(drain_insert_history(&mut rx).is_empty());
+        }
+    }
+}
+
+#[tokio::test]
 async fn test_rate_limit_warnings_monthly() {
     let mut state = RateLimitWarningState::default();
     let mut warnings: Vec<String> = Vec::new();
 
     warnings.extend(state.take_warnings(
+        /*plan_type*/ None,
         Some(75.0),
         Some(43199),
         /*primary_used_percent*/ None,
@@ -610,6 +658,7 @@ async fn test_rate_limit_warnings_use_generic_fallback_labels() {
 
     assert_eq!(
         state.take_warnings(
+            /*plan_type*/ None,
             /*secondary_used_percent*/ Some(75.0),
             /*secondary_window_minutes*/ None,
             /*primary_used_percent*/ Some(75.0),
@@ -632,6 +681,7 @@ async fn test_rate_limit_warnings_use_secondary_fallback_for_unsupported_window(
 
     assert_eq!(
         state.take_warnings(
+            /*plan_type*/ None,
             /*secondary_used_percent*/ Some(75.0),
             /*secondary_window_minutes*/ Some(2 * 60),
             /*primary_used_percent*/ None,
