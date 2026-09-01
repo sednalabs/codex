@@ -1,19 +1,54 @@
 use super::*;
 use crate::model::ThreadGoalRow;
+use crate::runtime::ownership::OwnerCapability;
 use uuid::Uuid;
+
+#[derive(Clone)]
+pub(crate) enum GoalStoreAccess {
+    Owner(OwnerCapability),
+}
+
+impl GoalStoreAccess {
+    pub(crate) fn owner(capability: OwnerCapability) -> Self {
+        Self::Owner(capability)
+    }
+
+    fn owner_capability(&self) -> Option<OwnerCapability> {
+        match self {
+            Self::Owner(capability) => Some(capability.clone()),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct GoalStore {
     pool: Arc<SqlitePool>,
+    access: GoalStoreAccess,
 }
 
 impl GoalStore {
-    pub(crate) fn new(pool: Arc<SqlitePool>) -> Self {
-        Self { pool }
+    pub(crate) fn new(pool: Arc<SqlitePool>, access: GoalStoreAccess) -> Self {
+        Self { pool, access }
     }
 
     pub(crate) async fn close(&self) {
         self.pool.close().await;
+    }
+
+    /// Return the private capability required by owner-only goal mutations.
+    /// Callers cannot manufacture or obtain one.
+    pub(crate) fn owner_capability(&self) -> Option<OwnerCapability> {
+        self.access.owner_capability()
+    }
+
+    fn ensure_owner(&self) -> anyhow::Result<()> {
+        if self.owner_capability().is_some() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "goals database mutation requires the runtime owner capability"
+            ))
+        }
     }
 }
 
@@ -69,6 +104,7 @@ WHERE thread_id = ?
         &self,
         goal: &crate::ThreadGoal,
     ) -> anyhow::Result<()> {
+        self.ensure_owner()?;
         let mut transaction = self.pool.begin().await?;
         sqlx::query(
             r#"
@@ -145,6 +181,7 @@ SELECT EXISTS(
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<()> {
+        self.ensure_owner()?;
         sqlx::query("DELETE FROM thread_goal_continuation_deferrals WHERE thread_id = ?")
             .bind(thread_id.to_string())
             .execute(self.pool.as_ref())
@@ -160,6 +197,7 @@ SELECT EXISTS(
         status: crate::ThreadGoalStatus,
         token_budget: Option<i64>,
     ) -> anyhow::Result<crate::ThreadGoal> {
+        self.ensure_owner()?;
         let goal_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let status = status_after_budget_limit(status, /*tokens_used*/ 0, token_budget);
@@ -217,6 +255,7 @@ RETURNING
         status: crate::ThreadGoalStatus,
         token_budget: Option<i64>,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
+        self.ensure_owner()?;
         let goal_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let status = status_after_budget_limit(status, /*tokens_used*/ 0, token_budget);
@@ -273,6 +312,7 @@ RETURNING
         thread_id: ThreadId,
         update: GoalUpdate,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
+        self.ensure_owner()?;
         let GoalUpdate {
             objective,
             status,
@@ -421,6 +461,7 @@ WHERE thread_id = ?
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
+        self.ensure_owner()?;
         self.update_active_thread_goal_status(thread_id, crate::ThreadGoalStatus::Paused)
             .await
     }
@@ -429,6 +470,7 @@ WHERE thread_id = ?
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
+        self.ensure_owner()?;
         self.update_active_thread_goal_status(thread_id, crate::ThreadGoalStatus::UsageLimited)
             .await
     }
@@ -473,6 +515,7 @@ WHERE thread_id = ?
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
+        self.ensure_owner()?;
         let row = sqlx::query(
             r#"
 DELETE FROM thread_goals
@@ -504,6 +547,7 @@ RETURNING
         mode: GoalAccountingMode,
         expected_goal_id: Option<&str>,
     ) -> anyhow::Result<GoalAccountingOutcome> {
+        self.ensure_owner()?;
         let time_delta_seconds = time_delta_seconds.max(0);
         let token_delta = token_delta.max(0);
         if time_delta_seconds == 0 && token_delta == 0 {
