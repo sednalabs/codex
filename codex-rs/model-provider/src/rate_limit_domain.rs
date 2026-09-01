@@ -7,15 +7,22 @@
 use std::error::Error;
 use std::fmt;
 
+// This validation bound is part of the staged provider-integration contract.
+// The provider adapters that will call these constructors are not landed yet;
+// keep the contract checked by the module tests without making the module
+// wide dead-code lint permissive.
+#[allow(dead_code)]
 const MAX_OPAQUE_VALUE_LENGTH: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
 enum OpaqueValueError {
     Empty,
     TooLong,
     InvalidCharacter,
 }
 
+#[allow(dead_code)]
 fn validate_opaque_value(value: &str) -> Result<(), OpaqueValueError> {
     if value.is_empty() {
         return Err(OpaqueValueError::Empty);
@@ -43,6 +50,9 @@ impl ProviderDomainId {
     /// This crate-private boundary keeps admission evidence construction under
     /// provider integration control; shape validation alone does not attest
     /// provider authority.
+    // Provider adapters will become the production callers once the
+    // integration surface lands; the module tests exercise this boundary now.
+    #[allow(dead_code)]
     pub(crate) fn try_new(value: impl AsRef<str>) -> Result<Self, ProviderDomainIdError> {
         let value = value.as_ref();
         validate_opaque_value(value).map_err(ProviderDomainIdError::from)?;
@@ -96,6 +106,9 @@ impl Error for ProviderDomainIdError {}
 struct OpaqueProviderFact(String);
 
 impl OpaqueProviderFact {
+    // This constructor is intentionally retained for the staged provider
+    // observation API and is covered by the module's validation tests.
+    #[allow(dead_code)]
     fn try_new(value: &str) -> Result<Self, ProviderFactError> {
         validate_opaque_value(value).map_err(ProviderFactError::from)?;
         Ok(Self(value.to_owned()))
@@ -136,6 +149,7 @@ impl fmt::Display for ProviderFactError {
 impl Error for ProviderFactError {}
 
 #[derive(Clone, Eq, PartialEq)]
+#[allow(dead_code)]
 enum DomainScopeKind {
     Shared(ProviderDomainId),
     Independent,
@@ -148,11 +162,15 @@ pub struct RateLimitDomainScope(DomainScopeKind);
 
 impl RateLimitDomainScope {
     /// Construct a shared scope bound to one opaque provider-domain identity.
+    // Provider adapters will become the production callers once the
+    // integration surface lands; the module tests exercise this boundary now.
+    #[allow(dead_code)]
     pub(crate) fn shared(provider_domain: ProviderDomainId) -> Self {
         Self(DomainScopeKind::Shared(provider_domain))
     }
 
     /// Construct the provider-declared independent scope.
+    #[allow(dead_code)]
     pub(crate) fn independent() -> Self {
         Self(DomainScopeKind::Independent)
     }
@@ -229,6 +247,9 @@ impl ProviderObservedFacts {
     /// dormant at the admission-capable boundary. This constructor preserves
     /// caller-supplied observations but does not itself attest their source;
     /// the crate-private boundary is reserved for provider integrations.
+    // Provider adapters will become the production callers once the
+    // integration surface lands; the module tests exercise this boundary now.
+    #[allow(dead_code)]
     pub(crate) fn try_from_provider(
         provider_scope: Option<ProviderDomainId>,
         eligible: Option<bool>,
