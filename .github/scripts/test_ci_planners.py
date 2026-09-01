@@ -1472,6 +1472,7 @@ class RouteSelectionTests(unittest.TestCase):
             "--modify_execution_info=Rustc=+no-remote-cache",
             native_test_run,
         )
+        self.assertIn("--local_test_jobs=1", native_test_run)
 
         module_bazel = (REPO_ROOT / "MODULE.bazel").read_text(encoding="utf-8")
         self.assertIn(
@@ -1617,6 +1618,10 @@ class RouteSelectionTests(unittest.TestCase):
             "--extra_execution_platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm",
             analysis_run,
         )
+        self.assertIn(
+            "--extra_toolchains=//:windows_aarch64_gnullvm_rust_toolchain_for_health",
+            analysis_run,
+        )
         self.assertIn("--include_artifacts=true", analysis_run)
         self.assertIn("//codex-rs/otel:otel", analysis_run)
         self.assertIn(
@@ -1625,6 +1630,65 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertIn("--target //codex-rs/otel:otel", analysis_run)
         self.assertNotIn("grep", analysis_run)
+        aquery_upload = next(
+            (
+                step
+                for step in analysis_steps
+                if step.get("name") == "Upload ARM64 gnullvm aquery evidence"
+            ),
+            None,
+        )
+        self.assertIsNotNone(aquery_upload, "ARM64 aquery evidence upload not found")
+        self.assertEqual(
+            aquery_upload.get("uses"),
+            "actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f",
+        )
+        self.assertEqual(aquery_upload.get("if"), "always() && !cancelled()")
+        self.assertEqual(aquery_upload.get("continue-on-error"), "true")
+        self.assertEqual(
+            (aquery_upload.get("with") or {}).get("name"),
+            "native-windows-arm64-aquery-${{ github.run_id }}-${{ github.sha }}",
+        )
+        self.assertEqual(
+            (aquery_upload.get("with") or {}).get("path"),
+            "${{ runner.temp }}/aarch64-windows-gnullvm-aquery.txt",
+        )
+        self.assertEqual(
+            (aquery_upload.get("with") or {}).get("if-no-files-found"),
+            "error",
+        )
+        self.assertEqual((aquery_upload.get("with") or {}).get("retention-days"), "1")
+        build_bazel = (REPO_ROOT / "BUILD.bazel").read_text(encoding="utf-8")
+        self.assertIn(
+            'name = "windows_aarch64_gnullvm_rust_toolchain_for_health"',
+            build_bazel,
+        )
+        self.assertIn(
+            'toolchain = "@default_rust_toolchains//:windows_aarch64_gnullvm_1_95_0_rust_toolchain"',
+            build_bazel,
+        )
+        selector_match = re.search(
+            r'toolchain\(\n    name = "windows_aarch64_gnullvm_rust_toolchain_for_health",'
+            r'.*?\n\)\n',
+            build_bazel,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(
+            selector_match, "ARM64 health selector declaration not found"
+        )
+        selector = selector_match.group(0)
+        for constraint in (
+            '"@platforms//cpu:aarch64"',
+            '"@platforms//os:windows"',
+            '"@llvm//constraints/windows/abi:gnullvm"',
+            '"@llvm//constraints/windows/crt:msvcrt"',
+        ):
+            with self.subTest(constraint=constraint):
+                self.assertIn(constraint, selector)
+        self.assertIn('toolchain_type = "@rules_rust//rust:toolchain_type"', selector)
+        self.assertIn('"@rules_rs//rs/toolchains:non_bpf_targets"', selector)
+        self.assertNotIn('"@rules_rs//rs/toolchains:bpf_targets"', selector)
+        self.assertNotIn("target_compatible_with", selector)
         analysis_cache_save = next(
             (
                 step
