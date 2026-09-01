@@ -17,7 +17,7 @@ ARM64_GNULLVM_TOOLCHAINS = (
 )
 ARM64_DEFAULT_GNULLVM_TOOLCHAIN_RE = re.compile(
     r"external/rules_rs\+\+toolchains\+default_rust_toolchains/"
-    r"windows_aarch64_gnullvm_\d+_\d+_\d+_rust_toolchain"
+    r"windows_aarch64_gnullvm_\d+_\d+_\d+_rust_toolchain/bin/rustc(?:\.exe)?"
 )
 ARM64_MSVC_TOOLCHAIN_RE = re.compile(
     r"(?:rustc|cargo)_windows_aarch64_msvc"
@@ -72,16 +72,10 @@ def has_arm64_gnullvm_toolchain_inputs(action_block: str) -> bool:
 
     # Newer rules_rs versions expose the selected toolchain through the
     # generated default_rust_toolchains repository rather than separate
-    # rustc/cargo repositories.  Require both the exact versioned gnullvm
-    # toolchain root and its Rustc executable; generic gnullvm text is not
-    # sufficient evidence of the selected compiler.
-    return any(
-        re.search(
-            rf"{re.escape(match.group(0))}/bin/rustc(?:\.exe)?",
-            action_block,
-        )
-        for match in ARM64_DEFAULT_GNULLVM_TOOLCHAIN_RE.finditer(action_block)
-    )
+    # rustc/cargo repositories.  Require the exact versioned gnullvm
+    # toolchain root followed by its Rustc executable; generic gnullvm text
+    # is not sufficient evidence of the selected compiler.
+    return ARM64_DEFAULT_GNULLVM_TOOLCHAIN_RE.search(action_block) is not None
 
 
 def verify_selected_rust_action(aquery_output: str, target: str) -> None:
