@@ -269,6 +269,15 @@ pub(crate) async fn run_turn(
         return Ok(None);
     }
 
+    // Only speculate after hooks accept the turn, using its finalized tools and permissions.
+    {
+        let mut state = sess.state.lock().await;
+        if state.shell_snapshot_prewarm.is_none() {
+            state.shell_snapshot_prewarm =
+                sess.prewarm_shell_snapshots(first_step_context.as_ref());
+        }
+    }
+
     sess.merge_connector_selection(explicitly_enabled_connectors.clone())
         .await;
     sess.set_previous_turn_settings(Some(PreviousTurnSettings {
