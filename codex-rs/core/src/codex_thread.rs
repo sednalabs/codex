@@ -370,7 +370,7 @@ impl CodexThread {
             op,
             trace,
             client_user_message_id,
-            None,
+            /*principal*/ None,
         )
         .await
     }
@@ -425,7 +425,7 @@ impl CodexThread {
             expected_turn_id,
             client_user_message_id,
             responsesapi_client_metadata,
-            None,
+            /*principal*/ None,
         )
         .await
     }

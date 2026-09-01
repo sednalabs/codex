@@ -1182,12 +1182,12 @@ mod tests {
         assert_eq!(projected.len(), 2);
         assert_eq!(projected[0].outcome, OUTCOME_REBLOCKED);
         assert_eq!(projected[1].outcome, OUTCOME_STARTED);
-        assert_eq!(
+        assert!(
             runtime
                 .automatic_turn_capability(thread_id, &trigger_2)
                 .await
-                .as_deref(),
-            Some(capability_2.as_str())
+                .is_none(),
+            "a late completion must not mint a third pending capability"
         );
         Ok(())
     }
