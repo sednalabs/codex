@@ -3479,11 +3479,14 @@ impl Session {
             if settings.selected().service_tier != root_service_tier {
                 let mut selected = settings.selected().clone();
                 selected.service_tier = root_service_tier;
-                settings = Arc::new(ResolvedStepSettings::new(
+                let mut inherited_settings = ResolvedStepSettings::new(
                     Arc::new(selected),
                     Arc::clone(&settings.model_info),
                     self.features.enabled(Feature::FastMode),
-                ));
+                );
+                inherited_settings.mcp_approvals_reviewer_override =
+                    settings.mcp_approvals_reviewer_override;
+                settings = Arc::new(inherited_settings);
             }
         }
         let token_budget = token_budget::resolve_token_budget(

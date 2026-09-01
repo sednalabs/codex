@@ -9141,8 +9141,12 @@ async fn refreshed_mcp_binding_captures_current_approval_authority() {
     );
 }
 
+#[test_case(false; "legacy thread reviewer")]
+#[test_case(true; "explicit live reviewer")]
 #[tokio::test]
-async fn mcp_elicitation_reviewer_uses_latest_runtime_authority() {
+async fn mcp_elicitation_reviewer_uses_active_reviewer_and_latest_runtime_policy(
+    live_update: bool,
+) {
     let guardian_server = start_mock_server().await;
     mount_sse_once(
         &guardian_server,
@@ -9182,17 +9186,34 @@ async fn mcp_elicitation_reviewer_uses_latest_runtime_authority() {
         )
         .await;
 
-    session
-        .update_settings(SessionSettingsUpdate {
-            step_settings: StepSettingsUpdate {
-                approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .await
-        .expect("reviewer settings should update");
+    session.mark_mcp_runtime_dirty();
     session.refresh_mcp_if_dirty().await;
+    if live_update {
+        assert_eq!(
+            session
+                .apply_turn_settings(
+                    &old_turn.sub_id,
+                    codex_protocol::protocol::TurnSettingsUpdate {
+                        approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+                        ..Default::default()
+                    },
+                )
+                .await,
+            codex_protocol::protocol::TurnSettingsUpdateOutcome::Applied
+        );
+    } else {
+        session
+            .update_settings(SessionSettingsUpdate {
+                step_settings: StepSettingsUpdate {
+                    approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .await
+            .expect("reviewer settings should update");
+        session.refresh_mcp_if_dirty().await;
+    }
 
     let request = codex_mcp::ElicitationReviewRequest {
         server_name: "browser-use".to_string(),

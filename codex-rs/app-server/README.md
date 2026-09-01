@@ -221,7 +221,7 @@ Example with notification opt-out:
 - `thread/revert` — replace a loaded paginated thread's durable history with the prefix strictly before `beforeTurnId` while preserving its thread id. The operation interrupts an active turn if needed, leaves older rollout files immutable, reloads the thread, returns updated thread metadata with empty `turns` plus pagination cursors, and emits `thread/reverted`. It does not revert local file changes. Parent-owned Multi-Agent V2 subagents reject direct revert requests.
 - `turn/start` — add user input or a named standalone function-call output to a thread and begin Codex generation; responds with the initial `turn` object and streams `turn/started`, `item/*`, and `turn/completed` notifications. For standalone outputs, provide `toolOutput` with an empty `input` array. Optional `turnTrigger` classifies who or what started a new turn and is sent as `turn_trigger` in Responses request metadata; it is ignored if the request steers an active turn. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Experimental `runtimeWorkspaceRoots` supplies the default roots for newly resolved environment selections. Explicit `environments[].runtimeWorkspaceRoots` override that fallback with environment-native absolute paths. Prefer experimental `permissions` profile selection by id for permission overrides; the legacy `sandboxPolicy` field is still accepted but cannot be combined with `permissions`. For `collaborationMode`, `settings.developer_instructions: null` means "use built-in instructions for the selected mode". Deprecated experimental `multiAgentMode` is ignored; Ultra reasoning effort selects proactive behavior. Parent-owned Multi-Agent V2 subagents reject direct turns.
 - `thread/inject_items` — append raw Responses API items to a loaded thread’s model-visible history without starting a turn; returns `{}` on success. Parent-owned Multi-Agent V2 subagents reject direct item injection.
-- `turn/settings/update` — experimental; publish a narrow model-settings patch to the exact live task identified by `threadId` and `turnId`, regardless of task kind. Requires `step_model_switching`; returns `status: "applied"` or `status: "targetUnavailable"`, or a request error if rejected. Future-thread settings and already captured steps are unchanged. Parent-owned Multi-Agent V2 subagents reject direct settings updates.
+- `turn/settings/update` — experimental; publish a reviewer or model-settings patch to the exact live task identified by `threadId` and `turnId`, regardless of task kind. Model-settings updates require `step_model_switching`; reviewer-only updates do not. Returns `status: "applied"` or `status: "targetUnavailable"`, or a request error if rejected. Future-thread settings and already captured steps are unchanged. Parent-owned Multi-Agent V2 subagents reject direct settings updates.
 - `turn/steer` — add user input to an already in-flight regular turn without starting a new turn; returns the active `turnId` that accepted the input. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Review and manual compaction turns reject `turn/steer`. Parent-owned Multi-Agent V2 subagents reject direct steering.
 - `turn/interrupt` — request cancellation of an in-flight turn by `(thread_id, turn_id)`; success is an empty `{}` response and the turn finishes with `status: "interrupted"`. Also available for parent-owned Multi-Agent V2 subagents.
 - `thread/realtime/start` — start a thread-scoped realtime session (experimental); pass `outputModality: "text"` or `outputModality: "audio"` to choose model output, optionally pass `model` and `version` to override configured realtime selection for this session only, pass `includeStartupContext: false` to omit Codex's generated startup context, and optionally pass `initialItems` to seed V3 with complete role-bearing text messages at session creation. Pass `realtimeStartInstructions` and `realtimeEndInstructions` to control the developer instructions given to the backing Codex model when this session starts and ends. Version `"v1"` uses legacy Bidi `conversation.handoff.*`, `"v2"` uses the Realtime Voice API, and `"v3"` preserves V1 Codex Voice behavior while using Frameless Bidi `delegation.*`. For V3 automatic Codex text, `codexResponseHandoffMode` accepts `"thinking"` (the default; all output uses channel-less thinking appends), `"commentary"` (all output uses the commentary channel), or `"bemTags"` (the raw BEM envelope selects the API channel: BEM `analysis` and `commentary` use `commentary`, while BEM `final` and unparsable output use `speakable`). The BEM envelope remains in the appended text for the frontend model to interpret. V1 and V2 ignore this setting. For V3, pass `delegationAckFiller: false` to suppress the Realtime API's delegation acknowledgement filler or `true` to restore it; omitting the field preserves the Realtime API's default. V1 and V2 ignore `delegationAckFiller`. V3 handoffs do not prepend the legacy `"Agent Final Message"` label. Pass `clientManagedHandoffs: true` to disable automatic Codex response delivery so only the client's explicit append calls produce handoffs. Pass `codexResponsesAsItems: true` to send automatic Codex responses as realtime conversation items instead, and optionally pass `codexResponseItemPrefix` to prepend experiment instructions to those items. Returns `{}` and streams `thread/realtime/*` notifications. Omit `transport` for the websocket transport, or pass `{ "type": "webrtc", "sdp": "..." }` to create a Bidi WebRTC session from a browser-generated SDP offer; the remote answer SDP is emitted as `thread/realtime/sdp`. Conversation `version: "v2"` requests remain unsupported for WebRTC. Parent-owned Multi-Agent V2 subagents reject this request.
@@ -1351,8 +1351,8 @@ Use `thread/backgroundTerminals/terminate` to terminate one running background t
 
 ### Example: Update a running turn's settings (experimental)
 
-Enable `capabilities.experimentalApi` and the disabled-by-default `step_model_switching`
-feature. Supply the exact turn ID from `turn/start`, `turn/started`, `thread/read` with
+Enable `capabilities.experimentalApi`; model-settings updates also require the
+disabled-by-default `step_model_switching` feature. Supply the exact turn ID from `turn/start`, `turn/started`, `thread/read` with
 `includeTurns: true`, or `thread/turns/list`:
 
 ```json
@@ -1362,9 +1362,20 @@ feature. Supply the exact turn ID from `turn/start`, `turn/started`, `thread/rea
 { "id": 42, "result": { "status": "applied" } }
 ```
 
-Only `model`, `effort`, `summary`, and `serviceTier` may change. Unknown fields are
+Only `approvalsReviewer`, `model`, `effort`, `summary`, and `serviceTier` may change. Unknown fields are
 rejected. Omitted fields leave settings unchanged; `serviceTier: null` clears the
 requested tier, while `null` for model, effort, or summary leaves it unchanged.
+
+A reviewer-only update does not require `step_model_switching`. Set
+`approvalsReviewer` to `"auto_review"` or `"user"` to change review routing for
+subsequently captured steps and newly initiated background approval requests.
+Omission or `null` leaves the reviewer unchanged. Managed reviewer restrictions
+and model-required auto review still apply. Existing captured steps and pending
+approvals keep their original reviewer; this does not approve a pending request,
+change sandbox permissions, or update child sessions. App/account-specific
+reviewer overrides still take precedence. Future-thread defaults remain separate.
+For compatibility, MCP keeps following refreshed thread defaults until an explicit
+live reviewer update overrides them for that turn.
 
 The response waits for core: `status: "applied"` means a settings snapshot was published
 for subsequent captures, even if its values were unchanged. Normal defaults and tier
