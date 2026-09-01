@@ -3619,11 +3619,15 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
             .send(())
             .expect("second guardian review gate should still be open");
         assert_eq!(second_review.await?, ReviewDecision::Approved);
-        let feedback = codex_feedback::guardian_review_failures_attachment(&[session.thread_id()])
+        let feedback = codex_feedback::guardian_review_failures(&[session.thread_id()])
+            .attachment
             .expect("failed ephemeral review survives cleanup and subsequent allowed reviews");
         let record: serde_json::Value = serde_json::from_slice(&feedback.buffer)?;
         assert_eq!(
             serde_json::json!({
+                "reviewed_thread_id": record["reviewed_thread_id"],
+                "reviewed_turn_id": record["reviewed_turn_id"],
+                "target_item_id": record["target_item_id"],
                 "reviewer_thread_id": record["reviewer_thread_id"],
                 "status": record["status"],
                 "decision": record["decision"],
@@ -3632,6 +3636,9 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
                 )?["command"],
             }),
             serde_json::json!({
+                "reviewed_thread_id": session.thread_id(),
+                "reviewed_turn_id": turn.sub_id,
+                "target_item_id": "shell-guardian-3",
                 "reviewer_thread_id": failed_ephemeral_request_body["client_metadata"]["thread_id"],
                 "status": "invalid_decision",
                 "decision": "not valid guardian json",
