@@ -66,9 +66,20 @@ pub enum SandboxErr {
     LandlockRestrict,
 }
 
+/// Narrow source marker carried with an error until the host records its evidence.
+///
+/// This marker does not establish provider, account, quota, or model identity. It only records
+/// that the API bridge recognized the exact HTTP usage-limit response shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexErrSource {
+    /// The API bridge decoded an HTTP 429 with `error.type == "usage_limit_reached"`.
+    RecognizedHttpUsageLimit,
+}
+
 pub struct CodexErr {
     details: CodexErrorDetails,
     retry_delay: Option<Duration>,
+    source: Option<CodexErrSource>,
 }
 
 /// The semantic category and diagnostic payload for a [`CodexErr`].
@@ -212,6 +223,7 @@ impl From<CodexErrorDetails> for CodexErr {
         Self {
             details,
             retry_delay: None,
+            source: None,
         }
     }
 }
@@ -276,6 +288,7 @@ macro_rules! codex_err_unit_constructors {
             pub const $variant: Self = Self {
                 details: CodexErrorDetails::$variant,
                 retry_delay: None,
+                source: None,
             };
         )*
     };
@@ -348,6 +361,23 @@ impl CodexErr {
     /// Creates an error with no server-provided retry delay.
     pub fn new(details: CodexErrorDetails) -> Self {
         details.into()
+    }
+
+    /// Returns the narrow source marker, if one was preserved by the producer.
+    pub fn codex_source(&self) -> Option<CodexErrSource> {
+        self.source
+    }
+
+    /// Constructs a usage-limit error with in-process parser provenance.
+    ///
+    /// The marker is diagnostic data only; it is not an admission, retry, or security
+    /// capability.
+    pub fn recognized_http_usage_limit(error: UsageLimitReachedError) -> Self {
+        Self {
+            details: CodexErrorDetails::UsageLimitReached(error),
+            retry_delay: None,
+            source: Some(CodexErrSource::RecognizedHttpUsageLimit),
+        }
     }
 
     /// Returns the semantic failure and its diagnostic payload.
