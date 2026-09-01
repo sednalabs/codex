@@ -248,6 +248,18 @@ impl CodexPackageLayout {
                 let package_dir = exe_dir.parent()?;
                 Self::from_package_bin_dir(package_dir.join(BIN_DIRNAME))
             }
+            Some(name) if name == OsStr::new("MacOS") => {
+                // A provisioned CLI keeps helpers and metadata in the outer
+                // package. current_exe points inside the bundle, not at bin/codex.
+                let contents = exe_dir.parent()?;
+                let bundle = contents.parent()?;
+                if contents.file_name()? != OsStr::new("Contents")
+                    || bundle.file_name()? != OsStr::new("CodexCLI.app")
+                {
+                    return None;
+                }
+                Self::from_package_bin_dir(bundle.parent()?.join(BIN_DIRNAME))
+            }
             Some(_) | None => None,
         }
     }
@@ -343,6 +355,10 @@ fn default_rg_command() -> PathBuf {
 fn zsh_resource_path() -> PathBuf {
     PathBuf::from(ZSH_DIRNAME).join(BIN_DIRNAME).join("zsh")
 }
+
+#[cfg(test)]
+#[path = "bundle_tests.rs"]
+mod bundle_tests;
 
 #[cfg(test)]
 mod tests {
