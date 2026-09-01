@@ -72,6 +72,23 @@ pub struct ExecRequest {
 }
 
 impl ExecRequest {
+    pub(crate) fn allow_detached_children_in_linux_sandbox(&mut self) {
+        const ALLOW_DETACHED_CHILDREN: &str = "--allow-detached-children";
+
+        if self.sandbox != SandboxType::LinuxSeccomp {
+            return;
+        }
+
+        if let Some(separator) = self.command.iter().position(|arg| arg == "--")
+            && !self.command[..separator]
+                .iter()
+                .any(|arg| arg == ALLOW_DETACHED_CHILDREN)
+        {
+            self.command
+                .insert(separator, ALLOW_DETACHED_CHILDREN.to_string());
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         command: Vec<String>,

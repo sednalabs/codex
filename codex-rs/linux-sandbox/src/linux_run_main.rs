@@ -7,10 +7,13 @@ use std::fs::OpenOptions;
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
+use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
@@ -19,6 +22,7 @@ use std::time::Duration;
 
 use crate::bwrap::BwrapNetworkMode;
 use crate::bwrap::BwrapOptions;
+use crate::bwrap::BwrapProcessLifetime;
 use crate::bwrap::create_bwrap_command_args;
 use crate::landlock::apply_permission_profile_to_current_thread;
 use crate::launcher::exec_bwrap;
@@ -38,6 +42,8 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 
 static BWRAP_CHILD_PID: AtomicI32 = AtomicI32::new(0);
 static PENDING_FORWARDED_SIGNAL: AtomicI32 = AtomicI32::new(0);
+#[cfg(test)]
+static FORCE_DETACHED_MONITOR_EXIT_AFTER_READY: AtomicBool = AtomicBool::new(false);
 
 const FORWARDED_SIGNALS: &[libc::c_int] =
     &[libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM];
@@ -63,6 +69,11 @@ struct ProtectedCreateMonitor {
     stop: Arc<AtomicBool>,
     violation: Arc<AtomicBool>,
     handle: thread::JoinHandle<()>,
+}
+
+struct BwrapNamespaceInit {
+    pid: libc::pid_t,
+    pidfd: OwnedFd,
 }
 
 struct ProtectedCreateWatcher {
@@ -127,6 +138,17 @@ pub struct LandlockCommand {
     #[arg(long = "allow-network-for-proxy", hide = true, default_value_t = false)]
     pub allow_network_for_proxy: bool,
 
+    /// Internal: permit intentionally detached command descendants to outlive
+    /// the one-shot sandbox helper invocation.
+    #[arg(long = "allow-detached-children", hide = true, default_value_t = false)]
+    pub allow_detached_children: bool,
+
+    /// Internal write end of the one-shot command-status channel. The
+    /// namespace reaper reports the initial command before it continues
+    /// reaping intentionally detached descendants.
+    #[arg(long = "detached-status-fd", hide = true)]
+    pub detached_status_fd: Option<libc::c_int>,
+
     /// Internal route spec used for managed proxy routing in bwrap mode.
     #[arg(long = "proxy-route-spec", hide = true)]
     pub proxy_route_spec: Option<String>,
@@ -157,6 +179,8 @@ pub fn run_main() -> ! {
         use_legacy_landlock,
         apply_seccomp_then_exec,
         allow_network_for_proxy,
+        allow_detached_children,
+        detached_status_fd,
         proxy_route_spec,
         no_proc,
         command,
@@ -199,7 +223,63 @@ pub fn run_main() -> ! {
         ) {
             panic!("error applying Linux sandbox restrictions: {e:?}");
         }
-        exec_or_panic(command);
+
+        let signal_mask = ForwardedSignalMask::block();
+        let command_pid = unsafe { libc::fork() };
+        if command_pid < 0 {
+            let err = std::io::Error::last_os_error();
+            panic!("failed to fork sandboxed command: {err}");
+        }
+
+        if command_pid == 0 {
+            // The status pipe belongs solely to the namespace reaper. Closing
+            // it before exec prevents the foreground command (or a detached
+            // descendant) from forging the four-byte host result.
+            if allow_detached_children {
+                let status_fd = detached_status_fd.unwrap_or_else(|| {
+                    panic!("detached namespace reaper is missing its command-status fd")
+                });
+                mark_fd_close_on_exec(status_fd);
+            }
+            reset_forwarded_signal_handlers_to_default();
+            signal_mask.restore();
+            exec_or_panic(command);
+        }
+
+        let signal_forwarders = install_bwrap_signal_forwarders(command_pid);
+        signal_mask.restore();
+        loop {
+            let mut status = 0;
+            let reaped_pid = unsafe { libc::waitpid(-1, &mut status, 0) };
+            if reaped_pid == command_pid {
+                if allow_detached_children {
+                    let status_fd = detached_status_fd.unwrap_or_else(|| {
+                        panic!("detached namespace reaper is missing its command-status fd")
+                    });
+                    mark_fd_close_on_exec(status_fd);
+                    write_detached_command_status(status_fd, status);
+                    continue;
+                }
+                let exit_signal_mask = ForwardedSignalMask::block();
+                signal_forwarders.restore();
+                exit_signal_mask.restore();
+                exit_with_wait_status(status);
+            }
+            if reaped_pid >= 0 {
+                continue;
+            }
+
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::ECHILD) && allow_detached_children {
+                // The original command status was reported before this loop
+                // started reaping descendants. Once no descendants remain,
+                // this PID-1 reaper may exit normally.
+                std::process::exit(0);
+            }
+            if err.raw_os_error() != Some(libc::EINTR) {
+                panic!("failed to reap sandboxed child: {err}");
+            }
+        }
     }
 
     if file_system_sandbox_policy.has_full_disk_write_access() && !allow_network_for_proxy {
@@ -248,6 +328,11 @@ pub fn run_main() -> ! {
             inner,
             !no_proc,
             allow_network_for_proxy,
+            if allow_detached_children {
+                BwrapProcessLifetime::AllowDetachedChildren
+            } else {
+                BwrapProcessLifetime::TerminateWithParent
+            },
         );
     }
 
@@ -363,6 +448,7 @@ fn run_bwrap_with_proc_fallback(
     inner: Vec<String>,
     mount_proc: bool,
     allow_network_for_proxy: bool,
+    process_lifetime: BwrapProcessLifetime,
 ) -> ! {
     let mut network_mode = bwrap_network_mode(network_sandbox_policy, allow_network_for_proxy);
     let mut mount_proc = mount_proc;
@@ -390,6 +476,7 @@ fn run_bwrap_with_proc_fallback(
     let options = BwrapOptions {
         mount_proc,
         network_mode,
+        process_lifetime,
         ..Default::default()
     };
     let mut bwrap_args = build_bwrap_argv(
@@ -401,6 +488,28 @@ fn run_bwrap_with_proc_fallback(
     )
     .unwrap_or_else(|err| exit_with_bwrap_build_error(err));
     apply_inner_command_argv0(&mut bwrap_args.args);
+    if process_lifetime == BwrapProcessLifetime::AllowDetachedChildren {
+        let status_pipe = create_detached_command_status_pipe();
+        let command_separator = bwrap_args
+            .args
+            .iter()
+            .rposition(|arg| arg == "--")
+            .unwrap_or_else(|| panic!("bubblewrap argv is missing inner command separator '--'"));
+        bwrap_args.args.splice(
+            command_separator..command_separator,
+            [
+                "--detached-status-fd".to_string(),
+                status_pipe[1].to_string(),
+            ],
+        );
+        // `exec_bwrap` makes preserved descriptors inheritable for the outer
+        // exec. The inner reaper resets close-on-exec before it forks the user
+        // command, so the status writer never leaks into that command.
+        bwrap_args
+            .preserved_files
+            .push(unsafe { File::from_raw_fd(status_pipe[1]) });
+        run_bwrap_in_child_with_synthetic_mount_cleanup(bwrap_args, status_pipe[0]);
+    }
     run_or_exec_bwrap(bwrap_args);
 }
 
@@ -439,6 +548,7 @@ fn build_bwrap_argv(
         preserved_files: bwrap_args.preserved_files,
         synthetic_mount_targets: bwrap_args.synthetic_mount_targets,
         protected_create_targets: bwrap_args.protected_create_targets,
+        process_lifetime: bwrap_args.process_lifetime,
     })
 }
 
@@ -540,24 +650,40 @@ fn resolve_true_command() -> String {
 fn run_or_exec_bwrap(bwrap_args: crate::bwrap::BwrapArgs) -> ! {
     if bwrap_args.synthetic_mount_targets.is_empty()
         && bwrap_args.protected_create_targets.is_empty()
+        && bwrap_args.process_lifetime != BwrapProcessLifetime::AllowDetachedChildren
     {
         exec_bwrap(bwrap_args.args, bwrap_args.preserved_files);
     }
-    run_bwrap_in_child_with_synthetic_mount_cleanup(bwrap_args);
+    run_bwrap_in_child_with_synthetic_mount_cleanup(
+        bwrap_args, /*detached_status_read_fd*/ -1,
+    );
 }
 
-fn run_bwrap_in_child_with_synthetic_mount_cleanup(bwrap_args: crate::bwrap::BwrapArgs) -> ! {
+fn run_bwrap_in_child_with_synthetic_mount_cleanup(
+    bwrap_args: crate::bwrap::BwrapArgs,
+    detached_status_read_fd: libc::c_int,
+) -> ! {
     let crate::bwrap::BwrapArgs {
-        args,
+        mut args,
         preserved_files,
         synthetic_mount_targets,
         protected_create_targets,
+        process_lifetime,
     } = bwrap_args;
     let setup_signal_mask = ForwardedSignalMask::block();
     let synthetic_mount_registrations = register_synthetic_mount_targets(&synthetic_mount_targets);
     let protected_create_registrations =
         register_protected_create_targets(&protected_create_targets);
     let exec_start_pipe = create_exec_start_pipe(!protected_create_targets.is_empty());
+    // Detached execution always needs a status handoff from the namespace
+    // reaper. Protected targets additionally need the namespace identity so
+    // the monitor can retain custody after this launcher returns.
+    let detached_reaper_required = process_lifetime == BwrapProcessLifetime::AllowDetachedChildren;
+    let bwrap_info_pipe = create_bwrap_info_pipe(detached_reaper_required);
+    if bwrap_info_pipe[1] >= 0 {
+        args.insert(1, bwrap_info_pipe[1].to_string());
+        args.insert(1, "--info-fd".to_string());
+    }
     let parent_pid = unsafe { libc::getpid() };
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -566,6 +692,7 @@ fn run_bwrap_in_child_with_synthetic_mount_cleanup(bwrap_args: crate::bwrap::Bwr
     }
 
     if pid == 0 {
+        close_fd_if_open(bwrap_info_pipe[0]);
         reset_forwarded_signal_handlers_to_default();
         setup_signal_mask.restore();
         let setpgid_res = unsafe { libc::setpgid(0, 0) };
@@ -578,11 +705,41 @@ fn run_bwrap_in_child_with_synthetic_mount_cleanup(bwrap_args: crate::bwrap::Bwr
         exec_bwrap(args, preserved_files);
     }
 
+    close_fd_if_open(bwrap_info_pipe[1]);
     close_child_exec_start_read(exec_start_pipe[0]);
     let protected_create_monitor = ProtectedCreateMonitor::start(&protected_create_targets);
     let signal_forwarders = install_bwrap_signal_forwarders(pid);
     release_child_exec_start(exec_start_pipe[1]);
     setup_signal_mask.restore();
+    let namespace_init = read_bwrap_namespace_init(bwrap_info_pipe[0], pid);
+    if detached_reaper_required {
+        let initial_status = read_detached_command_status(detached_status_read_fd, pid);
+        let cleanup_signal_mask = ForwardedSignalMask::block();
+        let protected_create_monitor_violation = protected_create_monitor
+            .map(ProtectedCreateMonitor::stop)
+            .unwrap_or(false);
+        cleanup_synthetic_mount_targets(&synthetic_mount_registrations);
+        let protected_create_violation = if protected_create_targets.is_empty() {
+            protected_create_monitor_violation
+                || cleanup_protected_create_targets(&protected_create_registrations)
+        } else if let Some(namespace_init) = namespace_init
+            && !namespace_init.has_exited()
+        {
+            hand_off_protected_create_monitor(
+                namespace_init,
+                protected_create_targets,
+                protected_create_registrations,
+                &cleanup_signal_mask,
+            );
+            protected_create_monitor_violation
+        } else {
+            protected_create_monitor_violation
+                || cleanup_protected_create_targets(&protected_create_registrations)
+        };
+        signal_forwarders.restore();
+        cleanup_signal_mask.restore();
+        exit_with_wait_status_or_policy_violation(initial_status, protected_create_violation);
+    }
     let status = wait_for_bwrap_child(pid);
     let cleanup_signal_mask = ForwardedSignalMask::block();
     BWRAP_CHILD_PID.store(0, Ordering::SeqCst);
@@ -590,8 +747,20 @@ fn run_bwrap_in_child_with_synthetic_mount_cleanup(bwrap_args: crate::bwrap::Bwr
         .map(ProtectedCreateMonitor::stop)
         .unwrap_or(false);
     cleanup_synthetic_mount_targets(&synthetic_mount_registrations);
-    let protected_create_violation = protected_create_monitor_violation
-        || cleanup_protected_create_targets(&protected_create_registrations);
+    let protected_create_violation = if let Some(namespace_init) = namespace_init
+        && !namespace_init.has_exited()
+    {
+        hand_off_protected_create_monitor(
+            namespace_init,
+            protected_create_targets,
+            protected_create_registrations,
+            &cleanup_signal_mask,
+        );
+        protected_create_monitor_violation
+    } else {
+        protected_create_monitor_violation
+            || cleanup_protected_create_targets(&protected_create_registrations)
+    };
     signal_forwarders.restore();
     cleanup_signal_mask.restore();
     exit_with_wait_status_or_policy_violation(status, protected_create_violation);
@@ -637,6 +806,462 @@ impl ProtectedCreateMonitor {
             .join()
             .unwrap_or_else(|_| panic!("protected create monitor thread panicked"));
         self.violation.load(Ordering::SeqCst)
+    }
+}
+
+impl BwrapNamespaceInit {
+    fn from_bwrap_info(info: &str, launcher_pid: libc::pid_t) -> Option<Self> {
+        let pid = info
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("\"child-pid\":"))
+            .and_then(|value| value.trim().trim_end_matches(',').parse().ok())
+            .filter(|pid: &libc::pid_t| *pid > 0)
+            .unwrap_or_else(|| {
+                send_signal_to_bwrap_child(launcher_pid, libc::SIGKILL);
+                panic!("bubblewrap child information omitted a valid child-pid")
+            });
+        // Bind the numeric PID to an fd before inspecting any proc metadata.
+        // A detached namespace reaper legitimately becomes reparented after
+        // the outer launcher exits; PPid is therefore neither a liveness nor
+        // identity proof. The pidfd closes the reuse window instead.
+        let raw_pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        if raw_pidfd == -1 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::ESRCH) {
+                return None;
+            }
+            send_signal_to_bwrap_child(launcher_pid, libc::SIGKILL);
+            panic!("failed to open bubblewrap namespace init pidfd: {err}");
+        }
+        let pidfd = unsafe { OwnedFd::from_raw_fd(raw_pidfd as libc::c_int) };
+
+        let status = match fs::read_to_string(format!("/proc/{pid}/status")) {
+            Ok(status) => status,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(err) => {
+                send_signal_to_bwrap_child(launcher_pid, libc::SIGKILL);
+                panic!("failed to read bubblewrap namespace init status: {err}")
+            }
+        };
+        let is_namespace_reaper = namespace_status_is_pid_one(&status);
+        if !is_namespace_reaper {
+            send_signal_to_bwrap_child(launcher_pid, libc::SIGKILL);
+            panic!("bubblewrap child is not the namespace PID-1 reaper");
+        }
+        Some(Self { pid, pidfd })
+    }
+
+    fn has_exited(&self) -> bool {
+        let mut poll_fd = libc::pollfd {
+            fd: self.pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut poll_fd, 1, 0) };
+        result > 0
+    }
+
+    fn kill(&self) {
+        unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.pidfd.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            );
+        }
+    }
+
+    fn wait_for_exit(&self) {
+        let mut poll_fd = libc::pollfd {
+            fd: self.pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            let result = unsafe { libc::poll(&mut poll_fd, 1, -1) };
+            if result > 0 {
+                return;
+            }
+            if result < 0
+                && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                return;
+            }
+        }
+    }
+}
+
+fn namespace_status_is_pid_one(status: &str) -> bool {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("NSpid:"))
+        .and_then(|value| value.split_whitespace().last())
+        .is_some_and(|namespace_pid| namespace_pid == "1")
+}
+
+fn create_bwrap_info_pipe(enabled: bool) -> [libc::c_int; 2] {
+    if !enabled {
+        return [-1, -1];
+    }
+    let mut pipe = [-1, -1];
+    if unsafe { libc::pipe(pipe.as_mut_ptr()) } < 0 {
+        let err = std::io::Error::last_os_error();
+        panic!("failed to create bubblewrap info pipe: {err}");
+    }
+    pipe
+}
+
+fn create_detached_command_status_pipe() -> [libc::c_int; 2] {
+    let mut pipe = [-1, -1];
+    if unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+        let err = std::io::Error::last_os_error();
+        panic!("failed to create detached command-status pipe: {err}");
+    }
+    pipe
+}
+
+fn write_detached_command_status(fd: libc::c_int, status: libc::c_int) {
+    let bytes = status.to_ne_bytes();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let written = unsafe {
+            libc::write(
+                fd,
+                bytes[offset..].as_ptr().cast(),
+                bytes.len().saturating_sub(offset),
+            )
+        };
+        if written > 0 {
+            offset += written as usize;
+            continue;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        panic!("failed to report detached initial command status: {err}");
+    }
+    close_fd_if_open(fd);
+}
+
+fn read_detached_command_status(read_fd: libc::c_int, launcher_pid: libc::pid_t) -> libc::c_int {
+    if read_fd < 0 {
+        send_signal_to_bwrap_child(launcher_pid, libc::SIGKILL);
+        panic!("detached sandbox is missing its command-status pipe");
+    }
+    let mut bytes = [0_u8; std::mem::size_of::<libc::c_int>()];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let read = unsafe {
+            libc::read(
+                read_fd,
+                bytes[offset..].as_mut_ptr().cast(),
+                bytes.len().saturating_sub(offset),
+            )
+        };
+        if read > 0 {
+            offset += read as usize;
+            continue;
+        }
+        if read == 0 {
+            close_fd_if_open(read_fd);
+            send_signal_to_bwrap_child(launcher_pid, libc::SIGKILL);
+            panic!("detached namespace reaper closed the command-status pipe early");
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        close_fd_if_open(read_fd);
+        send_signal_to_bwrap_child(launcher_pid, libc::SIGKILL);
+        panic!("failed to read detached command status: {err}");
+    }
+    close_fd_if_open(read_fd);
+    libc::c_int::from_ne_bytes(bytes)
+}
+
+fn mark_fd_close_on_exec(fd: libc::c_int) {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        let err = std::io::Error::last_os_error();
+        panic!("failed to mark detached command-status fd close-on-exec: {err}");
+    }
+}
+
+fn read_bwrap_namespace_init(
+    read_fd: libc::c_int,
+    launcher_pid: libc::pid_t,
+) -> Option<BwrapNamespaceInit> {
+    if read_fd < 0 {
+        return None;
+    }
+    let mut info = String::new();
+    let mut file = unsafe { File::from_raw_fd(read_fd) };
+    file.by_ref()
+        .take(64 * 1024)
+        .read_to_string(&mut info)
+        .unwrap_or_else(|err| {
+            send_signal_to_bwrap_child(launcher_pid, libc::SIGKILL);
+            panic!("failed to read bubblewrap child information: {err}")
+        });
+    BwrapNamespaceInit::from_bwrap_info(&info, launcher_pid)
+}
+
+fn hand_off_protected_create_monitor(
+    namespace_init: BwrapNamespaceInit,
+    targets: Vec<crate::bwrap::ProtectedCreateTarget>,
+    mut registrations: Vec<ProtectedCreateTargetRegistration>,
+    signal_mask: &ForwardedSignalMask,
+) {
+    // Transfer custody before publishing READY. The supervisor owns the
+    // monitor after the one-shot parent returns, so monitor death after READY
+    // still terminates the namespace and cleans the authoritative markers.
+    transfer_protected_create_registrations(&mut registrations, namespace_init.pid);
+    let mut parent_ready_pipe = [-1, -1];
+    if unsafe { libc::pipe2(parent_ready_pipe.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+        terminate_namespace_and_cleanup(&namespace_init, &registrations);
+        let err = std::io::Error::last_os_error();
+        panic!("failed to create detached guard readiness pipe: {err}");
+    }
+    let supervisor_pid = unsafe { libc::fork() };
+    if supervisor_pid < 0 {
+        close_fd_if_open(parent_ready_pipe[0]);
+        close_fd_if_open(parent_ready_pipe[1]);
+        terminate_namespace_and_cleanup(&namespace_init, &registrations);
+        let err = std::io::Error::last_os_error();
+        panic!("failed to fork detached guard supervisor: {err}");
+    }
+    if supervisor_pid == 0 {
+        close_fd_if_open(parent_ready_pipe[0]);
+        reset_forwarded_signal_handlers_to_default();
+        signal_mask.restore();
+        if unsafe { libc::setsid() } < 0 {
+            unsafe { libc::_exit(1) };
+        }
+        redirect_standard_streams_to_dev_null();
+        supervise_protected_create_monitor(
+            namespace_init,
+            targets,
+            registrations,
+            parent_ready_pipe[1],
+        );
+    }
+
+    close_fd_if_open(parent_ready_pipe[1]);
+    let mut ready = [0_u8; 1];
+    loop {
+        let result =
+            unsafe { libc::read(parent_ready_pipe[0], ready.as_mut_ptr().cast(), ready.len()) };
+        if result > 0 {
+            if ready[0] != 1 {
+                close_fd_if_open(parent_ready_pipe[0]);
+                terminate_namespace_and_cleanup(&namespace_init, &registrations);
+                panic!("detached guard supervisor rejected the monitor handoff");
+            }
+            break;
+        }
+        if result == 0 {
+            terminate_namespace_and_cleanup(&namespace_init, &registrations);
+            panic!("detached guard exited before becoming ready");
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            terminate_namespace_and_cleanup(&namespace_init, &registrations);
+            panic!("failed waiting for detached guard readiness: {err}");
+        }
+    }
+    close_fd_if_open(parent_ready_pipe[0]);
+}
+
+fn supervise_protected_create_monitor(
+    namespace_init: BwrapNamespaceInit,
+    targets: Vec<crate::bwrap::ProtectedCreateTarget>,
+    registrations: Vec<ProtectedCreateTargetRegistration>,
+    parent_ready_fd: libc::c_int,
+) -> ! {
+    let mut monitor_ready_pipe = [-1, -1];
+    if unsafe { libc::pipe2(monitor_ready_pipe.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+        terminate_namespace_and_cleanup(&namespace_init, &registrations);
+        unsafe { libc::_exit(1) };
+    }
+    let monitor_pid = unsafe { libc::fork() };
+    if monitor_pid < 0 {
+        close_fd_if_open(monitor_ready_pipe[0]);
+        close_fd_if_open(monitor_ready_pipe[1]);
+        terminate_namespace_and_cleanup(&namespace_init, &registrations);
+        unsafe { libc::_exit(1) };
+    }
+    if monitor_pid == 0 {
+        close_fd_if_open(monitor_ready_pipe[0]);
+        close_fd_if_open(parent_ready_fd);
+        monitor_protected_create_targets_until_namespace_exit(
+            namespace_init,
+            &targets,
+            &registrations,
+            monitor_ready_pipe[1],
+        );
+    }
+
+    close_fd_if_open(monitor_ready_pipe[1]);
+    let mut ready = [0_u8; 1];
+    let ready_result = unsafe {
+        libc::read(
+            monitor_ready_pipe[0],
+            ready.as_mut_ptr().cast(),
+            ready.len(),
+        )
+    };
+    close_fd_if_open(monitor_ready_pipe[0]);
+    if ready_result != 1 || ready[0] != 1 {
+        kill_and_reap_monitor(monitor_pid);
+        terminate_namespace_and_cleanup(&namespace_init, &registrations);
+        close_fd_if_open(parent_ready_fd);
+        unsafe { libc::_exit(1) };
+    }
+    if write_monitor_status(parent_ready_fd, 1).is_err() {
+        kill_and_reap_monitor(monitor_pid);
+        terminate_namespace_and_cleanup(&namespace_init, &registrations);
+        unsafe { libc::_exit(1) };
+    }
+    close_fd_if_open(parent_ready_fd);
+    let mut status = 0;
+    loop {
+        let result = unsafe { libc::waitpid(monitor_pid, &mut status, 0) };
+        if result == monitor_pid {
+            break;
+        }
+        if result < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        terminate_namespace_and_cleanup(&namespace_init, &registrations);
+        unsafe { libc::_exit(1) };
+    }
+    if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+        terminate_namespace_and_cleanup(&namespace_init, &registrations);
+        unsafe { libc::_exit(1) };
+    }
+    unsafe { libc::_exit(0) }
+}
+
+fn terminate_namespace_and_cleanup(
+    namespace_init: &BwrapNamespaceInit,
+    registrations: &[ProtectedCreateTargetRegistration],
+) {
+    namespace_init.kill();
+    namespace_init.wait_for_exit();
+    let _ = cleanup_protected_create_targets(registrations);
+}
+
+fn write_monitor_status(fd: libc::c_int, status: u8) -> std::io::Result<()> {
+    let byte = [status];
+    loop {
+        let written = unsafe { libc::write(fd, byte.as_ptr().cast(), byte.len()) };
+        if written == 1 {
+            return Ok(());
+        }
+        if written < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WriteZero,
+            "detached guard readiness pipe closed",
+        ));
+    }
+}
+
+fn kill_and_reap_monitor(pid: libc::pid_t) {
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+    loop {
+        let mut status = 0;
+        let result = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if result == pid || result < 0 {
+            return;
+        }
+    }
+}
+
+fn transfer_protected_create_registrations(
+    registrations: &mut [ProtectedCreateTargetRegistration],
+    namespace_init_pid: libc::pid_t,
+) {
+    with_synthetic_mount_registry_lock(|| {
+        for registration in registrations {
+            let transferred_marker = registration.marker_dir.join(namespace_init_pid.to_string());
+            fs::rename(&registration.marker_file, &transferred_marker).unwrap_or_else(|err| {
+                panic!(
+                    "failed to transfer protected create target {}: {err}",
+                    registration.target.path().display()
+                )
+            });
+            registration.marker_file = transferred_marker;
+        }
+    });
+}
+
+fn monitor_protected_create_targets_until_namespace_exit(
+    namespace_init: BwrapNamespaceInit,
+    targets: &[crate::bwrap::ProtectedCreateTarget],
+    registrations: &[ProtectedCreateTargetRegistration],
+    ready_fd: libc::c_int,
+) -> ! {
+    let watcher = ProtectedCreateWatcher::new(targets);
+    for target in targets {
+        if remove_protected_create_target_best_effort(target).is_some() {
+            terminate_namespace_and_cleanup(&namespace_init, registrations);
+            unsafe { libc::_exit(1) };
+        }
+    }
+    if write_monitor_status(ready_fd, 1).is_err() {
+        terminate_namespace_and_cleanup(&namespace_init, registrations);
+        unsafe { libc::_exit(1) };
+    }
+    close_fd_if_open(ready_fd);
+    #[cfg(test)]
+    if FORCE_DETACHED_MONITOR_EXIT_AFTER_READY.load(Ordering::SeqCst) {
+        unsafe { libc::_exit(1) };
+    }
+    let never_stop = AtomicBool::new(false);
+    while !namespace_init.has_exited() {
+        for target in targets {
+            if remove_protected_create_target_best_effort(target).is_some() {
+                terminate_namespace_and_cleanup(&namespace_init, registrations);
+                unsafe { libc::_exit(1) };
+            }
+        }
+        if let Some(watcher) = &watcher {
+            watcher.wait_for_create_event(&never_stop);
+        } else {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    cleanup_protected_create_targets(registrations);
+    unsafe { libc::_exit(0) }
+}
+
+fn redirect_standard_streams_to_dev_null() {
+    let Ok(dev_null) = OpenOptions::new().read(true).write(true).open("/dev/null") else {
+        unsafe { libc::_exit(1) };
+    };
+    for fd in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        if unsafe { libc::dup2(dev_null.as_raw_fd(), fd) } < 0 {
+            unsafe { libc::_exit(1) };
+        }
+    }
+}
+
+fn close_fd_if_open(fd: libc::c_int) {
+    if fd >= 0 {
+        unsafe {
+            libc::close(fd);
+        }
     }
 }
 
@@ -1190,6 +1815,7 @@ fn try_remove_protected_create_target(
         ProtectedCreateRemoval::Other
     };
     let result = if removal == ProtectedCreateRemoval::Directory {
+        make_directory_tree_writable(path)?;
         fs::remove_dir_all(path)
     } else {
         fs::remove_file(path)
@@ -1204,6 +1830,33 @@ fn try_remove_protected_create_target(
         path.display()
     );
     Ok(Some(removal))
+}
+
+fn make_directory_tree_writable(path: &Path) -> std::io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    if metadata.file_type().is_symlink() {
+        // Never follow a hostile link while making an inaccessible cleanup
+        // tree traversable; remove_dir_all will unlink the link itself.
+        return Ok(());
+    }
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(permissions.mode() | 0o700);
+    fs::set_permissions(path, permissions)?;
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let child = entry.path();
+            let child_metadata = fs::symlink_metadata(&child)?;
+            if child_metadata.is_dir() {
+                make_directory_tree_writable(&child)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn remove_synthetic_mount_target(target: &crate::bwrap::SyntheticMountTarget) {
@@ -1246,7 +1899,21 @@ fn process_is_active(pid: libc::pid_t) -> bool {
         return true;
     }
     let err = std::io::Error::last_os_error();
-    !matches!(err.raw_os_error(), Some(libc::ESRCH))
+    if matches!(err.raw_os_error(), Some(libc::ESRCH)) {
+        return false;
+    }
+    !process_is_zombie(pid)
+}
+
+fn process_is_zombie(pid: libc::pid_t) -> bool {
+    let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    // Field three is the state. Split after the final ')' because comm may
+    // itself contain spaces or parentheses.
+    stat.rsplit_once(')')
+        .and_then(|(_, fields)| fields.split_whitespace().next())
+        == Some("Z")
 }
 
 fn with_synthetic_mount_registry_lock<T>(f: impl FnOnce() -> T) -> T {
@@ -1292,11 +1959,32 @@ fn synthetic_mount_marker_dir(path: &Path) -> PathBuf {
     synthetic_mount_registry_root().join(format!("{:016x}", hash_path(path)))
 }
 
-fn synthetic_mount_registry_root() -> PathBuf {
-    let effective_uid = unsafe { libc::geteuid() };
-    std::env::temp_dir().join(format!(
-        "codex-bwrap-synthetic-mount-targets-{effective_uid}"
-    ))
+pub(crate) fn synthetic_mount_registry_root() -> PathBuf {
+    static REGISTRY_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+    REGISTRY_ROOT
+        .get_or_init(|| {
+            let effective_uid = unsafe { libc::geteuid() };
+            let temp_dir = std::env::temp_dir();
+            let temp_dir = temp_dir.canonicalize().unwrap_or_else(|err| {
+                panic!(
+                    "failed to resolve synthetic mount registry temp directory {}: {err}",
+                    temp_dir.display()
+                )
+            });
+            let registry_root = temp_dir.join(format!(
+                "codex-bwrap-synthetic-mount-targets-{effective_uid}"
+            ));
+            // A registry symlink can redirect bookkeeping into a writable root
+            // that does not overlap TMPDIR, bypassing its read-only mount.
+            assert!(
+                !registry_root.is_symlink(),
+                "synthetic mount registry must not be a symlink: {}",
+                registry_root.display()
+            );
+            registry_root
+        })
+        .clone()
 }
 
 fn hash_path(path: &Path) -> u64 {
@@ -1354,6 +2042,7 @@ fn run_bwrap_in_child_capture_output(bwrap_args: crate::bwrap::BwrapArgs) -> Str
         preserved_files,
         synthetic_mount_targets,
         protected_create_targets,
+        process_lifetime: _,
     } = bwrap_args;
     let setup_signal_mask = ForwardedSignalMask::block();
     let synthetic_mount_registrations = register_synthetic_mount_targets(&synthetic_mount_targets);
