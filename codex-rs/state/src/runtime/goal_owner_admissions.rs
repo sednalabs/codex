@@ -138,8 +138,16 @@ impl GoalOwnerAdmissionStore {
         Self { pool }
     }
 
+    /// Close the shared goals database pool during runtime shutdown.
+    pub(crate) async fn close(&self) {
+        self.pool.close().await;
+    }
+
     /// Converts orphaned in-flight work to a conservative terminal state on reopen.
-    pub(crate) async fn recover_in_flight_on_open(pool: &SqlitePool) -> anyhow::Result<()> {
+    pub(crate) async fn recover_in_flight_on_open(
+        pool: &SqlitePool,
+        _runtime_owner: &super::RuntimeProcessLock,
+    ) -> anyhow::Result<()> {
         let now_ms = admission_datetime_to_epoch_millis(Utc::now());
         let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query(
@@ -151,6 +159,7 @@ SET phase = 'pending',
     lease_acquired_at_ms = NULL,
     updated_at_ms = ?
 WHERE phase = 'acquired'
+  AND requested_phase = 'pending'
   AND attempts_started > 0
             "#,
         )
@@ -165,6 +174,7 @@ SET phase = 'terminal',
     deferred_terminal_disposition = 'manual_review',
     updated_at_ms = ?
 WHERE phase = 'in_flight'
+  AND requested_phase = 'pending'
             "#,
         )
         .bind(now_ms)
@@ -194,6 +204,15 @@ WHERE phase = 'in_flight'
     ) -> anyhow::Result<GoalOwnerAdmissionRecord> {
         validate_observation(observation)?;
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let thread_goal_exists =
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM thread_goals WHERE thread_id = ?")
+                .bind(observation.thread_id.to_string())
+                .fetch_optional(&mut *transaction)
+                .await?
+                .is_some();
+        if !thread_goal_exists {
+            bail!("goal-owner admission requires an existing thread goal")
+        }
         let origin = fetch_origin(
             &mut *transaction,
             observation.thread_id,
@@ -298,6 +317,7 @@ WHERE thread_id = ?
   AND generation = ?
   AND cancellation_epoch = ?
   AND phase = 'pending'
+  AND requested_phase = 'pending'
   AND deadline_at_ms <= ?
   AND attempts_started < max_attempts
 RETURNING *
@@ -476,6 +496,16 @@ RETURNING *
             Some(record) if exact_terminal_replay(&record, lease, outcome, disposition) => {
                 Ok(Some(record))
             }
+            Some(record)
+                if same_lease(&record, lease)
+                    && matches!(
+                        record.terminal_outcome,
+                        GoalOwnerAdmissionTerminalOutcome::Cancelled
+                            | GoalOwnerAdmissionTerminalOutcome::Uncertain
+                    ) =>
+            {
+                Ok(None)
+            }
             Some(record) if same_lease(&record, lease) => {
                 bail!("conflicting replay for goal-owner admission lease outcome")
             }
@@ -484,6 +514,10 @@ RETURNING *
     }
 
     /// Increment the cancellation epoch and terminalize the exact durable generation.
+    ///
+    /// Cancellation before a provider request is opened is definitive. Once a
+    /// request is in flight, its external effect is unknowable, so cancellation
+    /// records `uncertain/manual_review` and permanently fences replacement.
     pub async fn cancel(
         &self,
         authority: &GoalOwnerAdmissionAuthority,
@@ -501,16 +535,22 @@ RETURNING *
             r#"
 UPDATE goal_owner_admissions
 SET phase = 'terminal',
-    terminal_outcome = 'cancelled',
+    terminal_outcome = CASE
+        WHEN phase = 'in_flight' THEN 'uncertain'
+        ELSE 'cancelled'
+    END,
     cancellation_epoch = ?,
-    deferred_terminal_disposition = ?,
+    deferred_terminal_disposition = CASE
+        WHEN phase = 'in_flight' THEN 'manual_review'
+        ELSE ?
+    END,
     updated_at_ms = ?
 WHERE thread_id = ?
   AND goal_id = ?
   AND generation = ?
   AND cancellation_epoch = ?
-  AND phase IN ('dormant', 'pending', 'in_flight')
-RETURNING *
+  AND phase IN ('dormant', 'pending', 'acquired', 'in_flight')
+  RETURNING *
             "#,
         )
         .bind(next_epoch)
@@ -543,7 +583,11 @@ RETURNING *
                             .cancellation_epoch
                             .checked_add(1)
                             .unwrap_or(i64::MIN)
-                    && record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Cancelled =>
+                    && matches!(
+                        record.terminal_outcome,
+                        GoalOwnerAdmissionTerminalOutcome::Cancelled
+                            | GoalOwnerAdmissionTerminalOutcome::Uncertain
+                    ) =>
             {
                 bail!("conflicting replay for goal-owner admission cancellation")
             }
@@ -865,7 +909,7 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
             }
         }
         GoalOwnerAdmissionPhase::Acquired | GoalOwnerAdmissionPhase::InFlight => {
-            if record.requested_phase == GoalOwnerAdmissionPhase::InFlight
+            if record.requested_phase != GoalOwnerAdmissionPhase::Pending
                 || record.terminal_outcome != GoalOwnerAdmissionTerminalOutcome::None
                 || !has_lease
                 || record.attempts_started == 0
@@ -956,8 +1000,17 @@ fn exact_cancellation_replay(
                 .checked_add(1)
                 .unwrap_or(i64::MIN)
         && record.phase == GoalOwnerAdmissionPhase::Terminal
-        && record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Cancelled
-        && record.deferred_terminal_disposition == disposition
+        && match record.terminal_outcome {
+            GoalOwnerAdmissionTerminalOutcome::Cancelled => {
+                record.deferred_terminal_disposition == disposition
+            }
+            GoalOwnerAdmissionTerminalOutcome::Uncertain => {
+                record.deferred_terminal_disposition
+                    == GoalOwnerAdmissionTerminalDisposition::ManualReview
+                    && disposition != GoalOwnerAdmissionTerminalDisposition::None
+            }
+            _ => false,
+        }
 }
 
 #[cfg(test)]

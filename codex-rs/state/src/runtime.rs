@@ -33,6 +33,8 @@ use sqlx::Sqlite;
 use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
 use std::collections::BTreeSet;
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -98,6 +100,33 @@ const LOG_PARTITION_ROW_LIMIT: i64 = 1_000;
 const STATE_DB_BASENAME: &str = "state";
 const LOGS_DB_BASENAME: &str = "logs";
 const USAGE_DB_BASENAME: &str = "usage";
+
+/// Process-lifetime ownership of the goals database.
+///
+/// The lock is held for the lifetime of the owning [`StateRuntime`]. A runtime
+/// that cannot acquire it opens the goals database read-only and must not run
+/// startup recovery. OS file-lock semantics release the lock when a process
+/// exits, which is the only safe signal for a later runtime to recover work.
+pub(crate) struct RuntimeProcessLock {
+    _file: File,
+}
+
+impl RuntimeProcessLock {
+    fn try_acquire(goals_path: &Path) -> anyhow::Result<Option<Self>> {
+        let lock_path = goals_path.with_extension("runtime.lock");
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(lock_path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct StateRuntime {
     sqlite: SqliteConfig,
@@ -110,6 +139,7 @@ pub struct StateRuntime {
     memories: MemoryStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
+    runtime_process_lock: Arc<tokio::sync::Mutex<Option<RuntimeProcessLock>>>,
 }
 
 impl StateRuntime {
@@ -143,27 +173,30 @@ impl StateRuntime {
         let goals_path = sqlite.goals_db_path();
         let memories_path = sqlite.memories_db_path();
         let usage_path = sqlite.usage_db_path();
-        remove_legacy_db_files(
-            sqlite.home(),
-            database_filename(&state_path)?,
-            STATE_DB_BASENAME,
-            "state",
-        )
-        .await;
-        remove_legacy_db_files(
-            sqlite.home(),
-            database_filename(&logs_path)?,
-            LOGS_DB_BASENAME,
-            "logs",
-        )
-        .await;
-        remove_legacy_db_files(
-            sqlite.home(),
-            database_filename(&usage_path)?,
-            USAGE_DB_BASENAME,
-            "usage",
-        )
-        .await;
+        let runtime_process_lock = RuntimeProcessLock::try_acquire(&goals_path)?;
+        if runtime_process_lock.is_some() {
+            remove_legacy_db_files(
+                sqlite.home(),
+                database_filename(&state_path)?,
+                STATE_DB_BASENAME,
+                "state",
+            )
+            .await;
+            remove_legacy_db_files(
+                sqlite.home(),
+                database_filename(&logs_path)?,
+                LOGS_DB_BASENAME,
+                "logs",
+            )
+            .await;
+            remove_legacy_db_files(
+                sqlite.home(),
+                database_filename(&usage_path)?,
+                USAGE_DB_BASENAME,
+                "usage",
+            )
+            .await;
+        }
         let state_migrator = runtime_state_migrator();
         let logs_migrator = runtime_logs_migrator();
         let usage_migrator = runtime_usage_migrator();
@@ -204,10 +237,14 @@ impl StateRuntime {
                 return Err(err);
             }
         };
-        let goals_pool = match sqlite
-            .open_goals_db(&goals_migrator, telemetry_override)
-            .await
-        {
+        let goals_pool_result = if runtime_process_lock.is_some() {
+            sqlite
+                .open_goals_db(&goals_migrator, telemetry_override)
+                .await
+        } else {
+            sqlite.open_read_only_pool(&goals_path).await
+        };
+        let goals_pool = match goals_pool_result {
             Ok(db) => Arc::new(db),
             Err(err) => {
                 warn!("failed to open goals db at {}: {err}", goals_path.display());
@@ -215,11 +252,16 @@ impl StateRuntime {
                 return Err(err);
             }
         };
-        if let Err(err) =
-            GoalOwnerAdmissionStore::recover_in_flight_on_open(goals_pool.as_ref()).await
-        {
-            close_sqlite_pools(&[pool.as_ref(), logs_pool.as_ref(), goals_pool.as_ref()]).await;
-            return Err(err);
+        if let Some(runtime_owner) = runtime_process_lock.as_ref() {
+            if let Err(err) = GoalOwnerAdmissionStore::recover_in_flight_on_open(
+                goals_pool.as_ref(),
+                runtime_owner,
+            )
+            .await
+            {
+                close_sqlite_pools(&[pool.as_ref(), logs_pool.as_ref(), goals_pool.as_ref()]).await;
+                return Err(err);
+            }
         }
         let memories_pool = match sqlite
             .open_memories_db(&memories_migrator, telemetry_override)
@@ -315,6 +357,7 @@ impl StateRuntime {
             default_provider,
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
             thread_recency_at_millis: Arc::new(AtomicI64::new(thread_recency_at_millis)),
+            runtime_process_lock: Arc::new(tokio::sync::Mutex::new(runtime_process_lock)),
         });
         if let Err(err) = runtime.run_logs_startup_maintenance().await {
             warn!("logs startup maintenance failed; continuing runtime initialization: {err}");
@@ -374,6 +417,7 @@ impl StateRuntime {
         self.usage_pool.close().await;
         self.logs_pool.close().await;
         self.pool.close().await;
+        self.runtime_process_lock.lock().await.take();
     }
 
     pub async fn clear_memory_data_in_sqlite_home(sqlite: &SqliteConfig) -> anyhow::Result<bool> {

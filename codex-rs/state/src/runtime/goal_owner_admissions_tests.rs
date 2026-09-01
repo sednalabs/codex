@@ -34,6 +34,38 @@ async fn runtime() -> Arc<StateRuntime> {
     .expect("initialize state runtime")
 }
 
+async fn ensure_thread_goal(runtime: &StateRuntime, thread_id: ThreadId) {
+    if runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await
+        .expect("read test thread goal")
+        .is_none()
+    {
+        runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "test goal for durable admission",
+                crate::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("create test thread goal");
+    }
+}
+
+async fn observe_denial(
+    runtime: &StateRuntime,
+    observation: &GoalOwnerAdmissionObservation,
+) -> anyhow::Result<GoalOwnerAdmissionRecord> {
+    ensure_thread_goal(runtime, observation.thread_id).await;
+    runtime
+        .goal_owner_admissions()
+        .observe_denial(observation)
+        .await
+}
+
 #[tokio::test]
 async fn observe_denial_is_idempotent_for_an_exact_replay_and_fences_conflicts() {
     let runtime = runtime().await;
@@ -46,27 +78,17 @@ async fn observe_denial_is_idempotent_for_an_exact_replay_and_fences_conflicts()
         GoalOwnerAdmissionPhase::Pending,
     );
 
-    let first = runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation)
+    let first = observe_denial(&runtime, &observation)
         .await
         .expect("record initial denial");
-    let replay = runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation)
+    let replay = observe_denial(&runtime, &observation)
         .await
         .expect("replay initial denial");
     assert_eq!(replay, first);
 
     let mut conflicting_replay = observation.clone();
     conflicting_replay.denial_class = GoalOwnerAdmissionDenialClass::RateLimited;
-    assert!(
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&conflicting_replay)
-            .await
-            .is_err()
-    );
+    assert!(observe_denial(&runtime, &conflicting_replay).await.is_err());
 
     let next_observation = observation(
         thread_id,
@@ -75,9 +97,7 @@ async fn observe_denial_is_idempotent_for_an_exact_replay_and_fences_conflicts()
         Utc::now(),
         GoalOwnerAdmissionPhase::Pending,
     );
-    let next = runtime
-        .goal_owner_admissions()
-        .observe_denial(&next_observation)
+    let next = observe_denial(&runtime, &next_observation)
         .await
         .expect("record next denial");
     assert_eq!(next.authority.generation, 2);
@@ -104,9 +124,7 @@ async fn acquire_requires_current_pending_authority_deadline_and_attempt_budget(
         Utc::now() + chrono::Duration::minutes(1),
         GoalOwnerAdmissionPhase::Pending,
     );
-    let future_record = runtime
-        .goal_owner_admissions()
-        .observe_denial(&future)
+    let future_record = observe_denial(&runtime, &future)
         .await
         .expect("record future admission");
     assert_eq!(
@@ -125,9 +143,7 @@ async fn acquire_requires_current_pending_authority_deadline_and_attempt_budget(
         Utc::now() - chrono::Duration::seconds(1),
         GoalOwnerAdmissionPhase::Pending,
     );
-    let ready_record = runtime
-        .goal_owner_admissions()
-        .observe_denial(&ready)
+    let ready_record = observe_denial(&runtime, &ready)
         .await
         .expect("record ready admission");
     let stale_authority = GoalOwnerAdmissionAuthority {
@@ -157,9 +173,7 @@ async fn acquire_requires_current_pending_authority_deadline_and_attempt_budget(
         .expect("read acquired admission")
         .expect("acquired admission should persist");
     assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&ready)
+        observe_denial(&runtime, &ready)
             .await
             .expect("replay original denial after acquisition"),
         in_flight
@@ -178,17 +192,18 @@ async fn acquire_requires_current_pending_authority_deadline_and_attempt_budget(
 async fn outcomes_and_cancellation_are_lease_and_epoch_fenced() {
     let runtime = runtime().await;
     let thread_id = ThreadId::new();
-    let first = runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation(
+    let first = observe_denial(
+        &runtime,
+        &observation(
             thread_id,
             "goal-a",
             "request-a",
             Utc::now() - chrono::Duration::seconds(1),
             GoalOwnerAdmissionPhase::Pending,
-        ))
-        .await
-        .expect("record first admission");
+        ),
+    )
+    .await
+    .expect("record first admission");
     let lease = runtime
         .goal_owner_admissions()
         .try_acquire(&first.authority, Utc::now())
@@ -235,17 +250,18 @@ async fn outcomes_and_cancellation_are_lease_and_epoch_fenced() {
             .is_err()
     );
 
-    let second = runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation(
+    let second = observe_denial(
+        &runtime,
+        &observation(
             thread_id,
             "goal-a",
             "request-b",
             Utc::now() - chrono::Duration::seconds(1),
             GoalOwnerAdmissionPhase::Pending,
-        ))
-        .await
-        .expect("record second admission");
+        ),
+    )
+    .await
+    .expect("record second admission");
     let second_lease = runtime
         .goal_owner_admissions()
         .try_acquire(&second.authority, Utc::now())
@@ -293,6 +309,151 @@ async fn outcomes_and_cancellation_are_lease_and_epoch_fenced() {
 }
 
 #[tokio::test]
+async fn cancellation_of_an_acquired_lease_fences_open_before_provider_io() {
+    let runtime = runtime().await;
+    let thread_id = ThreadId::new();
+    let pending = observe_denial(
+        &runtime,
+        &observation(
+            thread_id,
+            "goal-acquired-cancel",
+            "request-acquired-cancel",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ),
+    )
+    .await
+    .expect("record acquired cancellation admission");
+    let lease = runtime
+        .goal_owner_admissions()
+        .try_acquire(&pending.authority, Utc::now())
+        .await
+        .expect("acquire admission")
+        .expect("admission should acquire");
+
+    let cancelled = runtime
+        .goal_owner_admissions()
+        .cancel(
+            &pending.authority,
+            GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+        )
+        .await
+        .expect("cancel acquired admission")
+        .expect("acquired cancellation should be accepted");
+    assert_eq!(
+        cancelled.terminal_outcome,
+        GoalOwnerAdmissionTerminalOutcome::Cancelled
+    );
+    assert_eq!(cancelled.authority.cancellation_epoch, 1);
+    assert!(
+        !runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("cancelled acquired lease cannot open")
+    );
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .finish(
+                &lease,
+                GoalOwnerAdmissionTerminalOutcome::Succeeded,
+                GoalOwnerAdmissionTerminalDisposition::None,
+            )
+            .await
+            .expect("cancelled acquired lease cannot finish"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn cancellation_of_in_flight_work_is_uncertain_and_not_replayable() {
+    let runtime = runtime().await;
+    let thread_id = ThreadId::new();
+    let pending = observe_denial(
+        &runtime,
+        &observation(
+            thread_id,
+            "goal-in-flight-cancel",
+            "request-in-flight-cancel",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ),
+    )
+    .await
+    .expect("record in-flight cancellation admission");
+    let lease = runtime
+        .goal_owner_admissions()
+        .try_acquire(&pending.authority, Utc::now())
+        .await
+        .expect("acquire admission")
+        .expect("admission should acquire");
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("open admission")
+    );
+
+    let uncertain = runtime
+        .goal_owner_admissions()
+        .cancel(
+            &pending.authority,
+            GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+        )
+        .await
+        .expect("cancel in-flight admission")
+        .expect("in-flight cancellation should be accepted");
+    assert_eq!(
+        uncertain.terminal_outcome,
+        GoalOwnerAdmissionTerminalOutcome::Uncertain
+    );
+    assert_eq!(
+        uncertain.deferred_terminal_disposition,
+        GoalOwnerAdmissionTerminalDisposition::ManualReview
+    );
+    assert_eq!(uncertain.authority.cancellation_epoch, 1);
+    assert!(
+        observe_denial(
+            &runtime,
+            &observation(
+                thread_id,
+                "goal-replacement-after-cancel",
+                "request-replacement-after-cancel",
+                Utc::now(),
+                GoalOwnerAdmissionPhase::Pending,
+            ),
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .cancel(
+                &pending.authority,
+                GoalOwnerAdmissionTerminalDisposition::AwaitUserTurn,
+            )
+            .await
+            .expect("replay uncertain cancellation"),
+        Some(uncertain.clone())
+    );
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .finish(
+                &lease,
+                GoalOwnerAdmissionTerminalOutcome::Succeeded,
+                GoalOwnerAdmissionTerminalDisposition::None,
+            )
+            .await
+            .expect("uncertain lease cannot finish"),
+        None
+    );
+}
+
+#[tokio::test]
 async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
     let codex_home = unique_temp_dir();
     let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
@@ -300,17 +461,18 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         .await
         .expect("initialize runtime");
     let in_flight_thread = ThreadId::new();
-    let in_flight = runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation(
+    let in_flight = observe_denial(
+        &runtime,
+        &observation(
             in_flight_thread,
             "goal-in-flight",
             "request-in-flight",
             Utc::now() - chrono::Duration::seconds(1),
             GoalOwnerAdmissionPhase::Pending,
-        ))
-        .await
-        .expect("record in-flight admission");
+        ),
+    )
+    .await
+    .expect("record in-flight admission");
     let in_flight_lease = runtime
         .goal_owner_admissions()
         .try_acquire(&in_flight.authority, Utc::now())
@@ -325,44 +487,48 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
             .expect("open in-flight admission")
     );
     assert!(
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&observation(
+        observe_denial(
+            &runtime,
+            &observation(
                 in_flight_thread,
                 "goal-replacement",
                 "request-replacement",
                 Utc::now(),
                 GoalOwnerAdmissionPhase::Pending,
-            ))
-            .await
-            .is_err()
+            )
+        )
+        .await
+        .is_err()
     );
 
     let dormant_thread = ThreadId::new();
-    let dormant = runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation(
+    let dormant = observe_denial(
+        &runtime,
+        &observation(
             dormant_thread,
             "goal-dormant",
             "request-dormant",
             Utc::now() + chrono::Duration::minutes(1),
             GoalOwnerAdmissionPhase::Dormant,
-        ))
-        .await
-        .expect("record dormant admission");
+        ),
+    )
+    .await
+    .expect("record dormant admission");
     let pending_thread = ThreadId::new();
-    let pending = runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation(
+    let pending = observe_denial(
+        &runtime,
+        &observation(
             pending_thread,
             "goal-pending",
             "request-pending",
             Utc::now() + chrono::Duration::minutes(1),
             GoalOwnerAdmissionPhase::Pending,
-        ))
-        .await
-        .expect("record pending admission");
+        ),
+    )
+    .await
+    .expect("record pending admission");
     runtime.close().await;
+    drop(runtime);
 
     let reopened = StateRuntime::init(sqlite, "test-provider".to_string())
         .await
@@ -383,17 +549,18 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         GoalOwnerAdmissionTerminalDisposition::ManualReview
     );
     assert!(
-        reopened
-            .goal_owner_admissions()
-            .observe_denial(&observation(
+        observe_denial(
+            &reopened,
+            &observation(
                 in_flight_thread,
                 "goal-replacement",
                 "request-replacement",
                 Utc::now(),
                 GoalOwnerAdmissionPhase::Pending,
-            ))
-            .await
-            .is_err()
+            )
+        )
+        .await
+        .is_err()
     );
     assert_eq!(
         reopened
@@ -414,20 +581,81 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
 }
 
 #[tokio::test]
+async fn a_second_live_runtime_cannot_recover_the_first_runtime_admission() {
+    let codex_home = unique_temp_dir();
+    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+    let owner = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("initialize owning runtime");
+    let thread_id = ThreadId::new();
+    let pending = observe_denial(
+        &owner,
+        &observation(
+            thread_id,
+            "goal-live-runtime",
+            "request-live-runtime",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ),
+    )
+    .await
+    .expect("record live runtime admission");
+    let lease = owner
+        .goal_owner_admissions()
+        .try_acquire(&pending.authority, Utc::now())
+        .await
+        .expect("acquire live runtime admission")
+        .expect("live runtime admission should acquire");
+    assert!(
+        owner
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("open live runtime admission")
+    );
+
+    let second = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("initialize diagnostic runtime while owner is live");
+    let still_in_flight = second
+        .goal_owner_admissions()
+        .get(thread_id)
+        .await
+        .expect("read admission from diagnostic runtime")
+        .expect("live admission should remain present");
+    assert_eq!(still_in_flight.phase, GoalOwnerAdmissionPhase::InFlight);
+    assert_eq!(
+        still_in_flight,
+        owner
+            .goal_owner_admissions()
+            .get(thread_id)
+            .await
+            .unwrap()
+            .unwrap()
+    );
+
+    second.close().await;
+    owner.close().await;
+    drop(second);
+    drop(owner);
+}
+
+#[tokio::test]
 async fn acquired_open_release_and_reopen_are_exactly_fenced() {
     let runtime = runtime().await;
     let thread_id = ThreadId::new();
-    let pending = runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation(
+    let pending = observe_denial(
+        &runtime,
+        &observation(
             thread_id,
             "goal-lifecycle",
             "request-lifecycle",
             Utc::now() - chrono::Duration::seconds(1),
             GoalOwnerAdmissionPhase::Pending,
-        ))
-        .await
-        .expect("record lifecycle admission");
+        ),
+    )
+    .await
+    .expect("record lifecycle admission");
     let lease = runtime
         .goal_owner_admissions()
         .try_acquire(&pending.authority, Utc::now())
@@ -539,17 +767,18 @@ async fn malformed_input_and_contradictory_database_updates_fail_closed() {
         None
     );
 
-    let record = runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation(
+    let record = observe_denial(
+        &runtime,
+        &observation(
             thread_id,
             "goal-a",
             "request-a",
             Utc::now(),
             GoalOwnerAdmissionPhase::Pending,
-        ))
-        .await
-        .expect("record valid admission");
+        ),
+    )
+    .await
+    .expect("record valid admission");
     assert!(
         sqlx::query(
             "UPDATE goal_owner_admissions SET terminal_outcome = 'succeeded' WHERE thread_id = ?",
@@ -566,6 +795,99 @@ async fn malformed_input_and_contradictory_database_updates_fail_closed() {
             .await
             .expect("read valid admission after rejected update"),
         Some(record)
+    );
+}
+
+#[tokio::test]
+async fn admission_without_a_thread_goal_is_rejected_and_cannot_be_acquired() {
+    let runtime = runtime().await;
+    let thread_id = ThreadId::new();
+    let admission = observation(
+        thread_id,
+        "goal-without-thread",
+        "request-without-thread",
+        Utc::now() - chrono::Duration::seconds(1),
+        GoalOwnerAdmissionPhase::Pending,
+    );
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .observe_denial(&admission)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .get(thread_id)
+            .await
+            .expect("read rejected admission"),
+        None
+    );
+
+    ensure_thread_goal(&runtime, thread_id).await;
+    let admitted = runtime
+        .goal_owner_admissions()
+        .observe_denial(&admission)
+        .await
+        .expect("record admission after creating thread goal");
+    sqlx::query("DELETE FROM thread_goals WHERE thread_id = ?")
+        .bind(thread_id.to_string())
+        .execute(runtime.goal_owner_admissions().pool.as_ref())
+        .await
+        .expect("delete thread goal");
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .get(thread_id)
+            .await
+            .expect("read deleted admission"),
+        None
+    );
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .try_acquire(&admitted.authority, Utc::now())
+            .await
+            .expect("deleted admission cannot acquire"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn requested_phase_contradictions_are_rejected_by_schema_and_acquire_guard() {
+    let runtime = runtime().await;
+    let thread_id = ThreadId::new();
+    let admission = observe_denial(
+        &runtime,
+        &observation(
+            thread_id,
+            "goal-phase-guard",
+            "request-phase-guard",
+            Utc::now() - chrono::Duration::seconds(1),
+            GoalOwnerAdmissionPhase::Pending,
+        ),
+    )
+    .await
+    .expect("record phase guard admission");
+    assert!(
+        sqlx::query(
+            "UPDATE goal_owner_admissions SET requested_phase = 'dormant' WHERE thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .execute(runtime.goal_owner_admissions().pool.as_ref())
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        runtime
+            .goal_owner_admissions()
+            .try_acquire(&admission.authority, Utc::now())
+            .await
+            .expect("phase contradiction remains fenced")
+            .expect("valid pending admission should acquire")
+            .authority,
+        admission.authority
     );
 }
 
@@ -596,20 +918,12 @@ async fn phase_replays_fail_closed() {
         ),
     ] {
         let request = observation(thread_id, "goal", "request", Utc::now(), initial);
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&request)
+        observe_denial(&runtime, &request)
             .await
             .expect("record admission");
         let mut conflict = request;
         conflict.phase = conflicting;
-        assert!(
-            runtime
-                .goal_owner_admissions()
-                .observe_denial(&conflict)
-                .await
-                .is_err()
-        );
+        assert!(observe_denial(&runtime, &conflict).await.is_err());
     }
 }
 
@@ -625,9 +939,7 @@ async fn origin_history_replays_return_the_current_admission_across_replacements
         deadline_at,
         GoalOwnerAdmissionPhase::Pending,
     );
-    let first = runtime
-        .goal_owner_admissions()
-        .observe_denial(&origin_a)
+    let first = observe_denial(&runtime, &origin_a)
         .await
         .expect("record first origin");
     let origin_b = observation(
@@ -637,16 +949,12 @@ async fn origin_history_replays_return_the_current_admission_across_replacements
         deadline_at,
         GoalOwnerAdmissionPhase::Pending,
     );
-    let pending = runtime
-        .goal_owner_admissions()
-        .observe_denial(&origin_b)
+    let pending = observe_denial(&runtime, &origin_b)
         .await
         .expect("replace current admission with second origin");
     assert_eq!(pending.authority.generation, 2);
     assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&origin_a)
+        observe_denial(&runtime, &origin_a)
             .await
             .expect("replay first origin while second is pending"),
         pending
@@ -676,9 +984,7 @@ async fn origin_history_replays_return_the_current_admission_across_replacements
         .expect("finish second admission")
         .expect("finish should be accepted");
     assert_eq!(
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&origin_a)
+        observe_denial(&runtime, &origin_a)
             .await
             .expect("replay first origin after second is terminal"),
         terminal
@@ -688,9 +994,7 @@ async fn origin_history_replays_return_the_current_admission_across_replacements
     let mut conflicting_old_replay = origin_a;
     conflicting_old_replay.max_attempts = 3;
     assert!(
-        runtime
-            .goal_owner_admissions()
-            .observe_denial(&conflicting_old_replay)
+        observe_denial(&runtime, &conflicting_old_replay)
             .await
             .is_err()
     );
@@ -707,6 +1011,7 @@ async fn concurrent_exact_origin_replays_converge_without_duplicate_history() {
         Utc::now(),
         GoalOwnerAdmissionPhase::Pending,
     );
+    ensure_thread_goal(&runtime, thread_id).await;
     let store_a = runtime.goal_owner_admissions().clone();
     let store_b = runtime.goal_owner_admissions().clone();
     let (first, second) = tokio::join!(
@@ -745,6 +1050,7 @@ async fn concurrent_distinct_origins_are_recorded_and_generation_ordered() {
         Utc::now(),
         GoalOwnerAdmissionPhase::Pending,
     );
+    ensure_thread_goal(&runtime, thread_id).await;
     let store_a = runtime.goal_owner_admissions().clone();
     let store_b = runtime.goal_owner_admissions().clone();
     let (first, second) = tokio::join!(
