@@ -10,6 +10,9 @@
 
 use anyhow::Result;
 use codex_core::ThreadManager;
+use codex_core::context::ContextualUserFragment;
+use codex_core::context::InternalContextSource;
+use codex_core::context::InternalModelContextFragment;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ThreadIdleInput;
@@ -19,6 +22,7 @@ use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnLifecycleContributor;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
@@ -41,6 +45,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use serde_json::Value;
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
@@ -61,6 +66,7 @@ const ORCHESTRATOR_TASK: &str = "orchestrator starts sub-orchestrator";
 const FRESH_CHILD_TASK: &str = "fresh child starts after owner limit";
 const OPERATOR_LIMIT_PROMPT: &str = "operator provider limit";
 const LIMIT_PROMPT: &str = "orchestrator provider limit";
+const CONTINUATION_PROMPT: &str = "resume this persistent owner after the provider response";
 
 #[derive(Clone, Debug)]
 struct PendingOwnerContinuation {
@@ -71,7 +77,7 @@ struct PendingOwnerContinuation {
 struct ContinuityFixture {
     thread_manager: Arc<Mutex<Option<Weak<ThreadManager>>>>,
     continuation_starts: Arc<std::sync::atomic::AtomicUsize>,
-    persistent_owner_marks: Arc<Mutex<Vec<ThreadId>>>,
+    persistent_owner_marks: Arc<Mutex<HashSet<ThreadId>>>,
     owner_idle_tx: tokio::sync::mpsc::UnboundedSender<ThreadId>,
     continuation_started_tx: tokio::sync::mpsc::UnboundedSender<ThreadId>,
 }
@@ -84,7 +90,7 @@ impl ContinuityFixture {
         Self {
             thread_manager: Arc::new(Mutex::new(None)),
             continuation_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            persistent_owner_marks: Arc::new(Mutex::new(Vec::new())),
+            persistent_owner_marks: Arc::new(Mutex::new(HashSet::new())),
             owner_idle_tx,
             continuation_started_tx,
         }
@@ -116,7 +122,7 @@ impl ThreadLifecycleContributor<codex_core::config::Config> for ContinuityFixtur
                 self.persistent_owner_marks
                     .lock()
                     .expect("continuity fixture owner-mark lock")
-                    .push(thread_id);
+                    .insert(thread_id);
             }
             if matches!(
                 input.session_source,
@@ -151,7 +157,19 @@ impl ThreadLifecycleContributor<codex_core::config::Config> for ContinuityFixtur
                 input.thread_store.insert((*pending).to_owned());
                 return;
             };
-            if thread.try_start_turn_if_idle(Vec::new()).await.is_ok() {
+            // This mirrors the production goal extension's continuation_steering_item: the
+            // automatic idle-start gate must receive a non-empty, model-visible item. An empty
+            // vector is intentionally a no-op and would only prove bookkeeping, not a new turn.
+            let continuation_item: ResponseItem =
+                ContextualUserFragment::into(InternalModelContextFragment::new(
+                    InternalContextSource::from_static("goal"),
+                    CONTINUATION_PROMPT,
+                ));
+            if thread
+                .try_start_turn_if_idle(vec![continuation_item])
+                .await
+                .is_ok()
+            {
                 self.continuation_starts
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let _ = self.continuation_started_tx.send(thread_id);
@@ -582,8 +600,8 @@ impl Match for OwnerLimitPromptMatcher {
         else {
             return false;
         };
-        body["client_metadata"]["x-openai-subagent"] == "collab_spawn"
-            && current_input["type"] != "function_call_output"
+        body["client_metadata"]["x-openai-subagent"].as_str() == Some("collab_spawn")
+            && current_input["type"].as_str() != Some("function_call_output")
     }
 }
 
@@ -676,12 +694,14 @@ async fn provider_limit_pairs_operator_control_with_persistent_owner_continuatio
     extensions.turn_lifecycle_contributor(turn_lifecycle_contributor);
 
     let owner_requests = Arc::new(AtomicUsize::new(0));
+    let owner_request_bodies = Arc::new(Mutex::new(Vec::new()));
     let (owner_request_tx, mut owner_request_rx) = tokio::sync::mpsc::unbounded_channel();
     Mock::given(method("POST"))
         .and(path_regex(".*/responses$"))
         .and(LimitPromptMatcher)
         .respond_with(LimitSequenceResponder {
             calls: Arc::clone(&owner_requests),
+            request_bodies: Arc::clone(&owner_request_bodies),
             request_attempt_tx: owner_request_tx,
             limit_response,
             continuation_response: sse_response(sse(vec![
@@ -803,6 +823,22 @@ async fn provider_limit_pairs_operator_control_with_persistent_owner_continuatio
     );
     assert_eq!(1, continuity.continuation_starts.load(Ordering::SeqCst));
     assert_eq!(2, owner_requests.load(Ordering::SeqCst));
+    {
+        let owner_request_bodies = owner_request_bodies
+            .lock()
+            .expect("provider request-body lock");
+        assert_eq!(
+            2,
+            owner_request_bodies.len(),
+            "the persistent continuation must reach the provider as a second physical request"
+        );
+        assert!(
+            owner_request_bodies[1]
+                .to_string()
+                .contains(CONTINUATION_PROMPT),
+            "the second provider request must contain the model-visible continuation item"
+        );
+    }
     assert!(
         continuity.persistent_owner_marked(owner_thread_id),
         "the persistent owner marker must survive its provider-limited continuation"
@@ -818,13 +854,21 @@ async fn provider_limit_pairs_operator_control_with_persistent_owner_continuatio
 #[derive(Debug)]
 struct LimitSequenceResponder {
     calls: Arc<AtomicUsize>,
+    request_bodies: Arc<Mutex<Vec<Value>>>,
     request_attempt_tx: tokio::sync::mpsc::UnboundedSender<usize>,
     limit_response: ResponseTemplate,
     continuation_response: ResponseTemplate,
 }
 
 impl Respond for LimitSequenceResponder {
-    fn respond(&self, _request: &Request) -> ResponseTemplate {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        self.request_bodies
+            .lock()
+            .expect("provider request-body lock")
+            .push(
+                serde_json::from_slice(&decoded_body(request))
+                    .expect("provider request should contain JSON"),
+            );
         let attempt = self.calls.fetch_add(1, Ordering::SeqCst);
         let _ = self.request_attempt_tx.send(attempt);
         match attempt {
@@ -840,9 +884,23 @@ async fn wait_for_thread_spawn(
     created_threads: &mut tokio::sync::broadcast::Receiver<ThreadId>,
     expected_parent_thread_id: ThreadId,
 ) -> Result<ThreadId> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    let mut lagged_events = 0u64;
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let thread_id = created_threads.recv().await?;
+            let thread_id = match created_threads.recv().await {
+                Ok(thread_id) => thread_id,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    // Keep waiting for the target event, but retain the loss signal so a test
+                    // cannot claim exact publication evidence after an overrun receiver.
+                    lagged_events = lagged_events.saturating_add(skipped);
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    return Err(anyhow::anyhow!(
+                        "thread publication channel closed after skipping {lagged_events} events"
+                    ));
+                }
+            };
             let Ok(thread) = manager.get_thread(thread_id).await else {
                 continue;
             };
@@ -856,8 +914,17 @@ async fn wait_for_thread_spawn(
             }
         }
     })
-    .await
-    .map_err(|_| anyhow::anyhow!("timed out waiting for ThreadSpawn publication"))?
+    .await;
+    match result {
+        Ok(Ok(thread_id)) if lagged_events == 0 => Ok(thread_id),
+        Ok(Ok(_)) => Err(anyhow::anyhow!(
+            "thread publication receiver skipped {lagged_events} events before the target"
+        )),
+        Ok(Err(err)) => Err(err),
+        Err(_) => Err(anyhow::anyhow!(
+            "timed out waiting for ThreadSpawn publication after skipping {lagged_events} events"
+        )),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1005,11 +1072,13 @@ async fn usage_limit_spawns_fresh_v2_child_after_owner_denial() -> Result<()> {
 
     let (limit_request_tx, mut limit_request_rx) = tokio::sync::mpsc::unbounded_channel();
     let limit_request_calls = Arc::new(AtomicUsize::new(0));
+    let limit_request_bodies = Arc::new(Mutex::new(Vec::new()));
     Mock::given(method("POST"))
         .and(path_regex(".*/responses$"))
         .and(OwnerLimitPromptMatcher)
         .respond_with(LimitSequenceResponder {
             calls: Arc::clone(&limit_request_calls),
+            request_bodies: Arc::clone(&limit_request_bodies),
             request_attempt_tx: limit_request_tx,
             limit_response,
             continuation_response,
@@ -1169,6 +1238,22 @@ async fn usage_limit_spawns_fresh_v2_child_after_owner_denial() -> Result<()> {
             .map_err(|_| anyhow::anyhow!("timed out waiting for continuation request"))?
             .expect("continuation request signal channel should remain open");
     assert_eq!(1, continuation_attempt);
+    {
+        let limit_request_bodies = limit_request_bodies
+            .lock()
+            .expect("provider request-body lock");
+        assert_eq!(
+            2,
+            limit_request_bodies.len(),
+            "the owner continuation must reach the provider as a second physical request"
+        );
+        assert!(
+            limit_request_bodies[1]
+                .to_string()
+                .contains(CONTINUATION_PROMPT),
+            "the second provider request must contain the model-visible continuation item"
+        );
+    }
     let continuation_turn_id = loop {
         let event = wait_for_event(&orchestrator, |_| true).await;
         match event {
