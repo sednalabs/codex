@@ -97,8 +97,7 @@ pub struct InferenceCallEvent {
     pub omitted_fields: Option<Vec<InferenceCallField>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, TS, JsonSchema)]
-#[schemars(with = "String")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, TS)]
 #[ts(type = "string")]
 pub enum InferenceCallStatus {
     Started,
@@ -114,8 +113,7 @@ pub enum InferenceCallStatus {
     Unknown(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, TS, JsonSchema)]
-#[schemars(with = "String")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, TS)]
 #[ts(type = "string")]
 pub enum InferenceCallTransport {
     ResponsesHttp,
@@ -125,8 +123,7 @@ pub enum InferenceCallTransport {
     Unknown(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, TS, JsonSchema)]
-#[schemars(with = "String")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, TS)]
 #[ts(type = "string")]
 pub enum InferenceCallField {
     TurnId,
@@ -149,6 +146,45 @@ pub enum InferenceCallField {
     /// A receipt field introduced by a newer producer. The exact wire token
     /// is retained so older readers do not silently rewrite it.
     Unknown(String),
+}
+
+impl JsonSchema for InferenceCallStatus {
+    fn schema_name() -> Cow<'static, str> {
+        "InferenceCallStatus".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "minLength": 1,
+        })
+    }
+}
+
+impl JsonSchema for InferenceCallTransport {
+    fn schema_name() -> Cow<'static, str> {
+        "InferenceCallTransport".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "minLength": 1,
+        })
+    }
+}
+
+impl JsonSchema for InferenceCallField {
+    fn schema_name() -> Cow<'static, str> {
+        "InferenceCallField".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "minLength": 1,
+        })
+    }
 }
 
 /// Local provenance for one inference attempt.
@@ -459,13 +495,13 @@ impl JsonSchema for InferenceCallSource {
                     "type": "object",
                     "properties": {"type": {"const": "direct"}},
                     "required": ["type"],
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                 },
                 {
                     "type": "object",
                     "properties": {"type": {"const": "host_continuity_check"}},
                     "required": ["type"],
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                 },
                 {
                     "type": "object",
@@ -475,13 +511,20 @@ impl JsonSchema for InferenceCallSource {
                         "runtime_tool_call_id": {"type": "string"},
                     },
                     "required": ["type", "cell_id", "runtime_tool_call_id"],
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                 },
                 {
                     "type": "object",
                     "properties": {"type": {"type": "string", "minLength": 1}},
                     "required": ["type"],
                     "additionalProperties": true,
+                    "not": {
+                        "properties": {
+                            "type": {
+                                "enum": ["direct", "host_continuity_check", "code_mode"],
+                            },
+                        },
+                    },
                 },
             ],
         })

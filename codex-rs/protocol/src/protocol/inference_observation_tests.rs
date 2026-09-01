@@ -438,9 +438,52 @@ fn inference_call_schema_and_typescript_describe_wire_shapes() -> Result<()> {
     let field_schema = serde_json::to_value(schemars::schema_for!(InferenceCallField))?;
     let source_schema = serde_json::to_value(schemars::schema_for!(InferenceCallSource))?;
     assert_eq!(status_schema["type"], "string");
+    assert_eq!(status_schema["minLength"], 1);
     assert_eq!(transport_schema["type"], "string");
+    assert_eq!(transport_schema["minLength"], 1);
     assert_eq!(field_schema["type"], "string");
+    assert_eq!(field_schema["minLength"], 1);
     assert!(source_schema["anyOf"].is_array());
+
+    let source_branches = source_schema["anyOf"].as_array().expect("source branches");
+    let direct_branch = source_branches
+        .iter()
+        .find(|branch| branch["properties"]["type"]["const"] == "direct")
+        .expect("direct source branch");
+    assert_eq!(direct_branch["required"], json!(["type"]));
+    assert_eq!(direct_branch["additionalProperties"], true);
+
+    let host_continuity_check_branch = source_branches
+        .iter()
+        .find(|branch| branch["properties"]["type"]["const"] == "host_continuity_check")
+        .expect("host continuity check source branch");
+    assert_eq!(host_continuity_check_branch["required"], json!(["type"]));
+    assert_eq!(host_continuity_check_branch["additionalProperties"], true);
+
+    let code_mode_branch = source_branches
+        .iter()
+        .find(|branch| branch["properties"]["type"]["const"] == "code_mode")
+        .expect("code mode source branch");
+    assert_eq!(
+        code_mode_branch["required"],
+        json!(["type", "cell_id", "runtime_tool_call_id"])
+    );
+    assert_eq!(code_mode_branch["properties"]["cell_id"]["type"], "string");
+    assert_eq!(
+        code_mode_branch["properties"]["runtime_tool_call_id"]["type"],
+        "string"
+    );
+    assert_eq!(code_mode_branch["additionalProperties"], true);
+
+    let unknown_branch = source_branches
+        .iter()
+        .find(|branch| branch["properties"]["type"]["minLength"] == 1)
+        .expect("unknown source branch");
+    assert_eq!(unknown_branch["additionalProperties"], true);
+    assert_eq!(
+        unknown_branch["not"]["properties"]["type"]["enum"],
+        json!(["direct", "host_continuity_check", "code_mode"])
+    );
 
     let status_decl = InferenceCallStatus::decl(&ts_rs::Config::default());
     let source_decl = InferenceCallSource::decl(&ts_rs::Config::default());
@@ -448,6 +491,38 @@ fn inference_call_schema_and_typescript_describe_wire_shapes() -> Result<()> {
     assert!(source_decl.contains("code_mode"));
     assert!(source_decl.contains("cell_id"));
     assert!(source_decl.contains("runtime_tool_call_id"));
+    Ok(())
+}
+
+#[test]
+fn inference_call_schema_source_cases_match_serde_contract() -> Result<()> {
+    for wire in [
+        json!({"type": "direct"}),
+        json!({"type": "direct", "future_field": true}),
+        json!({"type": "host_continuity_check", "future_field": 7}),
+        json!({
+            "type": "code_mode",
+            "cell_id": "cell-1",
+            "runtime_tool_call_id": "runtime-call-1",
+            "future_field": "preserve-me",
+        }),
+        json!({"type": "future_source", "metadata": {"attempt": 2}}),
+    ] {
+        assert!(serde_json::from_value::<InferenceCallSource>(wire).is_ok());
+    }
+
+    for wire in [
+        json!({"type": "code_mode"}),
+        json!({"type": "code_mode", "cell_id": 42, "runtime_tool_call_id": "call"}),
+        json!({
+            "type": "code_mode",
+            "cell_id": "cell-1",
+            "runtime_tool_call_id": null,
+        }),
+        json!({"type": "code_mode", "cell_id": "cell-1"}),
+    ] {
+        assert!(serde_json::from_value::<InferenceCallSource>(wire).is_err());
+    }
     Ok(())
 }
 
