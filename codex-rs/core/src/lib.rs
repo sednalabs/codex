@@ -65,6 +65,9 @@ mod mcp_openai_file;
 mod mcp_skill_dependencies;
 mod mcp_tool_approval_templates;
 mod mcp_tool_exposure;
+// This PR #700 foundation is intentionally dormant and crate-private. Its
+// inline tests cover the module until consumer wiring lands in a separate follow-up.
+#[allow(dead_code)]
 pub(crate) mod model_request_admission;
 mod network_policy_decision;
 mod original_image_detail;
