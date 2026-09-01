@@ -793,6 +793,7 @@ async fn review_guardian_mcp_elicitation(
                 Some(turn_context.model_info().slug.as_str()),
                 request.server_name.as_str(),
                 connector_id,
+                /*link_id*/ None,
             ) != ApprovalsReviewer::AutoReview
             || request
                 .elicitation
@@ -877,6 +878,7 @@ async fn review_guardian_mcp_elicitation(
         Some(turn_context.model_info().slug.as_str()),
         request.server_name.as_str(),
         elicitation_connector_id(&request.elicitation),
+        /*link_id*/ None,
     );
     if !crate::guardian::routes_approval_policy_to_guardian(approval_policy, approvals_reviewer) {
         return Ok(None);

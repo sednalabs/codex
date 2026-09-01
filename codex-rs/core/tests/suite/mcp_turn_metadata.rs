@@ -31,6 +31,7 @@ use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
 use core_test_support::PathExt;
 use core_test_support::apps_test_server::AppsTestServer;
+use core_test_support::apps_test_server::LINK_ID;
 use core_test_support::apps_test_server::SEARCH_CALENDAR_CREATE_TOOL;
 use core_test_support::apps_test_server::SEARCH_CALENDAR_LIST_TOOL;
 use core_test_support::apps_test_server::SEARCH_CALENDAR_NAMESPACE;
@@ -379,10 +380,12 @@ async fn approved_mcp_tool_call_metadata_records_prior_user_input_request(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[test_case(false; "unmanaged model")]
-#[test_case(true; "protected model")]
-async fn apps_default_prompt_with_auto_review_routes_actual_mcp_approval_to_guardian(
+#[test_case(false, false; "unmanaged model")]
+#[test_case(true, false; "protected model")]
+#[test_case(false, true; "work mode link reviewer")]
+async fn apps_prompt_with_auto_review_routes_actual_mcp_approval_to_guardian(
     protected_model: bool,
+    work_link_reviewer: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -441,11 +444,30 @@ async fn apps_default_prompt_with_auto_review_routes_actual_mcp_approval_to_guar
                 .features
                 .enable(Feature::ToolCallMcpElicitation)
                 .expect("test config should allow feature update");
-            set_default_app_approval_mode_and_reviewer(
-                config,
-                AppToolApproval::Prompt,
-                app_reviewer,
-            );
+            if work_link_reviewer {
+                config.apps_mcp_product_sku = Some("tpp".to_string());
+                let user_config = toml::from_str(&format!(
+                    r#"
+[apps._default]
+default_tools_approval_mode = "prompt"
+approvals_reviewer = "user"
+[apps.calendar.links.{LINK_ID}]
+default_tools_approval_mode = "prompt"
+approvals_reviewer = "auto_review"
+"#
+                ))
+                .expect("apps config should parse");
+                config.config_layer_stack = config
+                    .config_layer_stack
+                    .with_user_config(&config.codex_home.join("config.toml").abs(), user_config)
+                    .expect("apps user config should be valid");
+            } else {
+                set_default_app_approval_mode_and_reviewer(
+                    config,
+                    AppToolApproval::Prompt,
+                    app_reviewer,
+                );
+            }
         });
     if protected_model {
         builder = builder.with_model("gpt-5.4").with_cloud_config_bundle(
@@ -454,7 +476,7 @@ async fn apps_default_prompt_with_auto_review_routes_actual_mcp_approval_to_guar
             ),
         );
     }
-    let test = builder.build(&server).await?;
+    let test = builder.build_with_auto_env(&server).await?;
 
     submit_user_turn(
         &test,
@@ -478,7 +500,7 @@ async fn apps_default_prompt_with_auto_review_routes_actual_mcp_approval_to_guar
     .await;
     assert!(
         matches!(route_event, EventMsg::TurnComplete(_)),
-        "expected apps._default auto_review to route the app approval to Guardian"
+        "expected the app's auto_review setting to route the approval to Guardian"
     );
 
     let guardian_request = responses
@@ -500,6 +522,201 @@ async fn apps_default_prompt_with_auto_review_routes_actual_mcp_approval_to_guar
         Some(&json!("Lunch"))
     );
 
+    Ok(())
+}
+
+#[test_case("approve", "prompt", None, false, true; "work_link_requires_prompt")]
+#[test_case("prompt", "approve", None, false, false; "work_link_skips_prompt")]
+#[test_case("approve", "approve", Some("selected_calendar_link"), true, true; "required_selector_uses_selected_link")]
+#[test_case("prompt", "prompt", Some("selected_calendar_link"), false, true; "ignores_non_selector_link_argument")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apps_link_policy_controls_elicitation(
+    connector_mode: &str,
+    link_mode: &str,
+    selected_link_id: Option<&'static str>,
+    requires_explicit_link_id: bool,
+    expected_prompt: bool,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let apps_server = AppsTestServer::mount(&server).await?;
+    let call_id = "calendar-link-policy";
+    let mut calendar_args = json!({
+        "title": "Lunch",
+        "starts_at": "2026-03-10T12:00:00Z"
+    });
+    let mut apps_config = format!(
+        r#"
+[apps.calendar]
+default_tools_approval_mode = "{connector_mode}"
+
+[apps.calendar.links.{LINK_ID}]
+default_tools_approval_mode = "{link_mode}"
+"#
+    );
+    if let Some(selected_link_id) = selected_link_id {
+        calendar_args["link_id"] = json!(selected_link_id);
+        let selected_link_mode = if requires_explicit_link_id {
+            "prompt"
+        } else {
+            "approve"
+        };
+        apps_config.push_str(&format!(
+            r#"
+[apps.calendar.links.{selected_link_id}]
+default_tools_approval_mode = "{selected_link_mode}"
+"#
+        ));
+        let mut required = vec!["title", "starts_at"];
+        let link_description = if requires_explicit_link_id {
+            required.push("link_id");
+            format!(
+                "Link ID for the account this call should use. Supply link_id using a link_id value below. Select only from the accounts below.\n{}",
+                serde_json::to_string_pretty(&json!([
+                    { "link_id": LINK_ID, "link_name": "Default calendar" },
+                    { "link_id": selected_link_id, "link_name": "Selected calendar" }
+                ]))?
+            )
+        } else {
+            "Link identifier for the calendar resource.".to_string()
+        };
+        let tool = json!({
+            "name": "calendar_create_event",
+            "description": "Create a calendar event.",
+            "annotations": { "readOnlyHint": false },
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "starts_at": { "type": "string" },
+                    "link_id": { "type": "string", "description": link_description }
+                },
+                "required": required,
+                "additionalProperties": false
+            },
+            "_meta": {
+                "connector_id": "calendar",
+                "link_id": LINK_ID,
+                "connector_name": "Calendar",
+                "_codex_apps": {
+                    "connector_id": "calendar",
+                    "resource_uri": "connector://calendar/tools/calendar_create_event",
+                    "contains_mcp_source": true,
+                    "requires_explicit_link_id": requires_explicit_link_id
+                }
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path_regex("^/api/codex/ps/mcp/?$"))
+            .and(body_partial_json(json!({ "method": "tools/list" })))
+            .respond_with(move |request: &Request| {
+                let body: Value = serde_json::from_slice(&request.body)
+                    .expect("Apps tools/list should be a valid JSON-RPC request");
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": { "tools": [tool] }
+                }))
+            })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+    }
+    let user_config = toml::from_str(&apps_config)?;
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-calendar"),
+                ev_function_call_with_namespace(
+                    call_id,
+                    SEARCH_CALENDAR_NAMESPACE,
+                    SEARCH_CALENDAR_CREATE_TOOL,
+                    &calendar_args.to_string(),
+                ),
+                ev_completed("resp-calendar"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-done"),
+                ev_assistant_message("msg-done", "done"),
+                ev_completed("resp-done"),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder =
+        search_capable_apps_builder(apps_server.chatgpt_base_url).with_config(move |config| {
+            config.apps_mcp_product_sku = Some("tpp".to_string());
+            config.approvals_reviewer = ApprovalsReviewer::User;
+            config
+                .features
+                .enable(Feature::ToolCallMcpElicitation)
+                .expect("test config should allow feature update");
+            config.config_layer_stack = config
+                .config_layer_stack
+                .with_user_config(&config.codex_home.join("config.toml").abs(), user_config)
+                .expect("apps user config should be valid");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    submit_user_turn(
+        &test,
+        "Use [$calendar](app://calendar) to create a calendar event.",
+        AskForApproval::OnRequest,
+        PermissionProfile::Disabled,
+        /*collaboration_mode*/ None,
+    )
+    .await?;
+
+    let mut completed_links = Vec::new();
+    let mut record_link = |event: &EventMsg| {
+        if let EventMsg::ItemCompleted(event) = event
+            && let TurnItem::McpToolCall(item) = &event.item
+            && item.id == call_id
+        {
+            completed_links.push(item.link_id.clone());
+        }
+    };
+    let event = wait_for_event(&test.codex, |event| {
+        record_link(event);
+        matches!(
+            event,
+            EventMsg::ElicitationRequest(_) | EventMsg::TurnComplete(_)
+        )
+    })
+    .await;
+    assert_eq!(
+        matches!(&event, EventMsg::ElicitationRequest(_)),
+        expected_prompt
+    );
+    if let EventMsg::ElicitationRequest(request) = event {
+        test.codex
+            .submit(Op::ResolveElicitation {
+                server_name: request.server_name,
+                request_id: request.id,
+                decision: ElicitationAction::Accept,
+                content: None,
+                meta: None,
+            })
+            .await?;
+        wait_for_event(&test.codex, |event| {
+            record_link(event);
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
+    assert_eq!(mock.requests().len(), 2);
+    assert_eq!(
+        recorded_apps_tool_call_by_call_id(&server, call_id).await["params"]["arguments"],
+        calendar_args
+    );
+    let expected_link_id = if requires_explicit_link_id {
+        selected_link_id
+    } else {
+        Some(LINK_ID)
+    };
+    assert_eq!(completed_links, vec![expected_link_id.map(str::to_string)]);
     Ok(())
 }
 

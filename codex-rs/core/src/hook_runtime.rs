@@ -334,6 +334,7 @@ fn executor_hook_sources_for_step(step_context: &StepContext) -> Vec<ExecutorPlu
                         app_tool_policy
                             .policy(AppToolPolicyInput {
                                 connector_id: tool_info.connector_id.as_deref(),
+                                link_id: None,
                                 tool_name: &tool_info.tool.name,
                                 tool_title: tool_info.tool.title.as_deref(),
                                 destructive_hint: annotations

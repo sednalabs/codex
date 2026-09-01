@@ -207,6 +207,7 @@ pub(crate) async fn handle_mcp_tool_call(
         let annotations = metadata.annotations.as_ref();
         AppToolPolicyEvaluator::new(&runtime_config.config_layer_stack).policy(AppToolPolicyInput {
             connector_id: metadata.connector_id.as_deref(),
+            link_id: metadata.link_id.as_deref(),
             tool_name: &tool_name,
             tool_title: metadata.tool_title.as_deref(),
             destructive_hint: annotations.and_then(|annotations| annotations.destructive_hint),
@@ -1415,6 +1416,7 @@ async fn maybe_request_mcp_tool_approval(
         Some(turn_context.model_info().slug.as_str()),
         &invocation.server,
         metadata.connector_id.as_deref(),
+        metadata.link_id.as_deref(),
     );
     if !strict_auto_review
         && mcp_permission_prompt_is_auto_approved(
