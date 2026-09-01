@@ -73,7 +73,7 @@ fn accept_loaded_thread_page(
     if loaded_thread_ids
         .len()
         .checked_add(page_thread_ids.len())
-        .map_or(true, |count| count > AGENT_PICKER_LOADED_MAX_THREADS)
+        .is_none_or(|count| count > AGENT_PICKER_LOADED_MAX_THREADS)
     {
         return Err(LoadedThreadPageRejection::ThreadBudgetExceeded);
     }
