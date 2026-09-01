@@ -40,6 +40,7 @@ use oauth2::RefreshToken;
 use oauth2::Scope;
 use oauth2::TokenResponse;
 use oauth2::basic::BasicTokenType;
+use rmcp::transport::auth::AuthError;
 use rmcp::transport::auth::OAuthTokenResponse;
 use rmcp::transport::auth::VendorExtraTokenFields;
 use serde::Deserialize;
@@ -88,6 +89,30 @@ pub(crate) use self::resolved_store::resolve_oauth_tokens_from_store_policy;
 const KEYRING_SERVICE: &str = "Codex MCP Credentials";
 const MCP_OAUTH_SECRET_PREFIX: &str = "MCP_OAUTH";
 const REFRESH_SKEW_MILLIS: u64 = 30_000;
+
+/// Returns whether RMCP's erased refresh failure identifies a terminal OAuth credential
+/// rejection.
+///
+/// RMCP 1.8 exposes `oauth2::RequestTokenError` as `AuthError::TokenRefreshFailed(String)`, so
+/// the structured server-error variant is unavailable at this boundary. Restrict the fallback to
+/// the stable `oauth2` display envelope and the exact RFC 6749 `invalid_grant` code. The one local
+/// terminal sentinel (a missing refresh token) is handled explicitly; every other erased failure
+/// remains retryable/unknown and must not trigger reauthorization.
+pub(crate) fn refresh_error_requires_reauthorization(error: &AuthError) -> bool {
+    let AuthError::TokenRefreshFailed(message) = error else {
+        return false;
+    };
+
+    let Some(server_error) = message.strip_prefix("Server returned error response: ") else {
+        return message == "No refresh token available";
+    };
+
+    let Some(remainder) = server_error.strip_prefix("invalid_grant") else {
+        return false;
+    };
+
+    remainder.is_empty() || remainder.starts_with(": ") || remainder.starts_with(" (see ")
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StoredOAuthTokens {
