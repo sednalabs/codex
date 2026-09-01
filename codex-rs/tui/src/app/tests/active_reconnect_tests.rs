@@ -180,8 +180,7 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
             app.recap
                 .note_turn_finished(&TurnStatus::Completed, before_disconnect);
         }
-        app.recap
-            .schedule_check(id, app.app_event_tx.clone(), Instant::now());
+        app.schedule_recap_check(id, Instant::now());
         let old_sender = app.app_event_tx.clone();
         let connected = reconnect(
             app.app_server_target.clone(),

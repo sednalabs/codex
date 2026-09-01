@@ -327,8 +327,7 @@ impl App {
                 self.chat_widget.pause_unavailable_thread();
                 self.chat_widget.add_info_message("This conversation is unavailable. Its cached transcript and draft remain here; input is paused. Open the agent picker or return to the parent to continue.".into(), /*hint*/ None);
             } else {
-                self.recap
-                    .schedule_check(id, self.app_event_tx.clone(), Instant::now());
+                self.schedule_recap_check(id, Instant::now());
             }
         } else {
             self.active_thread_id = None;

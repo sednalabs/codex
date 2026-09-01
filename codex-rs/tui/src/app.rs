@@ -833,8 +833,7 @@ impl App {
                 self.recap.note_focus_lost(now);
 
                 if let Some(thread_id) = thread_id {
-                    self.recap
-                        .schedule_check(thread_id, self.app_event_tx.clone(), now);
+                    self.schedule_recap_check(thread_id, now);
                 }
             }
             TuiEvent::FocusGained => {

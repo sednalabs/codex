@@ -620,8 +620,7 @@ impl App {
         }
         let now = Instant::now();
         self.recap.seed_from_progress(recap_progress, now);
-        self.recap
-            .schedule_check(thread_id, self.app_event_tx.clone(), now);
+        self.schedule_recap_check(thread_id, now);
 
         self.render_thread_snapshot(tui, app_server, thread_id, snapshot, !is_replay_only)?;
         if is_replay_only {

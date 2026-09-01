@@ -1210,6 +1210,7 @@ fn config_toml_deserializes_model_availability_nux() {
             notification_settings: TuiNotificationSettings::default(),
             animations: true,
             show_tooltips: true,
+            auto_recap: true,
             disable_paste_burst: None,
             vim_mode_default: false,
             raw_output_mode: false,
@@ -1314,6 +1315,38 @@ async fn runtime_config_uses_tui_raw_output_mode() {
     .expect("load config");
 
     assert!(cfg.tui_raw_output_mode);
+}
+
+#[tokio::test]
+async fn tui_auto_recap_defaults_and_cli_overrides() -> anyhow::Result<()> {
+    for (toml, override_value, expected) in [
+        ("", None, true),
+        ("[tui]", None, true),
+        ("[tui]\nauto_recap = true", None, true),
+        ("[tui]\nauto_recap = false", None, false),
+        ("[tui]\nauto_recap = true", Some(false), false),
+        ("[tui]\nauto_recap = false", Some(true), true),
+    ] {
+        let codex_home = TempDir::new()?;
+        std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), toml)?;
+        let config = ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .cli_overrides(
+                override_value
+                    .into_iter()
+                    .map(|enabled| ("tui.auto_recap".to_string(), TomlValue::Boolean(enabled)))
+                    .collect(),
+            )
+            .build()
+            .await?;
+
+        assert_eq!(
+            config.tui_auto_recap, expected,
+            "config: {toml}, override: {override_value:?}"
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -4190,6 +4223,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             notification_settings: TuiNotificationSettings::default(),
             animations: true,
             show_tooltips: true,
+            auto_recap: true,
             disable_paste_burst: None,
             vim_mode_default: false,
             raw_output_mode: false,
