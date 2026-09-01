@@ -1764,6 +1764,37 @@ decisions.
   the focused hosted proof; the app-server V2 slice also runs upstream's direct
   transport wire-shape regression.
 
+### In-Process Runtime And Facade Delivery Under Backpressure
+
+- Stage 1 covers the low-level `codex-app-server` runtime: its event and
+  response lanes remain bounded, its lossless notification classifier and
+  source FIFO remain authoritative, and lower-layer best-effort loss is
+  represented by the runtime's aggregated `Lagged` markers. Stage 2 now covers
+  the separate `codex-app-server-client` worker facade. Its caller-facing
+  in-process event receiver is unbounded, and each event the facade receives is
+  sent synchronously in FIFO order so unread notifications cannot block a later
+  request response.
+- The unbounded queue is only the caller-facing in-process facade queue.
+  Command queues and the embedded runtime remain bounded; this facade does not
+  recover events already dropped by the low-level runtime, does not alter the
+  bounded remote-client queue or classifier, and does not claim globally
+  bounded memory, exactly-once delivery, or durable recovery.
+- Facade FIFO applies to events it receives, including any low-level `Lagged`
+  markers. `ChatgptAuthTokensRefresh` remains handled locally as an unsupported
+  in-process server request, and closing the caller-facing receiver stops
+  forwarding without changing low-level runtime shutdown ownership.
+- Preserve `responses_bypass_saturated_in_process_event_router`,
+  `in_process_shutdown_waits_for_analytics_flush_budget`,
+  `guaranteed_delivery_helpers_cover_terminal_server_notifications`,
+  `unread_lossless_notifications_do_not_block_in_process_requests`, and
+  `next_event_surfaces_lagged_markers` until
+  upstream owns the corresponding low-level and facade scheduling boundaries.
+
+- Primary files:
+  - `codex-rs/app-server/src/in_process.rs`
+  - `codex-rs/app-server-client/src/lib.rs`
+  - `codex-rs/app-server-client/README.md`
+
 ### Thread-store History And Metadata Ordering
 
 - A clone-shared asynchronous operation permit serializes each `LiveThread`
