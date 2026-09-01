@@ -2627,6 +2627,7 @@ dependencies = [
  "codex-code-mode-protocol",
  "codex-code-mode-runtime",
  "codex-otel",
+ "codex-otel-trace-websocket",
  "codex-protocol",
  "codex-utils-cargo-bin",
  "futures",
@@ -3983,6 +3984,17 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "codex-otel-trace-websocket"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "futures",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
