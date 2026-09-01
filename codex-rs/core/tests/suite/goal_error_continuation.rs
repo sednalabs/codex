@@ -757,7 +757,7 @@ async fn provider_limit_pairs_operator_control_with_persistent_owner_continuatio
         Some(CodexErrorInfo::UsageLimitExceeded)
     ));
     assert!(
-        !matches!(owner.agent_status().await, AgentStatus::Errored(_)),
+        !matches!(owner.codex.agent_status().await, AgentStatus::Errored(_)),
         "the persistent owner remains non-terminal while its continuation is admitted"
     );
 
@@ -819,7 +819,7 @@ async fn provider_limit_pairs_operator_control_with_persistent_owner_continuatio
     assert!(continuation_complete.error.is_none());
     assert_eq!(
         AgentStatus::Completed(Some("owner resumed".to_string())),
-        owner.agent_status().await
+        owner.codex.agent_status().await
     );
     assert_eq!(1, continuity.continuation_starts.load(Ordering::SeqCst));
     assert_eq!(2, owner_requests.load(Ordering::SeqCst));
@@ -1055,7 +1055,7 @@ async fn usage_limit_spawns_fresh_v2_child_after_owner_denial() -> Result<()> {
         ev_assistant_message("orchestrator-complete", "owner completed after child"),
         ev_completed("orchestrator-followup"),
     ]));
-    mount_sse_once_match(
+    mount_response_once_match(
         &server,
         |request: &wiremock::Request| {
             request_matches_current_input(
