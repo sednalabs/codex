@@ -3,6 +3,7 @@ use crate::error_code::invalid_request;
 use crate::notification_media::without_notification_media;
 use crate::outgoing_message::ClientRequestResult;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
+use crate::request_processors::apply_live_model_settings;
 use crate::request_processors::populate_thread_turns_from_history;
 use crate::request_processors::thread_from_stored_thread;
 use crate::request_processors::thread_settings_from_config_snapshot;
@@ -1245,7 +1246,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                         return;
                     }
                 };
-                let fallback_cwd = conversation.config_snapshot().await.cwd().clone();
+                let config_snapshot = conversation.config_snapshot().await;
                 let stored_thread = match conversation
                     .read_thread(
                         /*include_archived*/ true, /*include_history*/ true,
@@ -1268,11 +1269,11 @@ pub(crate) async fn apply_bespoke_event_handling(
                 let loaded_status = thread_watch_manager
                     .loaded_status_for_thread(&conversation_id.to_string())
                     .await;
-                let response = match thread_rollback_response_from_stored_thread(
+                let mut response = match thread_rollback_response_from_stored_thread(
                     stored_thread,
                     conversation.session_configured().session_id.to_string(),
                     fallback_model_provider.as_str(),
-                    &fallback_cwd,
+                    config_snapshot.cwd(),
                     loaded_status,
                 ) {
                     Ok(response) => response,
@@ -1284,6 +1285,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     }
                 };
 
+                apply_live_model_settings(&mut response.thread, &config_snapshot);
                 outgoing.send_response(request_id, response).await;
             }
         }

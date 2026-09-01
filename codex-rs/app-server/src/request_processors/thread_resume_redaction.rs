@@ -208,6 +208,8 @@ mod tests {
             project_id: None,
             history_mode: Default::default(),
             model_provider: "mock_provider".to_string(),
+            model: None,
+            reasoning_effort: None,
             created_at: 0,
             updated_at: 0,
             recency_at: Some(0),

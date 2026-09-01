@@ -354,6 +354,14 @@ snapshot and any base-user entry; a base-user entry is not required for cleanup.
 
 ### Example: Start or resume a thread
 
+The shared `Thread` object includes nullable `model` and `reasoningEffort` fields,
+including in `thread/read`, `thread/list`, and `thread/started`. Loaded threads report
+their current configured settings; unloaded threads report the latest persisted
+values. Unavailable legacy or filesystem-only values remain `null`, and an unset
+reasoning effort is also `null`. These fields are not per-turn execution telemetry.
+Use `thread/read` or `thread/list` to inspect them without resuming a thread,
+subscribing to it, or dispatching queued work or goal continuations.
+
 Start a fresh thread when you need a new Codex conversation.
 
 ```json

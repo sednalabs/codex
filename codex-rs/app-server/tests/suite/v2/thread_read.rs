@@ -135,8 +135,13 @@ async fn thread_read_returns_summary_without_turns() -> Result<()> {
             include_turns: false,
         })
         .await?;
-    let ThreadReadResponse { thread, .. } =
-        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
+    let response: Value = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
+    assert_eq!(response["thread"].get("model"), Some(&Value::Null));
+    assert_eq!(
+        response["thread"].get("reasoningEffort"),
+        Some(&Value::Null)
+    );
+    let ThreadReadResponse { thread, .. } = serde_json::from_value(response)?;
 
     assert_eq!(thread.id, conversation_id);
     assert_eq!(thread.preview, preview);
@@ -149,6 +154,17 @@ async fn thread_read_returns_summary_without_turns() -> Result<()> {
     assert_eq!(thread.git_info, None);
     assert_eq!(thread.turns.len(), 0);
     assert_eq!(thread.status, ThreadStatus::NotLoaded);
+
+    let list_id = mcp.send_raw_request("thread/list", Some(json!({}))).await?;
+    let response: Value = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
+    let listed = response["data"]
+        .as_array()
+        .expect("thread list")
+        .iter()
+        .find(|listed| listed["id"] == conversation_id)
+        .expect("stored thread should be listed");
+    assert_eq!(listed.get("model"), Some(&Value::Null));
+    assert_eq!(listed.get("reasoningEffort"), Some(&Value::Null));
 
     Ok(())
 }
