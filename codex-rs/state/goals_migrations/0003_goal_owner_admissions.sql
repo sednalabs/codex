@@ -11,15 +11,6 @@ CREATE TABLE goal_owner_admissions (
         'policy_denied',
         'authentication_denied'
     )),
-    provider_id TEXT CHECK(provider_id IS NULL OR length(provider_id) BETWEEN 1 AND 512),
-    requested_model TEXT CHECK(requested_model IS NULL OR length(requested_model) BETWEEN 1 AND 512),
-    effective_model TEXT CHECK(effective_model IS NULL OR length(effective_model) BETWEEN 1 AND 512),
-    account_context_fingerprint TEXT CHECK(
-        account_context_fingerprint IS NULL OR (
-            length(account_context_fingerprint) = 64
-            AND account_context_fingerprint NOT GLOB '*[^0-9a-f]*'
-        )
-    ),
     deadline_at_ms INTEGER NOT NULL,
     attempts_started INTEGER NOT NULL DEFAULT 0 CHECK(attempts_started >= 0),
     max_attempts INTEGER NOT NULL CHECK(max_attempts >= 1),
@@ -79,15 +70,6 @@ CREATE TABLE goal_owner_admission_origins (
         'capacity', 'rate_limited', 'provider_unavailable',
         'policy_denied', 'authentication_denied'
     )),
-    provider_id TEXT CHECK(provider_id IS NULL OR length(provider_id) BETWEEN 1 AND 512),
-    requested_model TEXT CHECK(requested_model IS NULL OR length(requested_model) BETWEEN 1 AND 512),
-    effective_model TEXT CHECK(effective_model IS NULL OR length(effective_model) BETWEEN 1 AND 512),
-    account_context_fingerprint TEXT CHECK(
-        account_context_fingerprint IS NULL OR (
-            length(account_context_fingerprint) = 64
-            AND account_context_fingerprint NOT GLOB '*[^0-9a-f]*'
-        )
-    ),
     deadline_at_ms INTEGER NOT NULL,
     max_attempts INTEGER NOT NULL CHECK(max_attempts >= 1),
     requested_phase TEXT NOT NULL CHECK(requested_phase IN ('dormant', 'pending')),

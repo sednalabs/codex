@@ -4,11 +4,6 @@ use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
-fn fingerprint() -> GoalOwnerAdmissionAccountContextFingerprint {
-    GoalOwnerAdmissionAccountContextFingerprint::try_from("a".repeat(64))
-        .expect("canonical fingerprint")
-}
-
 fn observation(
     thread_id: ThreadId,
     goal_id: &str,
@@ -22,10 +17,6 @@ fn observation(
         origin_turn_id: "turn-1".to_string(),
         origin_request_id: origin_request_id.to_string(),
         denial_class: GoalOwnerAdmissionDenialClass::Capacity,
-        provider_id: Some("openai".to_string()),
-        requested_model: Some("gpt-5".to_string()),
-        effective_model: None,
-        account_context_fingerprint: Some(fingerprint()),
         deadline_at,
         max_attempts: 2,
         requested_phase,
@@ -590,12 +581,7 @@ fn admission_timestamps_preserve_milliseconds_without_legacy_seconds_inference()
 }
 
 #[tokio::test]
-async fn phase_and_fingerprint_replays_fail_closed() {
-    assert!(
-        GoalOwnerAdmissionAccountContextFingerprint::try_from("user@example.com".to_string())
-            .is_err()
-    );
-    assert!(GoalOwnerAdmissionAccountContextFingerprint::try_from("a".repeat(63)).is_err());
+async fn phase_replays_fail_closed() {
     let runtime = runtime().await;
     for (thread_id, initial, conflicting) in [
         (
@@ -700,7 +686,7 @@ async fn origin_history_replays_return_the_current_admission_across_replacements
     assert_eq!(first.authority.generation, 1);
 
     let mut conflicting_old_replay = origin_a;
-    conflicting_old_replay.effective_model = Some("gpt-5.1".to_string());
+    conflicting_old_replay.max_attempts = 3;
     assert!(
         runtime
             .goal_owner_admissions()
