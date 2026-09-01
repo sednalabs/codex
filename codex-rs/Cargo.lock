@@ -2643,6 +2643,7 @@ dependencies = [
  "codex-protocol",
  "deno_core_icudata",
  "futures",
+ "opentelemetry",
  "pretty_assertions",
  "serde_json",
  "tokio",
