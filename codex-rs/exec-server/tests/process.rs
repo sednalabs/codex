@@ -362,27 +362,9 @@ async fn exec_server_resumes_detached_session_without_killing_processes() -> any
     server.disconnect_websocket().await?;
     server.reconnect_websocket().await?;
 
-    let resume_initialize_id = server
-        .send_request(
-            "initialize",
-            serde_json::to_value(InitializeParams {
-                client_name: "exec-server-test".to_string(),
-                resume_session_id: Some(initialize_response.session_id.clone()),
-            })?,
-        )
+    let resumed_response = server
+        .resume_initialize(initialize_response.session_id.clone())
         .await?;
-    let response = server
-        .wait_for_event(|event| {
-            matches!(
-                event,
-                JSONRPCMessage::Response(JSONRPCResponse { id, .. }) if id == &resume_initialize_id
-            )
-        })
-        .await?;
-    let JSONRPCMessage::Response(JSONRPCResponse { result, .. }) = response else {
-        panic!("expected resume initialize response");
-    };
-    let resumed_response: InitializeResponse = serde_json::from_value(result)?;
     assert_eq!(resumed_response, initialize_response);
 
     server
