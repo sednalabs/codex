@@ -339,8 +339,14 @@ sources before returning; ordinary listing schedules the same work in the backgr
 Remote catalog settings and feature gating remain request-wide rather than being
 selected from the requested repos. Search continues to report `enabled: false`.
 
-Marketplace definitions can come from system configuration, but configured Git
-marketplaces currently require an existing downloaded snapshot.
+Marketplace definitions can come from system configuration. Startup synchronization
+and `marketplace/upgrade` download or update configured Git marketplaces using the
+merged source, ref, and sparse-path settings. Snapshot metadata stays with the
+downloaded files; configuration is not copied into the user layer. Pure catalog
+listing does not wait for missing snapshots to download.
+Activation reloads configuration with the operation's original load settings and
+rolls back if the marketplace definition changed or the reload fails. User files
+ignored at startup remain ignored during this check.
 
 `marketplace/remove` rejects removal when the marketplace name is defined in another
 enabled layer of the operation's loaded config stack. Otherwise it removes the
