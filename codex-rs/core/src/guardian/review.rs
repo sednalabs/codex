@@ -315,7 +315,7 @@ pub(crate) async fn record_guardian_denial_for_test(
     record_guardian_denial(session, turn, turn_id).await;
 }
 
-/// Runs Guardian unless an installed extension explicitly claims the review.
+/// Runs Guardian unless Full Access or an installed extension resolves the review.
 /// Guardian timeouts, review-session failures, and parse failures all block
 /// execution, with timeouts surfaced separately from explicit denials.
 async fn run_guardian_review(
@@ -327,6 +327,20 @@ async fn run_guardian_review(
     options: GuardianReviewOptions,
 ) -> ReviewDecision {
     let turn = Arc::clone(context.turn());
+    if context.environments().has_full_access(
+        context.approval_policy,
+        &turn.config.permissions.effective_permission_profile(),
+    ) {
+        return if options
+            .external_cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            ReviewDecision::Abort
+        } else {
+            ReviewDecision::Approved
+        };
+    }
     let requires_synchronous_review = options.require_synchronous_review
         || reasons.retry.is_some()
         || matches!(

@@ -45,6 +45,7 @@ use codex_protocol::mcp::is_node_repl_backed_tool;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::TruncationPolicy;
+use codex_protocol::protocol::has_full_access;
 use codex_protocol::security_risk::SecurityRiskScore;
 
 use super::action::GuardianAction;
@@ -213,9 +214,20 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                 .insert(TrustedSkillRoots::from_config(input.config));
             input.thread_store.insert(guardian_v2_enabled);
 
-            tokio::spawn(async move {
-                sampler.prewarm().await;
-            });
+            // Keep the sampler available if a later turn leaves Full Access, but do
+            // not open Guardian connections while Full Access is selected.
+            if !has_full_access(
+                input.config.permissions.approval_policy.value(),
+                &input.config.permissions.effective_permission_profile(),
+                input
+                    .environments
+                    .iter()
+                    .map(|environment| &environment.config),
+            ) {
+                tokio::spawn(async move {
+                    sampler.prewarm().await;
+                });
+            }
         })
     }
 }
@@ -481,6 +493,16 @@ impl GuardianV2Extension {
                 return;
             }
         };
+        // Read current permissions, not the startup config: existing threads can
+        // enter Full Access after the sampler has already been initialized.
+        let snapshot = thread.config_snapshot().await;
+        if snapshot.full_access {
+            // A skipped call invalidates older scores, including ones still in flight.
+            score_progress
+                .latest_failed_tool_call
+                .fetch_max(tool_call_index, Ordering::Release);
+            return;
+        }
         let parent_model = input.thread_store.get::<ModelInfo>();
         // Computer-use-only scores cannot approve other tools for required models.
         if guardian_config.review_scope != GuardianV2ReviewScope::ComputerUseOnly

@@ -1909,6 +1909,13 @@ persisted rollout errors, so unavailable details after a restart remain a termin
 
 ## Approvals
 
+Full Access (`approvalPolicy: "never"` with unrestricted selected environments)
+skips Guardian, including background scoring. Confirmation-only MCP approvals,
+including strict or sensitive CUA requests, are accepted. Strict responses retain
+`approvals_reviewer: "auto_review"` for client compatibility, without a model review.
+Restricted or unresolved environments, explicit client denials, and forms requiring
+user input keep their existing behavior. Cancellation still stops the request.
+
 Certain actions (shell commands or modifying files) may require explicit user approval depending on the user's config. When `turn/start` is used, the app-server drives an approval flow by sending a server-initiated JSON-RPC request to the client. The client must respond to tell Codex whether to proceed. UIs should present these requests inline with the active turn so users can review the proposed command or diff before choosing.
 
 - Requests include `threadId` and `turnId`—use them to scope UI state to the active conversation.

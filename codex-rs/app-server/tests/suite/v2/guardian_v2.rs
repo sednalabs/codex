@@ -23,12 +23,16 @@ use axum::routing::get;
 use axum::routing::post;
 use codex_app_server_protocol::ApprovalsReviewer;
 use codex_app_server_protocol::AskForApproval;
+use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemGuardianApprovalReviewStartedNotification;
+use codex_app_server_protocol::McpToolCallStatus;
+use codex_app_server_protocol::SandboxMode;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::StrictReviewRequiredNotification;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
+use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadRollbackParams;
@@ -37,6 +41,7 @@ use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
+use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
 use codex_features::Feature;
 use codex_state::StateRuntime;
@@ -144,6 +149,7 @@ struct MockResponsesState {
     guardian_reviews: AtomicUsize,
     guardian_requests: Mutex<Vec<Value>>,
     luna_requests: Mutex<Vec<Value>>,
+    luna_connections: AtomicUsize,
     root_thread_id: Mutex<Option<String>>,
     allow_luna: Notify,
     allow_guardian_review: Notify,
@@ -486,6 +492,7 @@ async fn luna_websocket(
     State(state): State<Arc<MockResponsesState>>,
     websocket: WebSocketUpgrade,
 ) -> impl IntoResponse {
+    state.luna_connections.fetch_add(1, Ordering::SeqCst);
     websocket.on_upgrade(move |mut socket| async move {
         while let Some(Ok(message)) = socket.recv().await {
             let Message::Text(text) = message else {
@@ -1803,6 +1810,113 @@ async fn first_cua_review_does_not_wait_for_initial_score(
         timeout(TIMEOUT, app_server.read_notification("turn/completed")).await??;
     assert_eq!(completed.thread_id, thread.id);
     assert_eq!(state.guardian_reviews.load(Ordering::SeqCst), 1);
+    app_server.shutdown_gracefully().await?;
+    mcp_server.abort();
+    responses_server.abort();
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_access_skips_guardian_until_review_is_enabled() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let state = Arc::new(MockResponsesState {
+        mcp_server_name: Some("node_repl"),
+        mcp_tool_sequence: Some(&["js", "js"]),
+        ..Default::default()
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let responses_url = format!("http://{}", listener.local_addr()?);
+    let router = Router::new()
+        .route("/v1/responses", get(luna_websocket).post(parent_response))
+        .with_state(Arc::clone(&state));
+    let responses_server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    // Exercise strict, sensitive CUA confirmations using the existing MCP server.
+    let (mcp_url, mcp_server) =
+        start_mcp_server_with_tools(&["js"], /*sensitive_action*/ Some(true)).await?;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&responses_url)
+        .with_model(MODEL)
+        .with_provider_config("supports_websockets = false")
+        .with_approval_policy("never")
+        .with_root_config("approvals_reviewer = \"auto_review\"")
+        .with_extra_config(&format!(
+            "[mcp_servers.node_repl]\nurl = \"{mcp_url}/mcp\"\ndefault_tools_approval_mode = \"auto\"\n\n[features.guardianv2]\nenabled = true"
+        ))
+        .enable_feature(Feature::GuardianApproval)
+        .write(codex_home.path())?;
+    let config = load_default_config_for_test(&codex_home).await;
+    let mut model_info = codex_core::test_support::construct_model_info_offline(MODEL, &config);
+    model_info.node_repl_auto_review_required = true;
+    write_models_cache_with_models(codex_home.path(), vec![model_info])?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized_with_timeout(TIMEOUT)
+        .await?;
+    let thread = app_server
+        .start_thread(ThreadStartParams {
+            approval_policy: Some(AskForApproval::Never),
+            sandbox: Some(SandboxMode::DangerFullAccess),
+            ..Default::default()
+        })
+        .await?
+        .thread;
+
+    // Leave async scoring pending so reviewed mode must use synchronous Guardian.
+    state.allow_guardian_review.notify_one();
+    for approval_policy in [AskForApproval::Never, AskForApproval::OnRequest] {
+        state.parent_requests.store(0, Ordering::SeqCst);
+        app_server.clear_message_buffer();
+        let completed = timeout(
+            TIMEOUT,
+            app_server.start_turn_and_wait_for_completion(TurnStartParams {
+                thread_id: thread.id.clone(),
+                input: vec![UserInput::Text {
+                    text: USER_CONTEXT.to_owned(),
+                    text_elements: Vec::new(),
+                }],
+                approval_policy: Some(approval_policy),
+                ..Default::default()
+            }),
+        )
+        .await??;
+        assert_eq!(completed.turn.status, TurnStatus::Completed);
+
+        let mut tool_results = Vec::new();
+        while tool_results.len() < 2 {
+            let completed: ItemCompletedNotification =
+                timeout(TIMEOUT, app_server.read_notification("item/completed")).await??;
+            if let ThreadItem::McpToolCall {
+                status,
+                result,
+                error,
+                ..
+            } = completed.item
+            {
+                tool_results.push((status, result.map(|result| result.content), error));
+            }
+        }
+        assert_eq!(
+            tool_results,
+            (0..2)
+                .map(|index| (
+                    McpToolCallStatus::Completed,
+                    Some(vec![
+                        json!({ "type": "text", "text": format!("echo: guardian-{index}") })
+                    ]),
+                    None,
+                ))
+                .collect::<Vec<_>>()
+        );
+        if approval_policy == AskForApproval::Never {
+            assert_eq!(state.guardian_reviews.load(Ordering::SeqCst), 0);
+            assert_eq!(state.luna_connections.load(Ordering::SeqCst), 0);
+        } else {
+            wait_for_luna_request(&state, /*index*/ 0).await?;
+            assert_eq!(state.guardian_reviews.load(Ordering::SeqCst), 2);
+        }
+    }
     app_server.shutdown_gracefully().await?;
     mcp_server.abort();
     responses_server.abort();
