@@ -1154,7 +1154,9 @@ impl Session {
         };
         turn_state.lock().await.insert_mcp_tool_approval_metadata(
             call_id.to_string(),
-            (invocation.server == CODEX_APPS_MCP_SERVER_NAME).then(|| invocation.clone()),
+            (invocation.server == CODEX_APPS_MCP_SERVER_NAME
+                || is_node_repl_backed_server(&invocation.server))
+            .then(|| invocation.clone()),
             metadata,
         );
     }
