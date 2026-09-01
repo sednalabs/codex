@@ -28,6 +28,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio::time::sleep;
 use tokio::time::timeout;
+use tokio::time::timeout_at;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -273,8 +274,7 @@ impl ExecServerHarness {
                     "timed out waiting for matching exec-server event after {EVENT_TIMEOUT:?}"
                 ));
             }
-            let remaining = deadline.duration_since(now);
-            let event = self.next_event_with_timeout(remaining).await?;
+            let event = self.next_event_until(deadline).await?;
             if predicate(&event) {
                 return Ok(event);
             }
@@ -299,8 +299,13 @@ impl ExecServerHarness {
         &mut self,
         timeout_duration: Duration,
     ) -> anyhow::Result<JSONRPCMessage> {
+        self.next_event_until(Instant::now() + timeout_duration)
+            .await
+    }
+
+    async fn next_event_until(&mut self, deadline: Instant) -> anyhow::Result<JSONRPCMessage> {
         loop {
-            let frame = timeout(timeout_duration, self.websocket.next())
+            let frame = timeout_at(deadline, self.websocket.next())
                 .await
                 .map_err(|_| anyhow!("timed out waiting for exec-server websocket event"))?
                 .ok_or_else(|| anyhow!("exec-server websocket closed"))??;
@@ -314,7 +319,9 @@ impl ExecServerHarness {
                 }
                 Message::Close(_) => return Err(anyhow!("exec-server websocket closed")),
                 Message::Ping(_) | Message::Pong(_) => {}
-                _ => {}
+                Message::Frame(_) => {
+                    return Err(anyhow!("unexpected raw exec-server websocket frame"));
+                }
             }
         }
     }
@@ -325,20 +332,24 @@ impl ExecServerHarness {
         deadline: Instant,
     ) -> anyhow::Result<JSONRPCMessage> {
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            if Instant::now() >= deadline {
                 return Err(anyhow!(
                     "timed out waiting for exec-server session resume initialize response"
                 ));
             }
 
-            let event = self.next_event_with_timeout(remaining).await?;
-            match &event {
-                JSONRPCMessage::Response(JSONRPCResponse { id, .. })
-                | JSONRPCMessage::Error(JSONRPCError { id, .. })
-                    if id == request_id =>
-                {
-                    return Ok(event);
+            let event = self.next_event_until(deadline).await?;
+            match event {
+                JSONRPCMessage::Response(response) if response.id == *request_id => {
+                    return Ok(JSONRPCMessage::Response(response));
+                }
+                JSONRPCMessage::Response(JSONRPCResponse { id, .. }) => {
+                    return Err(anyhow!(
+                        "unexpected exec-server response for request {request_id}: response id {id}"
+                    ));
+                }
+                JSONRPCMessage::Error(JSONRPCError { id, error }) if id == *request_id => {
+                    return Ok(JSONRPCMessage::Error(JSONRPCError { id, error }));
                 }
                 JSONRPCMessage::Error(JSONRPCError { id, error }) => {
                     return Err(anyhow!(
@@ -347,7 +358,18 @@ impl ExecServerHarness {
                         error.message
                     ));
                 }
-                _ => {}
+                JSONRPCMessage::Request(request) => {
+                    return Err(anyhow!(
+                        "unexpected exec-server request {} while waiting for resume initialize response",
+                        request.method
+                    ));
+                }
+                JSONRPCMessage::Notification(notification) => {
+                    return Err(anyhow!(
+                        "unexpected exec-server notification {} while waiting for resume initialize response",
+                        notification.method
+                    ));
+                }
             }
         }
     }
