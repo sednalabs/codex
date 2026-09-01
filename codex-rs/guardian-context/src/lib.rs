@@ -19,6 +19,9 @@ use transcript::ConversationTranscriptSection;
 pub use entry::ConversationTranscriptEntry;
 pub use entry::ConversationTranscriptEntryKind;
 pub use history::TranscriptHistory;
+pub use retention::UserMessageCost;
+pub use retention::UserMessageSelection;
+pub use retention::select_user_messages;
 pub use transcript::ConversationTranscriptConfig;
 pub use transcript::ConversationTranscriptOptions;
 pub use transcript::MANUAL_APPROVAL_DEVELOPER_PREFIX;
@@ -29,6 +32,7 @@ pub use truncation::truncate_text;
 
 mod entry;
 mod history;
+mod retention;
 mod transcript;
 mod truncation;
 

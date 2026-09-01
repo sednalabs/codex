@@ -398,45 +398,27 @@ fn render_guardian_transcript_entries_with_offset(
         .collect::<Vec<_>>();
 
     let mut included = vec![false; entries.len()];
-    let mut message_tokens = 0usize;
-    let mut tool_tokens = 0usize;
-    let user_indices = entries
+    let user_messages = entries
         .iter()
         .enumerate()
         .filter_map(|(index, entry)| {
-            matches!(entry.kind, ConversationTranscriptEntryKind::User).then_some(index)
+            matches!(entry.kind, ConversationTranscriptEntryKind::User).then_some(
+                codex_guardian_context::UserMessageCost {
+                    index,
+                    tokens: rendered_entries[index].1,
+                },
+            )
         })
         .collect::<Vec<_>>();
-
-    if let Some(&first_user_index) = user_indices.first() {
-        included[first_user_index] = true;
-        message_tokens += rendered_entries[first_user_index].1;
-    }
-
-    if let Some(&last_user_index) = user_indices.last()
-        && !included[last_user_index]
-        && message_tokens + rendered_entries[last_user_index].1
-            <= GUARDIAN_TRANSCRIPT_RETENTION.max_message_transcript_tokens
-    {
-        included[last_user_index] = true;
-        message_tokens += rendered_entries[last_user_index].1;
-    }
-
-    for &index in user_indices.iter().rev() {
-        if included[index] {
-            continue;
-        }
-
-        let token_count = rendered_entries[index].1;
-        if message_tokens + token_count
-            > GUARDIAN_TRANSCRIPT_RETENTION.max_message_transcript_tokens
-        {
-            continue;
-        }
-
+    let selection = codex_guardian_context::select_user_messages(
+        &user_messages,
+        GUARDIAN_TRANSCRIPT_RETENTION.max_message_transcript_tokens,
+    );
+    for index in selection.indices {
         included[index] = true;
-        message_tokens += token_count;
     }
+    let mut message_tokens = selection.tokens;
+    let mut tool_tokens = 0usize;
 
     let mut retained_non_user_entries = 0usize;
     for index in (0..entries.len()).rev() {
