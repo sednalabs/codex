@@ -7,15 +7,22 @@
 use std::error::Error;
 use std::fmt;
 
+// Provider adapters are not yet part of this crate's production contract.
+// Keep their construction boundary available to the module tests, but out of
+// non-test builds until an adapter can supply the required provider authority.
+// This makes the staged API's dormancy explicit without suppressing lints.
+#[cfg(test)]
 const MAX_OPAQUE_VALUE_LENGTH: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
 enum OpaqueValueError {
     Empty,
     TooLong,
     InvalidCharacter,
 }
 
+#[cfg(test)]
 fn validate_opaque_value(value: &str) -> Result<(), OpaqueValueError> {
     if value.is_empty() {
         return Err(OpaqueValueError::Empty);
@@ -43,6 +50,7 @@ impl ProviderDomainId {
     /// This crate-private boundary keeps admission evidence construction under
     /// provider integration control; shape validation alone does not attest
     /// provider authority.
+    #[cfg(test)]
     pub(crate) fn try_new(value: impl AsRef<str>) -> Result<Self, ProviderDomainIdError> {
         let value = value.as_ref();
         validate_opaque_value(value).map_err(ProviderDomainIdError::from)?;
@@ -70,6 +78,7 @@ pub enum ProviderDomainIdError {
     InvalidCharacter,
 }
 
+#[cfg(test)]
 impl From<OpaqueValueError> for ProviderDomainIdError {
     fn from(error: OpaqueValueError) -> Self {
         match error {
@@ -96,6 +105,7 @@ impl Error for ProviderDomainIdError {}
 struct OpaqueProviderFact(String);
 
 impl OpaqueProviderFact {
+    #[cfg(test)]
     fn try_new(value: &str) -> Result<Self, ProviderFactError> {
         validate_opaque_value(value).map_err(ProviderFactError::from)?;
         Ok(Self(value.to_owned()))
@@ -113,6 +123,7 @@ pub enum ProviderFactError {
     InvalidCharacter,
 }
 
+#[cfg(test)]
 impl From<OpaqueValueError> for ProviderFactError {
     fn from(error: OpaqueValueError) -> Self {
         match error {
@@ -137,7 +148,9 @@ impl Error for ProviderFactError {}
 
 #[derive(Clone, Eq, PartialEq)]
 enum DomainScopeKind {
+    #[cfg(test)]
     Shared(ProviderDomainId),
+    #[cfg(test)]
     Independent,
     Unknown,
 }
@@ -148,11 +161,13 @@ pub struct RateLimitDomainScope(DomainScopeKind);
 
 impl RateLimitDomainScope {
     /// Construct a shared scope bound to one opaque provider-domain identity.
+    #[cfg(test)]
     pub(crate) fn shared(provider_domain: ProviderDomainId) -> Self {
         Self(DomainScopeKind::Shared(provider_domain))
     }
 
     /// Construct the provider-declared independent scope.
+    #[cfg(test)]
     pub(crate) fn independent() -> Self {
         Self(DomainScopeKind::Independent)
     }
@@ -166,10 +181,12 @@ impl RateLimitDomainScope {
 impl fmt::Debug for RateLimitDomainScope {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
+            #[cfg(test)]
             DomainScopeKind::Shared(_) => formatter
                 .debug_tuple("RateLimitDomainScope::Shared")
                 .field(&"<redacted>")
                 .finish(),
+            #[cfg(test)]
             DomainScopeKind::Independent => {
                 formatter.write_str("RateLimitDomainScope::Independent")
             }
@@ -229,6 +246,7 @@ impl ProviderObservedFacts {
     /// dormant at the admission-capable boundary. This constructor preserves
     /// caller-supplied observations but does not itself attest their source;
     /// the crate-private boundary is reserved for provider integrations.
+    #[cfg(test)]
     pub(crate) fn try_from_provider(
         provider_scope: Option<ProviderDomainId>,
         eligible: Option<bool>,
@@ -278,11 +296,13 @@ impl RateLimitEvidence {
         scope: RateLimitDomainScope,
     ) -> Result<Self, RateLimitEvidenceError> {
         match &scope.0 {
+            #[cfg(test)]
             DomainScopeKind::Shared(expected_domain)
                 if observed.provider_scope.as_ref() != Some(expected_domain) =>
             {
                 return Err(RateLimitEvidenceError::SharedScopeMismatch);
             }
+            #[cfg(test)]
             DomainScopeKind::Independent if observed.provider_scope.is_none() => {
                 return Err(RateLimitEvidenceError::IndependentScopeMissingProviderObservation);
             }
