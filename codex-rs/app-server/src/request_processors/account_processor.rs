@@ -49,6 +49,10 @@ impl ActiveLogin {
     }
 }
 
+fn login_completion_is_active(active_login: Option<&ActiveLogin>, login_id: Uuid) -> bool {
+    active_login.map(ActiveLogin::login_id) == Some(login_id)
+}
+
 #[derive(Clone, Copy, Debug)]
 enum CancelLoginError {
     NotFound,
@@ -182,8 +186,8 @@ impl AccountRequestProcessor {
         }
     }
 
-    pub(crate) fn clear_external_auth(&self) {
-        self.auth_manager.clear_external_auth();
+    pub(crate) async fn clear_external_auth(&self) {
+        self.auth_manager.clear_external_auth().await;
         self.thread_manager
             .plugins_manager()
             .set_auth_mode(self.auth_manager.get_api_auth_mode());
@@ -594,6 +598,7 @@ impl AccountRequestProcessor {
                 config,
                 state_db,
                 auth_admission,
+                Arc::clone(&active_login),
                 login_id,
                 success,
                 error_msg,
@@ -674,6 +679,7 @@ impl AccountRequestProcessor {
                 config,
                 state_db,
                 auth_admission,
+                Arc::clone(&active_login),
                 login_id,
                 success,
                 error_msg,
@@ -832,10 +838,19 @@ impl AccountRequestProcessor {
         config: Arc<Config>,
         state_db: Option<StateDbHandle>,
         auth_admission: Arc<Mutex<()>>,
+        active_login: Arc<Mutex<Option<ActiveLogin>>>,
         login_id: Uuid,
         mut success: bool,
         mut error_msg: Option<String>,
     ) {
+        // Linearize completion with cancellation, replacement, and teardown before applying any
+        // newly persisted credential state. A stale successful task may report failure, but it
+        // must not invalidate capabilities, reload auth, or update the active account.
+        let active_login_guard = active_login.lock().await;
+        if success && !login_completion_is_active(active_login_guard.as_ref(), login_id) {
+            success = false;
+            error_msg = Some("Login attempt is no longer active".to_string());
+        }
         let mut account_updated = None;
         if success {
             let _auth_admission = auth_admission.lock().await;
@@ -888,6 +903,7 @@ impl AccountRequestProcessor {
                 .send_server_notification(ServerNotification::AccountUpdated(payload_v2))
                 .await;
         }
+        drop(active_login_guard);
     }
 
     async fn logout_common(&self) -> std::result::Result<Option<AuthMode>, JSONRPCErrorError> {
@@ -1358,6 +1374,23 @@ mod tests {
     use codex_backend_client::TokenUsageProfileDailyBucket;
     use codex_backend_client::TokenUsageProfileStats;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn login_completion_requires_the_current_attempt() {
+        let active_id = Uuid::new_v4();
+        let replaced_id = Uuid::new_v4();
+        let active_login = ActiveLogin::DeviceCode {
+            cancel: CancellationToken::new(),
+            login_id: active_id,
+        };
+
+        assert!(login_completion_is_active(Some(&active_login), active_id));
+        assert!(!login_completion_is_active(
+            Some(&active_login),
+            replaced_id
+        ));
+        assert!(!login_completion_is_active(None, active_id));
+    }
 
     #[test]
     fn account_token_usage_response_maps_profile_stats_and_daily_buckets() {

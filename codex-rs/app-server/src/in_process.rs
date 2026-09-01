@@ -638,8 +638,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 }
             }
 
-            processor.clear_runtime_references();
             processor.cancel_active_login().await;
+            processor.clear_runtime_references().await;
             processor
                 .connection_closed(IN_PROCESS_CONNECTION_ID, &session)
                 .await;

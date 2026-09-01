@@ -754,6 +754,7 @@ impl TurnRequestProcessor {
                 cwd,
                 runtime_workspace_roots,
                 environment_selections,
+                automatic_turn,
             )
             .await;
         let (thread_settings, settings_context_changed) = self
@@ -775,6 +776,11 @@ impl TurnRequestProcessor {
                 },
             )
             .await?;
+        if automatic_turn && settings_context_changed {
+            return Err(invalid_request(
+                "automatic turn capability no longer matches the server-canonical context",
+            ));
+        }
         if !automatic_turn && settings_context_changed {
             if let Some(state_db) = thread.state_db() {
                 state_db
@@ -830,9 +836,8 @@ impl TurnRequestProcessor {
                 turn_op,
                 self.request_trace_context(&request_id).await,
                 client_user_message_id,
-                Some(automatic_turn_connection_principal(
-                    request_id.connection_id,
-                )),
+                automatic_turn
+                    .then(|| automatic_turn_connection_principal(request_id.connection_id)),
             )
             .await
         {
@@ -890,6 +895,7 @@ impl TurnRequestProcessor {
         cwd: Option<AbsolutePathBuf>,
         workspace_roots: Option<Vec<AbsolutePathBuf>>,
         environment_selections: Option<Vec<TurnEnvironmentSelection>>,
+        preserve_existing_selections: bool,
     ) -> Option<TurnEnvironmentSelections> {
         if cwd.is_none() && workspace_roots.is_none() && environment_selections.is_none() {
             return None;
@@ -916,6 +922,9 @@ impl TurnRequestProcessor {
         }
 
         let snapshot = thread.config_snapshot().await;
+        if preserve_existing_selections {
+            return Some(snapshot.environments);
+        }
         let current_cwd = snapshot.cwd().clone();
         let legacy_fallback_cwd = cwd.unwrap_or_else(|| current_cwd.clone());
         let workspace_roots = match workspace_roots {
@@ -1109,6 +1118,7 @@ impl TurnRequestProcessor {
                 cwd,
                 /*workspace_roots*/ None,
                 /*environment_selections*/ None,
+                /*preserve_existing_selections*/ false,
             )
             .await;
         let (thread_settings, _settings_context_changed) = self
@@ -1256,15 +1266,12 @@ impl TurnRequestProcessor {
         let additional_context = map_additional_context(params.additional_context);
 
         let turn_id = match thread
-            .steer_input_with_principal(
+            .steer_input(
                 mapped_items,
                 additional_context,
                 Some(&params.expected_turn_id),
                 params.client_user_message_id,
                 params.responsesapi_client_metadata,
-                Some(automatic_turn_connection_principal(
-                    request_id.connection_id,
-                )),
             )
             .await
         {

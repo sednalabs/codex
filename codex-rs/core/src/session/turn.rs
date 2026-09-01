@@ -173,6 +173,13 @@ pub(crate) async fn run_turn(
     if let Err(err) =
         run_pre_sampling_compact(&sess, &turn_context, client_session, &cancellation_token).await
     {
+        if matches!(
+            err.details(),
+            CodexErrorDetails::AutomaticTurnContextChanged
+        ) {
+            emit_automatic_turn_context_denial(&sess, &turn_context, &err).await;
+            return Err(err);
+        }
         if matches!(err.details(), CodexErrorDetails::TurnAborted) {
             run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
             return Err(err);
@@ -493,6 +500,15 @@ pub(crate) async fn run_turn(
             Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
                 return Err(err);
             }
+            Err(err)
+                if matches!(
+                    err.details(),
+                    CodexErrorDetails::AutomaticTurnContextChanged
+                ) =>
+            {
+                emit_automatic_turn_context_denial(&sess, &turn_context, &err).await;
+                return Err(err);
+            }
             Err(codex_error)
                 if matches!(
                     codex_error.details(),
@@ -528,6 +544,24 @@ pub(crate) async fn run_turn(
     }
 
     Ok(last_agent_message)
+}
+
+async fn emit_automatic_turn_context_denial(
+    sess: &Session,
+    turn_context: &TurnContext,
+    error: &CodexErr,
+) {
+    let error_info = error.to_codex_protocol_error();
+    sess.emit_turn_error_lifecycle(turn_context, error_info.clone())
+        .await;
+    sess.send_event(
+        turn_context,
+        EventMsg::Error(ErrorEvent {
+            message: error.to_string(),
+            codex_error_info: Some(error_info),
+        }),
+    )
+    .await;
 }
 
 #[instrument(level = "trace", skip_all)]

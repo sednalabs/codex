@@ -17,6 +17,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
+use tokio::sync::OwnedRwLockReadGuard;
+use tokio::sync::RwLock as AsyncRwLock;
 use tokio::sync::Semaphore;
 use tokio::sync::watch;
 use tracing::instrument;
@@ -1770,6 +1772,7 @@ pub struct AuthManager {
     codex_home: PathBuf,
     inner: RwLock<CachedAuth>,
     auth_change_tx: watch::Sender<u64>,
+    provider_request_gate: Arc<AsyncRwLock<()>>,
     enable_codex_api_key_env: bool,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
@@ -1781,6 +1784,15 @@ pub struct AuthManager {
     agent_identity_bootstrap_cooldown: Mutex<AgentIdentityBootstrapCooldown>,
     external_auth: RwLock<Option<Arc<dyn ExternalAuth>>>,
     auth_route_config: AuthRouteConfig,
+}
+
+/// Keeps an admitted provider request ordered before credential transitions.
+///
+/// The guard is intentionally opaque: callers only need to retain it until the transport has
+/// accepted the request. Login, logout, and credential reload take the exclusive side of the same
+/// gate before changing the cached credential revision.
+pub struct ProviderRequestGuard {
+    _guard: OwnedRwLockReadGuard<()>,
 }
 
 /// Configuration view required to construct a shared [`AuthManager`].
@@ -1872,6 +1884,7 @@ impl AuthManager {
                 permanent_refresh_failure: None,
             }),
             auth_change_tx,
+            provider_request_gate: Arc::new(AsyncRwLock::new(())),
             enable_codex_api_key_env,
             auth_credentials_store_mode,
             keyring_backend_kind,
@@ -1898,6 +1911,7 @@ impl AuthManager {
             codex_home: PathBuf::from("non-existent"),
             inner: RwLock::new(cached),
             auth_change_tx,
+            provider_request_gate: Arc::new(AsyncRwLock::new(())),
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
             keyring_backend_kind: AuthKeyringBackendKind::default(),
@@ -1923,6 +1937,7 @@ impl AuthManager {
             codex_home,
             inner: RwLock::new(cached),
             auth_change_tx,
+            provider_request_gate: Arc::new(AsyncRwLock::new(())),
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
             keyring_backend_kind: AuthKeyringBackendKind::default(),
@@ -1952,6 +1967,7 @@ impl AuthManager {
             codex_home: PathBuf::from("non-existent"),
             inner: RwLock::new(cached),
             auth_change_tx,
+            provider_request_gate: Arc::new(AsyncRwLock::new(())),
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
             keyring_backend_kind: AuthKeyringBackendKind::default(),
@@ -1979,6 +1995,7 @@ impl AuthManager {
                 permanent_refresh_failure: None,
             }),
             auth_change_tx,
+            provider_request_gate: Arc::new(AsyncRwLock::new(())),
             enable_codex_api_key_env: false,
             auth_credentials_store_mode: AuthCredentialsStoreMode::File,
             keyring_backend_kind: AuthKeyringBackendKind::default(),
@@ -2010,6 +2027,35 @@ impl AuthManager {
     /// Subscribes to cached auth changes that can affect account-scoped request recovery.
     pub fn auth_change_receiver(&self) -> watch::Receiver<u64> {
         self.auth_change_tx.subscribe()
+    }
+
+    /// Returns the monotonic revision of the currently cached credentials.
+    ///
+    /// Callers that admit asynchronous work can retain this value and reject the work if an
+    /// account or credential transition occurs before provider setup.
+    pub fn auth_revision(&self) -> u64 {
+        *self.auth_change_receiver().borrow()
+    }
+
+    /// Acquires provider-send authority for work admitted under `expected_revision`.
+    ///
+    /// Returning `None` means a credential transition linearized before this request. Retaining
+    /// the returned guard prevents a later transition from completing until the caller's actual
+    /// transport send has finished.
+    pub async fn provider_request_guard(
+        self: &Arc<Self>,
+        expected_revision: u64,
+    ) -> Option<ProviderRequestGuard> {
+        let (revision, guard) = self.current_provider_request_guard().await;
+        (revision == expected_revision).then_some(guard)
+    }
+
+    /// Acquires provider-send authority for the credential revision that is current after any
+    /// already-linearized transition. Ordinary requests use this to keep their resolved auth and
+    /// any cached transport identity consistent even though they are not revision-pinned.
+    pub async fn current_provider_request_guard(self: &Arc<Self>) -> (u64, ProviderRequestGuard) {
+        let guard = Arc::clone(&self.provider_request_gate).read_owned().await;
+        (self.auth_revision(), ProviderRequestGuard { _guard: guard })
     }
 
     pub fn refresh_failure_for_auth(&self, auth: &CodexAuth) -> Option<RefreshTokenFailedError> {
@@ -2107,9 +2153,10 @@ impl AuthManager {
 
     /// Reloads auth from the active source. Returns whether the auth value changed.
     pub async fn reload(&self) -> bool {
+        let _transition = self.provider_request_gate.write().await;
         tracing::info!("Reloading auth");
         let new_auth = self.load_auth().await;
-        self.set_cached_auth(new_auth)
+        self.set_cached_auth_during_transition(new_auth)
     }
 
     async fn reload_if_account_id_matches(
@@ -2124,6 +2171,7 @@ impl AuthManager {
             }
         };
 
+        let _transition = self.provider_request_gate.write().await;
         let new_auth = self.load_auth().await;
         let new_account_id = new_auth.as_ref().and_then(CodexAuth::get_account_id);
 
@@ -2139,7 +2187,7 @@ impl AuthManager {
         let cached_before_reload = self.auth_cached();
         let auth_changed =
             !Self::auths_equal_for_refresh(cached_before_reload.as_ref(), new_auth.as_ref());
-        self.set_cached_auth(new_auth);
+        self.set_cached_auth_during_transition(new_auth);
         if auth_changed {
             ReloadOutcome::ReloadedChanged
         } else {
@@ -2225,7 +2273,7 @@ impl AuthManager {
         .flatten()
     }
 
-    fn set_cached_auth(&self, new_auth: Option<CodexAuth>) -> bool {
+    fn set_cached_auth_during_transition(&self, new_auth: Option<CodexAuth>) -> bool {
         if let Ok(mut guard) = self.inner.write() {
             let previous = guard.auth.as_ref();
             let changed = !AuthManager::auths_equal(previous, new_auth.as_ref());
@@ -2249,18 +2297,20 @@ impl AuthManager {
         &self,
         external_auth: Arc<dyn ExternalAuth>,
     ) -> Result<(), RefreshTokenError> {
+        let _transition = self.provider_request_gate.write().await;
         let auth = self.resolve_external_auth(&external_auth).await?;
         *self.external_auth.write().map_err(|_| {
             RefreshTokenError::Transient(std::io::Error::other("external auth lock is poisoned"))
         })? = Some(external_auth);
-        self.commit_external_auth(auth)
+        self.commit_external_auth_during_transition(auth)
     }
 
-    pub fn clear_external_auth(&self) {
+    pub async fn clear_external_auth(&self) {
+        let _transition = self.provider_request_gate.write().await;
         if let Ok(mut external_auth) = self.external_auth.write()
             && external_auth.take().is_some()
         {
-            self.set_cached_auth(/*new_auth*/ None);
+            self.set_cached_auth_during_transition(/*new_auth*/ None);
         }
     }
 
@@ -2469,7 +2519,7 @@ impl AuthManager {
             self.keyring_backend_kind,
         )?;
         // Always reload to clear any cached auth (even if file absent).
-        self.clear_external_auth();
+        self.clear_external_auth().await;
         self.reload().await;
         Ok(removed)
     }
@@ -2488,7 +2538,7 @@ impl AuthManager {
             self.keyring_backend_kind,
         )?;
         // Always reload to clear any cached auth (even if file absent).
-        self.clear_external_auth();
+        self.clear_external_auth().await;
         self.reload().await;
         Ok(result)
     }
@@ -2536,6 +2586,7 @@ impl AuthManager {
         &self,
         reason: ExternalAuthRefreshReason,
     ) -> Result<(), RefreshTokenError> {
+        let _transition = self.provider_request_gate.write().await;
         let Some(external_auth) = self.external_auth() else {
             return Err(RefreshTokenError::Transient(std::io::Error::other(
                 "external auth is not configured",
@@ -2555,11 +2606,14 @@ impl AuthManager {
             .await
             .map_err(RefreshTokenError::Transient)?;
         self.validate_external_auth(&refreshed)?;
-        self.commit_external_auth(refreshed)?;
+        self.commit_external_auth_during_transition(refreshed)?;
         Ok(())
     }
 
-    fn commit_external_auth(&self, auth: CodexAuth) -> Result<(), RefreshTokenError> {
+    fn commit_external_auth_during_transition(
+        &self,
+        auth: CodexAuth,
+    ) -> Result<(), RefreshTokenError> {
         if auth.is_external_chatgpt_tokens() {
             let auth_dot_json = auth.get_current_auth_json().ok_or_else(|| {
                 RefreshTokenError::Transient(std::io::Error::other(
@@ -2577,7 +2631,7 @@ impl AuthManager {
             .map_err(RefreshTokenError::Transient)?;
         }
 
-        self.set_cached_auth(Some(auth));
+        self.set_cached_auth_during_transition(Some(auth));
         Ok(())
     }
 

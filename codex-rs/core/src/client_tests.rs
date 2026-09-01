@@ -25,6 +25,9 @@ use codex_login::AuthCredentialsStoreMode;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_login::ExternalAuth;
+use codex_login::ExternalAuthFuture;
+use codex_login::ExternalAuthRefreshContext;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::BearerAuthProvider;
 use codex_model_provider::SharedModelProvider;
@@ -53,6 +56,9 @@ use codex_rollout_trace::RawTraceEventPayload;
 use codex_rollout_trace::RolloutTrace;
 use codex_rollout_trace::TraceWriter;
 use codex_rollout_trace::replay_bundle;
+use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_response_created;
+use core_test_support::responses::start_websocket_server;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -111,6 +117,354 @@ fn test_model_client_with_thread_id(
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     )
+}
+
+#[tokio::test]
+async fn automatic_turn_setup_rejects_stale_auth_revision_before_provider_capture() {
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test-key"));
+    let client = ModelClient::new(
+        Some(auth_manager),
+        AgentIdentityAuthPolicy::JwtOnly,
+        SessionId::new(),
+        ThreadId::new(),
+        TEST_INSTALLATION_ID.to_string(),
+        ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+
+    let error = match client
+        .current_client_setup(/*expected_auth_revision*/ Some(1))
+        .await
+    {
+        Ok(_) => panic!("stale automatic-turn auth must fail before provider setup"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error.details(),
+        codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
+    ));
+    assert_eq!(
+        error.to_string(),
+        "automatic turn context changed before provider request"
+    );
+}
+
+#[derive(Clone)]
+struct StaticExternalAuth(CodexAuth);
+
+impl ExternalAuth for StaticExternalAuth {
+    fn resolve(&self) -> ExternalAuthFuture<'_, CodexAuth> {
+        Box::pin(async { Ok(self.0.clone()) })
+    }
+
+    fn refresh(&self, _context: ExternalAuthRefreshContext) -> ExternalAuthFuture<'_, CodexAuth> {
+        Box::pin(async { Ok(self.0.clone()) })
+    }
+}
+
+#[tokio::test]
+async fn automatic_turn_transition_at_provider_gate_sends_no_request() {
+    let server = MockServer::start().await;
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
+    let client = ModelClient::new(
+        Some(Arc::clone(&auth_manager)),
+        AgentIdentityAuthPolicy::JwtOnly,
+        SessionId::new(),
+        ThreadId::new(),
+        TEST_INSTALLATION_ID.to_string(),
+        ModelProviderInfo::create_openai_provider(Some(server.uri())),
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+    let admitted_revision = auth_manager.auth_revision();
+    let boundary_barrier = auth_manager
+        .provider_request_guard(admitted_revision)
+        .await
+        .expect("initial credential revision should be current");
+
+    let transition = auth_manager.set_external_auth(Arc::new(StaticExternalAuth(
+        CodexAuth::from_api_key("key-b"),
+    )));
+    tokio::pin!(transition);
+    assert!(matches!(futures::poll!(transition.as_mut()), Poll::Pending));
+
+    let mut session = client.new_session_with_auth_revision(Some(admitted_revision));
+    let prompt = Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "continue".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }],
+        base_instructions: BaseInstructions {
+            text: "base instructions".to_string(),
+        },
+        ..Default::default()
+    };
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("automatic-turn"),
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let stream = session.stream(
+        &prompt,
+        &test_model_info(),
+        &test_session_telemetry(),
+        /*effort*/ None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        /*service_tier*/ None,
+        &responses_metadata,
+        &InferenceTraceContext::disabled(),
+    );
+    tokio::pin!(stream);
+    assert!(matches!(futures::poll!(stream.as_mut()), Poll::Pending));
+
+    drop(boundary_barrier);
+    let (transition_result, stream_result) = tokio::join!(&mut transition, &mut stream);
+    transition_result.expect("credential transition should complete");
+    let error = match stream_result {
+        Ok(_) => panic!("automatic request must be denied after transition"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error.details(),
+        codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
+    ));
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("request log")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn legacy_remote_compaction_uses_automatic_turn_authority() {
+    let server = MockServer::start().await;
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
+    let admitted_revision = auth_manager.auth_revision();
+    let client = ModelClient::new(
+        Some(Arc::clone(&auth_manager)),
+        AgentIdentityAuthPolicy::JwtOnly,
+        SessionId::new(),
+        ThreadId::new(),
+        TEST_INSTALLATION_ID.to_string(),
+        ModelProviderInfo::create_openai_provider(Some(server.uri())),
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+    auth_manager
+        .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
+            "key-b",
+        ))))
+        .await
+        .expect("credential transition should complete");
+    let prompt = Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "compact".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }],
+        base_instructions: BaseInstructions {
+            text: "base instructions".to_string(),
+        },
+        ..Default::default()
+    };
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("automatic-turn"),
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let result = client
+        .compact_conversation_history(
+            &prompt,
+            &test_model_info(),
+            /*turn_state*/ None,
+            Some(admitted_revision),
+            CompactConversationRequestSettings {
+                effort: None,
+                summary: codex_protocol::config_types::ReasoningSummary::None,
+                service_tier: None,
+            },
+            &test_session_telemetry(),
+            &CompactionTraceContext::disabled(),
+            &responses_metadata,
+        )
+        .await;
+    let error = match result {
+        Ok(_) => panic!("stale automatic compaction must be denied"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error.details(),
+        codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
+    ));
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("request log")
+            .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cached_websocket_reuse_is_bound_to_credential_revision() {
+    let server = start_websocket_server(vec![
+        vec![
+            vec![ev_response_created("resp-a1"), ev_completed("resp-a1")],
+            vec![ev_response_created("resp-a2"), ev_completed("resp-a2")],
+        ],
+        vec![vec![ev_response_created("resp-b"), ev_completed("resp-b")]],
+    ])
+    .await;
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
+    let client = ModelClient::new(
+        Some(Arc::clone(&auth_manager)),
+        AgentIdentityAuthPolicy::JwtOnly,
+        SessionId::new(),
+        ThreadId::new(),
+        TEST_INSTALLATION_ID.to_string(),
+        ModelProviderInfo::create_openai_provider(Some(server.uri())),
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+    let prompt = Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "continue".to_string(),
+            }],
+            end_turn: None,
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }],
+        base_instructions: BaseInstructions {
+            text: "base instructions".to_string(),
+        },
+        ..Default::default()
+    };
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("automatic-turn"),
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let revision_a = auth_manager.auth_revision();
+
+    for _ in 0..2 {
+        let mut session = client.new_session_with_auth_revision(Some(revision_a));
+        let mut stream = session
+            .stream(
+                &prompt,
+                &test_model_info(),
+                &test_session_telemetry(),
+                /*effort*/ None,
+                codex_protocol::config_types::ReasoningSummary::None,
+                /*service_tier*/ None,
+                &responses_metadata,
+                &InferenceTraceContext::disabled(),
+            )
+            .await
+            .expect("same-revision websocket request should start");
+        while let Some(event) = stream.next().await {
+            if matches!(
+                event.expect("websocket event"),
+                ResponseEvent::Completed { .. }
+            ) {
+                break;
+            }
+        }
+        drop(stream);
+        drop(session);
+    }
+    assert_eq!(
+        server.connections().len(),
+        1,
+        "revision A should reuse its socket"
+    );
+
+    auth_manager
+        .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
+            "key-b",
+        ))))
+        .await
+        .expect("credential transition should complete");
+    let revision_b = auth_manager.auth_revision();
+    let mut session = client.new_session_with_auth_revision(Some(revision_b));
+    let mut stream = session
+        .stream(
+            &prompt,
+            &test_model_info(),
+            &test_session_telemetry(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &responses_metadata,
+            &InferenceTraceContext::disabled(),
+        )
+        .await
+        .expect("revision B websocket request should start");
+    while let Some(event) = stream.next().await {
+        if matches!(
+            event.expect("websocket event"),
+            ResponseEvent::Completed { .. }
+        ) {
+            break;
+        }
+    }
+    drop(stream);
+    assert_eq!(
+        server.connections().len(),
+        2,
+        "revision B must open a new socket"
+    );
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -186,6 +540,7 @@ async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::
             &prompt,
             &test_model_info(),
             /*turn_state*/ None,
+            /*expected_auth_revision*/ None,
             CompactConversationRequestSettings {
                 effort: None,
                 summary: codex_protocol::config_types::ReasoningSummary::None,

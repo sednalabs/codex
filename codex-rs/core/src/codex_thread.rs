@@ -407,6 +407,11 @@ impl CodexThread {
                     client_user_message_id.as_deref(),
                 )
                 .await;
+            let auth_revision = self.session.services.auth_manager.auth_revision();
+            self.session
+                .services
+                .set_automatic_turn_auth_revision(&id, auth_revision)
+                .await;
         }
         if let Err(error) = self
             .submit_tracked(Submission {
@@ -475,6 +480,11 @@ impl CodexThread {
                     principal.to_owned(),
                     client_user_message_id.as_deref(),
                 )
+                .await;
+            let auth_revision = self.session.services.auth_manager.auth_revision();
+            self.session
+                .services
+                .set_automatic_turn_auth_revision(expected_turn_id, auth_revision)
                 .await;
         }
         let client_user_message_id_for_release = client_user_message_id.clone();

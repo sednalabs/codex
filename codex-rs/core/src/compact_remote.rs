@@ -187,6 +187,7 @@ async fn run_remote_compact_task_inner(
         if matches!(
             err.details(),
             codex_protocol::error::CodexErrorDetails::TurnAborted
+                | codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
         ) {
             return Err(err);
         }

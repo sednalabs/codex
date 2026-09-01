@@ -268,7 +268,14 @@ async fn run_compact_task_inner_impl(
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
     let mut capacity_retries = 0;
-    let mut client_session = sess.services.model_client.new_session();
+    let expected_auth_revision = sess
+        .services
+        .automatic_turn_auth_revision(&turn_context.sub_id)
+        .await;
+    let mut client_session = sess
+        .services
+        .model_client
+        .new_session_with_auth_revision(expected_auth_revision);
     // Reuse one client session so turn-scoped state (sticky routing, websocket incremental
     // request tracking)
     // survives retries within this compact turn.
@@ -306,7 +313,9 @@ async fn run_compact_task_inner_impl(
             Err(err)
                 if matches!(
                     err.details(),
-                    CodexErrorDetails::Interrupted | CodexErrorDetails::TurnAborted
+                    CodexErrorDetails::Interrupted
+                        | CodexErrorDetails::TurnAborted
+                        | CodexErrorDetails::AutomaticTurnContextChanged
                 ) =>
             {
                 return Err(err);

@@ -15,12 +15,16 @@ use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::InitializeResponse;
+use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::TurnEnvironmentParams;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
+use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
 use codex_arg0::Arg0DispatchPaths;
 use codex_config::CloudConfigBundleLoader;
@@ -28,8 +32,13 @@ use codex_config::LoaderOverrides;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
+use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_feedback::CodexFeedback;
 use codex_login::AuthManager;
+use codex_login::CodexAuth;
+use codex_login::ExternalAuth;
+use codex_login::ExternalAuthFuture;
+use codex_login::ExternalAuthRefreshContext;
 use codex_protocol::ThreadId;
 use codex_protocol::automatic_turn::AutomaticTurnProvenance;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -56,6 +65,7 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::task::Poll;
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tracing_subscriber::layer::SubscriberExt;
@@ -114,8 +124,9 @@ fn request_from_client_request(request: ClientRequest) -> JSONRPCRequest {
 }
 
 struct TracingHarness {
-    _server: MockServer,
+    server: MockServer,
     _codex_home: TempDir,
+    auth_manager: Arc<AuthManager>,
     processor: Arc<MessageProcessor>,
     outgoing_rx: mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
     session: Arc<ConnectionSessionState>,
@@ -147,13 +158,15 @@ impl TracingHarness {
         } else {
             None
         };
-        let (processor, outgoing_rx) = build_test_processor(config, state_db.clone()).await;
+        let (processor, outgoing_rx, auth_manager) =
+            build_test_processor(config, state_db.clone()).await;
         let tracing = init_test_tracing();
         tracing.exporter.reset();
         tracing::callsite::rebuild_interest_cache();
         let mut harness = Self {
-            _server: server,
+            server,
             _codex_home: codex_home,
+            auth_manager,
             processor,
             outgoing_rx,
             session: Arc::new(ConnectionSessionState::new()),
@@ -236,6 +249,28 @@ impl TracingHarness {
         read_thread_started_notification(&mut self.outgoing_rx).await;
         response
     }
+
+    async fn request_error(
+        &mut self,
+        request: ClientRequest,
+        trace: Option<W3cTraceContext>,
+    ) -> JSONRPCErrorError {
+        let request_id = match request.id() {
+            RequestId::Integer(request_id) => *request_id,
+            request_id => panic!("expected integer request id in test harness, got {request_id:?}"),
+        };
+        let mut request = request_from_client_request(request);
+        request.trace = trace;
+        self.processor
+            .process_request(
+                TEST_CONNECTION_ID,
+                request,
+                &AppServerTransport::Stdio,
+                Arc::clone(&self.session),
+            )
+            .await;
+        read_error(&mut self.outgoing_rx, request_id).await
+    }
 }
 
 async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config> {
@@ -261,6 +296,7 @@ async fn build_test_processor(
 ) -> (
     Arc<MessageProcessor>,
     mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    Arc<AuthManager>,
 ) {
     let (outgoing_tx, outgoing_rx) = mpsc::channel(16);
     let auth_manager =
@@ -292,14 +328,103 @@ async fn build_test_processor(
         state_db,
         config_warnings: Vec::new(),
         session_source: SessionSource::VSCode,
-        auth_manager,
+        auth_manager: Arc::clone(&auth_manager),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         code_mode_session_provider: None,
         rpc_transport: AppServerRpcTransport::Stdio,
         remote_control_handle: None,
         plugin_startup_tasks: crate::PluginStartupTasks::Start,
     }));
-    (processor, outgoing_rx)
+    (processor, outgoing_rx, auth_manager)
+}
+
+#[derive(Clone)]
+struct StaticExternalAuth(CodexAuth);
+
+impl ExternalAuth for StaticExternalAuth {
+    fn resolve(&self) -> ExternalAuthFuture<'_, CodexAuth> {
+        Box::pin(async { Ok(self.0.clone()) })
+    }
+
+    fn refresh(&self, _context: ExternalAuthRefreshContext) -> ExternalAuthFuture<'_, CodexAuth> {
+        Box::pin(async { Ok(self.0.clone()) })
+    }
+}
+
+fn into_server_notification(
+    envelope: crate::outgoing_message::OutgoingEnvelope,
+) -> Option<ServerNotification> {
+    let message = match envelope {
+        crate::outgoing_message::OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } if connection_id == TEST_CONNECTION_ID => message,
+        crate::outgoing_message::OutgoingEnvelope::Broadcast { message } => message,
+        _ => return None,
+    };
+    let crate::outgoing_message::OutgoingMessage::AppServerNotification(notification) = message
+    else {
+        return None;
+    };
+    Some(notification.notification)
+}
+
+async fn read_turn_denial_notifications(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    turn_id: &str,
+) -> (usize, usize, TurnStatus, bool) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(/*secs*/ 5);
+    let mut errors = 0;
+    let mut terminals = 0;
+    let mut terminal_status = None;
+    let mut unauthorized = false;
+    loop {
+        let now = tokio::time::Instant::now();
+        let wait = if terminal_status.is_some() {
+            std::time::Duration::from_millis(/*millis*/ 100)
+        } else {
+            deadline.saturating_duration_since(now)
+        };
+        if wait.is_zero() {
+            panic!("timed out waiting for terminal notification for turn {turn_id}");
+        }
+        let envelope = match tokio::time::timeout(wait, outgoing_rx.recv()).await {
+            Ok(Some(envelope)) => envelope,
+            Ok(None) => panic!("outgoing channel closed"),
+            Err(_) if terminal_status.is_some() => break,
+            Err(_) => panic!("timed out waiting for terminal notification for turn {turn_id}"),
+        };
+        let Some(notification) = into_server_notification(envelope) else {
+            continue;
+        };
+        match notification {
+            ServerNotification::Error(notification) if notification.turn_id == turn_id => {
+                errors += 1;
+                unauthorized |= notification
+                    .error
+                    .codex_error_info
+                    .as_ref()
+                    .is_some_and(|info| {
+                        matches!(
+                            info,
+                            codex_app_server_protocol::CodexErrorInfo::Unauthorized
+                        )
+                    });
+            }
+            ServerNotification::TurnCompleted(notification) if notification.turn.id == turn_id => {
+                terminals += 1;
+                terminal_status = Some(notification.turn.status);
+            }
+            _ => {}
+        }
+    }
+    (
+        errors,
+        terminals,
+        terminal_status.expect("terminal notification"),
+        unauthorized,
+    )
 }
 
 fn run_current_thread_test_with_stack<F>(name: &str, future: F) -> Result<()>
@@ -485,6 +610,35 @@ async fn read_response<T: serde::de::DeserializeOwned>(
     }
 }
 
+async fn read_error(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    request_id: i64,
+) -> JSONRPCErrorError {
+    loop {
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
+            .await
+            .expect("timed out waiting for error")
+            .expect("outgoing channel closed");
+        let crate::outgoing_message::OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } = envelope
+        else {
+            continue;
+        };
+        if connection_id != TEST_CONNECTION_ID {
+            continue;
+        }
+        let crate::outgoing_message::OutgoingMessage::Error(error) = message else {
+            continue;
+        };
+        if error.id == RequestId::Integer(request_id) {
+            return error.error;
+        }
+    }
+}
+
 async fn read_thread_started_notification(
     outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
 ) {
@@ -598,6 +752,92 @@ async fn wait_for_automatic_turn_row(
         }
         tokio::time::sleep((deadline - now).min(std::time::Duration::from_millis(/*millis*/ 50)))
             .await;
+    }
+}
+
+async fn prepare_automatic_turn(
+    harness: &TracingHarness,
+    thread_id: ThreadId,
+    trigger_turn_id: &str,
+) -> Result<(String, codex_core::ThreadConfigSnapshot)> {
+    let principal =
+        crate::outgoing_message::automatic_turn_connection_principal(TEST_CONNECTION_ID);
+    let state_db = harness
+        .state_db
+        .as_ref()
+        .expect("state db enabled for this harness");
+    state_db
+        .record_automatic_turn_event_with_principal(
+            thread_id,
+            &Event {
+                id: trigger_turn_id.to_string(),
+                msg: EventMsg::Error(ErrorEvent {
+                    message: "blocked".to_string(),
+                    codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                }),
+            },
+            Some(&principal),
+        )
+        .await;
+    let capability = state_db
+        .automatic_turn_capability(thread_id, trigger_turn_id)
+        .await
+        .expect("policy event should issue a server capability");
+    let client_user_message_id = AutomaticTurnProvenance::policy_retry(
+        thread_id,
+        trigger_turn_id,
+        /*attempt*/ 1,
+        /*max_attempts*/ 3,
+        capability.clone(),
+    )
+    .expect("valid automatic-turn provenance")
+    .to_client_user_message_id()
+    .expect("valid automatic-turn provenance");
+    let context_snapshot = harness
+        .processor
+        .config_snapshot_for_test(thread_id)
+        .await
+        .expect("thread should remain loaded");
+    let context_fingerprint = codex_core::automatic_turn_context_fingerprint(&context_snapshot);
+    state_db
+        .bind_automatic_turn_capability_contract(
+            thread_id,
+            trigger_turn_id,
+            &capability,
+            "start",
+            None,
+            &context_fingerprint,
+        )
+        .await?;
+    Ok((client_user_message_id, context_snapshot))
+}
+
+fn automatic_turn_start_params(
+    thread_id: String,
+    client_user_message_id: String,
+    context_snapshot: &codex_core::ThreadConfigSnapshot,
+) -> TurnStartParams {
+    TurnStartParams {
+        thread_id,
+        client_user_message_id: Some(client_user_message_id),
+        input: vec![UserInput::Text {
+            text: "continue".to_string(),
+            text_elements: Vec::new(),
+        }],
+        cwd: Some(context_snapshot.cwd().to_path_buf()),
+        runtime_workspace_roots: Some(context_snapshot.workspace_roots.clone()),
+        approval_policy: Some(context_snapshot.approval_policy.clone().into()),
+        approvals_reviewer: Some(context_snapshot.approvals_reviewer.into()),
+        model: Some(context_snapshot.model.clone()),
+        service_tier: Some(context_snapshot.service_tier.clone()),
+        effort: context_snapshot.reasoning_effort.clone(),
+        summary: context_snapshot.reasoning_summary,
+        personality: context_snapshot.personality,
+        permissions: context_snapshot
+            .active_permission_profile
+            .as_ref()
+            .map(|profile| profile.id.clone()),
+        ..TurnStartParams::default()
     }
 }
 
@@ -782,91 +1022,21 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
     let thread_id = thread_start_response.thread.id.clone();
     let thread_id_value = ThreadId::from_string(&thread_id)?;
     let trigger_turn_id = "trigger-turn";
-    let principal =
-        crate::outgoing_message::automatic_turn_connection_principal(TEST_CONNECTION_ID);
-
     // A policy event creates the server-owned eligibility ticket. The request below then travels
     // through the real app-server turn/start and core session event path before the state
     // projection accepts the client envelope.
-    harness
-        .state_db
-        .as_ref()
-        .expect("state db enabled for this harness")
-        .record_automatic_turn_event_with_principal(
-            thread_id_value,
-            &Event {
-                id: trigger_turn_id.to_string(),
-                msg: EventMsg::Error(ErrorEvent {
-                    message: "blocked".to_string(),
-                    codex_error_info: Some(CodexErrorInfo::CyberPolicy),
-                }),
-            },
-            Some(&principal),
-        )
-        .await;
-    let capability = harness
-        .state_db
-        .as_ref()
-        .expect("state db enabled for this harness")
-        .automatic_turn_capability(thread_id_value, trigger_turn_id)
-        .await
-        .expect("policy event should issue a server capability");
-    let client_user_message_id = AutomaticTurnProvenance::policy_retry(
-        thread_id_value,
-        trigger_turn_id,
-        /*attempt*/ 1,
-        /*max_attempts*/ 3,
-        capability.clone(),
-    )
-    .expect("valid automatic-turn provenance")
-    .to_client_user_message_id()
-    .expect("valid automatic-turn provenance");
-    let context_snapshot = harness
-        .processor
-        .config_snapshot_for_test(thread_id_value)
-        .await
-        .expect("thread should remain loaded");
-    let context_fingerprint = codex_core::automatic_turn_context_fingerprint(&context_snapshot);
-    harness
-        .state_db
-        .as_ref()
-        .expect("state db enabled for this harness")
-        .bind_automatic_turn_capability_contract(
-            thread_id_value,
-            trigger_turn_id,
-            &capability,
-            "start",
-            None,
-            &context_fingerprint,
-        )
-        .await?;
+    let (client_user_message_id, context_snapshot) =
+        prepare_automatic_turn(&harness, thread_id_value, trigger_turn_id).await?;
 
     let turn_start_response: TurnStartResponse = harness
         .request(
             ClientRequest::TurnStart {
                 request_id: RequestId::Integer(30_002),
-                params: TurnStartParams {
-                    thread_id: thread_id.clone(),
-                    client_user_message_id: Some(client_user_message_id.clone()),
-                    input: vec![UserInput::Text {
-                        text: "continue".to_string(),
-                        text_elements: Vec::new(),
-                    }],
-                    cwd: Some(context_snapshot.cwd().to_path_buf()),
-                    runtime_workspace_roots: Some(context_snapshot.workspace_roots.clone()),
-                    approval_policy: Some(context_snapshot.approval_policy.clone().into()),
-                    approvals_reviewer: Some(context_snapshot.approvals_reviewer.into()),
-                    model: Some(context_snapshot.model.clone()),
-                    service_tier: Some(context_snapshot.service_tier.clone()),
-                    effort: context_snapshot.reasoning_effort.clone(),
-                    summary: context_snapshot.reasoning_summary,
-                    personality: context_snapshot.personality,
-                    permissions: context_snapshot
-                        .active_permission_profile
-                        .as_ref()
-                        .map(|profile| profile.id.clone()),
-                    ..TurnStartParams::default()
-                },
+                params: automatic_turn_start_params(
+                    thread_id.clone(),
+                    client_user_message_id.clone(),
+                    &context_snapshot,
+                ),
             },
             /*trace*/ None,
         )
@@ -889,6 +1059,264 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
             3,
             "recovered".to_string(),
         )
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial(app_server_tracing)]
+async fn automatic_turn_auth_transition_at_provider_boundary_is_terminal() -> Result<()> {
+    let mut harness = TracingHarness::new_with_state_db().await?;
+    harness
+        .auth_manager
+        .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
+            "key-a",
+        ))))
+        .await?;
+    let thread_start_response = harness
+        .start_thread(/*request_id*/ 31_001, /*trace*/ None)
+        .await;
+    let thread_id = thread_start_response.thread.id.clone();
+    let thread_id_value = ThreadId::from_string(&thread_id)?;
+    let trigger_turn_id = "provider-boundary-trigger";
+    let (client_user_message_id, context_snapshot) =
+        prepare_automatic_turn(&harness, thread_id_value, trigger_turn_id).await?;
+    let admitted_revision = harness.auth_manager.auth_revision();
+    let boundary_barrier = harness
+        .auth_manager
+        .provider_request_guard(admitted_revision)
+        .await
+        .expect("admitted credential revision should be current");
+
+    let auth_manager = Arc::clone(&harness.auth_manager);
+    let transition = auth_manager.set_external_auth(Arc::new(StaticExternalAuth(
+        CodexAuth::from_api_key("key-b"),
+    )));
+    tokio::pin!(transition);
+    assert!(matches!(futures::poll!(transition.as_mut()), Poll::Pending));
+
+    let turn_start_response: TurnStartResponse = harness
+        .request(
+            ClientRequest::TurnStart {
+                request_id: RequestId::Integer(31_002),
+                params: automatic_turn_start_params(
+                    thread_id.clone(),
+                    client_user_message_id.clone(),
+                    &context_snapshot,
+                ),
+            },
+            /*trace*/ None,
+        )
+        .await;
+    tokio::task::yield_now().await;
+    drop(boundary_barrier);
+    transition
+        .await
+        .expect("credential transition should complete before provider send");
+
+    let notifications =
+        read_turn_denial_notifications(&mut harness.outgoing_rx, &turn_start_response.turn.id)
+            .await;
+    assert_eq!(notifications, (1, 1, TurnStatus::Interrupted, true));
+    assert!(
+        harness
+            .server
+            .received_requests()
+            .await
+            .expect("request log")
+            .is_empty(),
+        "a denied automatic turn must send no provider request"
+    );
+    let row = wait_for_automatic_turn_row(
+        harness
+            .state_db
+            .as_ref()
+            .expect("state db enabled")
+            .usage_pool()
+            .as_ref(),
+        &thread_id,
+        &client_user_message_id,
+    )
+    .await?;
+    assert_eq!(row.6, "failed");
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial(app_server_tracing)]
+async fn automatic_turn_omitted_environments_preserve_sticky_selection() -> Result<()> {
+    let mut harness = TracingHarness::new_with_state_db().await?;
+    let environment_cwd = TempDir::new()?;
+    let extra_root = TempDir::new()?;
+    let environment_cwd = environment_cwd.path().abs();
+    let extra_root = extra_root.path().abs();
+    let thread_start_response: ThreadStartResponse = harness
+        .request(
+            ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(32_001),
+                params: ThreadStartParams {
+                    cwd: Some(environment_cwd.to_string_lossy().into_owned()),
+                    runtime_workspace_roots: Some(vec![
+                        environment_cwd.clone(),
+                        extra_root.clone(),
+                    ]),
+                    environments: Some(vec![TurnEnvironmentParams {
+                        environment_id: LOCAL_ENVIRONMENT_ID.to_string(),
+                        cwd: environment_cwd.clone().into(),
+                        runtime_workspace_roots: Some(vec![
+                            environment_cwd.clone().into(),
+                            extra_root.clone().into(),
+                        ]),
+                    }]),
+                    ephemeral: Some(true),
+                    ..ThreadStartParams::default()
+                },
+            },
+            /*trace*/ None,
+        )
+        .await;
+    read_thread_started_notification(&mut harness.outgoing_rx).await;
+    let thread_id = thread_start_response.thread.id.clone();
+    let thread_id_value = ThreadId::from_string(&thread_id)?;
+    let before = harness
+        .processor
+        .config_snapshot_for_test(thread_id_value)
+        .await
+        .expect("thread should remain loaded");
+    let (client_user_message_id, admitted_snapshot) =
+        prepare_automatic_turn(&harness, thread_id_value, "sticky-environment-trigger").await?;
+    assert_eq!(admitted_snapshot.environments, before.environments);
+
+    let turn_start_response: TurnStartResponse = harness
+        .request(
+            ClientRequest::TurnStart {
+                request_id: RequestId::Integer(32_002),
+                params: automatic_turn_start_params(
+                    thread_id.clone(),
+                    client_user_message_id.clone(),
+                    &admitted_snapshot,
+                ),
+            },
+            /*trace*/ None,
+        )
+        .await;
+    let row = wait_for_automatic_turn_row(
+        harness
+            .state_db
+            .as_ref()
+            .expect("state db enabled")
+            .usage_pool()
+            .as_ref(),
+        &thread_id,
+        &client_user_message_id,
+    )
+    .await?;
+    assert_eq!(row.6, "recovered");
+    assert_eq!(row.3, turn_start_response.turn.id);
+    let after = harness
+        .processor
+        .config_snapshot_for_test(thread_id_value)
+        .await
+        .expect("thread should remain loaded");
+    assert_eq!(after.environments, before.environments);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial(app_server_tracing)]
+async fn automatic_turn_rejects_fingerprint_changing_settings() -> Result<()> {
+    let mut harness = TracingHarness::new_with_state_db().await?;
+    let thread_start_response = harness
+        .start_thread(/*request_id*/ 32_101, /*trace*/ None)
+        .await;
+    let thread_id = thread_start_response.thread.id.clone();
+    let thread_id_value = ThreadId::from_string(&thread_id)?;
+    let (client_user_message_id, context_snapshot) =
+        prepare_automatic_turn(&harness, thread_id_value, "settings-change-trigger").await?;
+    let mut params =
+        automatic_turn_start_params(thread_id, client_user_message_id, &context_snapshot);
+    params.model = Some("different-model".to_string());
+
+    let error = harness
+        .request_error(
+            ClientRequest::TurnStart {
+                request_id: RequestId::Integer(32_102),
+                params,
+            },
+            /*trace*/ None,
+        )
+        .await;
+    assert_eq!(
+        error.message,
+        "automatic turn capability no longer matches the server-canonical context"
+    );
+    assert!(
+        harness
+            .server
+            .received_requests()
+            .await
+            .expect("request log")
+            .is_empty()
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial(app_server_tracing)]
+async fn ordinary_app_server_turns_continue_after_auth_transition() -> Result<()> {
+    let mut harness = TracingHarness::new().await?;
+    harness
+        .auth_manager
+        .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
+            "key-a",
+        ))))
+        .await?;
+    let thread_start_response = harness
+        .start_thread(/*request_id*/ 33_001, /*trace*/ None)
+        .await;
+    let thread_id = thread_start_response.thread.id.clone();
+
+    for (request_id, key) in [(33_002, "key-a"), (33_003, "key-b")] {
+        harness
+            .auth_manager
+            .set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(key))))
+            .await?;
+        let response: TurnStartResponse = harness
+            .request(
+                ClientRequest::TurnStart {
+                    request_id: RequestId::Integer(request_id),
+                    params: TurnStartParams {
+                        thread_id: thread_id.clone(),
+                        input: vec![UserInput::Text {
+                            text: "continue".to_string(),
+                            text_elements: Vec::new(),
+                        }],
+                        ..TurnStartParams::default()
+                    },
+                },
+                /*trace*/ None,
+            )
+            .await;
+        let notifications =
+            read_turn_denial_notifications(&mut harness.outgoing_rx, &response.turn.id).await;
+        assert_eq!(notifications, (0, 1, TurnStatus::Completed, false));
+    }
+    assert_eq!(
+        harness
+            .server
+            .received_requests()
+            .await
+            .expect("request log")
+            .len(),
+        2
     );
 
     harness.shutdown().await;
