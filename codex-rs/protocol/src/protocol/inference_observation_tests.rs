@@ -13,6 +13,7 @@ fn inference_call_event(status: InferenceCallStatus) -> InferenceCallEvent {
             .expect("thread id"),
         turn_id: "turn-1".to_string(),
         spawn_request_id: Some("spawn-1".to_string()),
+        source: None,
         status,
         transport: InferenceCallTransport::ResponsesHttp,
         configured_provider: "configured-provider".to_string(),
@@ -44,7 +45,7 @@ fn inference_call_event(status: InferenceCallStatus) -> InferenceCallEvent {
 }
 
 fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
-    let mut event = inference_call_event(status);
+    let mut event = inference_call_event(status.clone());
     match status {
         InferenceCallStatus::Started => {
             event.request_completed_at_ms = None;
@@ -71,7 +72,8 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
         InferenceCallStatus::Failed
         | InferenceCallStatus::Cancelled
         | InferenceCallStatus::UsageLimitReached
-        | InferenceCallStatus::TransportUncertain => {
+        | InferenceCallStatus::TransportUncertain
+        | InferenceCallStatus::Unknown(_) => {
             event.response_id = None;
             event.observed_provider = None;
             event.observed_model = None;
@@ -260,14 +262,193 @@ fn inference_call_event_enforces_lifecycle_shapes() {
         InferenceCallStatus::UsageLimitReached,
         InferenceCallStatus::LocalDenied,
         InferenceCallStatus::TransportUncertain,
+        InferenceCallStatus::Unknown("future_status".to_string()),
     ] {
         assert_eq!(
-            inference_call_event(status)
+            inference_call_event(status.clone())
                 .into_durable()
                 .expect("durable event"),
             expected_durable_event(status)
         );
     }
+}
+
+#[test]
+fn inference_call_source_known_shapes_round_trip() -> Result<()> {
+    let cases = [
+        (InferenceCallSource::Direct, json!({"type": "direct"})),
+        (
+            InferenceCallSource::HostContinuityCheck,
+            json!({"type": "host_continuity_check"}),
+        ),
+        (
+            InferenceCallSource::CodeMode {
+                cell_id: "cell-1".to_string(),
+                runtime_tool_call_id: "runtime-call-1".to_string(),
+            },
+            json!({
+                "type": "code_mode",
+                "cell_id": "cell-1",
+                "runtime_tool_call_id": "runtime-call-1",
+            }),
+        ),
+    ];
+
+    for (source, expected_wire) in cases {
+        assert_eq!(serde_json::to_value(&source)?, expected_wire);
+        assert_eq!(
+            serde_json::from_value::<InferenceCallSource>(expected_wire)?,
+            source
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn inference_call_source_preserves_unknown_objects_and_future_fields() -> Result<()> {
+    let cases = [
+        json!({
+            "type": "future_source",
+            "metadata": {"region": "melbourne", "attempt": 2},
+            "enabled": true,
+        }),
+        json!({"type": "direct", "future_field": [1, {"nested": false}]}),
+        json!({
+            "type": "code_mode",
+            "cell_id": "cell-1",
+            "runtime_tool_call_id": "runtime-call-1",
+            "future_field": "preserve-me",
+        }),
+    ];
+
+    for expected_wire in cases {
+        let source = serde_json::from_value::<InferenceCallSource>(expected_wire.clone())?;
+        assert!(matches!(source, InferenceCallSource::Unknown { .. }));
+        assert_eq!(serde_json::to_value(source)?, expected_wire);
+    }
+    Ok(())
+}
+
+#[test]
+fn inference_call_source_rejects_malformed_objects() {
+    for wire in [
+        json!({}),
+        json!({"type": 42}),
+        json!({"type": null}),
+        json!({"type": ""}),
+        json!({"type": "code_mode"}),
+        json!({"type": "code_mode", "cell_id": 42, "runtime_tool_call_id": "call"}),
+        json!({"type": "code_mode", "cell_id": "cell", "runtime_tool_call_id": null}),
+        json!("direct"),
+        json!(null),
+    ] {
+        assert!(serde_json::from_value::<InferenceCallSource>(wire).is_err());
+    }
+}
+
+#[test]
+fn inference_call_open_scalars_preserve_unknown_wire_tokens() -> Result<()> {
+    let status = serde_json::from_value::<InferenceCallStatus>(json!("Future.Status-v2"))?;
+    let transport = serde_json::from_value::<InferenceCallTransport>(json!("ws+future"))?;
+    let field = serde_json::from_value::<InferenceCallField>(json!("Future_Field"))?;
+    assert_eq!(
+        status,
+        InferenceCallStatus::Unknown("Future.Status-v2".to_string())
+    );
+    assert_eq!(
+        transport,
+        InferenceCallTransport::Unknown("ws+future".to_string())
+    );
+    assert_eq!(
+        field,
+        InferenceCallField::Unknown("Future_Field".to_string())
+    );
+    assert_eq!(serde_json::to_value(status)?, json!("Future.Status-v2"));
+    assert_eq!(serde_json::to_value(transport)?, json!("ws+future"));
+    assert_eq!(serde_json::to_value(field)?, json!("Future_Field"));
+    assert!(serde_json::from_value::<InferenceCallStatus>(json!("")).is_err());
+    assert!(serde_json::from_value::<InferenceCallTransport>(json!("")).is_err());
+    assert!(serde_json::from_value::<InferenceCallField>(json!("")).is_err());
+    for value in [json!(false), json!(7), json!(null), json!({})] {
+        assert!(serde_json::from_value::<InferenceCallStatus>(value.clone()).is_err());
+        assert!(serde_json::from_value::<InferenceCallTransport>(value.clone()).is_err());
+        assert!(serde_json::from_value::<InferenceCallField>(value).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn inference_call_unknown_status_is_conservative_terminal() {
+    let mut event = inference_call_event(InferenceCallStatus::Unknown("future_status".to_string()));
+    let durable = event.clone().into_durable().expect("durable event");
+    assert_eq!(durable.status, event.status);
+    assert_eq!(
+        durable.request_completed_at_ms,
+        event.request_completed_at_ms
+    );
+    assert_eq!(durable.upstream_request_id, event.upstream_request_id);
+    assert_eq!(durable.outcome_detail, event.outcome_detail);
+    assert_eq!(durable.response_id, None);
+    assert_eq!(durable.observed_provider, None);
+    assert_eq!(durable.observed_model, None);
+    assert_eq!(durable.observed_model_snapshot, None);
+    assert_eq!(durable.observed_service_tier, None);
+    assert_eq!(durable.token_usage, None);
+
+    event.status = InferenceCallStatus::Completed;
+    let completed = event.into_durable().expect("durable event");
+    assert_eq!(completed.response_id, Some("response-1".to_string()));
+}
+
+#[test]
+fn inference_call_source_bounds_are_rejections() {
+    let mut oversized_code_mode = inference_call_event(InferenceCallStatus::Started);
+    oversized_code_mode.source = Some(InferenceCallSource::CodeMode {
+        cell_id: "c".repeat(INFERENCE_CALL_CORRELATION_ID_MAX_BYTES + 1),
+        runtime_tool_call_id: "runtime-call-1".to_string(),
+    });
+    assert!(oversized_code_mode.into_durable().is_none());
+
+    let mut oversized_unknown = inference_call_event(InferenceCallStatus::Completed);
+    oversized_unknown.source = Some(InferenceCallSource::Unknown {
+        raw: serde_json::from_value(json!({
+            "type": "future_source",
+            "payload": "x".repeat(INFERENCE_CALL_EVENT_MAX_BYTES),
+        }))
+        .expect("source object"),
+    });
+    assert!(oversized_unknown.into_durable().is_none());
+}
+
+#[test]
+fn inference_call_normalization_preserves_receipts_on_replay() {
+    let oversized_required = "🦀".repeat(INFERENCE_CALL_STRING_MAX_BYTES / 4 + 1);
+    let mut event = inference_call_event(InferenceCallStatus::Completed);
+    event.configured_provider = oversized_required.clone();
+    event.requested_model = oversized_required;
+    let once = event.into_durable().expect("first durable event");
+    let twice = once.clone().into_durable().expect("second durable event");
+    assert_eq!(twice, once);
+}
+
+#[test]
+fn inference_call_schema_and_typescript_describe_wire_shapes() -> Result<()> {
+    let status_schema = serde_json::to_value(schemars::schema_for!(InferenceCallStatus))?;
+    let transport_schema = serde_json::to_value(schemars::schema_for!(InferenceCallTransport))?;
+    let field_schema = serde_json::to_value(schemars::schema_for!(InferenceCallField))?;
+    let source_schema = serde_json::to_value(schemars::schema_for!(InferenceCallSource))?;
+    assert_eq!(status_schema["type"], "string");
+    assert_eq!(transport_schema["type"], "string");
+    assert_eq!(field_schema["type"], "string");
+    assert!(source_schema["anyOf"].is_array());
+
+    let status_decl = InferenceCallStatus::decl(&ts_rs::Config::default());
+    let source_decl = InferenceCallSource::decl(&ts_rs::Config::default());
+    assert!(status_decl.contains("string"));
+    assert!(source_decl.contains("code_mode"));
+    assert!(source_decl.contains("cell_id"));
+    assert!(source_decl.contains("runtime_tool_call_id"));
+    Ok(())
 }
 
 #[test]
