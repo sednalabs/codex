@@ -39,6 +39,14 @@ GNULLVM_INPUTS = (
     "external/rustc_windows_aarch64_gnullvm_1_90_0/rustc "
     "external/cargo_windows_aarch64_gnullvm_1_90_0/cargo"
 )
+DEFAULT_GNULLVM_INPUTS = (
+    "bazel-out/aarch64-pc-windows-gnullvm-fastbuild/bin/"
+    "external/rules_rs++toolchains+default_rust_toolchains/"
+    "windows_aarch64_gnullvm_1_95_0_rust_toolchain/bin/rustc.exe "
+    "--sysroot=bazel-out/aarch64-pc-windows-gnullvm-fastbuild/bin/"
+    "external/rules_rs++toolchains+default_rust_toolchains/"
+    "windows_aarch64_gnullvm_1_95_0_rust_toolchain"
+)
 
 
 class VerifyArm64GnullvmAqueryTest(unittest.TestCase):
@@ -50,6 +58,28 @@ class VerifyArm64GnullvmAqueryTest(unittest.TestCase):
         )
 
         VERIFY_AQUERY.verify_selected_rust_action(output, TARGET)
+
+    def test_accepts_generated_default_rust_toolchains_representation(self) -> None:
+        output = action_block(
+            target=TARGET,
+            execution_platform=GNULLVM_PLATFORM,
+            inputs=DEFAULT_GNULLVM_INPUTS,
+        )
+
+        VERIFY_AQUERY.verify_selected_rust_action(output, TARGET)
+
+    def test_rejects_unversioned_or_generic_gnullvm_text(self) -> None:
+        output = action_block(
+            target=TARGET,
+            execution_platform=GNULLVM_PLATFORM,
+            inputs="windows_aarch64_gnullvm rustc.exe",
+        )
+
+        with self.assertRaisesRegex(
+            VERIFY_AQUERY.AqueryValidationError,
+            "missing ARM64 gnullvm toolchain inputs",
+        ):
+            VERIFY_AQUERY.verify_selected_rust_action(output, TARGET)
 
     def test_rejects_gnullvm_toolchain_text_in_an_unrelated_action(self) -> None:
         selected_action = action_block(
