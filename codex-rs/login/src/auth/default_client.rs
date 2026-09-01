@@ -260,6 +260,25 @@ pub fn create_client_for_route(
     )
 }
 
+/// Builds a route-aware model API client that returns redirects to the caller instead of replaying
+/// an already-authorized request at a different destination.
+pub fn create_client_for_route_without_redirects(
+    http_client_factory: &HttpClientFactory,
+    request_url: &str,
+    route_class: ClientRouteClass,
+) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
+    let builder = default_http_client_builder().without_redirects();
+    if matches!(
+        http_client_factory.outbound_proxy_policy(),
+        OutboundProxyPolicy::ReqwestDefault
+    ) || is_sandboxed()
+    {
+        return Ok(build_default_client(builder));
+    }
+
+    builder.build_respecting_outbound_proxy_policy(http_client_factory, request_url, route_class)
+}
+
 /// Builds the default Codex HTTP client for a concrete outbound route without blocking the
 /// async runtime worker that initiated the request.
 pub async fn create_client_for_route_async(

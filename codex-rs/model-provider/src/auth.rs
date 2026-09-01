@@ -56,6 +56,7 @@ pub struct ResolvedProviderAuth {
     pub auth: SharedAuthProvider,
     pub agent_identity_telemetry: Option<AgentIdentityTelemetry>,
     authority_identity: ProviderAuthIdentity,
+    freeze_to_headers: bool,
 }
 
 /// Process-local, secret-safe identity for the credentials represented by a resolved provider
@@ -104,6 +105,24 @@ impl ResolvedProviderAuth {
             }),
             agent_identity_telemetry: None,
             authority_identity: provider_auth_hash(|state| hash_header_map(&headers, state)),
+            freeze_to_headers: true,
+        }
+    }
+
+    /// Preserves an auth provider whose credentials are applied to the complete request (for
+    /// example AWS SigV4), while binding its already-frozen signer identity into admission.
+    pub(crate) fn for_complete_request_auth(
+        auth: SharedAuthProvider,
+        signer_identity: codex_aws_auth::AwsCredentialIdentity,
+    ) -> Self {
+        Self {
+            auth,
+            agent_identity_telemetry: None,
+            authority_identity: provider_auth_hash(|state| {
+                state.write(b"complete-request-auth\0");
+                signer_identity.write_to(state);
+            }),
+            freeze_to_headers: false,
         }
     }
 
@@ -125,17 +144,21 @@ impl ResolvedProviderAuth {
             auth: Arc::new(AgentIdentityAuthProvider { auth }),
             agent_identity_telemetry: Some(agent_identity_telemetry),
             authority_identity,
+            freeze_to_headers: true,
         }
     }
 
-    /// Freezes the exact headers that will be used by this request attempt. This removes dynamic
-    /// AuthManager/env reads from the send path while preserving the semantic credential identity
-    /// used for automatic admission and transport reuse.
+    /// Freezes the exact credentials used by this request attempt. Header-based providers become
+    /// immutable headers; complete-request providers retain their already-frozen signer. This
+    /// removes dynamic AuthManager/env reads from the send path while preserving the semantic
+    /// credential identity used for automatic admission and transport reuse.
     pub fn freeze(mut self) -> Self {
-        let headers = self.auth.to_auth_headers();
-        self.auth = Arc::new(HeaderAuthProvider {
-            auth: AuthHeaders::new(headers),
-        });
+        if self.freeze_to_headers {
+            let headers = self.auth.to_auth_headers();
+            self.auth = Arc::new(HeaderAuthProvider {
+                auth: AuthHeaders::new(headers),
+            });
+        }
         self
     }
 

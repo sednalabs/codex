@@ -9,7 +9,6 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
-use super::through_request_initiation;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
@@ -306,46 +305,6 @@ async fn external_auth_resolution_succeeds_without_provider_gate_deadlock() {
         .await
         .expect("external auth resolution must not deadlock")
         .expect("external auth authority should resolve");
-}
-
-#[tokio::test]
-async fn provider_authority_releases_after_initiation_cancellation_and_error() {
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("key-a"));
-    let (_, guard) = auth_manager.current_provider_request_guard().await;
-    let pending_request = through_request_initiation(std::future::pending::<()>(), Some(guard));
-    tokio::pin!(pending_request);
-    assert!(matches!(
-        futures::poll!(pending_request.as_mut()),
-        Poll::Pending
-    ));
-
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        auth_manager.set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
-            "key-b",
-        )))),
-    )
-    .await
-    .expect("transition should not wait for response consumption")
-    .expect("transition after request initiation");
-    drop(pending_request);
-
-    let (_, guard) = auth_manager.current_provider_request_guard().await;
-    let request_error = through_request_initiation(
-        std::future::ready(Err::<(), &'static str>("request failed")),
-        Some(guard),
-    )
-    .await;
-    assert_eq!(request_error, Err("request failed"));
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        auth_manager.set_external_auth(Arc::new(StaticExternalAuth(CodexAuth::from_api_key(
-            "key-c",
-        )))),
-    )
-    .await
-    .expect("error path must release provider authority")
-    .expect("transition after request error");
 }
 
 #[tokio::test]

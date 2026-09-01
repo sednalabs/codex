@@ -29,7 +29,10 @@ use crate::provider::ModelProviderFuture;
 use crate::provider::ProviderAccountResult;
 use crate::provider::ProviderAccountState;
 use crate::provider::ProviderCapabilities;
+use crate::provider::ProviderRequestAuth;
+use auth::resolve_auth_method;
 use auth::resolve_provider_auth as resolve_bedrock_provider_auth;
+use auth::resolved_provider_auth;
 pub(crate) use catalog::static_model_catalog;
 use catalog::with_default_only_service_tier;
 use mantle::bedrock_mantle_runtime_base_url;
@@ -175,6 +178,41 @@ impl ModelProvider for AmazonBedrockModelProvider {
 
     fn api_auth(&self) -> ModelProviderFuture<'_, Result<SharedAuthProvider>> {
         Box::pin(AmazonBedrockModelProvider::api_auth(self))
+    }
+
+    fn request_auth_for_scope(
+        &self,
+        _scope: crate::auth::ProviderAuthScope,
+    ) -> ModelProviderFuture<'_, Result<ProviderRequestAuth>> {
+        Box::pin(async move {
+            let account_auth = self.auth().await;
+            if self.info.has_command_auth() {
+                return Ok(ProviderRequestAuth {
+                    account_auth: account_auth.clone(),
+                    api_provider: AmazonBedrockModelProvider::api_provider(self).await?,
+                    resolved: crate::auth::ResolvedProviderAuth::new(
+                        resolve_configured_provider_auth(account_auth.as_ref(), &self.info)?,
+                    ),
+                });
+            }
+
+            let managed_auth = self.managed_auth();
+            let method = resolve_auth_method(managed_auth.as_ref(), &self.aws).await?;
+            let region = match &method {
+                auth::BedrockAuthMethod::ManagedBearerToken { region, .. }
+                | auth::BedrockAuthMethod::EnvBearerToken { region, .. } => region.as_str(),
+                auth::BedrockAuthMethod::AwsSdkAuth { context } => context.region(),
+            };
+            let mut provider_info = self.info.clone();
+            if provider_info.base_url.is_none() {
+                provider_info.base_url = Some(mantle::base_url(region)?);
+            }
+            Ok(ProviderRequestAuth {
+                account_auth,
+                api_provider: provider_info.to_api_provider(/*auth_mode*/ None)?,
+                resolved: resolved_provider_auth(method),
+            })
+        })
     }
 
     fn models_manager(

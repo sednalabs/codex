@@ -9,6 +9,7 @@ use std::task::Poll;
 
 use codex_http_client::BuildCustomCaTransportError;
 use codex_http_client::HttpClientFactory;
+use codex_http_client::RequestInitiation;
 use codex_http_client::build_rustls_client_config_with_custom_ca;
 use futures::Sink;
 use futures::Stream;
@@ -93,19 +94,37 @@ impl WebSocketConnector {
         request: Request,
         config: WebSocketConfig,
     ) -> Result<(WebSocketConnection, Response), WebSocketError> {
+        self.connect_with_initiation(request, config, None).await
+    }
+
+    /// Connects a WebSocket while retaining single-use request authority until the dialer owns
+    /// the immutable handshake request.
+    pub async fn connect_with_initiation(
+        &self,
+        request: Request,
+        config: WebSocketConfig,
+        initiation: Option<RequestInitiation>,
+    ) -> Result<(WebSocketConnection, Response), WebSocketError> {
         let proxy_route = self
             .http_client_factory
             .resolve_proxy_route_async(request.uri().to_string())
             .await
             .map_err(WebSocketError::Io)?;
-        let (inner, response) = dialer::connect(
+        let claim = initiation
+            .map(|initiation| initiation.claim())
+            .transpose()
+            .map_err(|error| WebSocketError::Io(std::io::Error::other(error)))?;
+        let connection = dialer::connect(
             request,
             config,
             self.tls_config.clone(),
             proxy_route,
             self.tcp_nodelay,
-        )
-        .await?;
+        );
+        if let Some(claim) = claim {
+            claim.acknowledge();
+        }
+        let (inner, response) = connection.await?;
         Ok((WebSocketConnection { inner }, response))
     }
 }

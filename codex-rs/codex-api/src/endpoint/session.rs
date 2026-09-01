@@ -6,6 +6,7 @@ use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
 use codex_client::Request;
 use codex_client::RequestBody;
+use codex_client::RequestInitiation;
 use codex_client::RequestTelemetry;
 use codex_client::Response;
 use codex_client::StreamResponse;
@@ -21,6 +22,7 @@ pub(crate) struct EndpointSession<T: HttpTransport> {
     provider: Provider,
     auth: SharedAuthProvider,
     request_telemetry: Option<Arc<dyn RequestTelemetry>>,
+    request_initiation: Option<RequestInitiation>,
 }
 
 impl<T: HttpTransport> EndpointSession<T> {
@@ -30,7 +32,13 @@ impl<T: HttpTransport> EndpointSession<T> {
             provider,
             auth,
             request_telemetry: None,
+            request_initiation: None,
         }
+    }
+
+    pub(crate) fn with_request_initiation(mut self, initiation: Option<RequestInitiation>) -> Self {
+        self.request_initiation = initiation;
+        self
     }
 
     pub(crate) fn with_request_telemetry(
@@ -95,16 +103,37 @@ impl<T: HttpTransport> EndpointSession<T> {
             req
         };
 
+        let mut retry_policy = self.provider.retry.to_policy();
+        if self.request_initiation.is_some() {
+            retry_policy.max_attempts = 0;
+        }
         let response = run_with_request_telemetry(
-            self.provider.retry.to_policy(),
+            retry_policy,
             self.request_telemetry.clone(),
             make_request,
             |req| {
                 let auth = self.auth.clone();
                 let transport = &self.transport;
+                let initiation = self.request_initiation.clone();
                 async move {
-                    let req = auth.apply_auth(req).await.map_err(TransportError::from)?;
-                    transport.execute(req).await
+                    let req = match auth.apply_auth(req).await {
+                        Ok(req) => req,
+                        Err(err) => {
+                            if let Some(initiation) = initiation {
+                                initiation.cancel();
+                            }
+                            return Err(TransportError::from(err));
+                        }
+                    };
+                    let claim = initiation
+                        .map(|initiation| initiation.claim())
+                        .transpose()
+                        .map_err(TransportError::Build)?;
+                    let response = transport.execute(req);
+                    if let Some(claim) = claim {
+                        claim.acknowledge();
+                    }
+                    response.await
                 }
             },
         )
@@ -136,16 +165,37 @@ impl<T: HttpTransport> EndpointSession<T> {
         let request = request.into_prepared().map_err(TransportError::Build)?;
         let make_request = || request.clone();
 
+        let mut retry_policy = self.provider.retry.to_policy();
+        if self.request_initiation.is_some() {
+            retry_policy.max_attempts = 0;
+        }
         let stream = run_with_request_telemetry(
-            self.provider.retry.to_policy(),
+            retry_policy,
             self.request_telemetry.clone(),
             make_request,
             |req| {
                 let auth = self.auth.clone();
                 let transport = &self.transport;
+                let initiation = self.request_initiation.clone();
                 async move {
-                    let req = auth.apply_auth(req).await.map_err(TransportError::from)?;
-                    transport.stream(req).await
+                    let req = match auth.apply_auth(req).await {
+                        Ok(req) => req,
+                        Err(err) => {
+                            if let Some(initiation) = initiation {
+                                initiation.cancel();
+                            }
+                            return Err(TransportError::from(err));
+                        }
+                    };
+                    let claim = initiation
+                        .map(|initiation| initiation.claim())
+                        .transpose()
+                        .map_err(TransportError::Build)?;
+                    let response = transport.stream(req);
+                    if let Some(claim) = claim {
+                        claim.acknowledge();
+                    }
+                    response.await
                 }
             },
         )

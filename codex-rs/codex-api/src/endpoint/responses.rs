@@ -13,6 +13,7 @@ use crate::telemetry::SseTelemetry;
 use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
 use codex_client::RequestCompression;
+use codex_client::RequestInitiation;
 use codex_client::RequestTelemetry;
 use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
@@ -54,6 +55,13 @@ impl<T: HttpTransport> ResponsesClient<T> {
         Self {
             session: self.session.with_request_telemetry(request),
             sse_telemetry: sse,
+        }
+    }
+
+    pub fn with_request_initiation(self, initiation: Option<RequestInitiation>) -> Self {
+        Self {
+            session: self.session.with_request_initiation(initiation),
+            sse_telemetry: self.sse_telemetry,
         }
     }
 

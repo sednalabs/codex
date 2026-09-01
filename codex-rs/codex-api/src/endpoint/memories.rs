@@ -5,6 +5,7 @@ use crate::endpoint::session::EndpointSession;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use codex_client::HttpTransport;
+use codex_client::RequestInitiation;
 use codex_client::RequestTelemetry;
 use http::HeaderMap;
 use http::Method;
@@ -26,6 +27,12 @@ impl<T: HttpTransport> MemoriesClient<T> {
     pub fn with_telemetry(self, request: Option<Arc<dyn RequestTelemetry>>) -> Self {
         Self {
             session: self.session.with_request_telemetry(request),
+        }
+    }
+
+    pub fn with_request_initiation(self, initiation: Option<RequestInitiation>) -> Self {
+        Self {
+            session: self.session.with_request_initiation(initiation),
         }
     }
 

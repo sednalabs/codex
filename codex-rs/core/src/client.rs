@@ -25,7 +25,6 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
-use std::future::Future;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -50,6 +49,7 @@ use codex_api::RealtimeCallClient as ApiRealtimeCallClient;
 use codex_api::RealtimeSessionConfig as ApiRealtimeSessionConfig;
 use codex_api::Reasoning;
 use codex_api::ReasoningContext;
+use codex_api::RequestInitiation;
 use codex_api::RequestTelemetry;
 use codex_api::ReqwestTransport;
 use codex_api::ResponseCreateWsRequest;
@@ -72,11 +72,10 @@ use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
-use codex_login::ProviderRequestGuard;
 use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
 use codex_login::default_client::add_originator_header;
-use codex_login::default_client::create_client_for_route;
+use codex_login::default_client::create_client_for_route_without_redirects;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::auth::AuthMode;
@@ -236,7 +235,7 @@ struct CurrentClientSetup {
     api_auth: SharedAuthProvider,
     agent_identity_telemetry: Option<AgentIdentityTelemetry>,
     authority: ProviderAuthority,
-    request_authority: Option<ProviderRequestGuard>,
+    request_initiation: RequestInitiation,
 }
 
 /// Complete process-local provider authority and transport identity admitted for an automatic
@@ -549,23 +548,6 @@ fn complete_provider_authority(
     }
 }
 
-/// Polls a transport operation through its initiation boundary, then releases provider authority
-/// while the response or stream is consumed. Dropping or unwinding this future also releases the
-/// guard because the guard remains ordinary owned state in the polling closure.
-async fn through_request_initiation<F: Future>(
-    future: F,
-    request_authority: Option<ProviderRequestGuard>,
-) -> F::Output {
-    let mut future = std::pin::pin!(future);
-    let mut request_authority = request_authority;
-    futures::future::poll_fn(|cx| {
-        let result = future.as_mut().poll(cx);
-        drop(request_authority.take());
-        result
-    })
-    .await
-}
-
 impl ModelClient {
     #[allow(clippy::too_many_arguments)]
     /// Creates a new session-scoped `ModelClient`.
@@ -807,19 +789,18 @@ impl ModelClient {
             .saturating_mul(COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER);
         let client =
             ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
-                .with_telemetry(Some(request_telemetry));
+                .with_telemetry(Some(request_telemetry))
+                .with_request_initiation(Some(client_setup.request_initiation));
         let trace_attempt = compaction_trace.start_attempt(&payload);
-        let result = through_request_initiation(
-            client.compact_input(
+        let result = client
+            .compact_input(
                 &payload,
                 extra_headers,
                 compact_request_timeout,
                 turn_state.as_deref(),
-            ),
-            client_setup.request_authority,
-        )
-        .await
-        .map_err(|error| self.state.provider.map_api_error(error));
+            )
+            .await
+            .map_err(|error| self.state.provider.map_api_error(error));
         trace_attempt.record_result(result.as_deref());
         result
     }
@@ -845,13 +826,11 @@ impl ModelClient {
         ));
         let api_provider = api_provider_override.unwrap_or(client_setup.api_provider);
         let transport = self.build_api_transport(&api_provider, REALTIME_CALLS_ENDPOINT)?;
-        let response = through_request_initiation(
-            ApiRealtimeCallClient::new(transport, api_provider, client_setup.api_auth)
-                .create_with_session_and_headers(sdp, session_config, extra_headers),
-            client_setup.request_authority,
-        )
-        .await
-        .map_err(|error| self.state.provider.map_api_error(error))?;
+        let response = ApiRealtimeCallClient::new(transport, api_provider, client_setup.api_auth)
+            .with_request_initiation(Some(client_setup.request_initiation))
+            .create_with_session_and_headers(sdp, session_config, extra_headers)
+            .await
+            .map_err(|error| self.state.provider.map_api_error(error))?;
         Ok(RealtimeWebrtcCallStart {
             sdp: response.sdp,
             call_id: response.call_id,
@@ -894,7 +873,8 @@ impl ModelClient {
         );
         let client =
             ApiMemoriesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
-                .with_telemetry(Some(request_telemetry));
+                .with_telemetry(Some(request_telemetry))
+                .with_request_initiation(Some(client_setup.request_initiation));
 
         let payload = ApiMemorySummarizeInput {
             model: model_info.slug.clone(),
@@ -908,12 +888,10 @@ impl ModelClient {
                 }),
         };
 
-        through_request_initiation(
-            client.summarize_input(&payload, self.build_subagent_headers()),
-            client_setup.request_authority,
-        )
-        .await
-        .map_err(|error| self.state.provider.map_api_error(error))
+        client
+            .summarize_input(&payload, self.build_subagent_headers())
+            .await
+            .map_err(|error| self.state.provider.map_api_error(error))
     }
 
     fn build_subagent_headers(&self) -> ApiHeaderMap {
@@ -1187,7 +1165,7 @@ impl ModelClient {
                 api_auth: resolved_auth.auth,
                 agent_identity_telemetry: resolved_auth.agent_identity_telemetry,
                 authority,
-                request_authority,
+                request_initiation: RequestInitiation::new(request_authority),
             });
         }
     }
@@ -1198,7 +1176,7 @@ impl ModelClient {
             .current_client_setup(/*expected_authority*/ None)
             .await?;
         let authority = setup.authority;
-        drop(setup.request_authority);
+        setup.request_initiation.cancel();
         Ok(authority)
     }
 
@@ -1208,7 +1186,7 @@ impl ModelClient {
         endpoint: &str,
     ) -> Result<ReqwestTransport> {
         let request_url = api_provider.url_for_path(endpoint);
-        let client = create_client_for_route(
+        let client = create_client_for_route_without_redirects(
             &self.http_client_factory,
             &request_url,
             ClientRouteClass::Api,
@@ -1236,6 +1214,7 @@ impl ModelClient {
         responses_metadata: &CodexResponsesMetadata,
         auth_context: AuthRequestTelemetryContext,
         request_route_telemetry: RequestRouteTelemetry,
+        request_initiation: RequestInitiation,
     ) -> std::result::Result<ApiWebSocketConnection, ApiError> {
         let headers = self.build_websocket_headers(responses_metadata).await;
         let websocket_telemetry = ModelClientSession::build_websocket_telemetry(
@@ -1248,12 +1227,13 @@ impl ModelClient {
         let start = Instant::now();
         let result = match tokio::time::timeout(
             websocket_connect_timeout,
-            ApiWebSocketResponsesClient::new(api_provider, api_auth).connect(
+            ApiWebSocketResponsesClient::new(api_provider, api_auth).connect_with_initiation(
                 &self.http_client_factory,
                 headers,
                 codex_login::default_client::default_headers(),
                 /*turn_state*/ None,
                 Some(websocket_telemetry),
+                request_initiation,
             ),
         )
         .await
@@ -1514,25 +1494,24 @@ impl ModelClientSession {
                     "failed to build websocket prewarm client setup: {err}"
                 ))
             })?;
-        let request_authority = client_setup.request_authority;
         let auth_context = AuthRequestTelemetryContext::new(
             client_setup.auth.as_ref().map(CodexAuth::auth_mode),
             client_setup.api_auth.as_ref(),
             client_setup.agent_identity_telemetry.clone(),
             PendingUnauthorizedRetry::default(),
         );
-        let connection = through_request_initiation(
-            self.client.connect_websocket(
+        let connection = self
+            .client
+            .connect_websocket(
                 session_telemetry,
                 client_setup.api_provider,
                 client_setup.api_auth,
                 responses_metadata,
                 auth_context,
                 RequestRouteTelemetry::for_endpoint(RESPONSES_ENDPOINT),
-            ),
-            request_authority,
-        )
-        .await?;
+                client_setup.request_initiation,
+            )
+            .await?;
         self.websocket_session.connection = Some(connection);
         self.websocket_session.authority = Some(client_setup.authority);
         self.websocket_session
@@ -1555,7 +1534,7 @@ impl ModelClientSession {
     async fn websocket_connection(
         &mut self,
         params: WebsocketConnectParams<'_>,
-    ) -> std::result::Result<&ApiWebSocketConnection, ApiError> {
+    ) -> std::result::Result<Option<RequestInitiation>, ApiError> {
         let WebsocketConnectParams {
             session_telemetry,
             api_provider,
@@ -1564,6 +1543,7 @@ impl ModelClientSession {
             responses_metadata,
             auth_context,
             request_route_telemetry,
+            request_initiation,
         } = params;
         if self.websocket_session.connection.is_some()
             && self.websocket_session.authority != Some(authority)
@@ -1588,6 +1568,7 @@ impl ModelClientSession {
                     responses_metadata,
                     auth_context,
                     request_route_telemetry,
+                    request_initiation,
                 )
                 .await
             {
@@ -1603,17 +1584,12 @@ impl ModelClientSession {
             self.websocket_session.authority = Some(authority);
             self.websocket_session
                 .set_connection_reused(/*connection_reused*/ false);
+            Ok(None)
         } else {
             self.websocket_session
                 .set_connection_reused(/*connection_reused*/ true);
+            Ok(Some(request_initiation))
         }
-
-        self.websocket_session
-            .connection
-            .as_ref()
-            .ok_or(ApiError::Stream(
-                "websocket connection is unavailable".to_string(),
-            ))
     }
 
     fn responses_request_compression(&self, auth: Option<&CodexAuth>) -> Compression {
@@ -1665,7 +1641,6 @@ impl ModelClientSession {
                 .client
                 .current_client_setup(self.expected_authority)
                 .await?;
-            let request_authority = client_setup.request_authority;
             let transport = self
                 .client
                 .build_api_transport(&client_setup.api_provider, RESPONSES_ENDPOINT)?;
@@ -1711,12 +1686,9 @@ impl ModelClientSession {
                 client_setup.api_provider,
                 client_setup.api_auth,
             )
-            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
-            let stream_result = through_request_initiation(
-                client.stream_request(request, options),
-                request_authority,
-            )
-            .await;
+            .with_telemetry(Some(request_telemetry), Some(sse_telemetry))
+            .with_request_initiation(Some(client_setup.request_initiation));
+            let stream_result = client.stream_request(request, options).await;
 
             match stream_result {
                 Ok(stream) => {
@@ -1803,7 +1775,6 @@ impl ModelClientSession {
                 .client
                 .current_client_setup(self.expected_authority)
                 .await?;
-            let request_authority = client_setup.request_authority;
             let request_auth_context = AuthRequestTelemetryContext::new(
                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
                 client_setup.api_auth.as_ref(),
@@ -1831,7 +1802,8 @@ impl ModelClientSession {
             if let Some(turn_state) = self.turn_state.get() {
                 client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
             }
-            match self
+            let connection_authority = client_setup.authority;
+            let request_initiation = match self
                 .websocket_connection(WebsocketConnectParams {
                     session_telemetry,
                     api_provider: client_setup.api_provider,
@@ -1842,20 +1814,19 @@ impl ModelClientSession {
                     request_route_telemetry: RequestRouteTelemetry::for_endpoint(
                         RESPONSES_ENDPOINT,
                     ),
+                    request_initiation: client_setup.request_initiation,
                 })
                 .await
             {
-                Ok(_) => {}
+                Ok(request_initiation) => request_initiation,
                 Err(ApiError::Transport(TransportError::Http { status, .. }))
                     if status == StatusCode::UPGRADE_REQUIRED =>
                 {
-                    drop(request_authority);
                     return Ok(WebsocketStreamOutcome::FallbackToHttp);
                 }
                 Err(ApiError::Transport(
                     unauthorized_transport @ TransportError::Http { status, .. },
                 )) if status == StatusCode::UNAUTHORIZED => {
-                    drop(request_authority);
                     pending_retry = PendingUnauthorizedRetry::from_recovery(
                         handle_unauthorized(
                             unauthorized_transport,
@@ -1868,10 +1839,32 @@ impl ModelClientSession {
                     continue;
                 }
                 Err(err) => {
-                    drop(request_authority);
                     return Err(self.client.state.provider.map_api_error(err));
                 }
-            }
+            };
+            let request_initiation = match request_initiation {
+                Some(request_initiation) => request_initiation,
+                None => {
+                    match self
+                        .client
+                        .current_client_setup(Some(connection_authority))
+                        .await
+                    {
+                        Ok(setup) => setup.request_initiation,
+                        Err(err)
+                            if self.expected_authority.is_none()
+                                && matches!(
+                                    err.details(),
+                                    codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
+                                ) =>
+                        {
+                            self.reset_websocket_session();
+                            continue;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+            };
 
             let (incremental_request, previous_response_id_from_untraced_warmup) =
                 self.prepare_websocket_request(&request);
@@ -1929,15 +1922,14 @@ impl ModelClientSession {
                         "websocket connection is unavailable".to_string(),
                     ))
                 })?;
-            let stream_result = through_request_initiation(
-                websocket_connection.stream_request(
+            let stream_result = websocket_connection
+                .stream_request_with_initiation(
                     ws_request,
                     self.websocket_session.connection_reused(),
                     Some(Arc::clone(&self.turn_state)),
-                ),
-                request_authority,
-            )
-            .await;
+                    request_initiation,
+                )
+                .await;
             if let Some(original_item_ids) = original_item_ids {
                 for (item, original_item_id) in request.input.iter_mut().zip(original_item_ids) {
                     item.set_id(original_item_id);
@@ -2457,6 +2449,7 @@ struct WebsocketConnectParams<'a> {
     responses_metadata: &'a CodexResponsesMetadata,
     auth_context: AuthRequestTelemetryContext,
     request_route_telemetry: RequestRouteTelemetry,
+    request_initiation: RequestInitiation,
 }
 
 async fn handle_unauthorized(
