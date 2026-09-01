@@ -36,8 +36,18 @@ pub struct InferenceCallEvent {
     pub transport: InferenceCallTransport,
     /// Provider selected by local configuration.
     pub configured_provider: String,
+    /// Model selected by local configuration, when explicitly configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub configured_model: Option<String>,
     /// Model placed on this concrete provider request.
     pub requested_model: String,
+    /// Effective provider identity at the execution boundary.
+    #[serde(default = "unknown_identity")]
+    pub effective_provider: String,
+    /// Effective model identity at the execution boundary.
+    #[serde(default = "unknown_identity")]
+    pub effective_model: String,
     /// Service tier placed on this concrete provider request, when present.
     pub requested_service_tier: Option<String>,
     pub request_started_at_ms: i64,
@@ -56,6 +66,10 @@ pub struct InferenceCallEvent {
     pub observed_service_tier: Option<String>,
     /// Exact usage for this response. This is never an accumulated or estimated total.
     pub token_usage: Option<TokenUsage>,
+    /// Bounded detail explaining a non-success outcome, when supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub outcome_detail: Option<String>,
     /// Required string fields shortened to fit the durable observation limits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -74,6 +88,9 @@ pub enum InferenceCallStatus {
     Completed,
     Failed,
     Cancelled,
+    UsageLimitReached,
+    LocalDenied,
+    TransportUncertain,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -91,7 +108,10 @@ pub enum InferenceCallField {
     TurnId,
     SpawnRequestId,
     ConfiguredProvider,
+    ConfiguredModel,
     RequestedModel,
+    EffectiveProvider,
+    EffectiveModel,
     RequestedServiceTier,
     RequestCompletedAtMs,
     ResponseId,
@@ -101,6 +121,7 @@ pub enum InferenceCallField {
     ObservedModelSnapshot,
     ObservedServiceTier,
     TokenUsage,
+    OutcomeDetail,
 }
 
 impl InferenceCallEvent {
@@ -120,8 +141,6 @@ impl InferenceCallEvent {
             return None;
         }
 
-        self.truncated_fields = None;
-        self.omitted_fields = None;
         self.remove_lifecycle_inapplicable_evidence();
 
         truncate_required_string(
@@ -136,8 +155,21 @@ impl InferenceCallEvent {
             InferenceCallField::RequestedModel,
             &mut self.truncated_fields,
         );
+        truncate_required_string(
+            &mut self.effective_provider,
+            INFERENCE_CALL_STRING_MAX_BYTES,
+            InferenceCallField::EffectiveProvider,
+            &mut self.truncated_fields,
+        );
+        truncate_required_string(
+            &mut self.effective_model,
+            INFERENCE_CALL_STRING_MAX_BYTES,
+            InferenceCallField::EffectiveModel,
+            &mut self.truncated_fields,
+        );
 
         for field in [
+            InferenceCallField::ConfiguredModel,
             InferenceCallField::RequestedServiceTier,
             InferenceCallField::ResponseId,
             InferenceCallField::UpstreamRequestId,
@@ -145,6 +177,7 @@ impl InferenceCallEvent {
             InferenceCallField::ObservedModel,
             InferenceCallField::ObservedModelSnapshot,
             InferenceCallField::ObservedServiceTier,
+            InferenceCallField::OutcomeDetail,
         ] {
             if self
                 .string_field(field)
@@ -155,7 +188,9 @@ impl InferenceCallEvent {
         }
 
         for field in [
+            InferenceCallField::ConfiguredModel,
             InferenceCallField::RequestedServiceTier,
+            InferenceCallField::OutcomeDetail,
             InferenceCallField::ObservedModelSnapshot,
             InferenceCallField::ObservedServiceTier,
             InferenceCallField::ObservedModel,
@@ -182,6 +217,18 @@ impl InferenceCallEvent {
                 InferenceCallField::RequestedModel,
                 &mut self.truncated_fields,
             );
+            truncate_required_string(
+                &mut self.effective_provider,
+                INFERENCE_CALL_REQUIRED_STRING_FALLBACK_MAX_BYTES,
+                InferenceCallField::EffectiveProvider,
+                &mut self.truncated_fields,
+            );
+            truncate_required_string(
+                &mut self.effective_model,
+                INFERENCE_CALL_REQUIRED_STRING_FALLBACK_MAX_BYTES,
+                InferenceCallField::EffectiveModel,
+                &mut self.truncated_fields,
+            );
         }
 
         (self.serialized_len()? <= INFERENCE_CALL_EVENT_MAX_BYTES).then_some(self)
@@ -198,9 +245,23 @@ impl InferenceCallEvent {
                 InferenceCallField::ObservedModelSnapshot,
                 InferenceCallField::ObservedServiceTier,
                 InferenceCallField::TokenUsage,
+                InferenceCallField::OutcomeDetail,
             ],
-            InferenceCallStatus::Failed | InferenceCallStatus::Cancelled => &[
+            InferenceCallStatus::Failed
+            | InferenceCallStatus::Cancelled
+            | InferenceCallStatus::UsageLimitReached
+            | InferenceCallStatus::TransportUncertain => &[
                 InferenceCallField::ResponseId,
+                InferenceCallField::ObservedProvider,
+                InferenceCallField::ObservedModel,
+                InferenceCallField::ObservedModelSnapshot,
+                InferenceCallField::ObservedServiceTier,
+                InferenceCallField::TokenUsage,
+            ],
+            InferenceCallStatus::LocalDenied => &[
+                InferenceCallField::RequestCompletedAtMs,
+                InferenceCallField::ResponseId,
+                InferenceCallField::UpstreamRequestId,
                 InferenceCallField::ObservedProvider,
                 InferenceCallField::ObservedModel,
                 InferenceCallField::ObservedModelSnapshot,
@@ -217,16 +278,20 @@ impl InferenceCallEvent {
     fn string_field(&self, field: InferenceCallField) -> Option<&str> {
         match field {
             InferenceCallField::RequestedServiceTier => self.requested_service_tier.as_deref(),
+            InferenceCallField::ConfiguredModel => self.configured_model.as_deref(),
             InferenceCallField::ResponseId => self.response_id.as_deref(),
             InferenceCallField::UpstreamRequestId => self.upstream_request_id.as_deref(),
             InferenceCallField::ObservedProvider => self.observed_provider.as_deref(),
             InferenceCallField::ObservedModel => self.observed_model.as_deref(),
             InferenceCallField::ObservedModelSnapshot => self.observed_model_snapshot.as_deref(),
             InferenceCallField::ObservedServiceTier => self.observed_service_tier.as_deref(),
+            InferenceCallField::OutcomeDetail => self.outcome_detail.as_deref(),
             InferenceCallField::TurnId
             | InferenceCallField::SpawnRequestId
             | InferenceCallField::ConfiguredProvider
             | InferenceCallField::RequestedModel
+            | InferenceCallField::EffectiveProvider
+            | InferenceCallField::EffectiveModel
             | InferenceCallField::RequestCompletedAtMs
             | InferenceCallField::TokenUsage => None,
         }
@@ -237,6 +302,7 @@ impl InferenceCallEvent {
             InferenceCallField::RequestedServiceTier => {
                 self.requested_service_tier.take().is_some()
             }
+            InferenceCallField::ConfiguredModel => self.configured_model.take().is_some(),
             InferenceCallField::RequestCompletedAtMs => {
                 self.request_completed_at_ms.take().is_some()
             }
@@ -249,10 +315,13 @@ impl InferenceCallEvent {
             }
             InferenceCallField::ObservedServiceTier => self.observed_service_tier.take().is_some(),
             InferenceCallField::TokenUsage => self.token_usage.take().is_some(),
+            InferenceCallField::OutcomeDetail => self.outcome_detail.take().is_some(),
             InferenceCallField::TurnId
             | InferenceCallField::SpawnRequestId
             | InferenceCallField::ConfiguredProvider
-            | InferenceCallField::RequestedModel => false,
+            | InferenceCallField::RequestedModel
+            | InferenceCallField::EffectiveProvider
+            | InferenceCallField::EffectiveModel => false,
         };
         if present {
             record_field(&mut self.omitted_fields, field);
@@ -311,6 +380,10 @@ fn record_field(fields: &mut Option<Vec<InferenceCallField>>, field: InferenceCa
     if !fields.contains(&field) {
         fields.push(field);
     }
+}
+
+fn unknown_identity() -> String {
+    "<unknown>".to_string()
 }
 
 #[cfg(test)]

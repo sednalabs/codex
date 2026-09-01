@@ -16,7 +16,10 @@ fn inference_call_event(status: InferenceCallStatus) -> InferenceCallEvent {
         status,
         transport: InferenceCallTransport::ResponsesHttp,
         configured_provider: "configured-provider".to_string(),
+        configured_model: Some("configured-model".to_string()),
         requested_model: "requested-model".to_string(),
+        effective_provider: "effective-provider".to_string(),
+        effective_model: "effective-model".to_string(),
         requested_service_tier: Some("requested-tier".to_string()),
         request_started_at_ms: 10,
         request_completed_at_ms: Some(20),
@@ -34,6 +37,7 @@ fn inference_call_event(status: InferenceCallStatus) -> InferenceCallEvent {
             reasoning_output_tokens: 3,
             total_tokens: 18,
         }),
+        outcome_detail: Some("detail".to_string()),
         truncated_fields: None,
         omitted_fields: None,
     }
@@ -51,6 +55,7 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
             event.observed_model_snapshot = None;
             event.observed_service_tier = None;
             event.token_usage = None;
+            event.outcome_detail = None;
             event.omitted_fields = Some(vec![
                 InferenceCallField::RequestCompletedAtMs,
                 InferenceCallField::ResponseId,
@@ -60,9 +65,13 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
                 InferenceCallField::ObservedModelSnapshot,
                 InferenceCallField::ObservedServiceTier,
                 InferenceCallField::TokenUsage,
+                InferenceCallField::OutcomeDetail,
             ]);
         }
-        InferenceCallStatus::Failed | InferenceCallStatus::Cancelled => {
+        InferenceCallStatus::Failed
+        | InferenceCallStatus::Cancelled
+        | InferenceCallStatus::UsageLimitReached
+        | InferenceCallStatus::TransportUncertain => {
             event.response_id = None;
             event.observed_provider = None;
             event.observed_model = None;
@@ -71,6 +80,26 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
             event.token_usage = None;
             event.omitted_fields = Some(vec![
                 InferenceCallField::ResponseId,
+                InferenceCallField::ObservedProvider,
+                InferenceCallField::ObservedModel,
+                InferenceCallField::ObservedModelSnapshot,
+                InferenceCallField::ObservedServiceTier,
+                InferenceCallField::TokenUsage,
+            ]);
+        }
+        InferenceCallStatus::LocalDenied => {
+            event.request_completed_at_ms = None;
+            event.response_id = None;
+            event.upstream_request_id = None;
+            event.observed_provider = None;
+            event.observed_model = None;
+            event.observed_model_snapshot = None;
+            event.observed_service_tier = None;
+            event.token_usage = None;
+            event.omitted_fields = Some(vec![
+                InferenceCallField::RequestCompletedAtMs,
+                InferenceCallField::ResponseId,
+                InferenceCallField::UpstreamRequestId,
                 InferenceCallField::ObservedProvider,
                 InferenceCallField::ObservedModel,
                 InferenceCallField::ObservedModelSnapshot,
@@ -98,7 +127,10 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
             "status": "completed",
             "transport": "responses_http",
             "configured_provider": "configured-provider",
+            "configured_model": "configured-model",
             "requested_model": "requested-model",
+            "effective_provider": "effective-provider",
+            "effective_model": "effective-model",
             "requested_service_tier": "requested-tier",
             "request_started_at_ms": 10,
             "request_completed_at_ms": 20,
@@ -115,7 +147,8 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
                 "output_tokens": 7,
                 "reasoning_output_tokens": 3,
                 "total_tokens": 18
-            }
+            },
+            "outcome_detail": "detail"
         })
     );
     let EventMsg::InferenceCall(decoded) = serde_json::from_value::<EventMsg>(wire)? else {
@@ -127,6 +160,9 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
     let legacy_object = legacy_wire.as_object_mut().expect("object");
     legacy_object.remove("spawn_request_id");
     legacy_object.remove("observed_provider");
+    legacy_object.remove("configured_model");
+    legacy_object.remove("effective_provider");
+    legacy_object.remove("effective_model");
     legacy_object.remove("truncated_fields");
     legacy_object.remove("omitted_fields");
     assert_eq!(
@@ -134,6 +170,9 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
         InferenceCallEvent {
             spawn_request_id: None,
             observed_provider: None,
+            configured_model: None,
+            effective_provider: "<unknown>".to_string(),
+            effective_model: "<unknown>".to_string(),
             ..event
         }
     );
@@ -218,6 +257,9 @@ fn inference_call_event_enforces_lifecycle_shapes() {
         InferenceCallStatus::Completed,
         InferenceCallStatus::Failed,
         InferenceCallStatus::Cancelled,
+        InferenceCallStatus::UsageLimitReached,
+        InferenceCallStatus::LocalDenied,
+        InferenceCallStatus::TransportUncertain,
     ] {
         assert_eq!(
             inference_call_event(status)
