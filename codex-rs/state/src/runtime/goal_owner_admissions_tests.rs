@@ -204,7 +204,13 @@ async fn outcomes_and_cancellation_are_lease_and_epoch_fenced() {
         .await
         .expect("acquire first admission")
         .expect("first admission should acquire");
-    assert!(runtime.goal_owner_admissions().open_lease(&lease).await.expect("open first admission"));
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("open first admission")
+    );
     let completed = runtime
         .goal_owner_admissions()
         .finish(
@@ -320,7 +326,13 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         .await
         .expect("acquire in-flight admission")
         .expect("in-flight admission should acquire");
-    assert!(runtime.goal_owner_admissions().open_lease(&in_flight_lease).await.expect("open in-flight admission"));
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&in_flight_lease)
+            .await
+            .expect("open in-flight admission")
+    );
     assert!(
         runtime
             .goal_owner_admissions()
@@ -562,7 +574,13 @@ async fn origin_history_replays_return_the_current_admission_across_replacements
         .await
         .expect("acquire second admission")
         .expect("second admission should acquire");
-    assert!(runtime.goal_owner_admissions().open_lease(&lease).await.expect("open second admission"));
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("open second admission")
+    );
     let terminal = runtime
         .goal_owner_admissions()
         .finish(

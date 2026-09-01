@@ -216,7 +216,9 @@ impl StateRuntime {
                 return Err(err);
             }
         };
-        if let Err(err) = GoalOwnerAdmissionStore::recover_in_flight_on_open(goals_pool.as_ref()).await {
+        if let Err(err) =
+            GoalOwnerAdmissionStore::recover_in_flight_on_open(goals_pool.as_ref()).await
+        {
             close_sqlite_pools(&[pool.as_ref(), logs_pool.as_ref(), goals_pool.as_ref()]).await;
             return Err(err);
         }
