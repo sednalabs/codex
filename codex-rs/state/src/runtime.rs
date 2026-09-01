@@ -49,6 +49,9 @@ mod goals;
 mod logs;
 mod memories;
 pub(crate) mod migration_repair;
+mod ownership;
+#[cfg(test)]
+mod ownership_tests;
 mod phase2_attestation;
 mod recovery;
 mod remote_control;
@@ -67,6 +70,7 @@ pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
 pub use memories::MemoryStore;
+pub use ownership::RuntimeOwnershipError;
 pub use recovery::RuntimeDbBackup;
 pub(super) use recovery::RuntimeDbInitError;
 pub use recovery::backup_runtime_db_for_fresh_start;
@@ -132,6 +136,9 @@ impl StateRuntime {
         let goals_path = sqlite.goals_db_path();
         let memories_path = sqlite.memories_db_path();
         let usage_path = sqlite.usage_db_path();
+
+        let owner_admission = ownership::admit(&goals_path).await?;
+
         remove_legacy_db_files(
             sqlite.home(),
             database_filename(&state_path)?,
@@ -288,7 +295,10 @@ impl StateRuntime {
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let thread_recency_at_millis = thread_recency_at_millis.unwrap_or(0);
         let runtime = Arc::new(Self {
-            thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
+            thread_goals: GoalStore::new(
+                Arc::clone(&goals_pool),
+                goals::GoalStoreAccess::owner(owner_admission.owner_capability()),
+            ),
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             pool,
             logs_pool,
