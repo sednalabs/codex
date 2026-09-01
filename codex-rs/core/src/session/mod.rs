@@ -169,6 +169,7 @@ use codex_thread_store::ResumeThreadParams;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_utils_audio::prepare_response_items as prepare_audio_response_items;
+use codex_utils_git_discovery::GitRootDiscovery;
 use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use futures::future::Shared;
@@ -418,6 +419,7 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) installation_id: String,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: SharedModelsManager,
+    pub(crate) git_root_discovery: Arc<GitRootDiscovery>,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
     pub(crate) skills_service: Arc<HostSkillsService>,
     pub(crate) plugins_manager: Arc<PluginsManager>,
@@ -521,6 +523,7 @@ impl Session {
             installation_id,
             auth_manager,
             models_manager,
+            git_root_discovery,
             environment_manager,
             skills_service,
             plugins_manager,
@@ -775,6 +778,7 @@ impl Session {
             installation_id,
             auth_manager.clone(),
             models_manager.clone(),
+            git_root_discovery,
             model_info,
             exec_policy,
             tx_event.clone(),

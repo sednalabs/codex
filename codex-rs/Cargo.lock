@@ -2857,6 +2857,7 @@ dependencies = [
  "codex-utils-audio",
  "codex-utils-cache",
  "codex-utils-cargo-bin",
+ "codex-utils-git-discovery",
  "codex-utils-home-dir",
  "codex-utils-image",
  "codex-utils-output-truncation",
@@ -4688,6 +4689,19 @@ version = "0.0.0"
 [[package]]
 name = "codex-utils-fuzzy-match"
 version = "0.0.0"
+
+[[package]]
+name = "codex-utils-git-discovery"
+version = "0.0.0"
+dependencies = [
+ "codex-git-utils",
+ "codex-utils-absolute-path",
+ "futures",
+ "pretty_assertions",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "codex-utils-home-dir"
