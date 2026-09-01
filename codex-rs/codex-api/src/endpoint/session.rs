@@ -1,6 +1,7 @@
 use crate::auth::SharedAuthProvider;
 use crate::error::ApiError;
 use crate::provider::Provider;
+use crate::telemetry::WithStatus;
 use crate::telemetry::run_with_attempt_telemetry;
 use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
@@ -13,6 +14,7 @@ use codex_client::StreamResponse;
 use codex_client::TransportError;
 use http::HeaderMap;
 use http::Method;
+use http::StatusCode;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -25,6 +27,17 @@ pub(crate) struct EndpointSession<T: HttpTransport> {
     auth: SharedAuthProvider,
     request_telemetry: Option<Arc<dyn RequestTelemetry>>,
     request_attempt_factory: Option<ProviderRequestAttemptFactory<T>>,
+}
+
+struct ResponseWithAuth {
+    response: Response,
+    auth: SharedAuthProvider,
+}
+
+impl WithStatus for ResponseWithAuth {
+    fn status(&self) -> StatusCode {
+        self.response.status
+    }
 }
 
 /// Complete immutable setup for one credential-bearing application attempt.
@@ -212,7 +225,7 @@ impl<T: HttpTransport> EndpointSession<T> {
         C: Fn(&mut Request),
     {
         let body = body.map(RequestBody::Json);
-        let response = run_with_attempt_telemetry(
+        let response_with_auth = run_with_attempt_telemetry(
             self.provider.retry.to_policy(),
             self.request_telemetry.clone(),
             |_| {
@@ -259,13 +272,15 @@ impl<T: HttpTransport> EndpointSession<T> {
                     if let Some(claim) = claim {
                         claim.acknowledge();
                     }
-                    response.await.map(|response| (response, auth))
+                    response
+                        .await
+                        .map(|response| ResponseWithAuth { response, auth })
                 }
             },
         )
         .await?;
 
-        Ok(response)
+        Ok((response_with_auth.response, response_with_auth.auth))
     }
 
     #[instrument(
