@@ -15,7 +15,15 @@ ARM64_GNULLVM_TOOLCHAINS = (
     "rustc_windows_aarch64_gnullvm",
     "cargo_windows_aarch64_gnullvm",
 )
-ARM64_MSVC_TOOLCHAIN_RE = re.compile(r"(?:rustc|cargo)_windows_aarch64_msvc")
+ARM64_DEFAULT_GNULLVM_TOOLCHAIN_RE = re.compile(
+    r"external/rules_rs\+\+toolchains\+default_rust_toolchains/"
+    r"windows_aarch64_gnullvm_\d+_\d+_\d+_rust_toolchain/bin/rustc(?:\.exe)?"
+)
+ARM64_MSVC_TOOLCHAIN_RE = re.compile(
+    r"(?:rustc|cargo)_windows_aarch64_msvc"
+    r"|external/rules_rs\+\+toolchains\+default_rust_toolchains/"
+    r"windows_aarch64_msvc_\d+_\d+_\d+_rust_toolchain"
+)
 
 
 class AqueryValidationError(ValueError):
@@ -56,6 +64,20 @@ def selected_rust_action(aquery_output: str, target: str) -> str:
     return candidates[0]
 
 
+def has_arm64_gnullvm_toolchain_inputs(action_block: str) -> bool:
+    """Recognize the legacy and generated rules_rs toolchain representations."""
+
+    if all(repository in action_block for repository in ARM64_GNULLVM_TOOLCHAINS):
+        return True
+
+    # Newer rules_rs versions expose the selected toolchain through the
+    # generated default_rust_toolchains repository rather than separate
+    # rustc/cargo repositories.  Require the exact versioned gnullvm
+    # toolchain root followed by its Rustc executable; generic gnullvm text
+    # is not sufficient evidence of the selected compiler.
+    return bool(ARM64_DEFAULT_GNULLVM_TOOLCHAIN_RE.search(action_block))
+
+
 def verify_selected_rust_action(aquery_output: str, target: str) -> None:
     """Require one target Rustc block to prove the execution-toolchain contract."""
 
@@ -69,15 +91,9 @@ def verify_selected_rust_action(aquery_output: str, target: str) -> None:
             f"Rustc action for {target} does not use the ARM64 gnullvm execution platform"
         )
 
-    missing_toolchains = [
-        repository
-        for repository in ARM64_GNULLVM_TOOLCHAINS
-        if repository not in action_block
-    ]
-    if missing_toolchains:
+    if not has_arm64_gnullvm_toolchain_inputs(action_block):
         raise AqueryValidationError(
-            f"Rustc action for {target} is missing ARM64 gnullvm toolchain inputs: "
-            + ", ".join(missing_toolchains)
+            f"Rustc action for {target} is missing ARM64 gnullvm toolchain inputs"
         )
 
     if ARM64_MSVC_TOOLCHAIN_RE.search(action_block):
