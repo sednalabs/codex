@@ -69,11 +69,13 @@ async fn observe_denial_is_idempotent_for_an_exact_replay_and_fences_conflicts()
 
     let mut conflicting_replay = observation.clone();
     conflicting_replay.denial_class = GoalOwnerAdmissionDenialClass::RateLimited;
-    assert!(runtime
-        .goal_owner_admissions()
-        .observe_denial(&conflicting_replay)
-        .await
-        .is_err());
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .observe_denial(&conflicting_replay)
+            .await
+            .is_err()
+    );
 
     let next_observation = observation(
         thread_id,
@@ -202,11 +204,13 @@ async fn outcomes_and_cancellation_are_lease_and_epoch_fenced() {
         .await
         .expect("acquire first admission")
         .expect("first admission should acquire");
-    assert!(runtime
-        .goal_owner_admissions()
-        .open_lease(&lease)
-        .await
-        .expect("open first admission"));
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("open first admission")
+    );
     let completed = runtime
         .goal_owner_admissions()
         .finish(
@@ -228,15 +232,17 @@ async fn outcomes_and_cancellation_are_lease_and_epoch_fenced() {
         .expect("replay completed outcome")
         .expect("exact outcome replay should be accepted");
     assert_eq!(replay, completed);
-    assert!(runtime
-        .goal_owner_admissions()
-        .finish(
-            &lease,
-            GoalOwnerAdmissionTerminalOutcome::Rejected,
-            GoalOwnerAdmissionTerminalDisposition::None,
-        )
-        .await
-        .is_err());
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .finish(
+                &lease,
+                GoalOwnerAdmissionTerminalOutcome::Rejected,
+                GoalOwnerAdmissionTerminalDisposition::None,
+            )
+            .await
+            .is_err()
+    );
 
     let second = runtime
         .goal_owner_admissions()
@@ -320,22 +326,26 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         .await
         .expect("acquire in-flight admission")
         .expect("in-flight admission should acquire");
-    assert!(runtime
-        .goal_owner_admissions()
-        .open_lease(&in_flight_lease)
-        .await
-        .expect("open in-flight admission"));
-    assert!(runtime
-        .goal_owner_admissions()
-        .observe_denial(&observation(
-            in_flight_thread,
-            "goal-replacement",
-            "request-replacement",
-            Utc::now(),
-            GoalOwnerAdmissionPhase::Pending,
-        ))
-        .await
-        .is_err());
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&in_flight_lease)
+            .await
+            .expect("open in-flight admission")
+    );
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .observe_denial(&observation(
+                in_flight_thread,
+                "goal-replacement",
+                "request-replacement",
+                Utc::now(),
+                GoalOwnerAdmissionPhase::Pending,
+            ))
+            .await
+            .is_err()
+    );
 
     let dormant_thread = ThreadId::new();
     let dormant = runtime
@@ -381,17 +391,19 @@ async fn reopen_terminalizes_only_in_flight_admissions_as_uncertain() {
         recovered.deferred_terminal_disposition,
         GoalOwnerAdmissionTerminalDisposition::ManualReview
     );
-    assert!(reopened
-        .goal_owner_admissions()
-        .observe_denial(&observation(
-            in_flight_thread,
-            "goal-replacement",
-            "request-replacement",
-            Utc::now(),
-            GoalOwnerAdmissionPhase::Pending,
-        ))
-        .await
-        .is_err());
+    assert!(
+        reopened
+            .goal_owner_admissions()
+            .observe_denial(&observation(
+                in_flight_thread,
+                "goal-replacement",
+                "request-replacement",
+                Utc::now(),
+                GoalOwnerAdmissionPhase::Pending,
+            ))
+            .await
+            .is_err()
+    );
     assert_eq!(
         reopened
             .goal_owner_admissions()
@@ -441,11 +453,13 @@ async fn acquired_open_release_and_reopen_are_exactly_fenced() {
             .phase,
         GoalOwnerAdmissionPhase::Acquired
     );
-    assert!(runtime
-        .goal_owner_admissions()
-        .release_acquired_lease(&lease)
-        .await
-        .expect("release acquired admission"));
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .release_acquired_lease(&lease)
+            .await
+            .expect("release acquired admission")
+    );
     let restored = runtime
         .goal_owner_admissions()
         .get(thread_id)
@@ -454,11 +468,13 @@ async fn acquired_open_release_and_reopen_are_exactly_fenced() {
         .expect("restored admission exists");
     assert_eq!(restored.phase, GoalOwnerAdmissionPhase::Pending);
     assert_eq!(restored.attempts_started, 0);
-    assert!(!runtime
-        .goal_owner_admissions()
-        .release_acquired_lease(&lease)
-        .await
-        .expect("stale release is safe"));
+    assert!(
+        !runtime
+            .goal_owner_admissions()
+            .release_acquired_lease(&lease)
+            .await
+            .expect("stale release is safe")
+    );
 
     let lease = runtime
         .goal_owner_admissions()
@@ -466,21 +482,27 @@ async fn acquired_open_release_and_reopen_are_exactly_fenced() {
         .await
         .expect("reacquire lifecycle admission")
         .expect("lifecycle admission reacquires");
-    assert!(runtime
-        .goal_owner_admissions()
-        .open_lease(&lease)
-        .await
-        .expect("open lifecycle admission"));
-    assert!(!runtime
-        .goal_owner_admissions()
-        .open_lease(&lease)
-        .await
-        .expect("duplicate open is safe"));
-    assert!(runtime
-        .goal_owner_admissions()
-        .reopen(&lease)
-        .await
-        .expect("reopen in-flight admission"));
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("open lifecycle admission")
+    );
+    assert!(
+        !runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("duplicate open is safe")
+    );
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .reopen(&lease)
+            .await
+            .expect("reopen in-flight admission")
+    );
     let uncertain = runtime
         .goal_owner_admissions()
         .get(thread_id)
@@ -510,11 +532,13 @@ async fn malformed_input_and_contradictory_database_updates_fail_closed() {
         GoalOwnerAdmissionPhase::Pending,
     );
     malformed.origin_turn_id.clear();
-    assert!(runtime
-        .goal_owner_admissions()
-        .observe_denial(&malformed)
-        .await
-        .is_err());
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .observe_denial(&malformed)
+            .await
+            .is_err()
+    );
     assert_eq!(
         runtime
             .goal_owner_admissions()
@@ -535,13 +559,15 @@ async fn malformed_input_and_contradictory_database_updates_fail_closed() {
         ))
         .await
         .expect("record valid admission");
-    assert!(sqlx::query(
-        "UPDATE goal_owner_admissions SET terminal_outcome = 'succeeded' WHERE thread_id = ?",
-    )
-    .bind(thread_id.to_string())
-    .execute(runtime.goal_owner_admissions().pool.as_ref())
-    .await
-    .is_err());
+    assert!(
+        sqlx::query(
+            "UPDATE goal_owner_admissions SET terminal_outcome = 'succeeded' WHERE thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .execute(runtime.goal_owner_admissions().pool.as_ref())
+        .await
+        .is_err()
+    );
     assert_eq!(
         runtime
             .goal_owner_admissions()
@@ -591,11 +617,13 @@ async fn phase_and_fingerprint_replays_fail_closed() {
             .expect("record admission");
         let mut conflict = request;
         conflict.phase = conflicting;
-        assert!(runtime
-            .goal_owner_admissions()
-            .observe_denial(&conflict)
-            .await
-            .is_err());
+        assert!(
+            runtime
+                .goal_owner_admissions()
+                .observe_denial(&conflict)
+                .await
+                .is_err()
+        );
     }
 }
 
@@ -644,11 +672,13 @@ async fn origin_history_replays_return_the_current_admission_across_replacements
         .await
         .expect("acquire second admission")
         .expect("second admission should acquire");
-    assert!(runtime
-        .goal_owner_admissions()
-        .open_lease(&lease)
-        .await
-        .expect("open second admission"));
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .open_lease(&lease)
+            .await
+            .expect("open second admission")
+    );
     let terminal = runtime
         .goal_owner_admissions()
         .finish(
@@ -671,11 +701,13 @@ async fn origin_history_replays_return_the_current_admission_across_replacements
 
     let mut conflicting_old_replay = origin_a;
     conflicting_old_replay.effective_model = Some("gpt-5.1".to_string());
-    assert!(runtime
-        .goal_owner_admissions()
-        .observe_denial(&conflicting_old_replay)
-        .await
-        .is_err());
+    assert!(
+        runtime
+            .goal_owner_admissions()
+            .observe_denial(&conflicting_old_replay)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
