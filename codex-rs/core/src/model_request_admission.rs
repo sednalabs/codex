@@ -7,7 +7,8 @@
 //! an admitted decision or a physical-send permit. This is a Rust visibility
 //! trust boundary, not a cryptographic provenance proof.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 /// Opaque correlation material trusted by the caller that owns request identity.
