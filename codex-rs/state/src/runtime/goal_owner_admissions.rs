@@ -255,11 +255,13 @@ WHERE phase = 'in_flight'
         }
 
         let generation = if let Some(existing) = &existing {
-            if matches!(existing.phase, GoalOwnerAdmissionPhase::Acquired | GoalOwnerAdmissionPhase::InFlight)
-                || (existing.phase == GoalOwnerAdmissionPhase::Terminal
-                    && existing.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Uncertain
-                    && existing.deferred_terminal_disposition
-                        == GoalOwnerAdmissionTerminalDisposition::ManualReview)
+            if matches!(
+                existing.phase,
+                GoalOwnerAdmissionPhase::Acquired | GoalOwnerAdmissionPhase::InFlight
+            ) || (existing.phase == GoalOwnerAdmissionPhase::Terminal
+                && existing.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Uncertain
+                && existing.deferred_terminal_disposition
+                    == GoalOwnerAdmissionTerminalDisposition::ManualReview)
             {
                 bail!("goal-owner admission replacement is not authorized for the current state")
             }
@@ -595,7 +597,10 @@ RETURNING *
                     && record.authority.goal_id == authority.goal_id
                     && record.authority.generation == authority.generation
                     && record.authority.cancellation_epoch
-                        == authority.cancellation_epoch.checked_add(1).unwrap_or(i64::MIN)
+                        == authority
+                            .cancellation_epoch
+                            .checked_add(1)
+                            .unwrap_or(i64::MIN)
                     && record.terminal_outcome == GoalOwnerAdmissionTerminalOutcome::Cancelled =>
             {
                 bail!("conflicting replay for goal-owner admission cancellation")
