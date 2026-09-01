@@ -1883,6 +1883,14 @@ impl Session {
             ) {
                 warn!("failed to refresh MCP auth storage config: {err}");
             }
+            if let Err(err) = config.features.set_enabled(
+                Feature::McpOAuthRefreshCoordination,
+                next_config
+                    .features
+                    .enabled(Feature::McpOAuthRefreshCoordination),
+            ) {
+                warn!("failed to refresh MCP OAuth coordination config: {err}");
+            }
             let config = Arc::new(config);
             state.session_configuration.original_config_do_not_use = Arc::clone(&config);
             self.mark_mcp_runtime_dirty();
@@ -1930,6 +1938,14 @@ impl Session {
             next_config.features.enabled(Feature::SecretAuthStorage),
         ) {
             warn!("failed to refresh MCP auth storage config: {err}");
+        }
+        if let Err(err) = config.features.set_enabled(
+            Feature::McpOAuthRefreshCoordination,
+            next_config
+                .features
+                .enabled(Feature::McpOAuthRefreshCoordination),
+        ) {
+            warn!("failed to refresh MCP OAuth coordination config: {err}");
         }
         state.session_configuration.original_config_do_not_use = Arc::new(config);
         self.mark_mcp_runtime_dirty();

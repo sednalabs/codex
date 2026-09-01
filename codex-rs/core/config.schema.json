@@ -822,6 +822,9 @@
             "mcp_2026_07_28": {
               "type": "boolean"
             },
+            "mcp_oauth_refresh_coordination": {
+              "type": "boolean"
+            },
             "memories": {
               "type": "boolean"
             },
@@ -6109,6 +6112,9 @@
           "type": "boolean"
         },
         "mcp_2026_07_28": {
+          "type": "boolean"
+        },
+        "mcp_oauth_refresh_coordination": {
           "type": "boolean"
         },
         "memories": {
