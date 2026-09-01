@@ -1766,10 +1766,14 @@ decisions.
 
 ### In-Process Runtime And Facade Delivery Under Backpressure
 
-- Stage 1 covers the low-level `codex-app-server` runtime: its event and
-  response lanes remain bounded, its lossless notification classifier and
-  source FIFO remain authoritative, and lower-layer best-effort loss is
-  represented by the runtime's aggregated `Lagged` markers. Stage 2 now covers
+- Stage 1 currently covers the low-level `codex-app-server` runtime: its event
+  and response lanes remain bounded, and its required-notification classifier
+  applies only to events accepted by the bounded low-level event queue. FIFO
+  therefore applies only to events accepted by that queue. Best-effort
+  notifications dropped when the queue is full are currently unmarked and
+  unrecovered; the runtime does not yet generate aggregated `Lagged` markers.
+  Ordinary server requests use the bounded queue's current try-send/error path
+  and are not guaranteed custody when that queue is full. Stage 2 now covers
   the separate `codex-app-server-client` worker facade. Its caller-facing
   in-process event receiver is unbounded, and each event the facade receives is
   sent synchronously in FIFO order so unread notifications cannot block a later
@@ -1779,10 +1783,16 @@ decisions.
   recover events already dropped by the low-level runtime, does not alter the
   bounded remote-client queue or classifier, and does not claim globally
   bounded memory, exactly-once delivery, or durable recovery.
-- Facade FIFO applies to events it receives, including any low-level `Lagged`
-  markers. `ChatgptAuthTokensRefresh` remains handled locally as an unsupported
+- At Stage 1, FIFO applies only to events accepted by the low-level queue. At
+  Stage 2, every event received by the facade enters its unbounded
+  caller-facing FIFO, including any already-supplied `Lagged` markers; this
+  does not imply that the current low-level runtime generates those markers.
+  `ChatgptAuthTokensRefresh` remains handled locally as an unsupported
   in-process server request, and closing the caller-facing receiver stops
   forwarding without changing low-level runtime shutdown ownership.
+- Exact low-level aggregated-`Lagged` accounting and FIFO custody for ordinary
+  server requests are future w13409 Stage 1 re-custody work, not current
+  behavior. Do not describe either guarantee as present until that work lands.
 - Preserve `responses_bypass_saturated_in_process_event_router`,
   `in_process_shutdown_waits_for_analytics_flush_budget`,
   `guaranteed_delivery_helpers_cover_terminal_server_notifications`,
