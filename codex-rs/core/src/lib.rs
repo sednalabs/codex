@@ -65,6 +65,7 @@ mod mcp_openai_file;
 mod mcp_skill_dependencies;
 mod mcp_tool_approval_templates;
 mod mcp_tool_exposure;
+pub(crate) mod model_request_admission;
 mod network_policy_decision;
 mod original_image_detail;
 pub use codex_mcp::CodexAppsToolsCache;

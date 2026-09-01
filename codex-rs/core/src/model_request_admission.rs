@@ -1,0 +1,297 @@
+//! Provider-authoritative admission for one model request attempt.
+//!
+//! This module deliberately has no knowledge of endpoints, accounts, models, or
+//! service tiers. A trusted in-crate provider adapter supplies the opaque
+//! correlation value and provider decision; no alternate provider or route is
+//! selected here. The module is crate-private so downstream crates cannot mint
+//! an admitted decision or a physical-send permit. This is a Rust visibility
+//! trust boundary, not a cryptographic provenance proof.
+
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+/// Opaque correlation material trusted by the caller that owns request identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TrustedCorrelation(Vec<u8>);
+
+impl TrustedCorrelation {
+    pub(crate) fn new(bytes: impl Into<Vec<u8>>) -> Self {
+        Self(bytes.into())
+    }
+}
+
+/// A generation/lease pair is intentionally non-Clone: it belongs to one attempt.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct AttemptLease {
+    generation: u64,
+    lease: u64,
+}
+
+impl AttemptLease {
+    pub(crate) fn new(generation: u64, lease: u64) -> Self {
+        Self { generation, lease }
+    }
+}
+
+/// Provider evidence.  The provider response is the authority for this decision.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ProviderAdmission {
+    Admitted,
+    Denied,
+    Deferred { retry_after: Duration },
+    UnknownDomain,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum AdmissionOutcome {
+    Admitted(PhysicalSendPermit),
+    ProviderDenied,
+    ProviderDeferred { retry_after: Duration },
+    DormantDomain,
+    CancelledBeforeSend,
+    StaleGenerationOrLease,
+    AlreadyDecided,
+}
+
+/// Non-Clone, single-use capability establishing ownership of a future physical send.
+/// It intentionally exposes no endpoint, account, model, or authentication data.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct PhysicalSendPermit {
+    correlation: TrustedCorrelation,
+}
+
+impl PhysicalSendPermit {
+    /// Consume the permit at the transport-owned boundary.
+    pub(crate) fn into_transport_ownership(self) -> PhysicalSendOwnership {
+        PhysicalSendOwnership {
+            correlation: self.correlation,
+        }
+    }
+}
+
+/// Opaque marker handed to the transport after the permit is consumed.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct PhysicalSendOwnership {
+    correlation: TrustedCorrelation,
+}
+
+/// One exact attempt.  Admission is immutable and can succeed at most once.
+#[derive(Debug)]
+pub(crate) struct ModelRequestAttempt {
+    correlation: TrustedCorrelation,
+    lease: AttemptLease,
+    decided: AtomicBool,
+}
+
+impl ModelRequestAttempt {
+    pub(crate) fn new(correlation: TrustedCorrelation, lease: AttemptLease) -> Self {
+        Self {
+            correlation,
+            lease,
+            decided: AtomicBool::new(false),
+        }
+    }
+
+    /// Evaluate exactly one provider decision.  No denial or deferral is rerouted.
+    pub(crate) fn admit(
+        &self,
+        provider: ProviderAdmission,
+        current_generation: u64,
+        current_lease: u64,
+        cancelled_before_send: bool,
+    ) -> AdmissionOutcome {
+        if self.decided.swap(true, Ordering::AcqRel) {
+            return AdmissionOutcome::AlreadyDecided;
+        }
+        if cancelled_before_send {
+            return AdmissionOutcome::CancelledBeforeSend;
+        }
+        if self.lease.generation != current_generation || self.lease.lease != current_lease {
+            return AdmissionOutcome::StaleGenerationOrLease;
+        }
+        match provider {
+            ProviderAdmission::Admitted => AdmissionOutcome::Admitted(PhysicalSendPermit {
+                correlation: self.correlation.clone(),
+            }),
+            ProviderAdmission::Denied => AdmissionOutcome::ProviderDenied,
+            ProviderAdmission::Deferred { retry_after } => {
+                AdmissionOutcome::ProviderDeferred { retry_after }
+            }
+            ProviderAdmission::UnknownDomain => AdmissionOutcome::DormantDomain,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attempt() -> ModelRequestAttempt {
+        ModelRequestAttempt::new(
+            TrustedCorrelation::new([1, 2, 3]),
+            AttemptLease::new(/*generation*/ 4, /*lease*/ 5),
+        )
+    }
+
+    #[test]
+    fn provider_outcomes_are_terminal_and_not_rerouted() {
+        assert_eq!(
+            attempt().admit(
+                ProviderAdmission::Denied,
+                /*current_generation*/ 4,
+                /*current_lease*/ 5,
+                /*cancelled_before_send*/ false,
+            ),
+            AdmissionOutcome::ProviderDenied
+        );
+        assert_eq!(
+            attempt().admit(
+                ProviderAdmission::UnknownDomain,
+                /*current_generation*/ 4,
+                /*current_lease*/ 5,
+                /*cancelled_before_send*/ false,
+            ),
+            AdmissionOutcome::DormantDomain
+        );
+    }
+
+    #[test]
+    fn deferral_preserves_deadline() {
+        assert_eq!(
+            attempt().admit(
+                ProviderAdmission::Deferred {
+                    retry_after: Duration::from_secs(/*secs*/ 7)
+                },
+                /*current_generation*/ 4,
+                /*current_lease*/ 5,
+                /*cancelled_before_send*/ false
+            ),
+            AdmissionOutcome::ProviderDeferred {
+                retry_after: Duration::from_secs(/*secs*/ 7)
+            }
+        );
+    }
+
+    #[test]
+    fn cancellation_and_stale_lease_fail_closed() {
+        assert_eq!(
+            attempt().admit(
+                ProviderAdmission::Admitted,
+                /*current_generation*/ 4,
+                /*current_lease*/ 5,
+                /*cancelled_before_send*/ true,
+            ),
+            AdmissionOutcome::CancelledBeforeSend
+        );
+        assert_eq!(
+            attempt().admit(
+                ProviderAdmission::Admitted,
+                /*current_generation*/ 9,
+                /*current_lease*/ 5,
+                /*cancelled_before_send*/ false,
+            ),
+            AdmissionOutcome::StaleGenerationOrLease
+        );
+    }
+
+    #[test]
+    fn duplicate_admission_and_permit_consumption_are_impossible() {
+        let a = attempt();
+        let permit = match a.admit(
+            ProviderAdmission::Admitted,
+            /*current_generation*/ 4,
+            /*current_lease*/ 5,
+            /*cancelled_before_send*/ false,
+        ) {
+            AdmissionOutcome::Admitted(p) => p,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        assert_eq!(
+            a.admit(
+                ProviderAdmission::Admitted,
+                /*current_generation*/ 4,
+                /*current_lease*/ 5,
+                /*cancelled_before_send*/ false,
+            ),
+            AdmissionOutcome::AlreadyDecided
+        );
+        let _ownership = permit.into_transport_ownership();
+    }
+
+    #[test]
+    fn exact_attempt_is_at_most_once() {
+        let a = attempt();
+        assert!(matches!(
+            a.admit(
+                ProviderAdmission::Admitted,
+                /*current_generation*/ 4,
+                /*current_lease*/ 5,
+                /*cancelled_before_send*/ false,
+            ),
+            AdmissionOutcome::Admitted(_)
+        ));
+        assert_eq!(
+            a.admit(
+                ProviderAdmission::Denied,
+                /*current_generation*/ 4,
+                /*current_lease*/ 5,
+                /*cancelled_before_send*/ false,
+            ),
+            AdmissionOutcome::AlreadyDecided
+        );
+    }
+
+    #[test]
+    fn terminal_denial_cannot_become_admitted() {
+        let a = attempt();
+        assert_eq!(
+            a.admit(
+                ProviderAdmission::Denied,
+                /*current_generation*/ 4,
+                /*current_lease*/ 5,
+                /*cancelled_before_send*/ false,
+            ),
+            AdmissionOutcome::ProviderDenied
+        );
+        assert_eq!(
+            a.admit(
+                ProviderAdmission::Admitted,
+                /*current_generation*/ 4,
+                /*current_lease*/ 5,
+                /*cancelled_before_send*/ false,
+            ),
+            AdmissionOutcome::AlreadyDecided
+        );
+    }
+
+    #[test]
+    fn correlation_is_opaque_and_does_not_infer_authority() {
+        let first = ModelRequestAttempt::new(
+            TrustedCorrelation::new([0]),
+            AttemptLease::new(/*generation*/ 1, /*lease*/ 1),
+        );
+        let second = ModelRequestAttempt::new(
+            TrustedCorrelation::new([255, 254]),
+            AttemptLease::new(/*generation*/ 1, /*lease*/ 1),
+        );
+        assert!(matches!(
+            first.admit(
+                ProviderAdmission::Admitted,
+                /*current_generation*/ 1,
+                /*current_lease*/ 1,
+                /*cancelled_before_send*/ false,
+            ),
+            AdmissionOutcome::Admitted(_)
+        ));
+        assert!(matches!(
+            second.admit(
+                ProviderAdmission::Admitted,
+                /*current_generation*/ 1,
+                /*current_lease*/ 1,
+                /*cancelled_before_send*/ false,
+            ),
+            AdmissionOutcome::Admitted(_)
+        ));
+    }
+}
