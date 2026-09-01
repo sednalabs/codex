@@ -35,7 +35,7 @@ impl StateRuntime {
         thread_id: ThreadId,
         event: &Event,
     ) -> Option<String> {
-        self.record_automatic_turn_event_with_principal(thread_id, event, None)
+        self.record_automatic_turn_event_with_principal(thread_id, event, /*principal*/ None)
             .await
     }
 
@@ -1132,20 +1132,10 @@ mod tests {
             )
             .await;
 
-        runtime
-            .record_automatic_turn_event(
-                thread_id,
-                &Event {
-                    id: "occurrence-2".to_string(),
-                    msg: EventMsg::Error(ErrorEvent {
-                        message: "blocked".to_string(),
-                        codex_error_info: Some(CodexErrorInfo::CyberPolicy),
-                    }),
-                },
-            )
-            .await;
+        // The policy-bearing completion already issues the next capability. The next retry is a
+        // distinct server event occurrence even though its regular turn id is reused.
         let (trigger_2, capability_2) = runtime
-            .automatic_turn_capability_for_turn(thread_id, "occurrence-2")
+            .automatic_turn_capability_for_turn(thread_id, turn_id)
             .await
             .expect("second occurrence should issue a capability");
         let mut second_attempt = automatic_user_message(
@@ -1194,10 +1184,10 @@ mod tests {
         assert_eq!(projected[1].outcome, OUTCOME_STARTED);
         assert_eq!(
             runtime
-                .automatic_turn_capability_for_turn(thread_id, "occurrence-2")
+                .automatic_turn_capability(thread_id, &trigger_2)
                 .await
-                .map(|(_, capability)| capability),
-            Some(capability_2)
+                .as_deref(),
+            Some(capability_2.as_str())
         );
         Ok(())
     }
