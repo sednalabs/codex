@@ -331,46 +331,36 @@ impl ExecServerHarness {
         request_id: &RequestId,
         deadline: Instant,
     ) -> anyhow::Result<JSONRPCMessage> {
-        loop {
-            if Instant::now() >= deadline {
-                return Err(anyhow!(
-                    "timed out waiting for exec-server session resume initialize response"
-                ));
-            }
+        if Instant::now() >= deadline {
+            return Err(anyhow!(
+                "timed out waiting for exec-server session resume initialize response"
+            ));
+        }
 
-            let event = self.next_event_until(deadline).await?;
-            match event {
-                JSONRPCMessage::Response(response) if response.id == *request_id => {
-                    return Ok(JSONRPCMessage::Response(response));
-                }
-                JSONRPCMessage::Response(JSONRPCResponse { id, .. }) => {
-                    return Err(anyhow!(
-                        "unexpected exec-server response for request {request_id}: response id {id}"
-                    ));
-                }
-                JSONRPCMessage::Error(JSONRPCError { id, error }) if id == *request_id => {
-                    return Ok(JSONRPCMessage::Error(JSONRPCError { id, error }));
-                }
-                JSONRPCMessage::Error(JSONRPCError { id, error }) => {
-                    return Err(anyhow!(
-                        "unexpected exec-server error for request {id}: {}: {}",
-                        error.code,
-                        error.message
-                    ));
-                }
-                JSONRPCMessage::Request(request) => {
-                    return Err(anyhow!(
-                        "unexpected exec-server request {} while waiting for resume initialize response",
-                        request.method
-                    ));
-                }
-                JSONRPCMessage::Notification(notification) => {
-                    return Err(anyhow!(
-                        "unexpected exec-server notification {} while waiting for resume initialize response",
-                        notification.method
-                    ));
-                }
+        let event = self.next_event_until(deadline).await?;
+        match event {
+            JSONRPCMessage::Response(response) if response.id == *request_id => {
+                Ok(JSONRPCMessage::Response(response))
             }
+            JSONRPCMessage::Response(JSONRPCResponse { id, .. }) => Err(anyhow!(
+                "unexpected exec-server response for request {request_id}: response id {id}"
+            )),
+            JSONRPCMessage::Error(JSONRPCError { id, error }) if id == *request_id => {
+                Ok(JSONRPCMessage::Error(JSONRPCError { id, error }))
+            }
+            JSONRPCMessage::Error(JSONRPCError { id, error }) => Err(anyhow!(
+                "unexpected exec-server error for request {id}: {}: {}",
+                error.code,
+                error.message
+            )),
+            JSONRPCMessage::Request(request) => Err(anyhow!(
+                "unexpected exec-server request {} while waiting for resume initialize response",
+                request.method
+            )),
+            JSONRPCMessage::Notification(notification) => Err(anyhow!(
+                "unexpected exec-server notification {} while waiting for resume initialize response",
+                notification.method
+            )),
         }
     }
 }
