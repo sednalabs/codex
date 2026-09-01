@@ -1,5 +1,5 @@
 CREATE TABLE goal_owner_admissions (
-    thread_id TEXT PRIMARY KEY NOT NULL,
+    thread_id TEXT PRIMARY KEY NOT NULL REFERENCES thread_goals(thread_id) ON DELETE CASCADE,
     goal_id TEXT NOT NULL CHECK(length(goal_id) BETWEEN 1 AND 512),
     generation INTEGER NOT NULL CHECK(generation >= 1),
     origin_turn_id TEXT NOT NULL CHECK(length(origin_turn_id) BETWEEN 1 AND 512),
@@ -38,10 +38,12 @@ CREATE TABLE goal_owner_admissions (
     CHECK((lease_id IS NULL) = (lease_acquired_at_ms IS NULL)),
     CHECK(
         (phase IN ('dormant', 'pending')
+            AND requested_phase = phase
             AND terminal_outcome = 'none'
             AND lease_id IS NULL
             AND deferred_terminal_disposition = 'none')
         OR (phase IN ('acquired', 'in_flight')
+            AND requested_phase = 'pending'
             AND terminal_outcome = 'none'
             AND lease_id IS NOT NULL
             AND attempts_started > 0
@@ -62,7 +64,7 @@ CREATE TABLE goal_owner_admissions (
 );
 
 CREATE TABLE goal_owner_admission_origins (
-    thread_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL REFERENCES thread_goals(thread_id) ON DELETE CASCADE,
     origin_request_id TEXT NOT NULL CHECK(length(origin_request_id) BETWEEN 1 AND 512),
     goal_id TEXT NOT NULL CHECK(length(goal_id) BETWEEN 1 AND 512),
     origin_turn_id TEXT NOT NULL CHECK(length(origin_turn_id) BETWEEN 1 AND 512),
@@ -75,6 +77,42 @@ CREATE TABLE goal_owner_admission_origins (
     requested_phase TEXT NOT NULL CHECK(requested_phase IN ('dormant', 'pending')),
     PRIMARY KEY(thread_id, origin_request_id)
 );
+
+CREATE TRIGGER goal_owner_admissions_require_thread_goal
+BEFORE INSERT ON goal_owner_admissions
+WHEN NOT EXISTS (
+    SELECT 1 FROM thread_goals WHERE thread_id = NEW.thread_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'goal-owner admission requires an existing thread goal');
+END;
+
+CREATE TRIGGER goal_owner_admissions_require_thread_goal_update
+BEFORE UPDATE OF thread_id ON goal_owner_admissions
+WHEN NOT EXISTS (
+    SELECT 1 FROM thread_goals WHERE thread_id = NEW.thread_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'goal-owner admission requires an existing thread goal');
+END;
+
+CREATE TRIGGER goal_owner_admission_origins_require_thread_goal
+BEFORE INSERT ON goal_owner_admission_origins
+WHEN NOT EXISTS (
+    SELECT 1 FROM thread_goals WHERE thread_id = NEW.thread_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'goal-owner admission origin requires an existing thread goal');
+END;
+
+CREATE TRIGGER goal_owner_admission_origins_require_thread_goal_update
+BEFORE UPDATE OF thread_id ON goal_owner_admission_origins
+WHEN NOT EXISTS (
+    SELECT 1 FROM thread_goals WHERE thread_id = NEW.thread_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'goal-owner admission origin requires an existing thread goal');
+END;
 
 CREATE TRIGGER goal_owner_admissions_delete_origins
 AFTER DELETE ON thread_goals
