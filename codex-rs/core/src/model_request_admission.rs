@@ -1,38 +1,41 @@
 //! Provider-authoritative admission for one model request attempt.
 //!
 //! This module deliberately has no knowledge of endpoints, accounts, models, or
-//! service tiers.  A caller supplies a trusted opaque correlation value and the
-//! provider's decision; no alternate provider or route is selected here.
+//! service tiers. A trusted in-crate provider adapter supplies the opaque
+//! correlation value and provider decision; no alternate provider or route is
+//! selected here. The module is crate-private so downstream crates cannot mint
+//! an admitted decision or a physical-send permit. This is a Rust visibility
+//! trust boundary, not a cryptographic provenance proof.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Opaque correlation material trusted by the caller that owns request identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TrustedCorrelation(Vec<u8>);
+pub(crate) struct TrustedCorrelation(Vec<u8>);
 
 impl TrustedCorrelation {
-    pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
+    pub(crate) fn new(bytes: impl Into<Vec<u8>>) -> Self {
         Self(bytes.into())
     }
 }
 
 /// A generation/lease pair is intentionally non-Clone: it belongs to one attempt.
 #[derive(Debug, Eq, PartialEq)]
-pub struct AttemptLease {
+pub(crate) struct AttemptLease {
     generation: u64,
     lease: u64,
 }
 
 impl AttemptLease {
-    pub fn new(generation: u64, lease: u64) -> Self {
+    pub(crate) fn new(generation: u64, lease: u64) -> Self {
         Self { generation, lease }
     }
 }
 
 /// Provider evidence.  The provider response is the authority for this decision.
 #[derive(Debug, Eq, PartialEq)]
-pub enum ProviderAdmission {
+pub(crate) enum ProviderAdmission {
     Admitted,
     Denied,
     Deferred { retry_after: Duration },
@@ -40,7 +43,7 @@ pub enum ProviderAdmission {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum AdmissionOutcome {
+pub(crate) enum AdmissionOutcome {
     Admitted(PhysicalSendPermit),
     ProviderDenied,
     ProviderDeferred { retry_after: Duration },
@@ -53,13 +56,13 @@ pub enum AdmissionOutcome {
 /// Non-Clone, single-use capability establishing ownership of a future physical send.
 /// It intentionally exposes no endpoint, account, model, or authentication data.
 #[derive(Debug, Eq, PartialEq)]
-pub struct PhysicalSendPermit {
+pub(crate) struct PhysicalSendPermit {
     correlation: TrustedCorrelation,
 }
 
 impl PhysicalSendPermit {
     /// Consume the permit at the transport-owned boundary.
-    pub fn into_transport_ownership(self) -> PhysicalSendOwnership {
+    pub(crate) fn into_transport_ownership(self) -> PhysicalSendOwnership {
         PhysicalSendOwnership {
             correlation: self.correlation,
         }
@@ -68,20 +71,20 @@ impl PhysicalSendPermit {
 
 /// Opaque marker handed to the transport after the permit is consumed.
 #[derive(Debug, Eq, PartialEq)]
-pub struct PhysicalSendOwnership {
+pub(crate) struct PhysicalSendOwnership {
     correlation: TrustedCorrelation,
 }
 
 /// One exact attempt.  Admission is immutable and can succeed at most once.
 #[derive(Debug)]
-pub struct ModelRequestAttempt {
+pub(crate) struct ModelRequestAttempt {
     correlation: TrustedCorrelation,
     lease: AttemptLease,
     decided: AtomicBool,
 }
 
 impl ModelRequestAttempt {
-    pub fn new(correlation: TrustedCorrelation, lease: AttemptLease) -> Self {
+    pub(crate) fn new(correlation: TrustedCorrelation, lease: AttemptLease) -> Self {
         Self {
             correlation,
             lease,
@@ -90,7 +93,7 @@ impl ModelRequestAttempt {
     }
 
     /// Evaluate exactly one provider decision.  No denial or deferral is rerouted.
-    pub fn admit(
+    pub(crate) fn admit(
         &self,
         provider: ProviderAdmission,
         current_generation: u64,
@@ -191,6 +194,19 @@ mod tests {
         ));
         assert_eq!(
             a.admit(ProviderAdmission::Denied, 4, 5, false),
+            AdmissionOutcome::AlreadyDecided
+        );
+    }
+
+    #[test]
+    fn terminal_denial_cannot_become_admitted() {
+        let a = attempt();
+        assert_eq!(
+            a.admit(ProviderAdmission::Denied, 4, 5, false),
+            AdmissionOutcome::ProviderDenied
+        );
+        assert_eq!(
+            a.admit(ProviderAdmission::Admitted, 4, 5, false),
             AdmissionOutcome::AlreadyDecided
         );
     }
