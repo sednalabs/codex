@@ -1,5 +1,12 @@
 #[path = "bundled_plugin_exclusions.rs"]
 mod bundled_plugin_exclusions;
+#[path = "remote_mutations.rs"]
+mod remote_mutations;
+pub use remote_mutations::RemotePluginInstallOutcome;
+pub use remote_mutations::RemotePluginInstallRequest;
+pub use remote_mutations::RemotePluginOperationError;
+pub use remote_mutations::RemotePluginOperationErrorKind;
+pub use remote_mutations::RemotePluginUninstallOutcome;
 #[path = "marketplace_context.rs"]
 mod marketplace_context;
 pub use marketplace_context::PluginMarketplaceContext;
@@ -255,7 +262,7 @@ enum RemoteInstalledPluginsCachePublication {
 ///
 /// Callers should keep this guard only while mutating the remote plugin cache and backend
 /// installed state, then release it before unrelated analytics, OAuth, or runtime refresh work.
-pub struct RemoteInstalledPluginSyncGuard {
+struct RemoteInstalledPluginSyncGuard {
     _permit: OwnedSemaphorePermit,
 }
 
@@ -1458,7 +1465,7 @@ impl PluginsManager {
         });
     }
 
-    pub fn maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
+    fn maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
         self: &Arc<Self>,
         config: &PluginsConfigInput,
         auth: Option<CodexAuth>,
@@ -1563,7 +1570,7 @@ impl PluginsManager {
 
     /// Acquires the cache-root gate shared by full installed-bundle sync, reconciliation, and
     /// direct remote plugin mutations.
-    pub async fn acquire_remote_installed_plugin_sync_guard(
+    async fn acquire_remote_installed_plugin_sync_guard(
         &self,
     ) -> Result<RemoteInstalledPluginSyncGuard, RemoteInstalledPluginBundleSyncError> {
         let permit = tokio::time::timeout(
