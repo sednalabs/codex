@@ -1,7 +1,7 @@
 use crate::auth::SharedAuthProvider;
 use crate::common::CompactionInput;
 use crate::endpoint::session::EndpointSession;
-use crate::endpoint::session::RequestInitiationFactory;
+use crate::endpoint::session::ProviderRequestAttemptFactory;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use codex_client::HttpTransport;
@@ -33,12 +33,12 @@ impl<T: HttpTransport> CompactClient<T> {
         }
     }
 
-    pub fn with_request_initiation_factory(
+    pub fn with_request_attempt_factory(
         self,
-        factory: Option<RequestInitiationFactory>,
+        factory: Option<ProviderRequestAttemptFactory>,
     ) -> Self {
         Self {
-            session: self.session.with_request_initiation_factory(factory),
+            session: self.session.with_request_attempt_factory(factory),
         }
     }
 
@@ -101,13 +101,18 @@ struct CompactHistoryResponse {
 mod tests {
     use super::*;
     use crate::auth::AuthProvider;
+    use crate::endpoint::session::ProviderRequestAttempt;
     use crate::provider::RetryConfig;
     use codex_client::Request;
     use codex_client::RequestInitiation;
     use codex_client::Response;
     use codex_client::StreamResponse;
     use codex_client::TransportError;
+    use http::HeaderValue;
     use http::StatusCode;
+    use http::header::AUTHORIZATION;
+    use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
@@ -115,16 +120,25 @@ mod tests {
     use tokio::sync::Notify;
     use tokio::sync::RwLock;
 
-    fn one_initiation_factory(initiation: RequestInitiation) -> RequestInitiationFactory {
-        let initiation = Arc::new(Mutex::new(Some(initiation)));
-        RequestInitiationFactory::new(move || {
-            let initiation = initiation
+    fn one_attempt_factory(
+        provider: Provider,
+        auth: SharedAuthProvider,
+        initiation: RequestInitiation,
+    ) -> ProviderRequestAttemptFactory {
+        let attempt = Arc::new(Mutex::new(Some(ProviderRequestAttempt::new(
+            provider,
+            auth,
+            (),
+            initiation,
+        ))));
+        ProviderRequestAttemptFactory::new(move || {
+            let attempt = attempt
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
             async move {
-                initiation.ok_or_else(|| {
-                    TransportError::Build("test initiation already issued".to_string())
+                attempt.ok_or_else(|| {
+                    TransportError::Build("test request attempt already issued".to_string())
                 })
             }
         })
@@ -208,7 +222,9 @@ mod tests {
             test_provider(),
             Arc::new(NoAuth),
         )
-        .with_request_initiation_factory(Some(one_initiation_factory(
+        .with_request_attempt_factory(Some(one_attempt_factory(
+            test_provider(),
+            Arc::new(NoAuth),
             RequestInitiation::new(authority),
         )));
 
@@ -266,18 +282,170 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct HeaderAuth(&'static str);
+
+    impl AuthProvider for HeaderAuth {
+        fn add_auth_headers(&self, headers: &mut HeaderMap) {
+            headers.insert(AUTHORIZATION, HeaderValue::from_static(self.0));
+        }
+    }
+
+    fn named_provider(name: &str, base_url: &str, provider_header: &'static str) -> Provider {
+        let mut provider = test_provider();
+        provider.name = name.to_string();
+        provider.base_url = base_url.to_string();
+        provider.query_params = Some(HashMap::from([(
+            "deployment".to_string(),
+            name.to_string(),
+        )]));
+        provider
+            .headers
+            .insert("x-provider", HeaderValue::from_static(provider_header));
+        provider
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturingRetryTransport {
+        requests: Arc<Mutex<Vec<Request>>>,
+    }
+
+    impl HttpTransport for CapturingRetryTransport {
+        async fn execute(&self, req: Request) -> Result<Response, TransportError> {
+            let mut requests = self
+                .requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            requests.push(req);
+            if requests.len() == 1 {
+                return Err(TransportError::Network(
+                    "first provider unavailable".to_string(),
+                ));
+            }
+            Ok(Response {
+                status: StatusCode::OK,
+                headers: HeaderMap::new(),
+                body: br#"{"output":[]}"#.as_slice().into(),
+            })
+        }
+
+        async fn stream(&self, _req: Request) -> Result<StreamResponse, TransportError> {
+            Err(TransportError::Build("stream should not run".to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn ordinary_retry_rebuilds_the_complete_provider_and_auth_attempt() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let factory_calls = Arc::new(AtomicUsize::new(0));
+        let factory = ProviderRequestAttemptFactory::new({
+            let factory_calls = Arc::clone(&factory_calls);
+            move || {
+                let call = factory_calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    let (provider, auth): (Provider, SharedAuthProvider) = if call == 0 {
+                        (
+                            named_provider("a", "https://a.example/v1", "provider-a"),
+                            Arc::new(HeaderAuth("Bearer auth-a")),
+                        )
+                    } else {
+                        (
+                            named_provider("b", "https://b.example/v2", "provider-b"),
+                            Arc::new(HeaderAuth("Bearer auth-b")),
+                        )
+                    };
+                    Ok(ProviderRequestAttempt::new(
+                        provider,
+                        auth,
+                        call,
+                        RequestInitiation::new(call),
+                    ))
+                }
+            }
+        });
+        let transport = CapturingRetryTransport {
+            requests: Arc::clone(&requests),
+        };
+        let mut request_headers = HeaderMap::new();
+        request_headers.insert("x-client-request-id", HeaderValue::from_static("request-1"));
+        let client = CompactClient::new(
+            transport,
+            named_provider("stale", "https://stale.example", "provider-stale"),
+            Arc::new(HeaderAuth("Bearer auth-stale")),
+        )
+        .with_request_attempt_factory(Some(factory));
+
+        client
+            .compact(
+                serde_json::json!({"model": "test", "input": ["same-body"]}),
+                request_headers,
+                Duration::from_secs(5),
+                None,
+            )
+            .await
+            .expect("ordinary retry should succeed with renewed provider B");
+
+        let requests = requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.url.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "https://a.example/v1/responses/compact?deployment=a",
+                "https://b.example/v2/responses/compact?deployment=b",
+            ]
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.headers.get("x-provider"))
+                .collect::<Vec<_>>(),
+            vec![
+                Some(&HeaderValue::from_static("provider-a")),
+                Some(&HeaderValue::from_static("provider-b")),
+            ]
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.headers.get(AUTHORIZATION))
+                .collect::<Vec<_>>(),
+            vec![
+                Some(&HeaderValue::from_static("Bearer auth-a")),
+                Some(&HeaderValue::from_static("Bearer auth-b")),
+            ]
+        );
+        assert!(requests.iter().all(|request| {
+            request.headers.get("x-client-request-id")
+                == Some(&HeaderValue::from_static("request-1"))
+        }));
+        assert_eq!(requests[0].body, requests[1].body);
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 2);
+    }
+
     #[tokio::test]
     async fn same_authority_retry_uses_one_fresh_initiation_per_wire_attempt() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let issued = Arc::new(AtomicUsize::new(0));
         let released = Arc::new(AtomicUsize::new(0));
-        let factory = RequestInitiationFactory::new({
+        let factory = ProviderRequestAttemptFactory::new({
             let issued = Arc::clone(&issued);
             let released = Arc::clone(&released);
             move || {
                 issued.fetch_add(1, Ordering::SeqCst);
                 let initiation = RequestInitiation::new(AttemptAuthority(Arc::clone(&released)));
-                async move { Ok(initiation) }
+                async move {
+                    Ok(ProviderRequestAttempt::new(
+                        test_provider(),
+                        Arc::new(NoAuth),
+                        (),
+                        initiation,
+                    ))
+                }
             }
         });
         let client = CompactClient::new(
@@ -287,7 +455,7 @@ mod tests {
             test_provider(),
             Arc::new(NoAuth),
         )
-        .with_request_initiation_factory(Some(factory));
+        .with_request_attempt_factory(Some(factory));
 
         client
             .compact(
@@ -303,17 +471,89 @@ mod tests {
         assert_eq!(released.load(Ordering::SeqCst), 2);
     }
 
+    #[derive(Clone)]
+    struct AlwaysFailTransport {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    impl HttpTransport for AlwaysFailTransport {
+        async fn execute(&self, _req: Request) -> Result<Response, TransportError> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Err(TransportError::Network("persistent failure".to_string()))
+        }
+
+        async fn stream(&self, _req: Request) -> Result<StreamResponse, TransportError> {
+            Err(TransportError::Build("stream should not run".to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn renewed_attempts_share_one_finite_budget_and_never_reuse_a_token() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let issued = Arc::new(AtomicUsize::new(0));
+        let released = Arc::new(AtomicUsize::new(0));
+        let factory = ProviderRequestAttemptFactory::new({
+            let issued = Arc::clone(&issued);
+            let released = Arc::clone(&released);
+            move || {
+                let token_id = issued.fetch_add(1, Ordering::SeqCst);
+                let initiation =
+                    RequestInitiation::new((token_id, AttemptAuthority(Arc::clone(&released))));
+                async move {
+                    Ok(ProviderRequestAttempt::new(
+                        test_provider(),
+                        Arc::new(NoAuth),
+                        token_id,
+                        initiation,
+                    ))
+                }
+            }
+        });
+        let mut provider = test_provider();
+        provider.retry.max_attempts = 2;
+        let client = CompactClient::new(
+            AlwaysFailTransport {
+                attempts: Arc::clone(&attempts),
+            },
+            provider,
+            Arc::new(NoAuth),
+        )
+        .with_request_attempt_factory(Some(factory));
+
+        let error = client
+            .compact(
+                serde_json::json!({"model": "test"}),
+                HeaderMap::new(),
+                Duration::from_secs(5),
+                None,
+            )
+            .await
+            .expect_err("the finite retry budget should be exhausted");
+        assert!(matches!(
+            error,
+            ApiError::Transport(TransportError::Network(_))
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(issued.load(Ordering::SeqCst), 3);
+        assert_eq!(released.load(Ordering::SeqCst), 3);
+    }
+
     #[tokio::test]
     async fn authority_change_before_retry_sends_no_second_wire_attempt() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let factory_calls = Arc::new(AtomicUsize::new(0));
-        let factory = RequestInitiationFactory::new({
+        let factory = ProviderRequestAttemptFactory::new({
             let factory_calls = Arc::clone(&factory_calls);
             move || {
                 let call = factory_calls.fetch_add(1, Ordering::SeqCst);
                 async move {
                     if call == 0 {
-                        Ok(RequestInitiation::new(()))
+                        Ok(ProviderRequestAttempt::new(
+                            test_provider(),
+                            Arc::new(NoAuth),
+                            (),
+                            RequestInitiation::new(()),
+                        ))
                     } else {
                         Err(TransportError::AutomaticTurnContextChanged)
                     }
@@ -327,7 +567,7 @@ mod tests {
             test_provider(),
             Arc::new(NoAuth),
         )
-        .with_request_initiation_factory(Some(factory));
+        .with_request_attempt_factory(Some(factory));
 
         let error = client
             .compact(

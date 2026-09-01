@@ -44,13 +44,14 @@ use codex_api::MemoriesClient as ApiMemoriesClient;
 use codex_api::MemorySummarizeInput as ApiMemorySummarizeInput;
 use codex_api::MemorySummarizeOutput as ApiMemorySummarizeOutput;
 use codex_api::Provider as ApiProvider;
+use codex_api::ProviderRequestAttempt;
+use codex_api::ProviderRequestAttemptFactory;
 use codex_api::RawMemory as ApiRawMemory;
 use codex_api::RealtimeCallClient as ApiRealtimeCallClient;
 use codex_api::RealtimeSessionConfig as ApiRealtimeSessionConfig;
 use codex_api::Reasoning;
 use codex_api::ReasoningContext;
 use codex_api::RequestInitiation;
-use codex_api::RequestInitiationFactory;
 use codex_api::RequestTelemetry;
 use codex_api::ReqwestTransport;
 use codex_api::ResponseCreateWsRequest;
@@ -719,10 +720,14 @@ impl ModelClient {
             return Ok(Vec::new());
         }
         let client_setup = self.current_client_setup(expected_authority).await?;
-        let request_initiation_factory = self.request_initiation_factory(
-            client_setup.authority,
-            expected_authority.is_some(),
-            client_setup.request_initiation,
+        let request_attempt_factory = self.provider_request_attempt_factory(
+            expected_authority,
+            ProviderRequestAttempt::new(
+                client_setup.api_provider.clone(),
+                client_setup.api_auth.clone(),
+                client_setup.authority,
+                client_setup.request_initiation,
+            ),
         );
         let transport =
             self.build_api_transport(&client_setup.api_provider, RESPONSES_COMPACT_ENDPOINT)?;
@@ -796,7 +801,7 @@ impl ModelClient {
         let client =
             ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry))
-                .with_request_initiation_factory(Some(request_initiation_factory));
+                .with_request_attempt_factory(Some(request_attempt_factory));
         let trace_attempt = compaction_trace.start_attempt(&payload);
         let result = client
             .compact_input(
@@ -832,13 +837,17 @@ impl ModelClient {
         ));
         let api_provider = api_provider_override.unwrap_or(client_setup.api_provider);
         let transport = self.build_api_transport(&api_provider, REALTIME_CALLS_ENDPOINT)?;
-        let request_initiation_factory = self.request_initiation_factory(
-            client_setup.authority,
-            /*automatic*/ false,
-            client_setup.request_initiation,
+        let request_attempt_factory = self.provider_request_attempt_factory(
+            /*expected_authority*/ None,
+            ProviderRequestAttempt::new(
+                api_provider.clone(),
+                client_setup.api_auth.clone(),
+                client_setup.authority,
+                client_setup.request_initiation,
+            ),
         );
         let response = ApiRealtimeCallClient::new(transport, api_provider, client_setup.api_auth)
-            .with_request_initiation_factory(Some(request_initiation_factory))
+            .with_request_attempt_factory(Some(request_attempt_factory))
             .create_with_session_and_headers(sdp, session_config, extra_headers)
             .await
             .map_err(|error| self.state.provider.map_api_error(error))?;
@@ -871,10 +880,14 @@ impl ModelClient {
             .await?;
         let transport =
             self.build_api_transport(&client_setup.api_provider, MEMORIES_SUMMARIZE_ENDPOINT)?;
-        let request_initiation_factory = self.request_initiation_factory(
-            client_setup.authority,
-            /*automatic*/ false,
-            client_setup.request_initiation,
+        let request_attempt_factory = self.provider_request_attempt_factory(
+            /*expected_authority*/ None,
+            ProviderRequestAttempt::new(
+                client_setup.api_provider.clone(),
+                client_setup.api_auth.clone(),
+                client_setup.authority,
+                client_setup.request_initiation,
+            ),
         );
         let request_telemetry = Self::build_request_telemetry(
             session_telemetry,
@@ -890,7 +903,7 @@ impl ModelClient {
         let client =
             ApiMemoriesClient::new(transport, client_setup.api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry))
-                .with_request_initiation_factory(Some(request_initiation_factory));
+                .with_request_attempt_factory(Some(request_attempt_factory));
 
         let payload = ApiMemorySummarizeInput {
             model: model_info.slug.clone(),
@@ -1196,21 +1209,20 @@ impl ModelClient {
         Ok(authority)
     }
 
-    /// Returns a fresh initiation for each visible application retry.
+    /// Returns a freshly resolved provider, frozen auth, and initiation for every visible retry.
     ///
     /// The initial setup already validated and pinned the admitted authority. Later attempts must
     /// repeat complete provider-authority resolution before receiving a new one-use token. Ordinary
     /// non-automatic requests retain the existing application retry behavior through the same
     /// per-attempt gate, but only automatic work receives the automatic-context-change error.
-    fn request_initiation_factory(
+    fn provider_request_attempt_factory(
         &self,
-        expected_authority: ProviderAuthority,
-        automatic: bool,
-        initial: RequestInitiation,
-    ) -> RequestInitiationFactory {
+        expected_authority: Option<ProviderAuthority>,
+        initial: ProviderRequestAttempt,
+    ) -> ProviderRequestAttemptFactory {
         let initial = Arc::new(StdMutex::new(Some(initial)));
         let client = self.clone();
-        RequestInitiationFactory::new(move || {
+        ProviderRequestAttemptFactory::new(move || {
             let initial = initial
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1221,11 +1233,18 @@ impl ModelClient {
                     return Ok(initial);
                 }
                 client
-                    .current_client_setup(Some(expected_authority))
+                    .current_client_setup(expected_authority)
                     .await
-                    .map(|setup| setup.request_initiation)
+                    .map(|setup| {
+                        ProviderRequestAttempt::new(
+                            setup.api_provider,
+                            setup.api_auth,
+                            setup.authority,
+                            setup.request_initiation,
+                        )
+                    })
                     .map_err(|error| {
-                        if automatic
+                        if expected_authority.is_some()
                             && matches!(
                                 error.details(),
                                 codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
@@ -1743,19 +1762,22 @@ impl ModelClientSession {
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
             inference_trace_attempt.record_started(&request);
+            let request_attempt_factory = self.client.provider_request_attempt_factory(
+                self.expected_authority,
+                ProviderRequestAttempt::new(
+                    client_setup.api_provider.clone(),
+                    client_setup.api_auth.clone(),
+                    client_setup.authority,
+                    client_setup.request_initiation,
+                ),
+            );
             let client = ApiResponsesClient::new(
                 transport,
                 client_setup.api_provider,
                 client_setup.api_auth,
             )
             .with_telemetry(Some(request_telemetry), Some(sse_telemetry))
-            .with_request_initiation_factory(Some(
-                self.client.request_initiation_factory(
-                    client_setup.authority,
-                    self.expected_authority.is_some(),
-                    client_setup.request_initiation,
-                ),
-            ));
+            .with_request_attempt_factory(Some(request_attempt_factory));
             let stream_result = client.stream_request(request, options).await;
 
             match stream_result {

@@ -84,6 +84,10 @@ impl HttpClientBuilder {
     /// Credential-bound requests use the observable application retry loop, where each attempt
     /// can acquire and validate fresh authority. A transport retry would instead clone the
     /// already-authorized wire request after that authority has been released.
+    ///
+    /// This does not disable hyper-util's stale pooled-connection recovery. That recovery is
+    /// limited to a reused connection that fails before any request bytes are written, so it does
+    /// not create another credential-bearing wire attempt.
     pub fn without_retries(mut self) -> Self {
         self.retry_requests = false;
         self
@@ -208,47 +212,60 @@ impl HttpClientBuilder {
     }
 
     fn build_with_custom_ca_fallback(self, proxy_routing: ProxyRouting) -> HttpClient {
-        self.build_with_custom_ca_fallback_using(proxy_routing, build_reqwest_client_with_custom_ca)
+        self.build_with_custom_ca_fallback_using(
+            proxy_routing,
+            build_reqwest_client_with_custom_ca,
+            reqwest::ClientBuilder::build,
+        )
     }
 
-    fn build_with_custom_ca_fallback_using(
+    fn build_with_custom_ca_fallback_using<E>(
         self,
         proxy_routing: ProxyRouting,
         build_with_custom_ca: impl FnOnce(
             reqwest::ClientBuilder,
         )
             -> Result<reqwest::Client, BuildCustomCaTransportError>,
-    ) -> HttpClient {
+        build_fallback: impl FnOnce(reqwest::ClientBuilder) -> Result<reqwest::Client, E>,
+    ) -> HttpClient
+    where
+        E: std::fmt::Display,
+    {
         let request_logging = self.request_logging;
-        let retry_requests = self.retry_requests;
         match build_with_custom_ca(self.clone().reqwest_builder(proxy_routing)) {
             Ok(inner) => HttpClient::from_parts(inner, request_logging),
             Err(error) => {
                 tracing::warn!(error = %error, "failed to build HTTP client with custom CA");
-                self.reqwest_builder(proxy_routing)
-                    .build()
+                build_fallback(self.clone().reqwest_builder(proxy_routing))
                     .map(|inner| HttpClient::from_parts(inner, request_logging))
                     .unwrap_or_else(|fallback_error| {
                         tracing::warn!(
                             error = %fallback_error,
                             "failed to build fallback HTTP client"
                         );
-                        let inner = if retry_requests {
-                            reqwest::Client::new()
-                        } else {
-                            // `Client::new()` would silently restore protocol-NACK retries on the
-                            // credential-bound path, so its last-resort client must fail closed.
-                            reqwest::Client::builder()
-                                .retry(reqwest::retry::never())
-                                .build()
-                                .expect(
-                                    "minimal credential-bound HTTP client without retries should build",
-                                )
-                        };
+                        // `Client::new()` would silently restore redirects and protocol-NACK
+                        // retries on credential-bound paths. Reapply both fail-closed policies on
+                        // the last-resort builder while leaving hyper-util's documented zero-write
+                        // stale-pool recovery enabled.
+                        let inner = self
+                            .last_resort_reqwest_builder()
+                            .build()
+                            .expect("minimal credential-bound HTTP client policy should build");
                         HttpClient::from_parts(inner, request_logging)
                     })
             }
         }
+    }
+
+    fn last_resort_reqwest_builder(&self) -> reqwest::ClientBuilder {
+        let mut builder = reqwest::Client::builder();
+        if !self.follow_redirects {
+            builder = builder.redirect(reqwest::redirect::Policy::none());
+        }
+        if !self.retry_requests {
+            builder = builder.retry(reqwest::retry::never());
+        }
+        builder
     }
 
     fn into_reqwest_parts(self) -> (reqwest::ClientBuilder, RequestLogging) {

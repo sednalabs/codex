@@ -3,7 +3,7 @@ use crate::endpoint::realtime_websocket::RealtimeEventParser;
 use crate::endpoint::realtime_websocket::RealtimeSessionConfig;
 use crate::endpoint::realtime_websocket::session_update_session_json;
 use crate::endpoint::session::EndpointSession;
-use crate::endpoint::session::RequestInitiationFactory;
+use crate::endpoint::session::ProviderRequestAttemptFactory;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use bytes::Bytes;
@@ -60,12 +60,12 @@ impl<T: HttpTransport> RealtimeCallClient<T> {
         }
     }
 
-    pub fn with_request_initiation_factory(
+    pub fn with_request_attempt_factory(
         self,
-        factory: Option<RequestInitiationFactory>,
+        factory: Option<ProviderRequestAttemptFactory>,
     ) -> Self {
         Self {
-            session: self.session.with_request_initiation_factory(factory),
+            session: self.session.with_request_attempt_factory(factory),
         }
     }
 
