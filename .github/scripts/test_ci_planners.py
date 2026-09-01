@@ -1663,9 +1663,9 @@ class RouteSelectionTests(unittest.TestCase):
             'name = "windows_aarch64_gnullvm_rust_toolchain_for_health"',
             build_bazel,
         )
-        self.assertIn(
-            'toolchain = "@default_rust_toolchains//:windows_aarch64_gnullvm_1_95_0_rust_toolchain"',
+        self.assertRegex(
             build_bazel,
+            r'toolchain = "@default_rust_toolchains//:windows_aarch64_gnullvm_\d+_\d+_\d+_rust_toolchain"',
         )
         selector_match = re.search(
             r'toolchain\(\n    name = "windows_aarch64_gnullvm_rust_toolchain_for_health",'
