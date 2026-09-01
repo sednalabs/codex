@@ -3,6 +3,8 @@ use crate::error_code::invalid_request;
 use crate::outgoing_message::ClientRequestResult;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
+use crate::outgoing_message::is_current_automatic_turn_principal;
+use crate::outgoing_message::parse_automatic_turn_connection_principal;
 use crate::request_processors::populate_thread_turns_from_history;
 use crate::request_processors::thread_from_stored_thread;
 use crate::request_processors::thread_settings_from_core_snapshot;
@@ -130,18 +132,6 @@ use tracing::error;
 enum CommandExecutionApprovalPresentation {
     Network(V2NetworkApprovalContext),
     Command(CommandExecutionCompletionItem),
-}
-
-fn automatic_turn_connection_principal(connection_id: ConnectionId) -> String {
-    format!("connection:{}", connection_id.0)
-}
-
-fn parse_automatic_turn_connection_principal(principal: &str) -> Option<ConnectionId> {
-    principal
-        .strip_prefix("connection:")?
-        .parse()
-        .ok()
-        .map(ConnectionId)
 }
 
 #[derive(Debug, PartialEq)]
@@ -1055,36 +1045,19 @@ pub(crate) async fn apply_bespoke_event_handling(
                     {
                         Some((trigger_turn_id, capability, principal)) => {
                             let subscribed = outgoing.connection_ids();
-                            let parsed_principal = principal
+                            let owner = principal
                                 .as_deref()
+                                .filter(|principal| is_current_automatic_turn_principal(principal))
                                 .and_then(parse_automatic_turn_connection_principal)
+                                .map(|(_, connection_id)| connection_id)
                                 .filter(|connection_id| subscribed.contains(connection_id));
-                            let owner = parsed_principal.or_else(|| {
-                                subscribed
-                                    .iter()
-                                    .copied()
-                                    .min_by_key(|connection_id| connection_id.0)
-                            });
-                            if principal
-                                .as_deref()
-                                .and_then(parse_automatic_turn_connection_principal)
-                                != owner
-                                && let Some(owner) = owner
-                            {
-                                let _ = state_db
-                                    .rebind_automatic_turn_capability_principal(
-                                        conversation_id,
+                            (
+                                owner.and_then(|_| {
+                                    AutomaticTurnProvenance::capability_details(
                                         &trigger_turn_id,
                                         &capability,
-                                        &automatic_turn_connection_principal(owner),
                                     )
-                                    .await;
-                            }
-                            (
-                                AutomaticTurnProvenance::capability_details(
-                                    &trigger_turn_id,
-                                    &capability,
-                                ),
+                                }),
                                 owner,
                             )
                         }

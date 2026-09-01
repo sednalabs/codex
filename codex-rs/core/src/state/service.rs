@@ -95,7 +95,13 @@ pub(crate) struct SessionServices {
     pub(crate) turn_environments: Arc<ThreadEnvironments>,
     /// Server-authenticated principals for submissions whose events are still in flight. The
     /// app-server supplies these through the internal thread bridge; they are never client data.
-    pub(crate) automatic_turn_principals: Mutex<HashMap<String, String>>,
+    pub(crate) automatic_turn_principals: Mutex<HashMap<String, AutomaticTurnPrincipal>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AutomaticTurnPrincipal {
+    pub(crate) principal: String,
+    pub(crate) client_user_message_id: Option<String>,
 }
 
 impl SessionServices {
@@ -109,20 +115,26 @@ impl SessionServices {
             codex_protocol::protocol::EventMsg::Error(_)
                 | codex_protocol::protocol::EventMsg::ItemCompleted(_)
                 | codex_protocol::protocol::EventMsg::TurnComplete(_)
+                | codex_protocol::protocol::EventMsg::TurnAborted(_)
         );
         if relevant_to_automatic_turns {
             if let Some(state_db) = &self.state_db {
-                let principal = self
+                let operation = self
                     .automatic_turn_principals
                     .lock()
                     .await
                     .get(&event.id)
                     .cloned();
                 state_db
-                    .record_automatic_turn_event_with_principal(
+                    .record_automatic_turn_event_with_principal_and_client_user_message_id(
                         thread_id,
                         event,
-                        principal.as_deref(),
+                        operation
+                            .as_ref()
+                            .map(|operation| operation.principal.as_str()),
+                        operation
+                            .as_ref()
+                            .and_then(|operation| operation.client_user_message_id.as_deref()),
                     )
                     .await;
             }
@@ -130,6 +142,7 @@ impl SessionServices {
             if matches!(
                 &event.msg,
                 codex_protocol::protocol::EventMsg::TurnComplete(_)
+                    | codex_protocol::protocol::EventMsg::TurnAborted(_)
             ) {
                 self.automatic_turn_principals
                     .lock()
@@ -149,11 +162,22 @@ impl SessionServices {
         &self,
         event_occurrence_id: impl Into<String>,
         principal: impl Into<String>,
+        client_user_message_id: Option<&str>,
     ) {
+        let principal = principal.into();
+        let client_user_message_id = client_user_message_id.map(str::to_owned);
         self.automatic_turn_principals
             .lock()
             .await
             .entry(event_occurrence_id.into())
-            .or_insert_with(|| principal.into());
+            .and_modify(|operation| {
+                if operation.client_user_message_id.is_none() {
+                    operation.client_user_message_id = client_user_message_id.clone();
+                }
+            })
+            .or_insert_with(|| AutomaticTurnPrincipal {
+                principal,
+                client_user_message_id,
+            });
     }
 }

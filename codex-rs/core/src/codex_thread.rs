@@ -393,7 +393,11 @@ impl CodexThread {
         if let Some(principal) = principal {
             self.session
                 .services
-                .register_automatic_turn_principal(id.clone(), principal)
+                .register_automatic_turn_principal(
+                    id.clone(),
+                    principal,
+                    client_user_message_id.as_deref(),
+                )
                 .await;
         }
         self.submit_tracked(Submission {
@@ -443,7 +447,11 @@ impl CodexThread {
         if let (Some(expected_turn_id), Some(principal)) = (expected_turn_id, principal) {
             self.session
                 .services
-                .register_automatic_turn_principal(expected_turn_id.to_string(), principal)
+                .register_automatic_turn_principal(
+                    expected_turn_id.to_string(),
+                    principal,
+                    client_user_message_id.as_deref(),
+                )
                 .await;
         }
         let _residency_transition = self.session.input_queue.begin_residency_activity().await;

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
@@ -25,6 +26,7 @@ use tokio::sync::oneshot;
 use tracing::Instrument;
 use tracing::Span;
 use tracing::warn;
+use uuid::Uuid;
 
 use crate::error_code::internal_error;
 use crate::server_request_error::TURN_TRANSITION_PENDING_REQUEST_ERROR_REASON;
@@ -33,6 +35,32 @@ pub(crate) use codex_app_server_transport::OutgoingError;
 pub(crate) use codex_app_server_transport::OutgoingMessage;
 pub(crate) use codex_app_server_transport::OutgoingResponse;
 pub(crate) use codex_app_server_transport::QueuedOutgoingMessage;
+
+static AUTOMATIC_TURN_PROCESS_EPOCH: LazyLock<String> =
+    LazyLock::new(|| Uuid::new_v4().to_string());
+
+/// The process epoch is deliberately included in persisted automatic-turn principals. Numeric
+/// transport connection ids may be reused after an app-server restart, but an epoch is not.
+pub(crate) fn automatic_turn_connection_principal(connection_id: ConnectionId) -> String {
+    format!(
+        "automatic-turn:{}:connection:{}",
+        AUTOMATIC_TURN_PROCESS_EPOCH.as_str(),
+        connection_id.0
+    )
+}
+
+pub(crate) fn parse_automatic_turn_connection_principal(
+    principal: &str,
+) -> Option<(&str, ConnectionId)> {
+    let value = principal.strip_prefix("automatic-turn:")?;
+    let (epoch, connection_id) = value.rsplit_once(":connection:")?;
+    Some((epoch, ConnectionId(connection_id.parse().ok()?)))
+}
+
+pub(crate) fn is_current_automatic_turn_principal(principal: &str) -> bool {
+    parse_automatic_turn_connection_principal(principal)
+        .is_some_and(|(epoch, _)| epoch == AUTOMATIC_TURN_PROCESS_EPOCH.as_str())
+}
 
 #[cfg(test)]
 use codex_protocol::account::PlanType;
@@ -821,6 +849,19 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    #[test]
+    fn automatic_turn_principal_is_epoch_scoped() {
+        let principal = automatic_turn_connection_principal(ConnectionId(7));
+        let (epoch, connection_id) =
+            parse_automatic_turn_connection_principal(&principal).expect("valid principal");
+        assert_eq!(connection_id, ConnectionId(7));
+        assert!(!epoch.is_empty());
+        assert!(is_current_automatic_turn_principal(&principal));
+        assert!(!is_current_automatic_turn_principal(
+            "automatic-turn:previous-process:connection:7"
+        ));
+    }
 
     #[test]
     fn verify_server_notification_serialization() {

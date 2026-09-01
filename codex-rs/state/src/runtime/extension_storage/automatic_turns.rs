@@ -15,6 +15,7 @@ const OUTCOME_RECOVERED: &str = "recovered";
 const OUTCOME_REBLOCKED: &str = "policy_blocked_again";
 const OUTCOME_EXHAUSTED: &str = "exhausted";
 const OUTCOME_FAILED: &str = "failed";
+const OUTCOME_ABORTED: &str = "aborted";
 const OUTCOME_ACCEPTED: &str = "accepted";
 const OUTCOME_SUPPRESSED: &str = "suppressed";
 const PROVENANCE_SOURCE: &str = "server_validated_client_user_message_id";
@@ -52,7 +53,32 @@ impl StateRuntime {
             return None;
         }
         match self
-            .record_automatic_turn_event_inner(thread_id, event, principal)
+            .record_automatic_turn_event_inner(thread_id, event, principal, None)
+            .await
+        {
+            Ok(capability) => capability,
+            Err(err) => {
+                warn!("automatic turn usage projection: {err}");
+                None
+            }
+        }
+    }
+
+    /// Project one event with both its authenticated principal and the client message identity
+    /// retained by the session while the operation is in flight. The latter lets an abort clean
+    /// up an admission even if the user item was not emitted before interruption.
+    pub async fn record_automatic_turn_event_with_principal_and_client_user_message_id(
+        &self,
+        thread_id: ThreadId,
+        event: &Event,
+        principal: Option<&str>,
+        client_user_message_id: Option<&str>,
+    ) -> Option<String> {
+        if self.usage_ledger_pool().is_closed() {
+            return None;
+        }
+        match self
+            .record_automatic_turn_event_inner(thread_id, event, principal, client_user_message_id)
             .await
         {
             Ok(capability) => capability,
@@ -158,6 +184,68 @@ impl StateRuntime {
         Ok(result.rows_affected() == 1)
     }
 
+    /// Atomically admit one validated automatic operation. The capability remains in the
+    /// eligibility row until the corresponding user item is projected, but the admission marker
+    /// makes concurrent requests for the same ticket mutually exclusive.
+    pub async fn reserve_automatic_turn_capability(
+        &self,
+        thread_id: ThreadId,
+        trigger_turn_id: &str,
+        capability: &str,
+        principal: &str,
+        client_user_message_id: &str,
+        operation_kind: &str,
+        expected_turn_id: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        if trigger_turn_id.is_empty()
+            || capability.is_empty()
+            || principal.is_empty()
+            || client_user_message_id.is_empty()
+            || operation_kind.is_empty()
+            || self.usage_ledger_pool().is_closed()
+        {
+            return Ok(false);
+        }
+        let result = sqlx::query(
+            "UPDATE usage_automatic_turn_eligibility SET admitted_client_user_message_id = ?, admitted_operation_kind = ?, admitted_expected_turn_id = ? WHERE thread_id = ? AND trigger_turn_id = ? AND capability = ? AND connection_principal = ? AND admitted_client_user_message_id IS NULL",
+        )
+        .bind(client_user_message_id)
+        .bind(operation_kind)
+        .bind(expected_turn_id)
+        .bind(thread_id.to_string())
+        .bind(trigger_turn_id)
+        .bind(capability)
+        .bind(principal)
+        .execute(self.usage_ledger_pool().as_ref())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Release an admission if the core submission failed before the operation entered the
+    /// session loop. A successful submission keeps the reservation until projection consumes it.
+    pub async fn release_automatic_turn_capability(
+        &self,
+        thread_id: ThreadId,
+        capability: &str,
+        client_user_message_id: &str,
+    ) -> anyhow::Result<bool> {
+        if capability.is_empty()
+            || client_user_message_id.is_empty()
+            || self.usage_ledger_pool().is_closed()
+        {
+            return Ok(false);
+        }
+        let result = sqlx::query(
+            "UPDATE usage_automatic_turn_eligibility SET admitted_client_user_message_id = NULL, admitted_operation_kind = NULL, admitted_expected_turn_id = NULL WHERE thread_id = ? AND capability = ? AND admitted_client_user_message_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .bind(capability)
+        .bind(client_user_message_id)
+        .execute(self.usage_ledger_pool().as_ref())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Return the server-selected trigger identity and capability for the current policy event.
     /// Trigger identities may carry an occurrence suffix when a regular turn id is reused.
     pub async fn automatic_turn_capability_for_turn(
@@ -197,6 +285,7 @@ impl StateRuntime {
         thread_id: ThreadId,
         event: &Event,
         principal: Option<&str>,
+        client_user_message_id: Option<&str>,
     ) -> anyhow::Result<Option<String>> {
         match &event.msg {
             EventMsg::ItemCompleted(item_event) => {
@@ -228,6 +317,7 @@ impl StateRuntime {
                         event.id.as_str(),
                         turn_complete.turn_id.as_str(),
                         outcome,
+                        client_user_message_id,
                     )
                     .await?;
                 if let Some(error) = turn_complete.error.as_ref()
@@ -256,6 +346,7 @@ impl StateRuntime {
                         event.id.as_str(),
                         event.id.as_str(),
                         outcome,
+                        client_user_message_id,
                     )
                     .await?;
                 if error
@@ -273,6 +364,18 @@ impl StateRuntime {
                         )
                         .await;
                 }
+                Ok(None)
+            }
+            EventMsg::TurnAborted(turn_aborted) => {
+                let turn_id = turn_aborted.turn_id.as_deref().unwrap_or(event.id.as_str());
+                self.complete_automatic_turn(
+                    thread_id,
+                    event.id.as_str(),
+                    turn_id,
+                    OUTCOME_ABORTED,
+                    client_user_message_id,
+                )
+                .await?;
                 Ok(None)
             }
             _ => Ok(None),
@@ -349,8 +452,22 @@ impl StateRuntime {
             max_attempts,
             capability,
             expected_principal,
-        )) = sqlx::query_as::<_, (String, Option<String>, i64, i64, i64, String, Option<String>)>(
-            "SELECT trigger_turn_id, event_occurrence_id, generation, next_attempt, max_attempts, capability, connection_principal FROM usage_automatic_turn_eligibility WHERE thread_id = ?",
+            admitted_client_user_message_id,
+            admitted_operation_kind,
+            admitted_expected_turn_id,
+        )) = sqlx::query_as::<_, (
+            String,
+            Option<String>,
+            i64,
+            i64,
+            i64,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )>(
+            "SELECT trigger_turn_id, event_occurrence_id, generation, next_attempt, max_attempts, capability, connection_principal, admitted_client_user_message_id, admitted_operation_kind, admitted_expected_turn_id FROM usage_automatic_turn_eligibility WHERE thread_id = ?",
             )
             .bind(&actual_thread_id)
             .fetch_optional(&mut *tx)
@@ -372,6 +489,19 @@ impl StateRuntime {
             || expected_principal
                 .as_deref()
                 .is_some_and(|expected| principal != Some(expected))
+            || principal.is_some() && admitted_client_user_message_id.as_deref() != Some(client_id)
+            || admitted_client_user_message_id
+                .as_deref()
+                .is_some_and(|admitted| admitted != client_id)
+            || admitted_operation_kind
+                .as_deref()
+                .is_some_and(|kind| kind != "start" && kind != "steer")
+            || admitted_expected_turn_id
+                .as_deref()
+                .is_some_and(|expected_turn_id| expected_turn_id.is_empty())
+            || admitted_expected_turn_id
+                .as_deref()
+                .is_some_and(|expected_turn_id| expected_turn_id != turn_id)
         {
             return Ok(false);
         }
@@ -618,25 +748,122 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
         event_occurrence_id: &str,
         turn_id: &str,
         outcome: &str,
+        client_user_message_id: Option<&str>,
     ) -> anyhow::Result<Option<CompletedAutomaticTurn>> {
         if turn_id.is_empty() {
             return Ok(None);
         }
         let pool = self.usage_ledger_pool();
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-        let Some((id, attempt, max_attempts, generation, trigger_turn_id, trigger_occurrence_id)) =
-            sqlx::query_as::<_, (i64, i64, i64, i64, String, String)>(
+        let row = sqlx::query_as::<_, (i64, i64, i64, i64, String, String)>(
                 "SELECT id, attempt, max_attempts, generation, trigger_turn_id, event_occurrence_id FROM usage_automatic_turns WHERE thread_id = ? AND turn_id = ? AND event_occurrence_id = ? AND outcome = 'started' LIMIT 1",
             )
             .bind(thread_id.to_string())
             .bind(turn_id)
             .bind(event_occurrence_id)
             .fetch_optional(&mut *tx)
+            .await?;
+        let row = if row.is_some() {
+            row
+        } else if let Some(client_id) = client_user_message_id.filter(|id| !id.is_empty()) {
+            sqlx::query_as::<_, (i64, i64, i64, i64, String, String)>(
+                "SELECT id, attempt, max_attempts, generation, trigger_turn_id, event_occurrence_id FROM usage_automatic_turns WHERE thread_id = ? AND client_user_message_id = ? AND outcome = 'started' LIMIT 1",
+            )
+            .bind(thread_id.to_string())
+            .bind(client_id)
+            .fetch_optional(&mut *tx)
             .await?
+        } else {
+            None
+        };
+        let Some((id, attempt, max_attempts, generation, trigger_turn_id, trigger_occurrence_id)) =
+            row
         else {
             // A successful/non-automatic turn is the explicit reset boundary for a stale pending
-            // ticket. Policy errors are handled by the caller after this no-op completion.
-            if outcome != OUTCOME_REBLOCKED {
+            // ticket. Policy errors are handled by the caller after this no-op completion. Avoid
+            // advancing the generation again when a duplicate terminal event is replayed after
+            // the first terminal projection already cleared the pending ticket.
+            let aborted_admission = if outcome == OUTCOME_ABORTED {
+                if let Some(client_id) = client_user_message_id.filter(|id| !id.is_empty()) {
+                    sqlx::query_as::<_, (
+                        String,
+                        String,
+                        Option<String>,
+                        i64,
+                        i64,
+                        i64,
+                        Option<String>,
+                        String,
+                    )>(
+                        "SELECT trigger_turn_id, capability, event_occurrence_id, generation, next_attempt, max_attempts, connection_principal, admitted_client_user_message_id FROM usage_automatic_turn_eligibility WHERE thread_id = ? AND admitted_client_user_message_id = ? LIMIT 1",
+                    )
+                    .bind(thread_id.to_string())
+                    .bind(client_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let had_aborted_admission = aborted_admission.is_some();
+            let has_pending_eligibility: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM usage_automatic_turn_eligibility WHERE thread_id = ?)",
+            )
+            .bind(thread_id.to_string())
+            .fetch_one(&mut *tx)
+            .await?;
+            if outcome == OUTCOME_ABORTED
+                && let Some((
+                    trigger_turn_id,
+                    capability,
+                    trigger_occurrence_id,
+                    generation,
+                    attempt,
+                    max_attempts,
+                    connection_principal,
+                    admitted_client_user_message_id,
+                )) = aborted_admission
+            {
+                sqlx::query(
+                    "INSERT INTO usage_automatic_turns (thread_id, client_user_message_id, trigger_turn_id, event_occurrence_id, turn_id, connection_principal, origin, generation, capability, attempt, max_attempts, provenance_source, outcome, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(thread_id, client_user_message_id) DO NOTHING",
+                )
+                .bind(thread_id.to_string())
+                .bind(admitted_client_user_message_id)
+                .bind(&trigger_turn_id)
+                .bind(event_occurrence_id)
+                .bind(turn_id)
+                .bind(connection_principal)
+                .bind("policy_retry")
+                .bind(generation)
+                .bind(&capability)
+                .bind(attempt)
+                .bind(max_attempts)
+                .bind(PROVENANCE_SOURCE)
+                .bind(OUTCOME_ABORTED)
+                .execute(&mut *tx)
+                .await?;
+                let trigger_occurrence_id =
+                    trigger_occurrence_id.unwrap_or_else(|| trigger_turn_id.clone());
+                sqlx::query(
+                    "UPDATE usage_automatic_turn_triggers SET outcome = ? WHERE thread_id = ? AND trigger_turn_id = ? AND event_occurrence_id = ? AND generation = ? AND attempt = ?",
+                )
+                .bind(OUTCOME_ABORTED)
+                .bind(thread_id.to_string())
+                .bind(&trigger_turn_id)
+                .bind(trigger_occurrence_id)
+                .bind(generation)
+                .bind(attempt)
+                .execute(&mut *tx)
+                .await?;
+            }
+            let should_reset = if outcome == OUTCOME_ABORTED {
+                had_aborted_admission
+            } else {
+                outcome != OUTCOME_REBLOCKED && has_pending_eligibility
+            };
+            if should_reset {
                 let thread_id = thread_id.to_string();
                 reset_chain_in_transaction(&mut tx, &thread_id).await?;
             }
@@ -666,7 +893,10 @@ ON CONFLICT(thread_id, client_user_message_id) DO NOTHING
         .bind(attempt)
         .execute(&mut *tx)
         .await?;
-        if outcome == OUTCOME_RECOVERED || outcome == OUTCOME_FAILED {
+        if matches!(
+            outcome,
+            OUTCOME_RECOVERED | OUTCOME_FAILED | OUTCOME_ABORTED
+        ) {
             let thread_id = thread_id.to_string();
             reset_chain_in_transaction(&mut tx, &thread_id).await?;
         }
@@ -890,6 +1120,24 @@ mod tests {
             thread_id, "trigger", "turn", /*attempt*/ 1, /*max_attempts*/ 3, &cap,
         );
         sibling_attempt.id = "turn".to_string();
+        let client_id = match &sibling_attempt.msg {
+            EventMsg::ItemCompleted(ItemCompletedEvent {
+                item: TurnItem::UserMessage(item),
+                ..
+            }) => item.client_id.as_deref().expect("automatic message id"),
+            _ => unreachable!("automatic helper emits a user item"),
+        };
+        runtime
+            .reserve_automatic_turn_capability(
+                thread_id,
+                "trigger",
+                &cap,
+                "connection:1",
+                client_id,
+                "start",
+                None,
+            )
+            .await?;
         runtime
             .record_automatic_turn_event_with_principal(
                 thread_id,
@@ -907,6 +1155,199 @@ mod tests {
             )
             .await;
         assert_eq!(rows(runtime.as_ref(), thread_id, "turn").await?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn automatic_turn_admission_is_single_use() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        runtime
+            .record_automatic_turn_event_with_principal(
+                thread_id,
+                &policy_error("trigger"),
+                Some("connection:1"),
+            )
+            .await;
+        let capability = capability(runtime.as_ref(), thread_id, "trigger").await;
+        let first = runtime.clone();
+        let second = runtime.clone();
+        let (first, second) = tokio::join!(
+            first.reserve_automatic_turn_capability(
+                thread_id,
+                "trigger",
+                &capability,
+                "connection:1",
+                "client-1",
+                "start",
+                None,
+            ),
+            second.reserve_automatic_turn_capability(
+                thread_id,
+                "trigger",
+                &capability,
+                "connection:1",
+                "client-2",
+                "start",
+                None,
+            ),
+        );
+        assert_eq!(u8::from(first?) + u8::from(second?), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn aborted_automatic_turn_is_terminal_and_idempotent() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        runtime
+            .record_automatic_turn_event(thread_id, &policy_error("trigger"))
+            .await;
+        let capability = capability(runtime.as_ref(), thread_id, "trigger").await;
+        runtime
+            .record_automatic_turn_event(
+                thread_id,
+                &automatic_user_message(
+                    thread_id,
+                    "trigger",
+                    "turn",
+                    /*attempt*/ 1,
+                    /*max_attempts*/ 3,
+                    &capability,
+                ),
+            )
+            .await;
+
+        let aborted = Event {
+            id: "turn".to_string(),
+            msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
+                turn_id: Some("turn".to_string()),
+                reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+                provider_usage: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }),
+        };
+        runtime
+            .record_automatic_turn_event(thread_id, &aborted)
+            .await;
+        let generation: i64 = sqlx::query_scalar(
+            "SELECT generation FROM usage_automatic_turn_chains WHERE thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(runtime.usage_ledger_pool().as_ref())
+        .await?;
+        let (outcome, completed_at): (String, Option<String>) = sqlx::query_as(
+            "SELECT outcome, completed_at FROM usage_automatic_turns WHERE thread_id = ? AND turn_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .bind("turn")
+        .fetch_one(runtime.usage_ledger_pool().as_ref())
+        .await?;
+        assert_eq!(outcome, OUTCOME_ABORTED);
+        assert!(completed_at.is_some());
+        assert!(
+            runtime
+                .automatic_turn_capability(thread_id, "trigger")
+                .await
+                .is_none()
+        );
+
+        runtime
+            .record_automatic_turn_event(thread_id, &aborted)
+            .await;
+        let duplicate_generation: i64 = sqlx::query_scalar(
+            "SELECT generation FROM usage_automatic_turn_chains WHERE thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(runtime.usage_ledger_pool().as_ref())
+        .await?;
+        assert_eq!(generation, duplicate_generation);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM usage_automatic_turns WHERE thread_id = ? AND outcome = ?",
+            )
+            .bind(thread_id.to_string())
+            .bind(OUTCOME_ABORTED)
+            .fetch_one(runtime.usage_ledger_pool().as_ref())
+            .await?,
+            1
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn admitted_abort_before_item_projection_is_persisted() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        runtime
+            .record_automatic_turn_event_with_principal(
+                thread_id,
+                &policy_error("trigger"),
+                Some("connection:1"),
+            )
+            .await;
+        let capability = capability(runtime.as_ref(), thread_id, "trigger").await;
+        let client_id = AutomaticTurnProvenance::policy_retry(
+            thread_id,
+            "trigger",
+            /*attempt*/ 1,
+            /*max_attempts*/ 3,
+            capability.clone(),
+        )
+        .expect("valid provenance")
+        .to_client_user_message_id()
+        .expect("valid client id");
+        assert!(
+            runtime
+                .reserve_automatic_turn_capability(
+                    thread_id,
+                    "trigger",
+                    &capability,
+                    "connection:1",
+                    &client_id,
+                    "start",
+                    None,
+                )
+                .await?
+        );
+
+        let aborted = Event {
+            id: "turn-before-item".to_string(),
+            msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
+                turn_id: Some("turn-before-item".to_string()),
+                reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+                provider_usage: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }),
+        };
+        runtime
+            .record_automatic_turn_event_with_principal_and_client_user_message_id(
+                thread_id,
+                &aborted,
+                Some("connection:1"),
+                Some(&client_id),
+            )
+            .await;
+
+        let (outcome, completed_at): (String, Option<String>) = sqlx::query_as(
+            "SELECT outcome, completed_at FROM usage_automatic_turns WHERE thread_id = ? AND turn_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .bind("turn-before-item")
+        .fetch_one(runtime.usage_ledger_pool().as_ref())
+        .await?;
+        assert_eq!(outcome, OUTCOME_ABORTED);
+        assert!(completed_at.is_some());
+        assert!(
+            runtime
+                .automatic_turn_capability(thread_id, "trigger")
+                .await
+                .is_none()
+        );
         Ok(())
     }
 
