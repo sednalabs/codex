@@ -7,8 +7,6 @@ use sqlx::Row;
 use uuid::Uuid;
 
 const MAX_ORIGIN_ID_LENGTH: usize = 512;
-const MAX_EVIDENCE_LENGTH: usize = 512;
-const ACCOUNT_CONTEXT_FINGERPRINT_LENGTH: usize = 64;
 
 macro_rules! admission_enum {
     ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
@@ -67,31 +65,6 @@ admission_enum!(GoalOwnerAdmissionTerminalDisposition {
     ManualReview => "manual_review",
 });
 
-/// Canonical SHA-256 digest for non-secret account-context correlation evidence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GoalOwnerAdmissionAccountContextFingerprint(String);
-
-impl GoalOwnerAdmissionAccountContextFingerprint {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for GoalOwnerAdmissionAccountContextFingerprint {
-    type Error = anyhow::Error;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.len() != ACCOUNT_CONTEXT_FINGERPRINT_LENGTH
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            bail!("invalid goal-owner account-context fingerprint")
-        }
-        Ok(Self(value))
-    }
-}
-
 /// Fencing tuple for an exact durable admission generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalOwnerAdmissionAuthority {
@@ -109,11 +82,6 @@ pub struct GoalOwnerAdmissionObservation {
     pub origin_turn_id: String,
     pub origin_request_id: String,
     pub denial_class: GoalOwnerAdmissionDenialClass,
-    pub provider_id: Option<String>,
-    pub requested_model: Option<String>,
-    pub effective_model: Option<String>,
-    /// Optional non-secret SHA-256 account-context correlation evidence.
-    pub account_context_fingerprint: Option<GoalOwnerAdmissionAccountContextFingerprint>,
     pub deadline_at: DateTime<Utc>,
     pub max_attempts: i64,
     /// Immutable requested state used to distinguish replays from lifecycle transitions.
@@ -136,10 +104,6 @@ pub struct GoalOwnerAdmissionRecord {
     pub origin_turn_id: String,
     pub origin_request_id: String,
     pub denial_class: GoalOwnerAdmissionDenialClass,
-    pub provider_id: Option<String>,
-    pub requested_model: Option<String>,
-    pub effective_model: Option<String>,
-    pub account_context_fingerprint: Option<GoalOwnerAdmissionAccountContextFingerprint>,
     pub deadline_at: DateTime<Utc>,
     pub attempts_started: i64,
     pub max_attempts: i64,
@@ -159,10 +123,6 @@ struct GoalOwnerAdmissionOrigin {
     origin_turn_id: String,
     origin_request_id: String,
     denial_class: GoalOwnerAdmissionDenialClass,
-    provider_id: Option<String>,
-    requested_model: Option<String>,
-    effective_model: Option<String>,
-    account_context_fingerprint: Option<GoalOwnerAdmissionAccountContextFingerprint>,
     deadline_at_ms: i64,
     max_attempts: i64,
     requested_phase: GoalOwnerAdmissionPhase,
@@ -284,15 +244,6 @@ WHERE phase = 'in_flight'
                     .bind(&observation.origin_turn_id)
                     .bind(&observation.origin_request_id)
                     .bind(observation.denial_class.as_str())
-                    .bind(&observation.provider_id)
-                    .bind(&observation.requested_model)
-                    .bind(&observation.effective_model)
-                    .bind(
-                        observation
-                            .account_context_fingerprint
-                            .as_ref()
-                            .map(|value| value.as_str()),
-                    )
                     .bind(admission_datetime_to_epoch_millis(observation.deadline_at))
                     .bind(observation.max_attempts)
                     .bind(existing.authority.cancellation_epoch)
@@ -310,15 +261,6 @@ WHERE phase = 'in_flight'
                     .bind(&observation.origin_turn_id)
                     .bind(&observation.origin_request_id)
                     .bind(observation.denial_class.as_str())
-                    .bind(&observation.provider_id)
-                    .bind(&observation.requested_model)
-                    .bind(&observation.effective_model)
-                    .bind(
-                        observation
-                            .account_context_fingerprint
-                            .as_ref()
-                            .map(|value| value.as_str()),
-                    )
                     .bind(admission_datetime_to_epoch_millis(observation.deadline_at))
                     .bind(observation.max_attempts)
                     .bind(observation.requested_phase.as_str())
@@ -613,17 +555,15 @@ RETURNING *
 const INSERT_ADMISSION_SQL: &str = r#"
 INSERT INTO goal_owner_admissions (
     thread_id, goal_id, generation, origin_turn_id, origin_request_id, denial_class,
-    provider_id, requested_model, effective_model, account_context_fingerprint, deadline_at_ms,
-    max_attempts, requested_phase, phase, terminal_outcome, deferred_terminal_disposition, created_at_ms,
+    deadline_at_ms, max_attempts, requested_phase, phase, terminal_outcome, deferred_terminal_disposition, created_at_ms,
     updated_at_ms
-) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', 'none', ?, ?)
+) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'none', 'none', ?, ?)
 RETURNING *
 "#;
 
 const REPLACE_ADMISSION_SQL: &str = r#"
 UPDATE goal_owner_admissions
 SET goal_id = ?, generation = ?, origin_turn_id = ?, origin_request_id = ?, denial_class = ?,
-    provider_id = ?, requested_model = ?, effective_model = ?, account_context_fingerprint = ?,
     deadline_at_ms = ?, attempts_started = 0, max_attempts = ?, cancellation_epoch = ?,
     requested_phase = ?, phase = ?, terminal_outcome = 'none', lease_id = NULL, lease_acquired_at_ms = NULL,
     deferred_terminal_disposition = 'none', updated_at_ms = ?
@@ -639,10 +579,9 @@ async fn insert_origin(
     sqlx::query(
         r#"
 INSERT INTO goal_owner_admission_origins (
-    thread_id, origin_request_id, goal_id, origin_turn_id, denial_class, provider_id,
-    requested_model, effective_model, account_context_fingerprint, deadline_at_ms,
+    thread_id, origin_request_id, goal_id, origin_turn_id, denial_class, deadline_at_ms,
     max_attempts, requested_phase
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(observation.thread_id.to_string())
@@ -650,15 +589,6 @@ INSERT INTO goal_owner_admission_origins (
     .bind(&origin.goal_id)
     .bind(&origin.origin_turn_id)
     .bind(origin.denial_class.as_str())
-    .bind(&origin.provider_id)
-    .bind(&origin.requested_model)
-    .bind(&origin.effective_model)
-    .bind(
-        origin
-            .account_context_fingerprint
-            .as_ref()
-            .map(|value| value.as_str()),
-    )
     .bind(origin.deadline_at_ms)
     .bind(origin.max_attempts)
     .bind(origin.requested_phase.as_str())
@@ -696,10 +626,6 @@ SELECT
     origin_turn_id,
     origin_request_id,
     denial_class,
-    provider_id,
-    requested_model,
-    effective_model,
-    account_context_fingerprint,
     deadline_at_ms,
     max_attempts,
     requested_phase
@@ -729,13 +655,6 @@ fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
         denial_class: GoalOwnerAdmissionDenialClass::try_from(
             row.try_get::<String, _>("denial_class")?.as_str(),
         )?,
-        provider_id: row.try_get("provider_id")?,
-        requested_model: row.try_get("requested_model")?,
-        effective_model: row.try_get("effective_model")?,
-        account_context_fingerprint: row
-            .try_get::<Option<String>, _>("account_context_fingerprint")?
-            .map(GoalOwnerAdmissionAccountContextFingerprint::try_from)
-            .transpose()?,
         deadline_at: admission_epoch_millis_to_datetime(row.try_get("deadline_at_ms")?)?,
         attempts_started: row.try_get("attempts_started")?,
         max_attempts: row.try_get("max_attempts")?,
@@ -771,13 +690,6 @@ fn origin_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<GoalOwnerAdm
         denial_class: GoalOwnerAdmissionDenialClass::try_from(
             row.try_get::<String, _>("denial_class")?.as_str(),
         )?,
-        provider_id: row.try_get("provider_id")?,
-        requested_model: row.try_get("requested_model")?,
-        effective_model: row.try_get("effective_model")?,
-        account_context_fingerprint: row
-            .try_get::<Option<String>, _>("account_context_fingerprint")?
-            .map(GoalOwnerAdmissionAccountContextFingerprint::try_from)
-            .transpose()?,
         deadline_at_ms: row.try_get("deadline_at_ms")?,
         max_attempts: row.try_get("max_attempts")?,
         requested_phase: GoalOwnerAdmissionPhase::try_from(
@@ -823,10 +735,6 @@ fn origin_from_observation(
         origin_turn_id: observation.origin_turn_id.clone(),
         origin_request_id: observation.origin_request_id.clone(),
         denial_class: observation.denial_class,
-        provider_id: observation.provider_id.clone(),
-        requested_model: observation.requested_model.clone(),
-        effective_model: observation.effective_model.clone(),
-        account_context_fingerprint: observation.account_context_fingerprint.clone(),
         deadline_at_ms: admission_datetime_to_epoch_millis(observation.deadline_at),
         max_attempts: observation.max_attempts,
         requested_phase: observation.requested_phase,
@@ -844,21 +752,6 @@ fn validate_origin(origin: &GoalOwnerAdmissionOrigin) -> anyhow::Result<()> {
         "origin request id",
         &origin.origin_request_id,
         MAX_ORIGIN_ID_LENGTH,
-    )?;
-    validate_evidence(
-        "provider id",
-        origin.provider_id.as_deref(),
-        MAX_EVIDENCE_LENGTH,
-    )?;
-    validate_evidence(
-        "requested model",
-        origin.requested_model.as_deref(),
-        MAX_EVIDENCE_LENGTH,
-    )?;
-    validate_evidence(
-        "effective model",
-        origin.effective_model.as_deref(),
-        MAX_EVIDENCE_LENGTH,
     )?;
     admission_epoch_millis_to_datetime(origin.deadline_at_ms)?;
     if origin.max_attempts < 1 {
@@ -936,13 +829,6 @@ fn validate_nonempty(name: &str, value: &str, max_length: usize) -> anyhow::Resu
     Ok(())
 }
 
-fn validate_evidence(name: &str, value: Option<&str>, max_length: usize) -> anyhow::Result<()> {
-    if let Some(value) = value {
-        validate_nonempty(name, value, max_length)?;
-    }
-    Ok(())
-}
-
 fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
     validate_authority(&record.authority)?;
     validate_nonempty(
@@ -954,21 +840,6 @@ fn validate_record(record: &GoalOwnerAdmissionRecord) -> anyhow::Result<()> {
         "origin request id",
         &record.origin_request_id,
         MAX_ORIGIN_ID_LENGTH,
-    )?;
-    validate_evidence(
-        "provider id",
-        record.provider_id.as_deref(),
-        MAX_EVIDENCE_LENGTH,
-    )?;
-    validate_evidence(
-        "requested model",
-        record.requested_model.as_deref(),
-        MAX_EVIDENCE_LENGTH,
-    )?;
-    validate_evidence(
-        "effective model",
-        record.effective_model.as_deref(),
-        MAX_EVIDENCE_LENGTH,
     )?;
     if record.attempts_started < 0
         || record.max_attempts < 1
@@ -1050,10 +921,6 @@ fn observation_matches_origin(
         && observation.origin_turn_id == origin.origin_turn_id
         && observation.origin_request_id == origin.origin_request_id
         && observation.denial_class == origin.denial_class
-        && observation.provider_id == origin.provider_id
-        && observation.requested_model == origin.requested_model
-        && observation.effective_model == origin.effective_model
-        && observation.account_context_fingerprint == origin.account_context_fingerprint
         && admission_datetime_to_epoch_millis(observation.deadline_at) == origin.deadline_at_ms
         && observation.max_attempts == origin.max_attempts
         && observation.requested_phase == origin.requested_phase
