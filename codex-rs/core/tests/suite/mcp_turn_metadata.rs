@@ -9,6 +9,7 @@ use codex_core::config::Config;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_history::RolloutLine;
+use codex_protocol::approvals::ElicitationRequest;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
@@ -698,10 +699,11 @@ approvals_reviewer = "auto_review"
     Ok(())
 }
 
-#[test_case("approve", "prompt", None, false, true; "work_link_requires_prompt")]
-#[test_case("prompt", "approve", None, false, false; "work_link_skips_prompt")]
-#[test_case("approve", "approve", Some("selected_calendar_link"), true, true; "required_selector_uses_selected_link")]
-#[test_case("prompt", "prompt", Some("selected_calendar_link"), false, true; "ignores_non_selector_link_argument")]
+#[test_case("approve", "prompt", None, false, true, false; "work_link_requires_prompt")]
+#[test_case("prompt", "approve", None, false, false, false; "work_link_skips_prompt")]
+#[test_case("approve", "approve", Some("selected_calendar_link"), true, true, false; "required_selector_uses_selected_link")]
+#[test_case("approve", "approve", Some("implicit_link::calendar"), true, true, true; "required_selector_uses_implicit_link")]
+#[test_case("prompt", "prompt", Some("selected_calendar_link"), false, true, false; "ignores_non_selector_link_argument")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apps_link_policy_controls_elicitation(
     connector_mode: &str,
@@ -709,6 +711,7 @@ async fn apps_link_policy_controls_elicitation(
     selected_link_id: Option<&'static str>,
     requires_explicit_link_id: bool,
     expected_prompt: bool,
+    expected_link_is_implicit: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -737,7 +740,7 @@ default_tools_approval_mode = "{link_mode}"
         };
         apps_config.push_str(&format!(
             r#"
-[apps.calendar.links.{selected_link_id}]
+[apps.calendar.links."{selected_link_id}"]
 default_tools_approval_mode = "{selected_link_mode}"
 "#
         ));
@@ -842,6 +845,11 @@ default_tools_approval_mode = "{selected_link_mode}"
     )
     .await?;
 
+    let expected_link_id = if requires_explicit_link_id {
+        selected_link_id
+    } else {
+        Some(LINK_ID)
+    };
     let mut completed_links = Vec::new();
     let mut record_link = |event: &EventMsg| {
         if let EventMsg::ItemCompleted(event) = event
@@ -864,6 +872,19 @@ default_tools_approval_mode = "{selected_link_mode}"
         expected_prompt
     );
     if let EventMsg::ElicitationRequest(request) = event {
+        let ElicitationRequest::Form {
+            meta: Some(meta), ..
+        } = &request.request
+        else {
+            panic!("expected a native MCP tool approval with metadata");
+        };
+        assert_eq!(
+            (
+                meta.get("link_id").and_then(Value::as_str),
+                meta.get("link_is_implicit").and_then(Value::as_bool),
+            ),
+            (expected_link_id, Some(expected_link_is_implicit)),
+        );
         test.codex
             .submit(Op::ResolveElicitation {
                 server_name: request.server_name,
@@ -884,11 +905,6 @@ default_tools_approval_mode = "{selected_link_mode}"
         recorded_apps_tool_call_by_call_id(&server, call_id).await["params"]["arguments"],
         calendar_args
     );
-    let expected_link_id = if requires_explicit_link_id {
-        selected_link_id
-    } else {
-        Some(LINK_ID)
-    };
     assert_eq!(completed_links, vec![expected_link_id.map(str::to_string)]);
     Ok(())
 }
