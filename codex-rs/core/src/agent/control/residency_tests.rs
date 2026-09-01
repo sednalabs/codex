@@ -794,10 +794,15 @@ async fn terminal_idle_unload_defers_for_pending_unified_exec_completion() {
 
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_failure_preserves_trigger_mail_and_residency() {
-    let (_home, _config, manager, _control, first, _metadata) = terminal_idle_test_agent(
+    let (_home, _config, manager, control, first, metadata) = terminal_idle_test_agent(
         /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
     )
     .await;
+    let prior_generation = metadata
+        .lifecycle
+        .lock()
+        .await
+        .terminal_idle_unload_generation();
     let queued = vec![
         test_communication("queue-only", /*trigger_turn*/ false),
         test_communication("trigger work", /*trigger_turn*/ true),
@@ -813,10 +818,17 @@ async fn terminal_idle_unload_failure_preserves_trigger_mail_and_residency() {
         AgentStatus::Errored("terminal failure".to_string()),
     )
     .await;
-    yield_now().await;
+    wait_for_terminal_idle_deadline_after(&metadata, prior_generation).await;
+    control
+        .v2_residency
+        .wait_for_terminal_idle_unload_deadline_polled()
+        .await;
 
     advance(Duration::from_millis(100)).await;
-    yield_now().await;
+    control
+        .v2_residency
+        .wait_for_terminal_idle_unload_deadline_polled()
+        .await;
     let resident = manager
         .get_thread(first.thread_id)
         .await
@@ -831,13 +843,11 @@ async fn terminal_idle_unload_failure_preserves_trigger_mail_and_residency() {
         queued
     );
 
-    assert_thread_unloads_within_terminal_idle_intervals(
-        &manager,
-        first.thread_id,
-        Duration::from_millis(100),
-        /*max_intervals*/ 2,
-    )
-    .await;
+    advance(Duration::from_millis(100)).await;
+    control
+        .v2_residency
+        .wait_for_terminal_idle_unload(&manager, first.thread_id)
+        .await;
     assert!(
         manager.get_thread(first.thread_id).await.is_err(),
         "the watcher should retry after trigger mail is drained"
@@ -1022,36 +1032,6 @@ async fn wait_for_terminal_idle_deadline_after(
         yield_now().await;
     }
     panic!("terminal idle watcher did not arm a replacement deadline");
-}
-
-async fn assert_thread_unloads_within_terminal_idle_intervals(
-    manager: &ThreadManager,
-    thread_id: ThreadId,
-    interval: Duration,
-    max_intervals: usize,
-) {
-    for _ in 0..max_intervals {
-        settle_terminal_idle_watcher().await;
-        advance(interval).await;
-        if thread_unloads_after_terminal_idle_deadline(manager, thread_id).await {
-            return;
-        }
-    }
-    panic!("thread {thread_id} should unload within {max_intervals} terminal idle intervals");
-}
-
-async fn thread_unloads_after_terminal_idle_deadline(
-    manager: &ThreadManager,
-    thread_id: ThreadId,
-) -> bool {
-    const MAX_SETTLE_YIELDS: usize = 100;
-    for _ in 0..MAX_SETTLE_YIELDS {
-        if manager.get_thread(thread_id).await.is_err() {
-            return true;
-        }
-        yield_now().await;
-    }
-    false
 }
 
 #[tokio::test]

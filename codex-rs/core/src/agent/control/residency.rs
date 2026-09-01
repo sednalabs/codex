@@ -461,7 +461,7 @@ impl V2Residency {
                     manager,
                     registry,
                     metadata.as_ref(),
-                    lifecycle.as_mut().map(|guard| &mut **guard),
+                    lifecycle.as_deref_mut(),
                     candidate_thread,
                 )
                 .await
@@ -473,6 +473,7 @@ impl V2Residency {
         false
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn try_unload_terminal_idle(
         &self,
         manager: &Arc<ThreadManagerState>,
