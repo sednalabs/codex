@@ -86,3 +86,27 @@ may remain external; runtime closure inspection must verify that independently.
 `//third_party/voice:build_inputs` exposes the recipe and source inputs to Bazel.
 Neither this filegroup nor a successful prefix build proves final Cargo/Bazel
 linkage, safe private runtime loading, or an installed voice-capable Codex package.
+
+## Private macOS runtime projection
+
+`macos_runtime.py --prefix <extracted-prefix> --receipts <native-ci-receipts>
+--target <macOS-triple> --output <fresh-directory>` verifies the native receipt,
+source manifest, per-file digests and Mach-O architecture before projecting the
+seven explicit plugins and their declared library dependencies. It removes SDK
+aliases and build-machine runpaths, rewrites private imports relative to each
+loader, and regenerates only development ad-hoc signatures. Inputs are untouched.
+The output must be new and outside the input directories; failures remove only
+that new output. `runtime.json` records source and transformed file identities.
+Xcode's `xcrun llvm-objdump` inspects Mach-O headers and load commands; the
+preparer reads its output and enforces the package dependency policy rather than
+decoding binary structures itself. `install_name_tool` still rewrites paths.
+`runtime.py` owns shared receipt checks, dependency selection, verified copying,
+and cleanup; each platform owns its binary format and loader changes. Output
+containment uses filesystem identity, and copied bytes are checked again before
+transformation so input changes cannot silently invalidate the source receipt.
+
+This is a development-only payload, not a signed distribution package or proof of
+audio behavior. Dynamic-only dependencies, native helper linkage, LGPL notices,
+production signing/notarization, Windows/Linux loading and security approval remain
+separate requirements. No microphone, device, plugin scanner or backend is started
+by projection. Run its native relocation tests on macOS with Python 3.12 or newer.

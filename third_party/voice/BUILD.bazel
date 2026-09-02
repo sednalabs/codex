@@ -33,6 +33,8 @@ filegroup(
     srcs = [
         "assemble_package.py",
         "build_native.py",
+        "macos_runtime.py",
+        "runtime.py",
         ":source_inputs",
     ],
     visibility = ["//visibility:public"],
