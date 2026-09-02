@@ -76,6 +76,7 @@ pub(crate) enum TrackEventRequest {
     HookRun(CodexHookRunEventRequest),
     Compaction(Box<CodexCompactionEventRequest>),
     Goal(Box<CodexGoalEventRequest>),
+    ThreadHintStatus(Box<crate::thread_hint::ThreadHintStatusEventRequest>),
     TurnEvent(Box<CodexTurnEventRequest>),
     TurnSteer(CodexTurnSteerEventRequest),
     ArtifactOperation(CodexArtifactOperationEventRequest),

@@ -566,6 +566,7 @@ pub(crate) enum CustomAnalyticsFact {
     SubAgentThreadStarted(SubAgentThreadStartedInput),
     Compaction(Box<CodexCompactionEvent>),
     Goal(Box<CodexGoalEvent>),
+    ThreadHintStatus(Box<crate::thread_hint::ThreadHintStatusEvent>),
     GuardianReview(Box<GuardianReviewEventParams>),
     GuardianV2(Box<GuardianV2Event>),
     TurnResolvedConfig(Box<TurnResolvedConfigFact>),
