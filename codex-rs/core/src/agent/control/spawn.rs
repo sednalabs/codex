@@ -68,7 +68,8 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_reference_context_item:
                 "assistant" => *phase == Some(MessagePhase::FinalAnswer),
                 _ => false,
             },
-            ResponseItem::FunctionCallOutput { call_id: None, .. } => true,
+            ResponseItem::FunctionCallOutput { call_id: None, .. }
+            | ResponseItem::ConfigurationUpdate { .. } => true,
             ResponseItem::AdditionalTools { .. }
             | ResponseItem::AgentMessage { .. }
             | ResponseItem::Reasoning { .. }

@@ -1759,6 +1759,8 @@ All filesystem paths in this section must be absolute.
 
 Event notifications are the server-initiated event stream for thread lifecycles, turn lifecycles, and the items within them. After you start or resume a thread, keep reading stdout for `thread/started`, `thread/archived`, `thread/unarchived`, `thread/closed`, `turn/*`, and `item/*` notifications.
 
+Harness-owned `configuration_update` input items are persisted for model-history replay and emitted through `rawResponseItem/completed` when raw events are enabled. Clients should use the ordinary reasoning-effort settings rather than inject these controls; raw injected items cannot establish trusted configuration updates.
+
 Thread realtime publishes thread-scoped timeline item lifecycle notifications for paginated threads alongside its existing realtime notifications. Completed timeline items are durably interleaved with ordinary turn items by `thread/timeline/list`. Neither surface changes `ThreadItem`, `thread/read`, `thread/resume`, or `thread/fork`; clients ignore notification methods they do not recognize.
 
 Core records transcript segments, session boundaries, and backing-agent artifact promotions through its injected thread store, even without an app-server event listener. Presentation selection uses the same rules for every Core host. App-server translates Core's history events into the notifications below; it does not append those items again. Recording remains limited to paginated threads. A completed notification follows acceptance by the thread store, not an additional flush or power-loss durability barrier.

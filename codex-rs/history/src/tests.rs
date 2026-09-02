@@ -1,4 +1,6 @@
 use anyhow::Result;
+use codex_protocol::models::ConfigurationReasoning;
+use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
@@ -73,6 +75,7 @@ fn response_item_envelope_stores_metadata_beside_rollout_payload() -> Result<()>
             metadata: Some(CodexHarnessMetadata {
                 client_authored: true,
                 fallback_token_limit_override: Some(20_000),
+                ..Default::default()
             }),
         }),
     };
@@ -99,7 +102,54 @@ fn response_item_envelope_stores_metadata_beside_rollout_payload() -> Result<()>
         Some(CodexHarnessMetadata {
             client_authored: true,
             fallback_token_limit_override: Some(20_000),
+            ..Default::default()
         })
+    );
+    Ok(())
+}
+
+#[test]
+fn response_item_envelope_preserves_harness_authored_configuration_provenance() -> Result<()> {
+    let response_item = ResponseItem::ConfigurationUpdate {
+        reasoning: ConfigurationReasoning {
+            effort: ReasoningEffort::High,
+        },
+    };
+    let metadata = CodexHarnessMetadata {
+        harness_authored_configuration: true,
+        ..Default::default()
+    };
+    let rollout_item = RolloutItem::ResponseItem(ResponseItemEnvelope {
+        item: response_item.clone(),
+        metadata: Some(metadata.clone()),
+    });
+
+    let serialized = serde_json::to_value(&rollout_item)?;
+    assert_eq!(
+        serialized,
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "configuration_update",
+                "reasoning": { "effort": "high" },
+            },
+            "metadata": {
+                "client_authored": false,
+                "harness_authored_configuration": true,
+            },
+        })
+    );
+
+    let restored = serde_json::from_value::<RolloutItem>(serialized)?;
+    let RolloutItem::ResponseItem(envelope) = restored else {
+        panic!("expected response item");
+    };
+    assert_eq!(
+        envelope,
+        ResponseItemEnvelope {
+            item: response_item,
+            metadata: Some(metadata),
+        }
     );
     Ok(())
 }

@@ -278,7 +278,7 @@ impl ContextManager {
     {
         for (item, metadata) in items {
             let item = item.deref();
-            if !is_api_message(item) {
+            if !is_api_message(item, metadata) {
                 continue;
             }
 
@@ -677,12 +677,13 @@ impl ContextManager {
     }
 }
 
-/// API messages include every non-system item (user/assistant messages, reasoning,
-/// tool calls, tool outputs, shell calls, web-search calls, and image-generation
-/// calls).
-fn is_api_message(message: &ResponseItem) -> bool {
+/// Configuration updates require harness provenance; raw system messages are never retained.
+fn is_api_message(message: &ResponseItem, metadata: Option<&CodexHarnessMetadata>) -> bool {
     match message {
         ResponseItem::Message { role, .. } => role.as_str() != "system",
+        ResponseItem::ConfigurationUpdate { .. } => {
+            metadata.is_some_and(|metadata| metadata.harness_authored_configuration)
+        }
         ResponseItem::AdditionalTools { .. }
         | ResponseItem::AgentMessage { .. }
         | ResponseItem::FunctionCallOutput { .. }
@@ -1011,7 +1012,7 @@ fn is_model_generated_item(item: &ResponseItem) -> bool {
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::Compaction { .. }
         | ResponseItem::ContextCompaction { .. } => true,
-        ResponseItem::CompactionTrigger { .. } => false,
+        ResponseItem::ConfigurationUpdate { .. } | ResponseItem::CompactionTrigger { .. } => false,
         ResponseItem::AdditionalTools { .. }
         | ResponseItem::FunctionCallOutput { .. }
         | ResponseItem::ToolSearchOutput { .. }
