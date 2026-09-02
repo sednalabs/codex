@@ -1098,6 +1098,10 @@ mod tests {
         (stream, rx_message)
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the test deliberately holds the stream mutex to prove a queued sender cannot consume authority before the actual send"
+    )]
     #[tokio::test]
     async fn websocket_frame_holds_authority_until_actual_send_and_rejects_reuse() {
         let (stream, mut received) = local_ws_stream().await;
@@ -1161,6 +1165,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the test deliberately holds the stream mutex to prove cancellation before send releases authority without emitting a frame"
+    )]
     #[tokio::test]
     async fn cancelled_websocket_task_releases_authority_without_sending() {
         let (stream, mut received) = local_ws_stream().await;

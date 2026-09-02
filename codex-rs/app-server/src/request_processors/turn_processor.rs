@@ -673,6 +673,10 @@ impl TurnRequestProcessor {
         Ok(())
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the auth admission gate must remain held through automatic-turn validation and core submission"
+    )]
     async fn turn_start_inner(
         &self,
         request_id: ConnectionRequestId,
@@ -1112,6 +1116,10 @@ impl TurnRequestProcessor {
         ))
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the auth admission gate must remain held through settings invalidation and core enqueue"
+    )]
     async fn thread_settings_update_inner(
         &self,
         request_id: &ConnectionRequestId,

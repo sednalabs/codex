@@ -368,6 +368,10 @@ impl AccountRequestProcessor {
         )
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the auth admission gate must remain held while invalidating retry capabilities and publishing credentials"
+    )]
     async fn login_api_key_common(
         &self,
         params: &LoginApiKeyParams,
@@ -418,6 +422,10 @@ impl AccountRequestProcessor {
         }
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the auth admission gate must remain held while invalidating retry capabilities and publishing credentials"
+    )]
     async fn login_amazon_bedrock_v2(
         &self,
         request_id: ConnectionRequestId,
@@ -757,6 +765,10 @@ impl AccountRequestProcessor {
         }
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the auth admission gate must remain held while invalidating retry capabilities and publishing credentials"
+    )]
     async fn login_chatgpt_auth_tokens_response(
         &self,
         access_token: String,
@@ -841,6 +853,11 @@ impl AccountRequestProcessor {
             .await;
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        clippy::expect_used,
+        reason = "the active-login and auth admission guards serialize credential completion; staged auth is required by the success invariant"
+    )]
     async fn send_chatgpt_login_completion_notifications(
         outgoing: &OutgoingMessageSender,
         config_manager: ConfigManager,
@@ -939,6 +956,10 @@ impl AccountRequestProcessor {
         drop(active_login_guard);
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the auth admission gate must remain held while invalidating retry capabilities and revoking credentials"
+    )]
     async fn logout_common(&self) -> std::result::Result<Option<AuthMode>, JSONRPCErrorError> {
         let managed_bedrock_auth = matches!(
             self.auth_manager.auth_cached(),

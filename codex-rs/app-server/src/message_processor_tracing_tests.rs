@@ -605,14 +605,12 @@ fn assert_has_internal_descendant_at_min_depth(
 
 fn take_pending_outgoing<F>(
     pending_outgoing: &mut VecDeque<crate::outgoing_message::OutgoingEnvelope>,
-    mut predicate: F,
+    predicate: F,
 ) -> Option<crate::outgoing_message::OutgoingEnvelope>
 where
     F: FnMut(&crate::outgoing_message::OutgoingEnvelope) -> bool,
 {
-    let index = pending_outgoing
-        .iter()
-        .position(|envelope| predicate(envelope))?;
+    let index = pending_outgoing.iter().position(predicate)?;
     pending_outgoing.remove(index)
 }
 
@@ -966,7 +964,6 @@ async fn prepare_automatic_turn(
 fn automatic_turn_start_params(
     thread_id: String,
     client_user_message_id: String,
-    context_snapshot: &codex_core::ThreadConfigSnapshot,
 ) -> TurnStartParams {
     TurnStartParams {
         thread_id,
@@ -975,19 +972,6 @@ fn automatic_turn_start_params(
             text: "continue".to_string(),
             text_elements: Vec::new(),
         }],
-        cwd: Some(context_snapshot.cwd().to_path_buf()),
-        runtime_workspace_roots: Some(context_snapshot.workspace_roots.clone()),
-        approval_policy: Some(context_snapshot.approval_policy.clone().into()),
-        approvals_reviewer: Some(context_snapshot.approvals_reviewer.into()),
-        model: Some(context_snapshot.model.clone()),
-        service_tier: Some(context_snapshot.service_tier.clone()),
-        effort: context_snapshot.reasoning_effort.clone(),
-        summary: context_snapshot.reasoning_summary,
-        personality: context_snapshot.personality,
-        permissions: context_snapshot
-            .active_permission_profile
-            .as_ref()
-            .map(|profile| profile.id.clone()),
         ..TurnStartParams::default()
     }
 }
@@ -1176,7 +1160,7 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
     // A policy event creates the server-owned eligibility ticket. The request below then travels
     // through the real app-server turn/start and core session event path before the state
     // projection accepts the client envelope.
-    let (client_user_message_id, context_snapshot) =
+    let (client_user_message_id, _) =
         prepare_automatic_turn(&harness, thread_id_value, trigger_turn_id).await?;
 
     let turn_start_response: TurnStartResponse = harness
@@ -1186,7 +1170,6 @@ async fn turn_start_projects_validated_automatic_user_message() -> Result<()> {
                 params: automatic_turn_start_params(
                     thread_id.clone(),
                     client_user_message_id.clone(),
-                    &context_snapshot,
                 ),
             },
             /*trace*/ None,
@@ -1232,7 +1215,7 @@ async fn automatic_turn_auth_transition_at_provider_boundary_is_terminal() -> Re
     let thread_id = thread_start_response.thread.id.clone();
     let thread_id_value = ThreadId::from_string(&thread_id)?;
     let trigger_turn_id = "provider-boundary-trigger";
-    let (client_user_message_id, context_snapshot) =
+    let (client_user_message_id, _) =
         prepare_automatic_turn(&harness, thread_id_value, trigger_turn_id).await?;
     let admitted_revision = harness.auth_manager.auth_revision();
     let boundary_barrier = harness
@@ -1255,7 +1238,6 @@ async fn automatic_turn_auth_transition_at_provider_boundary_is_terminal() -> Re
                 params: automatic_turn_start_params(
                     thread_id.clone(),
                     client_user_message_id.clone(),
-                    &context_snapshot,
                 ),
             },
             /*trace*/ None,
@@ -1352,7 +1334,6 @@ async fn automatic_turn_omitted_environments_preserve_sticky_selection() -> Resu
                 params: automatic_turn_start_params(
                     thread_id.clone(),
                     client_user_message_id.clone(),
-                    &admitted_snapshot,
                 ),
             },
             /*trace*/ None,
@@ -1391,10 +1372,9 @@ async fn automatic_turn_rejects_fingerprint_changing_settings() -> Result<()> {
         .await;
     let thread_id = thread_start_response.thread.id.clone();
     let thread_id_value = ThreadId::from_string(&thread_id)?;
-    let (client_user_message_id, context_snapshot) =
+    let (client_user_message_id, _) =
         prepare_automatic_turn(&harness, thread_id_value, "settings-change-trigger").await?;
-    let mut params =
-        automatic_turn_start_params(thread_id, client_user_message_id, &context_snapshot);
+    let mut params = automatic_turn_start_params(thread_id, client_user_message_id);
     params.model = Some("different-model".to_string());
 
     let error = harness
