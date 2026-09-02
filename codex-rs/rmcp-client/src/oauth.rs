@@ -16,6 +16,8 @@
 //!
 //! If the keyring is not available or fails, we fall back to CODEX_HOME/.credentials.json which is consistent with other coding CLI agents.
 
+#[cfg(test)]
+mod credential_store;
 mod ema_identity;
 mod issuer_binding;
 mod refresh_lock;
@@ -72,6 +74,8 @@ use tokio::sync::Mutex;
 
 use codex_utils_home_dir::find_codex_home;
 
+#[cfg(test)]
+pub(crate) use self::credential_store::OAuthCredentialStore;
 pub(crate) use self::ema_identity::stored_oidc_identity;
 pub(crate) use self::issuer_binding::validate_authorization_server_endpoints;
 pub(crate) use self::issuer_binding::validate_refresh_token_issuer;
@@ -1121,6 +1125,8 @@ mod tests {
     use keyring::Error as KeyringError;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
+    #[path = "credential_store_tests.rs"]
+    mod credential_store_tests;
     #[path = "persistor_tests.rs"]
     mod persistor_tests;
 
