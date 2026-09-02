@@ -3287,7 +3287,16 @@ async fn remote_request_permissions_grant_unblocks_later_remote_exec() -> Result
         request.environment_id.as_deref(),
         Some(REMOTE_ENVIRONMENT_ID)
     );
-    assert_eq!(request.cwd.as_ref(), Some(&remote_cwd));
+    let request_cwd = request.cwd.expect("request cwd");
+    let expected_cwd = PathUri::from_abs_path(&remote_cwd);
+    assert_eq!(
+        request_cwd.as_str(),
+        expected_cwd.inferred_native_path_string()
+    );
+    let request_cwd: PathUri = request_cwd
+        .try_into()
+        .expect("request cwd should remain target-native");
+    assert_eq!(request_cwd, expected_cwd);
     assert_eq!(request.permissions, expected_permissions);
 
     test.codex

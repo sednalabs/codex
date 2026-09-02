@@ -7353,7 +7353,7 @@ async fn request_permissions_emits_event_when_granular_policy_allows_requests() 
     );
     #[allow(deprecated)]
     let turn_cwd = turn_context.cwd.clone();
-    assert_eq!(request.cwd, Some(turn_cwd));
+    assert_eq!(request.cwd, Some(turn_cwd.into()));
 
     session
         .notify_request_permissions_response(&request.call_id, expected_response.clone())
@@ -7608,7 +7608,8 @@ async fn request_permissions_response_materializes_session_cwd_grants_before_rec
         request.environment_id.as_deref(),
         Some(codex_exec_server::LOCAL_ENVIRONMENT_ID)
     );
-    let request_cwd = request.cwd.clone().expect("request cwd");
+    let request_cwd =
+        PathUri::try_from(request.cwd.clone().expect("request cwd")).expect("request cwd URI");
 
     session
         .notify_request_permissions_response(
@@ -7622,7 +7623,7 @@ async fn request_permissions_response_materializes_session_cwd_grants_before_rec
         .await;
 
     let expected_permissions = RequestPermissionProfile {
-        file_system: Some(FileSystemPermissions::from_read_write_roots(
+        file_system: Some(FileSystemPermissions::from_read_write_path_uris(
             /*read*/ None,
             Some(vec![request_cwd]),
         )),

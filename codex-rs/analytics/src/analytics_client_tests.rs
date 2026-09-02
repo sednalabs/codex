@@ -1018,7 +1018,7 @@ fn sample_permissions_approval_request(request_id: i64) -> ServerRequest {
             item_id: "permissions-1".to_string(),
             environment_id: None,
             started_at_ms: 1_000,
-            cwd: test_path_buf("/tmp").abs(),
+            cwd: test_path_buf("/tmp").abs().into(),
             reason: Some("need network".to_string()),
             permissions: RequestPermissionProfile {
                 network: Some(codex_app_server_protocol::AdditionalNetworkPermissions {

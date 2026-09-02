@@ -2891,19 +2891,6 @@ impl Session {
             return Some(response);
         }
 
-        // The interactive approval event remains host-native until its public
-        // app-server/TUI boundary migrates in the next stack stage.
-        let Ok(native_cwd) = cwd.to_abs_path() else {
-            warn!(
-                cwd = %cwd,
-                "request_permissions interactive approval requires a cwd native to the Codex host"
-            );
-            return Some(RequestPermissionsResponse {
-                permissions: RequestPermissionProfile::default(),
-                scope: PermissionGrantScope::Turn,
-                strict_auto_review: false,
-            });
-        };
         let _elicitation = self.services.elicitations.register();
         let (tx_response, rx_response) = oneshot::channel();
         let prev_entry = {
@@ -2934,7 +2921,7 @@ impl Session {
             started_at_ms: now_unix_timestamp_ms(),
             reason: args.reason,
             permissions: requested_permissions,
-            cwd: Some(native_cwd),
+            cwd: Some(cwd.clone().into()),
         });
         self.send_event(turn_context.as_ref(), event).await;
         tokio::select! {

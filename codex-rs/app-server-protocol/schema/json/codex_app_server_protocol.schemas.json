@@ -4272,7 +4272,7 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
         "cwd": {
-          "$ref": "#/definitions/v2/AbsolutePathBuf"
+          "$ref": "#/definitions/v2/LegacyAppPathString"
         },
         "environmentId": {
           "default": null,

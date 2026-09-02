@@ -743,7 +743,10 @@ fn permissions_request_approval_uses_request_permission_profile() {
     }))
     .expect("permissions request should deserialize");
 
-    assert_eq!(params.cwd, absolute_path("repo"));
+    assert_eq!(
+        params.cwd,
+        LegacyAppPathString::from_abs_path(&absolute_path("repo"))
+    );
     assert_eq!(params.environment_id.as_deref(), Some("remote"));
     assert_eq!(
         params.permissions,
