@@ -805,7 +805,7 @@ async fn prepare_automatic_turn(
             trigger_turn_id,
             &capability,
             "start",
-            None,
+            /*expected_turn_id*/ None,
             &context_fingerprint,
         )
         .await?;

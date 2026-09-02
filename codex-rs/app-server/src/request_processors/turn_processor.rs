@@ -704,7 +704,7 @@ impl TurnRequestProcessor {
             thread.as_ref(),
             params.client_user_message_id.as_deref(),
             "start",
-            None,
+            /*expected_turn_id*/ None,
             request_settings_match,
         )
         .await?;
@@ -819,7 +819,7 @@ impl TurnRequestProcessor {
                 thread.as_ref(),
                 client_user_message_id.as_deref(),
                 "start",
-                None,
+                /*expected_turn_id*/ None,
                 request_id.connection_id,
             )
             .await?
@@ -1977,7 +1977,7 @@ mod automatic_turn_validation_tests {
         assert!(is_automatic_turn_capability(
             Some(&client_user_message_id())
         ));
-        assert!(!is_automatic_turn_capability(None));
+        assert!(!is_automatic_turn_capability(/*client_user_message_id*/ None));
         assert!(!is_automatic_turn_capability(Some("ordinary-client-id")));
     }
 }

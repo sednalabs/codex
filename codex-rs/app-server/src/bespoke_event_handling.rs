@@ -1054,7 +1054,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                                     &trigger_turn_id,
                                     &capability,
                                     "start",
-                                    None,
+                                    /*expected_turn_id*/ None,
                                     &context_fingerprint,
                                 )
                                 .await
