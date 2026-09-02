@@ -136,7 +136,7 @@ async fn ordinary_environment_ignores_provisioning_reports() -> anyhow::Result<(
 }
 
 #[tokio::test]
-async fn failure_before_materialization_is_terminal_without_connecting() -> anyhow::Result<()> {
+async fn failure_before_materialization_is_reported_without_connecting() -> anyhow::Result<()> {
     let manager = environment_manager_without_environments();
     let provider = Arc::new(FailingNoiseConnectProvider::default());
 
@@ -153,8 +153,15 @@ async fn failure_before_materialization_is_terminal_without_connecting() -> anyh
     )?;
 
     assert!(Arc::ptr_eq(&failed, &materialized));
+    assert_eq!(
+        failed.status().await,
+        codex_exec_server::EnvironmentObservedStatus::Disconnected {
+            error: "environment unavailable: provisioning failed".to_string(),
+        }
+    );
     let error = failed.wait_until_ready().await.unwrap_err();
     assert!(error.to_string().ends_with("provisioning failed"));
+    assert!(failed.startup_finished());
     assert_eq!(provider.calls(), 0);
     Ok(())
 }
@@ -183,7 +190,7 @@ async fn failure_releases_the_existing_pending_environment_without_connecting() 
 }
 
 #[tokio::test]
-async fn repeated_failure_preserves_the_first_error_and_rejects_ready() -> anyhow::Result<()> {
+async fn repeated_failure_preserves_the_first_error_until_ready() -> anyhow::Result<()> {
     let manager = environment_manager_without_environments();
     let provider = Arc::new(FailingNoiseConnectProvider::default());
     let failed = manager
@@ -203,18 +210,39 @@ async fn repeated_failure_preserves_the_first_error_and_rejects_ready() -> anyho
         .expect("repeated failure should be idempotent");
     assert!(Arc::ptr_eq(&failed, &repeated));
 
-    let error = manager
-        .report_environment_provisioning_status(
-            "tools".to_string(),
-            Ok(ready_info("selected-root", "tools")?),
-            provider.clone(),
-        )
-        .unwrap_err();
-    assert!(error.to_string().contains("first failure"));
-    assert!(failed.selected_capability_roots().is_empty());
     let error = failed.wait_until_ready().await.unwrap_err();
     assert!(error.to_string().ends_with("first failure"));
     assert_eq!(provider.calls(), 0);
+    let invalid_ready_error = manager
+        .report_environment_provisioning_status(
+            "tools".to_string(),
+            Ok(ready_info("selected-root", "other")?),
+            provider.clone(),
+        )
+        .unwrap_err();
+    assert!(matches!(invalid_ready_error, ExecServerError::Protocol(_)));
+    assert_eq!(
+        failed.wait_until_ready().await.unwrap_err().to_string(),
+        error.to_string()
+    );
+    assert!(failed.selected_capability_roots().is_empty());
+    assert_eq!(provider.calls(), 0);
+    let selected = ready_info("selected-root", "tools")?;
+    let ready = manager
+        .report_environment_provisioning_status(
+            "tools".to_string(),
+            Ok(selected.clone()),
+            provider.clone(),
+        )?
+        .expect("successful provisioning should recover the same environment");
+    assert!(Arc::ptr_eq(&failed, &ready));
+    assert_eq!(
+        failed.selected_capability_roots(),
+        selected.selected_capability_roots
+    );
+    let error = failed.wait_until_ready().await.unwrap_err();
+    assert!(error.to_string().contains("test Noise provider called"));
+    assert_eq!(provider.calls(), 1);
     Ok(())
 }
 
@@ -319,19 +347,19 @@ async fn invalid_ready_report_fails_the_provisioning_gate() -> anyhow::Result<()
     assert!(environment.selected_capability_roots().is_empty());
     assert_eq!(provider.calls(), 0);
 
-    let later_ready_error = manager
+    let selected = ready_info("selected-root", "tools")?;
+    let reported = manager
         .report_environment_provisioning_status(
             "tools".to_string(),
-            Ok(ready_info("selected-root", "tools")?),
+            Ok(selected.clone()),
             provider.clone(),
-        )
-        .unwrap_err();
-    assert!(
-        later_ready_error
-            .to_string()
-            .contains("provisioning already failed")
+        )?
+        .expect("a corrected ready report should recover provisioning");
+    assert!(Arc::ptr_eq(&environment, &reported));
+    assert_eq!(
+        environment.selected_capability_roots(),
+        selected.selected_capability_roots
     );
-    assert!(environment.selected_capability_roots().is_empty());
     assert_eq!(provider.calls(), 0);
     Ok(())
 }

@@ -395,9 +395,9 @@ impl EnvironmentManager {
     /// Ordinary environments are ignored. A provisioned environment keeps the same `Arc` from
     /// Pending through Ready or Failed, and is created if the report arrives first.
     ///
-    /// Ready updates capability roots. Failed keeps the first error. Repeating the same result is
-    /// allowed, but changing between Ready and Failed is rejected. Invalid Ready information fails
-    /// an existing Pending environment but does not create a missing environment.
+    /// Ready updates capability roots and can recover a failed provisioning attempt. Failed keeps
+    /// the first error until a Ready report arrives; a late failure cannot replace Ready. Invalid
+    /// Ready information fails an existing Pending environment but does not create a missing one.
     ///
     /// This only updates provisioning. The connection starts when the environment is selected.
     pub fn report_environment_provisioning_status(
@@ -835,31 +835,19 @@ impl Environment {
             return Ok(());
         };
         let mut transition_error = None;
-        provisioning_status_tx.send_if_modified(|current| match current.as_ref() {
-            Some(Err(error)) => {
-                transition_error = Some(ExecServerError::Protocol(format!(
-                    "environment `{environment_id}` provisioning already failed: {error}"
-                )));
-                false
-            }
-            None => {
-                if let Err(error) = validate_environment_ready_info(environment_id, &ready_info) {
+        provisioning_status_tx.send_if_modified(|current| {
+            if let Err(error) = validate_environment_ready_info(environment_id, &ready_info) {
+                let pending = current.is_none();
+                if pending {
                     *current = Some(Err(error.to_string()));
-                    transition_error = Some(error);
-                } else {
-                    self.ready_info.store(Some(Arc::new(ready_info.clone())));
-                    *current = Some(Ok(()));
                 }
-                true
+                transition_error = Some(error);
+                return pending;
             }
-            Some(Ok(())) => {
-                if let Err(error) = validate_environment_ready_info(environment_id, &ready_info) {
-                    transition_error = Some(error);
-                } else {
-                    self.ready_info.store(Some(Arc::new(ready_info.clone())));
-                }
-                false
-            }
+            self.ready_info.store(Some(Arc::new(ready_info.clone())));
+            let was_ready = matches!(current, Some(Ok(())));
+            *current = Some(Ok(()));
+            !was_ready
         });
 
         transition_error.map_or(Ok(()), Err)
