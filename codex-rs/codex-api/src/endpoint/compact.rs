@@ -120,7 +120,7 @@ mod tests {
     use tokio::sync::Notify;
     use tokio::sync::RwLock;
 
-    fn one_attempt_factory<T: HttpTransport>(
+    fn one_attempt_factory<T: HttpTransport + 'static>(
         transport: T,
         provider: Provider,
         auth: SharedAuthProvider,
