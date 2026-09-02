@@ -83,6 +83,18 @@ pub(super) async fn reconnect(
                     {
                         return Err(error);
                     }
+                    // Unloading threads use the same code as unavailable conversations, but
+                    // ordinary resume can reattach once the unload finishes.
+                    Err(error)
+                        if matches!(
+                            error.downcast_ref::<TypedRequestError>(),
+                            Some(TypedRequestError::Server { method, source })
+                                if method == "thread/resume" && source.code == -32600
+                                    && source.message.starts_with(&format!("thread {thread_id} is closing;"))
+                        ) =>
+                    {
+                        return Err(error);
+                    }
                     Err(error)
                         if matches!(
                             error.downcast_ref::<TypedRequestError>(),
