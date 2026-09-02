@@ -251,7 +251,7 @@ impl FrozenAwsAuthContext {
         region: impl Into<String>,
         service: impl Into<String>,
     ) -> Self {
-        Self::new(credentials, None, region.into(), service.into())
+        Self::new(credentials, /*profile*/ None, region.into(), service.into())
     }
 
     pub fn identity(&self) -> AwsCredentialIdentity {

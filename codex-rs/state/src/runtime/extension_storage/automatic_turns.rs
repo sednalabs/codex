@@ -1557,7 +1557,7 @@ mod tests {
         runtime
             .record_automatic_turn_event(thread_id, &policy_error("trigger-2"))
             .await;
-        let replacement = capability(runtime.as_ref(), thread_id, "trigger-2").await;
+        let replacement = self::capability(runtime.as_ref(), thread_id, "trigger-2").await;
         assert_eq!(
             runtime
                 .automatic_turn_capability_epochs(thread_id, "trigger-2", &replacement)
