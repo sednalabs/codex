@@ -1,3 +1,5 @@
+//! Resolves packaged and legacy standalone install layouts.
+
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -16,12 +18,23 @@ use tokio::fs;
 #[cfg(unix)]
 use tokio::process::Command;
 
+/// Returns the packaged executable when present, otherwise an existing legacy executable.
+/// If neither exists, returns the expected packaged path on Windows and preserves the
+/// historical legacy fallback on Unix. This is path selection, not existence validation:
+/// launch operations reject a missing executable separately, while commands such as
+/// stop can still run after the managed install has been removed.
 pub(crate) fn managed_codex_bin(codex_home: &Path) -> PathBuf {
-    codex_home
+    let current = codex_home
         .join("packages")
         .join("standalone")
-        .join("current")
-        .join(managed_codex_file_name())
+        .join("current");
+    let packaged = current.join("bin").join(managed_codex_file_name());
+    let legacy = current.join(managed_codex_file_name());
+    if packaged.is_file() || (cfg!(windows) && !legacy.is_file()) {
+        packaged
+    } else {
+        legacy
+    }
 }
 
 #[cfg(unix)]
@@ -101,3 +114,7 @@ fn parse_codex_version(output: &str) -> Result<String> {
 #[cfg(all(test, unix))]
 #[path = "managed_install_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "managed_install_path_tests.rs"]
+mod path_tests;
