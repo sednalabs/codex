@@ -585,6 +585,8 @@ pub struct AccountRateLimitsUpdatedNotification {
 pub struct RateLimitSnapshot {
     pub limit_id: Option<String>,
     pub limit_name: Option<String>,
+    /// Normal model whose display name and reasoning options describe this quota alias.
+    pub normal_model_slug: Option<String>,
     pub primary: Option<RateLimitWindow>,
     pub secondary: Option<RateLimitWindow>,
     pub credits: Option<CreditsSnapshot>,
@@ -600,6 +602,7 @@ impl From<CoreRateLimitSnapshot> for RateLimitSnapshot {
         Self {
             limit_id: value.limit_id,
             limit_name: value.limit_name,
+            normal_model_slug: value.normal_model_slug,
             primary: value.primary.map(RateLimitWindow::from),
             secondary: value.secondary.map(RateLimitWindow::from),
             credits: value.credits.map(CreditsSnapshot::from),

@@ -721,7 +721,16 @@ impl App {
             AppEvent::FatalExitRequest(message) => {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
-            AppEvent::CodexOp(op) => {
+            AppEvent::CodexOp(mut op) => {
+                if self.active_thread_id == self.chat_widget.thread_id() {
+                    if matches!(&op, AppCommand::UserTurn { .. })
+                        && self.chat_widget.defer_pending_turn_for_luna_reserve()
+                    {
+                        return Ok(AppRunControl::Continue);
+                    }
+                    self.chat_widget
+                        .apply_reserve_fallback_to_pending_turn(&mut op);
+                }
                 let is_user_turn = matches!(&op, AppCommand::UserTurn { .. });
                 if is_user_turn {
                     let screen_size = tui.terminal.last_known_screen_size;
@@ -1219,6 +1228,17 @@ impl App {
             AppEvent::RefreshRateLimits { origin } => {
                 self.refresh_rate_limits(app_server, origin);
             }
+            AppEvent::ApplyBackendBannerFallback { thread_id } => {
+                if self.active_thread_id == Some(thread_id)
+                    && self.chat_widget.thread_id() == Some(thread_id)
+                {
+                    self.apply_backend_banner_fallback(app_server).await;
+                    if !self.rate_limit_refresh_state.has_pending_recovery() {
+                        self.chat_widget.finish_rate_limit_recovery();
+                    }
+                    self.refresh_rate_limits(app_server, RateLimitRefreshOrigin::Periodic);
+                }
+            }
             AppEvent::RefreshTokenActivity { request_id } => {
                 self.refresh_token_activity(app_server, request_id);
             }
@@ -1300,7 +1320,7 @@ impl App {
                         Vec::new()
                     };
                     match origin {
-                        RateLimitRefreshOrigin::Recovery => {
+                        RateLimitRefreshOrigin::Recovery | RateLimitRefreshOrigin::Periodic => {
                             for snapshot in snapshots {
                                 self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
                             }
@@ -1361,7 +1381,11 @@ impl App {
                     // A failed read is not authoritative recovery. Keep the last valid banner.
                     tracing::warn!("account/rateLimits/read failed during TUI refresh: {err}");
                     match origin {
-                        RateLimitRefreshOrigin::Recovery => {},
+                        RateLimitRefreshOrigin::Recovery | RateLimitRefreshOrigin::Periodic => {
+                            // Re-evaluate snapshot age even when the backend cannot refresh it.
+                            // This updates display freshness without authorizing model recovery.
+                            self.chat_widget.refresh_status_surfaces();
+                        },
                         RateLimitRefreshOrigin::StartupPrefetch {
                             reset_hint_request_id,
                         } => {
@@ -1399,10 +1423,10 @@ impl App {
                     }
                 }
                 }
-                if matches!(
+                if (accepted || matches!(
                     origin,
                     RateLimitRefreshOrigin::Recovery | RateLimitRefreshOrigin::ResetConsume { .. }
-                ) && !self.rate_limit_refresh_state.has_pending_recovery()
+                )) && !self.rate_limit_refresh_state.has_pending_recovery()
                 {
                     self.chat_widget.finish_rate_limit_recovery();
                 }
@@ -1539,6 +1563,10 @@ impl App {
             AppEvent::UpdateReasoningEffort(effort) => {
                 self.on_update_reasoning_effort(effort.clone());
                 self.sync_active_thread_reasoning_setting(app_server, effort)
+                    .await;
+            }
+            AppEvent::UpdateLunaReserveReasoning { thread_id, effort } => {
+                self.update_luna_reserve_reasoning(app_server, thread_id, effort)
                     .await;
             }
             AppEvent::UpdateModel(model) => {

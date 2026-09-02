@@ -2420,6 +2420,7 @@ mod tests {
         RateLimitSnapshot {
             limit_id: Some(limit_id.to_string()),
             limit_name: None,
+            normal_model_slug: None,
             primary: Some(codex_app_server_protocol::RateLimitWindow {
                 used_percent: 0,
                 window_duration_mins: Some(10_080),

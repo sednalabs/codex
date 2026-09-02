@@ -1967,6 +1967,12 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn set_luna_reserve_active(&mut self, active: bool) {
+        if self.composer.set_luna_reserve_active(active) {
+            self.request_redraw();
+        }
+    }
+
     pub(crate) fn set_status_line_hyperlink(&mut self, url: Option<String>) {
         if self.composer.set_status_line_hyperlink(url) {
             self.request_redraw();

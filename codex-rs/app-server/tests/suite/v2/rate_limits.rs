@@ -255,6 +255,7 @@ async fn get_account_rate_limits_returns_snapshot(
         rate_limits: RateLimitSnapshot {
             limit_id: Some("codex".to_string()),
             limit_name: None,
+            normal_model_slug: None,
             primary: Some(RateLimitWindow {
                 used_percent: 42,
                 window_duration_mins: Some(60),
@@ -283,6 +284,7 @@ async fn get_account_rate_limits_returns_snapshot(
                     RateLimitSnapshot {
                         limit_id: Some("codex".to_string()),
                         limit_name: None,
+                        normal_model_slug: None,
                         primary: Some(RateLimitWindow {
                             used_percent: 42,
                             window_duration_mins: Some(60),
@@ -312,6 +314,7 @@ async fn get_account_rate_limits_returns_snapshot(
                     RateLimitSnapshot {
                         limit_id: Some("codex_other".to_string()),
                         limit_name: Some("codex_other".to_string()),
+                        normal_model_slug: None,
                         primary: Some(RateLimitWindow {
                             used_percent: 88,
                             window_duration_mins: Some(30),

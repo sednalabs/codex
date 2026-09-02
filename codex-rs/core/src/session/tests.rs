@@ -4506,6 +4506,7 @@ async fn set_rate_limits_retains_previous_credits() {
     let initial = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 10.0,
             window_minutes: Some(15),
@@ -4527,6 +4528,7 @@ async fn set_rate_limits_retains_previous_credits() {
     let update = RateLimitSnapshot {
         limit_id: Some("codex_other".to_string()),
         limit_name: Some("codex_other".to_string()),
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 40.0,
             window_minutes: Some(30),
@@ -4550,6 +4552,7 @@ async fn set_rate_limits_retains_previous_credits() {
         Some(RateLimitSnapshot {
             limit_id: Some("codex_other".to_string()),
             limit_name: Some("codex_other".to_string()),
+            normal_model_slug: None,
             primary: update.primary.clone(),
             secondary: update.secondary,
             credits: initial.credits,
@@ -4622,6 +4625,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
     let initial = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 15.0,
             window_minutes: Some(20),
@@ -4647,6 +4651,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
     let update = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 35.0,
             window_minutes: Some(25),
@@ -4666,6 +4671,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
         Some(RateLimitSnapshot {
             limit_id: Some("codex".to_string()),
             limit_name: None,
+            normal_model_slug: None,
             primary: update.primary,
             secondary: update.secondary,
             credits: initial.credits,

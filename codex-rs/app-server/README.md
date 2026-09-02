@@ -2798,6 +2798,7 @@ Field notes:
 - `usedPercent` is current usage within the OpenAI quota window.
 - `windowDurationMins` is the quota window length.
 - `resetsAt` is a Unix timestamp (seconds) for the next reset.
+- `normalModelSlug` optionally identifies the normal model associated with an additional quota, forwarded from `/wham/usage`'s `normal_model_slug`. Clients can use that model's catalog name and reasoning choices without changing the quota alias used for requests. Missing metadata is `null`; it does not grant model access.
 - `rateLimitReachedType` identifies the backend-classified limit state when one has been reached.
 - `individualLimit` describes the effective monthly credit limit when available. In an `account/rateLimits/read` response, `null` means no monthly limit is available. In a sparse `account/rateLimits/updated` notification, nullable account metadata may be unavailable and does not clear a previously observed value.
 - `accountId` identifies the account in the usage snapshot when the backend supplies it.

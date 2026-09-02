@@ -246,6 +246,8 @@ mod goal_validation;
 mod guardian;
 pub(crate) mod helpers;
 mod history_replay;
+#[path = "tests/luna_reserve_usage_tests.rs"]
+mod luna_reserve_usage_tests;
 mod mcp_startup;
 #[path = "tests/misalignment_policy_tests.rs"]
 mod misalignment_policy;

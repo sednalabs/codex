@@ -6,6 +6,7 @@
 //! - Routing keys to the active popup (slash commands, file search, skill/apps/task mentions).
 //! - Promoting typed slash commands into atomic elements when the command name is completed.
 //! - Handling submit vs newline on Enter.
+//! - Showing a single yellow prompt arrow while the active model is Luna Reserve.
 //! - Turning raw key streams into explicit paste operations on platforms where terminals
 //!   don't provide reliable bracketed paste (notably Windows).
 //!
@@ -518,6 +519,7 @@ pub(crate) struct ChatComposer {
     effort_ignition: Option<EffortIgnition>,
     effort_status_line_transition: Option<EffortStatusLineTransition>,
     effort_observed: bool,
+    luna_reserve_active: bool,
     attachments: AttachmentState,
     placeholder_text: String,
     blocks_direct_input: bool,
@@ -697,6 +699,7 @@ impl ChatComposer {
             effort_ignition: None,
             effort_status_line_transition: None,
             effort_observed: false,
+            luna_reserve_active: false,
             attachments: AttachmentState::default(),
             placeholder_text,
             blocks_direct_input: false,
@@ -4626,6 +4629,14 @@ impl Renderable for ChatComposer {
 }
 
 impl ChatComposer {
+    pub(crate) fn set_luna_reserve_active(&mut self, active: bool) -> bool {
+        if self.luna_reserve_active == active {
+            return false;
+        }
+        self.luna_reserve_active = active;
+        true
+    }
+
     pub(crate) fn desired_height_with_textarea_right_reserve(
         &self,
         width: u16,
@@ -4949,6 +4960,11 @@ impl ChatComposer {
             let prompt = if self.draft.input_enabled {
                 if self.draft.is_bash_mode {
                     Span::from("!").light_red().bold()
+                } else if self.luna_reserve_active {
+                    // Reserve keeps one arrow at every reasoning effort; only its foreground changes.
+                    "›"
+                        .fg(crate::terminal_palette::best_color((246, 197, 67)))
+                        .bold()
                 } else if let Some(tier) = self.effort_tier {
                     let charge = self
                         .effort_ignition

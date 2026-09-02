@@ -221,6 +221,8 @@ impl ChatWidget {
         self.clear_pending_token_activity_refreshes();
         self.clear_pending_rate_limit_reset_requests();
         self.clear_backend_banner();
+        self.luna_reserve_notice_account_id = None;
+        self.automatic_model_switch_state = backend_banners::AutomaticModelSwitchState::default();
         self.input_queue.rate_limit_recovery_pending = false;
         self.add_credits_nudge_email_in_flight = None;
         self.codex_rate_limit_reached_type = None;
@@ -261,6 +263,14 @@ impl ChatWidget {
 
     /// Set the model in the widget's config copy and stored collaboration mode.
     pub(crate) fn set_model(&mut self, model: &str) {
+        if model != self.current_model() {
+            if self.current_model() == crate::model_catalog::LUNA_RESERVE_MODEL {
+                self.clear_reserve_return();
+            } else {
+                self.automatic_model_switch_state =
+                    backend_banners::AutomaticModelSwitchState::default();
+            }
+        }
         self.current_collaboration_mode = self.current_collaboration_mode.with_updates(
             Some(model.to_string()),
             /*effort*/ None,
@@ -452,6 +462,7 @@ impl ChatWidget {
         self.sync_backend_banner_view();
         self.refresh_model_display();
         self.refresh_status_line();
+        self.refresh_open_model_picker();
     }
 
     fn apply_thread_settings(&mut self, mut settings: ThreadSettings) {
@@ -551,7 +562,7 @@ impl ChatWidget {
         if model.is_empty() {
             DEFAULT_MODEL_DISPLAY_NAME
         } else {
-            model
+            crate::model_catalog::model_display_name(model)
         }
     }
 

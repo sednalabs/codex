@@ -1728,6 +1728,7 @@ async fn paginated_projection_accepts_float_rate_limits_and_later_final_answers(
             rate_limits: Some(RateLimitSnapshot {
                 limit_id: None,
                 limit_name: None,
+                normal_model_slug: None,
                 primary: primary.map(|used_percent| RateLimitWindow {
                     used_percent,
                     window_minutes: Some(60),

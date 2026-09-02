@@ -175,6 +175,8 @@ pub(crate) enum RateLimitRefreshOrigin {
     ResetConsume { request_id: u64 },
     /// Refresh backend recovery after an inference limit error.
     Recovery,
+    /// Background account usage read, scheduled more frequently near exhaustion.
+    Periodic,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -500,6 +502,11 @@ pub(crate) enum AppEvent {
     /// Refresh account rate limits in the background.
     RefreshRateLimits {
         origin: RateLimitRefreshOrigin,
+    },
+
+    /// Reconcile inherited account usage with an attached task before its queued input runs.
+    ApplyBackendBannerFallback {
+        thread_id: ThreadId,
     },
 
     /// Open the current thread goal summary/action menu.
@@ -961,6 +968,12 @@ pub(crate) enum AppEvent {
 
     /// Update the current reasoning effort in the running app and widget.
     UpdateReasoningEffort(Option<ReasoningEffort>),
+
+    /// Change Reserve effort only on the task that opened the picker, without saving defaults.
+    UpdateLunaReserveReasoning {
+        thread_id: ThreadId,
+        effort: Option<ReasoningEffort>,
+    },
 
     /// Update the current model slug in the running app and widget.
     UpdateModel(String),

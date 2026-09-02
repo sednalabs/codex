@@ -42,8 +42,22 @@ impl Client {
             .as_ref()
             .and_then(|limit| limit.as_deref())
             .map(|limit| limit.allowed);
+        let mut rate_limits = Self::rate_limit_snapshots_from_payload(payload.rate_limits);
+        let plan_type = rate_limits.first().and_then(|snapshot| snapshot.plan_type);
+        rate_limits.extend(
+            payload
+                .additional_rate_limits
+                .into_iter()
+                .flatten()
+                .map(|limit| {
+                    let mut snapshot =
+                        Self::make_additional_rate_limit_snapshot(limit.details, plan_type);
+                    snapshot.normal_model_slug = limit.normal_model_slug;
+                    snapshot
+                }),
+        );
         Ok(RateLimitsWithResetCredits {
-            rate_limits: Self::rate_limit_snapshots_from_payload(payload.rate_limits),
+            rate_limits,
             ordinary_usage_allowed,
             rate_limit_reset_credits: payload.rate_limit_reset_credits,
             account_id: payload.account_id,

@@ -20,6 +20,8 @@ mod connector_policy;
 mod disconnect;
 #[path = "tests/key_chords.rs"]
 mod key_chords;
+#[path = "tests/luna_reserve_recovery_tests.rs"]
+mod luna_reserve_recovery_tests;
 #[path = "tests/mcp_startup.rs"]
 mod mcp_startup;
 mod model_catalog;

@@ -396,6 +396,9 @@ pub(crate) use self::permissions_menu::auto_review_available;
 pub(crate) use self::permissions_menu::cyber_model_approval_reviewer;
 mod backend_banners;
 mod compaction;
+mod luna_reserve_model;
+mod luna_reserve_return;
+pub(crate) use backend_banners::AutomaticModelSwitchReason;
 mod protocol;
 mod protocol_requests;
 mod rate_limits;
@@ -583,6 +586,7 @@ pub(crate) struct ChatWidget {
     pub(crate) remote_connection: Option<RemoteConnectionStatus>,
     token_info: Option<TokenUsageInfo>,
     token_usage_pending: bool,
+    // Status and polling use account usage reads; response streams may identify meters differently.
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,
     refreshing_status_outputs: Vec<(u64, StatusHistoryHandle)>,
     next_status_refresh_request_id: u64,
@@ -602,7 +606,10 @@ pub(crate) struct ChatWidget {
     codex_spend_control_reached: Option<bool>,
     rate_limit_warnings: RateLimitWarningState,
     backend_banner_state: backend_banners::BackendBannerState,
+    automatic_model_switch_state: backend_banners::AutomaticModelSwitchState,
     backend_banner_notice_model: Option<String>,
+    // Remember the account's Reserve entry notice across chats and transient banner refreshes.
+    luna_reserve_notice_account_id: Option<String>,
     warning_display_state: WarningDisplayState,
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     add_credits_nudge_email_in_flight: Option<rate_limits::PendingCreditsNudge>,
