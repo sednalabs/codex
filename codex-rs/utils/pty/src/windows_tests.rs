@@ -10,6 +10,7 @@ use std::path::Path;
 use std::time::Duration;
 
 const READY_MARKER: &str = "__CODEX_CHILD_READY__";
+const SHELL_READY_MARKER: &str = "__CODEX_SHELL_READY__";
 const VALUE_MARKER: &str = "__CODEX_CHILD_VALUE__";
 
 struct WindowsShell {
@@ -17,6 +18,7 @@ struct WindowsShell {
     program: String,
     args: Vec<String>,
     child_command: String,
+    ready_marker: Option<&'static str>,
 }
 
 fn find_powershell() -> Option<String> {
@@ -199,13 +201,21 @@ async fn conpty_delivers_input_to_foreground_children() -> anyhow::Result<()> {
         program: std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string()),
         args: vec!["/D".to_string(), "/Q".to_string()],
         child_command: format!("\"{}\" -u -c \"{code}\"", python.replace('"', "\"\"")),
+        ready_marker: None,
     }];
     if let Some(program) = find_powershell() {
         shells.push(WindowsShell {
             name: "PowerShell",
             program,
-            args: vec!["-NoLogo".to_string(), "-NoProfile".to_string()],
+            args: vec![
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-NoExit".to_string(),
+                "-Command".to_string(),
+                format!("[Console]::WriteLine('{SHELL_READY_MARKER}')"),
+            ],
             child_command: format!("& '{}' -u -c \"{code}\"", python.replace('\'', "''")),
+            ready_marker: Some(SHELL_READY_MARKER),
         });
     }
     let env: HashMap<String, String> = std::env::vars().collect();
@@ -223,6 +233,13 @@ async fn conpty_delivers_input_to_foreground_children() -> anyhow::Result<()> {
         .await?;
         let (session, mut output_rx, exit_rx) = combine_spawned_output(spawned);
         let writer = session.writer_sender();
+        if let Some(marker) = shell.ready_marker {
+            wait_for_output_contains(&mut output_rx, marker, /*timeout_ms*/ 10_000)
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!("{} shell did not become ready: {err}", shell.name)
+                })?;
+        }
         writer
             .send(format!("{}\n", shell.child_command).into_bytes())
             .await?;
