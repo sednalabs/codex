@@ -1,8 +1,43 @@
-//! Offline editing bypasses command dispatch and popup actions, retaining the draft in place.
+//! Offline editing retains the draft, with shared paste Enter handling for submission.
 
 use super::*;
 
 impl ChatComposer {
+    /// Preserve Enter inside a paste burst without attempting submission.
+    pub(super) fn handle_paste_enter(&mut self, now: Instant) -> bool {
+        let in_slash_context = self.slash_commands_enabled()
+            && !self.draft.is_bash_mode
+            && (matches!(self.popups.active, ActivePopup::Command(_))
+                || self
+                    .draft
+                    .textarea
+                    .text()
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .starts_with('/'));
+        if !self.draft.disable_paste_burst
+            && self.draft.paste_burst.is_active()
+            && !in_slash_context
+            && self.draft.paste_burst.append_newline_if_active(now)
+        {
+            return true;
+        }
+        if !in_slash_context
+            && !self.draft.disable_paste_burst
+            && self
+                .draft
+                .paste_burst
+                .newline_should_insert_instead_of_submit(now)
+        {
+            self.draft.textarea.insert_str("\n");
+            self.draft.paste_burst.extend_window(now);
+            return true;
+        }
+
+        false
+    }
+
     pub(crate) fn handle_disconnected_key(&mut self, key: KeyEvent) {
         self.cancel_history_search();
         self.attachments.clear_remote_image_selection();

@@ -3184,37 +3184,7 @@ impl ChatComposer {
         should_queue: bool,
         now: Instant,
     ) -> (InputResult, bool) {
-        // Preserve newlines that are part of a paste before applying parent-owned submission
-        // policy. Queued startup input still flushes the burst into its queued message below.
-        let in_slash_context = self.slash_commands_enabled()
-            && !self.draft.is_bash_mode
-            && (matches!(self.popups.active, ActivePopup::Command(_))
-                || self
-                    .draft
-                    .textarea
-                    .text()
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .starts_with('/'));
-        if !should_queue
-            && !self.draft.disable_paste_burst
-            && self.draft.paste_burst.is_active()
-            && !in_slash_context
-            && self.draft.paste_burst.append_newline_if_active(now)
-        {
-            return (InputResult::None, true);
-        }
-        if !should_queue
-            && !in_slash_context
-            && !self.draft.disable_paste_burst
-            && self
-                .draft
-                .paste_burst
-                .newline_should_insert_instead_of_submit(now)
-        {
-            self.draft.textarea.insert_str("\n");
-            self.draft.paste_burst.extend_window(now);
+        if !should_queue && self.handle_paste_enter(now) {
             return (InputResult::None, true);
         }
 
