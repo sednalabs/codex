@@ -101,7 +101,10 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   test-windows-native-main:
-    timeout-minutes: 40
+    # The full native test suite routinely takes 37-39 minutes on a warm
+    # runner. Leave enough headroom for the explicitly supported D:/C:
+    # non-Dev-Drive fallback and its cold Bazel repository cache.
+    timeout-minutes: 90
     runs-on: windows-2022
     name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm (native health)
     environment:
