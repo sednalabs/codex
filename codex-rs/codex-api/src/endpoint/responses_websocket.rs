@@ -1114,7 +1114,7 @@ mod tests {
                 &stream,
                 "{\"type\":\"response.create\"}".to_string(),
                 Duration::from_secs(2),
-                None,
+                /*telemetry*/ None,
                 /*connection_reused*/ false,
                 initiation,
             )
@@ -1146,7 +1146,7 @@ mod tests {
             &stream,
             "{\"type\":\"response.create\"}".to_string(),
             Duration::from_secs(1),
-            None,
+            /*telemetry*/ None,
             /*connection_reused*/ true,
             stale_reuse,
         )
@@ -1176,7 +1176,7 @@ mod tests {
                 &stream,
                 "{\"type\":\"response.create\"}".to_string(),
                 Duration::from_secs(2),
-                None,
+                /*telemetry*/ None,
                 /*connection_reused*/ false,
                 initiation,
             )

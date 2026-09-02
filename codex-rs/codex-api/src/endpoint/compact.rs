@@ -240,7 +240,7 @@ mod tests {
                     serde_json::json!({"model": "test"}),
                     HeaderMap::new(),
                     Duration::from_secs(5),
-                    None,
+                    /*turn_state*/ None,
                 )
                 .await
         });
@@ -397,7 +397,7 @@ mod tests {
                 serde_json::json!({"model": "test", "input": ["same-body"]}),
                 request_headers,
                 Duration::from_secs(5),
-                None,
+                /*turn_state*/ None,
             )
             .await
             .expect("ordinary retry should succeed with renewed provider B");
@@ -491,7 +491,7 @@ mod tests {
                 serde_json::json!({"model": "test"}),
                 HeaderMap::new(),
                 Duration::from_secs(5),
-                None,
+                /*turn_state*/ None,
             )
             .await
             .expect("second application attempt should succeed");
@@ -559,7 +559,7 @@ mod tests {
                 serde_json::json!({"model": "test"}),
                 HeaderMap::new(),
                 Duration::from_secs(5),
-                None,
+                /*turn_state*/ None,
             )
             .await
             .expect_err("the finite retry budget should be exhausted");
@@ -613,7 +613,7 @@ mod tests {
                 serde_json::json!({"model": "test"}),
                 HeaderMap::new(),
                 Duration::from_secs(5),
-                None,
+                /*turn_state*/ None,
             )
             .await
             .expect_err("changed authority should stop the visible retry");
@@ -644,7 +644,7 @@ mod tests {
                 serde_json::json!({"model": "test"}),
                 HeaderMap::new(),
                 Duration::from_secs(5),
-                None,
+                /*turn_state*/ None,
             )
             .await
             .expect("ordinary retry should succeed");
