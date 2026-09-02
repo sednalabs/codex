@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -11,6 +12,7 @@ use super::PidCommandKind;
 use super::PidFileState;
 use super::PidLogTail;
 use super::PidRecord;
+#[cfg(unix)]
 use super::read_process_start_time;
 use super::read_stderr_log_tail;
 use super::stderr_log_file_for_pid_file;
@@ -99,7 +101,11 @@ async fn stop_waits_for_live_reservation_to_resolve() {
 #[tokio::test]
 async fn start_retries_stale_empty_pid_file_under_its_own_lock() {
     let temp_dir = TempDir::new().expect("temp dir");
-    let pid_file = temp_dir.path().join("app-server.pid");
+    let state_dir = temp_dir.path().join("state");
+    codex_uds::prepare_private_socket_directory(&state_dir)
+        .await
+        .expect("private state directory");
+    let pid_file = state_dir.join("app-server.pid");
     tokio::fs::write(&pid_file, "")
         .await
         .expect("write pid file");
@@ -149,6 +155,7 @@ async fn stale_record_cleanup_preserves_replacement_record() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn stop_reaps_untracked_app_server_child() {
     let temp_dir = TempDir::new().expect("temp dir");
@@ -254,4 +261,69 @@ async fn read_stderr_log_tail_returns_recent_complete_lines() {
             contents: "recent error\nusage".to_string(),
         })
     );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn stale_creation_time_never_stops_reused_pid() {
+    let temp = TempDir::new().expect("temp");
+    let backend = PidBackend::new(
+        temp.path().join("codex.exe"),
+        temp.path().join("server.pid"),
+        /*remote_control_enabled*/ false,
+    );
+    let record = PidRecord {
+        pid: std::process::id(),
+        process_start_time: "stale".into(),
+    };
+    tokio::fs::write(&backend.pid_file, serde_json::to_vec(&record).unwrap())
+        .await
+        .unwrap();
+    backend.stop().await.expect("stale record cleanup");
+    assert!(!backend.pid_file.exists());
+    assert!(!backend.pid_file.with_extension("shutdown").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn inaccessible_reused_pid_is_stale_without_hiding_process_open_errors() {
+    use futures::FutureExt;
+    use windows_sys::Win32::Security::ImpersonateAnonymousToken;
+    use windows_sys::Win32::Security::RevertToSelf;
+    use windows_sys::Win32::System::Threading::GetCurrentThread;
+
+    // Isolate impersonation from Tokio workers and other tests. Query our own
+    // process anonymously instead of assuming a system PID is inaccessible.
+    std::thread::spawn(|| {
+        let record = PidRecord {
+            pid: std::process::id(),
+            process_start_time: "stale".into(),
+        };
+        assert!(
+            crate::backend::windows::Process::open(record.pid)
+                .unwrap()
+                .is_some()
+        );
+        assert_ne!(unsafe { ImpersonateAnonymousToken(GetCurrentThread()) }, 0);
+        let opened = crate::backend::windows::Process::open(record.pid);
+        // Windows identity checks are synchronous; never suspend while impersonating.
+        let matches = super::process_matches_record(&record).now_or_never();
+        let reverted = unsafe { RevertToSelf() };
+        assert_ne!(reverted, 0);
+
+        let error = match opened {
+            Err(error) => error,
+            Ok(_) => panic!("anonymous caller unexpectedly queried the test process"),
+        };
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32),
+        );
+        assert!(!matches.expect("identity check must not suspend").unwrap());
+    })
+    .join()
+    .expect("anonymous identity check");
 }

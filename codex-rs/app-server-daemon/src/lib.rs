@@ -1,4 +1,8 @@
+//! Managed app-server lifecycle, serialized across CLI invocations and the updater.
+
 mod backend;
+#[cfg(windows)]
+use backend::windows::try_lock_file;
 mod client;
 mod managed_install;
 mod remote_control_client;
@@ -727,12 +731,18 @@ impl Daemon {
 
     async fn open_operation_lock_file(&self) -> Result<tokio::fs::File> {
         if let Some(parent) = self.operation_lock_file.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!(
-                    "failed to create daemon state directory {}",
-                    parent.display()
-                )
-            })?;
+            #[cfg(unix)]
+            if let Some(home) = parent.parent() {
+                tokio::fs::create_dir_all(home).await?;
+            }
+            codex_uds::prepare_private_socket_directory(parent)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to create daemon state directory {}",
+                        parent.display()
+                    )
+                })?;
         }
         tokio::fs::OpenOptions::new()
             .create(true)
@@ -842,7 +852,7 @@ fn try_lock_file(file: &tokio::fs::File) -> Result<bool> {
     Err(err).context("failed to lock daemon operation")
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn try_lock_file(_file: &tokio::fs::File) -> Result<bool> {
     Ok(true)
 }
@@ -1003,6 +1013,28 @@ mod tests {
         assert_eq!(
             serde_json::to_value(output).expect("serialize"),
             serde_json::to_value(bootstrap_output).expect("serialize")
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_creates_missing_home_parent() {
+        let temp = TempDir::new().expect("temp dir");
+        let state = temp.path().join("missing-home").join("daemon-state");
+        let daemon = Daemon {
+            socket_path: state.join("server.sock"),
+            pid_file: state.join("server.pid"),
+            update_pid_file: state.join("updater.pid"),
+            operation_lock_file: state.join("daemon.lock"),
+            settings_file: state.join("settings.json"),
+            managed_codex_bin: state.join("missing-codex"),
+        };
+        assert_eq!(
+            daemon
+                .run(super::LifecycleCommand::Stop)
+                .await
+                .expect("stop on fresh home")
+                .status,
+            LifecycleStatus::NotRunning,
         );
     }
 

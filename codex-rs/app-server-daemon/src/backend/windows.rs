@@ -1,0 +1,161 @@
+//! Windows process identity and file locks. Keep a process handle across shutdown
+//! so PID reuse can never redirect forced termination to a different process.
+
+use std::io;
+use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::FromRawHandle;
+use std::os::windows::io::OwnedHandle;
+
+use anyhow::Context;
+use anyhow::Result;
+use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
+use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
+use windows_sys::Win32::Foundation::FILETIME;
+use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+use windows_sys::Win32::Storage::FileSystem::LOCKFILE_EXCLUSIVE_LOCK;
+use windows_sys::Win32::Storage::FileSystem::LOCKFILE_FAIL_IMMEDIATELY;
+use windows_sys::Win32::Storage::FileSystem::LockFileEx;
+use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+use windows_sys::Win32::System::Threading::GetProcessId;
+use windows_sys::Win32::System::Threading::GetProcessTimes;
+use windows_sys::Win32::System::Threading::OpenProcess;
+use windows_sys::Win32::System::Threading::PROCESS_ACCESS_RIGHTS;
+use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
+use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
+use windows_sys::Win32::System::Threading::PROCESS_TERMINATE;
+use windows_sys::Win32::System::Threading::TerminateProcess;
+use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+pub(super) struct Process(OwnedHandle);
+
+impl Process {
+    pub(super) fn open(pid: u32) -> Result<Option<Self>> {
+        Self::open_with_access(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE)
+    }
+
+    fn open_with_access(pid: u32, access: PROCESS_ACCESS_RIGHTS) -> Result<Option<Self>> {
+        let handle = unsafe {
+            OpenProcess(access, /*binherithandle*/ 0, pid)
+        };
+        if handle == 0 {
+            let err = io::Error::last_os_error();
+            return if err.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+                Ok(None)
+            } else {
+                Err(err).context("failed to open daemon process")
+            };
+        }
+        Ok(Some(Self(unsafe {
+            OwnedHandle::from_raw_handle(handle as _)
+        })))
+    }
+
+    pub(super) fn start_time(&self) -> Result<String> {
+        let mut created: FILETIME = unsafe { std::mem::zeroed() };
+        let mut exited = created;
+        let mut kernel = created;
+        let mut user = created;
+        if unsafe {
+            GetProcessTimes(
+                self.0.as_raw_handle() as _,
+                &mut created,
+                &mut exited,
+                &mut kernel,
+                &mut user,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error()).context("failed to query daemon creation time");
+        }
+        Ok(
+            ((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+                .to_string(),
+        )
+    }
+
+    pub(super) fn is_running(&self) -> Result<bool> {
+        match unsafe {
+            WaitForSingleObject(self.0.as_raw_handle() as _, /*dwmilliseconds*/ 0)
+        } {
+            WAIT_TIMEOUT => Ok(true),
+            WAIT_OBJECT_0 => Ok(false),
+            _ => Err(io::Error::last_os_error()).context("failed to wait for daemon process"),
+        }
+    }
+
+    pub(super) fn ensure_detached(&self) -> Result<()> {
+        let mut in_job = 0;
+        if unsafe {
+            IsProcessInJob(
+                self.0.as_raw_handle() as _,
+                /*jobhandle*/ 0,
+                &mut in_job,
+            )
+        } == 0
+        {
+            let error = io::Error::last_os_error();
+            self.terminate()?;
+            return Err(error).context("failed to verify daemon detachment");
+        }
+        if in_job != 0 {
+            self.terminate()?;
+            anyhow::bail!(
+                "host Job Object prevents daemon detachment; start from a host that allows breakaway"
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn terminate(&self) -> Result<()> {
+        if !self.is_running()? {
+            return Ok(());
+        }
+        let pid = unsafe { GetProcessId(self.0.as_raw_handle() as _) };
+        let Some(target) = Self::open_with_access(
+            pid,
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE,
+        )?
+        else {
+            return Ok(());
+        };
+        // Keep the original identity handle alive and validate the handle that
+        // will actually be terminated, rather than trusting a second PID lookup.
+        if target.start_time()? != self.start_time()? || !target.is_running()? {
+            return Ok(());
+        }
+        if unsafe {
+            TerminateProcess(target.0.as_raw_handle() as _, /*uexitcode*/ 1)
+        } == 0
+        {
+            return Err(io::Error::last_os_error()).context("failed to terminate daemon process");
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn try_lock_file(file: &tokio::fs::File) -> Result<bool> {
+    let mut overlapped = unsafe { std::mem::zeroed() };
+    if unsafe {
+        LockFileEx(
+            file.as_raw_handle() as _,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            /*dwreserved*/ 0,
+            /*nnumberofbytestolocklow*/ 1,
+            /*nnumberofbytestolockhigh*/ 0,
+            &mut overlapped,
+        )
+    } != 0
+    {
+        return Ok(true);
+    }
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+        return Ok(false);
+    }
+    Err(err).context("failed to lock daemon state")
+}
+
+#[cfg(test)]
+#[path = "windows_tests.rs"]
+mod tests;

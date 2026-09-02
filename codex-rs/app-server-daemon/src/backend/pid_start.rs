@@ -1,4 +1,5 @@
-//! Detached Unix process launch and PID publication under the reservation lock.
+//! Detached process launch and PID publication. Hold the reservation lock until
+//! the record is published.
 
 use super::PidBackend;
 use super::PidFileState;
@@ -11,21 +12,24 @@ use tokio::fs;
 use tokio::process::Command;
 
 impl PidBackend {
-    pub(crate) async fn start(&self) -> Result<Option<u32>> {
+    pub(super) async fn start_inner(&self) -> Result<Option<u32>> {
         if let Some(parent) = self.pid_file.parent() {
-            fs::create_dir_all(parent)
+            codex_uds::prepare_private_socket_directory(parent)
                 .await
                 .with_context(|| format!("failed to create pid directory {}", parent.display()))?;
         }
         let reservation_lock = self.acquire_reservation_lock().await?;
-        let _pid_file = loop {
+        loop {
             match fs::OpenOptions::new()
                 .create_new(true)
                 .write(true)
                 .open(&self.pid_file)
                 .await
             {
-                Ok(pid_file) => break pid_file,
+                Ok(pid_file) => {
+                    drop(pid_file);
+                    break;
+                }
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                     match self.read_pid_file_state_with_lock_held().await? {
                         PidFileState::Missing => continue,
@@ -47,8 +51,15 @@ impl PidBackend {
                     });
                 }
             }
-        };
-        let mut command = Command::new(&self.codex_bin);
+        }
+        // Pin the Windows image path across installer junction retargeting.
+        #[cfg(windows)]
+        let codex_bin = fs::canonicalize(&self.codex_bin)
+            .await
+            .unwrap_or_else(|_| self.codex_bin.clone());
+        #[cfg(not(windows))]
+        let codex_bin = &self.codex_bin;
+        let mut command = Command::new(codex_bin);
         let stderr_log = match self.open_stderr_log().await {
             Ok(stderr_log) => stderr_log,
             Err(err) => {
@@ -77,13 +88,37 @@ impl PidBackend {
             }
         }
 
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Threading::CREATE_BREAKAWAY_FROM_JOB;
+            use windows_sys::Win32::System::Threading::DETACHED_PROCESS;
+            // Never retry inside the parent's Job Object: that would report a
+            // successful launch that dies when the terminal/SSH session closes.
+            command.creation_flags(DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB);
+            let shutdown_file = self.pid_file.with_extension("shutdown");
+            match fs::remove_file(&shutdown_file).await {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err).context("failed to clear daemon shutdown request"),
+            }
+            command.env(
+                codex_app_server_transport::DAEMON_SHUTDOWN_FILE_ENV,
+                shutdown_file,
+            );
+        }
+
         let child = match command.spawn() {
             Ok(child) => child,
             Err(err) => {
                 let _ = fs::remove_file(&self.pid_file).await;
                 return Err(err).with_context(|| {
+                    let job_hint = if cfg!(windows) {
+                        " (the Windows host job must allow breakaway)"
+                    } else {
+                        ""
+                    };
                     format!(
-                        "failed to spawn detached app-server process using {}",
+                        "failed to spawn detached app-server process using {}{job_hint}",
                         self.codex_bin.display()
                     )
                 });
@@ -92,7 +127,15 @@ impl PidBackend {
         let pid = child
             .id()
             .context("spawned app-server process has no pid")?;
-        let record = match read_process_start_time(pid).await {
+        let record = match async {
+            #[cfg(windows)]
+            super::super::windows::Process::open(pid)?
+                .context("daemon exited during launch")?
+                .ensure_detached()?;
+            read_process_start_time(pid).await
+        }
+        .await
+        {
             Ok(process_start_time) => PidRecord {
                 pid,
                 process_start_time,
