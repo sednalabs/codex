@@ -2231,6 +2231,10 @@ impl AuthManager {
     }
 
     /// Reloads auth from the active source. Returns whether the auth value changed.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the credential transition gate must remain held while loading and publishing auth"
+    )]
     pub async fn reload(&self) -> bool {
         let _transition = self.provider_request_gate.write().await;
         tracing::info!("Reloading auth");
@@ -2238,6 +2242,10 @@ impl AuthManager {
         self.set_cached_auth_during_transition(new_auth)
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the credential transition gate must remain held while loading and publishing auth"
+    )]
     async fn reload_if_account_id_matches(
         &self,
         expected_account_id: Option<&str>,
@@ -2372,6 +2380,10 @@ impl AuthManager {
         }
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the credential transition gate must serialize external auth resolution and publication"
+    )]
     pub async fn set_external_auth(
         &self,
         external_auth: Arc<dyn ExternalAuth>,
@@ -2605,6 +2617,10 @@ impl AuthManager {
         Ok(removed)
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the credential transition gate must remain held through token revocation and logout"
+    )]
     pub async fn logout_with_revoke(&self) -> std::io::Result<bool> {
         let _transition = self.provider_request_gate.write().await;
         let auth_dot_json = self
@@ -2665,6 +2681,10 @@ impl AuthManager {
         last_refresh < Utc::now() - chrono::Duration::days(TOKEN_REFRESH_INTERVAL)
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the credential transition gate must serialize external refresh and cache publication"
+    )]
     async fn refresh_external_auth(
         &self,
         reason: ExternalAuthRefreshReason,
@@ -2734,6 +2754,10 @@ impl AuthManager {
 
     // Refreshes ChatGPT OAuth tokens, persists the updated auth state, and
     // reloads the in-memory cache so callers immediately observe new tokens.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the credential transition gate must serialize token persistence and cache publication"
+    )]
     async fn refresh_and_persist_chatgpt_token(
         &self,
         auth: &ChatgptAuth,

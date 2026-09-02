@@ -1,7 +1,6 @@
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
 use crate::outgoing_message::ClientRequestResult;
-use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
 use crate::outgoing_message::is_current_automatic_turn_principal;
 use crate::outgoing_message::parse_automatic_turn_connection_principal;
@@ -1067,7 +1066,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                                 .map(|(_, connection_id)| connection_id)
                                 .filter(|connection_id| subscribed.contains(connection_id));
                             (
-                                contract_bound.then(|| owner).flatten().and_then(|_| {
+                                contract_bound.then_some(owner).flatten().and_then(|_| {
                                     AutomaticTurnProvenance::capability_details(
                                         &trigger_turn_id,
                                         &capability,

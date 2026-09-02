@@ -7,6 +7,7 @@ use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
 use codex_client::Request;
 use codex_client::RequestBody;
+use codex_client::RequestCompression;
 use codex_client::RequestInitiation;
 use codex_client::RequestTelemetry;
 use codex_client::Response;
@@ -300,7 +301,25 @@ impl<T: HttpTransport> EndpointSession<T> {
     where
         C: Fn(&mut Request),
     {
-        let body = body.map(RequestBody::EncodedJson);
+        // Prepare the encoded body and any derived content headers once. The provider and auth
+        // remain attempt-local so credential/provider transitions still get a fresh request on
+        // every retry, while the immutable wire bytes are shared by each request clone.
+        let (prepared_body, prepared_content_type, prepared_content_encoding) = match body
+            .map(RequestBody::EncodedJson)
+        {
+            Some(body) => {
+                let mut request =
+                    Self::make_request(&self.provider, &method, path, &extra_headers, Some(&body));
+                configure(&mut request);
+                let request = request.into_prepared().map_err(TransportError::Build)?;
+                (
+                    request.body,
+                    request.headers.get(http::header::CONTENT_TYPE).cloned(),
+                    request.headers.get(http::header::CONTENT_ENCODING).cloned(),
+                )
+            }
+            None => (None, None, None),
+        };
         let stream = run_with_attempt_telemetry(
             self.provider.retry.to_policy(),
             self.request_telemetry.clone(),
@@ -311,7 +330,9 @@ impl<T: HttpTransport> EndpointSession<T> {
                 let static_auth = self.auth.clone();
                 let method = method.clone();
                 let extra_headers = extra_headers.clone();
-                let body = body.clone();
+                let prepared_body = prepared_body.clone();
+                let prepared_content_type = prepared_content_type.clone();
+                let prepared_content_encoding = prepared_content_encoding.clone();
                 let configure = &configure;
                 async move {
                     let (attempt_transport, provider, auth, initiation) =
@@ -328,17 +349,43 @@ impl<T: HttpTransport> EndpointSession<T> {
                             None => (None, static_provider, static_auth, None),
                         };
                     let mut req =
-                        Self::make_request(&provider, &method, path, &extra_headers, body.as_ref());
+                        Self::make_request(&provider, &method, path, &extra_headers, None);
                     configure(&mut req);
-                    let req = match req.into_prepared() {
-                        Ok(req) => req,
-                        Err(err) => {
-                            if let Some(initiation) = initiation {
-                                initiation.cancel();
+                    if let Some(body) = prepared_body.clone() {
+                        req.body = Some(body);
+                        // `prepared_body` already contains the exact bytes and the final body
+                        // encoding. Do not prepare it again: doing so would discard trace bytes
+                        // and, more importantly, could allocate a distinct retry body.
+                        req.compression = RequestCompression::None;
+                        match prepared_content_type.as_ref() {
+                            Some(value) => {
+                                req.headers
+                                    .insert(http::header::CONTENT_TYPE, value.clone());
                             }
-                            return Err(TransportError::Build(err));
+                            None => {
+                                req.headers.remove(http::header::CONTENT_TYPE);
+                            }
                         }
-                    };
+                        match prepared_content_encoding.as_ref() {
+                            Some(value) => {
+                                req.headers
+                                    .insert(http::header::CONTENT_ENCODING, value.clone());
+                            }
+                            None => {
+                                req.headers.remove(http::header::CONTENT_ENCODING);
+                            }
+                        }
+                    } else {
+                        req = match req.into_prepared() {
+                            Ok(req) => req,
+                            Err(err) => {
+                                if let Some(initiation) = initiation {
+                                    initiation.cancel();
+                                }
+                                return Err(TransportError::Build(err));
+                            }
+                        };
+                    }
                     let req = match auth.apply_auth(req).await {
                         Ok(req) => req,
                         Err(err) => {

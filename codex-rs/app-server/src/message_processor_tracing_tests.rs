@@ -61,6 +61,7 @@ use opentelemetry_sdk::trace::SpanData;
 use pretty_assertions::assert_eq;
 use serial_test::serial;
 use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
@@ -129,6 +130,7 @@ struct TracingHarness {
     auth_manager: Arc<AuthManager>,
     processor: Arc<MessageProcessor>,
     outgoing_rx: mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    pending_outgoing: VecDeque<crate::outgoing_message::OutgoingEnvelope>,
     session: Arc<ConnectionSessionState>,
     tracing: &'static TestTracing,
     state_db: Option<codex_rollout::StateDbHandle>,
@@ -169,6 +171,7 @@ impl TracingHarness {
             auth_manager,
             processor,
             outgoing_rx,
+            pending_outgoing: VecDeque::new(),
             session: Arc::new(ConnectionSessionState::new()),
             tracing,
             state_db,
@@ -226,7 +229,12 @@ impl TracingHarness {
                 Arc::clone(&self.session),
             )
             .await;
-        read_response(&mut self.outgoing_rx, request_id).await
+        read_response(
+            &mut self.pending_outgoing,
+            &mut self.outgoing_rx,
+            request_id,
+        )
+        .await
     }
 
     async fn start_thread(
@@ -246,7 +254,7 @@ impl TracingHarness {
                 trace,
             )
             .await;
-        read_thread_started_notification(&mut self.outgoing_rx).await;
+        read_thread_started_notification(&mut self.pending_outgoing, &mut self.outgoing_rx).await;
         response
     }
 
@@ -269,7 +277,12 @@ impl TracingHarness {
                 Arc::clone(&self.session),
             )
             .await;
-        read_error(&mut self.outgoing_rx, request_id).await
+        read_error(
+            &mut self.pending_outgoing,
+            &mut self.outgoing_rx,
+            request_id,
+        )
+        .await
     }
 }
 
@@ -371,6 +384,7 @@ fn into_server_notification(
 }
 
 async fn read_turn_denial_notifications(
+    pending_outgoing: &mut VecDeque<crate::outgoing_message::OutgoingEnvelope>,
     outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
     turn_id: &str,
 ) -> (usize, usize, TurnStatus, bool) {
@@ -389,12 +403,22 @@ async fn read_turn_denial_notifications(
         if wait.is_zero() {
             panic!("timed out waiting for terminal notification for turn {turn_id}");
         }
-        let envelope = match tokio::time::timeout(wait, outgoing_rx.recv()).await {
-            Ok(Some(envelope)) => envelope,
-            Ok(None) => panic!("outgoing channel closed"),
-            Err(_) if terminal_status.is_some() => break,
-            Err(_) => panic!("timed out waiting for terminal notification for turn {turn_id}"),
+        let envelope = if let Some(envelope) = take_pending_outgoing(pending_outgoing, |envelope| {
+            is_turn_notification_for(envelope, turn_id)
+        }) {
+            envelope
+        } else {
+            match tokio::time::timeout(wait, outgoing_rx.recv()).await {
+                Ok(Some(envelope)) => envelope,
+                Ok(None) => panic!("outgoing channel closed"),
+                Err(_) if terminal_status.is_some() => break,
+                Err(_) => panic!("timed out waiting for terminal notification for turn {turn_id}"),
+            }
         };
+        if !is_turn_notification_for(&envelope, turn_id) {
+            pending_outgoing.push_back(envelope);
+            continue;
+        }
         let Some(notification) = into_server_notification(envelope) else {
             continue;
         };
@@ -579,15 +603,120 @@ fn assert_has_internal_descendant_at_min_depth(
     );
 }
 
+fn take_pending_outgoing<F>(
+    pending_outgoing: &mut VecDeque<crate::outgoing_message::OutgoingEnvelope>,
+    mut predicate: F,
+) -> Option<crate::outgoing_message::OutgoingEnvelope>
+where
+    F: FnMut(&crate::outgoing_message::OutgoingEnvelope) -> bool,
+{
+    let index = pending_outgoing
+        .iter()
+        .position(|envelope| predicate(envelope))?;
+    pending_outgoing.remove(index)
+}
+
+fn as_server_notification(
+    envelope: &crate::outgoing_message::OutgoingEnvelope,
+) -> Option<&ServerNotification> {
+    let message = match envelope {
+        crate::outgoing_message::OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } if *connection_id == TEST_CONNECTION_ID => message,
+        crate::outgoing_message::OutgoingEnvelope::Broadcast { message } => message,
+        _ => return None,
+    };
+    let crate::outgoing_message::OutgoingMessage::AppServerNotification(notification) = message
+    else {
+        return None;
+    };
+    Some(&notification.notification)
+}
+
+fn is_response_for_request(
+    envelope: &crate::outgoing_message::OutgoingEnvelope,
+    request_id: i64,
+) -> bool {
+    let crate::outgoing_message::OutgoingEnvelope::ToConnection {
+        connection_id,
+        message,
+        ..
+    } = envelope
+    else {
+        return false;
+    };
+    if *connection_id != TEST_CONNECTION_ID {
+        return false;
+    }
+    matches!(
+        message,
+        crate::outgoing_message::OutgoingMessage::Response(response)
+            if response.id == RequestId::Integer(request_id)
+    )
+}
+
+fn is_error_for_request(
+    envelope: &crate::outgoing_message::OutgoingEnvelope,
+    request_id: i64,
+) -> bool {
+    let crate::outgoing_message::OutgoingEnvelope::ToConnection {
+        connection_id,
+        message,
+        ..
+    } = envelope
+    else {
+        return false;
+    };
+    if *connection_id != TEST_CONNECTION_ID {
+        return false;
+    }
+    matches!(
+        message,
+        crate::outgoing_message::OutgoingMessage::Error(error)
+            if error.id == RequestId::Integer(request_id)
+    )
+}
+
+fn is_thread_started_notification(envelope: &crate::outgoing_message::OutgoingEnvelope) -> bool {
+    matches!(
+        as_server_notification(envelope),
+        Some(ServerNotification::ThreadStarted(_))
+    )
+}
+
+fn is_turn_notification_for(
+    envelope: &crate::outgoing_message::OutgoingEnvelope,
+    turn_id: &str,
+) -> bool {
+    as_server_notification(envelope).is_some_and(|notification| match notification {
+        ServerNotification::Error(notification) => notification.turn_id == turn_id,
+        ServerNotification::TurnCompleted(notification) => notification.turn.id == turn_id,
+        _ => false,
+    })
+}
+
 async fn read_response<T: serde::de::DeserializeOwned>(
+    pending_outgoing: &mut VecDeque<crate::outgoing_message::OutgoingEnvelope>,
     outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
     request_id: i64,
 ) -> T {
     loop {
-        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
-            .await
-            .expect("timed out waiting for response")
-            .expect("outgoing channel closed");
+        let envelope = if let Some(envelope) = take_pending_outgoing(pending_outgoing, |envelope| {
+            is_response_for_request(envelope, request_id)
+        }) {
+            envelope
+        } else {
+            tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
+                .await
+                .expect("timed out waiting for response")
+                .expect("outgoing channel closed")
+        };
+        if !is_response_for_request(&envelope, request_id) {
+            pending_outgoing.push_back(envelope);
+            continue;
+        }
         let crate::outgoing_message::OutgoingEnvelope::ToConnection {
             connection_id,
             message,
@@ -611,14 +740,25 @@ async fn read_response<T: serde::de::DeserializeOwned>(
 }
 
 async fn read_error(
+    pending_outgoing: &mut VecDeque<crate::outgoing_message::OutgoingEnvelope>,
     outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
     request_id: i64,
 ) -> JSONRPCErrorError {
     loop {
-        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
-            .await
-            .expect("timed out waiting for error")
-            .expect("outgoing channel closed");
+        let envelope = if let Some(envelope) = take_pending_outgoing(pending_outgoing, |envelope| {
+            is_error_for_request(envelope, request_id)
+        }) {
+            envelope
+        } else {
+            tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
+                .await
+                .expect("timed out waiting for error")
+                .expect("outgoing channel closed")
+        };
+        if !is_error_for_request(&envelope, request_id) {
+            pending_outgoing.push_back(envelope);
+            continue;
+        }
         let crate::outgoing_message::OutgoingEnvelope::ToConnection {
             connection_id,
             message,
@@ -640,13 +780,24 @@ async fn read_error(
 }
 
 async fn read_thread_started_notification(
+    pending_outgoing: &mut VecDeque<crate::outgoing_message::OutgoingEnvelope>,
     outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
 ) {
     loop {
-        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
-            .await
-            .expect("timed out waiting for thread/started notification")
-            .expect("outgoing channel closed");
+        let envelope = if let Some(envelope) =
+            take_pending_outgoing(pending_outgoing, is_thread_started_notification)
+        {
+            envelope
+        } else {
+            tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
+                .await
+                .expect("timed out waiting for thread/started notification")
+                .expect("outgoing channel closed")
+        };
+        if !is_thread_started_notification(&envelope) {
+            pending_outgoing.push_back(envelope);
+            continue;
+        }
         match envelope {
             crate::outgoing_message::OutgoingEnvelope::ToConnection {
                 connection_id,
@@ -1116,9 +1267,12 @@ async fn automatic_turn_auth_transition_at_provider_boundary_is_terminal() -> Re
         .await
         .expect("credential transition should complete before provider send");
 
-    let notifications =
-        read_turn_denial_notifications(&mut harness.outgoing_rx, &turn_start_response.turn.id)
-            .await;
+    let notifications = read_turn_denial_notifications(
+        &mut harness.pending_outgoing,
+        &mut harness.outgoing_rx,
+        &turn_start_response.turn.id,
+    )
+    .await;
     assert_eq!(notifications, (1, 1, TurnStatus::Interrupted, true));
     assert!(
         harness
@@ -1179,7 +1333,7 @@ async fn automatic_turn_omitted_environments_preserve_sticky_selection() -> Resu
             /*trace*/ None,
         )
         .await;
-    read_thread_started_notification(&mut harness.outgoing_rx).await;
+    read_thread_started_notification(&mut harness.pending_outgoing, &mut harness.outgoing_rx).await;
     let thread_id = thread_start_response.thread.id.clone();
     let thread_id_value = ThreadId::from_string(&thread_id)?;
     let before = harness
@@ -1305,8 +1459,12 @@ async fn ordinary_app_server_turns_continue_after_auth_transition() -> Result<()
                 /*trace*/ None,
             )
             .await;
-        let notifications =
-            read_turn_denial_notifications(&mut harness.outgoing_rx, &response.turn.id).await;
+        let notifications = read_turn_denial_notifications(
+            &mut harness.pending_outgoing,
+            &mut harness.outgoing_rx,
+            &response.turn.id,
+        )
+        .await;
         assert_eq!(notifications, (0, 1, TurnStatus::Completed, false));
     }
     assert_eq!(

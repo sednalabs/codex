@@ -1006,7 +1006,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::net::TcpListener;
     use tokio::sync::RwLock;
-    use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::accept_async_with_config;
 
     #[test]
     fn direct_serialization_preserves_websocket_request_payload() {
@@ -1075,7 +1075,7 @@ mod tests {
         let (tx_message, rx_message) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             let (socket, _) = listener.accept().await.expect("accept websocket client");
-            let mut websocket = accept_async(socket)
+            let mut websocket = accept_async_with_config(socket, Some(websocket_config()))
                 .await
                 .expect("accept websocket handshake");
             while let Some(Ok(message)) = websocket.next().await {

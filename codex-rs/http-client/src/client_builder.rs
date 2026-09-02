@@ -219,6 +219,10 @@ impl HttpClientBuilder {
         )
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "the minimal credential-bound client is an internal construction invariant"
+    )]
     fn build_with_custom_ca_fallback_using<E>(
         self,
         proxy_routing: ProxyRouting,

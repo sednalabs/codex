@@ -910,26 +910,6 @@ pub(crate) async fn exchange_code_for_tokens(
     })
 }
 
-/// Persists exchanged credentials using the configured local auth store.
-pub(crate) async fn persist_tokens_async(
-    codex_home: &Path,
-    api_key: Option<String>,
-    id_token: String,
-    access_token: String,
-    refresh_token: String,
-    auth_credentials_store_mode: AuthCredentialsStoreMode,
-    keyring_backend_kind: AuthKeyringBackendKind,
-) -> io::Result<()> {
-    let auth = build_auth_from_tokens_async(api_key, id_token, access_token, refresh_token).await?;
-    persist_auth_dot_json_async(
-        codex_home,
-        auth,
-        auth_credentials_store_mode,
-        keyring_backend_kind,
-    )
-    .await
-}
-
 pub(crate) async fn build_auth_from_tokens_async(
     api_key: Option<String>,
     id_token: String,
