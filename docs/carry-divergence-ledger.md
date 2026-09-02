@@ -3065,9 +3065,15 @@ decisions.
 - Cached expired tokens remain visibly expired when reloaded so the OAuth
   manager refreshes them before reconnecting instead of treating stale access
   tokens as usable.
-- Proactive refresh failures such as missing refresh tokens are classified as
-  authentication-required startup failures, so operators get the reauth path
-  instead of a generic MCP startup failure.
+- Proactive refresh failures preserve the existing durable credentials and remain
+  ordinary refresh failures unless the response is an explicit terminal
+  credential rejection such as `invalid_grant` (or the refresh token is
+  missing). Malformed, non-OAuth, transient, and upstream-unavailable token
+  responses must not be presented as authentication-required startup failures.
+  RMCP 1.8 erases the underlying OAuth error type, so the compatibility
+  classifier accepts only the stable `oauth2` server-error display envelope
+  for `invalid_grant`; a future typed RMCP rejection variant can remove this
+  narrow boundary.
 - The selected keyring backend is intentional carry now that upstream supports
   encrypted local secrets storage. Syncs must preserve both upstream
   concrete-store pinning and `AuthKeyringBackendKind::Secrets` support, plus the

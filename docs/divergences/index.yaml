@@ -888,7 +888,7 @@
         "codex-rs/rmcp-client/src/bin/test_streamable_http_server.rs",
         "codex-rs/core/tests/suite/rmcp_client.rs"
       ],
-      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort Auto-mode auth loading, writes replace the fallback file atomically, restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting, and proactive or unauthorized failures route through serialized refresh and reauthentication. Upstream concrete-store pinning and RMCP persistence are retained; normal requests receive access-only credentials, refresh material is staged only inside the per-server refresh transaction, and every RMCP-derived durable save or delete rereads that pinned store under the same lock so newer rotating credentials are adopted rather than overwritten. Direct and Secrets keyring backends remain distinct, and refresh requests do not broaden explicitly stored scopes with authorization-server-advertised offline_access.",
+      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort Auto-mode auth loading, writes replace the fallback file atomically, restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting, and proactive or unauthorized failures route through serialized refresh. Only an explicit terminal credential rejection such as invalid_grant (or a missing refresh token) requires reauthentication; malformed, non-OAuth, transient, and upstream-unavailable refresh responses preserve durable credentials and remain ordinary refresh failures. Upstream concrete-store pinning and RMCP persistence are retained; normal requests receive access-only credentials, refresh material is staged only inside the per-server refresh transaction, and every RMCP-derived durable save or delete rereads that pinned store under the same lock so newer rotating credentials are adopted rather than overwritten. Direct and Secrets keyring backends remain distinct, and refresh requests do not broaden explicitly stored scopes with authorization-server-advertised offline_access.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -915,7 +915,13 @@
         "oauth_authorization_required_refreshes_oauth",
         "streamable_http_auth_required_refreshes_oauth",
         "refreshes_expired_persisted_token_before_initialize",
-        "token_refresh_failure_requires_authentication",
+        "missing_refresh_token_requires_authentication",
+        "invalid_grant_refresh_failure_requires_authentication",
+        "transient_refresh_failure_does_not_require_authentication",
+        "malformed_refresh_failure_does_not_require_authentication",
+        "rejected_refresh_token_requires_reauthorization",
+        "transient_refresh_failure_does_not_require_reauthorization",
+        "malformed_refresh_failure_does_not_require_reauthorization",
         "suite::rmcp_client::streamable_http_with_oauth_round_trip"
       ],
       "owner": "downstream",
