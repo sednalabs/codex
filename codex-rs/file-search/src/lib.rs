@@ -492,6 +492,10 @@ fn matcher_worker(
     let shutdown_requested = || inner.shutdown.load(Ordering::Relaxed);
 
     let mut last_query = String::new();
+    let mut pending_query = None;
+    let mut query_in_flight = false;
+    let mut matcher_idle = true;
+    let mut completion_pending = false;
     let mut next_notify = never();
     let mut will_notify = false;
     let mut walk_complete = false;
@@ -504,15 +508,22 @@ fn matcher_worker(
                 };
                 match signal {
                     WorkSignal::QueryUpdated(query) => {
-                        let append = query.starts_with(&last_query);
-                        nucleo.pattern.reparse(
-                            0,
-                            &query,
-                            CaseMatching::Ignore,
-                            Normalization::Smart,
-                            append,
-                        );
-                        last_query = query;
+                        if query_in_flight || !matcher_idle {
+                            pending_query = Some(query);
+                        } else {
+                            let append = query.starts_with(&last_query);
+                            nucleo.pattern.reparse(
+                                0,
+                                &query,
+                                CaseMatching::Ignore,
+                                Normalization::Smart,
+                                append,
+                            );
+                            last_query = query;
+                            query_in_flight = true;
+                            completion_pending = true;
+                            matcher_idle = false;
+                        }
                         will_notify = true;
                         next_notify = after(Duration::from_millis(0));
                     }
@@ -583,8 +594,46 @@ fn matcher_worker(
                     };
                     inner.reporter.on_update(&snapshot);
                 }
-                if !status.running && walk_complete {
+                if status.running {
+                    matcher_idle = false;
+                }
+                if status.changed {
+                    // `status.running` only describes newly injected items. A
+                    // queued worker may still need to publish the changed
+                    // snapshot after a canceled pass reports `running=false`.
+                    query_in_flight = false;
+                }
+                if !status.running {
+                    matcher_idle = true;
+                }
+                if !query_in_flight && !status.running && walk_complete && completion_pending {
                     inner.reporter.on_complete();
+                    completion_pending = false;
+                }
+                if !query_in_flight && matcher_idle {
+                    if let Some(query) = pending_query.take() {
+                        let append = query.starts_with(&last_query);
+                        nucleo.pattern.reparse(
+                            0,
+                            &query,
+                            CaseMatching::Ignore,
+                            Normalization::Smart,
+                            append,
+                        );
+                        last_query = query;
+                        query_in_flight = true;
+                        completion_pending = true;
+                        matcher_idle = false;
+                        will_notify = true;
+                        next_notify = after(Duration::from_millis(0));
+                    }
+                }
+                if query_in_flight || status.running {
+                    // Continue driving the matcher while a query is in flight.
+                    // The delay gives a queued Rayon worker an opportunity to
+                    // start; this avoids a hot loop when `running` is stale.
+                    will_notify = true;
+                    next_notify = after(Duration::from_millis(TICK_TIMEOUT_MS));
                 }
             }
             default(Duration::from_millis(100)) => {
