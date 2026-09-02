@@ -681,6 +681,10 @@ impl TurnRequestProcessor {
         app_server_client_version: Option<String>,
         supports_openai_form_elicitation: bool,
     ) -> Result<TurnStartResponse, JSONRPCErrorError> {
+        // Settings invalidation and automatic-turn admission must observe one ordered
+        // settings/auth boundary. Keep the guard through validation, reservation, and core
+        // submission so a settings transition cannot interleave between those steps.
+        let _auth_admission = self.auth_admission.lock().await;
         let (thread_id, thread) =
             self.load_thread(&params.thread_id)
                 .await
@@ -808,14 +812,6 @@ impl TurnRequestProcessor {
             responsesapi_client_metadata: params.responsesapi_client_metadata,
             additional_context,
             thread_settings,
-        };
-        // Serialize automatic-ticket admission through auth transitions. Holding this guard
-        // through core submission closes the window where a ticket can be reserved before
-        // logout/login invalidation but submitted after the auth state changed.
-        let _auth_admission = if automatic_turn {
-            Some(self.auth_admission.lock().await)
-        } else {
-            None
         };
         let automatic_turn_admitted = if automatic_turn {
             self.reserve_automatic_turn_capability(
@@ -1110,6 +1106,10 @@ impl TurnRequestProcessor {
         request_id: &ConnectionRequestId,
         params: ThreadSettingsUpdateParams,
     ) -> Result<ThreadSettingsUpdateResponse, JSONRPCErrorError> {
+        // Serialize settings invalidation with automatic-turn validation/reservation. The guard
+        // spans the snapshot, invalidation, and core enqueue so no admitted turn can cross the
+        // settings transition boundary.
+        let _auth_admission = self.auth_admission.lock().await;
         let (thread_id, thread) = self.load_thread(&params.thread_id).await?;
         let cwd = resolve_request_cwd(params.cwd)?;
         let environments = self

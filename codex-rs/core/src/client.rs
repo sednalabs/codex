@@ -645,16 +645,6 @@ impl ModelClient {
         session
     }
 
-    pub(crate) fn set_expected_authority(&mut self, expected_authority: Option<ProviderAuthority>) {
-        self.expected_authority = expected_authority;
-        if expected_authority.is_some()
-            && self.websocket_session.connection.is_some()
-            && self.websocket_session.authority != expected_authority
-        {
-            self.reset_websocket_session();
-        }
-    }
-
     pub(crate) fn auth_manager(&self) -> Option<Arc<AuthManager>> {
         self.state.provider.auth_manager()
     }
@@ -1446,6 +1436,16 @@ impl Drop for ModelClientSession {
 impl ModelClientSession {
     pub(crate) fn turn_state(&self) -> Arc<OnceLock<String>> {
         Arc::clone(&self.turn_state)
+    }
+
+    pub(crate) fn set_expected_authority(&mut self, expected_authority: Option<ProviderAuthority>) {
+        self.expected_authority = expected_authority;
+        if expected_authority.is_some()
+            && self.websocket_session.connection.is_some()
+            && self.websocket_session.authority != expected_authority
+        {
+            self.reset_websocket_session();
+        }
     }
 
     pub(crate) fn reset_websocket_session(&mut self) {

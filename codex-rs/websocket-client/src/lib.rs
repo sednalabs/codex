@@ -94,7 +94,8 @@ impl WebSocketConnector {
         request: Request,
         config: WebSocketConfig,
     ) -> Result<(WebSocketConnection, Response), WebSocketError> {
-        self.connect_with_initiation(request, config, None).await
+        self.connect_with_initiation(request, config, /*initiation*/ None)
+            .await
     }
 
     /// Connects a WebSocket while retaining single-use request authority until the dialer owns
