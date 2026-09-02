@@ -208,7 +208,7 @@ Example with notification opt-out:
 - `thread/status/changed` — notification emitted when a loaded thread’s status changes (`threadId` + new `status`).
 - `thread/archive` — move a thread’s rollout file into the archived directory and attempt to move any spawned descendant thread rollout files; returns `{}` on success and emits `thread/archived` for each archived thread.
 - `thread/delete` — hard-delete an active or archived thread and any spawned descendant threads; returns `{}` on success and emits `thread/deleted` for each deleted thread.
-- `thread/unsubscribe` — unsubscribe this connection from thread turn/item events. If this was the last subscriber, the server keeps the thread loaded and unloads it only after it has had no subscribers and no thread activity for 30 minutes, runs `SessionEnd` hooks, then emits `thread/closed`.
+- `thread/unsubscribe` — unsubscribe this connection from thread turn/item events. If this was the last subscriber, the server keeps the thread loaded and unloads it only after it has had no subscribers and no thread activity for 60 seconds by default (configured by `thread_unload_delay_secs`), runs `SessionEnd` hooks, then emits `thread/closed`.
 - `thread/name/set` — set or update a thread’s user-facing name for either a loaded thread or a persisted rollout; returns `{}` on success and emits `thread/name/updated` to initialized, opted-in clients. Thread names are not required to be unique; name lookups resolve to the most recently updated thread.
 - `thread/unarchive` — move an archived rollout file back into the sessions directory; returns the restored `thread` on success and emits `thread/unarchived`.
 - `thread/compact/start` — trigger conversation history compaction for a thread; returns `{}` immediately while progress streams through standard turn/item notifications. Parent-owned Multi-Agent V2 subagents reject direct compaction requests.
@@ -638,7 +638,17 @@ Gauges register when first used. Depending on process activity, the snapshot can
 - `notSubscribed` when the connection was not subscribed to that thread.
 - `notLoaded` when the thread is not loaded.
 
-If this was the last subscriber, the server does not unload the thread immediately. It unloads the thread after the thread has had no subscribers and no thread activity for 30 minutes, runs `SessionEnd` hooks, then emits `thread/closed` and a `thread/status/changed` transition to `notLoaded`.
+If this was the last subscriber, the server unloads the thread after the thread has had no subscribers and no thread activity for 60 seconds by default, runs `SessionEnd` hooks, then emits `thread/closed` and a `thread/status/changed` transition to `notLoaded`. A new subscriber or thread activity resets the countdown.
+
+Set the top-level `thread_unload_delay_secs` key in `config.toml` to change this timeout:
+
+```toml
+thread_unload_delay_secs = 60
+```
+
+The value must be a nonnegative integer in seconds that fits in a monotonic-clock deadline; excessively large values are rejected. Set it to `0` to unload as soon as the thread is inactive and has no subscribers. The app-server reads this setting at startup and applies it to all threads, so changes require a server restart. Set it to `1800` to retain the previous 30-minute timeout.
+
+The timeout also applies to ephemeral threads. Unloading discards their in-memory state, and they cannot subsequently be resumed by ID.
 
 `SessionEnd` also runs before archive, delete, and graceful app-server shutdown. It runs only for root threads, not `ThreadSpawn` children or internal subagents. Hooks are advisory: their output cannot block teardown. The default timeout is one second, configured timeouts are capped at three seconds, `async: true` runs synchronously with a configuration warning, and the hook input always reports `reason: "other"`. `SessionEnd` matchers are evaluated against that reason.
 

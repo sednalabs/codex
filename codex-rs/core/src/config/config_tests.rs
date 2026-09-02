@@ -248,6 +248,43 @@ async fn load_config_applies_optional_mcp_startup_grace() -> std::io::Result<()>
 }
 
 #[tokio::test]
+async fn load_config_resolves_thread_unload_delay() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    for (toml, seconds) in [
+        ("", 60),
+        ("thread_unload_delay_secs = 0", 0),
+        ("thread_unload_delay_secs = 1800", 1800),
+    ] {
+        let config = Config::load_from_base_config_with_overrides(
+            toml::from_str(toml)?,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
+        assert_eq!(config.thread_unload_delay, Duration::from_secs(seconds));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_thread_unload_delay_overflow() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let error = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            thread_unload_delay_secs: Some(u64::MAX),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("idle timeout must fit in a monotonic deadline");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(error.to_string(), "thread_unload_delay_secs is too large");
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_toml_parsing() {
     let history_with_persistence = r#"
 [history]
