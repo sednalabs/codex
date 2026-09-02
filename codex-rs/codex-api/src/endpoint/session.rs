@@ -347,9 +347,14 @@ impl<T: HttpTransport> EndpointSession<T> {
                                 )
                             }
                             None => (None, static_provider, static_auth, None),
-                    };
-                    let mut req =
-                        Self::make_request(&provider, &method, path, &extra_headers, /*body*/ None);
+                        };
+                    let mut req = Self::make_request(
+                        &provider,
+                        &method,
+                        path,
+                        &extra_headers,
+                        /*body*/ None,
+                    );
                     configure(&mut req);
                     if let Some(body) = prepared_body.clone() {
                         req.body = Some(body);
