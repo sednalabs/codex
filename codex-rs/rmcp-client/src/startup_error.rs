@@ -4,6 +4,7 @@ use rmcp::transport::auth::AuthError;
 use rmcp::transport::streamable_http_client::StreamableHttpError;
 
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
+use crate::oauth::refresh_error_requires_reauthorization;
 
 /// Returns whether an RMCP client error indicates that authentication is required.
 ///
@@ -39,13 +40,12 @@ fn client_initialize_error_requires_authentication(error: &ClientInitializeError
 }
 
 fn auth_error_requires_authentication(error: &AuthError) -> bool {
-    // RMCP reports unrecoverable refresh attempts as reauthentication.
+    // RMCP 1.8 reports terminal refresh rejection as TokenRefreshFailed(String); preserve that
+    // marker only when its erased message still identifies the structured invalid_grant response.
     matches!(
         error,
-        AuthError::AuthorizationRequired
-            | AuthError::TokenExpired
-            | AuthError::TokenRefreshFailed(_)
-    )
+        AuthError::AuthorizationRequired | AuthError::TokenExpired
+    ) || refresh_error_requires_reauthorization(error)
 }
 
 #[cfg(test)]

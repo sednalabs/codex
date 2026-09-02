@@ -26,6 +26,7 @@ use super::OAuthPersistorInner;
 use super::StoredOAuthTokens;
 use super::WrappedOAuthTokenResponse;
 use super::compute_expires_at_millis;
+use super::refresh_error_requires_reauthorization;
 use super::refresh_lock::RefreshCredentialLock;
 use super::token_needs_refresh;
 
@@ -229,10 +230,10 @@ impl OAuthPersistor {
                 debug!("received refreshed MCP OAuth credentials from the provider");
                 Ok(refreshed_tokens(token_response, &latest, &self.inner))
             }
-            Ok(Err(error @ AuthError::TokenRefreshFailed(_))) => {
+            Ok(Err(error)) if refresh_error_requires_reauthorization(&error) => {
                 warn!(
                     error = %error,
-                    "MCP OAuth refresh failed; reauthorization required by RMCP compatibility policy"
+                    "MCP OAuth refresh token was rejected; reauthorization required"
                 );
                 Err(AuthError::AuthorizationRequired).with_context(|| {
                     format!(
