@@ -1977,7 +1977,9 @@ mod automatic_turn_validation_tests {
         assert!(is_automatic_turn_capability(
             Some(&client_user_message_id())
         ));
-        assert!(!is_automatic_turn_capability(/*client_user_message_id*/ None));
+        assert!(!is_automatic_turn_capability(
+            /*client_user_message_id*/ None
+        ));
         assert!(!is_automatic_turn_capability(Some("ordinary-client-id")));
     }
 }

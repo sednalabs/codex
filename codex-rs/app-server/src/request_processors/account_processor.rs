@@ -1440,7 +1440,9 @@ mod tests {
             Some(&active_login),
             replaced_id
         ));
-        assert!(!login_completion_is_active(/*active_login*/ None, active_id));
+        assert!(!login_completion_is_active(
+            /*active_login*/ None, active_id
+        ));
     }
 
     #[tokio::test]
