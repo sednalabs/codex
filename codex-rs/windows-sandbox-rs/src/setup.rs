@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::c_void;
+use std::os::windows::io::BorrowedHandle;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -897,6 +898,7 @@ fn run_setup_exe(
     payload: &ElevationPayload,
     needs_elevation: bool,
     codex_home: &Path,
+    retained_handles: &[BorrowedHandle<'_>],
 ) -> Result<()> {
     let payload_json = serde_json::to_string(payload).map_err(|err| {
         failure(
@@ -905,8 +907,13 @@ fn run_setup_exe(
         )
     })?;
     let payload_b64 = BASE64_STANDARD.encode(payload_json.as_bytes());
+    if !retained_handles.is_empty() {
+        // Service requests are serialized and must not join a bare setup flight
+        // whose helper was started without these directory protections.
+        return run_setup_exe_payload(&payload_b64, needs_elevation, codex_home, retained_handles);
+    }
     run_setup_singleflight(payload_b64.clone(), || {
-        run_setup_exe_payload(&payload_b64, needs_elevation, codex_home)
+        run_setup_exe_payload(&payload_b64, needs_elevation, codex_home, retained_handles)
     })
 }
 
@@ -914,6 +921,7 @@ fn run_setup_exe_payload(
     payload_b64: &str,
     needs_elevation: bool,
     codex_home: &Path,
+    retained_handles: &[BorrowedHandle<'_>],
 ) -> Result<()> {
     use windows_sys::Win32::System::Threading::GetExitCodeProcess;
     use windows_sys::Win32::System::Threading::INFINITE;
@@ -937,19 +945,27 @@ fn run_setup_exe_payload(
     };
 
     if !needs_elevation {
-        let status = Command::new(&exe)
-            .arg(payload_b64)
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|err| {
-                failure(
-                    SetupErrorCode::OrchestratorHelperLaunchFailed,
-                    format!("failed to launch setup helper (non-elevated): {err}"),
-                )
-            })?;
+        let status = if retained_handles.is_empty() {
+            Command::new(&exe)
+                .arg(payload_b64)
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+        } else {
+            crate::setup_launch::spawn_with_retained_handles(
+                Command::new(&exe).arg(payload_b64),
+                retained_handles,
+            )
+            .and_then(|mut child| child.wait())
+        }
+        .map_err(|err| {
+            failure(
+                SetupErrorCode::OrchestratorHelperLaunchFailed,
+                format!("failed to launch setup helper (non-elevated): {err}"),
+            )
+        })?;
         if !status.success() {
             return Err(report_helper_failure(
                 codex_home,
@@ -1052,7 +1068,7 @@ fn run_elevated_setup_inner(
             format!("failed to determine elevation state: {err}"),
         )
     })?;
-    run_setup_exe(&payload, needs_elevation, request.codex_home)
+    run_setup_exe(&payload, needs_elevation, request.codex_home, &[])
 }
 
 fn elevated_provisioning_payload(
@@ -1084,6 +1100,17 @@ pub fn run_elevated_provisioning_setup(
     codex_home: &Path,
     real_user: &str,
     settings: crate::WindowsSandboxProvisioningSettings,
+) -> Result<()> {
+    run_elevated_provisioning_setup_with_retained_handles(codex_home, real_user, settings, &[])
+}
+
+/// Runs service provisioning with directory protections retained by the helper
+/// itself, so they survive an unexpected exit of the provisioning service.
+pub fn run_elevated_provisioning_setup_with_retained_handles(
+    codex_home: &Path,
+    real_user: &str,
+    settings: crate::WindowsSandboxProvisioningSettings,
+    retained_handles: &[BorrowedHandle<'_>],
 ) -> Result<()> {
     if !codex_home.is_absolute()
         || !matches!(
@@ -1138,7 +1165,12 @@ pub fn run_elevated_provisioning_setup(
         mode: SetupMode::ProvisionOnly,
         refresh_only: false,
     };
-    run_setup_exe(&payload, /*needs_elevation*/ false, codex_home)
+    run_setup_exe(
+        &payload,
+        /*needs_elevation*/ false,
+        codex_home,
+        retained_handles,
+    )
 }
 
 pub(crate) fn build_payload_roots(

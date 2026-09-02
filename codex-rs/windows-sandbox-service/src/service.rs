@@ -41,6 +41,9 @@ const EVENT_SERVICE_STARTED: u32 = 1000;
 const EVENT_SERVICE_STOP_REQUESTED: u32 = 1001;
 const EVENT_SERVICE_STOPPED: u32 = 1002;
 const EVENT_SERVICE_FAILED: u32 = 1003;
+pub(crate) const EVENT_PROVISIONING_SUCCEEDED: u32 = 2000;
+pub(crate) const EVENT_PROVISIONING_FAILED: u32 = 2001;
+pub(crate) const EVENT_REQUEST_REJECTED: u32 = 2002;
 const MAX_EVENT_MESSAGE_UNITS: usize = 1024;
 
 static SERVICE_STATE: OnceLock<ServiceState> = OnceLock::new();
@@ -167,7 +170,11 @@ unsafe extern "system" fn service_control_handler(
                 if let Err(error) = state.report_status(SERVICE_STOP_PENDING, NO_ERROR) {
                     eprintln!("unable to report service shutdown: {error:#}");
                 }
-                crate::ipc::wake();
+                std::thread::spawn(move || {
+                    crate::ipc::wake(crate::ipc::PIPE_NAME, || {
+                        state.current_status.load(Ordering::Acquire) == SERVICE_STOPPED
+                    });
+                });
                 log_information(
                     EVENT_SERVICE_STOP_REQUESTED,
                     "The Codex sandbox service was asked to stop.",

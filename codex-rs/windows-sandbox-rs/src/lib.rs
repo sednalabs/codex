@@ -127,6 +127,9 @@ mod setup;
 mod setup_error;
 
 #[cfg(target_os = "windows")]
+mod setup_launch;
+
+#[cfg(target_os = "windows")]
 mod spawn_prep;
 
 #[cfg(target_os = "windows")]
@@ -320,6 +323,8 @@ pub use setup::SandboxSetupRequest;
 pub use setup::SetupRootOverrides;
 #[cfg(target_os = "windows")]
 pub use setup::run_elevated_provisioning_setup;
+#[cfg(target_os = "windows")]
+pub use setup::run_elevated_provisioning_setup_with_retained_handles;
 #[cfg(target_os = "windows")]
 pub use setup::run_elevated_setup;
 #[cfg(target_os = "windows")]

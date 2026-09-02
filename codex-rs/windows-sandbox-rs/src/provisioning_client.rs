@@ -171,6 +171,9 @@ pub fn provision_windows_sandbox_via_service(
         crate::SandboxProvisioningResponse::Ok => {
             Ok(WindowsSandboxProvisioningOutcome::Provisioned)
         }
+        crate::SandboxProvisioningResponse::Unavailable => {
+            Ok(WindowsSandboxProvisioningOutcome::Unavailable)
+        }
         crate::SandboxProvisioningResponse::Error { message } => Err(anyhow!(message)),
     }
 }

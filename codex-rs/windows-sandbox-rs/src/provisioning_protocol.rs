@@ -55,7 +55,11 @@ pub struct WindowsSandboxProxyListeners {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum SandboxProvisioningResponse {
     Ok,
-    Error { message: String },
+    /// The client should fall back to its elevated setup helper.
+    Unavailable,
+    Error {
+        message: String,
+    },
 }
 
 /// Write a length-prefixed provisioning-service message.

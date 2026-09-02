@@ -20,8 +20,8 @@ use super::request::ProvisioningRequest;
 pub(super) struct ClientIdentity {
     pub(super) account: String,
     pub(super) codex_home: PathBuf,
-    // Denying FILE_SHARE_DELETE pins every checked directory through provisioning.
-    _directory_handles: Vec<OwnedHandle>,
+    // Retained by both the service and helper throughout provisioning.
+    pub(super) directory_handles: Vec<OwnedHandle>,
 }
 
 pub(super) fn authenticate_client(
@@ -144,7 +144,7 @@ fn authenticate_impersonated_client(
         ClientIdentity {
             account,
             codex_home,
-            _directory_handles: handles,
+            directory_handles: handles,
         },
         token,
     ))
