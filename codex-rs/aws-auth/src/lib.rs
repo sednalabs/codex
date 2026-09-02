@@ -495,7 +495,7 @@ mod tests {
 
     #[test]
     fn frozen_signer_reuses_exact_credentials_for_multiple_requests() {
-        let signer = frozen_context("AKID-REUSED", "secret-reused", None);
+        let signer = frozen_context("AKID-REUSED", "secret-reused", /*session_token*/ None);
         let signed_a = signer
             .sign_at(
                 test_request(),
