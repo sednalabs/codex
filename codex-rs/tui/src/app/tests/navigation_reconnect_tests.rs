@@ -390,7 +390,19 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             let history = drain_history(&mut app, &mut tui, &mut session, &mut events).await?;
             assert!(history.contains("Cached previous conversation"));
 
-            let content = &history[history.find("Cached previous conversation").unwrap()..];
+            app.handle_tui_event(
+                &mut tui,
+                &mut session,
+                TuiEvent::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            )
+            .await?;
+            let preserved_history =
+                drain_history(&mut app, &mut tui, &mut session, &mut events).await?;
+            assert_eq!(preserved_history, history);
+
+            let content = &preserved_history[preserved_history
+                .find("Cached previous conversation")
+                .unwrap()..];
             assert_snapshot!(
                 "reconnected_unavailable_conversation",
                 format!(

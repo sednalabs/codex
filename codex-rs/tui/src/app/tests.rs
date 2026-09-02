@@ -38,6 +38,8 @@ mod startup;
 mod stream_animation_tests;
 #[path = "tests/thread_usage.rs"]
 mod thread_usage;
+#[path = "tests/transcript_composer.rs"]
+mod transcript_composer;
 #[path = "tests/turn_submission.rs"]
 mod turn_submission;
 
