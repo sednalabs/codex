@@ -26,7 +26,7 @@ pub fn apply_rollout_item(
         | RolloutItem::InterAgentCommunicationMetadata { .. } => {}
         RolloutItem::Compacted(_) => {}
         RolloutItem::WorldState(_) => {}
-        RolloutItem::SecurityRiskScore(_) => {}
+        RolloutItem::RetainedContext(_) | RolloutItem::SecurityRiskScore(_) => {}
         RolloutItem::RealtimeItem(_) => {}
         RolloutItem::TokenUsageRecord(_) => {}
     }
@@ -56,6 +56,7 @@ pub fn rollout_item_affects_thread_metadata(item: &RolloutItem) -> bool {
         | RolloutItem::InterAgentCommunicationMetadata { .. }
         | RolloutItem::Compacted(_)
         | RolloutItem::RealtimeItem(_)
+        | RolloutItem::RetainedContext(_)
         | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::WorldState(_) => false,

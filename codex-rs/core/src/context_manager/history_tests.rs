@@ -1121,9 +1121,24 @@ fn drop_last_n_user_turns_preserves_prefix() {
     ]);
     history.drop_last_n_user_turns(/*num_turns*/ 99);
     assert_eq!(
-        history.for_prompt(&modalities),
+        history.clone().for_prompt(&modalities),
         vec![assistant_msg("session prefix item")]
     );
+    // With no remaining instruction boundary, rollback must not revoke facts from a
+    // prior checkpoint merely because their source messages are no longer visible.
+    history.record_retained_context(&codex_history::RetainedContextEvent::VerifiedAnswer(
+        codex_history::VerifiedAnswer {
+            turn_id: "checkpoint-turn".to_owned(),
+            call_id: "ask-1".to_owned(),
+            questions: vec![codex_history::VerifiedQuestionAnswer {
+                question: "Upload?".to_owned(),
+                answer: "Only privately.".to_owned(),
+            }],
+        },
+    ));
+    let retained = history.retained_context().clone();
+    history.drop_last_n_user_turns(/*num_turns*/ 1);
+    assert_eq!(history.retained_context(), &retained);
 }
 
 #[test]

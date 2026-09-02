@@ -194,6 +194,7 @@ fn compacted_replacement_history_stores_metadata_in_an_aligned_sidecar() -> Resu
             },
             ResponseItemEnvelope::new(compaction_item.clone()),
         ]),
+        retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
         window_number: None,
@@ -304,6 +305,7 @@ fn compacted_metadata_remains_compatible_with_legacy_response_item_readers() -> 
     let compacted_line = serde_json::to_value(RolloutItem::Compacted(CompactedItem {
         message: "summary".to_string(),
         replacement_history: Some(vec![envelope]),
+        retained_context: None,
         guardian_history: Some(checkpoint.clone()),
         mcp_resource_origins: Some(McpResourceOriginCheckpoint::default()),
         window_number: None,
@@ -428,6 +430,15 @@ fn rollout_item_variants_preserve_existing_payload_shapes() -> Result<()> {
             "payload": { "type": "warning", "message": "heads up" },
         }),
         json!({
+            "type": "retained_context",
+            "payload": {
+                "type": "verified_answer",
+                "turn_id": "turn-1",
+                "call_id": "ask-1",
+                "questions": [{"question": "Publish?", "answer": "Only privately."}],
+            },
+        }),
+        json!({
             "type": "realtime_item",
             "payload": {
                 "id": "segment-1",
@@ -451,7 +462,7 @@ fn rollout_item_variants_preserve_existing_payload_shapes() -> Result<()> {
 fn rollout_item_schema_matches_tagged_payload_and_sibling_metadata() -> Result<()> {
     let schema = serde_json::to_value(schemars::schema_for!(RolloutItem))?;
     let variants = schema["oneOf"].as_array().expect("rollout variants");
-    assert_eq!(variants.len(), 11);
+    assert_eq!(variants.len(), 12);
 
     for variant in variants {
         let required = variant["required"].as_array().expect("required fields");
@@ -502,6 +513,7 @@ fn compacted_item_serializes_window_number_and_id() -> Result<()> {
     let item = CompactedItem {
         message: "summary".to_string(),
         replacement_history: None,
+        retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
         window_number: Some(3),
@@ -540,6 +552,7 @@ fn compacted_item_migrates_legacy_numeric_window_id() -> Result<()> {
         CompactedItem {
             message: "summary".to_string(),
             replacement_history: None,
+            retained_context: None,
             guardian_history: None,
             mcp_resource_origins: None,
             window_number: Some(3),

@@ -2224,6 +2224,7 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
     let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
         message: String::new(),
         replacement_history: Some(replacement_history.clone()),
+        retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
         window_number: Some(42),
@@ -2905,6 +2906,7 @@ fn latest_token_usage_record_stops_at_compaction_checkpoint() {
         RolloutItem::Compacted(CompactedItem {
             message: String::new(),
             replacement_history: None,
+            retained_context: None,
             guardian_history: None,
             mcp_resource_origins: None,
             window_number: None,
@@ -3516,6 +3518,7 @@ async fn start_new_context_window_persists_checkpoint_state() {
         | RolloutItem::InterAgentCommunicationMetadata { .. }
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
+        | RolloutItem::RetainedContext(_)
         | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::RealtimeItem(_)
@@ -3605,6 +3608,7 @@ async fn record_initial_history_assigns_and_persists_id_for_forked_response_item
         | RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
+        | RolloutItem::RetainedContext(_)
         | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::RealtimeItem(_)
@@ -4170,6 +4174,7 @@ async fn thread_rollback_restores_cleared_reference_context_item_after_compactio
                     .map(ResponseItemEnvelope::new)
                     .collect(),
             ),
+            retained_context: None,
             guardian_history: None,
             mcp_resource_origins: None,
             window_number: Some(7),
@@ -12447,6 +12452,7 @@ async fn sample_rollout(
     rollout_items.push(RolloutItem::Compacted(CompactedItem {
         message: summary1.to_string(),
         replacement_history: None,
+        retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
         window_number: Some(window_number),
@@ -12480,6 +12486,7 @@ async fn sample_rollout(
     rollout_items.push(RolloutItem::Compacted(CompactedItem {
         message: summary2.to_string(),
         replacement_history: None,
+        retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
         window_number: Some(window_number),

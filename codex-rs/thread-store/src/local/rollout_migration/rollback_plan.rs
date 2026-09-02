@@ -86,6 +86,7 @@ pub(super) struct RollbackPlanner {
     pending_user_response: Option<PendingUserResponse>,
     pending_delivery_boundary: Option<usize>,
     turn_boundaries: HashMap<String, usize>,
+    retained_fact_sources: Vec<(usize, String)>,
     compactions: Vec<CompactionFrame>,
     model_replay: ModelReplayPlanner,
 }
@@ -102,6 +103,7 @@ impl RollbackPlanner {
             pending_user_response: None,
             pending_delivery_boundary: None,
             turn_boundaries: HashMap::new(),
+            retained_fact_sources: Vec::new(),
             compactions: Vec::new(),
             model_replay: ModelReplayPlanner::new(),
         }
@@ -223,6 +225,13 @@ impl RollbackPlanner {
                 self.assign_targeted_record(index, Some(record.turn_id.as_str()));
             }
             RolloutItem::WorldState(_) | RolloutItem::RealtimeItem(_) => {}
+            RolloutItem::RetainedContext(codex_rollout::RetainedContextEvent::VerifiedAnswer(
+                answer,
+            )) => {
+                self.assign_targeted_record(index, Some(&answer.turn_id));
+                self.retained_fact_sources
+                    .push((index, answer.turn_id.clone()));
+            }
             RolloutItem::SecurityRiskScore(_) => self.record_boundaries[index] = None,
         }
 
@@ -235,12 +244,32 @@ impl RollbackPlanner {
             boundary_alive,
             compactions,
             model_replay,
+            turn_boundaries,
+            retained_fact_sources,
             ..
         } = self;
         let replay_anchor = model_replay.finish().empty_replacement_history_compaction;
+        let removed_turns = turn_boundaries
+            .iter()
+            .filter(|(_, boundary)| !boundary_alive[**boundary])
+            .map(|(turn_id, _)| turn_id.as_str())
+            .chain(
+                retained_fact_sources
+                    .iter()
+                    .filter(|(index, _)| {
+                        record_boundaries[*index].is_some_and(|boundary| !boundary_alive[boundary])
+                    })
+                    .map(|(_, turn_id)| turn_id.as_str()),
+            )
+            .collect::<Vec<_>>();
         let compacted_items = compactions
             .into_iter()
             .filter_map(|mut frame| {
+                // Migration removes rollback markers. Checkpoints must therefore carry
+                // the same surviving facts as their standalone source events.
+                if let Some(context) = &mut frame.item.retained_context {
+                    context.remove_turns(&removed_turns);
+                }
                 if Some(frame.record_index) == replay_anchor {
                     frame.item.replacement_history = Some(Vec::new());
                     frame.item.mcp_resource_origins = None;

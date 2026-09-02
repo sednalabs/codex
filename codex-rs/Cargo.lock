@@ -3183,6 +3183,7 @@ dependencies = [
  "codex-config",
  "codex-context-fragments",
  "codex-exec-server-protocol",
+ "codex-history",
  "codex-mcp",
  "codex-protocol",
  "codex-tools",

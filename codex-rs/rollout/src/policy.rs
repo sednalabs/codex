@@ -19,6 +19,7 @@ pub fn is_persisted_rollout_item(item: &RolloutItem, history_mode: ThreadHistory
         | RolloutItem::TurnContext(_)
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::WorldState(_)
+        | RolloutItem::RetainedContext(_)
         | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::SessionMeta(_) => true,
     }

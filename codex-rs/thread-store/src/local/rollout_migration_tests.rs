@@ -231,6 +231,7 @@ fn compacted(replacement_history: Vec<ResponseItem>) -> RolloutItem {
     RolloutItem::Compacted(CompactedItem {
         message: "checkpoint".to_string(),
         replacement_history: Some(replacement_history.into_iter().map(Into::into).collect()),
+        retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
         window_number: Some(1),
@@ -1076,6 +1077,23 @@ async fn migration_rolls_back_pre_compaction_turns_from_sqlite_history() {
         turns: vec!["keep-before-compaction".to_string()],
         current_turn_id: Some("keep-before-compaction".to_string()),
     });
+    let answer_event = serde_json::from_value(serde_json::json!({
+        "type": "verified_answer", "turn_id": "keep-before-compaction", "call_id": "ask-1",
+        "questions": [{"question": "Publish?", "answer": "Only privately."}]
+    }))
+    .expect("verified answer fixture");
+    let wake_answer_event = serde_json::from_value(serde_json::json!({
+        "type": "verified_answer", "turn_id": "empty-answer-turn", "call_id": "ask-2",
+        "questions": [{"question": "Continue?", "answer": "Keep it private."}]
+    }))
+    .expect("empty-turn answer fixture");
+    checkpoint.retained_context = Some(Default::default());
+    let context = checkpoint
+        .retained_context
+        .as_mut()
+        .expect("retained context");
+    context.record(&answer_event);
+    context.record(&wake_answer_event);
     let path = write_rollout(
         home.path(),
         thread_id,
@@ -1083,7 +1101,11 @@ async fn migration_rolls_back_pre_compaction_turns_from_sqlite_history() {
         vec![
             started("keep-before-compaction"),
             user_message("old question"),
+            RolloutItem::RetainedContext(answer_event),
             completed("keep-before-compaction"),
+            started("empty-answer-turn"),
+            RolloutItem::RetainedContext(wake_answer_event),
+            completed("empty-answer-turn"),
             RolloutItem::Compacted(checkpoint),
             started("remove-after-compaction"),
             user_message("new question"),
@@ -1113,7 +1135,13 @@ async fn migration_rolls_back_pre_compaction_turns_from_sqlite_history() {
         .await
         .expect("read rollback-through-compaction turns");
     assert_eq!(turns.turns.len(), 1);
-    let checkpoint = read_rollout(&path)
+    let migrated = read_rollout(&path);
+    assert!(
+        !migrated
+            .iter()
+            .any(|line| matches!(line.item, RolloutItem::RetainedContext(_)))
+    );
+    let checkpoint = migrated
         .into_iter()
         .find_map(|line| match line.item {
             RolloutItem::Compacted(item) => Some(item),
@@ -1122,6 +1150,14 @@ async fn migration_rolls_back_pre_compaction_turns_from_sqlite_history() {
         .expect("retained compaction");
     assert_eq!(checkpoint.replacement_history, Some(Vec::new()));
     assert_eq!(checkpoint.mcp_resource_origins, None);
+    assert_eq!(
+        checkpoint
+            .retained_context
+            .expect("retained context checkpoint")
+            .verified_answers()
+            .count(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -1410,6 +1446,7 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
             RolloutItem::Compacted(CompactedItem {
                 message: "superseded checkpoint".repeat(1024),
                 replacement_history: Some(Vec::new()),
+                retained_context: None,
                 guardian_history: None,
                 mcp_resource_origins: None,
                 window_number: Some(1),
@@ -1433,6 +1470,7 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
                     }
                     .into(),
                 ]),
+                retained_context: None,
                 guardian_history: None,
                 mcp_resource_origins: None,
                 window_number: Some(2),
