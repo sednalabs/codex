@@ -112,6 +112,7 @@ struct Payload {
 enum SetupMode {
     #[default]
     Full,
+    InteractiveProvision,
     ProvisionOnly,
     ReadAclsOnly,
 }
@@ -304,9 +305,9 @@ fn lock_sandbox_dir(
     setup_mode: SetupMode,
 ) -> Result<()> {
     // ProvisionOnly accepts another user's CODEX_HOME; keep its ACL mutation
-    // bound to a no-reparse handle without changing full setup behavior.
+    // bound to a no-reparse handle without changing interactive setup behavior.
     let directory = match setup_mode {
-        SetupMode::Full | SetupMode::ReadAclsOnly => {
+        SetupMode::Full | SetupMode::InteractiveProvision | SetupMode::ReadAclsOnly => {
             std::fs::create_dir_all(dir)?;
             None
         }
@@ -513,7 +514,9 @@ fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<(
     }
     match payload.mode {
         SetupMode::ReadAclsOnly => run_read_acl_only(payload, log),
-        SetupMode::ProvisionOnly => run_provision_only(payload, log, sbx_dir),
+        SetupMode::InteractiveProvision | SetupMode::ProvisionOnly => {
+            run_provision_only(payload, log, sbx_dir)
+        }
         SetupMode::Full => run_setup_full(payload, log, sbx_dir),
     }?;
     if writes_setup_marker {
@@ -1088,6 +1091,15 @@ mod tests {
         let payload: Payload = serde_json::from_value(payload).expect("payload");
 
         assert_eq!(payload.mode, super::SetupMode::ProvisionOnly);
+    }
+
+    #[test]
+    fn payload_accepts_interactive_provision_mode() {
+        let mut payload = payload_json();
+        payload["mode"] = json!("interactive-provision");
+        let payload: Payload = serde_json::from_value(payload).expect("payload");
+
+        assert_eq!(payload.mode, super::SetupMode::InteractiveProvision);
     }
 
     #[test]

@@ -216,13 +216,6 @@ pub fn require_logon_sandbox_creds(
                 codex_home,
                 proxy_enforced,
             },
-            crate::setup::SetupRootOverrides {
-                read_roots: Some(needed_read.clone()),
-                read_roots_include_platform_defaults,
-                write_roots: Some(needed_write.clone()),
-                deny_read_paths: Some(deny_read_paths_override.to_vec()),
-                deny_write_paths: Some(deny_write_paths_override.to_vec()),
-            },
             &desired_offline_proxy_settings,
         )?;
         identity = select_identity(network_identity, codex_home)?;

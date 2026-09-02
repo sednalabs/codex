@@ -693,6 +693,7 @@ struct ElevationPayload {
 #[serde(rename_all = "kebab-case")]
 enum SetupMode {
     Full,
+    InteractiveProvision,
     ProvisionOnly,
 }
 
@@ -1018,26 +1019,19 @@ fn run_setup_exe_payload(
     Ok(())
 }
 
-pub fn run_elevated_setup(
-    request: SandboxSetupRequest<'_>,
-    overrides: SetupRootOverrides,
-) -> Result<()> {
-    run_elevated_setup_inner(
-        request, overrides, /*offline_proxy_settings_override*/ None,
-    )
+pub fn run_elevated_setup(request: SandboxSetupRequest<'_>) -> Result<()> {
+    run_elevated_setup_inner(request, /*offline_proxy_settings_override*/ None)
 }
 
 pub(crate) fn run_elevated_setup_with_proxy_settings(
     request: SandboxSetupRequest<'_>,
-    overrides: SetupRootOverrides,
     offline_proxy_settings: &OfflineProxySettings,
 ) -> Result<()> {
-    run_elevated_setup_inner(request, overrides, Some(offline_proxy_settings))
+    run_elevated_setup_inner(request, Some(offline_proxy_settings))
 }
 
 fn run_elevated_setup_inner(
     request: SandboxSetupRequest<'_>,
-    overrides: SetupRootOverrides,
     offline_proxy_settings_override: Option<&OfflineProxySettings>,
 ) -> Result<()> {
     if !request.permissions.is_enforceable_by_windows_sandbox() {
@@ -1051,28 +1045,7 @@ fn run_elevated_setup_inner(
             format!("failed to create sandbox dir {}: {err}", sbx_dir.display()),
         )
     })?;
-    let (read_roots, write_roots) = build_payload_roots(&request, &overrides);
-    let deny_read_paths = build_payload_deny_read_paths(overrides.deny_read_paths);
-    let deny_write_paths = build_payload_deny_write_paths(&request, overrides.deny_write_paths);
-    let offline_proxy_settings =
-        offline_proxy_settings_for_request(&request, offline_proxy_settings_override);
-    let payload = ElevationPayload {
-        version: SETUP_VERSION,
-        offline_username: OFFLINE_USERNAME.to_string(),
-        online_username: ONLINE_USERNAME.to_string(),
-        codex_home: request.codex_home.to_path_buf(),
-        command_cwd: request.command_cwd.to_path_buf(),
-        read_roots,
-        write_roots,
-        deny_read_paths,
-        deny_write_paths,
-        proxy_ports: offline_proxy_settings.proxy_ports,
-        allow_local_binding: offline_proxy_settings.allow_local_binding,
-        real_user: std::env::var("USERNAME").unwrap_or_else(|_| "Administrators".to_string()),
-        otel: codex_otel::global_statsig_metrics_settings(),
-        mode: SetupMode::Full,
-        refresh_only: false,
-    };
+    let payload = elevated_provisioning_payload(&request, offline_proxy_settings_override);
     let needs_elevation = !is_elevated().map_err(|err| {
         failure(
             SetupErrorCode::OrchestratorElevationCheckFailed,
@@ -1080,6 +1053,31 @@ fn run_elevated_setup_inner(
         )
     })?;
     run_setup_exe(&payload, needs_elevation, request.codex_home)
+}
+
+fn elevated_provisioning_payload(
+    request: &SandboxSetupRequest<'_>,
+    offline_proxy_settings_override: Option<&OfflineProxySettings>,
+) -> ElevationPayload {
+    let offline_proxy_settings =
+        offline_proxy_settings_for_request(request, offline_proxy_settings_override);
+    ElevationPayload {
+        version: SETUP_VERSION,
+        offline_username: OFFLINE_USERNAME.to_string(),
+        online_username: ONLINE_USERNAME.to_string(),
+        codex_home: request.codex_home.to_path_buf(),
+        command_cwd: request.codex_home.to_path_buf(),
+        read_roots: Vec::new(),
+        write_roots: Vec::new(),
+        deny_read_paths: Vec::new(),
+        deny_write_paths: Vec::new(),
+        proxy_ports: offline_proxy_settings.proxy_ports,
+        allow_local_binding: offline_proxy_settings.allow_local_binding,
+        real_user: std::env::var("USERNAME").unwrap_or_else(|_| "Administrators".to_string()),
+        otel: codex_otel::global_statsig_metrics_settings(),
+        mode: SetupMode::InteractiveProvision,
+        refresh_only: false,
+    }
 }
 
 pub fn run_elevated_provisioning_setup(
@@ -1537,6 +1535,43 @@ mod tests {
             super::offline_proxy_settings_for_request(&request, Some(&explicit)),
             explicit
         );
+    }
+
+    #[test]
+    fn elevated_setup_payload_contains_no_caller_acl_roots() {
+        let tmp = TempDir::new().expect("tempdir");
+        let command_cwd = tmp.path().join("caller-workspace");
+        let codex_home = tmp.path().join("codex-home");
+        fs::create_dir_all(&command_cwd).expect("create workspace");
+        let permissions = permissions_for(
+            &workspace_write_profile(
+                workspace_roots_for(&command_cwd).as_slice(),
+                /*exclude_tmpdir_env_var*/ true,
+                /*exclude_slash_tmp*/ true,
+            ),
+            workspace_roots_for(&command_cwd).as_slice(),
+        );
+        let request = super::SandboxSetupRequest {
+            permissions: &permissions,
+            command_cwd: &command_cwd,
+            env_map: &HashMap::new(),
+            codex_home: &codex_home,
+            proxy_enforced: false,
+        };
+
+        let payload = super::elevated_provisioning_payload(
+            &request, /*offline_proxy_settings_override*/ None,
+        );
+
+        assert_eq!(payload.command_cwd, codex_home);
+        assert_eq!(payload.read_roots, Vec::<PathBuf>::new());
+        assert_eq!(payload.write_roots, Vec::<PathBuf>::new());
+        assert_eq!(payload.deny_read_paths, Vec::<PathBuf>::new());
+        assert_eq!(payload.deny_write_paths, Vec::<PathBuf>::new());
+        assert!(matches!(
+            payload.mode,
+            super::SetupMode::InteractiveProvision
+        ));
     }
 
     #[test]

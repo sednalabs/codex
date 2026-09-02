@@ -1780,22 +1780,11 @@ impl App {
                     let codex_home = self.config.codex_home.clone();
                     let tx = self.app_event_tx.clone();
 
-                    // If the elevated setup already ran on this machine, don't prompt for
-                    // elevation again - just flip the config to use the elevated path.
-                    if crate::windows_sandbox::sandbox_setup_is_complete(codex_home.as_path()) {
-                        tx.send(AppEvent::EnableWindowsSandboxForAgentMode {
-                            preset,
-                            mode: WindowsSandboxEnableMode::Elevated,
-                            profile_selection,
-                        });
-                        return Ok(AppRunControl::Continue);
-                    }
-
                     self.chat_widget.show_windows_sandbox_setup_status();
                     self.windows_sandbox.setup_started_at = Some(Instant::now());
                     let session_telemetry = self.session_telemetry.clone();
                     tokio::task::spawn_blocking(move || {
-                        let result = crate::windows_sandbox::run_elevated_setup(
+                        let result = crate::windows_sandbox::prepare_elevated_sandbox(
                             &permission_profile,
                             workspace_roots.as_slice(),
                             command_cwd.as_path(),
