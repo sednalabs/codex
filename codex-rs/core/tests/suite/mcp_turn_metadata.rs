@@ -528,6 +528,10 @@ async fn approved_mcp_tool_call_metadata_records_prior_user_input_request(
         .pointer("/params/_meta/x-codex-turn-metadata")
         .expect("MCP tools/call turn metadata");
     assert_eq!(
+        mcp_turn_metadata["codex_version"],
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(
         (
             mcp_turn_metadata.get("root_turn_id"),
             mcp_turn_metadata.get("parent_turn_id"),
