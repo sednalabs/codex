@@ -142,7 +142,7 @@ def prepare(prefix, receipts, target, output, format):
         for relative in sorted(selected):
             record, metadata = binaries[relative]
             destination = output / destinations[relative]
-            destination.parent.mkdir(exist_ok=True)
+            destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(prefix / relative, destination)
             if (
                 digest(destination) != record["sha256"]
