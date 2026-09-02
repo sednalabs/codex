@@ -117,7 +117,7 @@ impl PidBackend {
 
     #[cfg(any(unix, windows))]
     pub(crate) async fn start(&self) -> Result<Option<u32>> {
-        self.start_inner().await
+        self.start_inner(/*replacement*/ None).await
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -347,7 +347,7 @@ impl PidBackend {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     fn force_terminate_process(&self, pid: u32) -> Result<()> {
         match self.command_kind {
             PidCommandKind::AppServer { .. } => force_terminate_process(pid),
@@ -669,6 +669,10 @@ fn force_terminate_process(pid: u32) -> Result<()> {
 
 #[cfg(windows)]
 use force_terminate_process as terminate_process;
+
+#[cfg(windows)]
+#[path = "pid_windows.rs"]
+mod windows;
 
 #[cfg(any(unix, windows))]
 #[path = "pid_start.rs"]

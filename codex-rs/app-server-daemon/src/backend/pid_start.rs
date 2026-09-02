@@ -1,18 +1,21 @@
 //! Detached process launch and PID publication. Hold the reservation lock until
-//! the record is published.
+//! the record is published, and on Windows until an updater acknowledges startup.
 
 use super::PidBackend;
+#[cfg(windows)]
+use super::PidCommandKind;
 use super::PidFileState;
 use super::PidRecord;
 use super::read_process_start_time;
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::bail;
 use std::process::Stdio;
 use tokio::fs;
 use tokio::process::Command;
 
 impl PidBackend {
-    pub(super) async fn start_inner(&self) -> Result<Option<u32>> {
+    pub(super) async fn start_inner(&self, replacement: Option<PidRecord>) -> Result<Option<u32>> {
         if let Some(parent) = self.pid_file.parent() {
             codex_uds::prepare_private_socket_directory(parent)
                 .await
@@ -34,6 +37,16 @@ impl PidBackend {
                     match self.read_pid_file_state_with_lock_held().await? {
                         PidFileState::Missing => continue,
                         PidFileState::Running(record) => {
+                            if replacement.as_ref() == Some(&record) {
+                                break;
+                            }
+                            if replacement.is_some() {
+                                if self.record_is_active(&record).await? {
+                                    bail!("updater ownership changed before handoff");
+                                }
+                                // A failed rollback may leave the dead successor's record.
+                                break;
+                            }
                             if self.record_is_active(&record).await? {
                                 return Ok(None);
                             }
@@ -63,7 +76,9 @@ impl PidBackend {
         let stderr_log = match self.open_stderr_log().await {
             Ok(stderr_log) => stderr_log,
             Err(err) => {
-                let _ = fs::remove_file(&self.pid_file).await;
+                if replacement.is_none() {
+                    let _ = fs::remove_file(&self.pid_file).await;
+                }
                 return Err(err);
             }
         };
@@ -95,6 +110,13 @@ impl PidBackend {
             // Never retry inside the parent's Job Object: that would report a
             // successful launch that dies when the terminal/SSH session closes.
             command.creation_flags(DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB);
+            if matches!(self.command_kind, PidCommandKind::UpdateLoop) {
+                match fs::remove_file(self.pid_file.with_extension("ready")).await {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(err).context("failed to clear updater readiness"),
+                }
+            }
             let shutdown_file = self.pid_file.with_extension("shutdown");
             match fs::remove_file(&shutdown_file).await {
                 Ok(()) => {}
@@ -110,7 +132,9 @@ impl PidBackend {
         let child = match command.spawn() {
             Ok(child) => child,
             Err(err) => {
-                let _ = fs::remove_file(&self.pid_file).await;
+                if replacement.is_none() {
+                    let _ = fs::remove_file(&self.pid_file).await;
+                }
                 return Err(err).with_context(|| {
                     let job_hint = if cfg!(windows) {
                         " (the Windows host job must allow breakaway)"
@@ -145,7 +169,9 @@ impl PidBackend {
                 let mut context =
                     format!("failed to record pid-managed app-server process {pid} startup");
                 super::super::append_stderr_log_tail_context(&self.pid_file, &mut context).await;
-                let _ = fs::remove_file(&self.pid_file).await;
+                if replacement.is_none() {
+                    let _ = fs::remove_file(&self.pid_file).await;
+                }
                 return Err(err).context(context);
             }
         };
@@ -153,7 +179,9 @@ impl PidBackend {
         let temp_pid_file = self.pid_file.with_extension("pid.tmp");
         if let Err(err) = fs::write(&temp_pid_file, &contents).await {
             let _ = self.terminate_process(pid);
-            let _ = fs::remove_file(&self.pid_file).await;
+            if replacement.is_none() {
+                let _ = fs::remove_file(&self.pid_file).await;
+            }
             return Err(err).with_context(|| {
                 format!("failed to write pid temp file {}", temp_pid_file.display())
             });
@@ -161,10 +189,17 @@ impl PidBackend {
         if let Err(err) = fs::rename(&temp_pid_file, &self.pid_file).await {
             let _ = self.terminate_process(pid);
             let _ = fs::remove_file(&temp_pid_file).await;
-            let _ = fs::remove_file(&self.pid_file).await;
+            if replacement.is_none() {
+                let _ = fs::remove_file(&self.pid_file).await;
+            }
             return Err(err).with_context(|| {
                 format!("failed to publish pid file {}", self.pid_file.display())
             });
+        }
+        #[cfg(windows)]
+        if matches!(self.command_kind, PidCommandKind::UpdateLoop) {
+            self.finish_updater_start(&record, replacement.as_ref())
+                .await?;
         }
         drop(reservation_lock);
         Ok(Some(pid))

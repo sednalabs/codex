@@ -285,6 +285,169 @@ async fn stale_creation_time_never_stops_reused_pid() {
 }
 
 #[cfg(windows)]
+#[tokio::test]
+async fn failed_updater_handoff_preserves_predecessor_record() {
+    let temp = TempDir::new().expect("temp");
+    let state_dir = temp.path().join("state");
+    codex_uds::prepare_private_socket_directory(&state_dir)
+        .await
+        .expect("private state directory");
+    let backend = PidBackend::new_update_loop(
+        temp.path().join("missing-codex.exe"),
+        state_dir.join("updater.pid"),
+    );
+    let record = PidRecord {
+        pid: std::process::id(),
+        process_start_time: super::read_process_start_time(std::process::id())
+            .await
+            .unwrap(),
+    };
+    for record in [
+        record.clone(),
+        PidRecord {
+            process_start_time: "stale".into(),
+            ..record
+        },
+    ] {
+        tokio::fs::write(&backend.pid_file, serde_json::to_vec(&record).unwrap())
+            .await
+            .unwrap();
+        let error = backend.replace_current_updater().await.unwrap_err();
+        // Windows may reject breakaway before reporting the missing executable.
+        // Both must reach process I/O rather than rejecting stale ownership.
+        assert!(error.root_cause().is::<std::io::Error>(), "{error:#}");
+        assert_eq!(
+            backend.read_pid_file_state().await.unwrap(),
+            PidFileState::Running(record)
+        );
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn updater_readiness_and_post_publication_failure_preserve_ownership() {
+    use futures::FutureExt;
+    use windows_sys::Win32::Security::ImpersonateAnonymousToken;
+    use windows_sys::Win32::Security::RevertToSelf;
+    use windows_sys::Win32::System::Threading::GetCurrentThread;
+
+    let temp = TempDir::new().expect("temp");
+    let backend = PidBackend::new_update_loop(
+        temp.path().join("codex.exe"),
+        temp.path().join("updater.pid"),
+    );
+    let _lock = backend
+        .acquire_reservation_lock()
+        .await
+        .expect("reservation lock");
+    let mut child = tokio::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep 60",
+        ])
+        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("successor fixture");
+    let pid = child.id().expect("pid");
+    let successor = PidRecord {
+        pid,
+        process_start_time: super::read_process_start_time(pid)
+            .await
+            .expect("creation time"),
+    };
+    let predecessor = PidRecord {
+        pid: std::process::id(),
+        process_start_time: super::read_process_start_time(std::process::id())
+            .await
+            .expect("creation time"),
+    };
+    tokio::fs::write(&backend.pid_file, serde_json::to_vec(&successor).unwrap())
+        .await
+        .unwrap();
+    let ready = backend.pid_file.with_extension("ready");
+    tokio::fs::write(&ready, b"").await.unwrap();
+    backend
+        .finish_updater_start(&successor, Some(&predecessor))
+        .await
+        .expect("ready successor");
+    assert!(!ready.exists());
+    assert_eq!(
+        backend.read_pid_file_state().await.unwrap(),
+        PidFileState::Running(successor.clone())
+    );
+
+    // If cleanup cannot even query the successor, leave its ownership intact.
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                assert_ne!(unsafe { ImpersonateAnonymousToken(GetCurrentThread()) }, 0);
+                let result = backend
+                    .finish_updater_start(&successor, Some(&predecessor))
+                    .now_or_never();
+                let reverted = unsafe { RevertToSelf() };
+                assert_ne!(reverted, 0);
+                let error = result
+                    .expect("denied cleanup must not suspend")
+                    .unwrap_err();
+                assert_eq!(
+                    error
+                        .downcast_ref::<std::io::Error>()
+                        .unwrap()
+                        .raw_os_error(),
+                    Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32)
+                );
+            })
+            .join()
+            .expect("anonymous cleanup check");
+    });
+    assert_eq!(
+        backend.read_pid_file_state().await.unwrap(),
+        PidFileState::Running(successor.clone())
+    );
+
+    let reused_pid = PidRecord {
+        process_start_time: "stale".into(),
+        ..successor.clone()
+    };
+    assert!(
+        backend
+            .finish_updater_start(&reused_pid, Some(&predecessor))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        backend.read_pid_file_state().await.unwrap(),
+        PidFileState::Running(predecessor.clone())
+    );
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "PID reuse must not terminate another process"
+    );
+    tokio::fs::write(&backend.pid_file, serde_json::to_vec(&successor).unwrap())
+        .await
+        .unwrap();
+    // An invalid readiness path triggers cleanup while the successor is alive.
+    tokio::fs::create_dir(&ready).await.unwrap();
+    assert!(
+        backend
+            .finish_updater_start(&successor, Some(&predecessor))
+            .await
+            .is_err()
+    );
+    assert!(
+        child.try_wait().unwrap().is_some(),
+        "successor must exit before rollback"
+    );
+    assert_eq!(
+        backend.read_pid_file_state().await.unwrap(),
+        PidFileState::Running(predecessor)
+    );
+}
+
+#[cfg(windows)]
 #[test]
 fn inaccessible_reused_pid_is_stale_without_hiding_process_open_errors() {
     use futures::FutureExt;

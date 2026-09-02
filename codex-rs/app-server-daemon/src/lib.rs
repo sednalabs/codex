@@ -23,7 +23,7 @@ use codex_app_server_protocol::RemoteControlPairingStartResponse;
 use codex_app_server_transport::app_server_control_socket_path;
 use codex_utils_home_dir::find_codex_home;
 use managed_install::managed_codex_bin;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use managed_install::managed_codex_version;
 use serde::Serialize;
 use settings::DaemonSettings;
@@ -160,7 +160,7 @@ pub struct RemoteControlOutput {
     pub app_server_version: Option<String>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RestartIfRunningOutcome {
     Busy,
@@ -170,21 +170,21 @@ pub(crate) enum RestartIfRunningOutcome {
     Restarted,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RestartMode {
     IfVersionChanged,
     Always,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UpdaterRefreshMode {
     None,
     ReexecIfManagedBinaryChanged,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RestartDecision {
     NotReady,
@@ -363,7 +363,7 @@ impl Daemon {
             .await)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) async fn try_restart_if_running(
         &self,
         mode: RestartMode,
@@ -402,8 +402,17 @@ impl Daemon {
             RestartIfRunningOutcome::NotRunning
         };
 
+        #[cfg(unix)]
         if should_reexec_updater(updater_refresh_mode, outcome) {
             crate::update_loop::reexec_managed_updater(managed_codex_bin)?;
+        }
+        #[cfg(windows)]
+        if should_reexec_updater(updater_refresh_mode, outcome) {
+            backend::pid_update_loop_backend(
+                self.backend_paths_with_bin(&settings, managed_codex_bin),
+            )
+            .replace_current_updater()
+            .await?;
         }
 
         Ok(outcome)
@@ -683,12 +692,12 @@ impl Daemon {
         ))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn managed_codex_version_best_effort(&self) -> Option<String> {
         managed_codex_version(&self.managed_codex_bin).await.ok()
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     async fn managed_codex_version_best_effort(&self) -> Option<String> {
         None
     }
@@ -810,7 +819,7 @@ fn already_remote_control_status(mode: RemoteControlMode) -> RemoteControlStatus
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn restart_decision(
     mode: RestartMode,
     info: Option<&client::ProbeInfo>,
@@ -827,7 +836,7 @@ fn restart_decision(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn should_reexec_updater(
     updater_refresh_mode: UpdaterRefreshMode,
     outcome: RestartIfRunningOutcome,
@@ -857,7 +866,7 @@ fn try_lock_file(_file: &tokio::fs::File) -> Result<bool> {
     Ok(true)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
