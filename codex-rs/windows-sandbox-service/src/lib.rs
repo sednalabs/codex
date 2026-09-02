@@ -2,6 +2,10 @@ use anyhow::Result;
 
 #[cfg(windows)]
 mod ipc;
+// Provisioning remains disabled until authenticated transport connects this policy.
+#[cfg(windows)]
+#[allow(dead_code)]
+mod machine_policy;
 #[cfg(windows)]
 mod service;
 

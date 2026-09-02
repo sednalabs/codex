@@ -4977,7 +4977,12 @@ name = "codex-windows-sandbox-service"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "codex-cloud-config",
+ "codex-config",
+ "codex-core",
  "codex-windows-sandbox",
+ "tokio",
+ "toml 0.9.11+spec-1.1.0",
  "windows-sys 0.52.0",
 ]
 
