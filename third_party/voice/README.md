@@ -131,3 +131,19 @@ and `patchelf`; the latter constructs malformed inputs and is not needed during
 preparation or shipped in the runtime. The output is development-only, uses the
 host glibc, and does not establish musl or minimum-glibc support, dynamic-only
 dependency closure, helper loading policy or working voice.
+
+## Private Windows runtime preparation
+
+`windows_runtime.py` takes the same arguments for x64/ARM64 MSVC build prefixes.
+MSVC's existing `dumpbin` reads PE headers, dependencies and exports; the Python
+adapter applies package policy without walking binary structures.
+It checks bounded PE32+ import tables, uses case-insensitive DLL identities, and
+copies the seven plugins and their declared dependencies into one private `bin/`
+directory without changing DLL bytes. Delayed imports, managed DLLs and forwarded
+exports are unsupported and rejected. Native tests require MSVC and Python 3.12;
+they load the moved DLLs using only the DLL directory and System32 search flags.
+This development payload expects the Windows Universal CRT and the matching
+Microsoft Visual C++ runtime (`VCRUNTIME140.dll`) already installed. The latter
+is not a guaranteed OS component. Release redistribution/licensing, Authenticode
+policy and actual helper loading remain separate requirements; this script does
+not install or redistribute Microsoft runtime files or enable voice.
