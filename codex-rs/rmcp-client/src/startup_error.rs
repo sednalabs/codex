@@ -44,8 +44,7 @@ fn auth_error_requires_authentication(error: &AuthError) -> bool {
     // marker only when its erased message still identifies the structured invalid_grant response.
     matches!(
         error,
-        AuthError::AuthorizationRequired
-            | AuthError::TokenExpired
+        AuthError::AuthorizationRequired | AuthError::TokenExpired
     ) || refresh_error_requires_reauthorization(error)
 }
 
