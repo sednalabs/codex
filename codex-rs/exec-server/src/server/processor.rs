@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use codex_build_info::BuildInfo;
 use codex_exec_server_protocol::JSONRPCMessage;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -53,6 +54,8 @@ impl ConnectionProcessor {
         http_client_factory: HttpClientFactory,
         request_dispatch_mode: RequestDispatchMode,
     ) -> Self {
+        // Library callers may bypass CLI startup. Capture the version before serving clients.
+        let _ = BuildInfo::get();
         Self {
             session_registry: SessionRegistry::new(telemetry.clone()),
             runtime_paths,

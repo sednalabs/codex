@@ -94,6 +94,10 @@ pub struct InitializeResponse {
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentInfo {
     pub shell: ShellInfo,
+    /// Executor release version for version-based compatibility decisions.
+    /// `0.0.0` when unknown, including responses from legacy executors.
+    #[serde(default = "unknown_executor_version")]
+    pub executor_version: String,
     /// Working directory inherited by the exec-server process.
     #[serde(default)]
     pub cwd: Option<PathUri>,
@@ -113,6 +117,10 @@ pub struct EnvironmentInfo {
     /// Optional executor features that clients must gate before sending newer request fields.
     #[serde(default)]
     pub capabilities: EnvironmentCapabilities,
+}
+
+fn unknown_executor_version() -> String {
+    "0.0.0".to_string()
 }
 
 /// Features supported by the selected exec-server environment.
@@ -214,6 +222,7 @@ impl EnvironmentInfo {
 
         Self {
             shell: codex_shell_command::shell_detect::default_user_shell().into(),
+            executor_version: unknown_executor_version(),
             cwd: cwd.and_then(|cwd| PathUri::from_host_native_path(cwd).ok()),
             user_home_dir: PathUri::from_host_native_path("~").ok(),
             platform_os: Some(std::env::consts::OS.to_string()),
@@ -980,6 +989,7 @@ mod tests {
                     name: "zsh".to_string(),
                     path: "/bin/zsh".to_string(),
                 },
+                executor_version: "0.0.0".to_string(),
                 cwd: None,
                 user_home_dir: None,
                 platform_os: None,
@@ -1012,9 +1022,10 @@ mod tests {
     }
 
     #[test]
-    fn environment_info_preserves_executor_temporary_directories() {
+    fn environment_info_preserves_executor_metadata() {
         let expected = serde_json::json!({
             "shell": { "name": "powershell", "path": "powershell.exe" },
+            "executorVersion": "1.2.3-alpha.4",
             "cwd": null,
             "userHomeDir": "file:///C:/Users/remote",
             "platformOs": "windows",
@@ -1029,7 +1040,7 @@ mod tests {
             },
         });
         let info: EnvironmentInfo = serde_json::from_value(expected.clone())
-            .expect("environment info with executor temporary directories should deserialize");
+            .expect("environment info with executor metadata should deserialize");
 
         assert_eq!(
             serde_json::to_value(info).expect("environment info should serialize"),
