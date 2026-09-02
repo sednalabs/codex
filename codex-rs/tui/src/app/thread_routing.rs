@@ -715,7 +715,7 @@ impl App {
                                             self.thread_event_channels.get(&thread_id)
                                         {
                                             let mut store = channel.store.lock().await;
-                                            store.active_turn_id = Some(actual_turn_id.clone());
+                                            store.set_active_turn_id(actual_turn_id.clone());
                                         }
                                         steer_turn_id = actual_turn_id;
                                         retried_after_turn_mismatch = true;
@@ -727,7 +727,7 @@ impl App {
                                             self.thread_event_channels.get(&thread_id)
                                         {
                                             let mut store = channel.store.lock().await;
-                                            store.active_turn_id = Some(actual_turn_id);
+                                            store.set_active_turn_id(actual_turn_id);
                                         }
                                         return Err(error.into());
                                     }
@@ -803,7 +803,7 @@ impl App {
                     .wrap_err("review/start returned invalid review thread id")?;
                 let store = Arc::clone(&self.ensure_thread_channel(review_thread_id).store);
                 let mut store = store.lock().await;
-                store.active_turn_id = Some(response.turn.id);
+                store.set_active_turn_id(response.turn.id);
                 Ok(true)
             }
             AppCommand::CleanBackgroundTerminals => {

@@ -30,6 +30,7 @@ impl ChatWidget {
     /// avoid triggering side effects. Event ids are passed as `None` to
     /// distinguish replayed events from live ones.
     pub(crate) fn replay_thread_turns(&mut self, turns: Vec<Turn>, replay_kind: ReplayKind) {
+        let latest_turn_id = turns.last().map(|turn| turn.id.clone());
         let hidden_nested_review_turns = std::iter::once(/*value*/ false)
             .chain(turns.windows(/*size*/ 2).map(|turns| {
                 crate::app_backtrack::is_hidden_nested_review_turn(&turns[0], &turns[1])
@@ -41,7 +42,7 @@ impl ChatWidget {
                 items_view: _,
                 items,
                 status,
-                error,
+                mut error,
                 started_at,
                 completed_at,
                 duration_ms,
@@ -62,6 +63,15 @@ impl ChatWidget {
             } else {
                 status
             };
+            // A resolved historical precaution must not clear the restored draft or input queue.
+            if Some(&turn_id) != latest_turn_id.as_ref()
+                && error.as_ref().is_some_and(|error| {
+                    error.codex_error_info
+                        == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation)
+                })
+            {
+                error = None;
+            }
             if matches!(
                 status,
                 TurnStatus::Completed | TurnStatus::Interrupted | TurnStatus::Failed
