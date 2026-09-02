@@ -16,6 +16,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
 use tracing::warn;
 
 use super::BedrockApiKeyAuth;
@@ -84,6 +85,15 @@ impl AgentIdentityStorage {
             Self::Record(record) => Some(record),
         }
     }
+
+    pub(crate) fn matches_record(&self, record: &AgentIdentityAuthRecord) -> bool {
+        match self {
+            Self::Jwt(jwt) => AgentIdentityAuthRecord::from_agent_identity_jwt(jwt)
+                .ok()
+                .is_some_and(|stored| stored.same_credential(record)),
+            Self::Record(stored) => stored.same_credential(record),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
@@ -130,6 +140,13 @@ impl AgentIdentityAuthRecord {
 
         Ok(claims.into())
     }
+
+    pub(crate) fn same_credential(&self, other: &Self) -> bool {
+        self.agent_runtime_id == other.agent_runtime_id
+            && self.agent_private_key == other.agent_private_key
+            && self.account_id == other.account_id
+            && self.chatgpt_user_id == other.chatgpt_user_id
+    }
 }
 
 impl From<AgentIdentityJwtClaims> for AgentIdentityAuthRecord {
@@ -161,9 +178,270 @@ pub(super) fn delete_file_if_exists(codex_home: &Path) -> std::io::Result<bool> 
 }
 
 pub(super) trait AuthStorageBackend: Debug + Send + Sync {
+    /// This is a physical store operation. Implementations must not consult or
+    /// mutate another auth representation.
     fn load(&self) -> std::io::Result<Option<AuthDotJson>>;
+    /// This is a physical store operation. Policy belongs to AuthRepository.
     fn save(&self, auth: &AuthDotJson) -> std::io::Result<()>;
+    /// This is a physical store operation. Policy belongs to AuthRepository.
     fn delete(&self) -> std::io::Result<bool>;
+}
+
+/// The exact durable representation selected by a repository read.
+///
+/// `auth` is deliberately part of this snapshot: write-side callers must use
+/// it as a compare-and-update precondition rather than resolve Auto again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AuthStorageSource {
+    File,
+    DirectKeyring,
+    SecretsKeyring,
+    Ephemeral,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct LoadedAuth {
+    pub(super) source: AuthStorageSource,
+    pub(super) auth: AuthDotJson,
+}
+
+/// Coordinates configured auth policy over strictly source-local stores.
+///
+/// The lock is intentionally held across policy selection and compare/update
+/// operations. Individual stores never use it and never perform cross-store
+/// cleanup, which keeps a captured `LoadedAuth` a real authority boundary.
+#[derive(Clone, Debug)]
+pub(super) struct AuthRepository {
+    codex_home: PathBuf,
+    mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    file: Arc<FileAuthStorage>,
+    direct: Arc<DirectKeyringAuthStorage>,
+    secrets: Arc<SecretsKeyringAuthStorage>,
+    ephemeral: Arc<EphemeralAuthStorage>,
+}
+
+static AUTH_REPOSITORY_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+/// Holds both authority boundaries for one repository operation. The process
+/// mutex makes re-entrant in-process decisions deterministic; the OS lock is
+/// keyed by CODEX_HOME and remains held across the complete read/compare/write
+/// or read/compare/delete sequence for other Codex processes.
+struct AuthRepositoryTransaction<'a> {
+    _process_guard: MutexGuard<'a, ()>,
+    _file_lock: File,
+}
+
+impl AuthRepository {
+    fn new(
+        codex_home: PathBuf,
+        mode: AuthCredentialsStoreMode,
+        keyring_store: Arc<dyn KeyringStore>,
+        keyring_backend_kind: AuthKeyringBackendKind,
+    ) -> Self {
+        Self {
+            codex_home: codex_home.clone(),
+            mode,
+            keyring_backend_kind,
+            file: Arc::new(FileAuthStorage::new(codex_home.clone())),
+            direct: Arc::new(DirectKeyringAuthStorage::new(
+                codex_home.clone(),
+                Arc::clone(&keyring_store),
+            )),
+            secrets: Arc::new(SecretsKeyringAuthStorage::new(
+                codex_home.clone(),
+                keyring_store,
+            )),
+            ephemeral: Arc::new(EphemeralAuthStorage::new(codex_home)),
+        }
+    }
+
+    fn transaction(&self) -> std::io::Result<AuthRepositoryTransaction<'static>> {
+        let process_guard = AUTH_REPOSITORY_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("failed to lock auth repository"))?;
+        let lock_path = auth_repository_lock_path(&self.codex_home)?;
+        let lock_dir = lock_path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("auth repository lock path has no parent"))?;
+        std::fs::create_dir_all(&lock_dir)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            options.mode(0o600);
+        }
+        let file_lock = options.open(lock_path)?;
+        file_lock.lock()?;
+        Ok(AuthRepositoryTransaction {
+            _process_guard: process_guard,
+            _file_lock: file_lock,
+        })
+    }
+
+    fn selected_keyring_source(&self) -> AuthStorageSource {
+        match self.keyring_backend_kind {
+            AuthKeyringBackendKind::Direct => AuthStorageSource::DirectKeyring,
+            AuthKeyringBackendKind::Secrets => AuthStorageSource::SecretsKeyring,
+        }
+    }
+
+    fn storage(&self, source: AuthStorageSource) -> &dyn AuthStorageBackend {
+        match source {
+            AuthStorageSource::File => self.file.as_ref(),
+            AuthStorageSource::DirectKeyring => self.direct.as_ref(),
+            AuthStorageSource::SecretsKeyring => self.secrets.as_ref(),
+            AuthStorageSource::Ephemeral => self.ephemeral.as_ref(),
+        }
+    }
+
+    fn load_active_locked(&self) -> std::io::Result<Option<LoadedAuth>> {
+        let source = match self.mode {
+            AuthCredentialsStoreMode::File => AuthStorageSource::File,
+            AuthCredentialsStoreMode::Keyring => self.selected_keyring_source(),
+            AuthCredentialsStoreMode::Ephemeral => AuthStorageSource::Ephemeral,
+            AuthCredentialsStoreMode::Auto => {
+                let source = self.selected_keyring_source();
+                // A keyring read error is not evidence that no credential is
+                // present, so Auto must not silently select a shadow file.
+                return match self.storage(source).load()? {
+                    Some(auth) => Ok(Some(LoadedAuth { source, auth })),
+                    None => self.storage(AuthStorageSource::File).load().map(|auth| {
+                        auth.map(|auth| LoadedAuth {
+                            source: AuthStorageSource::File,
+                            auth,
+                        })
+                    }),
+                };
+            }
+        };
+        self.storage(source)
+            .load()
+            .map(|auth| auth.map(|auth| LoadedAuth { source, auth }))
+    }
+
+    pub(super) fn load_active(&self) -> std::io::Result<Option<LoadedAuth>> {
+        let _transaction = self.transaction()?;
+        self.load_active_locked()
+    }
+
+    pub(super) fn replace_for_login(&self, auth: &AuthDotJson) -> std::io::Result<LoadedAuth> {
+        let _transaction = self.transaction()?;
+        let source = match self.mode {
+            AuthCredentialsStoreMode::File => AuthStorageSource::File,
+            AuthCredentialsStoreMode::Keyring => self.selected_keyring_source(),
+            AuthCredentialsStoreMode::Ephemeral => AuthStorageSource::Ephemeral,
+            AuthCredentialsStoreMode::Auto => {
+                let keyring_source = self.selected_keyring_source();
+                // Fallback is safe only after the same locked observation
+                // positively established that the keyring is empty.
+                match self.storage(keyring_source).load()? {
+                    Some(_) => {
+                        self.storage(keyring_source).save(auth)?;
+                        keyring_source
+                    }
+                    None => match self.storage(keyring_source).save(auth) {
+                        Ok(()) => keyring_source,
+                        Err(err) => {
+                            // A failed save is not proof of no mutation: some
+                            // keyring implementations can durably write and
+                            // still return an error. Re-read the exact source
+                            // under this transaction before considering the
+                            // only safe File fallback.
+                            match self.storage(keyring_source).load()? {
+                                None => {
+                                    warn!(
+                                        "failed to save auth to empty keyring; using file store: {err}"
+                                    );
+                                    self.storage(AuthStorageSource::File).save(auth)?;
+                                    AuthStorageSource::File
+                                }
+                                Some(_) => {
+                                    return Err(std::io::Error::other(format!(
+                                        "keyring save failed after changing or retaining auth state: {err}"
+                                    )));
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        };
+        let loaded = self
+            .load_active_locked()?
+            .ok_or_else(|| std::io::Error::other("auth disappeared after save"))?;
+        if loaded.source != source || loaded.auth != *auth {
+            return Err(std::io::Error::other(
+                "auth storage selected a different source or credential after save",
+            ));
+        }
+        Ok(LoadedAuth {
+            source,
+            auth: loaded.auth,
+        })
+    }
+
+    pub(super) fn update_if_unchanged(
+        &self,
+        expected: &LoadedAuth,
+        updated: &AuthDotJson,
+    ) -> std::io::Result<LoadedAuth> {
+        let _transaction = self.transaction()?;
+        if self.storage(expected.source).load()?.as_ref() != Some(&expected.auth) {
+            return Err(std::io::Error::other("auth changed before update"));
+        }
+        self.storage(expected.source).save(updated)?;
+        Ok(LoadedAuth {
+            source: expected.source,
+            auth: updated.clone(),
+        })
+    }
+
+    pub(super) fn delete_if_matches(&self, expected: &LoadedAuth) -> std::io::Result<bool> {
+        let _transaction = self.transaction()?;
+        if self.storage(expected.source).load()?.as_ref() != Some(&expected.auth) {
+            return Ok(false);
+        }
+        self.storage(expected.source).delete()
+    }
+
+    /// User-initiated logout is deliberately independent of the configured
+    /// policy. All stores are attempted even after one fails.
+    pub(super) fn logout_all(&self) -> std::io::Result<bool> {
+        let _transaction = self.transaction()?;
+        let mut removed = false;
+        let mut failures = Vec::new();
+        for source in [
+            AuthStorageSource::Ephemeral,
+            AuthStorageSource::File,
+            AuthStorageSource::DirectKeyring,
+            AuthStorageSource::SecretsKeyring,
+        ] {
+            match self.storage(source).delete() {
+                Ok(value) => removed |= value,
+                Err(err) => failures.push(format!("{source:?}: {err}")),
+            }
+        }
+        if failures.is_empty() {
+            Ok(removed)
+        } else {
+            Err(std::io::Error::other(format!(
+                "partial auth logout; attempted all stores; failures: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+}
+
+fn auth_repository_lock_path(codex_home: &Path) -> std::io::Result<PathBuf> {
+    let canonical_home = codex_home
+        .canonicalize()
+        .unwrap_or_else(|_| codex_home.to_path_buf());
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_home.to_string_lossy().as_bytes());
+    Ok(std::env::temp_dir()
+        .join("codex-auth-repository-locks")
+        .join(digest_hex(hasher.finalize())))
 }
 
 #[derive(Clone, Debug)]
@@ -310,29 +588,22 @@ impl AuthStorageBackend for DirectKeyringAuthStorage {
         // Simpler error mapping per style: prefer method reference over closure
         let serialized = serde_json::to_string(auth).map_err(std::io::Error::other)?;
         self.save_to_keyring(&key, &serialized)?;
-        if let Err(err) = delete_file_if_exists(&self.codex_home) {
-            warn!("failed to remove CLI auth fallback file: {err}");
-        }
         Ok(())
     }
 
     fn delete(&self) -> std::io::Result<bool> {
         let key = compute_store_key(&self.codex_home)?;
-        let keyring_removed = self
-            .keyring_store
+        self.keyring_store
             .delete(KEYRING_SERVICE, &key)
             .map_err(|err| {
                 std::io::Error::other(format!("failed to delete auth from keyring: {err}"))
-            })?;
-        let file_removed = delete_file_if_exists(&self.codex_home)?;
-        Ok(keyring_removed || file_removed)
+            })
     }
 }
 
 #[derive(Clone)]
 struct SecretsKeyringAuthStorage {
     codex_home: PathBuf,
-    direct_storage: DirectKeyringAuthStorage,
     secrets_manager: SecretsManager,
 }
 
@@ -346,8 +617,6 @@ impl Debug for SecretsKeyringAuthStorage {
 
 impl SecretsKeyringAuthStorage {
     fn new(codex_home: PathBuf, keyring_store: Arc<dyn KeyringStore>) -> Self {
-        let direct_storage =
-            DirectKeyringAuthStorage::new(codex_home.clone(), Arc::clone(&keyring_store));
         let secrets_manager = SecretsManager::new_with_keyring_store_and_namespace(
             codex_home.clone(),
             SecretsBackendKind::Local,
@@ -356,7 +625,6 @@ impl SecretsKeyringAuthStorage {
         );
         Self {
             codex_home,
-            direct_storage,
             secrets_manager,
         }
     }
@@ -391,75 +659,17 @@ impl AuthStorageBackend for SecretsKeyringAuthStorage {
                 warn!("{message}");
                 std::io::Error::other(message)
             })?;
-        if let Err(err) = delete_file_if_exists(&self.codex_home) {
-            warn!("failed to remove CLI auth fallback file: {err}");
-        }
         Ok(())
     }
 
     fn delete(&self) -> std::io::Result<bool> {
-        let keyring_removed = self
-            .secrets_manager
+        self.secrets_manager
             .delete(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME)
             .map_err(|err| {
                 std::io::Error::other(format!(
                     "failed to delete auth from encrypted auth storage: {err}"
                 ))
-            })?;
-        let file_removed = delete_file_if_exists(&self.codex_home)?;
-        let direct_removed = self.direct_storage.delete()?;
-        Ok(keyring_removed || file_removed || direct_removed)
-    }
-}
-
-#[derive(Clone, Debug)]
-struct AutoAuthStorage {
-    keyring_storage: Arc<dyn AuthStorageBackend>,
-    file_storage: Arc<FileAuthStorage>,
-}
-
-impl AutoAuthStorage {
-    fn new(
-        codex_home: PathBuf,
-        keyring_store: Arc<dyn KeyringStore>,
-        keyring_backend_kind: AuthKeyringBackendKind,
-    ) -> Self {
-        Self {
-            keyring_storage: create_keyring_auth_storage(
-                codex_home.clone(),
-                keyring_store,
-                keyring_backend_kind,
-            ),
-            file_storage: Arc::new(FileAuthStorage::new(codex_home)),
-        }
-    }
-}
-
-impl AuthStorageBackend for AutoAuthStorage {
-    fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
-        match self.keyring_storage.load() {
-            Ok(Some(auth)) => Ok(Some(auth)),
-            Ok(None) => self.file_storage.load(),
-            Err(err) => {
-                warn!("failed to load CLI auth from keyring, falling back to file storage: {err}");
-                self.file_storage.load()
-            }
-        }
-    }
-
-    fn save(&self, auth: &AuthDotJson) -> std::io::Result<()> {
-        match self.keyring_storage.save(auth) {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                warn!("failed to save auth to keyring, falling back to file storage: {err}");
-                self.file_storage.save(auth)
-            }
-        }
-    }
-
-    fn delete(&self) -> std::io::Result<bool> {
-        // Keyring storage will delete from disk as well
-        self.keyring_storage.delete()
+            })
     }
 }
 
@@ -515,6 +725,29 @@ pub(super) fn create_auth_storage(
     create_auth_storage_with_store(codex_home, mode, keyring_store, keyring_backend_kind)
 }
 
+pub(super) fn create_auth_repository(
+    codex_home: PathBuf,
+    mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> Arc<AuthRepository> {
+    let keyring_store: Arc<dyn KeyringStore> = Arc::new(DefaultKeyringStore);
+    Arc::new(create_auth_repository_with_store(
+        codex_home,
+        mode,
+        keyring_store,
+        keyring_backend_kind,
+    ))
+}
+
+fn create_auth_repository_with_store(
+    codex_home: PathBuf,
+    mode: AuthCredentialsStoreMode,
+    keyring_store: Arc<dyn KeyringStore>,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> AuthRepository {
+    AuthRepository::new(codex_home, mode, keyring_store, keyring_backend_kind)
+}
+
 fn create_auth_storage_with_store(
     codex_home: PathBuf,
     mode: AuthCredentialsStoreMode,
@@ -526,11 +759,9 @@ fn create_auth_storage_with_store(
         AuthCredentialsStoreMode::Keyring => {
             create_keyring_auth_storage(codex_home, keyring_store, keyring_backend_kind)
         }
-        AuthCredentialsStoreMode::Auto => Arc::new(AutoAuthStorage::new(
-            codex_home,
-            keyring_store,
-            keyring_backend_kind,
-        )),
+        AuthCredentialsStoreMode::Auto => {
+            unreachable!("Auto policy must be accessed through AuthRepository")
+        }
         AuthCredentialsStoreMode::Ephemeral => Arc::new(EphemeralAuthStorage::new(codex_home)),
     }
 }
