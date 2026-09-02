@@ -3,6 +3,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use codex_windows_sandbox::string_from_sid_bytes;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::path::Path;
@@ -20,6 +21,10 @@ use super::request::ProvisioningRequest;
 pub(super) struct ClientIdentity {
     pub(super) account: String,
     pub(super) codex_home: PathBuf,
+    pub(super) user_sid: String,
+    pub(super) session_id: u32,
+    pub(super) token: OwnedHandle,
+    pub(super) desktop_installation: Option<crate::installation_record::DesktopInstallation>,
     // Retained by both the service and helper throughout provisioning.
     pub(super) directory_handles: Vec<OwnedHandle>,
 }
@@ -38,7 +43,7 @@ pub(super) fn authenticate_client(
                         .context("impersonate provisioning client");
                 }
 
-                let (identity, token) = authenticate_impersonated_client(
+                let identity = authenticate_impersonated_client(
                     authorized_process,
                     sandbox_sid,
                     &request.codex_home,
@@ -47,7 +52,7 @@ pub(super) fn authenticate_client(
                     &identity.codex_home,
                     &request.settings,
                     &request.listeners,
-                    token.0,
+                    identity.token.0,
                 );
                 Ok((identity, policy_result))
             })
@@ -60,7 +65,7 @@ fn authenticate_impersonated_client(
     authorized_process: &crate::package_identity::AuthorizedClientProcess,
     sandbox_sid: &[u8],
     requested_home: &Path,
-) -> Result<(ClientIdentity, OwnedHandle)> {
+) -> Result<ClientIdentity> {
     let mut raw_token = 0;
     if unsafe {
         threading::OpenThreadToken(
@@ -138,16 +143,34 @@ fn authenticate_impersonated_client(
     let sid = unsafe { ptr::read_unaligned(user.as_ptr().cast::<security::TOKEN_USER>()) }
         .User
         .Sid;
+    let sid_length = unsafe { security::GetLengthSid(sid) };
+    if sid_length == 0 {
+        return Err(std::io::Error::last_os_error()).context("size provisioning client SID");
+    }
+    let user_sid = string_from_sid_bytes(unsafe {
+        std::slice::from_raw_parts(sid.cast::<u8>(), sid_length as usize)
+    })
+    .map_err(anyhow::Error::msg)?;
     let account = account_name(sid)?;
     let (codex_home, handles) = prepare_codex_home(requested_home)?;
-    Ok((
-        ClientIdentity {
-            account,
-            codex_home,
-            directory_handles: handles,
-        },
+    let desktop_installation =
+        crate::installation_record::read_desktop_installation(&codex_home, token.0)
+            .inspect_err(|_| {
+                crate::service::log_error(
+                    crate::service::EVENT_SERVICE_FAILED,
+                    "unable to read desktop directory ownership; preserving desktop directories",
+                );
+            })
+            .ok();
+    Ok(ClientIdentity {
+        account,
+        codex_home,
+        user_sid,
+        session_id: session,
         token,
-    ))
+        desktop_installation,
+        directory_handles: handles,
+    })
 }
 
 fn account_name(sid: *mut c_void) -> Result<String> {

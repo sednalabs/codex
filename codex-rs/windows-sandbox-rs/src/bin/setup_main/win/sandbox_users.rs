@@ -63,6 +63,7 @@ pub(super) fn provision_sandbox_users(
     codex_home: &Path,
     offline_username: &str,
     online_username: &str,
+    new_user_flags: u32,
     log: &mut dyn Write,
     mode: SetupMode,
 ) -> Result<()> {
@@ -80,8 +81,8 @@ pub(super) fn provision_sandbox_users(
     )?;
     let offline_password = random_password();
     let online_password = random_password();
-    ensure_sandbox_user(offline_username, &offline_password, log)?;
-    ensure_sandbox_user(online_username, &online_password, log)?;
+    ensure_sandbox_user(offline_username, &offline_password, new_user_flags, log)?;
+    ensure_sandbox_user(online_username, &online_password, new_user_flags, log)?;
     write_secrets(
         codex_home,
         offline_username,
@@ -93,13 +94,23 @@ pub(super) fn provision_sandbox_users(
     Ok(())
 }
 
-pub fn ensure_sandbox_user(username: &str, password: &str, log: &mut dyn Write) -> Result<()> {
-    ensure_local_user(username, password, log)?;
+pub fn ensure_sandbox_user(
+    username: &str,
+    password: &str,
+    new_user_flags: u32,
+    log: &mut dyn Write,
+) -> Result<()> {
+    ensure_local_user(username, password, new_user_flags, log)?;
     ensure_local_group_member(SANDBOX_USERS_GROUP, username)?;
     Ok(())
 }
 
-pub fn ensure_local_user(name: &str, password: &str, log: &mut dyn Write) -> Result<()> {
+pub fn ensure_local_user(
+    name: &str,
+    password: &str,
+    new_user_flags: u32,
+    log: &mut dyn Write,
+) -> Result<()> {
     let name_w = to_wide(OsStr::new(name));
     let pwd_w = to_wide(OsStr::new(password));
     unsafe {
@@ -110,7 +121,7 @@ pub fn ensure_local_user(name: &str, password: &str, log: &mut dyn Write) -> Res
             usri1_priv: USER_PRIV_USER,
             usri1_home_dir: std::ptr::null_mut(),
             usri1_comment: std::ptr::null_mut(),
-            usri1_flags: UF_SCRIPT | UF_DONT_EXPIRE_PASSWD,
+            usri1_flags: UF_SCRIPT | UF_DONT_EXPIRE_PASSWD | new_user_flags,
             usri1_script_path: std::ptr::null_mut(),
         };
         let status = NetUserAdd(

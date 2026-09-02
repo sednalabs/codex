@@ -165,7 +165,7 @@ fn package_family_name(
     ))
 }
 
-fn token_user(token: HANDLE) -> Result<Vec<u8>> {
+pub(crate) fn token_user(token: HANDLE) -> Result<Vec<u8>> {
     let mut length = 0;
     unsafe {
         security::GetTokenInformation(token, security::TokenUser, ptr::null_mut(), 0, &mut length)

@@ -11,6 +11,7 @@ use codex_windows_sandbox::SETUP_VERSION;
 use codex_windows_sandbox::SetupErrorCode;
 use codex_windows_sandbox::SetupErrorReport;
 use codex_windows_sandbox::SetupFailure;
+use codex_windows_sandbox::acquire_sandbox_setup_lock;
 use codex_windows_sandbox::add_deny_write_ace;
 use codex_windows_sandbox::convert_string_sid_to_sid;
 use codex_windows_sandbox::ensure_allow_mask_aces_with_inheritance;
@@ -18,6 +19,7 @@ use codex_windows_sandbox::ensure_allow_write_aces;
 use codex_windows_sandbox::extract_setup_failure;
 use codex_windows_sandbox::hide_newly_created_users;
 use codex_windows_sandbox::install_wfp_filters;
+use codex_windows_sandbox::local_user_flags;
 use codex_windows_sandbox::log_note;
 use codex_windows_sandbox::log_writer;
 use codex_windows_sandbox::open_directory_no_reparse;
@@ -27,6 +29,7 @@ use codex_windows_sandbox::resolve_sid;
 use codex_windows_sandbox::sandbox_bin_dir;
 use codex_windows_sandbox::sandbox_dir;
 use codex_windows_sandbox::sandbox_secrets_dir;
+use codex_windows_sandbox::set_local_user_flags;
 use codex_windows_sandbox::setup_error_path;
 use codex_windows_sandbox::setup_log_writer;
 use codex_windows_sandbox::string_from_sid_bytes;
@@ -52,6 +55,7 @@ use std::sync::mpsc;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HLOCAL;
 use windows_sys::Win32::Foundation::LocalFree;
+use windows_sys::Win32::NetworkManagement::NetManagement::UF_ACCOUNTDISABLE;
 use windows_sys::Win32::Security::ACL;
 use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
 use windows_sys::Win32::Security::Authorization::EXPLICIT_ACCESS_W;
@@ -75,6 +79,7 @@ use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
 use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
 use windows_sys::Win32::Storage::FileSystem::WRITE_DAC;
+use windows_sys::Win32::System::Threading::INFINITE;
 
 const DENY_ACCESS: i32 = 3;
 #[cfg(test)]
@@ -655,15 +660,26 @@ fn run_read_acl_only(payload: &Payload, log: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
-fn provision_and_hide_sandbox_users(
-    payload: &Payload,
-    log: &mut dyn Write,
-    sbx_dir: &Path,
-) -> Result<()> {
+fn provision_sandbox(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
+    let _setup_lock = acquire_sandbox_setup_lock(INFINITE)?;
+    let mut repairing_disabled_accounts = false;
+    for username in [&payload.offline_username, &payload.online_username] {
+        if local_user_flags(username)?.is_some_and(|flags| flags & UF_ACCOUNTDISABLE != 0) {
+            repairing_disabled_accounts = true;
+        }
+    }
+    // Interrupted cleanup can leave one account missing and the other disabled. Keep any
+    // replacement disabled too until this repair has restored the network restrictions.
+    let new_user_flags = if repairing_disabled_accounts {
+        UF_ACCOUNTDISABLE
+    } else {
+        0
+    };
     let provision_result = provision_sandbox_users(
         &payload.codex_home,
         &payload.offline_username,
         &payload.online_username,
+        new_user_flags,
         log,
         payload.mode,
     );
@@ -681,6 +697,36 @@ fn provision_and_hide_sandbox_users(
         payload.online_username.clone(),
     ];
     hide_newly_created_users(&users, sbx_dir);
+    let offline_sid = resolve_sid(&payload.offline_username).map_err(|err| {
+        anyhow::Error::new(SetupFailure::new(
+            SetupErrorCode::HelperSidResolveFailed,
+            format!(
+                "resolve SID for offline user {} failed: {err}",
+                payload.offline_username
+            ),
+        ))
+    })?;
+    let offline_sid_str = string_from_sid_bytes(&offline_sid).map_err(anyhow::Error::msg)?;
+    configure_offline_sandbox_network(payload, &offline_sid_str, log)?;
+    let wfp_result = install_wfp_filters(
+        &payload.codex_home,
+        &payload.offline_username,
+        payload.otel.as_ref(),
+        |message| {
+            let _ = log_line(log, message);
+        },
+    );
+    if repairing_disabled_accounts {
+        // Ordinary setup keeps its best-effort WFP behavior. Recovery must not reopen logons
+        // after cleanup removed protections unless restoring those protections succeeded.
+        wfp_result?;
+        for username in [&payload.offline_username, &payload.online_username] {
+            let flags = local_user_flags(username)?.ok_or_else(|| {
+                anyhow::anyhow!("sandbox user {username} disappeared during repair")
+            })?;
+            set_local_user_flags(username, flags & !UF_ACCOUNTDISABLE)?;
+        }
+    }
     Ok(())
 }
 
@@ -714,14 +760,6 @@ fn configure_offline_sandbox_network(
             format!("ensure offline outbound block failed: {err}"),
         )));
     }
-    install_wfp_filters(
-        &payload.codex_home,
-        &payload.offline_username,
-        payload.otel.as_ref(),
-        |message| {
-            let _ = log_line(log, message);
-        },
-    );
     Ok(())
 }
 
@@ -794,17 +832,7 @@ fn lock_sandbox_bin_dir(payload: &Payload, sandbox_group_sid: &[u8]) -> Result<(
 }
 
 fn run_provision_only(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
-    provision_and_hide_sandbox_users(payload, log, sbx_dir)?;
-    let offline_sid = resolve_sid(&payload.offline_username).map_err(|err| {
-        anyhow::Error::new(SetupFailure::new(
-            SetupErrorCode::HelperSidResolveFailed,
-            format!(
-                "resolve SID for offline user {} failed: {err}",
-                payload.offline_username
-            ),
-        ))
-    })?;
-    let offline_sid_str = string_from_sid_bytes(&offline_sid).map_err(anyhow::Error::msg)?;
+    provision_sandbox(payload, log, sbx_dir)?;
 
     let sandbox_group_sid = resolve_sandbox_users_group_sid().map_err(|err| {
         anyhow::Error::new(SetupFailure::new(
@@ -812,8 +840,6 @@ fn run_provision_only(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) ->
             format!("resolve sandbox users group SID failed: {err}"),
         ))
     })?;
-
-    configure_offline_sandbox_network(payload, &offline_sid_str, log)?;
 
     lock_sandbox_bin_dir(payload, &sandbox_group_sid)?;
     lock_persistent_sandbox_dirs(payload, &sandbox_group_sid)?;
@@ -824,18 +850,8 @@ fn run_provision_only(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) ->
 fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
     let refresh_only = payload.refresh_only;
     if !refresh_only {
-        provision_and_hide_sandbox_users(payload, log, sbx_dir)?;
+        provision_sandbox(payload, log, sbx_dir)?;
     }
-    let offline_sid = resolve_sid(&payload.offline_username).map_err(|err| {
-        anyhow::Error::new(SetupFailure::new(
-            SetupErrorCode::HelperSidResolveFailed,
-            format!(
-                "resolve SID for offline user {} failed: {err}",
-                payload.offline_username
-            ),
-        ))
-    })?;
-    let offline_sid_str = string_from_sid_bytes(&offline_sid).map_err(anyhow::Error::msg)?;
 
     let sandbox_group_sid = resolve_sandbox_users_group_sid().map_err(|err| {
         anyhow::Error::new(SetupFailure::new(
@@ -853,9 +869,6 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
         string_from_sid_bytes(&sandbox_group_sid).map_err(anyhow::Error::msg)?;
 
     let mut refresh_errors: Vec<String> = Vec::new();
-    if !refresh_only {
-        configure_offline_sandbox_network(payload, &offline_sid_str, log)?;
-    }
 
     // Deny-read ACEs must be present before the sandboxed command starts. Apply
     // them synchronously here instead of delegating them to the background

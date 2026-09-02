@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::Result;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
@@ -7,7 +8,13 @@ use windows_sys::Win32::Foundation::HLOCAL;
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::NetworkManagement::NetManagement::LOCALGROUP_INFO_1;
 use windows_sys::Win32::NetworkManagement::NetManagement::NERR_Success;
+use windows_sys::Win32::NetworkManagement::NetManagement::NERR_UserNotFound;
+use windows_sys::Win32::NetworkManagement::NetManagement::NetApiBufferFree;
 use windows_sys::Win32::NetworkManagement::NetManagement::NetLocalGroupAdd;
+use windows_sys::Win32::NetworkManagement::NetManagement::NetUserGetInfo;
+use windows_sys::Win32::NetworkManagement::NetManagement::NetUserSetInfo;
+use windows_sys::Win32::NetworkManagement::NetManagement::USER_INFO_1;
+use windows_sys::Win32::NetworkManagement::NetManagement::USER_INFO_1008;
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
 use windows_sys::Win32::Security::CopySid;
@@ -134,6 +141,50 @@ const SID_USERS: &str = "S-1-5-32-545";
 const SID_AUTHENTICATED_USERS: &str = "S-1-5-11";
 const SID_EVERYONE: &str = "S-1-1-0";
 const SID_SYSTEM: &str = "S-1-5-18";
+
+pub fn local_user_flags(name: &str) -> Result<Option<u32>> {
+    let name_wide = to_wide(name);
+    let mut buffer = std::ptr::null_mut();
+    let status = unsafe {
+        NetUserGetInfo(
+            std::ptr::null(),
+            name_wide.as_ptr(),
+            /*level*/ 1,
+            &mut buffer,
+        )
+    };
+    if status == NERR_UserNotFound {
+        return Ok(None);
+    }
+    if status != NERR_Success {
+        return Err(std::io::Error::from_raw_os_error(status as i32))
+            .with_context(|| format!("read local sandbox user {name}"));
+    }
+    let flags = unsafe { (*buffer.cast::<USER_INFO_1>()).usri1_flags };
+    unsafe { NetApiBufferFree(buffer.cast()) };
+    Ok(Some(flags))
+}
+
+pub fn set_local_user_flags(name: &str, flags: u32) -> Result<()> {
+    let name_wide = to_wide(name);
+    let info = USER_INFO_1008 {
+        usri1008_flags: flags,
+    };
+    let status = unsafe {
+        NetUserSetInfo(
+            std::ptr::null(),
+            name_wide.as_ptr(),
+            /*level*/ 1008,
+            (&raw const info).cast(),
+            std::ptr::null_mut(),
+        )
+    };
+    if status != NERR_Success {
+        return Err(std::io::Error::from_raw_os_error(status as i32))
+            .with_context(|| format!("set local sandbox user {name} flags"));
+    }
+    Ok(())
+}
 
 pub fn ensure_sandbox_users_group() -> Result<Vec<u8>> {
     const ERROR_ALIAS_EXISTS: u32 = 1379;

@@ -1,6 +1,8 @@
 use crate::dpapi;
 use crate::logging::debug_log;
 use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
+use crate::setup::OFFLINE_USERNAME;
+use crate::setup::ONLINE_USERNAME;
 use crate::setup::SandboxNetworkIdentity;
 use crate::setup::SandboxUserRecord;
 use crate::setup::SandboxUsersFile;
@@ -12,6 +14,7 @@ use crate::setup::run_elevated_setup_with_proxy_settings;
 use crate::setup::run_setup_refresh_with_overrides_and_proxy_settings;
 use crate::setup::sandbox_users_path;
 use crate::setup::setup_marker_path;
+use crate::winutil::local_user_flags;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -21,6 +24,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use windows_sys::Win32::NetworkManagement::NetManagement::UF_ACCOUNTDISABLE;
 
 #[derive(Debug, Clone)]
 struct SandboxIdentity {
@@ -216,6 +220,23 @@ pub fn require_logon_sandbox_creds(
             None
         }
     };
+
+    if identity.is_some() {
+        // Cleanup may also have removed the group, so repair missing or disabled accounts before ACL
+        // refresh can fail, not only after a later logon reports ERROR_ACCOUNT_DISABLED.
+        for username in [OFFLINE_USERNAME, ONLINE_USERNAME] {
+            let needs_repair = match local_user_flags(username) {
+                Ok(Some(flags)) => flags & UF_ACCOUNTDISABLE != 0,
+                Ok(None) => true,
+                Err(_) => false,
+            };
+            if needs_repair {
+                setup_reason = Some("sandbox account is missing or disabled".to_string());
+                identity = None;
+                break;
+            }
+        }
+    }
 
     if identity.is_none() {
         if let Some(reason) = &setup_reason {

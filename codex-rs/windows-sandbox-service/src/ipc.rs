@@ -21,9 +21,8 @@ use codex_windows_sandbox::sandbox_setup_is_complete_with_settings;
 use codex_windows_sandbox::string_from_sid_bytes;
 use codex_windows_sandbox::to_wide;
 use codex_windows_sandbox::write_provisioning_frame;
-use home::OwnedHandle;
-#[cfg(test)]
-use home::pin_existing_ancestors;
+pub(crate) use home::OwnedHandle;
+pub(crate) use home::pin_existing_ancestors;
 #[cfg(test)]
 use request::ProvisioningRequest;
 use request::validate_request;
@@ -42,6 +41,8 @@ use windows_sys::Win32::Security as security;
 use windows_sys::Win32::Security::Authorization as authorization;
 use windows_sys::Win32::Storage::FileSystem as filesystem;
 use windows_sys::Win32::System::Pipes as pipes;
+
+use crate::installation_record::InstallationRecord;
 
 pub(crate) const PIPE_NAME: &str = codex_windows_sandbox::SANDBOX_PROVISIONING_PIPE_NAME;
 
@@ -64,7 +65,12 @@ enum PipeConnection {
     Disconnected,
 }
 
-pub(crate) fn run(shutdown: Arc<AtomicBool>, on_ready: impl FnOnce() -> Result<()>) -> Result<()> {
+pub(crate) fn run(
+    shutdown: Arc<AtomicBool>,
+    on_ready: impl FnOnce() -> Result<()>,
+    on_authenticated_user: impl Fn(&InstallationRecord, OwnedHandle) -> Result<()>,
+    on_session_change: impl Fn() -> Result<()>,
+) -> Result<()> {
     let sandbox_sid = ensure_sandbox_users_group()?;
     let sid_string = string_from_sid_bytes(&sandbox_sid).map_err(anyhow::Error::msg)?;
     let sddl = pipe_security_descriptor(&sid_string);
@@ -109,11 +115,14 @@ pub(crate) fn run(shutdown: Arc<AtomicBool>, on_ready: impl FnOnce() -> Result<(
     on_ready().context("publish provisioning listener readiness")?;
 
     while !shutdown.load(Ordering::Acquire) {
-        if accept_pipe_connection(pipe.0)? == PipeConnection::Disconnected {
-            continue;
-        }
+        let connection = accept_pipe_connection(pipe.0)?;
         if shutdown.load(Ordering::Acquire) {
             break;
+        }
+        // Session-change wakeups close the pipe immediately and can arrive disconnected.
+        on_session_change().context("restore the signed-in user's uninstall listener")?;
+        if connection == PipeConnection::Disconnected {
+            continue;
         }
 
         let authorized_process = match crate::package_identity::authorize_client_process(pipe.0) {
@@ -123,7 +132,13 @@ pub(crate) fn run(shutdown: Arc<AtomicBool>, on_ready: impl FnOnce() -> Result<(
                 continue;
             }
         };
-        let result = handle_request(pipe.0, &authorized_process, &sandbox_sid, &shutdown);
+        let result = handle_request(
+            pipe.0,
+            &authorized_process,
+            &sandbox_sid,
+            &shutdown,
+            &on_authenticated_user,
+        );
         let response = match result {
             Ok(response) => response,
             Err(error) if error.is::<home::UnsupportedHomeDrive>() => {
@@ -241,6 +256,7 @@ fn handle_request(
     authorized_process: &crate::package_identity::AuthorizedClientProcess,
     sandbox_sid: &[u8],
     shutdown: &AtomicBool,
+    on_authenticated_user: &dyn Fn(&InstallationRecord, OwnedHandle) -> Result<()>,
 ) -> Result<SandboxProvisioningResponse> {
     let deadline = Instant::now() + REQUEST_IDLE_TIMEOUT;
     let mut request = [0_u8; MAX_REQUEST_BYTES];
@@ -322,7 +338,22 @@ fn handle_request(
         return Err(error)
             .context("requested sandbox settings violate administrator-controlled machine policy");
     }
+    // A policy-rejected request must not choose the uninstall owner. Use the
+    // token already authenticated above instead of impersonating the pipe again.
+    let previous = crate::installation_record::load()?.filter(|record| {
+        record.user_sid == identity.user_sid && record.codex_home == identity.codex_home
+    });
+    let installation = InstallationRecord {
+        codex_home: identity.codex_home.clone(),
+        user_sid: identity.user_sid,
+        session_id: identity.session_id,
+        desktop_installation: previous
+            .and_then(|record| record.desktop_installation)
+            .or(identity.desktop_installation),
+    };
+    on_authenticated_user(&installation, identity.token)?;
     if sandbox_setup_is_complete_with_settings(&identity.codex_home, &request.settings) {
+        crate::service::record_provisioned_user(&installation)?;
         return Ok(SandboxProvisioningResponse::Ok);
     }
     let helper = std::env::current_exe()
@@ -352,6 +383,7 @@ fn handle_request(
         &retained_handles,
     ) {
         Ok(()) => {
+            crate::service::record_provisioned_user(&installation)?;
             crate::service::log_information(
                 crate::service::EVENT_PROVISIONING_SUCCEEDED,
                 "Codex sandbox provisioning completed successfully.",

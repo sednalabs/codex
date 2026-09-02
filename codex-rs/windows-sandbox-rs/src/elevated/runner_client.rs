@@ -31,6 +31,7 @@ use std::time::Instant;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::DUPLICATE_SAME_ACCESS;
 use windows_sys::Win32::Foundation::DuplicateHandle;
+use windows_sys::Win32::Foundation::ERROR_ACCOUNT_DISABLED;
 use windows_sys::Win32::Foundation::ERROR_LOGON_FAILURE;
 use windows_sys::Win32::Foundation::ERROR_NO_SUCH_LOGON_SESSION;
 use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
@@ -97,7 +98,10 @@ pub(crate) struct RunnerTransport {
 }
 
 fn is_refreshable_windows_error(code: u32) -> bool {
-    matches!(code, ERROR_LOGON_FAILURE | ERROR_NO_SUCH_LOGON_SESSION)
+    matches!(
+        code,
+        ERROR_ACCOUNT_DISABLED | ERROR_LOGON_FAILURE | ERROR_NO_SUCH_LOGON_SESSION
+    )
 }
 
 fn command_targets_windows_apps(command: &[String]) -> bool {
@@ -455,6 +459,7 @@ mod tests {
     use crate::ipc_framed::ErrorPayload;
     use crate::ipc_framed::ErrorStage;
     use pretty_assertions::assert_eq;
+    use windows_sys::Win32::Foundation::ERROR_ACCOUNT_DISABLED;
     use windows_sys::Win32::Foundation::ERROR_LOGON_FAILURE;
     use windows_sys::Win32::Foundation::ERROR_NO_SUCH_LOGON_SESSION;
     use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
@@ -463,6 +468,7 @@ mod tests {
     fn refreshable_sandbox_creds_error_recognizes_credential_and_child_start_failures() {
         assert_eq!(
             [
+                ERROR_ACCOUNT_DISABLED,
                 ERROR_LOGON_FAILURE,
                 ERROR_NO_SUCH_LOGON_SESSION,
                 ERROR_NOT_FOUND,
@@ -472,7 +478,7 @@ mod tests {
                     anyhow::Error::new(RunnerLogonError { code }).context("runner launch failed");
                 is_refreshable_sandbox_creds_error(&err, &[])
             }),
-            [true, true, false]
+            [true, true, true, false]
         );
 
         assert_eq!(

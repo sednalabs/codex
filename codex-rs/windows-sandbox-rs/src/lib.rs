@@ -104,6 +104,8 @@ mod winutil;
 mod workspace_acl;
 
 mod deny_read_resolver;
+#[cfg(target_os = "windows")]
+mod uninstall_windows;
 
 #[cfg(target_os = "windows")]
 mod conpty;
@@ -128,6 +130,9 @@ mod setup_error;
 
 #[cfg(target_os = "windows")]
 mod setup_launch;
+
+#[cfg(target_os = "windows")]
+mod setup_mutex;
 
 #[cfg(target_os = "windows")]
 mod spawn_prep;
@@ -354,6 +359,8 @@ pub use setup_error::setup_error_path;
 #[cfg(target_os = "windows")]
 pub use setup_error::write_setup_error_report;
 #[cfg(target_os = "windows")]
+pub use setup_mutex::acquire_sandbox_setup_lock;
+#[cfg(target_os = "windows")]
 pub use stdio_bridge::forward_sandbox_session_stdio;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
@@ -381,6 +388,8 @@ pub use unified_exec::spawn_windows_sandbox_session_for_level;
 #[cfg(target_os = "windows")]
 pub use unified_exec::spawn_windows_sandbox_session_legacy;
 #[cfg(target_os = "windows")]
+pub use uninstall_windows::clean_up_packaged_windows_sandbox;
+#[cfg(target_os = "windows")]
 pub use wfp::install_wfp_filters_for_account;
 #[cfg(target_os = "windows")]
 pub use wfp_setup::install_wfp_filters;
@@ -397,9 +406,13 @@ pub use winutil::SANDBOX_USERS_GROUP;
 #[cfg(target_os = "windows")]
 pub use winutil::ensure_sandbox_users_group;
 #[cfg(target_os = "windows")]
+pub use winutil::local_user_flags;
+#[cfg(target_os = "windows")]
 pub use winutil::quote_windows_arg;
 #[cfg(target_os = "windows")]
 pub use winutil::resolve_sid;
+#[cfg(target_os = "windows")]
+pub use winutil::set_local_user_flags;
 #[cfg(target_os = "windows")]
 pub use winutil::string_from_sid_bytes;
 #[cfg(target_os = "windows")]

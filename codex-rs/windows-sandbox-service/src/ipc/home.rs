@@ -33,7 +33,7 @@ impl std::fmt::Display for UnsupportedHomeDrive {
 
 impl std::error::Error for UnsupportedHomeDrive {}
 
-pub(super) struct OwnedHandle(pub(super) HANDLE);
+pub(crate) struct OwnedHandle(pub(crate) HANDLE);
 
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
@@ -138,7 +138,7 @@ pub(super) fn prepare_codex_home(requested: &Path) -> Result<(PathBuf, Vec<Owned
     Ok((home, handles))
 }
 
-pub(super) fn pin_existing_ancestors(path: &Path, handles: &mut Vec<OwnedHandle>) -> Result<()> {
+pub(crate) fn pin_existing_ancestors(path: &Path, handles: &mut Vec<OwnedHandle>) -> Result<()> {
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component.as_os_str());
