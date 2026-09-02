@@ -2231,6 +2231,63 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                 {"downstream_only.py": ["downstream-only"]},
             )
 
+    def test_registry_gate_projects_carry_onto_exact_live_tree_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+
+            (repo / "phantom.py").write_text("removed by both\n", encoding="utf-8")
+            (repo / "unchanged.py").write_text("base\n", encoding="utf-8")
+            (repo / "changed.py").write_text("base\n", encoding="utf-8")
+            base_sha = self.commit_all(repo, "base")
+
+            self.run_git(repo, "checkout", "-b", "upstream")
+            self.run_git(repo, "rm", "phantom.py")
+            (repo / "unchanged.py").write_text("shared result\n", encoding="utf-8")
+            (repo / "changed.py").write_text("upstream result\n", encoding="utf-8")
+            upstream_sha = self.commit_all(repo, "upstream changes")
+
+            self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+            self.run_git(repo, "rm", "phantom.py")
+            # This downstream change is byte-identical to upstream and must
+            # not be treated as an uncovered divergence.
+            (repo / "unchanged.py").write_text("shared result\n", encoding="utf-8")
+            # A different downstream edit to an upstream-modified path is a
+            # genuine downstream divergence and must remain visible.
+            (repo / "changed.py").write_text("downstream result\n", encoding="utf-8")
+            (repo / "downstream_only.py").write_text("downstream\n", encoding="utf-8")
+            downstream_sha = self.commit_all(repo, "downstream changes")
+
+            live_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo, upstream_sha, downstream_sha
+            )
+            merge_base = DOWNSTREAM_DIVERGENCE_AUDIT.merge_base_sha(
+                repo, upstream_sha, downstream_sha
+            )
+            carry_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo, merge_base, downstream_sha
+            )
+            projected_items = (
+                DOWNSTREAM_DIVERGENCE_AUDIT.downstream_carry_items_for_live_diff(
+                    live_items, carry_items
+                )
+            )
+            projected_paths = sorted(
+                {
+                    path
+                    for item in projected_items
+                    if item.is_code
+                    for path in item.paths
+                }
+            )
+
+            self.assertEqual(
+                projected_paths,
+                ["changed.py", "downstream_only.py"],
+            )
+
 
 class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
     workflow_path = REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"

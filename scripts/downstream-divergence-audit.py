@@ -150,9 +150,9 @@ def main() -> int:
     downstream_carry_items = diff_items_between(
         repo, merge_base, snapshot_1["downstream"].sha
     )
-    downstream_carry_code_items = [
-        item for item in downstream_carry_items if item.is_code
-    ]
+    downstream_carry_code_items = downstream_carry_items_for_live_diff(
+        diff_items, downstream_carry_items
+    )
 
     registry_state = reconcile_registry(registry, downstream_carry_code_items)
     required_marker_checks = verify_required_markers(
@@ -558,6 +558,27 @@ def cherry_counts_between(repo: Path, left_sha: str, right_sha: str) -> dict[str
 def merge_base_sha(repo: Path, left_sha: str, right_sha: str) -> str:
     result = run_git(repo, ["merge-base", left_sha, right_sha], capture_stdout=True)
     return result.stdout.strip()
+
+
+def downstream_carry_items_for_live_diff(
+    live_items: list[DiffItem], carry_items: list[DiffItem]
+) -> list[DiffItem]:
+    """Keep only live tree differences with downstream-carry provenance.
+
+    The merge-base-to-downstream diff describes everything changed by the
+    downstream history, including changes that upstream later made as well.
+    Reconcile only the exact upstream-to-downstream tree differences whose
+    paths occur in that carry.  This excludes paths that are now identical in
+    both trees (including paths removed by both sides), while retaining
+    downstream-only and independently changed paths.
+    """
+
+    carry_paths = {path for item in carry_items for path in item.paths}
+    return [
+        item
+        for item in live_items
+        if any(path in carry_paths for path in item.paths)
+    ]
 
 
 def classify_mirror_health(
