@@ -3128,6 +3128,7 @@ mod tests {
             request_id: RequestId::Integer(7),
             response: v2::ThreadStartResponse {
                 thread: v2::Thread {
+                    environments: None,
                     id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
                     extra: None,
                     session_id: "67e55044-10b1-426f-9247-bb680e5fe0c7".to_string(),
@@ -3186,6 +3187,7 @@ mod tests {
                 "response": {
                     "thread": {
                         "id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                        "environments": null,
                         "extra": null,
                         "sessionId": "67e55044-10b1-426f-9247-bb680e5fe0c7",
                         "forkedFromId": null,

@@ -39,6 +39,7 @@ fn overview_thread(
     status: ThreadStatus,
 ) -> Thread {
     Thread {
+        environments: None,
         id: thread_id.to_string(),
         extra: None,
         project_id: None,

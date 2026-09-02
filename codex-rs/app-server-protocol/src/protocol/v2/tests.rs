@@ -272,6 +272,13 @@ fn thread_resume_params_accept_turns_page_bootstrap() {
 fn thread_resume_response_round_trips_initial_turns_page() {
     let response = ThreadResumeResponse {
         thread: Thread {
+            environments: Some(vec![ThreadEnvironment {
+                environment_id: "remote".to_string(),
+                cwd: LegacyAppPathString::from_string(r"C:\workspace"),
+                runtime_workspace_roots: vec![LegacyAppPathString::from_string(
+                    r"C:\workspace\src",
+                )],
+            }]),
             id: "thr_123".to_string(),
             extra: None,
             session_id: "thr_123".to_string(),
@@ -329,6 +336,12 @@ fn thread_resume_response_round_trips_initial_turns_page() {
 
     let value = serde_json::to_value(&response).expect("serialize thread resume response");
     assert_eq!(
+        value["thread"]["environments"],
+        json!([{
+            "environmentId": "remote", "cwd": r"C:\workspace", "runtimeWorkspaceRoots": [r"C:\workspace\src"]
+        }])
+    );
+    assert_eq!(
         value["thread"]["section"],
         json!({
             "id": "01984de2-8f74-7c91-a3b2-5c5e937cf318",
@@ -345,11 +358,13 @@ fn thread_resume_response_round_trips_initial_turns_page() {
     legacy_thread_fields.remove("section");
     legacy_thread_fields.remove("sectionEnteredAt");
     legacy_thread_fields.remove("projectId");
+    legacy_thread_fields.remove("environments");
     let legacy_thread =
         serde_json::from_value::<Thread>(legacy_thread).expect("deserialize legacy thread");
     assert_eq!(legacy_thread.section, None);
     assert_eq!(legacy_thread.section_entered_at, None);
     assert_eq!(legacy_thread.project_id, None);
+    assert_eq!(legacy_thread.environments, None);
 
     assert_eq!(
         value.get("initialTurnsPage"),

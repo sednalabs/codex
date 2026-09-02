@@ -6266,6 +6266,7 @@ session_picker_view = "dense"
     fn app_server_row_keeps_pathless_threads() {
         let thread_id = ThreadId::new();
         let thread = Thread {
+            environments: None,
             id: thread_id.to_string(),
             extra: None,
             session_id: thread_id.to_string(),
@@ -6310,6 +6311,7 @@ session_picker_view = "dense"
 
         let thread_id = ThreadId::new();
         let thread = Thread {
+            environments: None,
             id: thread_id.to_string(),
             extra: None,
             session_id: thread_id.to_string(),
@@ -6394,6 +6396,7 @@ session_picker_view = "dense"
 
         let thread_id = ThreadId::new();
         let thread = Thread {
+            environments: None,
             id: thread_id.to_string(),
             extra: None,
             session_id: thread_id.to_string(),
@@ -6469,6 +6472,7 @@ session_picker_view = "dense"
 
         let thread_id = ThreadId::new();
         let thread = Thread {
+            environments: None,
             id: thread_id.to_string(),
             extra: None,
             session_id: thread_id.to_string(),

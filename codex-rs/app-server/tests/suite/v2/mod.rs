@@ -97,6 +97,7 @@ mod skills_list;
 mod sleep;
 mod thread_archive;
 mod thread_delete;
+mod thread_environments;
 mod thread_fork;
 mod thread_inject_items;
 mod thread_list;

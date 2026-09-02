@@ -1485,6 +1485,29 @@
       ],
       "type": "string"
     },
+    "ThreadEnvironment": {
+      "description": "An environment selected by a loaded thread, independent of connection status.",
+      "properties": {
+        "cwd": {
+          "$ref": "#/definitions/LegacyAppPathString"
+        },
+        "environmentId": {
+          "type": "string"
+        },
+        "runtimeWorkspaceRoots": {
+          "items": {
+            "$ref": "#/definitions/LegacyAppPathString"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "cwd",
+        "environmentId",
+        "runtimeWorkspaceRoots"
+      ],
+      "type": "object"
+    },
     "ThreadExtra": {
       "description": "Extra app-server data for a thread.",
       "type": "object"

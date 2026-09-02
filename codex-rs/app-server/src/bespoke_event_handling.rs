@@ -3,7 +3,7 @@ use crate::error_code::invalid_request;
 use crate::notification_media::without_notification_media;
 use crate::outgoing_message::ClientRequestResult;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
-use crate::request_processors::apply_live_model_settings;
+use crate::request_processors::apply_live_thread_settings;
 use crate::request_processors::populate_thread_turns_from_history;
 use crate::request_processors::thread_from_stored_thread;
 use crate::request_processors::thread_settings_from_config_snapshot;
@@ -1287,7 +1287,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     }
                 };
 
-                apply_live_model_settings(&mut response.thread, &config_snapshot);
+                apply_live_thread_settings(&mut response.thread, &config_snapshot);
                 outgoing.send_response(request_id, response).await;
             }
         }

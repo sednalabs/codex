@@ -1,4 +1,5 @@
 use super::CodexErrorInfo;
+use super::ThreadEnvironment;
 use super::ThreadItem;
 use super::ThreadStatus;
 use super::TurnStatus;
@@ -203,6 +204,12 @@ pub struct ThreadSectionAppearance {
 pub struct Thread {
     /// Identifier for this thread. Codex-generated thread IDs are UUIDv7.
     pub id: String,
+    /// Current environments for a loaded thread, in priority order, primary first.
+    /// `null` means the thread is not loaded or the server does not expose its selection.
+    /// An empty list means no environments are selected. This does not report connection status.
+    #[experimental("thread.environments")]
+    #[serde(default)]
+    pub environments: Option<Vec<ThreadEnvironment>>,
     /// Optional implementation-specific thread data.
     #[experimental("thread.extra")]
     pub extra: Option<ThreadExtra>,
@@ -286,6 +293,8 @@ pub struct Thread {
 #[serde(rename_all = "camelCase")]
 struct ThreadCompatibility {
     id: String,
+    #[serde(default)]
+    environments: Option<Vec<ThreadEnvironment>>,
     extra: Option<ThreadExtra>,
     session_id: String,
     forked_from_id: Option<String>,
@@ -328,6 +337,7 @@ impl<'de> Deserialize<'de> for Thread {
         let thread = ThreadCompatibility::deserialize(deserializer)?;
         Ok(Self {
             id: thread.id,
+            environments: thread.environments,
             extra: thread.extra,
             session_id: thread.session_id,
             forked_from_id: thread.forked_from_id,

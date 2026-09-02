@@ -370,6 +370,13 @@ subscribing to it, or dispatching queued work or goal continuations.
 
 Start a fresh thread when you need a new Codex conversation.
 
+Experimental `Thread.environments` returns a loaded thread's current selection as `{ environmentId, cwd, runtimeWorkspaceRoots }` entries.
+The first entry is the primary environment; paths use that environment's native syntax.
+An empty list means no environments are selected; `null` means the thread is not loaded or the server does not expose its selection.
+Start and resume responses report the resulting live selection, and read, list, and unarchive responses include it for loaded threads, even if the client missed `thread/environment/connected`.
+The field is not persisted and does not change executor selection or resume behavior.
+Reading an unloaded thread leaves it unloaded and returns `null`; use `environment/status` to check connection status separately.
+
 ```json
 { "method": "thread/start", "id": 10, "params": {
     // Optionally set config settings. If not specified, will use the user's
