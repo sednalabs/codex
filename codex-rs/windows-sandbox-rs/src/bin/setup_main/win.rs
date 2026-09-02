@@ -22,6 +22,7 @@ use codex_windows_sandbox::log_note;
 use codex_windows_sandbox::log_writer;
 use codex_windows_sandbox::path_mask_allows;
 use codex_windows_sandbox::path_write_aces_need_refresh;
+use codex_windows_sandbox::resolve_sid;
 use codex_windows_sandbox::sandbox_bin_dir;
 use codex_windows_sandbox::sandbox_dir;
 use codex_windows_sandbox::sandbox_secrets_dir;
@@ -80,7 +81,6 @@ use sandbox_users::commit_setup_marker;
 use sandbox_users::prepare_setup_marker;
 use sandbox_users::provision_sandbox_users;
 use sandbox_users::resolve_sandbox_users_group_sid;
-use sandbox_users::resolve_sid;
 use sandbox_users::sid_bytes_to_psid;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -5,6 +5,9 @@ use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HLOCAL;
 use windows_sys::Win32::Foundation::LocalFree;
+use windows_sys::Win32::NetworkManagement::NetManagement::LOCALGROUP_INFO_1;
+use windows_sys::Win32::NetworkManagement::NetManagement::NERR_Success;
+use windows_sys::Win32::NetworkManagement::NetManagement::NetLocalGroupAdd;
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
 use windows_sys::Win32::Security::CopySid;
@@ -15,6 +18,9 @@ use windows_sys::Win32::System::Diagnostics::Debug::FORMAT_MESSAGE_ALLOCATE_BUFF
 use windows_sys::Win32::System::Diagnostics::Debug::FORMAT_MESSAGE_FROM_SYSTEM;
 use windows_sys::Win32::System::Diagnostics::Debug::FORMAT_MESSAGE_IGNORE_INSERTS;
 use windows_sys::Win32::System::Diagnostics::Debug::FormatMessageW;
+
+pub const SANDBOX_USERS_GROUP: &str = "CodexSandboxUsers";
+const SANDBOX_USERS_GROUP_COMMENT: &str = "Codex sandbox internal group (managed)";
 
 pub fn to_wide<S: AsRef<OsStr>>(s: S) -> Vec<u16> {
     let mut v: Vec<u16> = s.as_ref().encode_wide().collect();
@@ -128,6 +134,34 @@ const SID_USERS: &str = "S-1-5-32-545";
 const SID_AUTHENTICATED_USERS: &str = "S-1-5-11";
 const SID_EVERYONE: &str = "S-1-1-0";
 const SID_SYSTEM: &str = "S-1-5-18";
+
+pub fn ensure_sandbox_users_group() -> Result<Vec<u8>> {
+    const ERROR_ALIAS_EXISTS: u32 = 1379;
+    const NERR_GROUP_EXISTS: u32 = 2223;
+
+    let name = to_wide(SANDBOX_USERS_GROUP);
+    let comment = to_wide(SANDBOX_USERS_GROUP_COMMENT);
+    let info = LOCALGROUP_INFO_1 {
+        lgrpi1_name: name.as_ptr() as *mut u16,
+        lgrpi1_comment: comment.as_ptr() as *mut u16,
+    };
+    let mut parameter_error = 0;
+    let status = unsafe {
+        NetLocalGroupAdd(
+            std::ptr::null(),
+            1,
+            (&raw const info).cast(),
+            &raw mut parameter_error,
+        )
+    };
+    if status != NERR_Success && status != ERROR_ALIAS_EXISTS && status != NERR_GROUP_EXISTS {
+        return Err(anyhow::anyhow!(
+            "NetLocalGroupAdd failed for {SANDBOX_USERS_GROUP} code {status} parm_err={parameter_error}"
+        ));
+    }
+
+    resolve_sid(SANDBOX_USERS_GROUP)
+}
 
 pub fn resolve_sid(name: &str) -> Result<Vec<u8>> {
     if let Some(sid_str) = well_known_sid_str(name) {

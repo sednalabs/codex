@@ -47,6 +47,24 @@ pub fn sandbox_setup_is_complete(codex_home: &Path) -> bool {
     matches!(load_users(codex_home), Ok(Some(users)) if users.version_matches())
 }
 
+/// Returns true when setup artifacts and provisioned network settings match.
+pub fn sandbox_setup_is_complete_with_settings(
+    codex_home: &Path,
+    settings: &crate::WindowsSandboxProvisioningSettings,
+) -> bool {
+    let Ok(Some(mut marker)) = load_marker(codex_home) else {
+        return false;
+    };
+
+    marker.proxy_ports.sort_unstable();
+    let mut proxy_ports = settings.proxy_ports.clone();
+    proxy_ports.sort_unstable();
+    marker.version_matches()
+        && marker.proxy_ports == proxy_ports
+        && marker.allow_local_binding == settings.allow_local_binding
+        && matches!(load_users(codex_home), Ok(Some(users)) if users.version_matches())
+}
+
 fn load_marker(codex_home: &Path) -> Result<Option<SetupMarker>> {
     let path = setup_marker_path(codex_home);
     let marker = match fs::read_to_string(&path) {
