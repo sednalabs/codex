@@ -69,6 +69,8 @@ mod dpapi;
 #[cfg(target_os = "windows")]
 mod env;
 #[cfg(target_os = "windows")]
+mod file_write;
+#[cfg(target_os = "windows")]
 mod framed_io;
 #[cfg(target_os = "windows")]
 mod helper_materialization;
@@ -78,6 +80,8 @@ mod hide_users;
 mod identity;
 #[cfg(target_os = "windows")]
 mod logging;
+#[cfg(target_os = "windows")]
+mod no_reparse_dir;
 #[cfg(target_os = "windows")]
 mod path_normalization;
 #[cfg(target_os = "windows")]
@@ -195,6 +199,8 @@ pub use elevated_impl::ElevatedSandboxProfileCaptureRequest;
 #[cfg(target_os = "windows")]
 pub use elevated_impl::run_windows_sandbox_capture_for_permission_profile as run_windows_sandbox_capture_for_permission_profile_elevated;
 #[cfg(target_os = "windows")]
+pub use file_write::write_file_atomically;
+#[cfg(target_os = "windows")]
 pub use helper_materialization::resolve_current_exe_for_launch;
 #[cfg(target_os = "windows")]
 pub use helper_materialization::resolve_exe_for_launch;
@@ -248,6 +254,16 @@ pub use logging::log_file_path_for_utc_date;
 pub use logging::log_note;
 #[cfg(target_os = "windows")]
 pub use logging::log_writer;
+#[cfg(target_os = "windows")]
+pub use logging::setup_log_writer;
+#[cfg(target_os = "windows")]
+pub use no_reparse_dir::DirectoryOpenDisposition;
+#[cfg(target_os = "windows")]
+pub use no_reparse_dir::create_directory_guard;
+#[cfg(target_os = "windows")]
+pub use no_reparse_dir::open_directory_no_reparse;
+#[cfg(target_os = "windows")]
+pub use no_reparse_dir::validate_local_directory_path;
 #[cfg(target_os = "windows")]
 pub use path_normalization::canonicalize_path;
 #[cfg(target_os = "windows")]

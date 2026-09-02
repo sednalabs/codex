@@ -4977,6 +4977,7 @@ name = "codex-windows-sandbox-service"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "codex-windows-sandbox",
  "windows-sys 0.52.0",
 ]
 
