@@ -563,22 +563,55 @@ def merge_base_sha(repo: Path, left_sha: str, right_sha: str) -> str:
 def downstream_carry_items_for_live_diff(
     live_items: list[DiffItem], carry_items: list[DiffItem]
 ) -> list[DiffItem]:
-    """Keep only live tree differences with downstream-carry provenance.
+    """Project downstream-carry provenance onto exact live code endpoints.
 
     The merge-base-to-downstream diff describes everything changed by the
     downstream history, including changes that upstream later made as well.
-    Reconcile only the exact upstream-to-downstream tree differences whose
-    paths occur in that carry.  This excludes paths that are now identical in
-    both trees (including paths removed by both sides), while retaining
-    downstream-only and independently changed paths.
+    Reconcile only the exact upstream-to-downstream code endpoints whose paths
+    occur in that carry.  Copy sources are observations of an unchanged source,
+    so only the copied destination is carry provenance; rename, delete, add,
+    and type-change endpoints remain actionable.  Projecting the live item
+    paths (rather than retaining an entire rename/copy pair) prevents an
+    upstream-only endpoint from being attributed to downstream.
     """
 
-    carry_paths = {path for item in carry_items for path in item.paths}
-    return [
-        item
-        for item in live_items
-        if any(path in carry_paths for path in item.paths)
-    ]
+    carry_paths = {
+        path
+        for item in carry_items
+        for path in carry_endpoint_paths(item)
+    }
+    projected_items: list[DiffItem] = []
+    for item in live_items:
+        if not item.is_code:
+            continue
+        projected_paths = tuple(path for path in item.paths if path in carry_paths)
+        if not projected_paths:
+            continue
+        projected_items.append(
+            DiffItem(
+                status=item.status,
+                paths=projected_paths,
+                old_mode=item.old_mode,
+                new_mode=item.new_mode,
+                rename_score=item.rename_score,
+                is_code=True,
+            )
+        )
+    return projected_items
+
+
+def carry_endpoint_paths(item: DiffItem) -> tuple[str, ...]:
+    """Return paths whose tree state was changed by a carry diff item.
+
+    Git's copy status includes the unchanged source as its first endpoint;
+    treating that source as a downstream change creates false provenance when
+    upstream changed the source independently.  A rename removes its old
+    endpoint, while delete/add/type-change entries have one actionable path.
+    """
+
+    if item.status.startswith("C"):
+        return (item.paths[-1],)
+    return item.paths
 
 
 def classify_mirror_health(
