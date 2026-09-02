@@ -564,15 +564,18 @@ async fn automatic_turn_transition_at_provider_gate_sends_no_request() {
         /*parent_thread_id*/ None,
         TestCodexResponsesRequestKind::Turn,
     );
+    let model_info = test_model_info();
+    let session_telemetry = test_session_telemetry();
+    let inference_trace = InferenceTraceContext::disabled();
     let stream = session.stream(
         &prompt,
-        &test_model_info(),
-        &test_session_telemetry(),
+        &model_info,
+        &session_telemetry,
         /*effort*/ None,
         codex_protocol::config_types::ReasoningSummary::None,
         /*service_tier*/ None,
         &responses_metadata,
-        &InferenceTraceContext::disabled(),
+        &inference_trace,
     );
     tokio::pin!(stream);
     assert!(matches!(futures::poll!(stream.as_mut()), Poll::Pending));
