@@ -91,6 +91,7 @@ async fn materialize_then_report_ready_reuses_the_pending_environment() -> anyho
     let pending_provider = Arc::new(FailingNoiseConnectProvider::default());
     let pending = manager
         .materialize_pending_noise_environment("tools".to_string(), pending_provider.clone())?;
+    assert_eq!(pending.last_ready_info(), None);
     let mut pending_readiness = Box::pin(pending.wait_until_ready());
     assert!(poll!(&mut pending_readiness).is_pending());
     let ready = manager
@@ -132,6 +133,7 @@ async fn ordinary_environment_ignores_provisioning_reports() -> anyhow::Result<(
     assert!(Arc::ptr_eq(&existing_environment, &current_environment));
     assert!(reported.is_none());
     assert!(existing_environment.selected_capability_roots().is_empty());
+    assert_eq!(existing_environment.last_ready_info(), None);
     Ok(())
 }
 
@@ -226,6 +228,7 @@ async fn repeated_failure_preserves_the_first_error_until_ready() -> anyhow::Res
         error.to_string()
     );
     assert!(failed.selected_capability_roots().is_empty());
+    assert_eq!(failed.last_ready_info(), None);
     assert_eq!(provider.calls(), 0);
     let selected = ready_info("selected-root", "tools")?;
     let ready = manager
@@ -236,6 +239,7 @@ async fn repeated_failure_preserves_the_first_error_until_ready() -> anyhow::Res
         )?
         .expect("successful provisioning should recover the same environment");
     assert!(Arc::ptr_eq(&failed, &ready));
+    assert_eq!(failed.last_ready_info().as_deref(), Some(&selected));
     assert_eq!(
         failed.selected_capability_roots(),
         selected.selected_capability_roots
@@ -322,6 +326,50 @@ async fn existing_environment_overwrites_reported_readiness() -> anyhow::Result<
         &environment,
         &manager.get_environment("tools").expect("environment")
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn last_ready_info_preserves_snapshots_through_replacement_and_clear() -> anyhow::Result<()> {
+    let manager = environment_manager_without_environments();
+    let provider = Arc::new(FailingNoiseConnectProvider::default());
+    let selected = ready_info("selected-root", "tools")?;
+    let environment = manager
+        .report_environment_provisioning_status(
+            "tools".to_string(),
+            Ok(selected.clone()),
+            provider.clone(),
+        )?
+        .expect("readiness report should create the environment");
+    let snapshot = environment.last_ready_info();
+    assert_eq!(snapshot.as_deref(), Some(&selected));
+
+    for replacement in [
+        ready_info("different-root", "tools")?,
+        EnvironmentReadyInfo::default(),
+    ] {
+        manager.report_environment_provisioning_status(
+            "tools".to_string(),
+            Ok(replacement.clone()),
+            provider.clone(),
+        )?;
+        assert_eq!(environment.last_ready_info().as_deref(), Some(&replacement));
+        assert_eq!(snapshot.as_deref(), Some(&selected));
+    }
+
+    let error = manager
+        .report_environment_provisioning_status(
+            "tools".to_string(),
+            Ok(ready_info("invalid-root", "other")?),
+            provider.clone(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, ExecServerError::Protocol(_)));
+    assert_eq!(
+        environment.last_ready_info().as_deref(),
+        Some(&EnvironmentReadyInfo::default())
+    );
+    assert_eq!(provider.calls(), 0);
     Ok(())
 }
 

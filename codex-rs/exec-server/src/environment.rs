@@ -853,6 +853,15 @@ impl Environment {
         transition_error.map_or(Ok(()), Err)
     }
 
+    /// Returns a snapshot of the last accepted Ready report.
+    ///
+    /// `None` means no Ready report has been accepted, including for ordinary environments.
+    /// A report with no capability roots is distinct from `None`. The snapshot does not change
+    /// when later reports arrive and does not indicate whether the connection is healthy.
+    pub fn last_ready_info(&self) -> Option<Arc<EnvironmentReadyInfo>> {
+        self.ready_info.load_full()
+    }
+
     /// Returns the capability roots most recently reported for this environment.
     pub fn selected_capability_roots(&self) -> Vec<SelectedCapabilityRoot> {
         self.ready_info
