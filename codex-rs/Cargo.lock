@@ -2468,6 +2468,7 @@ dependencies = [
  "codex-utils-cargo-bin",
  "codex-utils-cli",
  "codex-utils-path",
+ "codex-utils-pty",
  "codex-windows-sandbox",
  "crossterm",
  "flate2",
@@ -2997,7 +2998,6 @@ dependencies = [
  "tracing-test",
  "url",
  "uuid",
- "which 8.0.0",
  "wiremock",
  "zip",
 ]
@@ -4769,6 +4769,7 @@ dependencies = [
  "dunce",
  "pretty_assertions",
  "tempfile",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
