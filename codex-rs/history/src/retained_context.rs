@@ -44,7 +44,7 @@ pub enum RetainedContextEvent {
 }
 
 /// Bounded snapshot of retained families, persisted with the parent compaction checkpoint.
-/// Facts live until their source turn is rolled back; compaction does not expire them.
+/// Facts live until their source instruction is rolled back; compaction does not expire them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RetainedContext {
     verified_answers: VecDeque<VerifiedAnswer>,
@@ -123,10 +123,9 @@ impl RetainedContext {
         }
     }
 
-    /// Removes facts with explicitly removed source turns, not merely compacted tool calls.
-    pub fn remove_turns(&mut self, turn_ids: &[&str]) {
-        self.verified_answers
-            .retain(|answer| !turn_ids.contains(&answer.turn_id.as_str()));
+    /// Retains facts whose sources survive a lifecycle change. Compaction alone is not removal.
+    pub fn retain_answers(&mut self, keep: impl FnMut(&VerifiedAnswer) -> bool) {
+        self.verified_answers.retain(keep);
     }
 }
 

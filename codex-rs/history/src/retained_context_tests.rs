@@ -35,7 +35,7 @@ fn answer_lifecycle_is_bounded_idempotent_and_checkpointed() {
     }
     assert!(!context.is_complete());
     assert_eq!(context.verified_answers().count(), MAX_ANSWERS);
-    context.remove_turns(&["turn-2"]);
+    context.retain_answers(|answer| answer.turn_id != "turn-2");
     assert_eq!(context.verified_answers().count(), 0);
     assert!(!context.is_complete());
 

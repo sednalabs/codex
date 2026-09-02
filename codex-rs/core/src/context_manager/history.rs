@@ -1,6 +1,6 @@
 //! Parent model history and bounded host-owned context facts.
 //! Compaction replaces only the model window. Snapshots include retained facts atomically;
-//! checkpoint replay and source-turn rollback share their live lifecycle.
+//! checkpoint replay and source-call rollback share their live lifecycle.
 
 use crate::context::ContextualUserFragment;
 use crate::context::ModelSwitchInstructions;
@@ -514,7 +514,18 @@ impl ContextManager {
             .iter()
             .filter_map(|item| item.turn_id())
             .collect::<Vec<_>>();
-        Arc::make_mut(&mut retained_context).remove_turns(&removed_turns);
+        Arc::make_mut(&mut retained_context).retain_answers(|answer| {
+            // A steer creates an instruction boundary, not a new turn ID. Replay exposes
+            // the original calls from rolled-back checkpoints, so prefer the exact source.
+            if let Some(source_index) = snapshot.iter().rposition(|item| {
+                item.turn_id() == Some(answer.turn_id.as_str())
+                    && matches!(&item.item, ResponseItem::FunctionCall { call_id, .. }
+                        if call_id == &answer.call_id)
+            }) {
+                return source_index < cut_idx;
+            }
+            !removed_turns.contains(&answer.turn_id.as_str())
+        });
         self.replace_annotated(retained_items);
         self.retained_context = retained_context;
         self.review_history = review_history;

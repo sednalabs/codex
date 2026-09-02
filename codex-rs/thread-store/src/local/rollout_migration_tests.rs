@@ -1161,6 +1161,79 @@ async fn migration_rolls_back_pre_compaction_turns_from_sqlite_history() {
 }
 
 #[tokio::test]
+async fn migration_preserves_answers_before_a_rolled_back_steer() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let mut items = vec![started("shared-turn")];
+    let mut answers = Vec::new();
+    let RolloutItem::Compacted(mut checkpoint) = compacted(vec![
+        input_response_message("user", "before-steer"),
+        input_response_message("user", "after-steer"),
+    ]) else {
+        unreachable!()
+    };
+    checkpoint.retained_context = Some(Default::default());
+    for call_id in ["before-steer", "after-steer"] {
+        items.push(user_message(call_id));
+        let mut call: ResponseItem = serde_json::from_value(json!({
+            "type": "function_call", "call_id": call_id,
+            "name": "request_user_input", "arguments": "{}"
+        }))
+        .expect("request_user_input call");
+        call.set_turn_id_if_missing("shared-turn");
+        items.push(rollout_response_item(call));
+        let answer: codex_rollout::RetainedContextEvent = serde_json::from_value(json!({
+            "type": "verified_answer", "turn_id": "shared-turn", "call_id": call_id,
+            "questions": [{"question": "Publish?", "answer": "Only privately."}]
+        }))
+        .expect("verified answer");
+        checkpoint
+            .retained_context
+            .as_mut()
+            .expect("retained context")
+            .record(&answer);
+        answers.push(answer);
+    }
+    // Delayed delivery must use the original call boundary, not the turn's latest steer.
+    items.extend(answers.iter().cloned().map(RolloutItem::RetainedContext));
+    items.push(completed("shared-turn"));
+    items.push(RolloutItem::Compacted(checkpoint));
+    items.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+        ThreadRolledBackEvent { num_turns: 1 },
+    )));
+    let path = write_rollout(home.path(), thread_id, SessionSource::Cli, items);
+    let store = indexed_store(home.path()).await;
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate rollback of a steer");
+    let migrated = read_rollout(&path);
+    let events = migrated
+        .iter()
+        .filter_map(|line| match &line.item {
+            RolloutItem::RetainedContext(event) => Some(event.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(events, answers[..1]);
+    let checkpoint = migrated
+        .iter()
+        .find_map(|line| match &line.item {
+            RolloutItem::Compacted(checkpoint) => checkpoint.retained_context.as_ref(),
+            _ => None,
+        })
+        .expect("retained checkpoint");
+    assert_eq!(
+        checkpoint
+            .verified_answers()
+            .cloned()
+            .map(codex_rollout::RetainedContextEvent::VerifiedAnswer)
+            .collect::<Vec<_>>(),
+        answers[..1]
+    );
+}
+
+#[tokio::test]
 async fn migration_preserves_reverse_replay_anchor_after_pre_compaction_rollback() {
     let home = TempDir::new().expect("create Codex home");
     let thread_id = ThreadId::new();

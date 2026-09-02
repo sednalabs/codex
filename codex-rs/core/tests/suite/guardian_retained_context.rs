@@ -175,6 +175,147 @@ async fn compact_and_assert_answers(
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retained_answers_rollback_only_the_steered_instruction() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_history_mode(ThreadHistoryMode::Legacy)
+        .with_config(|config| {
+            config.experimental_thread_store = ThreadStoreConfig::Local;
+            for feature in [Feature::TokenBudget, Feature::DefaultModeRequestUserInput] {
+                config
+                    .features
+                    .enable(feature)
+                    .expect("enable test feature");
+            }
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let questions = [
+        ("before-steer", "Publish?", "Only privately."),
+        ("after-steer", "Publish the README?", "Do not publish it."),
+    ];
+    let mut responses = questions
+        .iter()
+        .map(|(call_id, question, _)| {
+            sse(vec![
+                ev_function_call(
+                    call_id,
+                    "request_user_input",
+                    &json!({"questions": [{
+                        "id": "publish", "header": "Publish", "question": question,
+                        "options": [
+                            {"label": "Yes", "description": "Publish privately."},
+                            {"label": "No", "description": "Keep local."}
+                        ]
+                    }]})
+                    .to_string(),
+                ),
+                ev_completed(call_id),
+            ])
+        })
+        .collect::<Vec<_>>();
+    responses.push(sse(vec![ev_completed("done")]));
+    let response_mock = mount_sse_sequence(&server, responses).await;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Check whether to publish.".to_owned(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let mut answers = Vec::new();
+    for (call_id, question, answer) in questions {
+        let request = wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::RequestUserInput(request) => Some(request.clone()),
+            _ => None,
+        })
+        .await;
+        if answers.is_empty() {
+            test.codex
+                .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                    text: "Also inspect the README.".to_owned(),
+                    text_elements: Vec::new(),
+                }]))
+                .await?;
+        }
+        test.codex
+            .submit(Op::UserInputAnswer {
+                id: request.turn_id.clone(),
+                response: RequestUserInputResponse {
+                    answers: HashMap::from([(
+                        "publish".to_owned(),
+                        RequestUserInputAnswer {
+                            answers: vec![answer.to_owned()],
+                        },
+                    )]),
+                },
+            })
+            .await?;
+        answers.push(VerifiedAnswer {
+            turn_id: request.turn_id,
+            call_id: call_id.to_owned(),
+            questions: vec![VerifiedQuestionAnswer {
+                question: question.to_owned(),
+                answer: answer.to_owned(),
+            }],
+        });
+    }
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(answers[0].turn_id, answers[1].turn_id);
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[0].has_message_with_input_texts("user", |texts| {
+            texts == ["Check whether to publish."]
+        })
+    );
+    for (index, request) in requests.iter().skip(1).enumerate() {
+        assert!(request.has_message_with_input_texts("user", |texts| {
+            texts == ["Also inspect the README."]
+        }));
+        for answer in &answers[..=index] {
+            let (output, _) = request
+                .function_call_output_content_and_success(&answer.call_id)
+                .context("answer tool output")?;
+            let output: serde_json::Value =
+                serde_json::from_str(&output.context("answer tool output content")?)?;
+            assert_eq!(
+                output,
+                json!({"answers": {"publish": {"answers": [answer.questions[0].answer]}}})
+            );
+        }
+    }
+    test.codex
+        .append_rollout_items(
+            &answers
+                .iter()
+                .cloned()
+                .map(|answer| {
+                    RolloutItem::RetainedContext(RetainedContextEvent::VerifiedAnswer(answer))
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+    let mut thread = resume(&test, &test.codex).await?;
+    compact_and_assert_answers(&test, &thread, &answers).await?;
+    for expected in [&answers[..1], &[]] {
+        thread.submit(Op::ThreadRollback { num_turns: 1 }).await?;
+        wait_for_event(&thread, |event| {
+            matches!(event, EventMsg::ThreadRolledBack(_))
+        })
+        .await;
+        compact_and_assert_answers(&test, &thread, expected).await?;
+        thread = resume(&test, &thread).await?;
+        compact_and_assert_answers(&test, &thread, expected).await?;
+    }
+    thread.shutdown_and_wait().await?;
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum LifecycleBoundary {
     Rollback,
