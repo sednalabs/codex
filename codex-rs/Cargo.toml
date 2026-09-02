@@ -103,6 +103,7 @@ members = [
     "tools",
     "v8-poc",
     "websocket-client",
+    "windows-sandbox-service",
     "worktree",
     "workload-identity",
     "utils/absolute-path",

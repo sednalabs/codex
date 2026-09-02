@@ -4973,6 +4973,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-windows-sandbox-service"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "codex-workload-identity"
 version = "0.0.0"
 dependencies = [
