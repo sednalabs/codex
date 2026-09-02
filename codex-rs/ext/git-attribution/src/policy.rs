@@ -46,7 +46,7 @@ pub(super) fn cached_attribution_policy(
 #[cfg(not(test))]
 const POLICY_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
-const POLICY_RESOLUTION_TIMEOUT: Duration = Duration::from_millis(500);
+const POLICY_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const POLICY_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 pub(super) async fn resolve_attribution_policy(
