@@ -4622,6 +4622,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uds_windows",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

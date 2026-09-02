@@ -43,6 +43,11 @@ opens exactly one raw stream connection to `$CODEX_HOME/app-server-control/app-s
 by default, or to `--sock PATH` when provided, and proxies bytes between that socket and stdin/stdout.
 The proxied stream carries the websocket HTTP Upgrade handshake followed by websocket frames.
 
+On Windows, the socket directory is created with a protected current-user-only DACL. Existing
+directories must already have that owner and DACL; startup rejects broader permissions rather
+than attempting to repair previously exposed state. Custom sockets should use a new dedicated
+subdirectory. The listener pins the validated directory until socket cleanup completes.
+
 Tracing/log output:
 
 - `RUST_LOG` controls log filtering/verbosity.
