@@ -3927,6 +3927,7 @@
               "delete_char": null,
               "delete_to_line_end": null,
               "enter_insert": null,
+              "enter_replace_mode": null,
               "find_backward": null,
               "find_forward": null,
               "insert_line_start": null,
@@ -4755,6 +4756,7 @@
             "delete_char": null,
             "delete_to_line_end": null,
             "enter_insert": null,
+            "enter_replace_mode": null,
             "find_backward": null,
             "find_forward": null,
             "insert_line_start": null,
@@ -5099,6 +5101,14 @@
             }
           ],
           "description": "Enter insert mode at cursor (`i`)."
+        },
+        "enter_replace_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Enter replace mode and overwrite characters under the cursor (`R`)."
         },
         "find_backward": {
           "allOf": [

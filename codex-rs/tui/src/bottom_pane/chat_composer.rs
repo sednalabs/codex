@@ -88,6 +88,9 @@
 //!
 //! `Enter` submits immediately. `Tab` requests queuing while a task is running; if no task is
 //! running, `Tab` submits just like Enter so input is never dropped.
+//! Vim Replace shares Insert's composer actions; only textarea editing differs.
+//! Literal completion/paste edits discard stale Replace recovery; subsequent typing records anew.
+//! Token markers added during Replace are removed when restoring overwritten characters.
 //! `Tab` does not submit when entering a `!` shell command.
 //!
 //! On submit/queue paths, the composer:
@@ -1233,7 +1236,8 @@ impl ChatComposer {
             && self.image_paste_enabled()
             && self.handle_paste_image_path(&pasted)
         {
-            self.draft.textarea.insert_str(" ");
+            let cursor = self.draft.textarea.cursor();
+            self.draft.textarea.insert_str_at(cursor, " ");
         } else {
             self.insert_str(&pasted);
         }
@@ -1336,7 +1340,7 @@ impl ChatComposer {
         }
         self.attachments.local_images = kept_images;
 
-        // Rebuild textarea so placeholders become elements again.
+        // Import literally so placeholders remain atomic and Replace recovery starts empty.
         self.draft.textarea.set_text_clearing_elements("");
         let mut remaining: HashMap<&str, usize> = HashMap::new();
         for img in &self.attachments.local_images {
@@ -1360,14 +1364,14 @@ impl ChatComposer {
                 continue;
             }
             if pos > idx {
-                self.draft.textarea.insert_str(&text[idx..pos]);
+                self.draft.textarea.insert_str_at(idx, &text[idx..pos]);
             }
             self.draft.textarea.insert_element(ph);
             *count -= 1;
             idx = pos + ph.len();
         }
         if idx < text.len() {
-            self.draft.textarea.insert_str(&text[idx..]);
+            self.draft.textarea.insert_str_at(idx, &text[idx..]);
         }
 
         // Keep local image placeholders normalized in attachment order after the
@@ -2113,14 +2117,13 @@ impl ChatComposer {
                             before,
                             retro_chars as usize,
                         ) {
-                            if !grab.grabbed.is_empty() {
-                                self.draft
-                                    .textarea
-                                    .replace_range(grab.start_byte..safe_cur, "");
+                            if grab.grabbed.is_empty()
+                                || self.draft.textarea.retract_paste_burst(grab.start_byte)
+                            {
+                                self.draft.paste_burst.append_char_to_buffer(ch, now);
+                                return (InputResult::None, true);
                             }
-                            // seed the paste burst buffer with everything (grabbed + new)
-                            self.draft.paste_burst.append_char_to_buffer(ch, now);
-                            return (InputResult::None, true);
+                            self.draft.paste_burst.clear_after_explicit_paste();
                         }
                         // If decide_begin_buffer opted not to start buffering,
                         // fall through to normal insertion below.
@@ -2468,12 +2471,12 @@ impl ChatComposer {
                 .next()
                 .is_some_and(|c| !c.is_whitespace());
             if separator_precedes_suffix {
-                self.draft.textarea.insert_str(" ");
+                self.draft.textarea.insert_str_at(cursor, " ");
             } else {
                 self.draft.textarea.set_cursor(after_separator);
             }
         } else {
-            self.draft.textarea.insert_str(" ");
+            self.draft.textarea.insert_str_at(cursor, " ");
         }
     }
 
@@ -3735,13 +3738,13 @@ impl ChatComposer {
                             before,
                             retro_chars as usize,
                         ) {
-                            if !grab.grabbed.is_empty() {
-                                self.draft
-                                    .textarea
-                                    .replace_range(grab.start_byte..safe_cur, "");
+                            if grab.grabbed.is_empty()
+                                || self.draft.textarea.retract_paste_burst(grab.start_byte)
+                            {
+                                self.draft.paste_burst.append_char_to_buffer(ch, now);
+                                return (InputResult::None, true);
                             }
-                            self.draft.paste_burst.append_char_to_buffer(ch, now);
-                            return (InputResult::None, true);
+                            self.draft.paste_burst.clear_after_explicit_paste();
                         }
                         // If decide_begin_buffer opted not to start buffering,
                         // fall through to normal insertion below.
@@ -6117,6 +6120,31 @@ mod tests {
         );
         assert_eq!(composer.footer.mode, FooterMode::ComposerEmpty);
         assert!(!composer.footer.esc_backtrack_hint);
+
+        composer.handle_key_event(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE));
+        assert_eq!(
+            composer.vim_mode_indicator_span(),
+            Some("Vim: Replace".cyan())
+        );
+        snapshot_composer_state(
+            "vim_replace_mode",
+            /*enhanced_keys_supported*/ true,
+            |composer| {
+                composer.set_vim_enabled(/*enabled*/ true);
+                composer.handle_key_event(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE));
+                composer.handle_paste("x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 1));
+            },
+        );
+        composer.insert_str("ok");
+        let (result, _) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(result, InputResult::Submitted { .. }));
+        assert_eq!(composer.current_text(), "");
+        composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(
+            composer.vim_mode_indicator_span(),
+            Some("Vim: Normal".magenta())
+        );
     }
 
     #[test]
@@ -6619,6 +6647,9 @@ mod tests {
         assert_eq!(style_output(composer.cursor_style(area)), steady_bar);
 
         composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(style_output(composer.cursor_style(area)), default,);
+
+        composer.handle_key_event(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE));
         assert_eq!(style_output(composer.cursor_style(area)), default,);
     }
 

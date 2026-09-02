@@ -184,6 +184,7 @@ pub(crate) struct VimNormalKeymap {
     pub(crate) insert_line_start: Vec<KeyBinding>,
     pub(crate) open_line_below: Vec<KeyBinding>,
     pub(crate) open_line_above: Vec<KeyBinding>,
+    pub(crate) enter_replace_mode: Vec<KeyBinding>,
     pub(crate) move_left: Vec<KeyBinding>,
     pub(crate) move_right: Vec<KeyBinding>,
     pub(crate) move_up: Vec<KeyBinding>,
@@ -723,6 +724,7 @@ impl RuntimeKeymap {
             insert_line_start: resolve_local!(keymap, defaults, vim_normal, insert_line_start),
             open_line_below: resolve_local!(keymap, defaults, vim_normal, open_line_below),
             open_line_above: resolve_local!(keymap, defaults, vim_normal, open_line_above),
+            enter_replace_mode: resolve_local!(keymap, defaults, vim_normal, enter_replace_mode),
             move_left: resolve_local!(keymap, defaults, vim_normal, move_left),
             move_right: resolve_local!(keymap, defaults, vim_normal, move_right),
             move_up: resolve_local!(keymap, defaults, vim_normal, move_up),
@@ -788,6 +790,10 @@ impl RuntimeKeymap {
             (
                 keymap.vim_normal.open_line_above.as_ref(),
                 vim_normal.open_line_above.as_slice(),
+            ),
+            (
+                keymap.vim_normal.enter_replace_mode.as_ref(),
+                vim_normal.enter_replace_mode.as_slice(),
             ),
             (
                 keymap.vim_normal.move_left.as_ref(),
@@ -1385,13 +1391,19 @@ impl RuntimeKeymap {
                 keymap.vim_normal.redo.as_ref(),
                 &mut resolved.vim_normal.redo,
             ),
+            (
+                keymap.vim_normal.enter_replace_mode.as_ref(),
+                &mut resolved.vim_normal.enter_replace_mode,
+            ),
         ] {
             if setting.is_none() {
                 bindings.retain(|binding| {
-                    !configured.contains(binding)
+                    let (code, modifiers) = binding.parts();
+                    let event = KeyEvent::new(code, modifiers);
+                    !configured.is_pressed(event)
                         && !resolved.chords.bindings.iter().any(|chord| {
                             chord.action.context.overlaps(KeymapContext::VimNormal)
-                                && chord.chord.prefix.parts() == binding.parts()
+                                && chord.chord.prefix.is_press(event)
                         })
                 });
             }
@@ -1533,6 +1545,10 @@ impl RuntimeKeymap {
                 open_line_above: default_bindings![
                     shift(KeyCode::Char('o')),
                     plain(KeyCode::Char('O'))
+                ],
+                enter_replace_mode: default_bindings![
+                    shift(KeyCode::Char('r')),
+                    plain(KeyCode::Char('R'))
                 ],
                 move_left: default_bindings![plain(KeyCode::Char('h')), plain(KeyCode::Left)],
                 move_right: default_bindings![plain(KeyCode::Char('l')), plain(KeyCode::Right)],
@@ -2843,6 +2859,15 @@ mod tests {
     }
 
     #[test]
+    fn explicit_replace_mode_binding_conflicts_with_legacy_binding() {
+        let mut keymap = TuiKeymap::default();
+        keymap.vim_normal.move_left = Some(one("shift-r"));
+        keymap.vim_normal.enter_replace_mode = Some(one("shift-r"));
+
+        expect_conflict(&keymap, "move_left", "enter_replace_mode");
+    }
+
+    #[test]
     fn configured_legacy_vim_normal_bindings_prune_new_substitute_default() {
         let mut keymap = TuiKeymap::default();
         keymap.vim_normal.move_left = Some(one("s"));
@@ -2996,8 +3021,12 @@ mod tests {
     }
 
     #[test]
-    fn configured_legacy_bindings_prune_new_history_defaults() {
-        for key in ["u", "ctrl-r"] {
+    fn configured_legacy_bindings_prune_new_vim_defaults() {
+        for (key, new_action) in [
+            ("u", "undo"),
+            ("ctrl-r", "redo"),
+            ("shift-r", "enter_replace_mode"),
+        ] {
             for (context, action, suffix) in [
                 ("vim_normal", "move_left", ""),
                 ("vim_normal", "move_left", " g"),
@@ -3019,12 +3048,11 @@ mod tests {
                     keymap.composer.history_search_previous = Some(KeybindingsSpec::Many(vec![]));
                 }
                 let runtime = RuntimeKeymap::from_config(&keymap).expect("config should parse");
-                let bindings = if key == "u" {
-                    runtime.vim_normal.undo
-                } else {
-                    runtime.vim_normal.redo
-                };
-                assert_eq!(bindings, Vec::new());
+                assert_eq!(
+                    bindings_for_action(&runtime, "vim_normal", new_action),
+                    Some([].as_slice()),
+                    "{context}.{action} = {key}{suffix}"
+                );
             }
         }
     }

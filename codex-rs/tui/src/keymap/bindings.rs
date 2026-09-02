@@ -293,6 +293,7 @@ define_runtime_action_bindings! {
         insert_line_start,
         open_line_below,
         open_line_above,
+        enter_replace_mode,
         move_left,
         move_right,
         move_up,
