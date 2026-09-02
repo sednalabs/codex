@@ -268,12 +268,7 @@ pub async fn run_windows_sandbox_setup(request: WindowsSandboxSetupRequest) -> a
             Ok(())
         }
         Err(err) => {
-            emit_windows_sandbox_setup_failure_metrics(
-                mode,
-                originator_tag.as_str(),
-                start.elapsed(),
-                &err,
-            );
+            emit_windows_sandbox_setup_failure_metrics(mode, start.elapsed(), &err);
             Err(err)
         }
     }
@@ -351,15 +346,17 @@ fn emit_windows_sandbox_setup_success_metrics(
     );
 }
 
-fn emit_windows_sandbox_setup_failure_metrics(
+/// Records setup failures, including service attempts that fail before the helper path.
+pub fn emit_windows_sandbox_setup_failure_metrics(
     mode: WindowsSandboxSetupMode,
-    originator_tag: &str,
     duration: std::time::Duration,
     _err: &anyhow::Error,
 ) {
     let Some(metrics) = codex_otel::global() else {
         return;
     };
+    let originator_tag = sanitize_metric_tag_value(originator().value.as_str());
+    let originator_tag = originator_tag.as_str();
     let mode_tag = windows_sandbox_setup_mode_tag(mode);
     let _ = metrics.record_duration(
         "codex.windows_sandbox.setup_duration_ms",

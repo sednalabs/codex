@@ -1,5 +1,6 @@
 //! Authenticated local IPC for the Windows sandbox provisioning service.
-//! Configuration parse failures defer provisioning to the client's elevated helper.
+//! Configuration parse failures and unsupported home drives defer provisioning to
+//! the client's elevated helper.
 //! Shutdown wakeups are retried until the listener connects or stops.
 
 mod authentication;
@@ -125,6 +126,9 @@ pub(crate) fn run(shutdown: Arc<AtomicBool>, on_ready: impl FnOnce() -> Result<(
         let result = handle_request(pipe.0, &authorized_process, &sandbox_sid, &shutdown);
         let response = match result {
             Ok(response) => response,
+            Err(error) if error.is::<home::UnsupportedHomeDrive>() => {
+                SandboxProvisioningResponse::Unavailable
+            }
             Err(error) => {
                 eprintln!("sandbox provisioning request failed: {error}");
                 let mut message = String::new();

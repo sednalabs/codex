@@ -1041,6 +1041,9 @@
             "web_search_request": {
               "type": "boolean"
             },
+            "windows_sandbox_service": {
+              "type": "boolean"
+            },
             "workspace_dependencies": {
               "type": "boolean"
             },
@@ -6351,6 +6354,9 @@
           "type": "boolean"
         },
         "web_search_request": {
+          "type": "boolean"
+        },
+        "windows_sandbox_service": {
           "type": "boolean"
         },
         "workspace_dependencies": {
