@@ -1390,7 +1390,15 @@ mod tests {
             )
             .await;
         let cap = capability(runtime.as_ref(), thread_id, "trigger").await;
-        bind_contract(runtime.as_ref(), thread_id, "trigger", &cap, "start", None).await?;
+        bind_contract(
+            runtime.as_ref(),
+            thread_id,
+            "trigger",
+            &cap,
+            "start",
+            /*expected_turn_id*/ None,
+        )
+        .await?;
         let mut sibling_attempt = automatic_user_message(
             thread_id, "trigger", "turn", /*attempt*/ 1, /*max_attempts*/ 3, &cap,
         );
@@ -1410,7 +1418,7 @@ mod tests {
                 "connection:1",
                 client_id,
                 "start",
-                None,
+                /*expected_turn_id*/ None,
             )
             .await?;
         runtime
@@ -1451,7 +1459,7 @@ mod tests {
             "trigger",
             &capability,
             "start",
-            None,
+            /*expected_turn_id*/ None,
         )
         .await?;
         let first = runtime.clone();
@@ -1464,7 +1472,7 @@ mod tests {
                 "connection:1",
                 "client-1",
                 "start",
-                None,
+                /*expected_turn_id*/ None,
             ),
             second.reserve_automatic_turn_capability(
                 thread_id,
@@ -1473,7 +1481,7 @@ mod tests {
                 "connection:1",
                 "client-2",
                 "start",
-                None,
+                /*expected_turn_id*/ None,
             ),
         );
         assert_eq!(u8::from(first?) + u8::from(second?), 1);
@@ -1499,7 +1507,7 @@ mod tests {
                     "trigger",
                     &capability,
                     "start",
-                    None,
+                    /*expected_turn_id*/ None,
                     "context-v1",
                 )
                 .await?
@@ -1522,7 +1530,7 @@ mod tests {
                     "trigger",
                     &capability,
                     "start",
-                    None,
+                    /*expected_turn_id*/ None,
                     "different-context",
                 )
                 .await?
@@ -1759,7 +1767,7 @@ mod tests {
             "trigger",
             &capability,
             "start",
-            None,
+            /*expected_turn_id*/ None,
         )
         .await?;
         let client_id = AutomaticTurnProvenance::policy_retry(
@@ -1781,7 +1789,7 @@ mod tests {
                     "connection:1",
                     &client_id,
                     "start",
-                    None,
+                    /*expected_turn_id*/ None,
                 )
                 .await?
         );
