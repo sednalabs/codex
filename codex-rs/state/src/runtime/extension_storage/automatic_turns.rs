@@ -54,10 +54,7 @@ impl StateRuntime {
         }
         match self
             .record_automatic_turn_event_inner(
-                thread_id,
-                event,
-                principal,
-                /*client_user_message_id*/ None,
+                thread_id, event, principal, /*client_user_message_id*/ None,
             )
             .await
         {
