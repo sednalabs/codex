@@ -284,6 +284,13 @@
         "null"
       ]
     },
+    "ordinaryUsageAllowed": {
+      "description": "Backend permission for ordinary included usage, validated against the active account. Null means unavailable; clients must not infer recovery from percentages or reset times.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "rateLimitResetCredits": {
       "anyOf": [
         {

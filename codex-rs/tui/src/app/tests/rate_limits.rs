@@ -40,6 +40,7 @@ fn rate_limit_snapshot(
 
 fn account_rate_limits_response(snapshot: RateLimitSnapshot) -> GetAccountRateLimitsResponse {
     GetAccountRateLimitsResponse {
+        ordinary_usage_allowed: None,
         account_id: None,
         rate_limit_upsell: None,
         rate_limits: snapshot,

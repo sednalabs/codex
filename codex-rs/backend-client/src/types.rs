@@ -44,6 +44,8 @@ pub struct RateLimitResetCreditDetails {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RateLimitsWithResetCredits {
     pub rate_limits: Vec<RateLimitSnapshot>,
+    /// Backend decision for ordinary included usage; absence is not permission to recover.
+    pub ordinary_usage_allowed: Option<bool>,
     pub rate_limit_reset_credits: Option<RateLimitResetCreditsSummary>,
     pub account_id: Option<String>,
     pub user_id: Option<String>,

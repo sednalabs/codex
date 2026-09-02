@@ -2750,11 +2750,25 @@ Codex-managed credentials are removed; AWS profiles, environment credentials, an
 
 ### 7) Rate limits (ChatGPT)
 
+Clients that implement automatic Luna Reserve fallback may send
+`"params": { "supportsLunaReserve": true }` on `account/rateLimits/read`. For eligible
+ChatGPT CLI users, this opts into experiment exposure only after the backend reports
+ordinary included usage blocked, for both control and treatment. It does not grant
+Reserve access. Omitted params preserve non-exposing reads; API-key, PAT, and FedRAMP
+sessions do not opt in. Clients connecting to older app servers that reject object
+params should retry without params.
+
+Background polls may also send `"excludeResetCreditDetails": true` to avoid the
+separate reset-credit detail lookup. The usage response still supplies the available
+count. Startup and user-requested usage/reset reads should omit this flag so credit
+details remain available; older servers ignore it and keep their existing behavior.
+
 ```json
 { "method": "account/rateLimits/read", "id": 7 }
 {
   "id": 7,
   "result": {
+    "ordinaryUsageAllowed": true,
     "rateLimits": {
       "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 },
       "secondary": null,
@@ -2787,6 +2801,7 @@ Field notes:
 - `rateLimitReachedType` identifies the backend-classified limit state when one has been reached.
 - `individualLimit` describes the effective monthly credit limit when available. In an `account/rateLimits/read` response, `null` means no monthly limit is available. In a sparse `account/rateLimits/updated` notification, nullable account metadata may be unavailable and does not clear a previously observed value.
 - `accountId` identifies the account in the usage snapshot when the backend supplies it.
+- `ordinaryUsageAllowed` is the backend decision for ordinary included usage, validated against the authenticated account and user. It is `null` for unavailable or mismatched identity data. A CLI task that automatically entered Luna Reserve can restore its previous model when a validated read allows included usage or reports usable credits, no backend banner or hard stop remains, and the user has not manually changed models. Percentages, reset timestamps, and sparse notifications do not authorize this transition.
 - `rateLimitUpsell` carries the optional backend-owned `rate_limit_upsell` object from the same usage request, preserving its nested snake_case fields. The backend controls eligibility; clients do not evaluate an experiment or issue another request for it. A missing, null, or unsupported banner leaves the existing client UI in place. Banners whose account or user does not match the authenticated identity are omitted. Sparse notifications do not clear this snapshot-only field.
 - `rateLimitResetCredits` contains the available earned-reset count when the backend provides it; otherwise it is `null`.
 - `rateLimitResetCredits.credits` is `null` when only the count is available. An empty array means details were fetched and no available credits were returned.
