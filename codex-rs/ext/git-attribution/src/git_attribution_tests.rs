@@ -102,7 +102,7 @@ async fn policy_resolution_retries_after_auth_refresh() {
                 0 => {
                     request_started.notify_one();
                     ResponseTemplate::new(200)
-                        .set_delay(Duration::from_millis(100))
+                        .set_delay(Duration::from_secs(1))
                         .set_body_json(serde_json::json!({
                             "commit_attribution_enabled": true,
                         }))
