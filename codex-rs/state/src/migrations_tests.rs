@@ -1217,14 +1217,8 @@ async fn repair_state_migration_version_collisions_succeeds_while_writer_slot_is
 
 #[tokio::test]
 async fn usage_automatic_turn_epochs_backfills_legacy_abort_occurrences() {
-    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
-    tokio::fs::create_dir_all(&sqlite_home)
-        .await
-        .expect("sqlite home should be created");
-    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
-        let _ = std::fs::remove_dir_all(sqlite_home);
-    });
-    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let sqlite_home = tempfile::tempdir().expect("sqlite home should be created");
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.path().abs());
     let usage_path = sqlite.usage_db_path();
     let pool = sqlite
         .open_read_write_pool(&usage_path)
