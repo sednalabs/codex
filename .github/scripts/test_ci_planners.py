@@ -1444,6 +1444,8 @@ class RouteSelectionTests(unittest.TestCase):
         )
 
         native_job = (payload.get("jobs") or {}).get("test-windows-native-main") or {}
+        self.assertEqual(native_job.get("timeout-minutes"), "90")
+        self.assertEqual(native_job.get("runs-on"), "windows-2022")
         self.assertEqual(
             native_job.get("name"),
             "Bazel test on windows-latest for x86_64-pc-windows-gnullvm (native health)",
