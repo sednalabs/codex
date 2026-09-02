@@ -44,7 +44,6 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_rollout::RolloutItem;
-use codex_rollout::RolloutLine;
 use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::read_session_meta_line;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
@@ -218,7 +217,7 @@ fn set_rollout_cwd(path: &Path, cwd: &Path) -> Result<()> {
     let first_line = lines
         .first_mut()
         .ok_or_else(|| anyhow::anyhow!("rollout at {} is empty", path.display()))?;
-    let mut rollout_line: RolloutLine = serde_json::from_str(first_line)?;
+    let mut rollout_line = codex_rollout::parse_rollout_line(first_line)?;
     let RolloutItem::SessionMeta(mut session_meta_line) = rollout_line.item else {
         return Err(anyhow::anyhow!(
             "rollout at {} does not start with session metadata",

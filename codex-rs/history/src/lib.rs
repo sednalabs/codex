@@ -232,7 +232,11 @@ impl From<CompactedItem> for ResponseItem {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, JsonSchema)]
+/// One persisted rollout JSONL record.
+///
+/// This intentionally does not implement Deserialize: JSONL readers must use
+/// codex_rollout's canonical parser so nested decimal values survive the flattened envelope.
+#[derive(Serialize, Clone, JsonSchema)]
 pub struct RolloutLine {
     pub timestamp: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

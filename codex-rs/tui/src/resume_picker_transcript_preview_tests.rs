@@ -18,6 +18,7 @@ use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_rollout::CompactedItem;
+use codex_rollout::RolloutLine;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;

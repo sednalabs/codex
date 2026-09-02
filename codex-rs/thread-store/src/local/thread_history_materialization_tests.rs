@@ -504,7 +504,7 @@ async fn paginated_realtime_items_materialize_separately_in_rollout_order() {
     let expected_rows = fs::read_to_string(rollout_path.as_path())
         .expect("read canonical rollout")
         .lines()
-        .map(|line| serde_json::from_str::<RolloutLine>(line).expect("parse rollout line"))
+        .map(|line| codex_rollout::parse_rollout_line(line).expect("parse rollout line"))
         .filter_map(|line| match line.item {
             RolloutItem::RealtimeItem(item) => Some((
                 item.id,
@@ -2675,7 +2675,7 @@ fn rollout_line_byte_offsets(path: &std::path::Path, ordinal: u64) -> (i64, i64)
     let mut start_byte_offset = 0;
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
         let end_byte_offset = start_byte_offset + line.len();
-        if serde_json::from_slice::<RolloutLine>(line)
+        if codex_rollout::parse_rollout_line_bytes(line)
             .ok()
             .and_then(|line| line.ordinal)
             == Some(ordinal)

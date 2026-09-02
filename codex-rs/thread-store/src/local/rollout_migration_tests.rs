@@ -259,7 +259,7 @@ fn read_rollout(path: &Path) -> Vec<RolloutLine> {
     fs::read_to_string(path)
         .expect("read migrated rollout")
         .lines()
-        .map(|line| serde_json::from_str(line).expect("parse migrated rollout"))
+        .map(|line| codex_rollout::parse_rollout_line(line).expect("parse migrated rollout"))
         .collect()
 }
 

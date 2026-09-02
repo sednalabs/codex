@@ -59,7 +59,7 @@ fn rollout_line_decoder_preserves_canonical_json_compatibility() -> Result<()> {
 
     for encoded in cases {
         let value = serde_json::from_str::<serde_json::Value>(encoded)?;
-        let decoded = crate::decode_rollout_line(value.clone())?;
+        let decoded = crate::parse_rollout_line(encoded)?;
         let mut expected = value;
         if expected["type"] != "response_item" {
             expected

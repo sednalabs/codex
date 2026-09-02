@@ -599,8 +599,8 @@ fn rollout_end_byte_offset(path: &Path, end_ordinal_exclusive: u64) -> u64 {
     let contents = std::fs::read(path).expect("read rollout");
     let mut byte_offset = 0_u64;
     for line in contents.split_inclusive(|byte| *byte == b'\n') {
-        let parsed: RolloutLine =
-            serde_json::from_slice(line).expect("parse rollout line for byte offset");
+        let parsed = codex_rollout::parse_rollout_line_bytes(line)
+            .expect("parse rollout line for byte offset");
         if parsed.ordinal == Some(end_ordinal_exclusive) {
             return byte_offset;
         }
