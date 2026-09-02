@@ -1,10 +1,15 @@
 //! Windows process identity and file locks. Keep a process handle across shutdown
 //! so PID reuse can never redirect forced termination to a different process.
+//! Managed servers must not elevate ordinary clients sharing the account's socket.
 
 use std::io;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::FromRawHandle;
 use std::os::windows::io::OwnedHandle;
+use std::os::windows::process::CommandExt;
+use std::path::Path;
+use std::process::Command;
+use std::process::Stdio;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -13,6 +18,10 @@ use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
 use windows_sys::Win32::Foundation::FILETIME;
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+use windows_sys::Win32::Security::GetTokenInformation;
+use windows_sys::Win32::Security::TOKEN_ELEVATION;
+use windows_sys::Win32::Security::TOKEN_QUERY;
+use windows_sys::Win32::Security::TokenElevation;
 use windows_sys::Win32::Storage::FileSystem::LOCKFILE_EXCLUSIVE_LOCK;
 use windows_sys::Win32::Storage::FileSystem::LOCKFILE_FAIL_IMMEDIATELY;
 use windows_sys::Win32::Storage::FileSystem::LockFileEx;
@@ -24,16 +33,84 @@ use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
 use windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION;
 use windows_sys::Win32::System::JobObjects::JobObjectExtendedLimitInformation;
 use windows_sys::Win32::System::JobObjects::SetInformationJobObject;
+use windows_sys::Win32::System::Threading::CREATE_BREAKAWAY_FROM_JOB;
+use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+use windows_sys::Win32::System::Threading::DETACHED_PROCESS;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::System::Threading::GetProcessId;
 use windows_sys::Win32::System::Threading::GetProcessTimes;
 use windows_sys::Win32::System::Threading::OpenProcess;
+use windows_sys::Win32::System::Threading::OpenProcessToken;
 use windows_sys::Win32::System::Threading::PROCESS_ACCESS_RIGHTS;
 use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
 use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
 use windows_sys::Win32::System::Threading::PROCESS_TERMINATE;
 use windows_sys::Win32::System::Threading::TerminateProcess;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+pub(crate) fn ensure_not_elevated() -> Result<()> {
+    let mut token = 0;
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error()).context("failed to query daemon launcher token");
+    }
+    let token = unsafe { OwnedHandle::from_raw_handle(token as _) };
+    let mut elevation: TOKEN_ELEVATION = unsafe { std::mem::zeroed() };
+    let mut returned = 0;
+    if unsafe {
+        GetTokenInformation(
+            token.as_raw_handle() as _,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error())
+            .context("failed to query daemon launcher elevation");
+    }
+    anyhow::ensure!(
+        elevation.TokenIsElevated == 0,
+        "start the Windows daemon from a non-elevated terminal; shared clients must not inherit administrator privileges"
+    );
+    Ok(())
+}
+
+// Probe the actual child association: escaping an inner job can leave an outer
+// job attached. Suspend the image so no application code runs before cleanup.
+pub(crate) fn ensure_detached_launch(executable: &Path) -> Result<()> {
+    let mut child = Command::new(executable)
+        .creation_flags(CREATE_SUSPENDED | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("cannot launch detached daemon; existing daemon was not stopped")?;
+    let mut in_job = 0;
+    let result = if unsafe {
+        IsProcessInJob(
+            child.as_raw_handle() as _,
+            /*jobhandle*/ 0,
+            &mut in_job,
+        )
+    } == 0
+    {
+        Err(io::Error::last_os_error()).context("failed to verify daemon launch capability")
+    } else if in_job != 0 {
+        Err(anyhow::anyhow!(
+            "host Job Object prevents daemon detachment; start from a host that allows breakaway"
+        ))
+    } else {
+        Ok(())
+    };
+    child
+        .kill()
+        .context("failed to terminate suspended launch probe")?;
+    child
+        .wait()
+        .context("failed to reap suspended launch probe")?;
+    result
+}
 
 pub(super) struct Process(OwnedHandle);
 

@@ -4543,6 +4543,7 @@ dependencies = [
  "codex-shell-command",
  "codex-state",
  "codex-terminal-detection",
+ "codex-uds",
  "codex-utils-absolute-path",
  "codex-utils-approval-presets",
  "codex-utils-cargo-bin",

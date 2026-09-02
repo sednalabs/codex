@@ -18,6 +18,27 @@ use super::read_stderr_log_tail;
 use super::stderr_log_file_for_pid_file;
 use super::try_lock_file;
 
+#[cfg(windows)]
+fn is_elevated_test_process() -> anyhow::Result<bool> {
+    let output = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
+        ])
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "administrator membership query failed"
+    );
+    match String::from_utf8(output.stdout)?.trim() {
+        "True" => Ok(true),
+        "False" => Ok(false),
+        other => anyhow::bail!("unexpected administrator membership: {other}"),
+    }
+}
+
 #[tokio::test]
 async fn locked_empty_pid_file_is_treated_as_active_reservation() {
     let temp_dir = TempDir::new().expect("temp dir");
@@ -116,6 +137,16 @@ async fn start_retries_stale_empty_pid_file_under_its_own_lock() {
     );
 
     let err = backend.start().await.expect_err("start");
+    #[cfg(windows)]
+    if is_elevated_test_process().expect("query administrator membership") {
+        assert!(err.to_string().contains("non-elevated terminal"));
+        assert_eq!(
+            tokio::fs::read(&backend.pid_file).await.unwrap(),
+            Vec::<u8>::new()
+        );
+        assert!(!backend.lock_file.exists());
+        return;
+    }
     assert!(
         err.to_string()
             .starts_with("failed to spawn detached app-server process using ")
@@ -287,6 +318,7 @@ async fn stale_creation_time_never_stops_reused_pid() {
 #[cfg(windows)]
 #[tokio::test]
 async fn failed_updater_handoff_preserves_predecessor_record() {
+    let elevated = is_elevated_test_process().expect("query administrator membership");
     let temp = TempDir::new().expect("temp");
     let state_dir = temp.path().join("state");
     codex_uds::prepare_private_socket_directory(&state_dir)
@@ -313,9 +345,13 @@ async fn failed_updater_handoff_preserves_predecessor_record() {
             .await
             .unwrap();
         let error = backend.replace_current_updater().await.unwrap_err();
-        // Windows may reject breakaway before reporting the missing executable.
-        // Both must reach process I/O rather than rejecting stale ownership.
-        assert!(error.root_cause().is::<std::io::Error>(), "{error:#}");
+        if elevated {
+            assert!(error.to_string().contains("non-elevated terminal"));
+        } else {
+            // Windows may reject breakaway before reporting the missing executable.
+            // Both must reach process I/O rather than rejecting stale ownership.
+            assert!(error.root_cause().is::<std::io::Error>(), "{error:#}");
+        }
         assert_eq!(
             backend.read_pid_file_state().await.unwrap(),
             PidFileState::Running(record)

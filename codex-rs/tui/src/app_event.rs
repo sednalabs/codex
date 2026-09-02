@@ -270,10 +270,10 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
     },
     /// Start the shared app-server daemon without moving the current embedded session.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     StartAgentsDaemon,
     /// Report whether starting the shared app-server daemon succeeded.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     AgentsDaemonStarted {
         result: Result<(), String>,
     },

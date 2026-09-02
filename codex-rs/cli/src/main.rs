@@ -1133,7 +1133,7 @@ async fn cli_main(
                         /*remote*/ None,
                         root_remote_auth_token_env.clone(),
                     )?;
-                    #[cfg(not(unix))]
+                    #[cfg(not(any(unix, windows)))]
                     anyhow::bail!("`codex agents` requires `--remote` on this platform");
                 }
                 interactive.agents_overview = true;
@@ -2600,7 +2600,7 @@ async fn run_interactive_tui(
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     if interactive.agents_overview && remote.is_none() {
         if !std::io::stdin().is_terminal() {
             return Ok(AppExitInfo::fatal("stdin is not a terminal"));

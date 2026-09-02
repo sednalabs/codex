@@ -5,6 +5,46 @@ use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use windows_sys::Win32::System::Threading::TerminateProcess;
 
+#[test]
+fn detached_launch_preflight_rejects_restrictive_job() {
+    const CHILD: &str = "CODEX_TEST_RESTRICTIVE_LAUNCH_JOB";
+    let executable = std::env::current_exe().expect("test executable");
+    if std::env::var_os(CHILD).is_some() {
+        let job = unsafe { super::CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        assert_ne!(job, 0);
+        let job = unsafe {
+            <std::os::windows::io::OwnedHandle as std::os::windows::io::FromRawHandle>::from_raw_handle(job as _)
+        };
+        assert_ne!(
+            unsafe {
+                super::AssignProcessToJobObject(
+                    job.as_raw_handle() as _,
+                    super::GetCurrentProcess(),
+                )
+            },
+            0
+        );
+        // A new job does not permit breakaway. Reject before any lifecycle mutation.
+        assert!(super::ensure_detached_launch(&executable).is_err());
+        return;
+    }
+    let output = std::process::Command::new(executable)
+        .args([
+            "--exact",
+            "backend::windows::tests::detached_launch_preflight_rejects_restrictive_job",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .expect("isolated job test");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+}
+
 #[tokio::test]
 async fn identity_queries_do_not_require_termination_access() {
     let mut child = tokio::process::Command::new("powershell.exe")

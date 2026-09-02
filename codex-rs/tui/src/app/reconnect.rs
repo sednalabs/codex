@@ -36,14 +36,9 @@ pub(super) async fn reconnect(
     presentation: ReconnectPresentation,
 ) -> Result<Reconnected> {
     let mode = target.thread_params_mode();
-    let endpoint = match target {
-        AppServerTarget::Remote { endpoint } | AppServerTarget::LocalDaemon { endpoint } => {
-            endpoint
-        }
-        AppServerTarget::Embedded => {
-            color_eyre::eyre::bail!("in-process sessions have no connection to restore")
-        }
-    };
+    if matches!(target, AppServerTarget::Embedded) {
+        color_eyre::eyre::bail!("in-process sessions have no connection to restore");
+    }
     if let ThreadToolTransport::Mcp(server) = &task_tools {
         server.suspend();
     }
@@ -58,7 +53,7 @@ pub(super) async fn reconnect(
     for delay in [0, 1, 2, 4, 8] {
         let attempt = async {
             tokio::time::sleep(Duration::from_secs(delay)).await;
-            let client = crate::connect_remote_app_server(endpoint.clone()).await?;
+            let client = crate::app_server_connection::connect(&target).await?;
             let mut session = AppServerSession::new(client, mode)
                 .with_startup_config(&config)
                 .with_remote_cwd_override(remote_cwd.clone())

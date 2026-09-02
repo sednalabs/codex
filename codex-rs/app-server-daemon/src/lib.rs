@@ -194,16 +194,24 @@ enum RestartDecision {
 
 pub async fn run(command: LifecycleCommand) -> Result<LifecycleOutput> {
     ensure_supported_platform()?;
+    #[cfg(windows)]
+    if matches!(command, LifecycleCommand::Start | LifecycleCommand::Restart) {
+        backend::windows::ensure_not_elevated()?;
+    }
     Daemon::from_environment()?.run(command).await
 }
 
 pub async fn bootstrap(options: BootstrapOptions) -> Result<BootstrapOutput> {
     ensure_supported_platform()?;
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
     Daemon::from_environment()?.bootstrap(options).await
 }
 
 pub async fn ensure_remote_control_ready() -> Result<RemoteControlReadyOutput> {
     ensure_supported_platform()?;
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
     Daemon::from_environment()?
         .ensure_remote_control_ready()
         .await
@@ -232,6 +240,8 @@ pub async fn start_remote_control_pairing() -> Result<RemoteControlPairingStartR
 
 pub async fn set_remote_control(mode: RemoteControlMode) -> Result<RemoteControlOutput> {
     ensure_supported_platform()?;
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
     Daemon::from_environment()?.set_remote_control(mode).await
 }
 
@@ -239,18 +249,20 @@ pub async fn run_pid_update_loop(
     http_client_factory: codex_http_client::HttpClientFactory,
 ) -> Result<()> {
     ensure_supported_platform()?;
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
     update_loop::run(http_client_factory).await
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn ensure_supported_platform() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn ensure_supported_platform() -> Result<()> {
     Err(anyhow!(
-        "codex app-server daemon lifecycle is only supported on Unix platforms"
+        "codex app-server daemon lifecycle is only supported on Unix and Windows platforms"
     ))
 }
 
@@ -386,6 +398,8 @@ impl Daemon {
                 RestartDecision::NotReady => return Ok(RestartIfRunningOutcome::NotReady),
                 RestartDecision::AlreadyCurrent => RestartIfRunningOutcome::AlreadyCurrent,
                 RestartDecision::Restart => {
+                    #[cfg(windows)]
+                    backend::windows::ensure_detached_launch(managed_codex_bin)?;
                     backend.stop().await?;
                     let _ = self
                         .start_managed_backend_with_bin(&settings, managed_codex_bin)
@@ -577,11 +591,13 @@ impl Daemon {
             ));
         }
 
+        if backend.is_some() {
+            self.ensure_managed_codex_bin()?;
+        }
         settings.remote_control_enabled = remote_control_enabled;
         settings.save(&self.settings_file).await?;
 
         let app_server_version = if let Some(backend) = backend {
-            self.ensure_managed_codex_bin()?;
             backend.stop().await?;
             let _ = self.start_managed_backend(&settings).await?;
             Some(self.wait_until_ready().await?.app_server_version)
@@ -679,15 +695,22 @@ impl Daemon {
 
     fn ensure_managed_codex_bin(&self) -> Result<()> {
         if self.managed_codex_bin.is_file() {
+            #[cfg(windows)]
+            backend::windows::ensure_detached_launch(&self.managed_codex_bin)?;
             return Ok(());
         }
 
         let managed_codex_path = self.managed_codex_bin.display();
+        let install_command = if cfg!(windows) {
+            "irm https://chatgpt.com/codex/install.ps1 | iex"
+        } else {
+            "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+        };
         Err(anyhow!(
             "managed standalone Codex install not found at {managed_codex_path}\n\n\
              This command requires the standalone install managed by the Codex installer, because \
              the daemon starts and updates app-server from that fixed path.\n\n\
-             Install it with:\n  curl -fsSL https://chatgpt.com/codex/install.sh | sh\n\n\
+             Install it with:\n  {install_command}\n\n\
              Then rerun the command you just tried."
         ))
     }

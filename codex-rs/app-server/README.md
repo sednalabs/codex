@@ -25,7 +25,7 @@ Supported transports:
 
 - stdio (`--stdio` or `--listen stdio://`, default): newline-delimited JSON (JSONL)
 - websocket (`--listen ws://IP:PORT`): one JSON-RPC message per websocket text frame (**experimental / unsupported**)
-- unix socket (`--listen unix://` or `--listen unix://PATH`): websocket connections over `$CODEX_HOME/app-server-control/app-server-control.sock` or a custom socket path, using the standard HTTP Upgrade handshake
+- unix socket (`--listen unix://` or `--listen unix://PATH`): websocket connections over `$CODEX_HOME/app-server-control/app-server-control.sock` or a custom socket path, using the standard HTTP Upgrade handshake (also supported on Windows)
 - off (`--listen off`): do not expose a local transport
 
 When running with `--listen ws://IP:PORT`, the same listener also serves basic HTTP health probes:
@@ -47,6 +47,10 @@ On Windows, the socket directory is created with a protected current-user-only D
 directories must already have that owner and DACL; startup rejects broader permissions rather
 than attempting to repair previously exposed state. Custom sockets should use a new dedicated
 subdirectory. The listener pins the validated directory until socket cleanup completes.
+
+`codex app-server daemon` manages this local server on Unix and Windows using the standalone
+installation. The TUI discovers an available local daemon; `codex agents` starts it when no explicit
+remote endpoint is supplied. See [daemon lifecycle](../app-server-daemon/README.md) for commands and platform requirements.
 
 Tracing/log output:
 

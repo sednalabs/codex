@@ -5510,7 +5510,7 @@ async fn make_test_app() -> App {
     }
 }
 
-async fn make_test_app_with_channels() -> (
+pub(super) async fn make_test_app_with_channels() -> (
     App,
     tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
     tokio::sync::mpsc::UnboundedReceiver<Op>,
