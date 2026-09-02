@@ -726,7 +726,7 @@ impl SandboxNetworkIdentity {
     }
 }
 
-const PROXY_ENV_KEYS: &[&str] = &[
+pub(crate) const PROXY_ENV_KEYS: &[&str] = &[
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "ALL_PROXY",
@@ -793,7 +793,7 @@ pub(crate) fn proxy_ports_from_env(env_map: &HashMap<String, String>) -> Vec<u16
     ports.into_iter().collect()
 }
 
-fn loopback_proxy_port_from_url(url: &str) -> Option<u16> {
+pub(crate) fn loopback_proxy_port_from_url(url: &str) -> Option<u16> {
     let authority = url.trim().split_once("://")?.1.split('/').next()?;
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
 
@@ -1360,6 +1360,8 @@ mod tests {
     use super::profile_read_roots;
     use super::proxy_ports_from_env;
     use super::verify_setup_completed;
+    use crate::WindowsSandboxProvisioningSettings;
+    use crate::WindowsSandboxProxyListeners;
     use crate::helper_materialization::BIN_DIRNAME;
     use crate::helper_materialization::RESOURCES_DIRNAME;
     use crate::helper_materialization::helper_bin_dir;
@@ -1822,6 +1824,26 @@ mod tests {
         );
 
         assert_eq!(proxy_ports_from_env(&env), vec![1081, 8080, 43128, 43129]);
+        assert_eq!(
+            WindowsSandboxProvisioningSettings::from_environment(
+                &PermissionProfile::workspace_write(),
+                &env,
+            ),
+            WindowsSandboxProvisioningSettings {
+                proxy_ports: vec![1081, 8080, 43128, 43129],
+                allow_local_binding: false,
+            }
+        );
+        assert_eq!(
+            WindowsSandboxProxyListeners::from_environment(
+                &PermissionProfile::workspace_write(),
+                &env,
+            ),
+            WindowsSandboxProxyListeners {
+                http_ports: vec![8080],
+                socks_ports: vec![1081],
+            }
+        );
     }
 
     #[test]
@@ -1843,6 +1865,20 @@ mod tests {
                 allow_local_binding: false,
             }
         );
+        let permission_profile = PermissionProfile::workspace_write_with(
+            &[],
+            NetworkSandboxPolicy::Enabled,
+            /*exclude_tmpdir_env_var*/ false,
+            /*exclude_slash_tmp*/ false,
+        );
+        assert_eq!(
+            WindowsSandboxProvisioningSettings::from_environment(&permission_profile, &env),
+            WindowsSandboxProvisioningSettings::default()
+        );
+        assert_eq!(
+            WindowsSandboxProxyListeners::from_environment(&permission_profile, &env),
+            WindowsSandboxProxyListeners::default()
+        );
     }
 
     #[test]
@@ -1862,12 +1898,104 @@ mod tests {
         );
 
         assert_eq!(
-            offline_proxy_settings_from_env(&env, super::SandboxNetworkIdentity::Offline),
-            super::OfflineProxySettings {
+            WindowsSandboxProvisioningSettings::from_environment(
+                &PermissionProfile::workspace_write(),
+                &env,
+            ),
+            WindowsSandboxProvisioningSettings {
                 proxy_ports: vec![1081, 8080],
                 allow_local_binding: true,
             }
         );
+        assert_eq!(
+            WindowsSandboxProxyListeners::from_environment(
+                &PermissionProfile::workspace_write(),
+                &env,
+            ),
+            WindowsSandboxProxyListeners {
+                http_ports: vec![8080],
+                socks_ports: vec![1081],
+            }
+        );
+
+        env.remove("ALL_PROXY");
+        for (all_proxy, socks_ports) in [
+            ("HTTP://localhost:8080", vec![]),
+            ("socks5h://[::1]:8080", vec![8080]),
+        ] {
+            env.insert("all_proxy".to_string(), all_proxy.to_string());
+            assert_eq!(
+                WindowsSandboxProxyListeners::from_environment(
+                    &PermissionProfile::workspace_write(),
+                    &env,
+                ),
+                WindowsSandboxProxyListeners {
+                    http_ports: vec![8080],
+                    socks_ports,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn provisioning_settings_preserve_all_inherited_proxy_ports() {
+        for (proxy_env, proxy_ports, http_ports, socks_ports) in [
+            (
+                vec![("ALL_PROXY", "socks5h://127.0.0.1:1081")],
+                vec![1081],
+                vec![],
+                vec![1081],
+            ),
+            (
+                vec![
+                    ("HTTP_PROXY", "http://127.0.0.1:8080"),
+                    ("HTTPS_PROXY", "http://127.0.0.1:3128"),
+                ],
+                vec![3128, 8080],
+                vec![3128, 8080],
+                vec![],
+            ),
+            (
+                vec![
+                    ("HTTP_PROXY", "http://127.0.0.1:8080"),
+                    (WINDOWS_SANDBOX_PROXY_PORTS_ENV_KEY, "8080,1081"),
+                ],
+                vec![1081, 8080],
+                vec![8080],
+                vec![],
+            ),
+            (
+                vec![("ALL_PROXY", "ftp://127.0.0.1:3128")],
+                vec![3128],
+                vec![],
+                vec![],
+            ),
+        ] {
+            let env = proxy_env
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect();
+            assert_eq!(
+                WindowsSandboxProvisioningSettings::from_environment(
+                    &PermissionProfile::workspace_write(),
+                    &env,
+                ),
+                WindowsSandboxProvisioningSettings {
+                    proxy_ports,
+                    allow_local_binding: false,
+                }
+            );
+            assert_eq!(
+                WindowsSandboxProxyListeners::from_environment(
+                    &PermissionProfile::workspace_write(),
+                    &env,
+                ),
+                WindowsSandboxProxyListeners {
+                    http_ports,
+                    socks_ports,
+                }
+            );
+        }
     }
 
     #[test]

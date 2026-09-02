@@ -1,5 +1,6 @@
 //! Dedicated protocol exchanged with the Windows sandbox provisioning service.
 
+use crate::WindowsSandboxProvisioningSettings;
 use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
@@ -37,9 +38,16 @@ pub enum ProvisioningMessage {
 #[serde(deny_unknown_fields)]
 pub struct SandboxProvisioningRequest {
     pub codex_home: String,
-    pub http_port: Option<u16>,
-    pub socks_port: Option<u16>,
-    pub allow_local_binding: bool,
+    pub settings: WindowsSandboxProvisioningSettings,
+    pub listeners: WindowsSandboxProxyListeners,
+}
+
+/// Known proxy protocols used for managed-policy validation, separate from firewall settings.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsSandboxProxyListeners {
+    pub http_ports: Vec<u16>,
+    pub socks_ports: Vec<u16>,
 }
 
 /// Result returned by the sandbox provisioning service.
