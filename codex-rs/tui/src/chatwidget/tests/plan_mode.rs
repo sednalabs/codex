@@ -549,7 +549,7 @@ fn plan_mode_prompt_notification_uses_dedicated_type_name() {
 #[tokio::test]
 async fn open_plan_implementation_prompt_sets_pending_notification() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    chat.config.tui_notifications.notifications =
+    chat.local_settings.tui.notification_settings.notifications =
         Notifications::Custom(vec!["plan-mode-prompt".to_string()]);
 
     chat.open_plan_implementation_prompt();
@@ -563,7 +563,7 @@ async fn open_plan_implementation_prompt_sets_pending_notification() {
 #[tokio::test]
 async fn open_plan_reasoning_scope_prompt_sets_pending_notification() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    chat.config.tui_notifications.notifications =
+    chat.local_settings.tui.notification_settings.notifications =
         Notifications::Custom(vec!["plan-mode-prompt".to_string()]);
 
     chat.open_plan_reasoning_scope_prompt("gpt-5.4".to_string(), Some(ReasoningEffortConfig::High));
@@ -624,7 +624,7 @@ async fn request_user_input_notification_overrides_pending_agent_turn_complete_n
 #[tokio::test]
 async fn handle_request_user_input_sets_pending_notification() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    chat.config.tui_notifications.notifications =
+    chat.local_settings.tui.notification_settings.notifications =
         Notifications::Custom(vec!["plan-mode-prompt".to_string()]);
 
     chat.handle_request_user_input_now(ToolRequestUserInputParams {
@@ -1630,6 +1630,8 @@ async fn make_startup_chat_with_cli_overrides(
     let resolved_model = get_model_offline_for_tests(cfg.model.as_deref());
     let session_telemetry = test_session_telemetry(&cfg, resolved_model.as_str());
     let init = ChatWidgetInit {
+        requires_openai_auth: true,
+        local_settings: crate::local_settings::LocalSettings::from(&cfg),
         config: cfg.clone(),
         frame_requester: FrameRequester::test_dummy(),
         app_event_tx: AppEventSender::new(unbounded_channel::<AppEvent>().0),

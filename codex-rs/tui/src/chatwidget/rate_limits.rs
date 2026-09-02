@@ -372,7 +372,7 @@ impl ChatWidget {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn should_prefetch_rate_limits(&self) -> bool {
-        self.config.model_provider.requires_openai_auth && self.has_chatgpt_account
+        self.requires_openai_auth && self.has_chatgpt_account
     }
 
     fn lower_cost_preset(&self) -> Option<ModelPreset> {
@@ -384,7 +384,7 @@ impl ChatWidget {
     }
 
     fn rate_limit_switch_prompt_hidden(&self) -> bool {
-        self.config
+        self.local_settings
             .notices
             .hide_rate_limit_model_nudge
             .unwrap_or(false)
@@ -598,7 +598,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn set_rate_limit_switch_prompt_hidden(&mut self, hidden: bool) {
-        self.config.notices.hide_rate_limit_model_nudge = Some(hidden);
+        self.local_settings.notices.hide_rate_limit_model_nudge = Some(hidden);
         if hidden {
             self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Idle;
         }

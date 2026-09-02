@@ -285,6 +285,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
         let connected = reconnect(
             app.app_server_target.clone(),
             app.config.clone(),
+            app.local_settings.clone(),
             previous_thread,
             /*remote_cwd*/ None,
             session.thread_tool_transport(),

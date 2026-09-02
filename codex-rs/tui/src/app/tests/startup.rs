@@ -1207,6 +1207,7 @@ async fn owned_subagent_approval_before_thread_started_is_preserved() -> Result<
     )?;
     app_server
         .resume_thread(
+            &app.local_settings,
             app.config.clone(),
             child_thread_id,
             crate::app_server_session::ResumeModelSettings::RestoreFromThread,

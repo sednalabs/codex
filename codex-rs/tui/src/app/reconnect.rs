@@ -29,6 +29,7 @@ pub(super) struct Reconnected {
 pub(super) async fn reconnect(
     target: AppServerTarget,
     config: Config,
+    local_settings: crate::local_settings::LocalSettings,
     thread_id: Option<ThreadId>,
     remote_cwd: Option<PathBuf>,
     task_tools: ThreadToolTransport,
@@ -66,6 +67,7 @@ pub(super) async fn reconnect(
             let thread = if let Some(thread_id) = thread_id {
                 match session
                     .resume_thread(
+                        &local_settings,
                         config.clone(),
                         thread_id,
                         ResumeModelSettings::PreserveExistingThread,
@@ -233,6 +235,7 @@ impl App {
         self.rate_limit_refresh_state.invalidate_recovery();
         session.inherit_task_tool_capabilities(app_server);
         *app_server = session;
+        self.chat_widget.requires_openai_auth = bootstrap.requires_openai_auth;
         self.chat_widget.remote_connection =
             crate::status::remote_connection::remote_connection_status_value(
                 &self.app_server_target,
