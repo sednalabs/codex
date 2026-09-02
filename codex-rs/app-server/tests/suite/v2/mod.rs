@@ -16,7 +16,7 @@ mod compaction;
 mod config_requirements_in_app_browser;
 mod config_rpc;
 mod connection_handling_websocket;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod connection_handling_websocket_unix;
 #[cfg(unix)]
 mod curated_mcp_sync;
