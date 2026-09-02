@@ -268,6 +268,7 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{collector_url}/v1/metrics", pr
         .map_err(|()| anyhow::anyhow!("could not convert cwd to file URL"))?;
     client
         .exec(ExecParams {
+            metadata: Default::default(),
             process_id: ProcessId::from("parent-lifetime-process"),
             argv: argv.into_iter().map(str::to_string).collect(),
             cwd: cwd.as_str().parse()?,

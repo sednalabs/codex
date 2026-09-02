@@ -36,6 +36,7 @@ codex-websocket-client = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
+opentelemetry = { workspace = true }
 prost = "0.14.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -79,7 +80,6 @@ codex-exec-server-test-support = { workspace = true }
 codex-test-binary-support = { workspace = true }
 ctor = { workspace = true }
 http = { workspace = true }
-opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 pretty_assertions = { workspace = true }
 rcgen = { workspace = true }

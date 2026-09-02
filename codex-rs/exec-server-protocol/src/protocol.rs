@@ -7,6 +7,7 @@ pub use codex_file_system::WalkOptions;
 pub use codex_file_system::WalkOutcome;
 use codex_network_proxy::ManagedNetworkSandboxContext;
 use codex_network_proxy::RemoteNetworkProxyLaunchConfig;
+use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use codex_shell_command::shell_detect::DetectedShell;
@@ -260,12 +261,25 @@ impl From<DetectedShell> for ShellInfo {
     }
 }
 
+/// Optional tool attribution for executor telemetry, not authorization.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<ThreadId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecParams {
     /// Client-chosen logical process handle scoped to this connection/session.
     /// This is a protocol key, not an OS pid.
     pub process_id: ProcessId,
+    /// Optional attribution; older clients omit it and older executors ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<ExecMetadata>,
     pub argv: Vec<String>,
     /// Working directory URI, interpreted using the exec-server host's path rules at launch time.
     pub cwd: PathUri,
@@ -881,6 +895,7 @@ mod tests {
     use super::EnvironmentCapabilities;
     use super::EnvironmentInfo;
     use super::ExecExitedNotification;
+    use super::ExecMetadata;
     use super::ExecParams;
     use super::ExecResponse;
     use super::FsReadFileParams;
@@ -914,6 +929,10 @@ mod tests {
                 .expect("cwd URI");
         let params = ExecParams {
             process_id: ProcessId::from("managed-network"),
+            metadata: Some(ExecMetadata {
+                thread_id: Some(codex_protocol::ThreadId::new()),
+                tool_call_id: Some("call-1".to_string()),
+            }),
             argv: vec!["true".to_string()],
             cwd,
             env_policy: None,
@@ -943,6 +962,14 @@ mod tests {
 
         let mut serialized = serde_json::to_value(&params).expect("serialize exec params");
         assert_eq!(
+            (
+                serialized.get("threadId").cloned(),
+                serialized.get("toolCallId").cloned(),
+                serialized.get("metadata").cloned(),
+            ),
+            (None, None, Some(serde_json::json!(params.metadata)),)
+        );
+        assert_eq!(
             serialized["managedNetwork"],
             serde_json::json!({
                 "loopbackPorts": [43123, 48081],
@@ -965,14 +992,19 @@ mod tests {
             .as_object_mut()
             .expect("exec params object")
             .remove("networkProxy");
+        serialized.as_object_mut().unwrap().remove("metadata");
         let legacy: ExecParams =
             serde_json::from_value(serialized).expect("deserialize legacy exec params");
         assert!(legacy.enforce_managed_network);
         assert_eq!(legacy.managed_network, None);
         assert_eq!(legacy.network_proxy, None);
+        assert_eq!(legacy.metadata, None);
         let legacy_serialized =
             serde_json::to_value(&legacy).expect("serialize exec params without proxy launch");
         assert!(legacy_serialized.get("networkProxy").is_none());
+        assert!(legacy_serialized.get("threadId").is_none());
+        assert!(legacy_serialized.get("toolCallId").is_none());
+        assert!(legacy_serialized.get("metadata").is_none());
     }
 
     #[test]

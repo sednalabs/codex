@@ -3916,6 +3916,7 @@ dependencies = [
  "codex-utils-rustls-provider",
  "codex-windows-sandbox",
  "globset",
+ "opentelemetry",
  "pretty_assertions",
  "rama-core",
  "rama-http",

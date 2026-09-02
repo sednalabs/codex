@@ -213,6 +213,7 @@ fn exec_server_env_for_request(
 fn exec_server_params_for_request(
     process_id: i32,
     request: &ExecRequest,
+    tool_ctx: Option<&ToolCtx>,
     windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
     tty: bool,
 ) -> codex_exec_server::ExecParams {
@@ -231,6 +232,10 @@ fn exec_server_params_for_request(
         };
     codex_exec_server::ExecParams {
         process_id: exec_server_process_id.into(),
+        metadata: tool_ctx.map(|ctx| codex_exec_server::ExecMetadata {
+            thread_id: Some(ctx.session.thread_id()),
+            tool_call_id: Some(ctx.call_id.clone()),
+        }),
         argv: request.command.clone(),
         cwd: request.cwd.clone(),
         env_policy,
@@ -1176,6 +1181,7 @@ impl UnifiedExecProcessManager {
     pub(crate) async fn open_session_with_exec_env(
         &self,
         process_id: i32,
+        tool_ctx: &ToolCtx,
         command: SandboxCommand,
         options: ExecOptions,
         attempt: &SandboxAttempt<'_>,
@@ -1208,6 +1214,7 @@ impl UnifiedExecProcessManager {
         self.open_session_with_prepared_exec_env(
             process_id,
             &request,
+            Some(tool_ctx),
             windows_sandbox_proxy_settings_mode,
             network_policy_decider,
             tty,
@@ -1231,6 +1238,7 @@ impl UnifiedExecProcessManager {
         &self,
         process_id: i32,
         request: &ExecRequest,
+        tool_ctx: Option<&ToolCtx>,
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
         network_policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
         tty: bool,
@@ -1250,6 +1258,7 @@ impl UnifiedExecProcessManager {
             let params = exec_server_params_for_request(
                 process_id,
                 request,
+                tool_ctx,
                 windows_sandbox_proxy_settings_mode,
                 tty,
             );

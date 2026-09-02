@@ -130,6 +130,7 @@ impl Session {
                 }
                 let params = ExecParams {
                     process_id: format!("shell-snapshot-warmup-{}", Uuid::new_v4()).into(),
+                    metadata: None,
                     // This capture-only operation never starts the command or routes
                     // speculative work through tool approvals or exec-policy bypass.
                     argv: shell.derive_exec_args("", /*use_login_shell*/ true),
