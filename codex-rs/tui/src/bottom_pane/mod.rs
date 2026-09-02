@@ -567,6 +567,11 @@ impl BottomPane {
         self.status_timer.reset(elapsed);
     }
 
+    pub(crate) fn set_status_timer_origin(&mut self, started_at: Option<Instant>) {
+        self.status_timer.display_started_at = started_at;
+        self.request_redraw();
+    }
+
     pub fn skills(&self) -> Option<&Vec<SkillMetadata>> {
         self.composer.skills()
     }

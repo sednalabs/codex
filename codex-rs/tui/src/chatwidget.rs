@@ -395,6 +395,7 @@ mod permissions_menu;
 pub(crate) use self::permissions_menu::auto_review_available;
 pub(crate) use self::permissions_menu::cyber_model_approval_reviewer;
 mod backend_banners;
+mod compaction;
 mod protocol;
 mod protocol_requests;
 mod rate_limits;
