@@ -610,23 +610,24 @@ fn matcher_worker(
                     inner.reporter.on_complete();
                     completion_pending = false;
                 }
-                if !query_in_flight && matcher_idle {
-                    if let Some(query) = pending_query.take() {
-                        let append = query.starts_with(&last_query);
-                        nucleo.pattern.reparse(
-                            0,
-                            &query,
-                            CaseMatching::Ignore,
-                            Normalization::Smart,
-                            append,
-                        );
-                        last_query = query;
-                        query_in_flight = true;
-                        completion_pending = true;
-                        matcher_idle = false;
-                        will_notify = true;
-                        next_notify = after(Duration::from_millis(0));
-                    }
+                if !query_in_flight
+                    && matcher_idle
+                    && let Some(query) = pending_query.take()
+                {
+                    let append = query.starts_with(&last_query);
+                    nucleo.pattern.reparse(
+                        0,
+                        &query,
+                        CaseMatching::Ignore,
+                        Normalization::Smart,
+                        append,
+                    );
+                    last_query = query;
+                    query_in_flight = true;
+                    completion_pending = true;
+                    matcher_idle = false;
+                    will_notify = true;
+                    next_notify = after(Duration::from_millis(0));
                 }
                 if query_in_flight || status.running {
                     // Continue driving the matcher while a query is in flight.
