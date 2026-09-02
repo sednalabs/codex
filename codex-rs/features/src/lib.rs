@@ -330,7 +330,7 @@ pub enum Feature {
     FastMode,
     /// Enable explicitly requested model changes for later step captures.
     StepModelSwitching,
-    /// Enable experimental realtime voice conversation mode in the TUI.
+    /// Removed compatibility flag. Realtime sessions no longer require a per-thread opt-in.
     RealtimeConversation,
     /// Prevent idle system sleep while a turn is actively running.
     PreventIdleSleep,
@@ -1612,7 +1612,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RealtimeConversation,
         key: "realtime_conversation",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Removed,
         default_enabled: false,
     },
     FeatureSpec {

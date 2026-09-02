@@ -4324,7 +4324,6 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::MultiAgentV2)
         .enable_feature(Feature::Goals)
-        .enable_feature(Feature::RealtimeConversation)
         .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
         .write(codex_home.path())?;
     write_models_cache(codex_home.path())?;

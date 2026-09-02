@@ -1189,6 +1189,8 @@ Use `thread/inject_items` to append prebuilt Responses API items to a loaded thr
 
 ### Example: Start realtime with WebRTC
 
+Realtime sessions do not require a per-thread feature opt-in. The legacy `features.realtime_conversation` setting is accepted but has no effect, including when set to `false`.
+
 Use `thread/realtime/start` with `transport.type: "webrtc"` when a browser or webview owns the `RTCPeerConnection` and app-server should create the server-side realtime session. The transport `sdp` must be the offer SDP produced by `RTCPeerConnection.createOffer()`, not a hand-written or minimal SDP string.
 
 The offer should include the media sections the client wants to negotiate. For the standard realtime UI flow, create the audio track/transceiver and the `oai-events` data channel before calling `createOffer()`:

@@ -1148,12 +1148,6 @@ impl TurnRequestProcessor {
             Err(error) => return Err(error),
         }
 
-        if !thread.enabled(Feature::RealtimeConversation) {
-            return Err(invalid_request(format!(
-                "thread {thread_id} does not support realtime conversation"
-            )));
-        }
-
         Ok(Some((thread_id, thread)))
     }
 
