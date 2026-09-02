@@ -60,6 +60,7 @@ use windows_sys::Win32::Security::Authorization::TRUSTEE_W;
 use windows_sys::Win32::Security::CONTAINER_INHERIT_ACE;
 use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::OBJECT_INHERIT_ACE;
+use windows_sys::Win32::Security::PROTECTED_DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Storage::FileSystem::DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_EXECUTE;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
@@ -115,6 +116,12 @@ enum SetupMode {
     InteractiveProvision,
     ProvisionOnly,
     ReadAclsOnly,
+}
+
+#[derive(Clone, Copy)]
+enum DaclInheritance {
+    Inherited,
+    Protected,
 }
 
 fn log_line(log: &mut dyn Write, msg: &str) -> Result<()> {
@@ -295,6 +302,7 @@ fn read_mask_allows_or_log(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lock_sandbox_dir(
     dir: &Path,
     real_user: &str,
@@ -302,6 +310,7 @@ fn lock_sandbox_dir(
     sandbox_group_access_mode: i32,
     sandbox_group_mask: u32,
     real_user_mask: u32,
+    dacl_inheritance: DaclInheritance,
     setup_mode: SetupMode,
 ) -> Result<()> {
     // ProvisionOnly accepts another user's CODEX_HOME; keep its ACL mutation
@@ -373,12 +382,18 @@ fn lock_sandbox_dir(
                 "SetEntriesInAclW sandbox dir failed: {set}",
             ));
         }
+        let security_information = match dacl_inheritance {
+            DaclInheritance::Inherited => DACL_SECURITY_INFORMATION,
+            DaclInheritance::Protected => {
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
+            }
+        };
         let (res, api) = match directory.as_ref() {
             Some(directory) => (
                 SetSecurityInfo(
                     directory.as_raw_handle() as _,
                     SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION,
+                    security_information,
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     new_dacl,
@@ -392,7 +407,7 @@ fn lock_sandbox_dir(
                     SetNamedSecurityInfoW(
                         path_w.as_ptr() as *mut u16,
                         SE_FILE_OBJECT,
-                        DACL_SECURITY_INFORMATION,
+                        security_information,
                         std::ptr::null_mut(),
                         std::ptr::null_mut(),
                         new_dacl,
@@ -671,6 +686,7 @@ fn lock_persistent_sandbox_dirs(payload: &Payload, sandbox_group_sid: &[u8]) -> 
         GRANT_ACCESS,
         FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE,
         FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE,
+        DaclInheritance::Inherited,
         payload.mode,
     )
     .map_err(|err| {
@@ -689,6 +705,7 @@ fn lock_persistent_sandbox_dirs(payload: &Payload, sandbox_group_sid: &[u8]) -> 
         DENY_ACCESS,
         FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE,
         FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE,
+        DaclInheritance::Inherited,
         payload.mode,
     )
     .map_err(|err| {
@@ -715,6 +732,7 @@ fn lock_sandbox_bin_dir(payload: &Payload, sandbox_group_sid: &[u8]) -> Result<(
         GRANT_ACCESS,
         FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
         FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE,
+        DaclInheritance::Protected,
         payload.mode,
     )
     .map_err(|err| {
