@@ -3071,6 +3071,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         phase: None,
         memory_citation: None,
         delivery: None,
+        questions: None,
     });
 
     assert_eq!(
@@ -3081,6 +3082,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             phase: None,
             memory_citation: None,
             delivery: None,
+            questions: None,
         }
     );
 
@@ -3100,6 +3102,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             rollout_ids: vec!["rollout-1".to_string()],
         }),
         delivery: None,
+        questions: None,
     });
 
     assert_eq!(
@@ -3118,8 +3121,41 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                 thread_ids: vec!["rollout-1".to_string()],
             }),
             delivery: None,
+            questions: None,
         }
     );
+
+    let async_item = ThreadItem::from(TurnItem::AgentMessage(AgentMessageItem {
+        id: "async-1".to_string(),
+        content: vec![AgentMessageContent::Text {
+            text: "Which?".to_string(),
+        }],
+        phase: Some(MessagePhase::FinalAnswer),
+        memory_citation: None,
+        delivery: Some(AgentMessageDelivery::Async),
+        questions: Some(vec![AsyncUserInputQuestion {
+            title: "Which?".to_string(),
+            options: None,
+        }]),
+    }));
+    assert_eq!(
+        serde_json::to_value(&async_item).unwrap(),
+        json!({
+            "type": "agentMessage", "id": "async-1", "text": "Which?", "phase": "final_answer",
+            "memoryCitation": null, "delivery": "async", "questions": [{"title": "Which?", "options": null}]
+        })
+    );
+    let old_item: ThreadItem = serde_json::from_value(json!({
+        "type": "agentMessage", "id": "old-1", "text": "An old message"
+    }))
+    .unwrap();
+    assert!(matches!(
+        old_item,
+        ThreadItem::AgentMessage {
+            questions: None,
+            ..
+        }
+    ));
 
     let reasoning_item = TurnItem::Reasoning(ReasoningItem {
         id: "reasoning-1".to_string(),

@@ -34,6 +34,7 @@ use crate::dynamic_tools::DynamicToolResponse;
 use crate::dynamic_tools::DynamicToolSpec;
 use crate::error::Result as CodexResult;
 use crate::items::AgentMessageDelivery;
+use crate::items::AsyncUserInputQuestion;
 use crate::items::TurnItem;
 use crate::mcp::CallToolResult;
 use crate::mcp::RequestId;
@@ -2496,6 +2497,9 @@ pub struct AgentMessageEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub delivery: Option<AgentMessageDelivery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub questions: Option<Vec<AsyncUserInputQuestion>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, JsonSchema, TS)]

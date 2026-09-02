@@ -6338,6 +6338,7 @@ session_picker_view = "dense"
                         phase: None,
                         memory_citation: None,
                         delivery: None,
+                        questions: None,
                     },
                     ThreadItem::Plan {
                         id: String::from("plan-1"),

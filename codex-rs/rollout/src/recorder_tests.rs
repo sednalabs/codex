@@ -67,6 +67,7 @@ fn agent_message_item(message: &str) -> RolloutItem {
         phase: None,
         memory_citation: None,
         delivery: None,
+        questions: None,
     }))
 }
 
@@ -650,6 +651,7 @@ async fn recorder_materializes_on_flush_with_pending_items() -> std::io::Result<
                 phase: None,
                 memory_citation: None,
                 delivery: None,
+                questions: None,
             },
         ))])
         .await?;
@@ -905,6 +907,7 @@ async fn persist_reports_filesystem_error_and_retries_buffered_items() -> std::i
                 phase: None,
                 memory_citation: None,
                 delivery: None,
+                questions: None,
             },
         ))])
         .await?;
@@ -957,6 +960,7 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
             phase: None,
             memory_citation: None,
             delivery: None,
+            questions: None,
         },
     ))]);
 

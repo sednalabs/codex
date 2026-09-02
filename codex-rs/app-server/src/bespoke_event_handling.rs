@@ -2291,6 +2291,7 @@ mod tests {
                 phase: None,
                 memory_citation: None,
                 delivery: None,
+                questions: None,
             })),
         ];
         let stored_thread = StoredThread {
@@ -3586,6 +3587,7 @@ mod tests {
                         phase: None,
                         memory_citation: None,
                         delivery: None,
+                        questions: None,
                     }),
                     started_at_ms: Some(0),
                     completed_at_ms: 0,
@@ -3604,6 +3606,7 @@ mod tests {
                         phase: None,
                         memory_citation: None,
                         delivery: None,
+                        questions: None,
                     }),
                     started_at_ms: Some(0),
                     completed_at_ms: 0,

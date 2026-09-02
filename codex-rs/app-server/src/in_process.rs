@@ -1031,6 +1031,7 @@ mod tests {
                     phase: None,
                     memory_citation: None,
                     delivery: Some(AgentMessageDelivery::Async),
+                    questions: None,
                 },
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),

@@ -1225,6 +1225,27 @@
         }
       ]
     },
+    "AsyncUserInputQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
     "AuthMode": {
       "description": "Authentication mode for OpenAI-backed providers.",
       "oneOf": [
@@ -18686,6 +18707,16 @@
                 }
               ],
               "default": null
+            },
+            "questions": {
+              "default": null,
+              "items": {
+                "$ref": "#/definitions/AsyncUserInputQuestion"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
             },
             "text": {
               "type": "string"

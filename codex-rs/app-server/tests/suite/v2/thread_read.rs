@@ -584,6 +584,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
                         phase: Some(MessagePhase::Commentary),
                         memory_citation: None,
                         delivery: None,
+                        questions: None,
                     }),
                 ),
                 paginated_completed_item(
@@ -597,6 +598,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
                         phase: Some(MessagePhase::FinalAnswer),
                         memory_citation: None,
                         delivery: None,
+                        questions: None,
                     }),
                 ),
                 paginated_turn_completed("turn-1"),
@@ -1627,6 +1629,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                         phase: None,
                         memory_citation: None,
                         delivery: None,
+                        questions: None,
                     }),
                 ),
                 paginated_completed_item(
@@ -1679,6 +1682,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                 phase: None,
                 memory_citation: None,
                 delivery: None,
+                questions: None,
             },
         ],
         items_view: TurnItemsView::Full,
@@ -1865,6 +1869,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                     phase: None,
                     memory_citation: None,
                     delivery: None,
+                    questions: None,
                 },
             ],
             items_view: TurnItemsView::Summary,
@@ -2111,6 +2116,7 @@ fn append_agent_message(path: &Path, timestamp: &str, text: &str) -> anyhow::Res
                 phase: None,
                 memory_citation: None,
                 delivery: None,
+                questions: None,
             }))?,
         })
     )?;
