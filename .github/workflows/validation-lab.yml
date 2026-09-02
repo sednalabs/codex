@@ -916,7 +916,7 @@ jobs:
 
       - name: Set up Node.js
         if: ${{ matrix.needs_node }}
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
