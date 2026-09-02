@@ -14,8 +14,10 @@ use serde::de::value::Error as ValueDeserializerError;
 use serde::de::value::StrDeserializer;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::convert::Infallible;
 use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 use wildmatch::WildMatchPattern;
 
 use super::requirements_exec_policy::RequirementsExecPolicyToml;
@@ -822,11 +824,53 @@ impl FeatureRequirementsToml {
 #[derive(Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct AppToolRequirementToml {
     pub approval_mode: Option<AppToolApproval>,
+    /// Opt-in analytics extraction for this exact tool, not a tool argument.
+    /// The highest-priority rule wins as a whole, including unsupported formats.
+    pub analytics_result_source: Option<AppToolResultSourceRequirementToml>,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AppToolResultSourceRequirementToml {
+    /// Result format to parse; currently only `detailed_message_search_v1` is supported.
+    pub format: AppToolResultSourceFormat,
+    /// Source kind emitted alongside each extracted ID.
+    #[serde(rename = "type")]
+    pub source_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppToolResultSourceFormat {
+    DetailedMessageSearchV1,
+    /// Keep unknown formats so higher-priority rules still override lower ones.
+    Unknown(String),
+}
+
+impl FromStr for AppToolResultSourceFormat {
+    type Err = Infallible;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(match value {
+            "detailed_message_search_v1" => Self::DetailedMessageSearchV1,
+            _ => Self::Unknown(value.to_string()),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for AppToolResultSourceFormat {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(D::Error::custom)
+    }
 }
 
 impl AppToolRequirementToml {
     pub fn is_empty(&self) -> bool {
-        self.approval_mode.is_none()
+        self.approval_mode.is_none() && self.analytics_result_source.is_none()
     }
 }
 
@@ -896,6 +940,9 @@ pub(crate) fn merge_app_requirements_descending(
             let base_tool = base_tools.tools.entry(tool_name).or_default();
             if base_tool.approval_mode.is_none() {
                 base_tool.approval_mode = incoming_tool.approval_mode;
+            }
+            if base_tool.analytics_result_source.is_none() {
+                base_tool.analytics_result_source = incoming_tool.analytics_result_source;
             }
         }
     }
@@ -3093,6 +3140,7 @@ allowed_approvals_reviewers = ["user"]
                                 "calendar/list_events".to_string(),
                                 AppToolRequirementToml {
                                     approval_mode: Some(AppToolApproval::Approve),
+                                    analytics_result_source: None,
                                 },
                             )]),
                         }),
@@ -3100,6 +3148,56 @@ allowed_approvals_reviewers = ["user"]
                 )]),
             })
         );
+        Ok(())
+    }
+
+    #[test]
+    fn app_tool_result_source_requirements_parse_and_merge() -> Result<()> {
+        let rule = r#"
+            [apps.connector_123123.tools."messages/search"]
+            analytics_result_source = { format = "detailed_message_search_v1", type = "message_room" }
+            "#;
+        let requirements: ConfigRequirementsToml = from_str(rule)?;
+        assert!(!requirements.is_empty());
+        let source = requirements.apps.expect("apps should be present");
+
+        for higher_rule in [
+            None,
+            Some(("unsupported", "other_resource")),
+            Some(("detailed_message_search_v1", "other_resource")),
+        ] {
+            let mut merged = source.clone();
+            merged
+                .apps
+                .get_mut("connector_123123")
+                .expect("app should be present")
+                .tools
+                .as_mut()
+                .expect("tools should be present")
+                .tools
+                .get_mut("messages/search")
+                .expect("tool should be present")
+                .analytics_result_source = higher_rule.map(|(format, source_type)| {
+                from_str(&format!("format = {format:?}\ntype = {source_type:?}"))
+                    .expect("complete source rule should parse, including unknown formats")
+            });
+            let expected = if higher_rule.is_none() {
+                source.clone()
+            } else {
+                merged.clone()
+            };
+
+            merge_app_requirements_descending(&mut merged, source.clone());
+
+            assert_eq!(merged, expected);
+        }
+
+        for incomplete_rule in [
+            r#"format = "detailed_message_search_v1""#,
+            r#"type = "message_room""#,
+        ] {
+            assert!(from_str::<AppToolResultSourceRequirementToml>(incomplete_rule).is_err());
+        }
         Ok(())
     }
 
@@ -3135,6 +3233,7 @@ allowed_approvals_reviewers = ["user"]
                             tool_name.to_string(),
                             AppToolRequirementToml {
                                 approval_mode: Some(approval_mode),
+                                analytics_result_source: None,
                             },
                         )]),
                     }),

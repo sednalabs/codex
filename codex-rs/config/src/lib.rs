@@ -83,6 +83,8 @@ pub use config_layer_source::ConfigLayerSource;
 pub use config_layer_source::format_config_layer_source;
 pub use config_requirements::AppRequirementToml;
 pub use config_requirements::AppToolRequirementToml;
+pub use config_requirements::AppToolResultSourceFormat;
+pub use config_requirements::AppToolResultSourceRequirementToml;
 pub use config_requirements::AppToolsRequirementsToml;
 pub use config_requirements::AppsRequirementsToml;
 pub use config_requirements::AutoReviewRequirementsToml;
