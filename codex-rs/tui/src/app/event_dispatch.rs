@@ -770,6 +770,16 @@ impl App {
                     tracing::error!(error = ?err, "failed to start turn through app server");
                 }
             }
+            AppEvent::ConfirmSafetyBufferedRetry {
+                thread_id,
+                turn_id,
+                model,
+                turn,
+                prompt,
+            } => {
+                self.chat_widget
+                    .confirm_safety_buffered_retry(thread_id, turn_id, model, turn, prompt);
+            }
             AppEvent::RetrySafetyBufferedTurn {
                 thread_id,
                 turn_id,

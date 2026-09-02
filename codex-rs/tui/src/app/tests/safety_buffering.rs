@@ -714,6 +714,13 @@ goals = true
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let second_retry = loop {
             match app_event_rx.try_recv() {
+                Ok(event @ AppEvent::ConfirmSafetyBufferedRetry { .. }) => {
+                    Box::pin(app.handle_event(&mut tui, &mut app_server, event)).await?;
+                    app.chat_widget
+                        .handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                    app.chat_widget
+                        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                }
                 Ok(AppEvent::RetrySafetyBufferedTurn {
                     thread_id,
                     turn_id,
