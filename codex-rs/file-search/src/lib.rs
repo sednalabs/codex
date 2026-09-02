@@ -583,6 +583,14 @@ fn matcher_worker(
                     };
                     inner.reporter.on_update(&snapshot);
                 }
+                if status.running {
+                    // A walk can finish while nucleo still has injected items to
+                    // process. Keep driving the matcher until it observes the
+                    // complete snapshot instead of relying on another notify
+                    // callback from the background worker.
+                    will_notify = true;
+                    next_notify = after(Duration::from_millis(0));
+                }
                 if !status.running && walk_complete {
                     inner.reporter.on_complete();
                 }
