@@ -102,6 +102,7 @@ pub use config_requirements::ModelsRequirementsToml;
 pub use config_requirements::NetworkConstraints;
 pub use config_requirements::NetworkDomainPermissionToml;
 pub use config_requirements::NetworkDomainPermissionsToml;
+pub use config_requirements::NetworkHeaderInjectionToml;
 pub use config_requirements::NetworkRequirementsToml;
 pub use config_requirements::NetworkUnixSocketPermissionToml;
 pub use config_requirements::NetworkUnixSocketPermissionsToml;
