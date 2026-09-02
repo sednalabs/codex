@@ -7,6 +7,9 @@ mod ipc;
 #[allow(dead_code)]
 mod machine_policy;
 #[cfg(windows)]
+#[allow(dead_code)]
+mod package_identity;
+#[cfg(windows)]
 mod service;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

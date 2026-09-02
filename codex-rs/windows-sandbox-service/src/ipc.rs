@@ -2,11 +2,15 @@
 
 // Keep these private until the authenticated transport is connected.
 #[allow(dead_code)]
+mod authentication;
+#[allow(dead_code)]
 mod home;
 #[allow(dead_code)]
 mod request;
 
 use anyhow::Result;
+#[cfg(test)]
+use home::OwnedHandle;
 #[cfg(test)]
 use home::pin_existing_ancestors;
 #[cfg(test)]

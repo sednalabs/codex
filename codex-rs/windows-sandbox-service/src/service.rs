@@ -87,6 +87,7 @@ pub(crate) fn run() -> Result<()> {
 
 #[cfg(debug_assertions)]
 pub(crate) fn run_foreground() -> Result<()> {
+    crate::package_identity::enable_foreground_mode();
     crate::ipc::run(Arc::new(AtomicBool::new(false)), || {
         eprintln!("{SERVICE_NAME} listening on {}", crate::ipc::PIPE_NAME);
         Ok(())
