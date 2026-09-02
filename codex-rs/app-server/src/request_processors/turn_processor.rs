@@ -827,16 +827,27 @@ impl TurnRequestProcessor {
             false
         };
         let client_user_message_id_for_release = client_user_message_id.clone();
-        let turn_id = match thread
-            .submit_user_input_with_client_user_message_id_and_principal(
-                turn_op,
-                self.request_trace_context(&request_id).await,
-                client_user_message_id,
-                automatic_turn
-                    .then(|| automatic_turn_connection_principal(request_id.connection_id)),
-            )
-            .await
-        {
+        let principal = automatic_turn_connection_principal(request_id.connection_id);
+        let turn_id_result = if automatic_turn {
+            thread
+                .submit_user_input_with_client_user_message_id_and_principal(
+                    turn_op,
+                    self.request_trace_context(&request_id).await,
+                    client_user_message_id,
+                    Some(principal),
+                )
+                .await
+        } else {
+            thread
+                .submit_user_input_with_client_user_message_id_and_event_principal(
+                    turn_op,
+                    self.request_trace_context(&request_id).await,
+                    client_user_message_id,
+                    principal,
+                )
+                .await
+        };
+        let turn_id = match turn_id_result {
             Ok(turn_id) => turn_id,
             Err(err) => {
                 if automatic_turn_admitted {

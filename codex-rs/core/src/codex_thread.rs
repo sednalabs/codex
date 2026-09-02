@@ -391,6 +391,46 @@ impl CodexThread {
         client_user_message_id: Option<String>,
         principal: Option<String>,
     ) -> CodexResult<String> {
+        self.submit_user_input_with_client_user_message_id_and_principal_inner(
+            op,
+            trace,
+            client_user_message_id,
+            principal,
+            /*capture_provider_authority*/ true,
+        )
+        .await
+    }
+
+    /// Submit user input with a server-authenticated event principal without binding the
+    /// ordinary operation to the current provider authority. Automatic-turn callers use the
+    /// principal variant above so their provider authority is captured for admission checks;
+    /// ordinary app-server turns still need provenance for policy recovery events but must retain
+    /// their existing provider-selection behavior.
+    pub async fn submit_user_input_with_client_user_message_id_and_event_principal(
+        &self,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+        client_user_message_id: Option<String>,
+        principal: String,
+    ) -> CodexResult<String> {
+        self.submit_user_input_with_client_user_message_id_and_principal_inner(
+            op,
+            trace,
+            client_user_message_id,
+            Some(principal),
+            /*capture_provider_authority*/ false,
+        )
+        .await
+    }
+
+    async fn submit_user_input_with_client_user_message_id_and_principal_inner(
+        &self,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+        client_user_message_id: Option<String>,
+        principal: Option<String>,
+        capture_provider_authority: bool,
+    ) -> CodexResult<String> {
         self.session
             .services
             .agent_control
@@ -398,7 +438,7 @@ impl CodexThread {
             .await?;
         let id = new_submission_id();
         let client_user_message_id_for_release = client_user_message_id.clone();
-        let provider_authority = if principal.is_some() {
+        let provider_authority = if capture_provider_authority && principal.is_some() {
             Some(
                 self.session
                     .services
@@ -418,13 +458,12 @@ impl CodexThread {
                     client_user_message_id.as_deref(),
                 )
                 .await;
-            self.session
-                .services
-                .set_automatic_turn_provider_authority(
-                    &id,
-                    provider_authority.expect("automatic provider authority was resolved"),
-                )
-                .await;
+            if let Some(provider_authority) = provider_authority {
+                self.session
+                    .services
+                    .set_automatic_turn_provider_authority(&id, provider_authority)
+                    .await;
+            }
         }
         if let Err(error) = self
             .submit_tracked(Submission {

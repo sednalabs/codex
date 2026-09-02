@@ -237,7 +237,6 @@ fn automatic_retry_prompt() -> Prompt {
             content: vec![ContentItem::InputText {
                 text: "continue".to_string(),
             }],
-            end_turn: None,
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         }],
@@ -491,7 +490,10 @@ async fn automatic_http_retry_rejects_changed_authority_before_second_wire_attem
     let (retry_result, transition_result) = tokio::join!(retry, transition);
     transition_result.expect("credential transition should complete during retry backoff");
 
-    let error = retry_result.expect_err("changed authority must stop the retry");
+    let error = match retry_result {
+        Ok(_) => panic!("changed authority must stop the retry"),
+        Err(error) => error,
+    };
     assert!(matches!(
         error.details(),
         codex_protocol::error::CodexErrorDetails::AutomaticTurnContextChanged
@@ -547,7 +549,6 @@ async fn automatic_turn_transition_at_provider_gate_sends_no_request() {
             content: vec![ContentItem::InputText {
                 text: "continue".to_string(),
             }],
-            end_turn: None,
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         }],
@@ -743,7 +744,6 @@ async fn legacy_remote_compaction_uses_automatic_turn_authority() {
             content: vec![ContentItem::InputText {
                 text: "compact".to_string(),
             }],
-            end_turn: None,
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         }],
@@ -809,7 +809,7 @@ async fn cached_websocket_reuse_is_bound_to_credential_revision() {
         SessionId::new(),
         ThreadId::new(),
         TEST_INSTALLATION_ID.to_string(),
-        ModelProviderInfo::create_openai_provider(Some(server.uri())),
+        ModelProviderInfo::create_openai_provider(Some(server.uri().to_string())),
         SessionSource::Exec,
         "test_originator".to_string(),
         /*model_verbosity*/ None,
@@ -827,7 +827,6 @@ async fn cached_websocket_reuse_is_bound_to_credential_revision() {
             content: vec![ContentItem::InputText {
                 text: "continue".to_string(),
             }],
-            end_turn: None,
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         }],
@@ -938,7 +937,7 @@ async fn env_authority_change_rejects_automatic_and_never_reuses_stale_socket() 
         vec![vec![ev_response_created("resp-b"), ev_completed("resp-b")]],
     ])
     .await;
-    let mut provider = ModelProviderInfo::create_openai_provider(Some(server.uri()));
+    let mut provider = ModelProviderInfo::create_openai_provider(Some(server.uri().to_string()));
     provider.requires_openai_auth = false;
     provider.env_key = Some(TOKEN_ENV.to_string());
     provider.env_http_headers = Some(HashMap::from([(
@@ -970,7 +969,6 @@ async fn env_authority_change_rejects_automatic_and_never_reuses_stale_socket() 
             content: vec![ContentItem::InputText {
                 text: "continue".to_string(),
             }],
-            end_turn: None,
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         }],
