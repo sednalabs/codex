@@ -235,6 +235,8 @@ mod app_server;
 mod approval_requests;
 #[path = "tests/backend_banners_tests.rs"]
 mod backend_banners_tests;
+#[path = "tests/collaboration_catalog_tests.rs"]
+mod collaboration_catalog_tests;
 #[path = "tests/compaction_tests.rs"]
 mod compaction_tests;
 mod composer_submission;

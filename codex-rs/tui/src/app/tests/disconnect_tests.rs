@@ -269,6 +269,7 @@ where
                 Some(json!({"result": {"account": null, "requiresOpenaiAuth": false}}))
             }
             "model/list" => Some(json!({"result": {"data": [], "nextCursor": null}})),
+            "collaborationMode/list" => Some(json!({"result": {"data": []}})),
             "configRequirements/read" => Some(json!({"result": {"requirements": null}})),
             _ => respond(request).await,
         };

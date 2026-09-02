@@ -801,9 +801,7 @@ impl ChatWidget {
                 });
             }
             SlashCommand::Plan if !trimmed.is_empty() => {
-                if !self.apply_plan_slash_command() {
-                    return;
-                }
+                let plan_available = self.apply_plan_slash_command();
                 let mut user_message = self.prepared_inline_user_message(
                     args,
                     text_elements,
@@ -812,7 +810,8 @@ impl ChatWidget {
                     mention_bindings,
                     source,
                 );
-                if !self.is_session_configured()
+                if !plan_available
+                    || !self.is_session_configured()
                     || self.current_model().trim().is_empty()
                     || (!self.current_model_supports_images()
                         && (!user_message.local_images.is_empty()
@@ -824,6 +823,10 @@ impl ChatWidget {
                         element.byte_range.start += PLAN_PREFIX.len();
                         element.byte_range.end += PLAN_PREFIX.len();
                     }
+                }
+                if !plan_available {
+                    self.restore_user_message_to_composer(user_message);
+                    return;
                 }
                 if self.is_session_configured() {
                     self.reasoning_buffer.clear();

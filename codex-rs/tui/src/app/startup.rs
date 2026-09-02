@@ -212,7 +212,10 @@ impl App {
         {
             tracing::warn!(%error, "TUI task delegation is unavailable without its MCP server");
         }
-        let model_catalog = Arc::new(ModelCatalog::new(available_models.clone()));
+        let model_catalog = Arc::new(
+            ModelCatalog::new(available_models.clone())
+                .with_collaboration_modes(bootstrap.collaboration_modes),
+        );
         let feedback_audience = bootstrap.feedback_audience;
         let auth_mode = bootstrap.auth_mode;
         let has_chatgpt_account = bootstrap.has_chatgpt_account;
