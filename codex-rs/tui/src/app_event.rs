@@ -1026,6 +1026,15 @@ pub(crate) enum AppEvent {
         result: Result<Vec<ModelPreset>, String>,
     },
 
+    FetchPermissionProfiles {
+        request_id: uuid::Uuid,
+        thread_cwd: Option<PathBuf>,
+    },
+    PermissionProfilesLoaded {
+        request_id: uuid::Uuid,
+        result: Result<crate::permission_discovery::PermissionDiscovery, String>,
+    },
+
     /// Open the reasoning selection popup after picking a model.
     OpenReasoningPopup {
         model: ModelPreset,

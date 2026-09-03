@@ -388,6 +388,7 @@ mod model_popup_state;
 mod model_popups;
 mod notifications;
 use self::notifications::Notification;
+mod permission_discovery;
 mod permission_popups;
 mod permission_shortcuts;
 mod permissions_menu;
@@ -577,6 +578,8 @@ pub(crate) struct ChatWidget {
     has_codex_backend_auth: bool,
     model_catalog: Arc<ModelCatalog>,
     model_popup_request_id: Option<uuid::Uuid>,
+    permission_popup_request_id: Option<uuid::Uuid>,
+    permission_profiles_menu_opened: bool,
     model_popup_model_ids: Vec<String>,
     session_telemetry: SessionTelemetry,
     session_header: SessionHeader,

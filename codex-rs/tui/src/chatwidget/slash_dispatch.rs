@@ -336,7 +336,11 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
             SlashCommand::Permissions => {
-                self.open_permissions_popup();
+                if self.remote_connection.is_some() {
+                    self.app_event_tx.send(AppEvent::OpenPermissionsPopup);
+                } else {
+                    self.open_permissions_popup();
+                }
                 self.defer_input_until_settings_applied();
             }
             SlashCommand::Vim => {
