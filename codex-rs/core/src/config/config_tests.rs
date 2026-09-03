@@ -9971,6 +9971,7 @@ async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() 
         default_permissions: None,
         remote_sandbox_config: None,
         allowed_web_search_modes: Some(vec![codex_config::WebSearchModeRequirement::Cached]),
+        application: None,
         allow_managed_hooks_only: None,
         allow_appshots: None,
         allow_remote_control: None,

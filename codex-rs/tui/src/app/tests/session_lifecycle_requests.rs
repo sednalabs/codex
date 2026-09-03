@@ -3358,8 +3358,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                     };
                     threads.push(discovered);
                 }
-                app.handle_event(&mut tui, &mut app_server, completion)
-                    .await?;
+                Box::pin(app.handle_event(&mut tui, &mut app_server, completion)).await?;
                 assert_eq!(
                     app.agent_navigation
                         .ordered_threads()

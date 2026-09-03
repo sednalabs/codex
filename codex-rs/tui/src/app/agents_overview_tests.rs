@@ -169,7 +169,7 @@ async fn shared_overview_keeps_rows_and_replays_changes_over_stale_reads() -> Re
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shared_overview_seeds_once_and_retains_locally_resumed_history() -> Result<()> {
     let mut app = make_test_app().await;
     let mut ids = Vec::new();

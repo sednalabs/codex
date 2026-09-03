@@ -381,6 +381,22 @@ fn map_requirements_toml_to_api(requirements: ConfigRequirementsToml) -> ConfigR
         .and_then(|windows| windows.sandbox_private_desktop);
 
     ConfigRequirements {
+        application: requirements.application.map(|application| {
+            codex_app_server_protocol::ApplicationRequirements {
+                network: application.network.map(|network| {
+                    codex_app_server_protocol::ApplicationNetworkRequirements {
+                        enabled: network.enabled,
+                        domains: network
+                            .domains
+                            .into_iter()
+                            .map(|(domain, permission)| {
+                                (domain, map_network_domain_permission_to_api(permission))
+                            })
+                            .collect(),
+                    }
+                }),
+            }
+        }),
         cli_auth_credentials_store: requirements.cli_auth_credentials_store.map(
             |mode| match mode {
                 codex_config::types::AuthCredentialsStoreMode::File => {

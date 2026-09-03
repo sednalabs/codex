@@ -322,6 +322,20 @@ metadata in `data._meta`. Other operation failures retain the existing
 internal-error response. Tool results with `isError: true` remain results,
 including their `_meta`.
 
+### Application requirements
+
+With experimental API support enabled, `configRequirements/read` returns
+`application.network` from managed requirements, separately from agent-network
+policy in `network`. This endpoint reports policy; it does not enforce it.
+
+```toml
+[application.network.domains]
+"managed.example.com" = "allow"
+```
+
+Application rules use normal managed TOML precedence. A present network block
+is enabled by default and denies unlisted domains; `enabled = false` disables it.
+
 ### Plugin configuration scope
 
 Plugin activation and MCP settings use the existing merged configuration, including
