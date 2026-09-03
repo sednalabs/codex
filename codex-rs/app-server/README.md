@@ -563,6 +563,7 @@ Pass any combination of:
 - `sortDirection` — `desc` (default for timestamp sorts) or `asc` (default for `section_position`).
 - `modelProviders` — restrict results to specific providers; unset, null, or an empty array will include all providers.
 - `sourceKinds` — restrict results to specific sources; omit or pass `[]` for interactive sessions only (`cli`, `vscode`).
+- `originators` — an exact-value allowlist for hosted backends that support originator filtering. The local app-server rejects a nonempty list; omission, `null`, and `[]` leave originators unrestricted.
 - `archived` — when `true`, list archived threads only. When `false` or `null`, list non-archived threads (default).
 - `sectionId` — provide an ID from `threadSection/list` to return threads from that section; pass `null` to return only threads without a section; or omit it to include threads from every section and threads without a section.
 - `cwd` — restrict results to threads whose session cwd exactly matches this path, or one of these paths when an array is provided. Relative paths are resolved against the app-server process cwd before matching.
@@ -570,6 +571,7 @@ Pass any combination of:
 - `searchTerm` — restrict results to threads whose extracted title contains this substring (case-sensitive).
 - Responses include `nextCursor` to continue in the same direction and `backwardsCursor` to pass as `cursor` when reversing `sortDirection`.
 - Responses include `agentNickname` and `agentRole` for AgentControl-spawned thread sub-agents when available.
+- Full thread responses and `thread/started` include `originator`, the value recorded at creation, or `null` when unavailable. Opening or resuming a thread does not attribute it to the current client. This is separate from the runtime `source` and does not choose an executor.
 
 Example:
 

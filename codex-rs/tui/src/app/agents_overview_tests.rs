@@ -227,6 +227,7 @@ fn overview_thread(
     status: ThreadStatus,
 ) -> Thread {
     Thread {
+        originator: None,
         environments: None,
         id: thread_id.to_string(),
         extra: None,

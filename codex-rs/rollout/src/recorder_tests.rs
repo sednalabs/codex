@@ -1594,6 +1594,7 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
     let filesystem_path = PathBuf::from("/tmp/filesystem-rollout.jsonl");
     let state_path = PathBuf::from("/tmp/state-rollout.jsonl");
     let mut item = ThreadItem {
+        originator: None,
         path: filesystem_path.clone(),
         thread_id: Some(filesystem_thread_id),
         first_user_message: Some("filesystem message".to_string()),
@@ -1621,6 +1622,7 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
         updated_at: None,
     };
     let state_item = ThreadItem {
+        originator: None,
         path: state_path,
         thread_id: Some(state_thread_id),
         first_user_message: Some("state message".to_string()),

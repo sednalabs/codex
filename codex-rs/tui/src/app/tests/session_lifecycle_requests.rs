@@ -1769,13 +1769,14 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
     app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    app.handle_event(
+    // Keep the large dispatcher future off the Windows test thread's stack.
+    Box::pin(app.handle_event(
         &mut tui,
         &mut app_server,
         AppEvent::ExportTranscript {
             destination: TranscriptExportDestination::File(export_path.clone()),
         },
-    )
+    ))
     .await?;
     assert!(app.chat_widget.queued_user_message_texts().is_empty());
     let markdown = std::fs::read_to_string(export_path)?;
@@ -1813,7 +1814,7 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
             .await?
             .ok_or_else(|| color_eyre::eyre::eyre!("history event channel closed"))?;
         if matches!(event, AppEvent::OlderThreadHistoryLoaded { .. }) {
-            app.handle_event(&mut tui, &mut app_server, event).await?;
+            Box::pin(app.handle_event(&mut tui, &mut app_server, event)).await?;
         }
     }
 
@@ -2234,7 +2235,8 @@ async fn underfilled_scrollback_fetches_older_pages_without_opening_the_transcri
             None => panic!("scrollback refill request channel closed"),
         }
     };
-    app.handle_event(&mut tui, &mut app_server, request).await?;
+    // Keep the large dispatcher future off the Windows test thread's stack.
+    Box::pin(app.handle_event(&mut tui, &mut app_server, request)).await?;
     let loaded = loop {
         match app_event_rx.recv().await {
             Some(event @ AppEvent::OlderThreadHistoryLoaded { .. }) => break event,
@@ -2242,7 +2244,7 @@ async fn underfilled_scrollback_fetches_older_pages_without_opening_the_transcri
             None => panic!("older history page channel closed"),
         }
     };
-    app.handle_event(&mut tui, &mut app_server, loaded).await?;
+    Box::pin(app.handle_event(&mut tui, &mut app_server, loaded)).await?;
 
     assert!(app.overlay.is_none());
     assert!(app.transcript_cells.len() > initial_cell_count);

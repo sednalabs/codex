@@ -2513,6 +2513,7 @@ impl ThreadRequestProcessor {
             sort_direction,
             model_providers,
             source_kinds,
+            originators,
             archived,
             section_id,
             project_id,
@@ -2522,6 +2523,14 @@ impl ThreadRequestProcessor {
             parent_thread_id,
             ancestor_thread_id,
         } = params;
+        if originators
+            .as_ref()
+            .is_some_and(|values| !values.is_empty())
+        {
+            return Err(invalid_params(
+                "originator filtering is not supported by the local app-server",
+            ));
+        }
         if project_id.is_some() && !self.thread_store.supports_projects() {
             return Err(unsupported_thread_store_operation("projects"));
         }
@@ -5948,6 +5957,7 @@ pub(crate) fn thread_from_stored_thread(
         path,
         cwd,
         cli_version: thread.cli_version,
+        originator: thread.originator,
         agent_nickname: source.get_nickname(),
         agent_role: source.get_agent_role(),
         source: source.into(),
@@ -6128,6 +6138,8 @@ fn build_thread_from_snapshot(
         path,
         cwd: config_snapshot.cwd().clone(),
         cli_version: env!("CARGO_PKG_VERSION").to_string(),
+        originator: (!config_snapshot.originator.is_empty())
+            .then(|| config_snapshot.originator.clone()),
         agent_nickname: config_snapshot.session_source.get_nickname(),
         agent_role: config_snapshot.session_source.get_agent_role(),
         source: config_snapshot.session_source.clone().into(),

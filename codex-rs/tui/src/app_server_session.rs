@@ -3695,6 +3695,7 @@ mod tests {
         let read_only_profile = PermissionProfile::read_only();
         let response = ThreadResumeResponse {
             thread: codex_app_server_protocol::Thread {
+                originator: None,
                 environments: None,
                 id: thread_id.to_string(),
                 extra: None,

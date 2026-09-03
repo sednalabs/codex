@@ -1604,6 +1604,7 @@ async fn resolve_resume_thread_id(
                 ClientRequest::ThreadList {
                     request_id: RequestId::Integer(0),
                     params: ThreadListParams {
+                        originators: None,
                         cursor,
                         limit: Some(100),
                         sort_key: Some(ThreadSortKey::UpdatedAt),
@@ -1689,6 +1690,7 @@ async fn resolve_resume_thread_id(
             ClientRequest::ThreadList {
                 request_id: RequestId::Integer(0),
                 params: ThreadListParams {
+                    originators: None,
                     cursor,
                     limit: Some(100),
                     sort_key: Some(ThreadSortKey::UpdatedAt),

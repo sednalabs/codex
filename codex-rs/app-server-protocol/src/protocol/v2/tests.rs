@@ -272,6 +272,7 @@ fn thread_resume_params_accept_turns_page_bootstrap() {
 fn thread_resume_response_round_trips_initial_turns_page() {
     let response = ThreadResumeResponse {
         thread: Thread {
+            originator: Some("future_client".to_string()),
             environments: Some(vec![ThreadEnvironment {
                 environment_id: "remote".to_string(),
                 cwd: LegacyAppPathString::from_string(r"C:\workspace"),
@@ -335,6 +336,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
     };
 
     let value = serde_json::to_value(&response).expect("serialize thread resume response");
+    assert_eq!(value["thread"]["originator"], json!("future_client"));
     assert_eq!(
         value["thread"]["environments"],
         json!([{
@@ -359,12 +361,14 @@ fn thread_resume_response_round_trips_initial_turns_page() {
     legacy_thread_fields.remove("sectionEnteredAt");
     legacy_thread_fields.remove("projectId");
     legacy_thread_fields.remove("environments");
+    legacy_thread_fields.remove("originator");
     let legacy_thread =
         serde_json::from_value::<Thread>(legacy_thread).expect("deserialize legacy thread");
     assert_eq!(legacy_thread.section, None);
     assert_eq!(legacy_thread.section_entered_at, None);
     assert_eq!(legacy_thread.project_id, None);
     assert_eq!(legacy_thread.environments, None);
+    assert_eq!(legacy_thread.originator, None);
 
     assert_eq!(
         value.get("initialTurnsPage"),

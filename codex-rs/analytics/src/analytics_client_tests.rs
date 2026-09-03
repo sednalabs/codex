@@ -242,6 +242,7 @@ fn sample_thread_with_metadata(
     parent_thread_id: Option<String>,
 ) -> Thread {
     Thread {
+        originator: None,
         environments: None,
         id: thread_id.to_string(),
         extra: None,

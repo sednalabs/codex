@@ -2003,6 +2003,7 @@ fn thread_list_params(
     use_state_db_only: bool,
 ) -> ThreadListParams {
     ThreadListParams {
+        originators: None,
         cursor,
         limit: Some(PAGE_SIZE as u32),
         sort_key: Some(sort_key),
@@ -6266,6 +6267,7 @@ session_picker_view = "dense"
     fn app_server_row_keeps_pathless_threads() {
         let thread_id = ThreadId::new();
         let thread = Thread {
+            originator: None,
             environments: None,
             id: thread_id.to_string(),
             extra: None,
@@ -6311,6 +6313,7 @@ session_picker_view = "dense"
 
         let thread_id = ThreadId::new();
         let thread = Thread {
+            originator: None,
             environments: None,
             id: thread_id.to_string(),
             extra: None,
@@ -6396,6 +6399,7 @@ session_picker_view = "dense"
 
         let thread_id = ThreadId::new();
         let thread = Thread {
+            originator: None,
             environments: None,
             id: thread_id.to_string(),
             extra: None,
@@ -6472,6 +6476,7 @@ session_picker_view = "dense"
 
         let thread_id = ThreadId::new();
         let thread = Thread {
+            originator: None,
             environments: None,
             id: thread_id.to_string(),
             extra: None,

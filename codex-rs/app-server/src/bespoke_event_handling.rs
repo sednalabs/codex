@@ -2297,6 +2297,7 @@ mod tests {
             })),
         ];
         let stored_thread = StoredThread {
+            originator: None,
             thread_id,
             extra_config: None,
             rollout_path: None,

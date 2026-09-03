@@ -50,6 +50,8 @@ pub struct ThreadsPage {
 /// Summary information for a thread rollout file.
 #[derive(Debug, PartialEq, Default)]
 pub struct ThreadItem {
+    /// Originator recorded at creation, if available.
+    pub originator: Option<String>,
     /// Absolute path to the rollout file.
     pub path: PathBuf,
     /// Thread ID from session metadata.
@@ -106,6 +108,7 @@ pub type ConversationsPage = ThreadsPage;
 
 #[derive(Default)]
 struct HeadTailSummary {
+    originator: Option<String>,
     saw_session_meta: bool,
     thread_id: Option<ThreadId>,
     first_user_message: Option<String>,
@@ -815,6 +818,7 @@ async fn build_thread_item(
     // Apply filters: must have session meta and a discoverable preview.
     if summary.saw_session_meta && summary.preview.is_some() {
         let HeadTailSummary {
+            originator,
             thread_id,
             first_user_message,
             preview,
@@ -837,6 +841,7 @@ async fn build_thread_item(
             summary_updated_at = updated_at.or_else(|| created_at.clone());
         }
         return Some(ThreadItem {
+            originator,
             path,
             thread_id,
             first_user_message,
@@ -1146,6 +1151,8 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
         match rollout_line.item {
             RolloutItem::SessionMeta(session_meta_line) => {
                 if !summary.saw_session_meta {
+                    summary.originator = (!session_meta_line.meta.originator.is_empty())
+                        .then(|| session_meta_line.meta.originator.clone());
                     summary.source = Some(session_meta_line.meta.source.clone());
                     summary.history_mode = session_meta_line.meta.history_mode;
                     summary.parent_thread_id = session_meta_line.meta.parent_thread_id;

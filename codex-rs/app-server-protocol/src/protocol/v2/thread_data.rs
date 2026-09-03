@@ -264,6 +264,9 @@ pub struct Thread {
     pub cwd: AbsolutePathBuf,
     /// Version of the CLI that created the thread.
     pub cli_version: String,
+    /// Originator recorded when the thread was created, independent of its current client or executor.
+    /// Null when the recorded originator is unavailable.
+    pub originator: Option<String>,
     /// Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
     pub source: SessionSource,
     /// Whether the app server accepts direct turn input for this loaded thread.
@@ -319,6 +322,7 @@ struct ThreadCompatibility {
     path: Option<PathBuf>,
     cwd: AbsolutePathBuf,
     cli_version: String,
+    originator: Option<String>,
     source: SessionSource,
     can_accept_direct_input: Option<bool>,
     thread_source: Option<ThreadSource>,
@@ -358,6 +362,7 @@ impl<'de> Deserialize<'de> for Thread {
             path: thread.path,
             cwd: thread.cwd,
             cli_version: thread.cli_version,
+            originator: thread.originator,
             source: thread.source,
             can_accept_direct_input: thread.can_accept_direct_input,
             thread_source: thread.thread_source,

@@ -4041,6 +4041,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         agent_thread_id,
         ServerNotification::ThreadStarted(ThreadStartedNotification {
             thread: Thread {
+                originator: None,
                 environments: None,
                 id: agent_thread_id.to_string(),
                 extra: None,
@@ -4143,6 +4144,7 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
         agent_thread_id,
         ServerNotification::ThreadStarted(ThreadStartedNotification {
             thread: Thread {
+                originator: None,
                 environments: None,
                 id: agent_thread_id.to_string(),
                 extra: None,
@@ -4212,6 +4214,7 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
     app.primary_session_configured = Some(primary_session);
 
     let thread = Thread {
+        originator: None,
         environments: None,
         id: read_thread_id.to_string(),
         extra: None,

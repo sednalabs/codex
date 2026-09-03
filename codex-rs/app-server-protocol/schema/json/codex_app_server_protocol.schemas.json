@@ -20339,6 +20339,13 @@
               "null"
             ]
           },
+          "originator": {
+            "description": "Originator recorded when the thread was created, independent of its current client or executor. Null when the recorded originator is unavailable.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "parentThreadId": {
             "description": "The ID of the parent thread. This will only be set if this thread is a subagent.",
             "type": [
@@ -22022,6 +22029,16 @@
           },
           "modelProviders": {
             "description": "Optional provider filter; when set, only sessions recorded under these providers are returned. When present but empty, includes all providers.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "originators": {
+            "description": "Optional originator allowlist, matching any supplied value exactly. Supported by hosted backends only; the local app-server rejects a nonempty list. Omitted or empty lists leave originators unrestricted.",
             "items": {
               "type": "string"
             },
