@@ -11,6 +11,7 @@ use crate::session::step_settings::StepSettingsUpdate;
 use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
 use codex_exec_server::SelectedCapabilityRootsStatus;
+use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
 use codex_history::RolloutItem;
@@ -804,9 +805,14 @@ impl CodexThread {
         self.session.multi_agent_version()
     }
 
+    /// Shares an immutable view of the live parent model context and retained host facts.
+    pub async fn conversation_history_snapshot(&self) -> Arc<dyn ConversationHistorySnapshot> {
+        self.session.conversation_history_snapshot().await
+    }
+
     /// Returns the current user-authorization revision for Guardian.
     pub async fn guardian_authorization_version(&self) -> GuardianAuthorizationVersion {
-        let history = self.session.conversation_history_snapshot().await;
+        let history = self.conversation_history_snapshot().await;
         self.thread_extension_data()
             .get_or_init(GuardianReviewEvidence::default)
             .authorization_version(history.as_ref())

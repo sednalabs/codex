@@ -64,6 +64,11 @@ struct GuardianReviewEvidenceState {
 }
 
 impl GuardianReviewEvidence {
+    /// Reports the fixed thread mode used for both capture and reviewer policy.
+    pub fn uses_thread_owned_context(&self) -> bool {
+        matches!(self.mode, GuardianContextMode::ThreadOwned)
+    }
+
     pub(crate) fn from_features(features: &Features) -> Self {
         Self {
             mode: if features.enabled(Feature::GuardianThreadContext) {

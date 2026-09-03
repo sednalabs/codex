@@ -3759,6 +3759,19 @@ impl Session {
         for envelope in &mut items {
             Self::assign_missing_response_item_id(&mut envelope.item);
         }
+        if self.enabled(Feature::GuardianThreadContext)
+            && let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
+                matches!(
+                    envelope.item,
+                    ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
+                )
+            })
+        {
+            checkpoint
+                .metadata
+                .get_or_insert_default()
+                .compaction_model_hash = metadata.compaction_model_hash;
+        }
         let mut compacted_item = CompactedItem {
             message: metadata.message,
             replacement_history: Some(items.clone()),
@@ -4227,6 +4240,7 @@ impl Session {
                 window_number,
                 window_ids,
                 compaction_response_id: None,
+                compaction_model_hash: None,
             },
         )
         .await;

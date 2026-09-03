@@ -67,17 +67,23 @@ enum ContextPath {
     ThreadOwned,
 }
 
-#[test_case(ContextPath::ThreadOwned, "matching", 0, AnswerSize::Normal; "compatible checkpoint")]
-#[test_case(ContextPath::ThreadOwned, "different", 0, AnswerSize::Normal; "incompatible checkpoint")]
-#[test_case(ContextPath::ThreadOwned, "matching", 140, AnswerSize::Normal; "source call evicted")]
-#[test_case(ContextPath::ThreadOwned, "matching", 0, AnswerSize::Oversized; "incomplete answers reject fresh low score")]
-#[test_case(ContextPath::Legacy, "matching", 0, AnswerSize::Normal; "legacy answers remain runtime only")]
-#[test_case(ContextPath::Legacy, "matching", 140, AnswerSize::Normal; "legacy source call evicted")]
-#[test_case(ContextPath::Legacy, "matching", 0, AnswerSize::Oversized; "legacy answer truncation")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("matching"), 0, AnswerSize::Normal; "compatible checkpoint")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("different"), 0, AnswerSize::Normal; "incompatible checkpoint")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), None, 0, AnswerSize::Normal; "unknown Luna compatibility")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), Some(""), 0, AnswerSize::Normal; "empty Luna compatibility")]
+#[test_case(ContextPath::ThreadOwned, None, Some("matching"), 0, AnswerSize::Normal; "unknown producer remains unknown after model switch")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("matching"), 140, AnswerSize::Normal; "source call evicted")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("matching"), 0, AnswerSize::Oversized; "incomplete answers reject fresh low score")]
+#[test_case(ContextPath::Legacy, Some("matching"), Some("matching"), 0, AnswerSize::Normal; "legacy answers remain runtime only")]
+#[test_case(ContextPath::Legacy, Some("matching"), Some("different"), 0, AnswerSize::Normal; "legacy incompatible checkpoint still samples")]
+#[test_case(ContextPath::Legacy, Some("matching"), None, 0, AnswerSize::Normal; "legacy unknown Luna compatibility still samples")]
+#[test_case(ContextPath::Legacy, Some("matching"), Some("matching"), 140, AnswerSize::Normal; "legacy source call evicted")]
+#[test_case(ContextPath::Legacy, Some("matching"), Some("matching"), 0, AnswerSize::Oversized; "legacy answer truncation")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollback(
     context_path: ContextPath,
-    luna_hash: &str,
+    parent_hash: Option<&str>,
+    luna_hash: Option<&str>,
     tool_traffic: usize,
     answer_size: AnswerSize,
 ) -> Result<()> {
@@ -86,6 +92,8 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
     const RESTRICTION: &str = "Only publish to a private repository.";
     const EVIDENCE: &str = "repository is private";
     const SUMMARY: &str = "Repository inspection was summarized.";
+    let compatible = parent_hash == Some("matching") && luna_hash == parent_hash;
+    let requires_sync = matches!(context_path, ContextPath::ThreadOwned) && !compatible;
     let answer = match answer_size {
         AnswerSize::Normal => USER_INPUT_RESTRICTION.to_owned(),
         AnswerSize::Oversized => "Never publish this repository publicly. ".repeat(200),
@@ -104,7 +112,11 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
         (ContextPath::ThreadOwned, AnswerSize::Oversized)
     );
     let classifier = Arc::new(MockResponsesState {
-        luna_score: if rejects_incomplete_score { 0.0 } else { 1.0 },
+        luna_score: if rejects_incomplete_score || requires_sync {
+            0.0
+        } else {
+            1.0
+        },
         ..Default::default()
     });
     let router = Router::new()
@@ -223,14 +235,18 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
     };
     mock_config.write(codex_home.path())?;
     let config = load_default_config_for_test(&codex_home).await;
-    let models = [(MODEL, "matching"), ("gpt-5.6-luna", luna_hash)]
-        .into_iter()
-        .map(|(model, hash)| {
-            let mut info = codex_core::test_support::construct_model_info_offline(model, &config);
-            info.comp_hash = Some(hash.to_owned());
-            info
-        })
-        .collect();
+    let models = [
+        (MODEL, parent_hash),
+        ("gpt-5.6-luna", luna_hash),
+        ("resumed-parent", Some("matching")),
+    ]
+    .into_iter()
+    .map(|(model, hash)| {
+        let mut info = codex_core::test_support::construct_model_info_offline(model, &config);
+        info.comp_hash = hash.map(str::to_owned);
+        info
+    })
+    .collect();
     write_models_cache_with_models(codex_home.path(), models)?;
     write_chatgpt_auth(
         codex_home.path(),
@@ -263,7 +279,7 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
     .into_iter()
     .enumerate()
     {
-        if (1..=2).contains(&index) {
+        if index == 2 || (index == 1 && !requires_sync) {
             app_server.shutdown_gracefully().await?;
             app_server = TestAppServer::builder()
                 .with_codex_home(codex_home.path())
@@ -273,6 +289,7 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
             let id = app_server
                 .send_thread_resume_request(ThreadResumeParams {
                     thread_id: thread_id.clone(),
+                    model: parent_hash.is_none().then(|| "resumed-parent".to_owned()),
                     ..Default::default()
                 })
                 .await?;
@@ -304,15 +321,26 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
         let id = app_server
             .send_turn_start_request(TurnStartParams {
                 thread_id: thread_id.clone(),
-                input: vec![UserInput::Text {
-                    text: prompt.to_owned(),
-                    text_elements: Vec::new(),
-                }],
+                input: if index == 1 && requires_sync {
+                    Vec::new()
+                } else {
+                    vec![UserInput::Text {
+                        text: prompt.to_owned(),
+                        text_elements: Vec::new(),
+                    }]
+                },
                 ..Default::default()
             })
             .await?;
         let _: TurnStartResponse = timeout(TIMEOUT, app_server.read_response(id)).await??;
         if index == 0 {
+            // Wait for the pre-answer sample before replying; scoring runs asynchronously.
+            let before_answer = wait_for_luna_request(&classifier, /*index*/ 0).await?;
+            assert!(
+                !before_answer
+                    .to_string()
+                    .contains(">>> TRUSTED USER ANSWERS START")
+            );
             submit_user_input_response(
                 &mut app_server,
                 json!({
@@ -320,19 +348,61 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
                 }),
             )
             .await?;
-            // request_user_input itself is scored before the host receives the answer.
-            let before_answer = wait_for_luna_request(&classifier, /*index*/ 0).await?;
-            assert!(
-                !before_answer
-                    .to_string()
-                    .contains(">>> TRUSTED USER ANSWERS START")
-            );
             classifier.allow_luna.notify_one();
         }
         let completed: TurnCompletedNotification =
             timeout(TIMEOUT, app_server.read_notification("turn/completed")).await??;
         assert_eq!(completed.turn.status, TurnStatus::Completed);
-        let request = wait_for_luna_request(&classifier, index + 1).await?;
+        if requires_sync && (1..=3).contains(&index) {
+            let reviews = review_requests.lock().expect("request log lock");
+            assert_eq!(
+                reviews.len(),
+                index + 1,
+                "incompatible checkpoints require sync review"
+            );
+            let review = &reviews[index];
+            assert!(
+                review["input"]
+                    .as_array()
+                    .expect("request input array")
+                    .contains(&checkpoint)
+            );
+            let text = review.to_string();
+            if index >= 2 {
+                assert!(
+                    text.contains(prompt),
+                    "current user input missing from sync review: {text}"
+                );
+            }
+            if index == 3 {
+                assert!(
+                    !text.contains("Inspect after resume."),
+                    "rolled-back user input remains in sync review: {text}"
+                );
+            }
+            assert!(text.contains(USER_INPUT_RESTRICTION));
+            assert!(text.contains("TRUSTED USER ANSWERS START"));
+            assert!(text.contains("TRANSCRIPT START"));
+            assert!(!text.contains("TRANSCRIPT DELTA START"));
+            assert_eq!(
+                classifier
+                    .luna_requests
+                    .lock()
+                    .expect("classifier request lock")
+                    .len(),
+                2,
+                "no checkpoint-less async request may run after compaction"
+            );
+            continue;
+        }
+        let sample_index = if !requires_sync {
+            index + 1
+        } else if index == 0 {
+            1
+        } else {
+            2
+        };
+        let request = wait_for_luna_request(&classifier, sample_index).await?;
         let content = request["input"]
             .as_array()
             .expect("request input array")
@@ -365,7 +435,7 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
             assert_eq!(sync_input.contains(&checkpoint), (1..=3).contains(&index));
             assert_eq!(
                 async_input.contains(&checkpoint),
-                (1..=3).contains(&index) && luna_hash == "matching"
+                (1..=3).contains(&index) && compatible
             );
             let sync_text = sync_input
                 .iter()
@@ -485,7 +555,7 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
             }
         }
         classifier.allow_luna.notify_one();
-        if rejects_incomplete_score {
+        if rejects_incomplete_score || (index == 0 && requires_sync) {
             // Wait for host publication, not merely a mock response. The next action must
             // see a fresh low score with unchanged authorization, rather than a stale score.
             let path = thread.path.as_ref().expect("legacy rollout path");
@@ -507,6 +577,8 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
                 }
             })
             .await?;
+        }
+        if rejects_incomplete_score {
             let completed = app_server
                 .start_turn_and_wait_for_completion(TurnStartParams {
                     thread_id: thread_id.clone(),
@@ -551,6 +623,27 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
         usize::from(matches!(context_path, ContextPath::ThreadOwned)),
         "only the enabled path may persist a retained-answer event",
     );
+    for line in &items {
+        if let RolloutItem::Compacted(checkpoint) = &line.item {
+            for envelope in checkpoint.replacement_history.iter().flatten() {
+                if matches!(
+                    envelope.item,
+                    codex_protocol::models::ResponseItem::Compaction { .. }
+                ) {
+                    assert_eq!(
+                        envelope
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.compaction_model_hash.as_deref()),
+                        matches!(context_path, ContextPath::ThreadOwned)
+                            .then_some(parent_hash)
+                            .flatten(),
+                        "only the enabled path records checkpoint producer provenance",
+                    );
+                }
+            }
+        }
+    }
     if matches!(context_path, ContextPath::Legacy) {
         for line in &items {
             if let RolloutItem::Compacted(checkpoint) = &line.item {
