@@ -873,10 +873,10 @@ impl BottomPane {
     }
 
     fn schedule_active_view_frame(&self) {
-        if let Some(delay) = self
-            .active_view()
-            .and_then(BottomPaneView::next_frame_delay)
-        {
+        if let Some(delay) = self.active_view().map_or_else(
+            || self.composer.footer_flash_delay(),
+            BottomPaneView::next_frame_delay,
+        ) {
             self.request_redraw_in(delay);
         }
     }

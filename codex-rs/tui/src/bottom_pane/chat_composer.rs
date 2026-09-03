@@ -10,6 +10,9 @@
 //! - Turning raw key streams into explicit paste operations on platforms where terminals
 //!   don't provide reliable bracketed paste (notably Windows).
 //!
+//! The plain-text preset keeps command prefixes literal, including `!`, so Enter and Tab
+//! submit ordinary text without enabling shell mode.
+//!
 //! # Mention Menus
 //!
 //! By default, `@` lists plugins, filesystem entries, and skills. Skills are hidden when their
@@ -477,6 +480,8 @@ pub(crate) struct ChatComposerConfig {
     pub(crate) popups_enabled: bool,
     /// Whether `/...` input is parsed and dispatched as slash commands.
     pub(crate) slash_commands_enabled: bool,
+    /// Whether a leading `!` switches the editor into shell mode.
+    pub(crate) shell_commands_enabled: bool,
     /// Whether pasting a file path can attach local images.
     pub(crate) image_paste_enabled: bool,
 }
@@ -486,6 +491,7 @@ impl Default for ChatComposerConfig {
         Self {
             popups_enabled: true,
             slash_commands_enabled: true,
+            shell_commands_enabled: true,
             image_paste_enabled: true,
         }
     }
@@ -494,12 +500,13 @@ impl Default for ChatComposerConfig {
 impl ChatComposerConfig {
     /// A minimal preset for plain-text inputs embedded in other surfaces.
     ///
-    /// This disables popups, slash commands, and image-path attachment behavior
+    /// This disables popups, slash and shell commands, and image-path attachment behavior
     /// so the composer behaves like a simple notes field.
     pub(crate) const fn plain_text() -> Self {
         Self {
             popups_enabled: false,
             slash_commands_enabled: false,
+            shell_commands_enabled: false,
             image_paste_enabled: false,
         }
     }
@@ -1389,11 +1396,14 @@ impl ChatComposer {
 
     /// Enable or disable Vim editing for the composer textarea.
     ///
-    /// The composer clears any in-flight paste-burst state when the mode
+    /// The composer flushes buffered typing and clears paste-burst state when the mode
     /// changes because Vim normal mode treats rapid character sequences as
     /// commands, not as candidate literal paste text. It also resets transient
     /// footer mode so the visible hints match the new editing surface.
     pub(crate) fn set_vim_enabled(&mut self, enabled: bool) {
+        if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {
+            self.handle_paste(pasted);
+        }
         self.draft.textarea.enable_vim_search();
         self.draft.textarea.set_vim_enabled(enabled);
         self.vim_history = VimHistory::default();
@@ -1404,6 +1414,11 @@ impl ChatComposer {
     /// Enable Vim while keeping already-active text entry in insert mode.
     pub(crate) fn enable_vim_in_insert_mode(&mut self) {
         self.set_vim_enabled(/*enabled*/ true);
+        self.resume_text_entry();
+    }
+
+    /// Resume text entry after a parent view takes focus, preserving Vim undo history.
+    pub(crate) fn resume_text_entry(&mut self) {
         self.draft.textarea.enter_vim_insert_mode();
     }
 
@@ -1542,11 +1557,6 @@ impl ChatComposer {
         urls
     }
 
-    #[cfg(test)]
-    pub(crate) fn show_footer_flash(&mut self, line: Line<'static>, duration: Duration) {
-        self.footer.show_flash(line, duration);
-    }
-
     /// Replace the entire composer content with `text` and reset cursor.
     ///
     /// This is the "fresh draft" path: it clears pending paste payloads and
@@ -1587,6 +1597,7 @@ impl ChatComposer {
         mention_bindings: Vec<MentionBinding>,
     ) {
         // Clear any existing content, placeholders, and attachments first.
+        self.footer.flash = None;
         self.vim_history = VimHistory::default();
         self.draft.textarea.set_text_clearing_elements("");
         self.draft.is_bash_mode = false;
@@ -1729,7 +1740,9 @@ impl ChatComposer {
         text: String,
         text_elements: Vec<TextElement>,
     ) -> (String, Vec<TextElement>) {
-        if let Some(stripped) = text.strip_prefix('!') {
+        if self.config.shell_commands_enabled
+            && let Some(stripped) = text.strip_prefix('!')
+        {
             self.draft.is_bash_mode = true;
             (
                 stripped.to_string(),
@@ -1744,7 +1757,11 @@ impl ChatComposer {
         }
     }
 
+    /// Flush buffered typing before clearing so cancellation preserves the complete draft in history.
     pub(crate) fn clear_for_ctrl_c(&mut self) -> Option<String> {
+        if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {
+            self.handle_paste(pasted);
+        }
         if self.is_empty() {
             return None;
         }
@@ -3115,6 +3132,16 @@ impl ChatComposer {
                 .pending_pastes
                 .clone_from(&original_pending_pastes);
             self.draft.textarea.set_cursor(original_input.len());
+            // Embedded composers may cover the transcript that receives the full error.
+            if self.footer.hint_override.is_some() {
+                self.show_footer_flash(
+                    Line::from(
+                        format!("Message too long; limit {MAX_USER_INPUT_TEXT_CHARS} characters")
+                            .red(),
+                    ),
+                    Duration::from_secs(5),
+                );
+            }
             return None;
         }
         self.attachments
@@ -3301,7 +3328,8 @@ impl ChatComposer {
                 )
             }
         } else {
-            // Restore text if submission was suppressed.
+            // Restore suppressed input, preserving validation feedback.
+            let flash = self.footer.flash.take();
             self.set_text_content_with_mention_bindings(
                 original_input,
                 original_text_elements,
@@ -3309,6 +3337,7 @@ impl ChatComposer {
                 original_mention_bindings,
             );
             self.draft.pending_pastes = original_pending_pastes;
+            self.footer.flash = flash;
             (InputResult::None, true)
         }
     }
@@ -3505,7 +3534,8 @@ impl ChatComposer {
         {
             return self.handle_input_basic(key_event);
         }
-        if self.draft.textarea.is_vim_normal_mode()
+        if self.config.shell_commands_enabled
+            && self.draft.textarea.is_vim_normal_mode()
             && self.is_empty()
             && matches!(
                 key_event,
@@ -3592,7 +3622,7 @@ impl ChatComposer {
     }
 
     fn is_bang_shell_command(&self) -> bool {
-        self.current_text().trim_start().starts_with('!')
+        self.config.shell_commands_enabled && self.current_text().trim_start().starts_with('!')
     }
 
     fn shell_mode_footer_line(&self) -> Option<Line<'static>> {
@@ -3801,7 +3831,10 @@ impl ChatComposer {
     }
 
     fn sync_bash_mode_from_text(&mut self) {
-        if !self.draft.is_bash_mode && self.draft.textarea.text().starts_with('!') {
+        if self.config.shell_commands_enabled
+            && !self.draft.is_bash_mode
+            && self.draft.textarea.text().starts_with('!')
+        {
             self.draft.textarea.replace_range(0..1, "");
             self.draft.is_bash_mode = true;
         }
@@ -3839,7 +3872,8 @@ impl ChatComposer {
             return true;
         }
 
-        let toggles = self.toggle_shortcuts_keys.is_pressed(*key_event)
+        let toggles = self.footer.hint_override.is_none()
+            && self.toggle_shortcuts_keys.is_pressed(*key_event)
             && self.is_empty()
             && !self.is_in_paste_burst();
 
@@ -5037,6 +5071,10 @@ mod agents_navigation_tests;
 #[cfg(test)]
 #[path = "chat_composer_effort_tests.rs"]
 mod effort_tests;
+
+#[cfg(test)]
+#[path = "chat_composer/embedded_input_tests.rs"]
+mod embedded_input_tests;
 
 #[cfg(test)]
 mod tests {
