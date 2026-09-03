@@ -2434,6 +2434,12 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                 encoding="utf-8",
             )
             upstream_sha = self.commit_all(repo, "upstream shared hunk")
+            upstream_hunk_header = DOWNSTREAM_DIVERGENCE_AUDIT.diff_hunks(
+                repo,
+                base_sha,
+                upstream_sha,
+                "carry.py",
+            )[0].header
 
             self.run_git(repo, "checkout", "-b", "downstream", base_sha)
             (repo / "carry.py").write_text(
@@ -2449,6 +2455,7 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                         "id": "shared-hunk",
                         "path": "carry.py",
                         "upstream_commit": upstream_sha,
+                        "hunk_header": upstream_hunk_header,
                         "hunk_lines": ["+shared"],
                     }
                 ],
@@ -2492,7 +2499,7 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 ValueError,
-                r"downstream carry hunk\(s\) are not declared and cannot be masked",
+                r"declared hunk position/context is absent",
             ):
                 DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
                     repo,
@@ -2502,7 +2509,7 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                     downstream_with_new_delta,
                 )
 
-    def test_superseded_hunk_final_tree_proof_rejects_relocation_duplicates_and_reorder(
+    def test_superseded_hunk_position_context_proof_rejects_relocation_duplicates_and_reorder(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2519,6 +2526,12 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
             self.run_git(repo, "checkout", "-b", "upstream")
             (repo / "carry.py").write_text(upstream_text, encoding="utf-8")
             upstream_sha = self.commit_all(repo, "upstream shared hunk")
+            upstream_hunk_header = DOWNSTREAM_DIVERGENCE_AUDIT.diff_hunks(
+                repo,
+                base_sha,
+                upstream_sha,
+                "carry.py",
+            )[0].header
 
             registry = {
                 "divergences": [],
@@ -2527,6 +2540,7 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                         "id": "shared-hunk",
                         "path": "carry.py",
                         "upstream_commit": upstream_sha,
+                        "hunk_header": upstream_hunk_header,
                         "hunk_lines": ["+shared-a", "+shared-b"],
                     }
                 ],
@@ -2571,7 +2585,7 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                     )
                     with self.assertRaisesRegex(
                         ValueError,
-                        r"final downstream tree.*does not exactly match",
+                        r"declared hunk position/context is absent",
                     ):
                         DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
                             repo,
@@ -2587,13 +2601,22 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                 "id": "short-sha",
                 "path": "carry.py",
                 "upstream_commit": "c8ddb210",
+                "hunk_header": "@@ -1,1 +1,2 @@",
                 "hunk_lines": ["+shared"],
             },
             "missing diff marker": {
                 "id": "missing-marker",
                 "path": "carry.py",
                 "upstream_commit": "c8ddb210d2429cacacf86593e157114b00634f13",
+                "hunk_header": "@@ -1,1 +1,2 @@",
                 "hunk_lines": ["shared"],
+            },
+            "malformed hunk header": {
+                "id": "malformed-header",
+                "path": "carry.py",
+                "upstream_commit": "c8ddb210d2429cacacf86593e157114b00634f13",
+                "hunk_header": "not-a-hunk",
+                "hunk_lines": ["+shared"],
             },
         }
         for label, declaration in cases.items():

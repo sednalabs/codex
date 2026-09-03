@@ -5,6 +5,7 @@ import argparse
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -59,6 +60,9 @@ NON_CODE_EXACT = {
     "LICENSE",
     "LICENSE.md",
 }
+HUNK_HEADER_PATTERN = re.compile(
+    r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(?: .*)?$"
+)
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,18 @@ class DiffItem:
         if self.old_mode == self.new_mode:
             return self.old_mode
         return f"{self.old_mode} -> {self.new_mode}"
+
+
+@dataclass(frozen=True)
+class DiffHunk:
+    """One unified-diff hunk with its location and surrounding context."""
+
+    header: str
+    body: tuple[str, ...]
+
+    @property
+    def changed_lines(self) -> tuple[str, ...]:
+        return tuple(line for line in self.body if line.startswith(("+", "-")))
 
 
 def main() -> int:
@@ -647,13 +663,13 @@ def carry_endpoint_paths(item: DiffItem) -> tuple[str, ...]:
     return item.paths
 
 
-def diff_hunk_bodies(
+def diff_hunks(
     repo: Path, left_sha: str, right_sha: str, path: str
-) -> list[tuple[str, ...]]:
-    """Return normalized zero-context hunk bodies for one exact path.
+) -> list[DiffHunk]:
+    """Return exact location- and context-bearing hunks for one path.
 
-    The hunk header is intentionally excluded so an equivalent carry remains
-    valid when unrelated edits move its line number. File headers and no-newline
+    Unified-diff headers bind the old/new ranges and function context, while
+    the body retains surrounding context lines. File headers and no-newline
     annotations are not hunk content and are ignored.
     """
 
@@ -663,7 +679,7 @@ def diff_hunk_bodies(
             "diff",
             "--no-ext-diff",
             "--no-renames",
-            "--unified=0",
+            "--unified=3",
             left_sha,
             right_sha,
             "--",
@@ -671,17 +687,19 @@ def diff_hunk_bodies(
         ],
         capture_stdout=True,
     )
-    hunks: list[tuple[str, ...]] = []
+    hunks: list[DiffHunk] = []
+    current_header: str | None = None
     current: list[str] | None = None
     for line in result.stdout.splitlines():
         if line.startswith("@@ "):
-            if current is not None:
-                hunks.append(tuple(current))
+            if current_header is not None and current is not None:
+                hunks.append(DiffHunk(current_header, tuple(current)))
+            current_header = line
             current = []
         elif current is not None and line.startswith((" ", "+", "-")):
             current.append(line)
-    if current is not None:
-        hunks.append(tuple(current))
+    if current_header is not None and current is not None:
+        hunks.append(DiffHunk(current_header, tuple(current)))
     return hunks
 
 
@@ -710,34 +728,6 @@ def file_contains_hunk_new_lines(
     )
 
 
-def path_tree_equal(
-    repo: Path, left_sha: str, right_sha: str, path: str
-) -> bool:
-    """Check exact final tree equivalence for one path, including file mode."""
-
-    result = run_git(
-        repo,
-        [
-            "diff",
-            "--quiet",
-            "--no-ext-diff",
-            "--no-renames",
-            left_sha,
-            right_sha,
-            "--",
-            path,
-        ],
-        capture_stdout=True,
-        allow_failure=True,
-    )
-    if result.returncode not in (0, 1):
-        raise RuntimeError(
-            "git path-equivalence check failed: "
-            f"{' '.join([left_sha, right_sha, path])}"
-        )
-    return result.returncode == 0
-
-
 def is_ancestor(repo: Path, ancestor_sha: str, descendant_sha: str) -> bool:
     result = run_git(
         repo,
@@ -760,15 +750,14 @@ def verify_superseded_hunks(
     """Validate exact upstreamed carry hunks before excluding their paths.
 
     A declaration is effective only when its hunk appears in the bound
-    upstream commit, remains present in the current upstream tree, appears in
-    the current merge-base-to-downstream carry diff, and the final downstream
-    path tree exactly equals the current upstream path tree. The final-tree
-    equivalence is the authoritative guard against relocation, duplication,
-    reordering, or context mismatch; hunk bodies identify the expected carry
-    but cannot mask a different final path state. Every carry hunk for a
-    declared path must be accounted for; an additional downstream hunk
-    therefore fails closed instead of being hidden by a path-level
-    supersession.
+    upstream commit, remains present in the current upstream tree, and appears
+    at the same unified-diff header and full context-bearing body in the current
+    merge-base-to-downstream carry diff. The exact header and body are the
+    authoritative guard against relocation, duplication, reordering, or context
+    mismatch; changed-line bodies alone cannot mask a different hunk position or
+    context. Every carry hunk for a declared path must be accounted for; an
+    additional downstream hunk therefore fails closed instead of being hidden
+    by a path-level supersession.
     """
 
     declarations = registry.get("superseded_hunks", [])
@@ -787,7 +776,8 @@ def verify_superseded_hunks(
 
     errors: list[str] = []
     checks: list[dict[str, Any]] = []
-    declarations_by_path: dict[str, list[dict[str, Any]]] = {}
+    declarations_by_path: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    resolved_hunks: dict[int, DiffHunk] = {}
     for index, declaration in enumerate(declarations, start=1):
         if not isinstance(declaration, dict):
             errors.append(f"superseded_hunks[{index}] must be an object")
@@ -796,16 +786,21 @@ def verify_superseded_hunks(
 
         entry_id = str(declaration.get("id", "<unnamed>"))
         upstream_commit = declaration.get("upstream_commit")
+        hunk_header_value = declaration.get("hunk_header")
         hunk_lines_value = declaration.get("hunk_lines")
         if not isinstance(path, str) or not isinstance(upstream_commit, str):
             errors.append(f"{entry_id}: supersession identity is malformed")
             continue
-        declarations_by_path.setdefault(path, []).append(declaration)
+        declarations_by_path.setdefault(path, []).append((index, declaration))
+        if not isinstance(hunk_header_value, str):
+            errors.append(f"{entry_id}: hunk_header is malformed")
+            continue
         if not isinstance(hunk_lines_value, list) or not all(
             isinstance(line, str) for line in hunk_lines_value
         ):
             errors.append(f"{entry_id}: hunk_lines is malformed")
             continue
+        hunk_header = hunk_header_value
         hunk_lines = tuple(hunk_lines_value)
 
         if not is_ancestor(repo, upstream_commit, upstream_sha):
@@ -820,74 +815,92 @@ def verify_superseded_hunks(
                 ["rev-parse", f"{upstream_commit}^"],
                 capture_stdout=True,
             ).stdout.strip()
-            upstream_hunks = diff_hunk_bodies(
+            upstream_hunks = diff_hunks(
                 repo, upstream_parent, upstream_commit, path
             )
         except RuntimeError as error:
             errors.append(f"{entry_id}: cannot read upstream evidence: {error}")
             continue
 
-        if hunk_lines not in upstream_hunks:
+        matching_upstream_hunks = [
+            hunk
+            for hunk in upstream_hunks
+            if hunk.header == hunk_header and hunk.changed_lines == hunk_lines
+        ]
+        if not matching_upstream_hunks:
             errors.append(
-                f"{entry_id}: declared hunk is absent from upstream commit "
+                f"{entry_id}: declared hunk header/body is absent from upstream "
                 f"{upstream_commit}"
             )
             continue
+        if len(matching_upstream_hunks) != 1:
+            errors.append(
+                f"{entry_id}: declared hunk is ambiguous in upstream commit "
+                f"{upstream_commit}"
+            )
+            continue
+        upstream_hunk = matching_upstream_hunks[0]
         if not file_contains_hunk_new_lines(
-            repo, upstream_sha, path, hunk_lines
+            repo, upstream_sha, path, upstream_hunk.body
         ):
             errors.append(
                 f"{entry_id}: declared hunk is absent from current upstream tree "
                 f"{upstream_sha}"
             )
             continue
-        if not path_tree_equal(repo, upstream_sha, downstream_sha, path):
-            errors.append(
-                f"{entry_id}: final downstream tree for {path} does not exactly "
-                f"match upstream snapshot {upstream_sha}; supersession cannot mask "
-                "relocated, duplicated, reordered, or context-mismatched carry"
-            )
-            continue
+        resolved_hunks[index] = upstream_hunk
 
         checks.append(
             {
                 "id": entry_id,
                 "path": path,
                 "upstream_commit": upstream_commit,
+                "hunk_header": hunk_header,
                 "upstream_hunk_verified": True,
-                "final_tree_verified": True,
+                "context_verified": True,
             }
         )
 
     superseded_carry_paths: list[str] = []
     for path, path_declarations in declarations_by_path.items():
-        carry_hunks = diff_hunk_bodies(repo, merge_base, downstream_sha, path)
+        carry_hunks = diff_hunks(repo, merge_base, downstream_sha, path)
         remaining = list(carry_hunks)
-        for declaration in path_declarations:
+        for index, declaration in path_declarations:
             entry_id = str(declaration.get("id", "<unnamed>"))
-            hunk_lines_value = declaration.get("hunk_lines")
-            if not isinstance(hunk_lines_value, list) or not all(
-                isinstance(line, str) for line in hunk_lines_value
-            ):
+            expected_hunk = resolved_hunks.get(index)
+            if expected_hunk is None:
                 continue
-            hunk_lines = tuple(hunk_lines_value)
-            try:
-                remaining.remove(hunk_lines)
-            except ValueError:
+            matching_carry_indexes = [
+                carry_index
+                for carry_index, carry_hunk in enumerate(remaining)
+                if carry_hunk.header == expected_hunk.header
+                and carry_hunk.body == expected_hunk.body
+            ]
+            if not matching_carry_indexes:
                 errors.append(
-                    f"{entry_id}: declared hunk is absent from current downstream "
-                    f"carry diff for {path}"
+                    f"{entry_id}: declared hunk position/context is absent from "
+                    f"current downstream carry diff for {path}"
                 )
+                continue
+            if len(matching_carry_indexes) != 1:
+                errors.append(
+                    f"{entry_id}: declared hunk position/context is ambiguous in "
+                    f"current downstream carry diff for {path}"
+                )
+                continue
+            del remaining[matching_carry_indexes[0]]
+            for check in checks:
+                if check["id"] == entry_id and check["path"] == path:
+                    check["carry_hunk_verified"] = True
         if remaining:
             errors.append(
                 f"supersession for {path}: {len(remaining)} downstream carry hunk(s) "
                 "are not declared and cannot be masked"
             )
-        elif path_declarations and carry_hunks:
+        elif path_declarations and carry_hunks and all(
+            index in resolved_hunks for index, _declaration in path_declarations
+        ):
             superseded_carry_paths.append(path)
-            for check in checks:
-                if check["path"] == path:
-                    check["carry_hunk_verified"] = True
 
     if errors:
         if enforce:
@@ -1008,7 +1021,13 @@ def validate_superseded_hunks(raw: Any, errors: list[str]) -> None:
 
         missing = [
             field
-            for field in ("id", "path", "upstream_commit", "hunk_lines")
+            for field in (
+                "id",
+                "path",
+                "upstream_commit",
+                "hunk_header",
+                "hunk_lines",
+            )
             if field not in declaration
         ]
         for field in missing:
@@ -1034,6 +1053,15 @@ def validate_superseded_hunks(raw: Any, errors: list[str]) -> None:
         ):
             errors.append(f"{prefix}: upstream_commit must be a lowercase full SHA")
 
+        hunk_header = declaration.get("hunk_header")
+        if not (
+            isinstance(hunk_header, str)
+            and HUNK_HEADER_PATTERN.fullmatch(hunk_header) is not None
+        ):
+            errors.append(
+                f"{prefix}: hunk_header must be an exact unified-diff header"
+            )
+
         hunk_lines = declaration.get("hunk_lines")
         if not isinstance(hunk_lines, list) or not hunk_lines:
             errors.append(f"{prefix}: hunk_lines must be a non-empty list")
@@ -1041,9 +1069,9 @@ def validate_superseded_hunks(raw: Any, errors: list[str]) -> None:
         if not all(isinstance(line, str) and line for line in hunk_lines):
             errors.append(f"{prefix}: hunk_lines entries must be non-empty strings")
             continue
-        if not all(line.startswith((" ", "+", "-")) for line in hunk_lines):
+        if not all(line.startswith(("+", "-")) for line in hunk_lines):
             errors.append(
-                f"{prefix}: hunk_lines entries must be unified-diff body lines"
+                f"{prefix}: hunk_lines entries must be changed unified-diff lines"
             )
         if not any(line.startswith(("+", "-")) for line in hunk_lines):
             errors.append(f"{prefix}: hunk_lines must contain a changed line")
