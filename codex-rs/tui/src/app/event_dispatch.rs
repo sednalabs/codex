@@ -238,7 +238,7 @@ impl App {
                 .await;
             }
             AppEvent::OpenResumePicker => {
-                return self.open_resume_picker(tui, app_server).await;
+                return Box::pin(self.open_resume_picker(tui, app_server)).await;
             }
             AppEvent::OpenExternalAgentConfigMigration => {
                 match crate::external_agent_config_migration::flow::handle_external_agent_config_migration_prompt(
