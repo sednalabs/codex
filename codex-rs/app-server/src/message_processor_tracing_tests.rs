@@ -289,9 +289,12 @@ impl TracingHarness {
 }
 
 async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config> {
+    // The mock-server URI is test-controlled, but keep it free of line breaks before it enters
+    // config-derived diagnostics so CodeQL does not treat the queued test envelopes as log data.
+    let server_uri = server_uri.replace('\n', "").replace('\r', "");
     write_mock_responses_config_toml(
         codex_home,
-        server_uri,
+        &server_uri,
         &BTreeMap::new(),
         /*auto_compact_limit*/ 8_192,
         Some(false),
