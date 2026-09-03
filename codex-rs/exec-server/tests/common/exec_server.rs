@@ -5,9 +5,13 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::anyhow;
+use codex_exec_server::InitializeParams;
+use codex_exec_server::InitializeResponse;
+use codex_exec_server_protocol::JSONRPCError;
 use codex_exec_server_protocol::JSONRPCMessage;
 use codex_exec_server_protocol::JSONRPCNotification;
 use codex_exec_server_protocol::JSONRPCRequest;
+use codex_exec_server_protocol::JSONRPCResponse;
 use codex_exec_server_protocol::RequestId;
 use futures::SinkExt;
 use futures::StreamExt;
@@ -24,12 +28,15 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio::time::sleep;
 use tokio::time::timeout;
+use tokio::time::timeout_at;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const EVENT_TIMEOUT: Duration = Duration::from_secs(5);
+const RESUME_RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+const SESSION_ALREADY_ATTACHED_ERROR_CODE: i64 = -32010;
 
 pub(crate) struct ExecServerHarness {
     _codex_home: TempDir,
@@ -183,6 +190,59 @@ impl ExecServerHarness {
         .await
     }
 
+    pub(crate) async fn resume_initialize(
+        &mut self,
+        session_id: String,
+    ) -> anyhow::Result<InitializeResponse> {
+        let params = serde_json::to_value(InitializeParams {
+            client_name: "exec-server-test".to_string(),
+            resume_session_id: Some(session_id),
+        })?;
+        let deadline = Instant::now() + RESUME_RECOVERY_TIMEOUT;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(anyhow!(
+                    "timed out recovering exec-server session resume after {RESUME_RECOVERY_TIMEOUT:?}"
+                ));
+            }
+
+            let request_id = self.send_request("initialize", params.clone()).await?;
+            let response = self
+                .wait_for_resume_initialize_response(&request_id, deadline)
+                .await?;
+            match response {
+                JSONRPCMessage::Response(JSONRPCResponse { result, .. }) => {
+                    return Ok(serde_json::from_value(result)?);
+                }
+                JSONRPCMessage::Error(JSONRPCError { error, .. })
+                    if error.code == SESSION_ALREADY_ATTACHED_ERROR_CODE =>
+                {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(anyhow!(
+                            "timed out recovering exec-server session resume after {RESUME_RECOVERY_TIMEOUT:?}"
+                        ));
+                    }
+                    sleep(CONNECT_RETRY_INTERVAL.min(remaining)).await;
+                }
+                JSONRPCMessage::Error(JSONRPCError { error, .. }) => {
+                    return Err(anyhow!(
+                        "exec-server session resume initialize failed with error {}: {}",
+                        error.code,
+                        error.message
+                    ));
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "unexpected response while resuming exec-server session"
+                    ));
+                }
+            }
+        }
+    }
+
     pub(crate) async fn send_raw_text(&mut self, text: &str) -> anyhow::Result<()> {
         self.websocket
             .send(Message::Text(text.to_string().into()))
@@ -214,8 +274,7 @@ impl ExecServerHarness {
                     "timed out waiting for matching exec-server event after {EVENT_TIMEOUT:?}"
                 ));
             }
-            let remaining = deadline.duration_since(now);
-            let event = self.next_event_with_timeout(remaining).await?;
+            let event = self.next_event_until(deadline).await?;
             if predicate(&event) {
                 return Ok(event);
             }
@@ -240,8 +299,13 @@ impl ExecServerHarness {
         &mut self,
         timeout_duration: Duration,
     ) -> anyhow::Result<JSONRPCMessage> {
+        self.next_event_until(Instant::now() + timeout_duration)
+            .await
+    }
+
+    async fn next_event_until(&mut self, deadline: Instant) -> anyhow::Result<JSONRPCMessage> {
         loop {
-            let frame = timeout(timeout_duration, self.websocket.next())
+            let frame = timeout_at(deadline, self.websocket.next())
                 .await
                 .map_err(|_| anyhow!("timed out waiting for exec-server websocket event"))?
                 .ok_or_else(|| anyhow!("exec-server websocket closed"))??;
@@ -255,8 +319,48 @@ impl ExecServerHarness {
                 }
                 Message::Close(_) => return Err(anyhow!("exec-server websocket closed")),
                 Message::Ping(_) | Message::Pong(_) => {}
-                _ => {}
+                Message::Frame(_) => {
+                    return Err(anyhow!("unexpected raw exec-server websocket frame"));
+                }
             }
+        }
+    }
+
+    async fn wait_for_resume_initialize_response(
+        &mut self,
+        request_id: &RequestId,
+        deadline: Instant,
+    ) -> anyhow::Result<JSONRPCMessage> {
+        if Instant::now() >= deadline {
+            return Err(anyhow!(
+                "timed out waiting for exec-server session resume initialize response"
+            ));
+        }
+
+        let event = self.next_event_until(deadline).await?;
+        match event {
+            JSONRPCMessage::Response(response) if response.id == *request_id => {
+                Ok(JSONRPCMessage::Response(response))
+            }
+            JSONRPCMessage::Response(JSONRPCResponse { id, .. }) => Err(anyhow!(
+                "unexpected exec-server response for request {request_id}: response id {id}"
+            )),
+            JSONRPCMessage::Error(JSONRPCError { id, error }) if id == *request_id => {
+                Ok(JSONRPCMessage::Error(JSONRPCError { id, error }))
+            }
+            JSONRPCMessage::Error(JSONRPCError { id, error }) => Err(anyhow!(
+                "unexpected exec-server error for request {id}: {}: {}",
+                error.code,
+                error.message
+            )),
+            JSONRPCMessage::Request(request) => Err(anyhow!(
+                "unexpected exec-server request {} while waiting for resume initialize response",
+                request.method
+            )),
+            JSONRPCMessage::Notification(notification) => Err(anyhow!(
+                "unexpected exec-server notification {} while waiting for resume initialize response",
+                notification.method
+            )),
         }
     }
 }
