@@ -10,6 +10,7 @@ use codex_exec_server::ReadResponse;
 use codex_exec_server::TerminateResponse;
 use codex_exec_server::WriteResponse;
 use codex_exec_server::WriteStatus;
+use codex_exec_server_protocol::JSONRPCError;
 use codex_exec_server_protocol::JSONRPCMessage;
 use codex_exec_server_protocol::JSONRPCResponse;
 use codex_utils_path_uri::PathUri;
@@ -323,12 +324,14 @@ async fn exec_server_resumes_detached_session_without_killing_processes() -> any
         .wait_for_event(|event| {
             matches!(
                 event,
-                JSONRPCMessage::Response(JSONRPCResponse { id, .. }) if id == &initialize_id
+                JSONRPCMessage::Response(JSONRPCResponse { id, .. })
+                    | JSONRPCMessage::Error(JSONRPCError { id, .. })
+                    if id == &initialize_id
             )
         })
         .await?;
     let JSONRPCMessage::Response(JSONRPCResponse { result, .. }) = response else {
-        panic!("expected initialize response");
+        anyhow::bail!("expected initialize response, got {response:?}");
     };
     let initialize_response: InitializeResponse = serde_json::from_value(result)?;
 
@@ -341,48 +344,35 @@ async fn exec_server_resumes_detached_session_without_killing_processes() -> any
             "process/start",
             serde_json::json!({
                 "processId": "proc-resume",
-                "argv": ["/bin/sh", "-c", "sleep 5"],
+                "argv": ["/bin/sh", "-c", "IFS= read -r line"],
                 "cwd": PathUri::from_host_native_path(std::env::current_dir()?)?,
                 "env": {},
                 "tty": false,
-                "pipeStdin": false,
+                "pipeStdin": true,
                 "arg0": null
             }),
-        )
-        .await?;
-    let _ = server
-        .wait_for_event(|event| {
-            matches!(
-                event,
-                JSONRPCMessage::Response(JSONRPCResponse { id, .. }) if id == &process_start_id
-            )
-        })
-        .await?;
-
-    server.disconnect_websocket().await?;
-    server.reconnect_websocket().await?;
-
-    let resume_initialize_id = server
-        .send_request(
-            "initialize",
-            serde_json::to_value(InitializeParams {
-                client_name: "exec-server-test".to_string(),
-                resume_session_id: Some(initialize_response.session_id.clone()),
-            })?,
         )
         .await?;
     let response = server
         .wait_for_event(|event| {
             matches!(
                 event,
-                JSONRPCMessage::Response(JSONRPCResponse { id, .. }) if id == &resume_initialize_id
+                JSONRPCMessage::Response(JSONRPCResponse { id, .. })
+                    | JSONRPCMessage::Error(JSONRPCError { id, .. })
+                    if id == &process_start_id
             )
         })
         .await?;
-    let JSONRPCMessage::Response(JSONRPCResponse { result, .. }) = response else {
-        panic!("expected resume initialize response");
+    let JSONRPCMessage::Response(_) = response else {
+        anyhow::bail!("expected process/start response, got {response:?}");
     };
-    let resumed_response: InitializeResponse = serde_json::from_value(result)?;
+
+    server.disconnect_websocket().await?;
+    server.reconnect_websocket().await?;
+
+    let resumed_response = server
+        .resume_initialize(initialize_response.session_id.clone())
+        .await?;
     assert_eq!(resumed_response, initialize_response);
 
     server
@@ -404,12 +394,14 @@ async fn exec_server_resumes_detached_session_without_killing_processes() -> any
         .wait_for_event(|event| {
             matches!(
                 event,
-                JSONRPCMessage::Response(JSONRPCResponse { id, .. }) if id == &process_read_id
+                JSONRPCMessage::Response(JSONRPCResponse { id, .. })
+                    | JSONRPCMessage::Error(JSONRPCError { id, .. })
+                    if id == &process_read_id
             )
         })
         .await?;
     let JSONRPCMessage::Response(JSONRPCResponse { result, .. }) = response else {
-        panic!("expected process/read response");
+        anyhow::bail!("expected process/read response, got {response:?}");
     };
     let process_read_response: ReadResponse = serde_json::from_value(result)?;
     assert!(process_read_response.failure.is_none());
@@ -428,12 +420,14 @@ async fn exec_server_resumes_detached_session_without_killing_processes() -> any
         .wait_for_event(|event| {
             matches!(
                 event,
-                JSONRPCMessage::Response(JSONRPCResponse { id, .. }) if id == &terminate_id
+                JSONRPCMessage::Response(JSONRPCResponse { id, .. })
+                    | JSONRPCMessage::Error(JSONRPCError { id, .. })
+                    if id == &terminate_id
             )
         })
         .await?;
     let JSONRPCMessage::Response(JSONRPCResponse { result, .. }) = response else {
-        panic!("expected process/terminate response");
+        anyhow::bail!("expected process/terminate response, got {response:?}");
     };
     let terminate_response: TerminateResponse = serde_json::from_value(result)?;
     assert_eq!(terminate_response, TerminateResponse { running: true });
