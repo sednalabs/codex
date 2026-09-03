@@ -300,7 +300,7 @@ pub enum Feature {
     /// Enable automatic review for approval prompts.
     GuardianApproval,
     /// Select thread-owned context for both Guardian reviewers.
-    /// Config-only until reviewer wiring lands; read from the thread's fixed feature set.
+    /// Read once from the thread's fixed feature set when Guardian evidence is initialized.
     GuardianThreadContext,
     /// Reuse encrypted parent compaction when restarting Guardian review sessions.
     GuardianReuseParentCompaction,

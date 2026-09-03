@@ -230,6 +230,7 @@ mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
 mod realtime_history;
+mod retained_context;
 mod review;
 mod rollout_budget;
 mod rollout_reconstruction;

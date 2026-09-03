@@ -209,7 +209,10 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                 metrics: input.extension_metrics.clone(),
                 ..Default::default()
             });
-            input.thread_store.insert(GuardianReviewEvidence::default());
+            // Preserve the answer path selected by the host for this thread.
+            input
+                .thread_store
+                .get_or_init(GuardianReviewEvidence::default);
             input
                 .thread_store
                 .insert(TrustedSkillRoots::from_config(input.config));
@@ -337,6 +340,18 @@ impl ApprovalReviewContributor for GuardianV2Extension {
                 return None;
             };
             let current_authorization = ScoreAuthorization::current(&thread).await;
+            if !current_authorization.local.retained_context_complete
+                || current_authorization
+                    .root
+                    .is_some_and(|root| !root.retained_context_complete)
+            {
+                record_fast_decision(
+                    extension_metrics.as_deref(),
+                    "deferred",
+                    "incomplete_authorization",
+                );
+                return None;
+            }
             let scored_authorization = score_progress
                 .authorization
                 .lock()
@@ -592,10 +607,10 @@ impl GuardianV2Extension {
             .thread_store
             .get_or_init(GuardianReviewEvidence::default);
         let sync_reviews = guardian_evidence.snapshot();
-        let authorization_version =
-            guardian_evidence.authorization_version(input.conversation_history.as_ref());
-        let trusted_user_inputs =
-            guardian_evidence.user_input_fragments(input.conversation_history.as_ref());
+        let codex_core::context::GuardianUserInputSnapshot {
+            fragments: trusted_user_inputs,
+            authorization_version,
+        } = guardian_evidence.user_input_snapshot(input.conversation_history.as_ref());
         let history = Arc::clone(&input.conversation_history);
         let local_trusted_skill_paths = guardian_evidence.trusted_skill_paths(input.turn_id);
         let node_repl_images = if guardian_config.transcript.include_images {
