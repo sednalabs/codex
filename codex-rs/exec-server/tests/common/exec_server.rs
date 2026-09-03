@@ -337,30 +337,29 @@ impl ExecServerHarness {
             ));
         }
 
-        let event = self.next_event_until(deadline).await?;
-        match event {
-            JSONRPCMessage::Response(response) if response.id == *request_id => {
-                Ok(JSONRPCMessage::Response(response))
+        loop {
+            let event = self.next_event_until(deadline).await?;
+            match event {
+                JSONRPCMessage::Response(response) if response.id == *request_id => {
+                    return Ok(JSONRPCMessage::Response(response));
+                }
+                JSONRPCMessage::Response(JSONRPCResponse { id, .. }) => {
+                    return Err(anyhow!(
+                        "unexpected exec-server response for request {request_id}: response id {id}"
+                    ));
+                }
+                JSONRPCMessage::Error(JSONRPCError { id, error }) if id == *request_id => {
+                    return Ok(JSONRPCMessage::Error(JSONRPCError { id, error }));
+                }
+                JSONRPCMessage::Error(JSONRPCError { id, error }) => {
+                    return Err(anyhow!(
+                        "unexpected exec-server error for request {id}: {}: {}",
+                        error.code,
+                        error.message
+                    ));
+                }
+                JSONRPCMessage::Request(_) | JSONRPCMessage::Notification(_) => {}
             }
-            JSONRPCMessage::Response(JSONRPCResponse { id, .. }) => Err(anyhow!(
-                "unexpected exec-server response for request {request_id}: response id {id}"
-            )),
-            JSONRPCMessage::Error(JSONRPCError { id, error }) if id == *request_id => {
-                Ok(JSONRPCMessage::Error(JSONRPCError { id, error }))
-            }
-            JSONRPCMessage::Error(JSONRPCError { id, error }) => Err(anyhow!(
-                "unexpected exec-server error for request {id}: {}: {}",
-                error.code,
-                error.message
-            )),
-            JSONRPCMessage::Request(request) => Err(anyhow!(
-                "unexpected exec-server request {} while waiting for resume initialize response",
-                request.method
-            )),
-            JSONRPCMessage::Notification(notification) => Err(anyhow!(
-                "unexpected exec-server notification {} while waiting for resume initialize response",
-                notification.method
-            )),
         }
     }
 }
@@ -493,5 +492,163 @@ async fn read_listen_url_from_stdout(child: &mut Child) -> anyhow::Result<String
         if listen_url.starts_with("ws://") {
             return Ok(listen_url.to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::SinkExt;
+    use futures::StreamExt;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
+
+    #[tokio::test]
+    async fn resume_response_wait_ignores_interleaved_messages() -> anyhow::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let websocket_url = format!("ws://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let mut websocket = accept_async(stream).await?;
+            let Some(Ok(Message::Text(request))) = websocket.next().await else {
+                anyhow::bail!("expected initialize request");
+            };
+            let JSONRPCMessage::Request(request) = serde_json::from_str(request.as_ref())? else {
+                anyhow::bail!("expected JSON-RPC request");
+            };
+
+            for message in [
+                JSONRPCMessage::Notification(JSONRPCNotification {
+                    method: "process/outputDelta".to_string(),
+                    params: Some(serde_json::json!({"processId": "proc-resume"})),
+                }),
+                JSONRPCMessage::Request(JSONRPCRequest {
+                    id: RequestId::Integer(99),
+                    method: "server/request".to_string(),
+                    params: None,
+                    trace: None,
+                }),
+                JSONRPCMessage::Response(JSONRPCResponse {
+                    id: request.id,
+                    result: serde_json::json!({"sessionId": "session-1"}),
+                }),
+            ] {
+                websocket
+                    .send(Message::Text(serde_json::to_string(&message)?.into()))
+                    .await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        });
+
+        let (websocket, _) = connect_async(&websocket_url).await?;
+        let child = Command::new(std::env::current_exe()?)
+            .arg("--help")
+            .stdin(Stdio::null())
+            .spawn()?;
+        let mut harness = ExecServerHarness {
+            _codex_home: TempDir::new()?,
+            _helper_paths: TestCodexHelperPaths {
+                codex_exe: PathBuf::new(),
+                codex_linux_sandbox_exe: None,
+            },
+            child,
+            websocket_url,
+            websocket,
+            next_request_id: 1,
+        };
+
+        let request_id = harness
+            .send_request("initialize", serde_json::json!({}))
+            .await?;
+        let response = harness
+            .wait_for_resume_initialize_response(
+                &request_id,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .await?;
+        assert!(matches!(
+            response,
+            JSONRPCMessage::Response(JSONRPCResponse { id, .. }) if id == request_id
+        ));
+
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resume_response_wait_keeps_absolute_deadline_after_interleaved_messages()
+    -> anyhow::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let websocket_url = format!("ws://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let mut websocket = accept_async(stream).await?;
+            let Some(Ok(Message::Text(request))) = websocket.next().await else {
+                anyhow::bail!("expected initialize request");
+            };
+            let JSONRPCMessage::Request(request) = serde_json::from_str(request.as_ref())? else {
+                anyhow::bail!("expected JSON-RPC request");
+            };
+
+            for message in [
+                JSONRPCMessage::Notification(JSONRPCNotification {
+                    method: "process/outputDelta".to_string(),
+                    params: None,
+                }),
+                JSONRPCMessage::Request(JSONRPCRequest {
+                    id: RequestId::Integer(99),
+                    method: "server/request".to_string(),
+                    params: None,
+                    trace: None,
+                }),
+            ] {
+                websocket
+                    .send(Message::Text(serde_json::to_string(&message)?.into()))
+                    .await?;
+            }
+            sleep(Duration::from_millis(100)).await;
+            let response = JSONRPCMessage::Response(JSONRPCResponse {
+                id: request.id,
+                result: serde_json::json!({"sessionId": "session-1"}),
+            });
+            let _ = websocket
+                .send(Message::Text(serde_json::to_string(&response)?.into()))
+                .await;
+            Ok::<_, anyhow::Error>(())
+        });
+
+        let (websocket, _) = connect_async(&websocket_url).await?;
+        let child = Command::new(std::env::current_exe()?)
+            .arg("--help")
+            .stdin(Stdio::null())
+            .spawn()?;
+        let mut harness = ExecServerHarness {
+            _codex_home: TempDir::new()?,
+            _helper_paths: TestCodexHelperPaths {
+                codex_exe: PathBuf::new(),
+                codex_linux_sandbox_exe: None,
+            },
+            child,
+            websocket_url,
+            websocket,
+            next_request_id: 1,
+        };
+
+        let request_id = harness
+            .send_request("initialize", serde_json::json!({}))
+            .await?;
+        let error = harness
+            .wait_for_resume_initialize_response(
+                &request_id,
+                Instant::now() + Duration::from_millis(25),
+            )
+            .await
+            .expect_err("the original deadline must not reset after interleaved messages");
+        assert!(error
+            .to_string()
+            .contains("timed out waiting for exec-server websocket event"));
+
+        server.await??;
+        Ok(())
     }
 }
