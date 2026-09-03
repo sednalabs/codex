@@ -347,7 +347,9 @@ impl ChatWidget {
         } else {
             None
         };
+        let client_user_message_id = uuid::Uuid::new_v4().to_string();
         let pending_steer = (!render_in_history).then(|| PendingSteer {
+            client_id: client_user_message_id.clone(),
             user_message: UserMessage {
                 text: text.clone(),
                 local_images: local_images.clone(),
@@ -366,6 +368,7 @@ impl ChatWidget {
         let service_tier = self.service_tier_update_for_core();
         let active_permission_profile = self.config.permissions.active_permission_profile();
         let op = AppCommand::user_turn(
+            client_user_message_id,
             items,
             self.config.cwd.to_path_buf(),
             AskForApproval::from(self.config.permissions.approval_policy.value()),

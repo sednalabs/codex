@@ -19,6 +19,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SessionSource;
+use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSource;
@@ -275,6 +276,34 @@ impl App {
 
         match server_notification_thread_target(&notification) {
             ServerNotificationThreadTarget::Thread(thread_id) => {
+                if self.current_displayed_thread_id() != Some(thread_id)
+                    && let ServerNotification::ItemCompleted(item) = &notification
+                    && let ThreadItem::UserMessage {
+                        client_id: Some(client_id),
+                        ..
+                    } = &item.item
+                {
+                    // Acknowledge by ID before routing can discard the receipt. ID-less receipts
+                    // cannot safely distinguish identical pending submissions.
+                    let mut store = match self.thread_event_channels.get(&thread_id) {
+                        Some(channel) => Some(channel.store.lock().await),
+                        None => None,
+                    };
+                    for input in store
+                        .as_mut()
+                        .and_then(|store| store.input_state.as_mut())
+                        .into_iter()
+                        .chain(self.agents_overview.input_states.get_mut(&thread_id))
+                    {
+                        if input
+                            .pending_steers
+                            .front()
+                            .is_some_and(|pending| pending.client_id == *client_id)
+                        {
+                            input.pending_steers.pop_front();
+                        }
+                    }
+                }
                 if self.primary_thread_id.is_none() && !self.pending_startup_thread_start {
                     return;
                 }
