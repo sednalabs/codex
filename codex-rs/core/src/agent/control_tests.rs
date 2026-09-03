@@ -3639,6 +3639,7 @@ async fn resume_thread_subagent_restores_stored_metadata() {
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
+        crate::thread_manager::passthrough_image_store(),
         thread_store.clone(),
         /*agent_graph_store*/ None,
         uuid::Uuid::new_v4().to_string(),

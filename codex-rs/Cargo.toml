@@ -9,6 +9,7 @@ members = [
     "bwrap",
     "build-info",
     "ansi-escape",
+    "attachment-store",
     "async-utils",
     "app-server",
     "app-server-transport",
@@ -166,6 +167,7 @@ codex-agent-identity = { path = "agent-identity" }
 codex-agent-roles = { path = "agent-roles" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-api = { path = "codex-api" }
+codex-attachment-store = { path = "attachment-store" }
 codex-aws-auth = { path = "aws-auth" }
 codex-app-server = { path = "app-server" }
 codex-app-server-transport = { path = "app-server-transport" }

@@ -2325,6 +2325,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-attachment-store"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "codex-utils-image",
+ "pretty_assertions",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "codex-aws-auth"
 version = "0.0.0"
 dependencies = [
@@ -2810,6 +2821,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-apply-patch",
  "codex-async-utils",
+ "codex-attachment-store",
  "codex-client",
  "codex-code-mode",
  "codex-config",
