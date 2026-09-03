@@ -1049,7 +1049,7 @@ mod tests {
     use futures::SinkExt;
     use futures::StreamExt;
     use pretty_assertions::assert_eq;
-    use std::ops::Deref;
+    use std::ops::{Deref, DerefMut};
     use std::path::Path;
     use tempfile::TempDir;
     use tokio::net::TcpListener;
@@ -1097,6 +1097,12 @@ mod tests {
 
         fn deref(&self) -> &Self::Target {
             &self.client
+        }
+    }
+
+    impl DerefMut for TestClient {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.client
         }
     }
 
