@@ -451,11 +451,22 @@ impl SandboxManager {
                             .to_string(),
                     ));
                 }
-                (
-                    os_argv_to_strings(argv),
-                    None,
-                    Some(pending_sandboxed_request?),
-                )
+                let pending = pending_sandboxed_request?;
+                if let Some(metrics) = codex_otel::global() {
+                    let _ = metrics.counter(
+                        "codex.windows_sandbox.private_desktop",
+                        /*inc*/ 1,
+                        &[(
+                            "enabled",
+                            if windows_sandbox_private_desktop {
+                                "true"
+                            } else {
+                                "false"
+                            },
+                        )],
+                    );
+                }
+                (os_argv_to_strings(argv), None, Some(pending))
             }
             #[cfg(not(target_os = "windows"))]
             SandboxType::WindowsRestrictedToken => (
