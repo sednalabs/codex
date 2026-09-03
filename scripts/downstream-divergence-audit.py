@@ -103,15 +103,29 @@ class DiffItem:
 
 
 @dataclass(frozen=True)
+class TreeEntry:
+    """Raw tree metadata for one exact path at one commit."""
+
+    mode: str
+    object_type: str
+    object_sha: str
+
+
+@dataclass(frozen=True)
 class DiffHunk:
     """One unified-diff hunk with its location and surrounding context."""
 
     header: str
     body: tuple[str, ...]
+    no_newline_marker: bool = False
 
     @property
     def changed_lines(self) -> tuple[str, ...]:
         return tuple(line for line in self.body if line.startswith(("+", "-")))
+
+    @property
+    def context_lines(self) -> tuple[str, ...]:
+        return tuple(line for line in self.body if line.startswith(" "))
 
 
 def main() -> int:
@@ -495,6 +509,158 @@ def tree_sha(repo: Path, commit_sha: str) -> str:
     return result.stdout.strip()
 
 
+def tree_entry(repo: Path, commit_sha: str, path: str) -> TreeEntry | None:
+    """Return raw tree metadata for an exact path, if it exists."""
+
+    result = run_git_bytes(
+        repo,
+        ["ls-tree", "-r", "-z", "--full-tree", commit_sha, "--", path],
+        allow_failure=True,
+    )
+    if result.returncode != 0:
+        return None
+
+    expected_path = path.encode("utf-8")
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, entry_path = record.split(b"\t", 1)
+            mode, object_type, object_sha = metadata.split(b" ", 2)
+        except ValueError as error:
+            raise RuntimeError(
+                f"malformed tree metadata for {commit_sha}:{path}"
+            ) from error
+        if entry_path != expected_path:
+            continue
+        try:
+            return TreeEntry(
+                mode=mode.decode("ascii"),
+                object_type=object_type.decode("ascii"),
+                object_sha=object_sha.decode("ascii"),
+            )
+        except UnicodeDecodeError as error:
+            raise RuntimeError(
+                f"non-ASCII tree metadata for {commit_sha}:{path}"
+            ) from error
+    return None
+
+
+def read_blob_bytes(repo: Path, commit_sha: str, path: str) -> bytes | None:
+    """Read a path without text decoding or line-ending normalization."""
+
+    result = run_git_bytes(
+        repo,
+        ["show", f"{commit_sha}:{path}"],
+        allow_failure=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def diff_is_binary(repo: Path, left_sha: str, right_sha: str, path: str) -> bool:
+    """Fail closed when Git's raw line statistics classify a path as binary."""
+
+    result = run_git(
+        repo,
+        [
+            "diff",
+            "--no-ext-diff",
+            "--no-renames",
+            "--numstat",
+            left_sha,
+            right_sha,
+            "--",
+            path,
+        ],
+        capture_stdout=True,
+        allow_failure=True,
+    )
+    if result.returncode != 0:
+        return True
+    for line in result.stdout.splitlines():
+        fields = line.split("\t", 2)
+        if len(fields) >= 2 and fields[0] == "-" and fields[1] == "-":
+            return True
+    return False
+
+
+def is_safe_text_blob(blob: bytes) -> bool:
+    """Return whether bytes are unambiguous UTF-8 text with LF line endings."""
+
+    if b"\0" in blob or b"\r" in blob or not blob.endswith(b"\n"):
+        return False
+    try:
+        blob.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def validate_textual_supersession_path(
+    repo: Path,
+    path: str,
+    snapshots: list[tuple[str, str]],
+    diff_pairs: list[tuple[str, str, str]],
+) -> list[str]:
+    """Validate the narrow path class allowed by superseded-hunk evidence.
+
+    Supersession is intentionally limited to a stable, non-executable regular
+    file whose exact bytes are unambiguous text at every evidence snapshot.
+    Raw tree metadata and Git's binary classification are checked separately
+    so a content hunk cannot hide a mode, type, or binary path-level change.
+    """
+
+    errors: list[str] = []
+    entries: list[tuple[str, TreeEntry]] = []
+    for label, commit_sha in snapshots:
+        entry = tree_entry(repo, commit_sha, path)
+        if entry is None:
+            errors.append(f"{label} path entry is missing")
+            continue
+        entries.append((label, entry))
+
+    if entries:
+        first_label, first_entry = entries[0]
+        if first_entry.object_type != "blob" or first_entry.mode != "100644":
+            errors.append(
+                f"{first_label} path entry is not a regular 100644 file "
+                f"(mode={first_entry.mode}, type={first_entry.object_type})"
+            )
+        for label, entry in entries[1:]:
+            if (
+                entry.mode != first_entry.mode
+                or entry.object_type != first_entry.object_type
+            ):
+                errors.append(
+                    f"path tree metadata is not mode/type-stable at {label} "
+                    f"(expected mode={first_entry.mode}, "
+                    f"type={first_entry.object_type}; "
+                    f"got mode={entry.mode}, type={entry.object_type})"
+                )
+            if entry.object_type != "blob" or entry.mode != "100644":
+                errors.append(
+                    f"{label} path entry is not a regular 100644 file "
+                    f"(mode={entry.mode}, type={entry.object_type})"
+                )
+
+    for label, commit_sha in snapshots:
+        blob = read_blob_bytes(repo, commit_sha, path)
+        if blob is None:
+            continue
+        if not is_safe_text_blob(blob):
+            errors.append(
+                f"{label} path bytes are binary, non-UTF-8, CRLF/CR, "
+                "or missing a final LF"
+            )
+
+    for label, left_sha, right_sha in diff_pairs:
+        if diff_is_binary(repo, left_sha, right_sha, path):
+            errors.append(f"{label} raw diff classifies the path as binary")
+    return errors
+
+
 def diff_items_between(repo: Path, left_sha: str, right_sha: str) -> list[DiffItem]:
     result = run_git(
         repo,
@@ -669,8 +835,8 @@ def diff_hunks(
     """Return exact location- and context-bearing hunks for one path.
 
     Unified-diff headers bind the old/new ranges and function context, while
-    the body retains surrounding context lines. File headers and no-newline
-    annotations are not hunk content and are ignored.
+    the body retains surrounding context lines. No-newline annotations are
+    retained as metadata because they make byte-preserving carry proof unsafe.
     """
 
     result = run_git(
@@ -690,42 +856,63 @@ def diff_hunks(
     hunks: list[DiffHunk] = []
     current_header: str | None = None
     current: list[str] | None = None
+    current_no_newline_marker = False
     for line in result.stdout.splitlines():
         if line.startswith("@@ "):
             if current_header is not None and current is not None:
-                hunks.append(DiffHunk(current_header, tuple(current)))
+                hunks.append(
+                    DiffHunk(
+                        current_header,
+                        tuple(current),
+                        current_no_newline_marker,
+                    )
+                )
             current_header = line
             current = []
+            current_no_newline_marker = False
+        elif current is not None and line == "\\ No newline at end of file":
+            current_no_newline_marker = True
         elif current is not None and line.startswith((" ", "+", "-")):
             current.append(line)
     if current_header is not None and current is not None:
-        hunks.append(DiffHunk(current_header, tuple(current)))
+        hunks.append(
+            DiffHunk(current_header, tuple(current), current_no_newline_marker)
+        )
     return hunks
 
 
-def file_contains_hunk_new_lines(
-    repo: Path, commit_sha: str, path: str, hunk_lines: tuple[str, ...]
-) -> bool:
-    """Check that a superseded hunk's resulting lines remain in a commit tree."""
+def is_safe_addition_hunk(hunk: DiffHunk) -> bool:
+    """Require contextual, addition-only hunks with no EOL ambiguity."""
 
-    result = run_git(
-        repo,
-        ["show", f"{commit_sha}:{path}"],
-        capture_stdout=True,
-        allow_failure=True,
+    changed_lines = hunk.changed_lines
+    return (
+        bool(hunk.body)
+        and bool(hunk.context_lines)
+        and bool(changed_lines)
+        and all(line.startswith("+") for line in changed_lines)
+        and not hunk.no_newline_marker
     )
-    if result.returncode != 0:
+
+
+def file_contains_hunk_new_lines(
+    repo: Path, commit_sha: str, path: str, hunk: DiffHunk
+) -> bool:
+    """Check one unique, byte-exact context/addition sequence in a tree."""
+
+    if not is_safe_addition_hunk(hunk):
         return False
-    expected = tuple(
-        line[1:] for line in hunk_lines if line.startswith((" ", "+"))
+    actual = read_blob_bytes(repo, commit_sha, path)
+    if actual is None or not is_safe_text_blob(actual):
+        return False
+    expected = b"".join(
+        line[1:].encode("utf-8") + b"\n"
+        for line in hunk.body
+        if line.startswith((" ", "+"))
     )
     if not expected:
         return False
-    actual = tuple(result.stdout.splitlines())
-    return any(
-        actual[index : index + len(expected)] == expected
-        for index in range(len(actual) - len(expected) + 1)
-    )
+    first = actual.find(expected)
+    return first >= 0 and actual.find(expected, first + 1) == -1
 
 
 def is_ancestor(repo: Path, ancestor_sha: str, descendant_sha: str) -> bool:
@@ -815,6 +1002,30 @@ def verify_superseded_hunks(
                 ["rev-parse", f"{upstream_commit}^"],
                 capture_stdout=True,
             ).stdout.strip()
+            path_safety_errors = validate_textual_supersession_path(
+                repo,
+                path,
+                [
+                    ("upstream parent", upstream_parent),
+                    ("upstream commit", upstream_commit),
+                    ("current upstream", upstream_sha),
+                    ("merge base", merge_base),
+                    ("downstream", downstream_sha),
+                ],
+                [
+                    (
+                        "upstream commit",
+                        upstream_parent,
+                        upstream_commit,
+                    ),
+                    ("downstream carry", merge_base, downstream_sha),
+                ],
+            )
+            if path_safety_errors:
+                errors.extend(
+                    f"{entry_id}: {error}" for error in path_safety_errors
+                )
+                continue
             upstream_hunks = diff_hunks(
                 repo, upstream_parent, upstream_commit, path
             )
@@ -840,8 +1051,14 @@ def verify_superseded_hunks(
             )
             continue
         upstream_hunk = matching_upstream_hunks[0]
+        if not is_safe_addition_hunk(upstream_hunk):
+            errors.append(
+                f"{entry_id}: declared hunk must be a contextual, "
+                "textual addition-only hunk with no EOL ambiguity"
+            )
+            continue
         if not file_contains_hunk_new_lines(
-            repo, upstream_sha, path, upstream_hunk.body
+            repo, upstream_sha, path, upstream_hunk
         ):
             errors.append(
                 f"{entry_id}: declared hunk is absent from current upstream tree "
@@ -1069,12 +1286,10 @@ def validate_superseded_hunks(raw: Any, errors: list[str]) -> None:
         if not all(isinstance(line, str) and line for line in hunk_lines):
             errors.append(f"{prefix}: hunk_lines entries must be non-empty strings")
             continue
-        if not all(line.startswith(("+", "-")) for line in hunk_lines):
+        if not all(line.startswith("+") for line in hunk_lines):
             errors.append(
-                f"{prefix}: hunk_lines entries must be changed unified-diff lines"
+                f"{prefix}: hunk_lines entries must be addition-only unified-diff lines"
             )
-        if not any(line.startswith(("+", "-")) for line in hunk_lines):
-            errors.append(f"{prefix}: hunk_lines must contain a changed line")
 
 
 def non_empty_string(value: Any) -> bool:
@@ -1559,6 +1774,31 @@ def run_git(
         raise RuntimeError(
             "git command failed: "
             f"{' '.join(args)}\nstdout={result.stdout.strip()}\nstderr={result.stderr.strip()}"
+        )
+    return result
+
+
+def run_git_bytes(
+    repo: Path,
+    args: list[str],
+    *,
+    allow_failure: bool = False,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run Git without decoding output so blob and tree bytes stay exact."""
+
+    env = os.environ.copy()
+    env["LC_ALL"] = "C"
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=False,
+        env=env,
+        check=False,
+    )
+    if result.returncode != 0 and not allow_failure:
+        raise RuntimeError(
+            "git command failed: "
+            f"{' '.join(args)}\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
         )
     return result
 
