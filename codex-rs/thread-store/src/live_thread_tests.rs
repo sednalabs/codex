@@ -104,7 +104,7 @@ impl ThreadStore for GatedThreadStore {
             if append_index == self.gated_append_index {
                 self.gated_append_persisted.notify_one();
                 self.release_gated_append.notified().await;
-            } else if append_index == self.gated_append_index + 1 {
+            } else if self.gated_append_index.checked_add(1) == Some(append_index) {
                 self.next_append_persisted.notify_one();
             }
             Ok(())
@@ -299,6 +299,15 @@ async fn concurrent_appends_keep_sqlite_metadata_in_canonical_history_order() {
         .expect("second append task")
         .expect("second append");
     live_thread.flush().await.expect("flush live thread");
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            gated_store.next_append_persisted.notified()
+        )
+        .await
+        .is_err(),
+        "max sentinel must not emit a next-append notification"
+    );
 
     let history = live_thread
         .load_history(/*include_archived*/ true)
