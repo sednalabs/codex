@@ -667,13 +667,14 @@ impl InProcessAppServerClient {
             }
 
             drop(event_forward_tx);
-            if let Some(mut auth_rejection_handle) = auth_rejection_handle
-                && timeout(SHUTDOWN_TIMEOUT, &mut auth_rejection_handle)
+            if let Some(mut auth_rejection_handle) = auth_rejection_handle {
+                if timeout(SHUTDOWN_TIMEOUT, &mut auth_rejection_handle)
                     .await
                     .is_err()
-            {
-                auth_rejection_handle.abort();
-                let _ = auth_rejection_handle.await;
+                {
+                    auth_rejection_handle.abort();
+                    let _ = auth_rejection_handle.await;
+                }
             }
             if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut event_forward_handle).await {
                 event_forward_handle.abort();
@@ -861,14 +862,15 @@ impl InProcessAppServerClient {
             .send(ClientCommand::Shutdown { response_tx })
             .await
             .is_ok()
-            && let Ok(command_result) = timeout(IN_PROCESS_SHUTDOWN_TIMEOUT, response_rx).await
         {
-            command_result.map_err(|_| {
-                IoError::new(
-                    ErrorKind::BrokenPipe,
-                    "in-process app-server shutdown channel is closed",
-                )
-            })??;
+            if let Ok(command_result) = timeout(IN_PROCESS_SHUTDOWN_TIMEOUT, response_rx).await {
+                command_result.map_err(|_| {
+                    IoError::new(
+                        ErrorKind::BrokenPipe,
+                        "in-process app-server shutdown channel is closed",
+                    )
+                })??;
+            }
         }
 
         if let Err(_elapsed) = timeout(IN_PROCESS_SHUTDOWN_TIMEOUT, &mut worker_handle).await {
@@ -1582,9 +1584,9 @@ mod tests {
         let mut personalities = Vec::new();
         timeout(Duration::from_secs(2), async {
             while personalities.len() < 4 {
-                if let Some(InProcessServerEvent::ServerNotification(notification)) =
-                    client.next_event().await
-                    && let ServerNotification::ThreadSettingsUpdated(notification) = notification
+                if let Some(InProcessServerEvent::ServerNotification(
+                    ServerNotification::ThreadSettingsUpdated(notification),
+                )) = client.next_event().await
                 {
                     personalities.push(notification.thread_settings.personality);
                 }
