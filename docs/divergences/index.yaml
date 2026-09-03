@@ -3448,7 +3448,7 @@
       "id": "http-client-outbound-proxy-blocking-read-upstreamed",
       "path": "codex-rs/http-client/src/outbound_proxy_tests.rs",
       "upstream_commit": "c8ddb210d2429cacacf86593e157114b00634f13",
-      "hunk_header": "@@ -64,4 +64,7 @@ fn spawn_http_listener(",
+      "hunk_header": "@@ -64,6 +64,9 @@ fn spawn_http_listener(",
       "hunk_lines": [
         "+            stream",
         "+                .set_nonblocking(false)",
