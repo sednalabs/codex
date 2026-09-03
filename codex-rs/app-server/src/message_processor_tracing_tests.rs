@@ -66,8 +66,11 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use tempfile::TempDir;
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tracing_subscriber::layer::SubscriberExt;
 use wiremock::MockServer;
@@ -196,6 +199,13 @@ impl TracingHarness {
                 /*trace*/ None,
             )
             .await;
+        // `process_request` uses the transport-facing initialize path, which leaves outbound
+        // connection bookkeeping to the real transport loop. The in-process harness must perform
+        // that post-initialize step so thread listeners can subscribe to this connection.
+        harness
+            .processor
+            .connection_initialized(TEST_CONNECTION_ID, /*request_attestation*/ false)
+            .await;
         assert!(harness.session.initialized());
 
         Ok(harness)
@@ -205,15 +215,7 @@ impl TracingHarness {
         self.tracing.exporter.reset();
     }
 
-    async fn shutdown(self) {
-        self.processor.shutdown_threads().await;
-        self.processor.drain_background_tasks().await;
-    }
-
-    async fn request<T>(&mut self, request: ClientRequest, trace: Option<W3cTraceContext>) -> T
-    where
-        T: serde::de::DeserializeOwned,
-    {
+    async fn dispatch(&self, request: ClientRequest, trace: Option<W3cTraceContext>) -> i64 {
         let request_id = match request.id() {
             RequestId::Integer(request_id) => *request_id,
             request_id => panic!("expected integer request id in test harness, got {request_id:?}"),
@@ -229,6 +231,19 @@ impl TracingHarness {
                 Arc::clone(&self.session),
             )
             .await;
+        request_id
+    }
+
+    async fn shutdown(self) {
+        self.processor.shutdown_threads().await;
+        self.processor.drain_background_tasks().await;
+    }
+
+    async fn request<T>(&mut self, request: ClientRequest, trace: Option<W3cTraceContext>) -> T
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let request_id = self.dispatch(request, trace).await;
         read_response(
             &mut self.pending_outgoing,
             &mut self.outgoing_rx,
@@ -263,20 +278,7 @@ impl TracingHarness {
         request: ClientRequest,
         trace: Option<W3cTraceContext>,
     ) -> JSONRPCErrorError {
-        let request_id = match request.id() {
-            RequestId::Integer(request_id) => *request_id,
-            request_id => panic!("expected integer request id in test harness, got {request_id:?}"),
-        };
-        let mut request = request_from_client_request(request);
-        request.trace = trace;
-        self.processor
-            .process_request(
-                TEST_CONNECTION_ID,
-                request,
-                &AppServerTransport::Stdio,
-                Arc::clone(&self.session),
-            )
-            .await;
+        let request_id = self.dispatch(request, trace).await;
         read_error(
             &mut self.pending_outgoing,
             &mut self.outgoing_rx,
@@ -361,6 +363,45 @@ impl ExternalAuth for StaticExternalAuth {
 
     fn refresh(&self, _context: ExternalAuthRefreshContext) -> ExternalAuthFuture<'_, CodexAuth> {
         Box::pin(async { Ok(self.0.clone()) })
+    }
+}
+
+#[derive(Clone)]
+struct GatedExternalAuth {
+    auth: CodexAuth,
+    resolve_calls: Arc<AtomicUsize>,
+    resolve_started: Arc<Notify>,
+    resolve_release: Arc<Notify>,
+}
+
+impl GatedExternalAuth {
+    fn new(auth: CodexAuth) -> Self {
+        Self {
+            auth,
+            resolve_calls: Arc::new(AtomicUsize::new(0)),
+            resolve_started: Arc::new(Notify::new()),
+            resolve_release: Arc::new(Notify::new()),
+        }
+    }
+}
+
+impl ExternalAuth for GatedExternalAuth {
+    fn resolve(&self) -> ExternalAuthFuture<'_, CodexAuth> {
+        let call = self.resolve_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let auth = self.auth.clone();
+        let resolve_started = Arc::clone(&self.resolve_started);
+        let resolve_release = Arc::clone(&self.resolve_release);
+        Box::pin(async move {
+            if call >= 3 {
+                resolve_started.notify_one();
+                resolve_release.notified().await;
+            }
+            Ok(auth)
+        })
+    }
+
+    fn refresh(&self, _context: ExternalAuthRefreshContext) -> ExternalAuthFuture<'_, CodexAuth> {
+        Box::pin(async { Ok(self.auth.clone()) })
     }
 }
 
@@ -904,6 +945,20 @@ async fn wait_for_automatic_turn_row(
     }
 }
 
+async fn automatic_turn_started_exists(
+    pool: &sqlx::SqlitePool,
+    thread_id: &str,
+    client_user_message_id: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM usage_automatic_turns WHERE thread_id = ? AND client_user_message_id = ? AND outcome = 'started')",
+    )
+    .bind(thread_id)
+    .bind(client_user_message_id)
+    .fetch_one(pool)
+    .await?)
+}
+
 async fn prepare_automatic_turn(
     harness: &TracingHarness,
     thread_id: ThreadId,
@@ -1217,22 +1272,14 @@ async fn automatic_turn_auth_transition_at_provider_boundary_is_terminal() -> Re
     let trigger_turn_id = "provider-boundary-trigger";
     let (client_user_message_id, _) =
         prepare_automatic_turn(&harness, thread_id_value, trigger_turn_id).await?;
-    let admitted_revision = harness.auth_manager.auth_revision();
-    let boundary_barrier = harness
+    let gated_auth = GatedExternalAuth::new(CodexAuth::from_api_key("key-a"));
+    harness
         .auth_manager
-        .provider_request_guard(admitted_revision)
-        .await
-        .expect("admitted credential revision should be current");
+        .set_external_auth(Arc::new(gated_auth.clone()))
+        .await?;
 
-    let auth_manager = Arc::clone(&harness.auth_manager);
-    let transition = auth_manager.set_external_auth(Arc::new(StaticExternalAuth(
-        CodexAuth::from_api_key("key-b"),
-    )));
-    tokio::pin!(transition);
-    assert!(matches!(futures::poll!(transition.as_mut()), Poll::Pending));
-
-    let turn_start_response: TurnStartResponse = harness
-        .request(
+    let (turn_start_request_id, provider_setup_started) = {
+        let dispatch = harness.dispatch(
             ClientRequest::TurnStart {
                 request_id: RequestId::Integer(31_002),
                 params: automatic_turn_start_params(
@@ -1241,13 +1288,80 @@ async fn automatic_turn_auth_transition_at_provider_boundary_is_terminal() -> Re
                 ),
             },
             /*trace*/ None,
-        )
-        .await;
-    tokio::task::yield_now().await;
-    drop(boundary_barrier);
+        );
+        tokio::pin!(dispatch);
+        let mut provider_setup_started = false;
+        let turn_start_request_id = loop {
+            tokio::select! {
+                request_id = &mut dispatch => break request_id,
+                () = gated_auth.resolve_started.notified() => {
+                    if automatic_turn_started_exists(
+                        harness
+                            .state_db
+                            .as_ref()
+                            .expect("state db enabled")
+                            .usage_pool()
+                            .as_ref(),
+                        &thread_id,
+                        &client_user_message_id,
+                    )
+                    .await?
+                    {
+                        provider_setup_started = true;
+                        break dispatch.as_mut().await;
+                    }
+                    gated_auth.resolve_release.notify_one();
+                }
+            }
+        };
+
+        if !provider_setup_started {
+            loop {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    gated_auth.resolve_started.notified(),
+                )
+                .await
+                .expect("timed out waiting for provider setup to reach the auth boundary");
+                if automatic_turn_started_exists(
+                    harness
+                        .state_db
+                        .as_ref()
+                        .expect("state db enabled")
+                        .usage_pool()
+                        .as_ref(),
+                    &thread_id,
+                    &client_user_message_id,
+                )
+                .await?
+                {
+                    provider_setup_started = true;
+                    break;
+                }
+                gated_auth.resolve_release.notify_one();
+            }
+        }
+        (turn_start_request_id, provider_setup_started)
+    };
+
+    let auth_manager = Arc::clone(&harness.auth_manager);
+    let transition = auth_manager.set_external_auth(Arc::new(StaticExternalAuth(
+        CodexAuth::from_api_key("key-b"),
+    )));
+    tokio::pin!(transition);
+    assert!(matches!(futures::poll!(transition.as_mut()), Poll::Pending));
+
+    assert!(provider_setup_started);
+    gated_auth.resolve_release.notify_one();
     transition
         .await
         .expect("credential transition should complete before provider send");
+    let turn_start_response: TurnStartResponse = read_response(
+        &mut harness.pending_outgoing,
+        &mut harness.outgoing_rx,
+        turn_start_request_id,
+    )
+    .await;
 
     let notifications = read_turn_denial_notifications(
         &mut harness.pending_outgoing,
