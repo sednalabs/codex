@@ -1197,6 +1197,7 @@ impl Session {
                 usage_logger,
                 tool_search_handler_cache: Default::default(),
                 turn_environments: Arc::clone(&turn_environments),
+                automatic_turn_principals: Mutex::new(std::collections::HashMap::new()),
             };
             let (mcp_prewarm_tx, mcp_prewarm_rx) = async_channel::bounded(1);
             let sess = Arc::new(Session {

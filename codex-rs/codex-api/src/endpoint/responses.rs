@@ -2,6 +2,7 @@ use crate::auth::SharedAuthProvider;
 use crate::common::ResponseStream;
 use crate::common::ResponsesApiRequest;
 use crate::endpoint::session::EndpointSession;
+use crate::endpoint::session::ProviderRequestAttemptFactory;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use crate::requests::Compression;
@@ -54,6 +55,16 @@ impl<T: HttpTransport> ResponsesClient<T> {
         Self {
             session: self.session.with_request_telemetry(request),
             sse_telemetry: sse,
+        }
+    }
+
+    pub fn with_request_attempt_factory(
+        self,
+        factory: Option<ProviderRequestAttemptFactory<T>>,
+    ) -> Self {
+        Self {
+            session: self.session.with_request_attempt_factory(factory),
+            sse_telemetry: self.sse_telemetry,
         }
     }
 

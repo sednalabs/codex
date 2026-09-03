@@ -21,6 +21,8 @@ pub enum TransportError {
     Network(String),
     #[error("request build error: {0}")]
     Build(String),
+    #[error("automatic turn context changed before provider request")]
+    AutomaticTurnContextChanged,
 }
 
 #[derive(Debug, Error)]

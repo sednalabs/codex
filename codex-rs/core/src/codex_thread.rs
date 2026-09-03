@@ -90,6 +90,13 @@ pub struct ThreadConfigSnapshot {
     pub originator: String,
 }
 
+/// Produces the process-local canonical identity of the settings/context used by an automatic
+/// retry. Keeping this in core makes trigger binding and request validation use the same complete
+/// snapshot, including thread lineage and environment selections.
+pub fn automatic_turn_context_fingerprint(snapshot: &ThreadConfigSnapshot) -> String {
+    format!("{snapshot:?}")
+}
+
 /// Explains why `CodexThread::try_start_turn_if_idle` rejected an automatic
 /// idle turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -366,19 +373,119 @@ impl CodexThread {
         trace: Option<W3cTraceContext>,
         client_user_message_id: Option<String>,
     ) -> CodexResult<String> {
+        self.submit_user_input_with_client_user_message_id_and_principal(
+            op,
+            trace,
+            client_user_message_id,
+            /*principal*/ None,
+        )
+        .await
+    }
+
+    /// Submit user input while retaining a server-authenticated operation principal for the
+    /// resulting event occurrence. The principal is internal provenance and never client data.
+    pub async fn submit_user_input_with_client_user_message_id_and_principal(
+        &self,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+        client_user_message_id: Option<String>,
+        principal: Option<String>,
+    ) -> CodexResult<String> {
+        self.submit_user_input_with_client_user_message_id_and_principal_inner(
+            op,
+            trace,
+            client_user_message_id,
+            principal,
+            /*capture_provider_authority*/ true,
+        )
+        .await
+    }
+
+    /// Submit user input with a server-authenticated event principal without binding the
+    /// ordinary operation to the current provider authority. Automatic-turn callers use the
+    /// principal variant above so their provider authority is captured for admission checks;
+    /// ordinary app-server turns still need provenance for policy recovery events but must retain
+    /// their existing provider-selection behavior.
+    pub async fn submit_user_input_with_client_user_message_id_and_event_principal(
+        &self,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+        client_user_message_id: Option<String>,
+        principal: String,
+    ) -> CodexResult<String> {
+        self.submit_user_input_with_client_user_message_id_and_principal_inner(
+            op,
+            trace,
+            client_user_message_id,
+            Some(principal),
+            /*capture_provider_authority*/ false,
+        )
+        .await
+    }
+
+    async fn submit_user_input_with_client_user_message_id_and_principal_inner(
+        &self,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+        client_user_message_id: Option<String>,
+        principal: Option<String>,
+        capture_provider_authority: bool,
+    ) -> CodexResult<String> {
         self.session
             .services
             .agent_control
             .ensure_execution_capacity_for_op(self.session.thread_id(), &op)
             .await?;
         let id = new_submission_id();
-        self.submit_tracked(Submission {
-            id: id.clone(),
-            op,
-            client_user_message_id,
-            trace,
-        })
-        .await?;
+        let client_user_message_id_for_release = client_user_message_id.clone();
+        let provider_authority = if capture_provider_authority && principal.is_some() {
+            Some(
+                self.session
+                    .services
+                    .model_client
+                    .current_provider_authority()
+                    .await?,
+            )
+        } else {
+            None
+        };
+        if let Some(principal) = principal.as_deref() {
+            self.session
+                .services
+                .register_automatic_turn_principal(
+                    id.clone(),
+                    principal.to_owned(),
+                    client_user_message_id.as_deref(),
+                )
+                .await;
+            if let Some(provider_authority) = provider_authority {
+                self.session
+                    .services
+                    .set_automatic_turn_provider_authority(&id, provider_authority)
+                    .await;
+            }
+        }
+        if let Err(error) = self
+            .submit_tracked(Submission {
+                id: id.clone(),
+                op,
+                client_user_message_id,
+                trace,
+            })
+            .await
+        {
+            if let Some(principal) = principal.as_deref() {
+                self.session
+                    .services
+                    .remove_automatic_turn_principal_if_matches(
+                        &id,
+                        principal,
+                        client_user_message_id_for_release.as_deref(),
+                    )
+                    .await;
+            }
+            return Err(error);
+        }
         Ok(id)
     }
 
@@ -395,8 +502,44 @@ impl CodexThread {
         client_user_message_id: Option<String>,
         responsesapi_client_metadata: Option<HashMap<String, String>>,
     ) -> Result<String, SteerInputError> {
+        self.steer_input_with_principal(
+            input,
+            additional_context,
+            expected_turn_id,
+            client_user_message_id,
+            responsesapi_client_metadata,
+            /*principal*/ None,
+        )
+        .await
+    }
+
+    /// Steer a turn while retaining a server-authenticated principal for its event occurrence.
+    pub async fn steer_input_with_principal(
+        &self,
+        input: Vec<UserInput>,
+        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        expected_turn_id: Option<&str>,
+        client_user_message_id: Option<String>,
+        responsesapi_client_metadata: Option<HashMap<String, String>>,
+        principal: Option<String>,
+    ) -> Result<String, SteerInputError> {
+        if let (Some(expected_turn_id), Some(principal)) = (expected_turn_id, principal.as_deref())
+        {
+            self.session
+                .services
+                .register_automatic_turn_principal(
+                    expected_turn_id.to_string(),
+                    principal.to_owned(),
+                    client_user_message_id.as_deref(),
+                )
+                .await;
+            // Capability-bearing steer is rejected by the app-server admission contract. Do not
+            // manufacture a provider authority for this legacy internal-only seam.
+        }
+        let client_user_message_id_for_release = client_user_message_id.clone();
         let _residency_transition = self.session.input_queue.begin_residency_activity().await;
-        self.session
+        let result = self
+            .session
             .steer_input(
                 input,
                 additional_context,
@@ -404,7 +547,20 @@ impl CodexThread {
                 client_user_message_id,
                 responsesapi_client_metadata,
             )
-            .await
+            .await;
+        if result.is_err()
+            && let (Some(expected_turn_id), Some(principal)) = (expected_turn_id, principal)
+        {
+            self.session
+                .services
+                .remove_automatic_turn_principal_if_matches(
+                    expected_turn_id,
+                    &principal,
+                    client_user_message_id_for_release.as_deref(),
+                )
+                .await;
+        }
+        result
     }
 
     /// Injects model-visible items into the currently active turn.

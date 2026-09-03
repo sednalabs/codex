@@ -98,7 +98,17 @@ pub(super) async fn run_remote_compact_v2_attempt(
     let mut owned_client_session = None;
     let client_session = match client_session {
         Some(client_session) => client_session,
-        None => owned_client_session.insert(sess.services.model_client.new_session()),
+        None => {
+            let expected_authority = sess
+                .services
+                .automatic_turn_provider_authority(&turn_context.sub_id)
+                .await;
+            owned_client_session.insert(
+                sess.services
+                    .model_client
+                    .new_session_with_authority(expected_authority),
+            )
+        }
     };
     let compaction_output_result = run_remote_compaction_request_v2(
         sess,

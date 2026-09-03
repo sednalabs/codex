@@ -1,4 +1,8 @@
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher;
+use std::hash::Hasher;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
@@ -51,22 +55,115 @@ impl AgentIdentitySessionFallback {
 pub struct ResolvedProviderAuth {
     pub auth: SharedAuthProvider,
     pub agent_identity_telemetry: Option<AgentIdentityTelemetry>,
+    authority_identity: ProviderAuthIdentity,
+    freeze_to_headers: bool,
+}
+
+/// Process-local, secret-safe identity for the credentials represented by a resolved provider
+/// auth snapshot. The keyed hash is intentionally neither printable nor persisted.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProviderAuthIdentity([u64; 2]);
+
+impl std::fmt::Debug for ProviderAuthIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProviderAuthIdentity(<redacted>)")
+    }
+}
+
+fn provider_auth_hash(parts: impl Fn(&mut dyn Hasher)) -> ProviderAuthIdentity {
+    static KEYS: OnceLock<[RandomState; 2]> = OnceLock::new();
+    let keys = KEYS.get_or_init(|| [RandomState::new(), RandomState::new()]);
+    let mut values = [0; 2];
+    for (index, key) in keys.iter().enumerate() {
+        let mut hasher = key.build_hasher();
+        parts(&mut hasher);
+        values[index] = hasher.finish();
+    }
+    ProviderAuthIdentity(values)
+}
+
+fn hash_header_map(headers: &HeaderMap, state: &mut dyn Hasher) {
+    let mut entries = headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_bytes()))
+        .collect::<Vec<_>>();
+    entries.sort_unstable();
+    for (name, value) in entries {
+        state.write_usize(name.len());
+        state.write(name.as_bytes());
+        state.write_usize(value.len());
+        state.write(value);
+    }
 }
 
 impl ResolvedProviderAuth {
     pub(crate) fn new(auth: SharedAuthProvider) -> Self {
+        let headers = auth.to_auth_headers();
+        Self {
+            auth: Arc::new(HeaderAuthProvider {
+                auth: AuthHeaders::new(headers.clone()),
+            }),
+            agent_identity_telemetry: None,
+            authority_identity: provider_auth_hash(|state| hash_header_map(&headers, state)),
+            freeze_to_headers: true,
+        }
+    }
+
+    /// Preserves an auth provider whose credentials are applied to the complete request (for
+    /// example AWS SigV4), while binding its already-frozen signer identity into admission.
+    pub(crate) fn for_complete_request_auth(
+        auth: SharedAuthProvider,
+        signer_identity: codex_aws_auth::AwsCredentialIdentity,
+    ) -> Self {
         Self {
             auth,
             agent_identity_telemetry: None,
+            authority_identity: provider_auth_hash(|state| {
+                state.write(b"complete-request-auth\0");
+                signer_identity.write_to(state);
+            }),
+            freeze_to_headers: false,
         }
     }
 
     fn for_agent_identity(auth: AgentIdentityAuth) -> Self {
         let agent_identity_telemetry = agent_identity_telemetry(&auth);
+        let record = auth.record();
+        let authority_identity = provider_auth_hash(|state| {
+            state.write(b"agent-identity\0");
+            state.write(record.agent_runtime_id.as_bytes());
+            state.write_u8(0);
+            state.write(record.agent_private_key.as_bytes());
+            state.write_u8(0);
+            state.write(auth.run_task_id().as_bytes());
+            state.write_u8(0);
+            state.write(auth.account_id().as_bytes());
+            state.write_u8(u8::from(auth.is_fedramp_account()));
+        });
         Self {
             auth: Arc::new(AgentIdentityAuthProvider { auth }),
             agent_identity_telemetry: Some(agent_identity_telemetry),
+            authority_identity,
+            freeze_to_headers: true,
         }
+    }
+
+    /// Freezes the exact credentials used by this request attempt. Header-based providers become
+    /// immutable headers; complete-request providers retain their already-frozen signer. This
+    /// removes dynamic AuthManager/env reads from the send path while preserving the semantic
+    /// credential identity used for automatic admission and transport reuse.
+    pub fn freeze(mut self) -> Self {
+        if self.freeze_to_headers {
+            let headers = self.auth.to_auth_headers();
+            self.auth = Arc::new(HeaderAuthProvider {
+                auth: AuthHeaders::new(headers),
+            });
+        }
+        self
+    }
+
+    pub fn authority_identity(&self) -> ProviderAuthIdentity {
+        self.authority_identity
     }
 }
 
@@ -538,6 +635,55 @@ mod tests {
         auth_manager.reload().await;
 
         assert!(provider.to_auth_headers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn frozen_request_auth_keeps_the_credentials_represented_before_transition() {
+        let codex_home = test_codex_home();
+        login_with_chatgpt_auth_tokens(
+            &codex_home,
+            "header.e30.token-a",
+            "test-account",
+            /*chatgpt_plan_type*/ None,
+        )
+        .expect("save auth A");
+        let auth_manager = Arc::new(
+            AuthManager::new(
+                codex_home.clone(),
+                /*enable_codex_api_key_env*/ false,
+                AuthCredentialsStoreMode::Ephemeral,
+                /*forced_chatgpt_workspace_id*/ None,
+                /*chatgpt_base_url*/ None,
+                AuthKeyringBackendKind::default(),
+                codex_login::test_support::transport_default_auth_route_config(),
+            )
+            .await,
+        );
+        let auth_a = auth_manager.auth_cached().expect("auth A");
+        let frozen = ResolvedProviderAuth::new(auth_provider_from_auth_manager(
+            Arc::clone(&auth_manager),
+            &auth_a,
+        ))
+        .freeze();
+
+        login_with_chatgpt_auth_tokens(
+            &codex_home,
+            "header.e30.token-b",
+            "test-account",
+            /*chatgpt_plan_type*/ None,
+        )
+        .expect("save auth B");
+        auth_manager.reload().await;
+
+        let headers = frozen.auth.to_auth_headers();
+        assert_eq!(
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer header.e30.token-a")
+        );
+        assert!(!format!("{:?}", frozen.authority_identity()).contains("token-a"));
+        assert!(!format!("{:?}", frozen.authority_identity()).contains("token-b"));
     }
 
     #[tokio::test]

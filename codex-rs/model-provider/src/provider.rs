@@ -81,6 +81,15 @@ impl std::error::Error for ProviderAccountError {}
 
 pub type ProviderAccountResult = std::result::Result<ProviderAccountState, ProviderAccountError>;
 
+/// One staged provider resolution. The account snapshot, effective endpoint configuration, and
+/// request credentials come from the same resolution pass so callers can validate the surrounding
+/// AuthManager revision before admitting the transport send.
+pub struct ProviderRequestAuth {
+    pub account_auth: Option<CodexAuth>,
+    pub api_provider: Provider,
+    pub resolved: ResolvedProviderAuth,
+}
+
 /// Default model used for automatic approval review when a provider does not
 /// require a backend-specific model ID.
 pub const DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL: &str = "codex-auto-review";
@@ -184,12 +193,56 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
         scope: ProviderAuthScope,
     ) -> ModelProviderFuture<'_, codex_protocol::error::Result<ResolvedProviderAuth>> {
         Box::pin(async move {
-            if !provider_uses_first_party_auth_path(self.info()) {
-                return self.api_auth().await.map(ResolvedProviderAuth::new);
-            }
-            let auth = self.auth().await;
-            resolve_provider_auth_for_scope(self.auth_manager(), auth.as_ref(), self.info(), scope)
+            self.request_auth_for_scope(scope)
                 .await
+                .map(|request_auth| request_auth.resolved)
+        })
+    }
+
+    /// Resolves the account snapshot and request credentials together. This method may refresh or
+    /// reload auth; callers that also need provider-send authority must invoke it before acquiring
+    /// that authority, then validate that the AuthManager revision remained stable.
+    fn request_auth_for_scope(
+        &self,
+        scope: ProviderAuthScope,
+    ) -> ModelProviderFuture<'_, codex_protocol::error::Result<ProviderRequestAuth>> {
+        Box::pin(async move {
+            let auth = self.auth().await;
+            if !provider_uses_first_party_auth_path(self.info()) {
+                let (api_provider, resolved) = if self.info().is_amazon_bedrock() {
+                    (
+                        self.api_provider().await?,
+                        ResolvedProviderAuth::new(self.api_auth().await?),
+                    )
+                } else {
+                    (
+                        self.info()
+                            .to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))?,
+                        resolve_provider_auth(auth.as_ref(), self.info())
+                            .map(ResolvedProviderAuth::new)?,
+                    )
+                };
+                return Ok(ProviderRequestAuth {
+                    account_auth: auth,
+                    api_provider,
+                    resolved,
+                });
+            }
+            let api_provider = self
+                .info()
+                .to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))?;
+            let resolved = resolve_provider_auth_for_scope(
+                self.auth_manager(),
+                auth.as_ref(),
+                self.info(),
+                scope,
+            )
+            .await?;
+            Ok(ProviderRequestAuth {
+                account_auth: auth,
+                api_provider,
+                resolved,
+            })
         })
     }
 

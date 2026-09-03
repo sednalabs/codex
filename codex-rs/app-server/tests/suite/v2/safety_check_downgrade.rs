@@ -21,6 +21,7 @@ use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
 use codex_features::Feature;
+use codex_protocol::automatic_turn::AutomaticTurnProvenance;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
@@ -184,19 +185,24 @@ async fn cyber_policy_response_emits_typed_error_notification_v2() -> Result<()>
         .await?;
 
     let error = collect_cyber_policy_error_and_validate_no_reroute(&mut mcp).await?;
-    assert_eq!(
+    let ErrorNotification {
         error,
-        ErrorNotification {
-            error: codex_app_server_protocol::TurnError {
-                message: CYBER_POLICY_MESSAGE.to_string(),
-                codex_error_info: Some(CodexErrorInfo::CyberPolicy),
-                additional_details: None,
-            },
-            will_retry: false,
-            thread_id: thread.id,
-            turn_id: turn_start.turn.id,
-        }
-    );
+        will_retry,
+        thread_id: error_thread_id,
+        turn_id: error_turn_id,
+    } = error;
+    assert!(!will_retry);
+    assert_eq!(error_thread_id, thread.id);
+    assert_eq!(error_turn_id, turn_start.turn.id);
+    assert_eq!(error.message, CYBER_POLICY_MESSAGE);
+    assert_eq!(error.codex_error_info, Some(CodexErrorInfo::CyberPolicy));
+    let (trigger_turn_id, capability) =
+        AutomaticTurnProvenance::trigger_and_capability_from_details(
+            error.additional_details.as_deref(),
+        )
+        .expect("cyber policy errors carry server-issued automatic-turn capability details");
+    assert_eq!(trigger_turn_id, turn_start.turn.id);
+    assert!(!capability.is_empty());
 
     Ok(())
 }

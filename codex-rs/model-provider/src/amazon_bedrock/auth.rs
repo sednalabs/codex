@@ -6,6 +6,7 @@ use codex_api::SharedAuthProvider;
 use codex_aws_auth::AwsAuthContext;
 use codex_aws_auth::AwsAuthError;
 use codex_aws_auth::AwsRequestToSign;
+use codex_aws_auth::FrozenAwsAuthContext;
 use codex_http_client::Request;
 use codex_http_client::RequestBody;
 use codex_http_client::RequestCompression;
@@ -16,6 +17,7 @@ use codex_protocol::error::Result;
 use http::HeaderMap;
 
 use crate::BearerAuthProvider;
+use crate::auth::ResolvedProviderAuth;
 
 use super::mantle::aws_auth_config;
 use super::mantle::region_from_config;
@@ -27,7 +29,7 @@ const AWS_DEFAULT_REGION_ENV_VAR: &str = "AWS_DEFAULT_REGION";
 pub(super) enum BedrockAuthMethod {
     ManagedBearerToken { token: String, region: String },
     EnvBearerToken { token: String, region: String },
-    AwsSdkAuth { context: AwsAuthContext },
+    AwsSdkAuth { context: FrozenAwsAuthContext },
 }
 
 pub(super) async fn resolve_auth_method(
@@ -49,6 +51,9 @@ pub(super) async fn resolve_auth_method(
     let config = aws_auth_config(aws);
     let context = AwsAuthContext::load(config)
         .await
+        .map_err(aws_auth_error_to_codex_error)?
+        .freeze()
+        .await
         .map_err(aws_auth_error_to_codex_error)?;
     Ok(BedrockAuthMethod::AwsSdkAuth { context })
 }
@@ -57,15 +62,25 @@ pub(super) async fn resolve_provider_auth(
     managed_auth: Option<&BedrockApiKeyAuth>,
     aws: &ModelProviderAwsAuthInfo,
 ) -> Result<SharedAuthProvider> {
-    match resolve_auth_method(managed_auth, aws).await? {
+    Ok(resolved_provider_auth(resolve_auth_method(managed_auth, aws).await?).auth)
+}
+
+pub(super) fn resolved_provider_auth(method: BedrockAuthMethod) -> ResolvedProviderAuth {
+    match method {
         BedrockAuthMethod::ManagedBearerToken { token, .. }
-        | BedrockAuthMethod::EnvBearerToken { token, .. } => Ok(Arc::new(BearerAuthProvider {
-            token: Some(token),
-            account_id: None,
-            is_fedramp_account: false,
-        })),
+        | BedrockAuthMethod::EnvBearerToken { token, .. } => {
+            ResolvedProviderAuth::new(Arc::new(BearerAuthProvider {
+                token: Some(token),
+                account_id: None,
+                is_fedramp_account: false,
+            }))
+        }
         BedrockAuthMethod::AwsSdkAuth { context } => {
-            Ok(Arc::new(BedrockMantleSigV4AuthProvider::new(context)))
+            let identity = context.identity();
+            ResolvedProviderAuth::for_complete_request_auth(
+                Arc::new(BedrockMantleSigV4AuthProvider::new(context)),
+                identity,
+            )
         }
     }
 }
@@ -97,7 +112,12 @@ pub(super) fn bearer_token_region(
 }
 
 fn aws_auth_error_to_codex_error(error: AwsAuthError) -> CodexErr {
-    CodexErr::Fatal(format!("failed to resolve Amazon Bedrock auth: {error}"))
+    let message = format!("failed to resolve Amazon Bedrock auth: {error}");
+    if error.is_retryable() {
+        CodexErr::Io(std::io::Error::other(message))
+    } else {
+        CodexErr::Fatal(message)
+    }
 }
 
 fn aws_auth_error_to_auth_error(error: AwsAuthError) -> AuthError {
@@ -126,11 +146,11 @@ fn remove_headers_not_preserved_by_bedrock_mantle(headers: &mut HeaderMap) {
 /// AWS SigV4 auth provider for Bedrock Mantle OpenAI-compatible requests.
 #[derive(Debug)]
 struct BedrockMantleSigV4AuthProvider {
-    context: AwsAuthContext,
+    context: FrozenAwsAuthContext,
 }
 
 impl BedrockMantleSigV4AuthProvider {
-    fn new(context: AwsAuthContext) -> Self {
+    fn new(context: FrozenAwsAuthContext) -> Self {
         Self { context }
     }
 
@@ -167,8 +187,11 @@ impl AuthProvider for BedrockMantleSigV4AuthProvider {
 
 #[cfg(test)]
 mod tests {
+    use aws_credential_types::Credentials;
     use codex_api::AuthProvider;
+    use codex_aws_auth::FrozenAwsAuthContext;
     use http::HeaderValue;
+    use http::Method;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -291,6 +314,75 @@ mod tests {
                 .get("x-client-request-id")
                 .and_then(|value| value.to_str().ok()),
             Some("request-id")
+        );
+    }
+
+    fn frozen_test_context(secret: &str) -> FrozenAwsAuthContext {
+        FrozenAwsAuthContext::from_credentials(
+            Credentials::new(
+                "AKIDEXAMPLE",
+                secret,
+                Some("session-token".to_string()),
+                /*expires_after*/ None,
+                "unit-test",
+            ),
+            "us-east-1",
+            "bedrock-mantle",
+        )
+    }
+
+    #[tokio::test]
+    async fn resolved_sigv4_auth_preserves_complete_request_signing_and_identity() {
+        let same_a = resolved_provider_auth(BedrockAuthMethod::AwsSdkAuth {
+            context: frozen_test_context("secret-a"),
+        });
+        let same_b = resolved_provider_auth(BedrockAuthMethod::AwsSdkAuth {
+            context: frozen_test_context("secret-a"),
+        });
+        let different = resolved_provider_auth(BedrockAuthMethod::AwsSdkAuth {
+            context: frozen_test_context("secret-b"),
+        });
+        assert_eq!(same_a.authority_identity(), same_b.authority_identity());
+        assert_ne!(same_a.authority_identity(), different.authority_identity());
+
+        let signed = same_a
+            .freeze()
+            .auth
+            .apply_auth(
+                Request::new(
+                    Method::POST,
+                    "https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses".to_string(),
+                )
+                .with_raw_body(br#"{"model":"openai.gpt-oss-120b-1:0"}"#.as_slice()),
+            )
+            .await
+            .expect("complete request should be signed after resolution is frozen");
+        let authorization = signed
+            .headers
+            .get(http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("SigV4 authorization header");
+        assert!(authorization.starts_with("AWS4-HMAC-SHA256 "));
+        assert!(signed.headers.contains_key("x-amz-security-token"));
+        let debug = format!("{:?}", same_b.authority_identity());
+        for secret in ["AKIDEXAMPLE", "secret-a", "session-token"] {
+            assert!(!debug.contains(secret));
+        }
+    }
+
+    #[test]
+    fn resolved_bearer_auth_still_freezes_to_authorization_header() {
+        let resolved = resolved_provider_auth(BedrockAuthMethod::ManagedBearerToken {
+            token: "managed-token".to_string(),
+            region: "us-east-1".to_string(),
+        })
+        .freeze();
+        let headers = resolved.auth.to_auth_headers();
+        assert_eq!(
+            headers
+                .get(http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer managed-token")
         );
     }
 }

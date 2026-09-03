@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -7,6 +8,7 @@ use crate::agent::AgentControl;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::attestation::AttestationProvider;
 use crate::client::ModelClient;
+use crate::client::ProviderAuthority;
 use crate::config::NetworkProxyAuditMetadata;
 use crate::config::StartedNetworkProxy;
 use crate::current_time::TimeProvider;
@@ -32,6 +34,7 @@ use codex_login::AuthManager;
 use codex_mcp::McpRuntime;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_otel::SessionTelemetry;
+use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::protocol::Event;
 use codex_rollout::state_db::StateDbHandle;
@@ -91,6 +94,16 @@ pub(crate) struct SessionServices {
     pub(crate) usage_logger: Option<Mutex<UsageLogger>>,
     pub(crate) tool_search_handler_cache: ToolSearchHandlerCache,
     pub(crate) turn_environments: Arc<ThreadEnvironments>,
+    /// Server-authenticated principals for submissions whose events are still in flight. The
+    /// app-server supplies these through the internal thread bridge; they are never client data.
+    pub(crate) automatic_turn_principals: Mutex<HashMap<String, AutomaticTurnPrincipal>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AutomaticTurnPrincipal {
+    pub(crate) principal: String,
+    pub(crate) client_user_message_id: Option<String>,
+    pub(crate) provider_authority: Option<ProviderAuthority>,
 }
 
 impl SessionServices {
@@ -98,11 +111,124 @@ impl SessionServices {
         clippy::await_holding_invalid_type,
         reason = "usage logger event handling mutates ordered in-memory snapshots around async ledger writes"
     )]
-    pub(crate) async fn log_usage_event(&self, event: &Event) {
+    pub(crate) async fn log_usage_event(&self, thread_id: ThreadId, event: &Event) {
+        let relevant_to_automatic_turns = matches!(
+            &event.msg,
+            codex_protocol::protocol::EventMsg::Error(_)
+                | codex_protocol::protocol::EventMsg::ItemCompleted(_)
+                | codex_protocol::protocol::EventMsg::TurnComplete(_)
+                | codex_protocol::protocol::EventMsg::TurnAborted(_)
+        );
+        if relevant_to_automatic_turns {
+            if let Some(state_db) = &self.state_db {
+                let operation = self
+                    .automatic_turn_principals
+                    .lock()
+                    .await
+                    .get(&event.id)
+                    .cloned();
+                state_db
+                    .record_automatic_turn_event_with_principal_and_client_user_message_id(
+                        thread_id,
+                        event,
+                        operation
+                            .as_ref()
+                            .map(|operation| operation.principal.as_str()),
+                        operation
+                            .as_ref()
+                            .and_then(|operation| operation.client_user_message_id.as_deref()),
+                    )
+                    .await;
+            }
+
+            if matches!(
+                &event.msg,
+                codex_protocol::protocol::EventMsg::TurnComplete(_)
+                    | codex_protocol::protocol::EventMsg::TurnAborted(_)
+            ) {
+                self.automatic_turn_principals
+                    .lock()
+                    .await
+                    .remove(&event.id);
+            }
+        }
+
         let Some(usage_logger) = &self.usage_logger else {
             return;
         };
 
         usage_logger.lock().await.record_event(event).await;
+    }
+
+    pub(crate) async fn register_automatic_turn_principal(
+        &self,
+        event_occurrence_id: impl Into<String>,
+        principal: impl Into<String>,
+        client_user_message_id: Option<&str>,
+    ) {
+        let principal = principal.into();
+        let client_user_message_id = client_user_message_id.map(str::to_owned);
+        self.automatic_turn_principals
+            .lock()
+            .await
+            .entry(event_occurrence_id.into())
+            .and_modify(|operation| {
+                // A repeated same-turn steer is a new admitted attempt. Replace the complete
+                // identity whenever it carries a client message id; retaining the old id would
+                // let a later abort terminalize the wrong attempt.
+                if client_user_message_id.is_some() {
+                    operation.principal = principal.clone();
+                    operation.client_user_message_id = client_user_message_id.clone();
+                }
+            })
+            .or_insert_with(|| AutomaticTurnPrincipal {
+                principal,
+                client_user_message_id,
+                provider_authority: None,
+            });
+    }
+
+    pub(crate) async fn set_automatic_turn_provider_authority(
+        &self,
+        event_occurrence_id: &str,
+        provider_authority: ProviderAuthority,
+    ) {
+        if let Some(operation) = self
+            .automatic_turn_principals
+            .lock()
+            .await
+            .get_mut(event_occurrence_id)
+        {
+            operation.provider_authority = Some(provider_authority);
+        }
+    }
+
+    pub(crate) async fn automatic_turn_provider_authority(
+        &self,
+        event_occurrence_id: &str,
+    ) -> Option<ProviderAuthority> {
+        self.automatic_turn_principals
+            .lock()
+            .await
+            .get(event_occurrence_id)
+            .and_then(|operation| operation.provider_authority)
+    }
+
+    pub(crate) async fn remove_automatic_turn_principal_if_matches(
+        &self,
+        event_occurrence_id: &str,
+        principal: &str,
+        client_user_message_id: Option<&str>,
+    ) {
+        let mut principals = self.automatic_turn_principals.lock().await;
+        let matches = principals
+            .get(event_occurrence_id)
+            .is_some_and(|operation| {
+                operation.principal == principal
+                    && operation.client_user_message_id.as_deref() == client_user_message_id
+            });
+        if matches {
+            principals.remove(event_occurrence_id);
+        }
     }
 }

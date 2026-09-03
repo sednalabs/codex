@@ -14,6 +14,7 @@ pub(crate) mod sse;
 pub(crate) mod telemetry;
 
 pub use crate::requests::headers::build_session_headers;
+pub use codex_client::RequestInitiation;
 pub use codex_client::RequestTelemetry;
 pub use codex_client::ReqwestTransport;
 pub use codex_client::TransportError;
@@ -52,6 +53,8 @@ pub use crate::endpoint::CompactClient;
 pub use crate::endpoint::ImagesClient;
 pub use crate::endpoint::MemoriesClient;
 pub use crate::endpoint::ModelsClient;
+pub use crate::endpoint::ProviderRequestAttempt;
+pub use crate::endpoint::ProviderRequestAttemptFactory;
 pub use crate::endpoint::RealtimeCallClient;
 pub use crate::endpoint::RealtimeCallResponse;
 pub use crate::endpoint::RealtimeContextAppendChannel;

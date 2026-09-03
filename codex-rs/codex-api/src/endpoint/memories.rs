@@ -2,6 +2,7 @@ use crate::auth::SharedAuthProvider;
 use crate::common::MemorySummarizeInput;
 use crate::common::MemorySummarizeOutput;
 use crate::endpoint::session::EndpointSession;
+use crate::endpoint::session::ProviderRequestAttemptFactory;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use codex_client::HttpTransport;
@@ -26,6 +27,15 @@ impl<T: HttpTransport> MemoriesClient<T> {
     pub fn with_telemetry(self, request: Option<Arc<dyn RequestTelemetry>>) -> Self {
         Self {
             session: self.session.with_request_telemetry(request),
+        }
+    }
+
+    pub fn with_request_attempt_factory(
+        self,
+        factory: Option<ProviderRequestAttemptFactory<T>>,
+    ) -> Self {
+        Self {
+            session: self.session.with_request_attempt_factory(factory),
         }
     }
 

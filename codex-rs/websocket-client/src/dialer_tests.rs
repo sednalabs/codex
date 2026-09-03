@@ -6,6 +6,7 @@ use std::time::Duration;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 use codex_http_client::OutboundProxyRoute;
+use codex_http_client::RequestInitiation;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use futures::SinkExt;
 use futures::StreamExt;
@@ -22,6 +23,8 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
+use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::MaybeTlsStream;
@@ -64,6 +67,60 @@ async fn public_connector_uses_factory_and_exposes_stream_and_sink() {
     assert_eq!(actual, expected);
 
     target_task.await.expect("target task should finish");
+}
+
+#[tokio::test]
+async fn handshake_releases_authority_after_dialer_acceptance_before_upgrade_response() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind delayed websocket server");
+    let address = listener.local_addr().expect("delayed server address");
+    let accepted = Arc::new(Notify::new());
+    let release_handshake = Arc::new(Notify::new());
+    let server = tokio::spawn({
+        let accepted = Arc::clone(&accepted);
+        let release_handshake = Arc::clone(&release_handshake);
+        async move {
+            let (socket, _) = listener.accept().await.expect("accept websocket client");
+            accepted.notify_one();
+            release_handshake.notified().await;
+            accept_async(socket)
+                .await
+                .expect("complete websocket handshake")
+        }
+    });
+    let request = format!("ws://{address}/v1/responses")
+        .into_client_request()
+        .expect("websocket request should build");
+    let factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
+    let connector = WebSocketConnector::new(&factory).expect("connector should build");
+    let gate = Arc::new(RwLock::new(()));
+    let authority = Arc::clone(&gate).read_owned().await;
+    let connect = tokio::spawn(async move {
+        connector
+            .connect_with_initiation(
+                request,
+                WebSocketConfig::default(),
+                Some(RequestInitiation::new(authority)),
+            )
+            .await
+    });
+
+    accepted.notified().await;
+    let transition = tokio::time::timeout(Duration::from_secs(1), gate.write())
+        .await
+        .expect("dialer acceptance should release handshake authority");
+    assert!(
+        !connect.is_finished(),
+        "upgrade response should remain pending after handshake authority is released"
+    );
+    drop(transition);
+    release_handshake.notify_one();
+    connect
+        .await
+        .expect("connector task should join")
+        .expect("websocket handshake should succeed");
+    server.await.expect("server task should join");
 }
 
 #[tokio::test]

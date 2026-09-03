@@ -35,6 +35,7 @@ pub use codex_thread::CodexThreadSettingsOverrides;
 pub use codex_thread::ThreadConfigSnapshot;
 pub use codex_thread::TryStartTurnIfIdleError;
 pub use codex_thread::TryStartTurnIfIdleRejectionReason;
+pub use codex_thread::automatic_turn_context_fingerprint;
 pub use session::turn_context::TurnContext;
 mod agent;
 mod agent_communication;

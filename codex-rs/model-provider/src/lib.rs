@@ -7,6 +7,7 @@ mod rate_limit_domain;
 
 pub use amazon_bedrock::is_supported_amazon_bedrock_region;
 pub use auth::AgentIdentitySessionFallback;
+pub use auth::ProviderAuthIdentity;
 pub use auth::ProviderAuthScope;
 pub use auth::ResolvedProviderAuth;
 pub use auth::auth_provider_from_auth;
@@ -23,6 +24,7 @@ pub use provider::ProviderAccountError;
 pub use provider::ProviderAccountResult;
 pub use provider::ProviderAccountState;
 pub use provider::ProviderCapabilities;
+pub use provider::ProviderRequestAuth;
 pub use provider::SharedModelProvider;
 pub use provider::create_model_provider;
 pub use rate_limit_domain::LocalRequestFacts;
