@@ -3858,6 +3858,7 @@
             "agents": {
               "new_task": null,
               "rename": null,
+              "resume": null,
               "search": null,
               "stop": null,
               "toggle_grouping": null
@@ -4163,6 +4164,14 @@
             }
           ],
           "description": "Rename the selected task."
+        },
+        "resume": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Open the session resume picker."
         },
         "search": {
           "allOf": [
@@ -4631,6 +4640,7 @@
           "default": {
             "new_task": null,
             "rename": null,
+            "resume": null,
             "search": null,
             "stop": null,
             "toggle_grouping": null

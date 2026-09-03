@@ -1158,7 +1158,7 @@ impl App {
                         .await;
                     }
                     Err(err) => {
-                        self.chat_widget.add_error_message(format!(
+                        self.add_session_picker_error(format!(
                             "Failed to attach to resumed app-server thread: {err}"
                         ));
                     }
@@ -1166,7 +1166,7 @@ impl App {
             }
             Err(err) => {
                 let path_display = target_session.display_label();
-                self.chat_widget.add_error_message(format!(
+                self.add_session_picker_error(format!(
                     "Failed to resume session from {path_display}: {err}"
                 ));
             }

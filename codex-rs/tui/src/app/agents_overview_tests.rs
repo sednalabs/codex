@@ -199,7 +199,7 @@ async fn shared_overview_seeds_once_and_retains_locally_resumed_history() -> Res
         )?);
     }
     let config = app.config.clone();
-    let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
     for thread_id in [ids[0], ids[21]] {
         app_server
             .resume_thread(
@@ -284,15 +284,14 @@ async fn shared_overview_seeds_once_and_retains_locally_resumed_history() -> Res
         "[tui]\nresume_cwd = \"session\"\n",
     )?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    app.select_agents_overview_thread(&mut tui, &mut app_server, ids[2])
-        .await?;
+    Box::pin(app.select_agents_overview_thread(&mut tui, &mut app_server, ids[2])).await?;
     assert_eq!(app.primary_thread_id, Some(ids[2]));
     app_server.shutdown().await?;
 
     // A fresh TUI/server has no in-memory additions; read-only resumes did not promote history.
     let mut restarted = make_test_app().await;
     restarted.app_server_target = app.app_server_target.clone();
-    let app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+    let app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     restarted.app_event_tx = crate::app_event_sender::AppEventSender::new(event_tx);
     restarted.refresh_agents_overview_threads(&app_server);
@@ -672,6 +671,7 @@ async fn filtered_dashboard_actions_use_configured_shortcuts() {
     let mut keymap = TuiKeymap::default();
     keymap.agents.search = Some(KeybindingsSpec::One(KeybindingSpec("f6".to_string())));
     keymap.agents.stop = Some(KeybindingsSpec::One(KeybindingSpec("f10".to_string())));
+    keymap.agents.resume = Some(KeybindingsSpec::One(KeybindingSpec("f8".to_string())));
     app.keymap = crate::keymap::RuntimeKeymap::from_config(&keymap).expect("runtime keymap");
     let first = ThreadId::new();
     let second = ThreadId::new();
@@ -709,6 +709,12 @@ async fn filtered_dashboard_actions_use_configured_shortcuts() {
     assert!(view.handle_paste("Do not dispatch this draft".to_string()));
     view.handle_key_event(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
     assert!(view.handle_paste("Second task".to_string()));
+    view.handle_key_event(KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE));
+    assert!(matches!(
+        event_rx.try_recv(),
+        Ok(AppEvent::OpenResumePicker)
+    ));
+    assert!(!view.is_complete());
     view.handle_key_event(KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE));
     assert!(matches!(
         event_rx.try_recv(),
@@ -1133,5 +1139,334 @@ async fn restored_server_permission_profile_survives_cd_without_turn_override() 
     );
 
     app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_resume_picker_preserves_command_center_state() -> Result<()> {
+    for primary_thread_id in [None, Some(ThreadId::new())] {
+        let mut app = make_test_app().await;
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.app_event_tx = crate::app_event_sender::AppEventSender::new(event_tx);
+        app.primary_thread_id = primary_thread_id;
+        let threads = ["First task", "Second task"].map(|name| {
+            overview_thread(
+                ThreadId::new(),
+                /*parent_thread_id*/ None,
+                name,
+                ThreadStatus::Idle,
+            )
+        });
+        let selected = ThreadId::from_string(&threads[1].id).unwrap();
+        let view = app.agents_overview_view(threads.into(), Some(selected));
+        app.chat_widget.show_bottom_pane_view(Box::new(view));
+        for key in [
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE),
+        ] {
+            app.chat_widget.handle_key_event(key);
+        }
+        let before = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+        let selection = app
+            .chat_widget
+            .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID);
+        while event_rx.try_recv().is_ok() {}
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(AppEvent::OpenResumePicker)
+        ));
+        assert!(event_rx.try_recv().is_err());
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+        for selection in [SessionSelection::StartFresh, SessionSelection::Exit] {
+            assert!(matches!(
+                app.apply_resume_picker_selection(&mut tui, &mut server, selection)
+                    .await?,
+                AppRunControl::Continue
+            ));
+            app.chat_widget.pre_draw_tick();
+            assert_eq!(render_bottom_popup(&app.chat_widget, /*width*/ 96), before);
+        }
+        server.shutdown().await?;
+        assert_eq!(
+            app.chat_widget
+                .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID),
+            selection
+        );
+        assert_eq!(app.agents_overview.view_state.lock().unwrap().input, "d");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn command_center_cursor_tracks_wrapped_footer() {
+    let app = make_test_app().await;
+    let mut view = app.agents_overview_view(
+        vec![overview_thread(
+            ThreadId::new(),
+            /*parent_thread_id*/ None,
+            "Task",
+            ThreadStatus::Idle,
+        )],
+        /*selected_thread_id*/ None,
+    );
+    for (key, label) in [('n', "New task ›"), ('f', "Search ›"), ('r', "Rename ›")] {
+        view.handle_key_event(KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL));
+        for width in [48, 96, 120] {
+            let area =
+                ratatui::layout::Rect::new(/*x*/ 0, /*y*/ 0, width, /*height*/ 24);
+            let mut buffer = ratatui::buffer::Buffer::empty(area);
+            view.render(area, &mut buffer);
+            let prompt_row = buffer
+                .content()
+                .chunks(usize::from(width))
+                .position(|row| {
+                    row.iter()
+                        .map(ratatui::buffer::Cell::symbol)
+                        .collect::<String>()
+                        .contains(label)
+                })
+                .expect("rendered prompt");
+            assert_eq!(
+                view.cursor_pos(area).map(|(_, y)| usize::from(y)),
+                Some(prompt_row)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn empty_command_center_can_open_resume_picker() {
+    let mut app = make_test_app().await;
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.app_event_tx = crate::app_event_sender::AppEventSender::new(event_tx);
+    let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    while event_rx.try_recv().is_ok() {}
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+    assert!(matches!(
+        event_rx.try_recv(),
+        Ok(AppEvent::OpenResumePicker)
+    ));
+    insta::with_settings!({snapshot_path => "../snapshots"}, {
+        insta::assert_snapshot!("agents_overview_empty_narrow", render_bottom_popup(&app.chat_widget, /*width*/ 48));
+    });
+}
+
+#[tokio::test]
+async fn resuming_active_session_closes_command_center() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.active_thread_id = Some(thread_id);
+    app.primary_thread_id = Some(thread_id);
+    let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    assert!(matches!(
+        app.apply_resume_picker_selection(
+            &mut tui,
+            &mut server,
+            SessionSelection::Resume(SessionTarget {
+                path: None,
+                thread_id,
+                history_mode: None,
+            })
+        )
+        .await?,
+        AppRunControl::Continue
+    ));
+    assert_eq!(
+        app.chat_widget
+            .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID),
+        None
+    );
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn resume_failure_keeps_command_center_available() {
+    let mut app = make_test_app().await;
+    let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let before = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    app.add_session_picker_error("The session is unavailable.".to_string());
+    insta::with_settings!({snapshot_path => "../snapshots"}, {
+        insta::assert_snapshot!("agents_overview_resume_error", render_bottom_popup(&app.chat_widget, /*width*/ 96));
+    });
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(render_bottom_popup(&app.chat_widget, /*width*/ 96), before);
+}
+
+#[tokio::test]
+async fn resume_picker_round_trip_preserves_each_threads_input() -> Result<()> {
+    let mut app = make_test_app().await;
+    std::fs::write(
+        app.config.codex_home.join("config.toml"),
+        "[tui]\nresume_cwd = \"current\"\n",
+    )?;
+    let mut targets = Vec::new();
+    for (timestamp, name) in [
+        ("2025-01-05T12-00-00", "First task"),
+        ("2025-01-05T13-00-00", "Second task"),
+    ] {
+        let id = app_test_support::create_fake_rollout(
+            app.config.codex_home.as_path(),
+            timestamp,
+            "2025-01-05T12:00:00Z",
+            name,
+            Some(&app.config.model_provider_id),
+            /*git_info*/ None,
+        )
+        .expect("saved rollout");
+        targets.push(SessionTarget {
+            path: Some(app_test_support::rollout_path(
+                app.config.codex_home.as_path(),
+                timestamp,
+                &id,
+            )),
+            thread_id: ThreadId::from_string(&id)?,
+            history_mode: None,
+        });
+    }
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    let mut expected_states = Vec::new();
+    for target in targets.iter().chain(&targets) {
+        let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+        app.chat_widget.show_bottom_pane_view(Box::new(view));
+        app.apply_resume_picker_selection(
+            &mut tui,
+            &mut server,
+            SessionSelection::Resume(target.clone()),
+        )
+        .await?;
+        assert_eq!(app.chat_widget.thread_id(), Some(target.thread_id));
+        if expected_states.len() < targets.len() {
+            assert_eq!(app.chat_widget.composer_text_with_pending(), "");
+            assert!(app.chat_widget.queued_user_message_texts().is_empty());
+            app.chat_widget.handle_server_notification(
+                ServerNotification::TurnStarted(
+                    codex_app_server_protocol::TurnStartedNotification {
+                        thread_id: target.thread_id.to_string(),
+                        turn: codex_app_server_protocol::Turn {
+                            id: "turn-with-follow-up".to_string(),
+                            items_view: codex_app_server_protocol::TurnItemsView::Full,
+                            items: Vec::new(),
+                            status: codex_app_server_protocol::TurnStatus::InProgress,
+                            error: None,
+                            started_at: None,
+                            completed_at: None,
+                            duration_ms: None,
+                        },
+                    },
+                ),
+                /*replay_kind*/ None,
+            );
+            let follow_up = format!("Follow-up for {}", target.thread_id);
+            app.chat_widget.apply_external_edit(follow_up.clone());
+            app.chat_widget
+                .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            assert_eq!(app.chat_widget.queued_user_message_texts(), vec![follow_up]);
+            app.chat_widget
+                .apply_external_edit(format!("Draft for {}", target.thread_id));
+            let mut input_state = app.chat_widget.capture_thread_input_state().unwrap();
+            // Recovered follow-ups stay paused until the user explicitly submits them.
+            input_state.recovered_queue = true;
+            app.chat_widget.restore_thread_input_state(
+                Some(input_state),
+                crate::chatwidget::ThreadInputStateRestoreMode {
+                    preserve_in_flight_turn: false,
+                },
+            );
+            expected_states.push(app.chat_widget.capture_thread_input_state());
+        } else {
+            let index = targets
+                .iter()
+                .position(|t| t.thread_id == target.thread_id)
+                .unwrap();
+            assert_eq!(
+                app.chat_widget.capture_thread_input_state(),
+                expected_states[index]
+            );
+        }
+    }
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn command_center_handles_resume_failure_and_success() -> Result<()> {
+    let mut app = make_test_app().await;
+    std::fs::write(
+        app.config.codex_home.join("config.toml"),
+        "[tui]\nresume_cwd = \"current\"\n",
+    )?;
+    let timestamp = "2025-01-05T12-00-00";
+    let id = app_test_support::create_fake_rollout(
+        app.config.codex_home.as_path(),
+        timestamp,
+        "2025-01-05T12:00:00Z",
+        "Saved task",
+        Some(&app.config.model_provider_id),
+        /*git_info*/ None,
+    )
+    .expect("saved rollout");
+    let thread_id = ThreadId::from_string(&id)?;
+    let path = app_test_support::rollout_path(app.config.codex_home.as_path(), timestamp, &id);
+    let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    assert!(matches!(
+        app.apply_resume_picker_selection(
+            &mut tui,
+            &mut server,
+            SessionSelection::Resume(SessionTarget {
+                path: None,
+                thread_id: ThreadId::new(),
+                history_mode: None,
+            })
+        )
+        .await?,
+        AppRunControl::Continue
+    ));
+    assert!(
+        app.chat_widget
+            .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID)
+            .is_some()
+    );
+    assert!(
+        render_bottom_popup(&app.chat_widget, /*width*/ 96).contains("Unable to resume session")
+    );
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(matches!(
+        app.apply_resume_picker_selection(
+            &mut tui,
+            &mut server,
+            SessionSelection::Resume(SessionTarget {
+                path: Some(path),
+                thread_id,
+                history_mode: None,
+            })
+        )
+        .await?,
+        AppRunControl::Continue
+    ));
+    assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
+    assert_eq!(
+        app.chat_widget
+            .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID),
+        None
+    );
+    server.shutdown().await?;
     Ok(())
 }

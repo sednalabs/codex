@@ -23,6 +23,6 @@ expression: "render_bottom_popup(&app.chat_widget,\n96).replace(&format!(\"{proj
                                                       │
                                                       │
                                                       │
-                                                      │
   New task › Describe a task and press enter to dispatch it
-  ↑↓ navigate  enter open  ctrl+f search  ctrl+s group  ctrl+r rename  ctrl+x stop  esc back
+  ↑↓ navigate ctrl+o resume enter open ctrl+f search ctrl+s group ctrl+r rename ctrl+x stop
+  esc back

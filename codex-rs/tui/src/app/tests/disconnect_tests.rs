@@ -218,6 +218,7 @@ async fn disconnected_command_center_keeps_input_and_blocks_actions() -> Result<
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
         KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
     ] {
         app.handle_tui_event(&mut tui, &mut session, TuiEvent::Key(key))
             .await?;
@@ -235,8 +236,10 @@ async fn disconnected_command_center_keeps_input_and_blocks_actions() -> Result<
         "task draft!"
     );
     assert!(
-        !std::iter::from_fn(|| events.try_recv().ok())
-            .any(|event| matches!(event, AppEvent::DispatchAgentsOverviewTask { .. }))
+        !std::iter::from_fn(|| events.try_recv().ok()).any(|event| matches!(
+            event,
+            AppEvent::DispatchAgentsOverviewTask { .. } | AppEvent::OpenResumePicker
+        ))
     );
     assert_snapshot!(
         "offline_command_center",

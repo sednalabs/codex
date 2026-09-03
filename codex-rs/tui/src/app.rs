@@ -237,6 +237,7 @@ mod resize_reflow;
 mod resume_config;
 mod safety_buffering;
 mod session_lifecycle;
+mod session_picker;
 mod side;
 mod startup;
 mod startup_prompts;

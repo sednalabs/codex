@@ -93,6 +93,8 @@ pub(super) struct AgentsOverviewViewState {
     searching: bool,
     pub(super) status_grouping: bool,
     pub(super) renaming: bool,
+    // The picker can finish this retained view when it selects the already active session.
+    pub(super) completion: Option<ViewCompletion>,
 }
 
 pub(super) struct AgentsOverviewView {
@@ -100,7 +102,6 @@ pub(super) struct AgentsOverviewView {
     selected: usize,
     state: Arc<Mutex<AgentsOverviewViewState>>,
     exit_on_cancel: bool,
-    completion: Option<ViewCompletion>,
     app_event_tx: AppEventSender,
     keymap: ListKeymap,
     agents_keymap: AgentsKeymap,
@@ -124,11 +125,11 @@ impl AgentsOverviewView {
             selected,
             state,
             exit_on_cancel,
-            completion: None,
             app_event_tx,
             keymap: keymap.list,
             agents_keymap: keymap.agents,
         };
+        view.state().completion = None;
         let visible = view.visible_indices();
         if !visible.contains(&view.selected) {
             view.selected = visible.first().copied().unwrap_or(usize::MAX);
@@ -234,7 +235,7 @@ impl AgentsOverviewView {
                 state.search.clear();
                 state.searching = false;
             }
-            self.completion = Some(ViewCompletion::Accepted);
+            self.state().completion = Some(ViewCompletion::Accepted);
         }
     }
 
@@ -416,11 +417,11 @@ impl BottomPaneView for AgentsOverviewView {
     }
 
     fn completion(&self) -> Option<ViewCompletion> {
-        self.completion
+        self.state().completion
     }
 
     fn is_complete(&self) -> bool {
-        self.completion.is_some()
+        self.completion().is_some()
     }
 
     fn prefer_esc_to_handle_key_event(&self) -> bool {
@@ -475,6 +476,10 @@ impl BottomPaneView for AgentsOverviewView {
             return;
         }
 
+        if self.agents_keymap.resume.is_pressed(key) {
+            self.app_event_tx.send(AppEvent::OpenResumePicker);
+            return;
+        }
         if self.agents_keymap.toggle_grouping.is_pressed(key) {
             let mut state = self.state();
             state.status_grouping = !state.status_grouping;
@@ -541,7 +546,7 @@ impl BottomPaneView for AgentsOverviewView {
                             self.app_event_tx
                                 .send(AppEvent::Exit(crate::app::ExitMode::Immediate));
                         }
-                        self.completion = Some(ViewCompletion::Cancelled);
+                        state.completion = Some(ViewCompletion::Cancelled);
                     }
                 }
                 ListAction::PageUp | ListAction::PageDown => {
