@@ -17,6 +17,7 @@ use crate::encode_frame;
 use crate::message_reader::MessageReader;
 
 const DEADLINE: Duration = Duration::from_secs(/*secs*/ 5);
+const RUNTIME_INITIALIZATION_DEADLINE: Duration = Duration::from_secs(/*secs*/ 30);
 
 /// Owns one helper. Dropping it terminates the process and leaves its waiter to reap it.
 /// A successful handshake establishes compatibility only, not an active audio session.
@@ -27,6 +28,17 @@ pub struct VoiceHost {
 }
 
 impl VoiceHost {
+    /// Initialize the packaged native runtime without opening devices or starting a session.
+    pub async fn initialize_runtime(mut self) -> Result<Self> {
+        self.exchange(
+            Message::InitializeRuntime {},
+            Message::RuntimeReady {},
+            RUNTIME_INITIALIZATION_DEADLINE,
+        )
+        .await?;
+        Ok(self)
+    }
+
     pub async fn connect(package: &CodexPackageLayout, build_commit: &str) -> Result<Self> {
         let root = package.package_dir.as_path().canonicalize()?;
         let name = if cfg!(windows) {
@@ -66,13 +78,16 @@ impl VoiceHost {
                 build_commit: build_commit.to_owned(),
             },
             Message::Ready {},
+            DEADLINE,
         )
         .await?;
         Ok(host)
     }
 
     pub async fn close(mut self) -> Result<()> {
-        let result = self.exchange(Message::Close {}, Message::Closed {}).await;
+        let result = self
+            .exchange(Message::Close {}, Message::Closed {}, DEADLINE)
+            .await;
         if result.is_err() {
             self.process.terminate();
         }
@@ -82,8 +97,13 @@ impl VoiceHost {
         Ok(())
     }
 
-    async fn exchange(&mut self, request: Message, expected: Message) -> Result<()> {
-        timeout(DEADLINE, async {
+    async fn exchange(
+        &mut self,
+        request: Message,
+        expected: Message,
+        deadline: Duration,
+    ) -> Result<()> {
+        timeout(deadline, async {
             self.process
                 .writer_sender()
                 .send(encode_frame(&request)?)
@@ -128,6 +148,11 @@ fn child_environment(vars: impl Iterator<Item = (OsString, OsString)>) -> HashMa
         .then(|| Some((key, value.into_string().ok()?)))
         .flatten()
     })
+    .chain(
+        crate::RUNTIME_ENVIRONMENT
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned())),
+    )
     .collect()
 }
 

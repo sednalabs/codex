@@ -8,6 +8,20 @@ use serde::Serialize;
 
 pub const MAX_FRAME_BYTES: usize = 256;
 
+/// Fixed child settings prevent native initialization from scanning system plugins or caches.
+pub const RUNTIME_ENVIRONMENT: [(&str, &str); 7] = [
+    ("GST_PLUGIN_PATH", ""),
+    ("GST_PLUGIN_PATH_1_0", ""),
+    ("GST_PLUGIN_SYSTEM_PATH", ""),
+    ("GST_PLUGIN_SYSTEM_PATH_1_0", ""),
+    (
+        "GST_REGISTRY",
+        if cfg!(windows) { "NUL" } else { "/dev/null" },
+    ),
+    ("GST_REGISTRY_UPDATE", "no"),
+    ("GST_REGISTRY_FORK", "no"),
+];
+
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(
     tag = "type",
@@ -18,6 +32,8 @@ pub const MAX_FRAME_BYTES: usize = 256;
 pub enum Message {
     Hello { protocol: u32, build_commit: String },
     Ready {},
+    InitializeRuntime {},
+    RuntimeReady {},
     Close {},
     Closed {},
 }

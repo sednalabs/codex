@@ -151,6 +151,9 @@ async fn installed_client_rejects_mixed_builds_and_missing_helper() -> Result<()
         .close()
         .await?;
     assert!(VoiceHost::connect(&package, "wrong-build").await.is_err());
+    // Helper-only installations still handshake, but cannot claim native readiness.
+    let host = VoiceHost::connect(&package, &build_commit().await?).await?;
+    assert!(host.initialize_runtime().await.is_err());
     // The same executable elsewhere in the package must not become a fallback.
     fs::rename(&helper, bin.join(source.file_name().unwrap()))?;
     assert!(

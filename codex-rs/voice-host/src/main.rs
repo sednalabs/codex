@@ -1,4 +1,6 @@
-//! Private helper lifecycle foundation. No devices, native plugins, or media are opened yet.
+//! Same-build helper lifecycle and opt-in private runtime initialization. No devices or media yet.
+
+mod runtime;
 
 use std::io;
 use std::io::Write;
@@ -64,12 +66,29 @@ fn run() -> io::Result<()> {
     let mut output = io::stdout().lock();
     output.write_all(&encode_frame(&Message::Ready {})?)?;
     output.flush()?;
-    match receiver.recv() {
-        Ok(Message::Close {}) => {
-            output.write_all(&encode_frame(&Message::Closed {})?)?;
-            output.flush()
-        }
-        Err(_) => Ok(()),
-        Ok(_) => Err(io::Error::other("invalid voice control sequence")),
+    let mut runtime = None;
+    loop {
+        let reply = match receiver.recv() {
+            Ok(Message::InitializeRuntime {}) => {
+                if runtime.is_some() {
+                    return Err(io::Error::other("runtime already initialized"));
+                }
+                runtime = Some(runtime::Runtime::initialize()?);
+                Message::RuntimeReady {}
+            }
+            Ok(Message::Close {}) => {
+                output.write_all(&encode_frame(&Message::Closed {})?)?;
+                return output.flush();
+            }
+            Err(_) => return Ok(()),
+            Ok(
+                Message::Hello { .. }
+                | Message::Ready {}
+                | Message::RuntimeReady {}
+                | Message::Closed {},
+            ) => return Err(io::Error::other("invalid voice control sequence")),
+        };
+        output.write_all(&encode_frame(&reply)?)?;
+        output.flush()?;
     }
 }

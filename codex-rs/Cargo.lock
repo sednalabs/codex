@@ -4908,6 +4908,7 @@ dependencies = [
  "codex-process-hardening",
  "codex-realtime-webrtc",
  "codex-utils-cargo-bin",
+ "libloading",
  "pretty_assertions",
  "tempfile",
  "tokio",
