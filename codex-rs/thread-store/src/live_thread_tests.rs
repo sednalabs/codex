@@ -299,15 +299,6 @@ async fn concurrent_appends_keep_sqlite_metadata_in_canonical_history_order() {
         .expect("second append task")
         .expect("second append");
     live_thread.flush().await.expect("flush live thread");
-    assert!(
-        tokio::time::timeout(
-            Duration::from_millis(20),
-            gated_store.next_append_persisted.notified()
-        )
-        .await
-        .is_err(),
-        "max sentinel must not emit a next-append notification"
-    );
 
     let history = live_thread
         .load_history(/*include_archived*/ true)
@@ -459,6 +450,15 @@ async fn partial_append_retries_only_the_uncommitted_suffix() {
         .await
         .expect("partial append should retry the suffix");
     live_thread.flush().await.expect("flush live thread");
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            gated_store.next_append_persisted.notified()
+        )
+        .await
+        .is_err(),
+        "max sentinel must not emit a next-append notification"
+    );
 
     let history = live_thread
         .load_history(/*include_archived*/ true)
