@@ -686,11 +686,13 @@ fn compatibility_workspace_write_policy(
         .and_then(|tmpdir| {
             AbsolutePathBuf::from_absolute_path(std::path::PathBuf::from(tmpdir)).ok()
         })
-        .is_some_and(|tmpdir| file_system_policy.can_write_path_with_cwd(tmpdir.as_path(), cwd));
+        .is_some_and(|tmpdir| {
+            file_system_policy.can_write_local_path_with_cwd(tmpdir.as_path(), cwd)
+        });
     let slash_tmp = Path::new("/tmp");
     let slash_tmp_writable = slash_tmp.is_absolute()
         && slash_tmp.is_dir()
-        && file_system_policy.can_write_path_with_cwd(slash_tmp, cwd);
+        && file_system_policy.can_write_local_path_with_cwd(slash_tmp, cwd);
 
     SandboxPolicy::WorkspaceWrite {
         writable_roots,
