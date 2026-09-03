@@ -2353,6 +2353,7 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
         live_items = [
             item("R100", "upstream-renamed.py", "renamed.py"),
             item("C100", "upstream-copied.py", "copied.py"),
+            item("R100", "source.py", "README.md"),
             item("D", "deleted.py"),
             item("A", "added.py"),
             item("T", "typechanged.py"),
@@ -2360,6 +2361,7 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
         carry_items = [
             item("R100", "original.py", "renamed.py"),
             item("C100", "source.py", "copied.py"),
+            item("C100", "other.py", "README.md"),
             item("D", "deleted.py"),
             item("A", "added.py"),
             item("T", "typechanged.py"),
@@ -2371,7 +2373,10 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
             )
         )
         projected_paths = [
-            path for projected in projected_items for path in projected.paths
+            path
+            for projected in projected_items
+            if projected.is_code
+            for path in projected.paths
         ]
 
         self.assertEqual(
@@ -2384,6 +2389,31 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
         )
         self.assertNotIn("upstream-renamed.py", projected_paths)
         self.assertNotIn("upstream-copied.py", projected_paths)
+
+        rename_projection = next(
+            projected
+            for projected in projected_items
+            if projected.paths == ("renamed.py",)
+        )
+        self.assertEqual(rename_projection.status, "M")
+        self.assertIsNone(rename_projection.rename_score)
+
+        copy_projection = next(
+            projected
+            for projected in projected_items
+            if projected.paths == ("copied.py",)
+        )
+        self.assertEqual(copy_projection.status, "M")
+        self.assertIsNone(copy_projection.rename_score)
+
+        documentation_projection = next(
+            projected
+            for projected in projected_items
+            if projected.paths == ("README.md",)
+        )
+        self.assertEqual(documentation_projection.status, "M")
+        self.assertIsNone(documentation_projection.rename_score)
+        self.assertFalse(documentation_projection.is_code)
 
     def test_superseded_hunk_requires_complete_carry_match(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2471,6 +2501,85 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                     base_sha,
                     downstream_with_new_delta,
                 )
+
+    def test_superseded_hunk_final_tree_proof_rejects_relocation_duplicates_and_reorder(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+
+            base_text = "before\nanchor\nend\n"
+            upstream_text = "before\nshared-a\nshared-b\nanchor\nend\n"
+            (repo / "carry.py").write_text(base_text, encoding="utf-8")
+            base_sha = self.commit_all(repo, "base")
+
+            self.run_git(repo, "checkout", "-b", "upstream")
+            (repo / "carry.py").write_text(upstream_text, encoding="utf-8")
+            upstream_sha = self.commit_all(repo, "upstream shared hunk")
+
+            registry = {
+                "divergences": [],
+                "superseded_hunks": [
+                    {
+                        "id": "shared-hunk",
+                        "path": "carry.py",
+                        "upstream_commit": upstream_sha,
+                        "hunk_lines": ["+shared-a", "+shared-b"],
+                    }
+                ],
+            }
+            DOWNSTREAM_DIVERGENCE_AUDIT.validate_registry(registry)
+
+            self.run_git(repo, "checkout", "-b", "downstream-valid", base_sha)
+            (repo / "carry.py").write_text(upstream_text, encoding="utf-8")
+            valid_downstream_sha = self.commit_all(repo, "downstream equivalent hunk")
+            valid_state = DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                repo,
+                registry,
+                upstream_sha,
+                base_sha,
+                valid_downstream_sha,
+            )
+            self.assertEqual(valid_state["superseded_carry_paths"], ["carry.py"])
+
+            invalid_variants = {
+                "relocated": "before\nanchor\nend\nshared-a\nshared-b\n",
+                "duplicated": (
+                    "before\nshared-a\nshared-b\nanchor\nshared-a\nshared-b\nend\n"
+                ),
+                "reordered": "before\nshared-b\nshared-a\nanchor\nend\n",
+            }
+            for label, downstream_text in invalid_variants.items():
+                with self.subTest(label=label):
+                    self.run_git(
+                        repo,
+                        "checkout",
+                        "-b",
+                        f"downstream-{label}",
+                        base_sha,
+                    )
+                    (repo / "carry.py").write_text(
+                        downstream_text,
+                        encoding="utf-8",
+                    )
+                    downstream_sha = self.commit_all(
+                        repo,
+                        f"downstream {label} hunk",
+                    )
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        r"final downstream tree.*does not exactly match",
+                    ):
+                        DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                            repo,
+                            registry,
+                            upstream_sha,
+                            base_sha,
+                            downstream_sha,
+                        )
 
     def test_superseded_hunk_schema_rejects_stale_or_ambiguous_evidence(self) -> None:
         cases = {

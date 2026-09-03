@@ -158,11 +158,14 @@ def main() -> int:
         snapshot_1["downstream"].sha,
         enforce=args.enforce_registry,
     )
-    downstream_carry_code_items = downstream_carry_items_for_live_diff(
+    downstream_carry_projected_items = downstream_carry_items_for_live_diff(
         diff_items,
         downstream_carry_items,
         superseded_carry_paths=set(supersession_state["superseded_carry_paths"]),
     )
+    downstream_carry_code_items = [
+        item for item in downstream_carry_projected_items if item.is_code
+    ]
 
     registry_state = reconcile_registry(registry, downstream_carry_code_items)
     registry_state["supersession_checks"] = supersession_state["checks"]
@@ -589,7 +592,10 @@ def downstream_carry_items_for_live_diff(
     so only the copied destination is carry provenance; rename, delete, add,
     and type-change endpoints remain actionable.  Projecting the live item
     paths (rather than retaining an entire rename/copy pair) prevents an
-    upstream-only endpoint from being attributed to downstream.
+    upstream-only endpoint from being attributed to downstream.  A projected
+    rename/copy with a partial endpoint set is normalized to a modification,
+    and ``is_code`` is recomputed from the projected paths so callers can filter
+    documentation-only projections before registry reconciliation.
     """
 
     carry_paths = {
@@ -609,14 +615,19 @@ def downstream_carry_items_for_live_diff(
         )
         if not projected_paths:
             continue
+        projected_status = item.status
+        projected_rename_score = item.rename_score
+        if item.status.startswith(("R", "C")) and len(projected_paths) != 2:
+            projected_status = "M"
+            projected_rename_score = None
         projected_items.append(
             DiffItem(
-                status=item.status,
+                status=projected_status,
                 paths=projected_paths,
                 old_mode=item.old_mode,
                 new_mode=item.new_mode,
-                rename_score=item.rename_score,
-                is_code=True,
+                rename_score=projected_rename_score,
+                is_code=any(is_code_path(path) for path in projected_paths),
             )
         )
     return projected_items
@@ -699,6 +710,34 @@ def file_contains_hunk_new_lines(
     )
 
 
+def path_tree_equal(
+    repo: Path, left_sha: str, right_sha: str, path: str
+) -> bool:
+    """Check exact final tree equivalence for one path, including file mode."""
+
+    result = run_git(
+        repo,
+        [
+            "diff",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-renames",
+            left_sha,
+            right_sha,
+            "--",
+            path,
+        ],
+        capture_stdout=True,
+        allow_failure=True,
+    )
+    if result.returncode not in (0, 1):
+        raise RuntimeError(
+            "git path-equivalence check failed: "
+            f"{' '.join([left_sha, right_sha, path])}"
+        )
+    return result.returncode == 0
+
+
 def is_ancestor(repo: Path, ancestor_sha: str, descendant_sha: str) -> bool:
     result = run_git(
         repo,
@@ -721,10 +760,15 @@ def verify_superseded_hunks(
     """Validate exact upstreamed carry hunks before excluding their paths.
 
     A declaration is effective only when its hunk appears in the bound
-    upstream commit, remains present in the current upstream tree, and appears
-    in the current merge-base-to-downstream carry diff. Every carry hunk for a
-    declared path must be accounted for; an additional downstream hunk therefore
-    fails closed instead of being hidden by a path-level supersession.
+    upstream commit, remains present in the current upstream tree, appears in
+    the current merge-base-to-downstream carry diff, and the final downstream
+    path tree exactly equals the current upstream path tree. The final-tree
+    equivalence is the authoritative guard against relocation, duplication,
+    reordering, or context mismatch; hunk bodies identify the expected carry
+    but cannot mask a different final path state. Every carry hunk for a
+    declared path must be accounted for; an additional downstream hunk
+    therefore fails closed instead of being hidden by a path-level
+    supersession.
     """
 
     declarations = registry.get("superseded_hunks", [])
@@ -733,7 +777,9 @@ def verify_superseded_hunks(
     if not isinstance(declarations, list):
         error = "superseded_hunks must be a list"
         if enforce:
-            raise ValueError(f"superseded hunk evidence verification failed:\n- {error}")
+            raise ValueError(
+                "superseded hunk evidence verification failed:\n- " + error
+            )
         print(f"warning: {error}", file=sys.stderr)
         return {"checks": [], "superseded_carry_paths": []}
     if not declarations:
@@ -795,6 +841,13 @@ def verify_superseded_hunks(
                 f"{upstream_sha}"
             )
             continue
+        if not path_tree_equal(repo, upstream_sha, downstream_sha, path):
+            errors.append(
+                f"{entry_id}: final downstream tree for {path} does not exactly "
+                f"match upstream snapshot {upstream_sha}; supersession cannot mask "
+                "relocated, duplicated, reordered, or context-mismatched carry"
+            )
+            continue
 
         checks.append(
             {
@@ -802,6 +855,7 @@ def verify_superseded_hunks(
                 "path": path,
                 "upstream_commit": upstream_commit,
                 "upstream_hunk_verified": True,
+                "final_tree_verified": True,
             }
         )
 
