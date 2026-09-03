@@ -62,6 +62,13 @@ impl App {
         }
 
         match event {
+            AppEvent::ReviewMisalignment(review) => {
+                self.open_misalignment_review(tui, review);
+            }
+            AppEvent::ContinueMisalignment(review) => {
+                self.continue_misalignment(app_server, review).await;
+            }
+            AppEvent::CloseMisalignmentReview => self.chat_widget.show_misalignment_policy_precaution(),
             AppEvent::SkillsListLoaded { ref cwd, .. }
             | AppEvent::PluginMentionsLoaded { ref cwd, .. }
                 if cwds_differ(cwd, self.config.cwd.as_path()) => {}

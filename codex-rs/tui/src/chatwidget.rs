@@ -365,6 +365,7 @@ mod keymap_picker;
 mod mcp_startup;
 use self::mcp_startup::McpStartupStatus;
 mod misalignment_policy;
+pub(crate) use misalignment_policy::MisalignmentReview;
 mod pets;
 mod session_flow;
 mod session_header;
@@ -691,7 +692,7 @@ pub(crate) struct ChatWidget {
     thread_rename_block_message: Option<String>,
     active_side_conversation: bool,
     blocks_direct_input: bool,
-    misalignment_policy_violation: bool,
+    misalignment_policy_violation: Option<misalignment_policy::MisalignmentViolation>,
     normal_placeholder_text: String,
     side_placeholder_text: String,
     forked_from: Option<ThreadId>,

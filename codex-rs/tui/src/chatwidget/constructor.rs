@@ -214,7 +214,7 @@ impl ChatWidget {
             thread_rename_block_message: None,
             active_side_conversation: false,
             blocks_direct_input: false,
-            misalignment_policy_violation: false,
+            misalignment_policy_violation: None,
             normal_placeholder_text: placeholder,
             side_placeholder_text: side_placeholder,
             forked_from: None,

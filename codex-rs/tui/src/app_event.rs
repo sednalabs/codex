@@ -224,6 +224,9 @@ pub(crate) struct AgentsOverviewThreadRefresh {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, IntoStaticStr)]
 pub(crate) enum AppEvent {
+    ReviewMisalignment(Arc<crate::chatwidget::MisalignmentReview>),
+    ContinueMisalignment(Arc<crate::chatwidget::MisalignmentReview>),
+    CloseMisalignmentReview,
     /// Open the daemon-wide overview of recent and locally retained root sessions.
     OpenAgentsOverview,
     /// Update the daemon-wide overview after a background thread listing finishes.

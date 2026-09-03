@@ -24,6 +24,8 @@ mod key_chords;
 mod luna_reserve_recovery_tests;
 #[path = "tests/mcp_startup.rs"]
 mod mcp_startup;
+#[path = "tests/misalignment_policy_tests.rs"]
+mod misalignment_policy;
 mod model_catalog;
 #[path = "tests/patch_approval_tests.rs"]
 mod patch_approval_tests;

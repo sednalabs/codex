@@ -60,6 +60,9 @@ impl ChatWidget {
                 self.on_thread_settings_updated(notification);
             }
             ServerNotification::TurnStarted(notification) => {
+                if replay_kind.is_none() {
+                    self.clear_misalignment_for_new_turn(&notification.turn.id);
+                }
                 self.turn_lifecycle.last_turn_id = Some(notification.turn.id);
                 self.last_non_retry_error = None;
                 if !matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages)) {
@@ -136,10 +139,20 @@ impl ChatWidget {
                         notification.turn_id.clone(),
                         notification.error.message.clone(),
                     ));
-                    self.handle_non_retry_error(
-                        notification.error.message,
-                        notification.error.codex_error_info,
-                    );
+                    if !from_replay
+                        && notification.error.codex_error_info
+                            == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation)
+                    {
+                        self.on_misalignment_error(
+                            Some(notification.turn_id),
+                            notification.error.misalignment,
+                        );
+                    } else {
+                        self.handle_non_retry_error(
+                            notification.error.message,
+                            notification.error.codex_error_info,
+                        );
+                    }
                 }
             }
             ServerNotification::SkillsChanged(_) => {
@@ -330,7 +343,13 @@ impl ChatWidget {
             }
             TurnStatus::Failed => {
                 if let Some(error) = notification.turn.error {
-                    if self.last_non_retry_error.as_ref()
+                    if replay_kind.is_none()
+                        && error.codex_error_info
+                            == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation)
+                    {
+                        self.on_misalignment_error(Some(notification.turn.id), error.misalignment);
+                        self.last_non_retry_error = None;
+                    } else if self.last_non_retry_error.as_ref()
                         == Some(&(notification.turn.id.clone(), error.message.clone()))
                     {
                         self.last_non_retry_error = None;
