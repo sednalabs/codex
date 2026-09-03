@@ -19,6 +19,7 @@ use codex_protocol::shell_environment::scrub_non_inheritable_env_vars;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use codex_websocket_client::WebSocketConnector;
 use codex_websocket_client::WebSocketTlsMode;
+use http::HeaderMap;
 
 use crate::ExecServerClient;
 use crate::ExecServerError;
@@ -101,7 +102,10 @@ impl ReconnectAttempt {
 #[derive(Clone)]
 pub(crate) enum ExecServerReconnectStrategy {
     Accepted(AcceptedConnectionSource),
-    WebSocket(RemoteExecServerConnectArgs),
+    WebSocket {
+        args: RemoteExecServerConnectArgs,
+        http_headers: HeaderMap,
+    },
     NoiseRendezvous {
         // The executor that created the session, not the latest recovery lookup.
         executor_public_key: crate::NoiseChannelPublicKey,
@@ -121,10 +125,11 @@ impl ExecServerReconnectStrategy {
     ) -> Result<ReconnectAttempt, ExecServerError> {
         match self {
             Self::Accepted(source) => source.next_connection(session_id).await,
-            Self::WebSocket(args) => {
+            Self::WebSocket { args, http_headers } => {
                 let mut args = args.clone();
                 args.resume_session_id = Some(session_id.to_string());
-                let connection = ExecServerClient::open_websocket_connection(&args).await?;
+                let connection =
+                    ExecServerClient::open_websocket_connection(&args, http_headers).await?;
                 Ok(ReconnectAttempt::new(connection, args.into()))
             }
             Self::NoiseRendezvous {
@@ -190,7 +195,7 @@ impl ExecServerClient {
             provisioning_result.map_err(ExecServerError::ProvisioningFailed)?;
         }
 
-        let (websocket_url, connect_timeout, initialize_timeout) = match transport_params {
+        let websocket = match transport_params {
             ExecServerTransportParams::Deferred(_) => {
                 return Err(ExecServerError::Protocol(
                     "nested deferred exec-server transports are unsupported".to_string(),
@@ -200,7 +205,13 @@ impl ExecServerClient {
                 websocket_url,
                 connect_timeout,
                 initialize_timeout,
-            } => (websocket_url, connect_timeout, initialize_timeout),
+                http_headers,
+            } => (
+                websocket_url,
+                connect_timeout,
+                initialize_timeout,
+                http_headers,
+            ),
             ExecServerTransportParams::NoiseRendezvous { provider, identity } => {
                 let (connection, options, executor_public_key) =
                     Self::open_initial_noise_rendezvous_connection(
@@ -234,14 +245,18 @@ impl ExecServerClient {
                 .await;
             }
         };
-        Self::connect_websocket(RemoteExecServerConnectArgs {
-            websocket_url,
-            client_name: ENVIRONMENT_CLIENT_NAME.to_string(),
-            connect_timeout,
-            initialize_timeout,
-            resume_session_id: None,
-            http_client_factory,
-        })
+        let (websocket_url, connect_timeout, initialize_timeout, http_headers) = websocket;
+        Self::connect_websocket_with_headers(
+            RemoteExecServerConnectArgs {
+                websocket_url,
+                client_name: ENVIRONMENT_CLIENT_NAME.to_string(),
+                connect_timeout,
+                initialize_timeout,
+                resume_session_id: None,
+                http_client_factory,
+            },
+            http_headers,
+        )
         .await
     }
 
@@ -339,50 +354,63 @@ impl ExecServerClient {
     pub async fn connect_websocket(
         args: RemoteExecServerConnectArgs,
     ) -> Result<Self, ExecServerError> {
-        let connection = Self::open_websocket_connection(&args).await?;
+        Self::connect_websocket_with_headers(args, HeaderMap::new()).await
+    }
+
+    async fn connect_websocket_with_headers(
+        args: RemoteExecServerConnectArgs,
+        http_headers: HeaderMap,
+    ) -> Result<Self, ExecServerError> {
+        let connection = Self::open_websocket_connection(&args, &http_headers).await?;
         let options = args.clone().into();
         Self::connect_with_recovery(
             connection,
             options,
-            Some(ExecServerReconnectStrategy::WebSocket(args)),
+            Some(ExecServerReconnectStrategy::WebSocket { args, http_headers }),
         )
         .await
     }
 
     pub(crate) async fn open_websocket_connection(
         args: &RemoteExecServerConnectArgs,
+        http_headers: &HeaderMap,
     ) -> Result<JsonRpcConnection, ExecServerError> {
         ensure_rustls_crypto_provider();
         let websocket_url = args.websocket_url.clone();
         let connect_timeout = args.connect_timeout;
-        let request = websocket_url
+        let mut request = websocket_url
             .as_str()
             .into_client_request()
             .map_err(|source| ExecServerError::WebSocketConnect {
                 url: websocket_url.clone(),
                 source,
             })?;
+        request.headers_mut().extend(http_headers.clone());
         let connector = WebSocketConnector::new_with_tls_mode(
             &args.http_client_factory,
             WebSocketTlsMode::TungsteniteDefault,
         )
         .map_err(|error| ExecServerError::WebSocketConfiguration(error.to_string()))?;
-        let (stream, _) = timeout(
-            connect_timeout,
-            connector.connect(
-                request,
-                tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default(),
-            ),
-        )
-        .await
-        .map_err(|_| ExecServerError::WebSocketConnectTimeout {
-            url: websocket_url.clone(),
-            timeout: connect_timeout,
-        })?
-        .map_err(|source| ExecServerError::WebSocketConnect {
-            url: websocket_url.clone(),
-            source,
-        })?;
+        let websocket_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
+        let connect = async {
+            if !http_headers.is_empty() && request.uri().scheme_str() == Some("ws") {
+                connector
+                    .connect_loopback_direct(request, websocket_config)
+                    .await
+            } else {
+                connector.connect(request, websocket_config).await
+            }
+        };
+        let (stream, _) = timeout(connect_timeout, connect)
+            .await
+            .map_err(|_| ExecServerError::WebSocketConnectTimeout {
+                url: websocket_url.clone(),
+                timeout: connect_timeout,
+            })?
+            .map_err(|source| ExecServerError::WebSocketConnect {
+                url: websocket_url.clone(),
+                source,
+            })?;
 
         let connection_label = format!("exec-server websocket {websocket_url}");
         let connection = if is_rendezvous_harness_url(&websocket_url) {

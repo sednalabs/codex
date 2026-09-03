@@ -1724,6 +1724,7 @@ mod tests {
     use codex_utils_path_uri::PathUri;
     use futures::SinkExt;
     use futures::StreamExt;
+    use http::HeaderMap;
     use opentelemetry::trace::TracerProvider as _;
     use opentelemetry_sdk::trace::SdkTracerProvider;
     use pretty_assertions::assert_eq;
@@ -2547,6 +2548,7 @@ mod tests {
                 websocket_url,
                 connect_timeout: Duration::from_secs(1),
                 initialize_timeout: Duration::from_secs(1),
+                http_headers: HeaderMap::new(),
             },
             HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         );
@@ -2657,6 +2659,7 @@ mod tests {
                 websocket_url,
                 connect_timeout: Duration::from_secs(1),
                 initialize_timeout: Duration::from_secs(1),
+                http_headers: HeaderMap::new(),
             },
             HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         );
@@ -2799,6 +2802,7 @@ mod tests {
                 websocket_url,
                 connect_timeout: Duration::from_secs(1),
                 initialize_timeout: Duration::from_secs(1),
+                http_headers: HeaderMap::new(),
             },
             HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         );
@@ -2898,6 +2902,7 @@ mod tests {
                 websocket_url,
                 connect_timeout: Duration::from_secs(1),
                 initialize_timeout: Duration::from_secs(1),
+                http_headers: HeaderMap::new(),
             },
             HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         );
@@ -2989,6 +2994,7 @@ mod tests {
                 websocket_url,
                 connect_timeout: Duration::from_secs(1),
                 initialize_timeout: Duration::from_secs(1),
+                http_headers: HeaderMap::new(),
             },
             HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         );
