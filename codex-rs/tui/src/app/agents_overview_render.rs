@@ -2,12 +2,13 @@
 //! The prompt and its cursor reserve the same height for wrapped footer hints.
 
 use super::*;
+use crossterm::cursor::SetCursorStyle;
 
 impl AgentsOverviewView {
-    fn footer_lines(&self, width: u16) -> Vec<Line<'static>> {
+    pub(super) fn footer_lines(&self, width: u16) -> Vec<Line<'static>> {
         if self.state().connection_notice.is_some() {
             return vec![
-                "ctrl+c quit · actions paused until the list is refreshed"
+                "ctrl+c clear input, then quit · actions paused until the list is refreshed"
                     .dim()
                     .into(),
             ];
@@ -65,6 +66,12 @@ impl AgentsOverviewView {
         add_hint(list_hint(ListAction::Accept), "open", true);
         add_hint(
             self.agents_keymap
+                .primary_hint("new_task", &self.agents_keymap.new_task),
+            "new task",
+            true,
+        );
+        add_hint(
+            self.agents_keymap
                 .primary_hint("search", &self.agents_keymap.search),
             "search",
             true,
@@ -106,22 +113,39 @@ impl Renderable for AgentsOverviewView {
         24
     }
 
+    fn cursor_style(&self, area: Rect) -> SetCursorStyle {
+        let state = self.state();
+        if state.composing()
+            && let Some(composer) = &state.composer
+        {
+            composer.cursor_style(area)
+        } else {
+            SetCursorStyle::DefaultUserShape
+        }
+    }
+
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        let state = self.state().clone();
+        if area.width < 12 || area.height < 8 {
+            return None;
+        }
+        let [_, _, _, _, _, prompt, _] = self.layout_areas(area);
+        let state = self.state();
+        if state.composing() {
+            return state.composer.as_ref()?.cursor_pos(prompt);
+        }
+        if !state.editing_metadata() {
+            return None;
+        }
         let (label, input) = if state.searching {
             ("  Search › ", &state.search)
-        } else if state.renaming {
-            ("  Rename › ", &state.input)
         } else {
-            ("  New task › ", &state.input)
+            ("  Rename › ", &state.input)
         };
         let x = area
             .x
             .saturating_add((label.width() + input.width()) as u16)
             .min(area.right().saturating_sub(3));
-        let footer_height = (self.footer_lines(area.width.saturating_sub(4)).len() as u16)
-            .min(area.height.saturating_sub(7));
-        Some((x, area.bottom().saturating_sub(footer_height + 1)))
+        Some((x, prompt.y))
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
@@ -129,17 +153,7 @@ impl Renderable for AgentsOverviewView {
             return;
         }
         Clear.render(area, buf);
-        let footer_lines = self.footer_lines(area.width.saturating_sub(4));
-        let footer_height = (footer_lines.len() as u16).min(area.height.saturating_sub(7));
-        let [header, summary, divider, body, prompt, footer] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(1),
-            Constraint::Length(footer_height),
-        ])
-        .areas(area);
+        let [header, summary, divider, body, title, prompt, footer] = self.layout_areas(area);
         let inset =
             |rect: Rect| rect.inner(Margin::new(/*horizontal*/ 2, /*vertical*/ 0));
         Line::from("Agent command center".bold()).render(inset(header), buf);
@@ -179,18 +193,11 @@ impl Renderable for AgentsOverviewView {
         } else {
             self.render_rows(body, buf);
         }
-        let state = self.state().clone();
+        let state = self.state();
         let (label, input) = if state.searching {
             ("Search › ", &state.search)
-        } else if state.renaming {
+        } else {
             ("Rename › ", &state.input)
-        } else {
-            ("New task › ", &state.input)
-        };
-        let placeholder = if input.is_empty() && !state.searching && !state.renaming {
-            "Describe a task and press enter to dispatch it"
-        } else {
-            ""
         };
         let available_width = usize::from(inset(prompt).width)
             .saturating_sub(label.width())
@@ -205,9 +212,19 @@ impl Renderable for AgentsOverviewView {
             visible_width += width;
             visible_start = index;
         }
-        let input = &input[visible_start..];
-        Line::from(vec![label.cyan().bold(), input.into(), placeholder.dim()])
-            .render(inset(prompt), buf);
-        Paragraph::new(footer_lines).render(inset(footer), buf);
+        if state.editing_metadata() {
+            Line::from(vec![label.cyan().bold(), input[visible_start..].into()])
+                .render(inset(prompt), buf);
+        } else {
+            Line::from("New task".dim()).render(inset(title), buf);
+            if let Some(composer) = &state.composer {
+                composer.render(prompt, buf);
+            }
+        }
+        if state.composing() {
+            return;
+        }
+        drop(state);
+        Paragraph::new(self.footer_lines(inset(footer).width)).render(inset(footer), buf);
     }
 }

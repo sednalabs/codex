@@ -199,7 +199,9 @@ async fn disconnected_command_center_keeps_input_and_blocks_actions() -> Result<
     };
     let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
     app.chat_widget.show_bottom_pane_view(Box::new(view));
-    app.agents_overview.view_state.lock().unwrap().input = "task draft".into();
+    app.chat_widget.handle_paste("task draft".into());
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.handle_tui_event(
         &mut tui,
@@ -232,7 +234,14 @@ async fn disconnected_command_center_keeps_input_and_blocks_actions() -> Result<
     )
     .await?;
     assert_eq!(
-        app.agents_overview.view_state.lock().unwrap().input,
+        app.agents_overview
+            .view_state
+            .lock()
+            .unwrap()
+            .composer
+            .as_ref()
+            .unwrap()
+            .current_text_with_pending(),
         "task draft!"
     );
     assert!(

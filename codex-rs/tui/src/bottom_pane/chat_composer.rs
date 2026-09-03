@@ -100,7 +100,8 @@
 //! On submit/queue paths, the composer:
 //!
 //! - Expands pending paste placeholders so element ranges align with the final text.
-//! - Trims whitespace and rebases text elements accordingly.
+//! - Trims whitespace and rebases elements when `trim_submission` is enabled (the default).
+//!   Otherwise, preserves both.
 //! - Treats a leading `!` revealed only by paste expansion as literal model input, not shell input.
 //! - Prunes local attached images so only placeholders that survive expansion are sent.
 //! - Preserves remote image URLs as separate attachments even when text is empty.
@@ -470,10 +471,7 @@ enum PendingPasteHandling {
     Preserve,
 }
 
-/// Feature flags for reusing the chat composer in other bottom-pane surfaces.
-///
-/// The default keeps today's behavior intact. Other call sites can opt out of
-/// specific behaviors by constructing a config with those flags set to `false`.
+/// Shared composer behavior; defaults match the main chat input.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChatComposerConfig {
     /// Whether command/file/skill popups are allowed to appear.
@@ -484,6 +482,8 @@ pub(crate) struct ChatComposerConfig {
     pub(crate) shell_commands_enabled: bool,
     /// Whether pasting a file path can attach local images.
     pub(crate) image_paste_enabled: bool,
+    /// Strip leading and trailing whitespace from submissions.
+    pub(crate) trim_submission: bool,
 }
 
 impl Default for ChatComposerConfig {
@@ -493,6 +493,7 @@ impl Default for ChatComposerConfig {
             slash_commands_enabled: true,
             shell_commands_enabled: true,
             image_paste_enabled: true,
+            trim_submission: true,
         }
     }
 }
@@ -508,6 +509,7 @@ impl ChatComposerConfig {
             slash_commands_enabled: false,
             shell_commands_enabled: false,
             image_paste_enabled: false,
+            trim_submission: true,
         }
     }
 }
@@ -3086,11 +3088,11 @@ impl ChatComposer {
             text_elements = expanded_elements;
         }
 
-        let expanded_input = text.clone();
-
-        // If there is neither text nor attachments, suppress submission entirely.
-        text = text.trim().to_string();
-        text_elements = Self::trim_text_elements(&expanded_input, &text, text_elements);
+        if self.config.trim_submission {
+            let expanded_input = text.clone();
+            text = text.trim().to_string();
+            text_elements = Self::trim_text_elements(&expanded_input, &text, text_elements);
+        }
 
         if slash_validation == SlashValidation::Immediate
             && let SubmissionValidation::UnknownCommand(name) = self
@@ -3146,7 +3148,7 @@ impl ChatComposer {
         }
         self.attachments
             .prune_local_images_for_submission(&text, &text_elements);
-        if text.is_empty() && self.attachments.is_empty() {
+        if text.trim().is_empty() && self.attachments.is_empty() {
             return None;
         }
         self.draft.recent_submission_mention_bindings = original_mention_bindings.clone();

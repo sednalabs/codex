@@ -21,8 +21,8 @@ expression: "render_bottom_popup(&app.chat_widget, 100)"
                                                           │
                                                           │
                                                           │
-                                                          │
-                                                          │
-  New task › Describe a task and press enter to dispatch it
-  ↑↓ navigate ctrl+o resume enter open ctrl+f search ctrl+s group ctrl+r rename ctrl+x stop esc
-  back
+  New task
+
+› Describe a new task
+
+   enter create task    ctrl+j newline    esc tasks

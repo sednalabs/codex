@@ -19,10 +19,10 @@ expression: "render_bottom_popup(&app.chat_widget, 48)"
 
 
 
+  New task
 
+› Describe a new task
 
-
-  New task › Describe a task and press enter t
-  ↑↓ navigate ctrl+o resume enter open ctrl+f
-  search ctrl+s group ctrl+r rename ctrl+x
-  stop esc back
+  ↑↓ navigate ctrl+o resume enter open ctrl+n
+  new task ctrl+f search ctrl+s group ctrl+r
+  rename ctrl+x stop esc back

@@ -1,5 +1,8 @@
 //! Daemon-wide overview of recent and locally retained sessions and their subagents.
 
+#[path = "agents_overview_composer.rs"]
+mod composer;
+
 use super::agents_overview_view::AgentsOverviewGroup;
 use super::agents_overview_view::AgentsOverviewRow;
 use super::agents_overview_view::AgentsOverviewView;
@@ -98,6 +101,11 @@ impl App {
             return;
         }
 
+        self.agents_overview
+            .view_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .focus_composer();
         let threads = self
             .agents_overview
             .threads
@@ -251,6 +259,8 @@ impl App {
                 is_current: self.primary_thread_id == Some(thread_id),
             });
         }
+
+        self.sync_agents_overview_composer();
 
         AgentsOverviewView::new(
             rows,
@@ -599,9 +609,7 @@ impl App {
             Some(cwd) => match self.rebuild_config_for_cwd(cwd.to_path_buf()).await {
                 Ok(config) => config,
                 Err(error) => {
-                    if let Ok(mut state) = self.agents_overview.view_state.lock() {
-                        state.input = prompt;
-                    }
+                    self.restore_agents_overview_prompt(prompt);
                     return self
                         .chat_widget
                         .add_error_message(format!("Failed to load project settings: {error}"));
@@ -615,9 +623,7 @@ impl App {
                 || config.permissions.profile_workspace_roots()
                     != self.config.permissions.profile_workspace_roots())
         {
-            if let Ok(mut state) = self.agents_overview.view_state.lock() {
-                state.input = prompt;
-            }
+            self.restore_agents_overview_prompt(prompt);
             return self
                 .chat_widget
                 .add_error_message("Permission profile has different settings.".to_string());
@@ -646,9 +652,7 @@ impl App {
                     .await;
             }
             Err(error) => {
-                if let Ok(mut state) = self.agents_overview.view_state.lock() {
-                    state.input = prompt;
-                }
+                self.restore_agents_overview_prompt(prompt);
                 self.chat_widget
                     .add_error_message(format!("Failed to start background task: {error}"));
             }
@@ -676,9 +680,7 @@ impl App {
             })
             .await;
         if let Err(error) = result {
-            if let Ok(mut state) = self.agents_overview.view_state.lock() {
-                state.input = prompt;
-            }
+            self.restore_agents_overview_prompt(prompt);
             self.chat_widget
                 .add_error_message(format!("Failed to send task message: {error}"));
         }
