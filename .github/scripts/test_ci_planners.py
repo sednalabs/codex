@@ -2233,6 +2233,158 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                 {"downstream_only.py": ["downstream-only"]},
             )
 
+    def test_registry_gate_projects_carry_onto_exact_live_tree_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+
+            (repo / "phantom.py").write_text("removed by both\n", encoding="utf-8")
+            (repo / "unchanged.py").write_text("base\n", encoding="utf-8")
+            (repo / "changed.py").write_text("base\n", encoding="utf-8")
+            base_sha = self.commit_all(repo, "base")
+
+            self.run_git(repo, "checkout", "-b", "upstream")
+            self.run_git(repo, "rm", "phantom.py")
+            (repo / "unchanged.py").write_text("shared result\n", encoding="utf-8")
+            (repo / "changed.py").write_text("upstream result\n", encoding="utf-8")
+            upstream_sha = self.commit_all(repo, "upstream changes")
+
+            self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+            self.run_git(repo, "rm", "phantom.py")
+            # This downstream change is byte-identical to upstream and must
+            # not be treated as an uncovered divergence.
+            (repo / "unchanged.py").write_text("shared result\n", encoding="utf-8")
+            # A different downstream edit to an upstream-modified path is a
+            # genuine downstream divergence and must remain visible.
+            (repo / "changed.py").write_text("downstream result\n", encoding="utf-8")
+            (repo / "downstream_only.py").write_text("downstream\n", encoding="utf-8")
+            downstream_sha = self.commit_all(repo, "downstream changes")
+
+            live_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo, upstream_sha, downstream_sha
+            )
+            merge_base = DOWNSTREAM_DIVERGENCE_AUDIT.merge_base_sha(
+                repo, upstream_sha, downstream_sha
+            )
+            carry_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo, merge_base, downstream_sha
+            )
+            projected_items = (
+                DOWNSTREAM_DIVERGENCE_AUDIT.downstream_carry_items_for_live_diff(
+                    live_items, carry_items
+                )
+            )
+            projected_paths = sorted(
+                {
+                    path
+                    for item in projected_items
+                    if item.is_code
+                    for path in item.paths
+                }
+            )
+
+            self.assertEqual(
+                projected_paths,
+                ["changed.py", "downstream_only.py"],
+            )
+
+    def test_registry_projection_ignores_docs_and_readme_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+
+            (repo / "README.md").write_text("base README\n", encoding="utf-8")
+            (repo / "docs").mkdir()
+            (repo / "docs" / "guide.md").write_text("base guide\n", encoding="utf-8")
+            base_sha = self.commit_all(repo, "base")
+
+            self.run_git(repo, "checkout", "-b", "upstream")
+            (repo / "README.md").write_text("upstream README\n", encoding="utf-8")
+            (repo / "docs" / "guide.md").write_text("upstream guide\n", encoding="utf-8")
+            upstream_sha = self.commit_all(repo, "upstream docs")
+
+            self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+            (repo / "README.md").write_text("downstream README\n", encoding="utf-8")
+            (repo / "docs" / "guide.md").write_text("downstream guide\n", encoding="utf-8")
+            downstream_sha = self.commit_all(repo, "downstream docs")
+
+            live_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo, upstream_sha, downstream_sha
+            )
+            carry_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo,
+                DOWNSTREAM_DIVERGENCE_AUDIT.merge_base_sha(
+                    repo, upstream_sha, downstream_sha
+                ),
+                downstream_sha,
+            )
+            projected_items = (
+                DOWNSTREAM_DIVERGENCE_AUDIT.downstream_carry_items_for_live_diff(
+                    live_items, carry_items
+                )
+            )
+
+            self.assertEqual(projected_items, [])
+            registry_state = DOWNSTREAM_DIVERGENCE_AUDIT.reconcile_registry(
+                {"_path": "docs/divergences/index.yaml", "divergences": []},
+                projected_items,
+            )
+            self.assertEqual(registry_state["uncovered_code_paths"], [])
+
+    def test_registry_projection_is_endpoint_precise_for_renames_copies_and_changes(
+        self,
+    ) -> None:
+        def item(status: str, *paths: str) -> DOWNSTREAM_DIVERGENCE_AUDIT.DiffItem:
+            return DOWNSTREAM_DIVERGENCE_AUDIT.DiffItem(
+                status=status,
+                paths=paths,
+                old_mode="100644",
+                new_mode="100644",
+                rename_score=status[1:] if len(status) > 1 else None,
+                is_code=True,
+            )
+
+        # The upstream endpoint differs from the downstream carry endpoint;
+        # only the shared destination is attributable to downstream.
+        live_items = [
+            item("R100", "upstream-renamed.py", "renamed.py"),
+            item("C100", "upstream-copied.py", "copied.py"),
+            item("D", "deleted.py"),
+            item("A", "added.py"),
+            item("T", "typechanged.py"),
+        ]
+        carry_items = [
+            item("R100", "original.py", "renamed.py"),
+            item("C100", "source.py", "copied.py"),
+            item("D", "deleted.py"),
+            item("A", "added.py"),
+            item("T", "typechanged.py"),
+        ]
+
+        projected_items = (
+            DOWNSTREAM_DIVERGENCE_AUDIT.downstream_carry_items_for_live_diff(
+                live_items, carry_items
+            )
+        )
+        projected_paths = [
+            path for projected in projected_items for path in projected.paths
+        ]
+
+        self.assertEqual(
+            projected_paths,
+            ["renamed.py", "copied.py", "deleted.py", "added.py", "typechanged.py"],
+        )
+        self.assertEqual(
+            DOWNSTREAM_DIVERGENCE_AUDIT.carry_endpoint_paths(carry_items[1]),
+            ("copied.py",),
+        )
+        self.assertNotIn("upstream-renamed.py", projected_paths)
+        self.assertNotIn("upstream-copied.py", projected_paths)
+
 
 class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
     workflow_path = REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"

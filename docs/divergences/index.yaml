@@ -1521,6 +1521,7 @@
         ".github/scripts/",
         ".github/validation-lanes.json",
         ".github/workflows/",
+        ".codespellignore",
         "codex-rs/core/tests/suite/exec_policy.rs",
         "codex-rs/core/tests/suite/mcp_startup_refresh_http_proxy.rs",
         "codex-rs/core/tests/suite/responses_system_proxy.rs",
@@ -1539,6 +1540,11 @@
         "tools/argument-comment-lint/list-bazel-targets.sh",
         "justfile"
       ],
+      "required_markers": {
+        ".codespellignore": [
+          "intoto"
+        ]
+      },
       "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork. The protected main queue runs both CI required and CodeQL required gate against the synthetic merge-group commit. Reusable workflow string inputs are copied into job-level environment variables so shell scripts never interpolate GitHub expression values directly into shell source. Large resolved validation plans remain in a runner-temp JSON file for field parsing, while the live workflow feeds plan fingerprinting through explicit stdin rather than a caller-selected path or a complete argv/environment payload. Environment input remains supported only for legacy direct callers and must not replace the workflow stdin boundary without a documented migration. Host-local shell-safety and approval-event fixtures explicitly skip Docker remote replay while retaining normal hosted test coverage. Host-bound MCP and Responses proxy fixtures explicitly select the local test environment during remote archive replay, while policy-only MITM fixtures bypass live DNS without changing production policy. The Windows native-main Bazel job disables remote caching for Rust actions on hosted runners so proc-macro DLLs are built in the same runner environment as their local consumers, while other action types retain remote cache reuse. Shared TUI test support gives stack-heavy individually dispatched app and app-server-session regressions the same explicit stack budget as broader hosted carry validation. Existing hosted recipes run complete upstream-owned exec-server and git-attribution unit seams plus the app-server, MCP, and CLI attribution entry points, Guardian PathUri reuse identity, and raw Responses tool JSON. Official releases support native Linux x86_64, Linux Arm64, and Intel macOS x86_64 archives with target-bound metadata, checksums, and native-runner verification; Linux assets add keyless Sigstore verification, SPDX SBOMs, and GitHub provenance attestations. Apple Silicon remains unsupported. The manual branch-build workflow keeps Linux x86_64 as its default, adds an explicit native Linux Arm64 mode, and keeps its explicit macOS mode as an ad hoc signed, non-notarized disposable preview while reusing target-isolated Cargo-home and compiler-cache entries without changing the release optimization profile.",
       "upstream_equivalent": false,
       "introduced_in": {
@@ -2502,6 +2508,7 @@
       ],
       "files": [
         ".bazelrc",
+        "BUILD.bazel",
         ".github/codeql/codeql-config.yml",
         "MODULE.bazel",
         "MODULE.bazel.lock",
@@ -2547,6 +2554,11 @@
         "codex-rs/secrets/src/lib.rs",
         "sdk/typescript/tests/runStreamed.test.ts"
       ],
+      "required_markers": {
+        "BUILD.bazel": [
+          "windows_aarch64_gnullvm_rust_toolchain_for_health"
+        ]
+      },
       "behavior": "Downstream keeps patched build, packaging, install, and test-stability artifacts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, deterministic pending-input and tracing-span observation barriers, thread-idle synchronization plus submission-correlated errors for host-only compact/resume rollback fixtures, a sha2 0.11-compatible explicit lowercase hexadecimal encoder for all-platform proxy cache keys, a TypeScript SDK manifest that remains paired with the downstream dependency lockfile, and broad SemVer installer validation that accepts upstream alpha-hotfix tags while retaining Sedna prerelease suffixes and build metadata. The upstream optional releases.openai.com installer source remains available only for the default openai/codex plus rust-v origin; custom repository or tag-prefix routing stays on GitHub and cannot be redirected to OpenAI's release channel by the opt-in flag.",
       "upstream_equivalent": false,
       "introduced_in": {
@@ -2597,6 +2609,116 @@
         "justfile"
       ],
       "extraction_target": "operator-owned build and release policy configuration"
+    },
+    {
+      "id": "devcontainer-ubuntu-base-image",
+      "title": "Development devcontainer Ubuntu base image",
+      "status": "live",
+      "category": "build-validation",
+      "surface_type": "operator-facing",
+      "surface": [
+        "development devcontainer"
+      ],
+      "files": [
+        ".devcontainer/Dockerfile"
+      ],
+      "required_markers": {
+        ".devcontainer/Dockerfile": [
+          "FROM ubuntu:26.04"
+        ]
+      },
+      "behavior": "The development devcontainer uses Ubuntu 26.04 with the existing build, Rust, and musl toolchain setup.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "116757ab1cdba9429a8a3dfcf303ecdf94f23b60",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.downstream-divergence-audit; codex.build-policy-sanity",
+      "tests": [
+        "scripts/downstream-divergence-audit.py --code-only --enforce-registry"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve the Ubuntu 26.04 base-image carry until upstream provides an equivalent development-container update. The existing Dockerfile comment's stale Ubuntu 24.04 wording is outside this entry and is not coupled to the base-image classification.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "build-policy-config",
+      "hotspot_files": [
+        ".devcontainer/Dockerfile"
+      ],
+      "extraction_target": "upstream devcontainer base-image update"
+    },
+    {
+      "id": "http-client-reqwest-rustls-manifest",
+      "title": "HTTP client Reqwest Rustls manifest",
+      "status": "live",
+      "category": "build-validation",
+      "surface_type": "validation-compatibility",
+      "surface": [
+        "codex-http-client dependency manifest"
+      ],
+      "files": [
+        "codex-rs/http-client/Cargo.toml"
+      ],
+      "required_markers": {
+        "codex-rs/http-client/Cargo.toml": [
+          "reqwest = { workspace = true, features = [\"json\", \"rustls\", \"stream\"] }"
+        ]
+      },
+      "behavior": "The downstream codex-http-client manifest keeps reqwest's json, rustls, and stream feature set for the reqwest 0.13 and OpenTelemetry 0.32 dependency alignment.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "f56bb90768d0cbf96aa0396ee74a6b5da8cd25ad",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.build-policy-sanity; codex.downstream-divergence-audit",
+      "tests": [
+        "verify_cargo_workspace_manifests.py",
+        "scripts/downstream-divergence-audit.py --code-only --enforce-registry"
+      ],
+      "owner": "downstream",
+      "notes": "Keep this entry limited to the exact reqwest feature line and its dependency alignment. It does not claim custom-CA, native-root, proxy, or general TLS policy, and it must not be expanded to cover upstream's later native-tls line.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "transport-dependency-manifest",
+      "hotspot_files": [
+        "codex-rs/http-client/Cargo.toml"
+      ],
+      "extraction_target": "upstream HTTP dependency alignment"
+    },
+    {
+      "id": "file-search-matcher-query-serialization",
+      "title": "File-search matcher pending-query serialization",
+      "status": "live",
+      "category": "core-runtime",
+      "surface_type": "runtime-correctness",
+      "surface": [
+        "file-search matcher query lifecycle"
+      ],
+      "files": [
+        "codex-rs/file-search/src/lib.rs"
+      ],
+      "required_markers": {
+        "codex-rs/file-search/src/lib.rs": [
+          "pending_query"
+        ]
+      },
+      "behavior": "The file-search matcher serializes query updates while a matching pass is active, replays the latest pending query after the matcher becomes idle, and reports completion only after the in-flight query settles while deriving match type from the current path.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "e04e091504c78cc55fd7613725351881d7d11798",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "rust-ci-full; codex.downstream-divergence-audit",
+      "tests": [
+        "cargo test -p codex-file-search",
+        "scripts/downstream-divergence-audit.py --code-only --enforce-registry"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve this focused matcher-runtime carry until upstream provides equivalent pending-query sequencing, completion ordering, and path-state classification coverage. Do not broaden it into unrelated file-search or indexing behavior.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "file-search-matcher-runtime",
+      "hotspot_files": [
+        "codex-rs/file-search/src/lib.rs"
+      ],
+      "extraction_target": "upstream file-search matcher query lifecycle"
     },
     {
       "id": "sedna-release-update-routing",
