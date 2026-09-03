@@ -150,11 +150,25 @@ def main() -> int:
     downstream_carry_items = diff_items_between(
         repo, merge_base, snapshot_1["downstream"].sha
     )
+    supersession_state = verify_superseded_hunks(
+        repo,
+        registry,
+        snapshot_1["upstream"].sha,
+        merge_base,
+        snapshot_1["downstream"].sha,
+        enforce=args.enforce_registry,
+    )
     downstream_carry_code_items = downstream_carry_items_for_live_diff(
-        diff_items, downstream_carry_items
+        diff_items,
+        downstream_carry_items,
+        superseded_carry_paths=set(supersession_state["superseded_carry_paths"]),
     )
 
     registry_state = reconcile_registry(registry, downstream_carry_code_items)
+    registry_state["supersession_checks"] = supersession_state["checks"]
+    registry_state["superseded_carry_paths"] = supersession_state[
+        "superseded_carry_paths"
+    ]
     required_marker_checks = verify_required_markers(
         repo,
         snapshot_1["downstream"].sha,
@@ -561,7 +575,10 @@ def merge_base_sha(repo: Path, left_sha: str, right_sha: str) -> str:
 
 
 def downstream_carry_items_for_live_diff(
-    live_items: list[DiffItem], carry_items: list[DiffItem]
+    live_items: list[DiffItem],
+    carry_items: list[DiffItem],
+    *,
+    superseded_carry_paths: set[str] | frozenset[str] | None = None,
 ) -> list[DiffItem]:
     """Project downstream-carry provenance onto exact live code endpoints.
 
@@ -580,11 +597,16 @@ def downstream_carry_items_for_live_diff(
         for item in carry_items
         for path in carry_endpoint_paths(item)
     }
+    superseded_paths = superseded_carry_paths or set()
     projected_items: list[DiffItem] = []
     for item in live_items:
         if not item.is_code:
             continue
-        projected_paths = tuple(path for path in item.paths if path in carry_paths)
+        projected_paths = tuple(
+            path
+            for path in item.paths
+            if path in carry_paths and path not in superseded_paths
+        )
         if not projected_paths:
             continue
         projected_items.append(
@@ -612,6 +634,221 @@ def carry_endpoint_paths(item: DiffItem) -> tuple[str, ...]:
     if item.status.startswith("C"):
         return (item.paths[-1],)
     return item.paths
+
+
+def diff_hunk_bodies(
+    repo: Path, left_sha: str, right_sha: str, path: str
+) -> list[tuple[str, ...]]:
+    """Return normalized zero-context hunk bodies for one exact path.
+
+    The hunk header is intentionally excluded so an equivalent carry remains
+    valid when unrelated edits move its line number. File headers and no-newline
+    annotations are not hunk content and are ignored.
+    """
+
+    result = run_git(
+        repo,
+        [
+            "diff",
+            "--no-ext-diff",
+            "--no-renames",
+            "--unified=0",
+            left_sha,
+            right_sha,
+            "--",
+            path,
+        ],
+        capture_stdout=True,
+    )
+    hunks: list[tuple[str, ...]] = []
+    current: list[str] | None = None
+    for line in result.stdout.splitlines():
+        if line.startswith("@@ "):
+            if current is not None:
+                hunks.append(tuple(current))
+            current = []
+        elif current is not None and line.startswith((" ", "+", "-")):
+            current.append(line)
+    if current is not None:
+        hunks.append(tuple(current))
+    return hunks
+
+
+def file_contains_hunk_new_lines(
+    repo: Path, commit_sha: str, path: str, hunk_lines: tuple[str, ...]
+) -> bool:
+    """Check that a superseded hunk's resulting lines remain in a commit tree."""
+
+    result = run_git(
+        repo,
+        ["show", f"{commit_sha}:{path}"],
+        capture_stdout=True,
+        allow_failure=True,
+    )
+    if result.returncode != 0:
+        return False
+    expected = tuple(
+        line[1:] for line in hunk_lines if line.startswith((" ", "+"))
+    )
+    if not expected:
+        return False
+    actual = tuple(result.stdout.splitlines())
+    return any(
+        actual[index : index + len(expected)] == expected
+        for index in range(len(actual) - len(expected) + 1)
+    )
+
+
+def is_ancestor(repo: Path, ancestor_sha: str, descendant_sha: str) -> bool:
+    result = run_git(
+        repo,
+        ["merge-base", "--is-ancestor", ancestor_sha, descendant_sha],
+        capture_stdout=False,
+        allow_failure=True,
+    )
+    return result.returncode == 0
+
+
+def verify_superseded_hunks(
+    repo: Path,
+    registry: dict[str, Any],
+    upstream_sha: str,
+    merge_base: str,
+    downstream_sha: str,
+    *,
+    enforce: bool = True,
+) -> dict[str, Any]:
+    """Validate exact upstreamed carry hunks before excluding their paths.
+
+    A declaration is effective only when its hunk appears in the bound
+    upstream commit, remains present in the current upstream tree, and appears
+    in the current merge-base-to-downstream carry diff. Every carry hunk for a
+    declared path must be accounted for; an additional downstream hunk therefore
+    fails closed instead of being hidden by a path-level supersession.
+    """
+
+    declarations = registry.get("superseded_hunks", [])
+    if declarations is None:
+        return {"checks": [], "superseded_carry_paths": []}
+    if not isinstance(declarations, list):
+        error = "superseded_hunks must be a list"
+        if enforce:
+            raise ValueError(f"superseded hunk evidence verification failed:\n- {error}")
+        print(f"warning: {error}", file=sys.stderr)
+        return {"checks": [], "superseded_carry_paths": []}
+    if not declarations:
+        return {"checks": [], "superseded_carry_paths": []}
+
+    errors: list[str] = []
+    checks: list[dict[str, Any]] = []
+    declarations_by_path: dict[str, list[dict[str, Any]]] = {}
+    for index, declaration in enumerate(declarations, start=1):
+        if not isinstance(declaration, dict):
+            errors.append(f"superseded_hunks[{index}] must be an object")
+            continue
+        path = declaration.get("path")
+
+        entry_id = str(declaration.get("id", "<unnamed>"))
+        upstream_commit = declaration.get("upstream_commit")
+        hunk_lines_value = declaration.get("hunk_lines")
+        if not isinstance(path, str) or not isinstance(upstream_commit, str):
+            errors.append(f"{entry_id}: supersession identity is malformed")
+            continue
+        declarations_by_path.setdefault(path, []).append(declaration)
+        if not isinstance(hunk_lines_value, list) or not all(
+            isinstance(line, str) for line in hunk_lines_value
+        ):
+            errors.append(f"{entry_id}: hunk_lines is malformed")
+            continue
+        hunk_lines = tuple(hunk_lines_value)
+
+        if not is_ancestor(repo, upstream_commit, upstream_sha):
+            errors.append(
+                f"{entry_id}: upstream commit {upstream_commit} is not an ancestor "
+                f"of upstream snapshot {upstream_sha}"
+            )
+            continue
+        try:
+            upstream_parent = run_git(
+                repo,
+                ["rev-parse", f"{upstream_commit}^"],
+                capture_stdout=True,
+            ).stdout.strip()
+            upstream_hunks = diff_hunk_bodies(
+                repo, upstream_parent, upstream_commit, path
+            )
+        except RuntimeError as error:
+            errors.append(f"{entry_id}: cannot read upstream evidence: {error}")
+            continue
+
+        if hunk_lines not in upstream_hunks:
+            errors.append(
+                f"{entry_id}: declared hunk is absent from upstream commit "
+                f"{upstream_commit}"
+            )
+            continue
+        if not file_contains_hunk_new_lines(
+            repo, upstream_sha, path, hunk_lines
+        ):
+            errors.append(
+                f"{entry_id}: declared hunk is absent from current upstream tree "
+                f"{upstream_sha}"
+            )
+            continue
+
+        checks.append(
+            {
+                "id": entry_id,
+                "path": path,
+                "upstream_commit": upstream_commit,
+                "upstream_hunk_verified": True,
+            }
+        )
+
+    superseded_carry_paths: list[str] = []
+    for path, path_declarations in declarations_by_path.items():
+        carry_hunks = diff_hunk_bodies(repo, merge_base, downstream_sha, path)
+        remaining = list(carry_hunks)
+        for declaration in path_declarations:
+            entry_id = str(declaration.get("id", "<unnamed>"))
+            hunk_lines_value = declaration.get("hunk_lines")
+            if not isinstance(hunk_lines_value, list) or not all(
+                isinstance(line, str) for line in hunk_lines_value
+            ):
+                continue
+            hunk_lines = tuple(hunk_lines_value)
+            try:
+                remaining.remove(hunk_lines)
+            except ValueError:
+                errors.append(
+                    f"{entry_id}: declared hunk is absent from current downstream "
+                    f"carry diff for {path}"
+                )
+        if remaining:
+            errors.append(
+                f"supersession for {path}: {len(remaining)} downstream carry hunk(s) "
+                "are not declared and cannot be masked"
+            )
+        elif path_declarations and carry_hunks:
+            superseded_carry_paths.append(path)
+            for check in checks:
+                if check["path"] == path:
+                    check["carry_hunk_verified"] = True
+
+    if errors:
+        if enforce:
+            raise ValueError(
+                "superseded hunk evidence verification failed:\n- "
+                + "\n- ".join(errors)
+            )
+        for error in errors:
+            print(f"warning: {error}", file=sys.stderr)
+        return {"checks": [], "superseded_carry_paths": []}
+
+    return {
+        "checks": checks,
+        "superseded_carry_paths": sorted(set(superseded_carry_paths)),
+    }
 
 
 def classify_mirror_health(
@@ -645,6 +882,7 @@ def load_registry(path: Path, enforce_registry: bool) -> dict[str, Any]:
 
 def validate_registry(registry: dict[str, Any]) -> None:
     errors: list[str] = []
+    validate_superseded_hunks(registry.get("superseded_hunks"), errors)
     for index, entry in enumerate(registry.get("divergences", []), start=1):
         entry_id = str(entry.get("id") or f"entry-{index}")
         if str(entry.get("status", "live")) != "live":
@@ -698,6 +936,63 @@ def validate_registry(registry: dict[str, Any]) -> None:
 
     if errors:
         raise ValueError("invalid divergence registry:\n- " + "\n- ".join(errors))
+
+
+def validate_superseded_hunks(raw: Any, errors: list[str]) -> None:
+    if raw is None:
+        return
+    if not isinstance(raw, list):
+        errors.append("superseded_hunks must be a list")
+        return
+
+    seen_ids: set[str] = set()
+    for index, declaration in enumerate(raw, start=1):
+        prefix = f"superseded_hunks[{index}]"
+        if not isinstance(declaration, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+
+        missing = [
+            field
+            for field in ("id", "path", "upstream_commit", "hunk_lines")
+            if field not in declaration
+        ]
+        for field in missing:
+            errors.append(f"{prefix}: missing required field {field}")
+
+        entry_id = declaration.get("id")
+        if not non_empty_string(entry_id):
+            errors.append(f"{prefix}: id must be a non-empty string")
+        elif entry_id in seen_ids:
+            errors.append(f"{prefix}: duplicate id {entry_id}")
+        else:
+            seen_ids.add(entry_id)
+
+        path = declaration.get("path")
+        if not safe_repo_relative_posix_path(path):
+            errors.append(f"{prefix}: path must be a safe repo-relative POSIX path")
+
+        upstream_commit = declaration.get("upstream_commit")
+        if not (
+            isinstance(upstream_commit, str)
+            and len(upstream_commit) == 40
+            and all(char in "0123456789abcdef" for char in upstream_commit)
+        ):
+            errors.append(f"{prefix}: upstream_commit must be a lowercase full SHA")
+
+        hunk_lines = declaration.get("hunk_lines")
+        if not isinstance(hunk_lines, list) or not hunk_lines:
+            errors.append(f"{prefix}: hunk_lines must be a non-empty list")
+            continue
+        if not all(isinstance(line, str) and line for line in hunk_lines):
+            errors.append(f"{prefix}: hunk_lines entries must be non-empty strings")
+            continue
+        if not all(line.startswith((" ", "+", "-")) for line in hunk_lines):
+            errors.append(
+                f"{prefix}: hunk_lines entries must be unified-diff body lines"
+            )
+        if not any(line.startswith(("+", "-")) for line in hunk_lines):
+            errors.append(f"{prefix}: hunk_lines must contain a changed line")
 
 
 def non_empty_string(value: Any) -> bool:

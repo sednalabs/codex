@@ -2385,6 +2385,147 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
         self.assertNotIn("upstream-renamed.py", projected_paths)
         self.assertNotIn("upstream-copied.py", projected_paths)
 
+    def test_superseded_hunk_requires_complete_carry_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+
+            (repo / "carry.py").write_text(
+                "before\n\n\n\n\nend\n",
+                encoding="utf-8",
+            )
+            base_sha = self.commit_all(repo, "base")
+
+            self.run_git(repo, "checkout", "-b", "upstream")
+            (repo / "carry.py").write_text(
+                "before\nshared\n\n\n\n\nend\n",
+                encoding="utf-8",
+            )
+            upstream_sha = self.commit_all(repo, "upstream shared hunk")
+
+            self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+            (repo / "carry.py").write_text(
+                "before\nshared\n\n\n\n\nend\n",
+                encoding="utf-8",
+            )
+            downstream_sha = self.commit_all(repo, "downstream shared hunk")
+
+            registry = {
+                "divergences": [],
+                "superseded_hunks": [
+                    {
+                        "id": "shared-hunk",
+                        "path": "carry.py",
+                        "upstream_commit": upstream_sha,
+                        "hunk_lines": ["+shared"],
+                    }
+                ],
+            }
+            DOWNSTREAM_DIVERGENCE_AUDIT.validate_registry(registry)
+            state = DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                repo,
+                registry,
+                upstream_sha,
+                base_sha,
+                downstream_sha,
+            )
+            self.assertEqual(state["superseded_carry_paths"], ["carry.py"])
+
+            live_items = [
+                DOWNSTREAM_DIVERGENCE_AUDIT.DiffItem(
+                    status="M",
+                    paths=("carry.py",),
+                    old_mode="100644",
+                    new_mode="100644",
+                    rename_score=None,
+                    is_code=True,
+                )
+            ]
+            carry_items = list(live_items)
+            self.assertEqual(
+                DOWNSTREAM_DIVERGENCE_AUDIT.downstream_carry_items_for_live_diff(
+                    live_items,
+                    carry_items,
+                    superseded_carry_paths=set(state["superseded_carry_paths"]),
+                ),
+                [],
+            )
+
+            (repo / "carry.py").write_text(
+                "before\nshared\n\n\n\n\nnew downstream\nend\n",
+                encoding="utf-8",
+            )
+            downstream_with_new_delta = self.commit_all(
+                repo, "downstream new delta"
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                r"downstream carry hunk\(s\) are not declared and cannot be masked",
+            ):
+                DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                    repo,
+                    registry,
+                    upstream_sha,
+                    base_sha,
+                    downstream_with_new_delta,
+                )
+
+    def test_superseded_hunk_schema_rejects_stale_or_ambiguous_evidence(self) -> None:
+        cases = {
+            "short upstream sha": {
+                "id": "short-sha",
+                "path": "carry.py",
+                "upstream_commit": "c8ddb210",
+                "hunk_lines": ["+shared"],
+            },
+            "missing diff marker": {
+                "id": "missing-marker",
+                "path": "carry.py",
+                "upstream_commit": "c8ddb210d2429cacacf86593e157114b00634f13",
+                "hunk_lines": ["shared"],
+            },
+        }
+        for label, declaration in cases.items():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(ValueError, "superseded_hunks"):
+                    DOWNSTREAM_DIVERGENCE_AUDIT.validate_registry(
+                        {"divergences": [], "superseded_hunks": [declaration]}
+                    )
+
+    def test_superseded_hunk_no_enforce_is_fail_closed_for_malformed_evidence(
+        self,
+    ) -> None:
+        cases = {
+            "non-list": {"superseded_hunks": {"path": "carry.py"}},
+            "non-object entry": {"superseded_hunks": ["not-an-object"]},
+            "non-string path": {
+                "superseded_hunks": [
+                    {
+                        "id": "bad-path",
+                        "path": ["carry.py"],
+                        "upstream_commit": "c8ddb210d2429cacacf86593e157114b00634f13",
+                        "hunk_lines": ["+shared"],
+                    }
+                ]
+            },
+        }
+        for label, registry in cases.items():
+            with self.subTest(label=label):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    state = DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                        Path("."),
+                        registry,
+                        "unused",
+                        "unused",
+                        "unused",
+                        enforce=False,
+                    )
+                self.assertEqual(state, {"checks": [], "superseded_carry_paths": []})
+                self.assertIn("warning:", stderr.getvalue())
+
 
 class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
     workflow_path = REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"

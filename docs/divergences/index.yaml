@@ -2548,6 +2548,9 @@
         "package.json",
         "scripts/codex-resume-recent.sh",
         "codex-rs/http-client/src/outbound_proxy.rs",
+        "codex-rs/http-client/src/outbound_proxy_redirect_coverage_tests.rs",
+        "codex-rs/http-client/src/route_aware_client_pool_tests.rs",
+        "codex-rs/http-client/src/route_aware_redirect_integration_tests.rs",
         "codex-rs/network-proxy/src/certs.rs",
         "codex-rs/network-proxy/src/proxy.rs",
         "codex-rs/network-proxy/src/windows_tcp_attribution_tests.rs",
@@ -2559,7 +2562,7 @@
           "windows_aarch64_gnullvm_rust_toolchain_for_health"
         ]
       },
-      "behavior": "Downstream keeps patched build, packaging, install, and test-stability artifacts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, deterministic pending-input and tracing-span observation barriers, thread-idle synchronization plus submission-correlated errors for host-only compact/resume rollback fixtures, a sha2 0.11-compatible explicit lowercase hexadecimal encoder for all-platform proxy cache keys, a TypeScript SDK manifest that remains paired with the downstream dependency lockfile, and broad SemVer installer validation that accepts upstream alpha-hotfix tags while retaining Sedna prerelease suffixes and build metadata. The upstream optional releases.openai.com installer source remains available only for the default openai/codex plus rust-v origin; custom repository or tag-prefix routing stays on GitHub and cannot be redirected to OpenAI's release channel by the opt-in flag.",
+      "behavior": "Downstream keeps patched build, packaging, install, and test-stability artifacts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, deterministic pending-input and tracing-span observation barriers, thread-idle synchronization plus submission-correlated errors for host-only compact/resume rollback fixtures, a sha2 0.11-compatible explicit lowercase hexadecimal encoder for all-platform proxy cache keys, deterministic blocking reads in three HTTP redirect fixtures, a TypeScript SDK manifest that remains paired with the downstream dependency lockfile, and broad SemVer installer validation that accepts upstream alpha-hotfix tags while retaining Sedna prerelease suffixes and build metadata. The upstream optional releases.openai.com installer source remains available only for the default openai/codex plus rust-v origin; custom repository or tag-prefix routing stays on GitHub and cannot be redirected to OpenAI's release channel by the opt-in flag.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -2600,7 +2603,7 @@
         "returns thread events"
       ],
       "owner": "downstream",
-      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream. Windows hosted setup prefers Dev Drive acceleration but falls back to an existing secondary or system volume when the runner image lacks Dev Drive formatting support. The Windows direct-loopback fixture observes a bounded native curl attempt, cleans up a WFP-stalled command through Codex's registered background-terminal path, and requires zero requests at its unique non-proxy endpoint while preserving distinct connected, denied, and probe-error outcomes. The reqwest ownership ratchet permits codex-android-computer-use only as temporary migration debt until its MCP transport moves behind codex-http-client; unnamed new direct reqwest owners remain denied. Python SDK runtime-package staging rejects traversal, links, and special archive entries rather than falling back to unfiltered extraction. The exec-server stress-test deadlines are test-only and may be dropped when upstream uses readiness-based completion conditions or equivalent cold-run-safe bounds. The daemon PID test removes the PID file while its reservation lock remains held. Compact/resume rollback fixtures wait for thread idle and fail immediately on a correlated typed error; this is test isolation, not a production lifecycle fix. Pending-input tests use the sleep completion itself as the sole consequence barrier so a separate event wait cannot consume it, and the OTel span test shuts the session down before reading its trace buffer so retained span handles have closed. Upstream commit c9ef7eff00 owns all-platform proxy cache hashing and explicit route resolution; retain only the manual byte-to-hex loop required by downstream sha2 0.11, and drop it if the digest dependency regains the upstream formatter or upstream adopts an equivalent explicit encoder. Drop the remaining test-only carries when upstream adopts equivalent deterministic ordering.",
+      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream. Windows hosted setup prefers Dev Drive acceleration but falls back to an existing secondary or system volume when the runner image lacks Dev Drive formatting support. The Windows direct-loopback fixture observes a bounded native curl attempt, cleans up a WFP-stalled command through Codex's registered background-terminal path, and requires zero requests at its unique non-proxy endpoint while preserving distinct connected, denied, and probe-error outcomes. The reqwest ownership ratchet permits codex-android-computer-use only as temporary migration debt until its MCP transport moves behind codex-http-client; unnamed new direct reqwest owners remain denied. Python SDK runtime-package staging rejects traversal, links, and special archive entries rather than falling back to unfiltered extraction. The exec-server stress-test deadlines are test-only and may be dropped when upstream uses readiness-based completion conditions or equivalent cold-run-safe bounds. The daemon PID test removes the PID file while its reservation lock remains held. Compact/resume rollback fixtures wait for thread idle and fail immediately on a correlated typed error; this is test isolation, not a production lifecycle fix. Pending-input tests use the sleep completion itself as the sole consequence barrier so a separate event wait cannot consume it, and the OTel span test shuts the session down before reading its trace buffer so retained span handles have closed. The three redirect fixture stream-read adjustments are test-only and may be dropped when upstream adopts equivalent deterministic blocking reads. Upstream commit c9ef7eff00 owns all-platform proxy cache hashing and explicit route resolution; retain only the manual byte-to-hex loop required by downstream sha2 0.11, and drop it if the digest dependency regains the upstream formatter or upstream adopts an equivalent explicit encoder. Drop the remaining test-only carries when upstream adopts equivalent deterministic ordering.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "build-policy-config",
       "hotspot_files": [
@@ -2609,6 +2612,55 @@
         "justfile"
       ],
       "extraction_target": "operator-owned build and release policy configuration"
+    },
+    {
+      "id": "automatic-turn-provider-request-authority-retry",
+      "title": "Automatic-turn provider request authority and retry contract",
+      "status": "live",
+      "category": "provider-runtime",
+      "surface_type": "provider-authority",
+      "surface": [
+        "automatic-turn request authority",
+        "HTTP retry transport",
+        "WebSocket handshake initiation"
+      ],
+      "files": [
+        "codex-rs/aws-auth/src/lib.rs",
+        "codex-rs/codex-client/src/lib.rs",
+        "codex-rs/codex-client/src/retry.rs",
+        "codex-rs/http-client/src/client_builder.rs",
+        "codex-rs/http-client/src/client_builder_tests.rs",
+        "codex-rs/http-client/src/error.rs",
+        "codex-rs/http-client/src/request.rs",
+        "codex-rs/websocket-client/src/dialer_tests.rs",
+        "codex-rs/websocket-client/src/lib.rs"
+      ],
+      "behavior": "Downstream preserves provider request-authority snapshots and single-use initiation across automatic-turn AWS signing, HTTP retry, and WebSocket handshake boundaries. Each retry rebuilds coherent provider, authentication, and transport state without reusing a consumed request authority, while pre-transport cancellation and post-acceptance handshake progress remain distinct.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "e6bd6b6f6ce8301f070867bee4263445f28230e7",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "rust-ci-full; codex.core-attestation-targeted; codex.downstream-divergence-audit",
+      "tests": [
+        "frozen AWS credential identity and signing tests",
+        "credential-bound retry and provider-context transition tests",
+        "request initiation single-use and cancellation tests",
+        "credential_bound_double_build_fallback_never_follows_307_or_308",
+        "zero_write_stale_pool_recovery_sends_credentials_once",
+        "handshake_releases_authority_after_dialer_acceptance_before_upgrade_response"
+      ],
+      "owner": "downstream",
+      "notes": "This is one decision-complete carry because the nine paths jointly define the automatic-turn request-authority and retry boundary. Preserve the complete contract together during upstream harvests; a replacement must cover credential snapshot identity, single-use initiation, retry provider/auth/transport coherence, cancellation, stale-pool recovery, and WebSocket handshake acceptance rather than adopting one file in isolation.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "provider-request-authority",
+      "hotspot_files": [
+        "codex-rs/aws-auth/src/lib.rs",
+        "codex-rs/http-client/src/client_builder.rs",
+        "codex-rs/http-client/src/request.rs",
+        "codex-rs/websocket-client/src/lib.rs"
+      ],
+      "extraction_target": "upstream automatic-turn provider request-authority and retry contract"
     },
     {
       "id": "devcontainer-ubuntu-base-image",
@@ -3389,6 +3441,18 @@
         "codex-rs/core/src/context_manager/history.rs"
       ],
       "extraction_target": "upstream model-safe MCP JSON-family resource output boundary"
+    }
+  ],
+  "superseded_hunks": [
+    {
+      "id": "http-client-outbound-proxy-blocking-read-upstreamed",
+      "path": "codex-rs/http-client/src/outbound_proxy_tests.rs",
+      "upstream_commit": "c8ddb210d2429cacacf86593e157114b00634f13",
+      "hunk_lines": [
+        "+            stream",
+        "+                .set_nonblocking(false)",
+        "+                .expect(\"HTTP stream should become blocking\");"
+      ]
     }
   ]
 }
