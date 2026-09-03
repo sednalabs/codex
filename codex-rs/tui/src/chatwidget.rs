@@ -122,7 +122,6 @@ use codex_config::types::ApprovalsReviewer;
 use codex_config::types::Notifications;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_connectors::AppInfo;
-use codex_features::FEATURES;
 use codex_features::Feature;
 #[cfg(test)]
 use codex_git_utils::CommitLogEntry;
@@ -279,7 +278,6 @@ use crate::bottom_pane::CollaborationModeIndicator;
 use crate::bottom_pane::ColumnWidthMode;
 use crate::bottom_pane::DOUBLE_PRESS_QUIT_SHORTCUT_ENABLED;
 use crate::bottom_pane::ExecApprovalRequest;
-use crate::bottom_pane::ExperimentalFeatureItem;
 use crate::bottom_pane::ExperimentalFeaturesView;
 use crate::bottom_pane::GoalStatusIndicator;
 use crate::bottom_pane::HistoryEntry;

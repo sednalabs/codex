@@ -119,6 +119,7 @@ mod collaboration_modes;
 mod color;
 mod config_update;
 pub(crate) mod custom_terminal;
+mod experimental_features;
 mod pets;
 pub use custom_terminal::Terminal;
 mod auto_review_denials;

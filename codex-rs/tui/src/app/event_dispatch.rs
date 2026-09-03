@@ -2380,6 +2380,13 @@ impl App {
                         .add_error_message(format!("Failed to save approvals reviewer: {err}"));
                 }
             }
+            AppEvent::FetchExperimentalFeatures { thread_id, response_tx } => {
+                crate::experimental_features::fetch(
+                    app_server.request_handle(),
+                    thread_id,
+                    response_tx,
+                );
+            }
             AppEvent::UpdateFeatureFlags { updates } => {
                 self.update_feature_flags(app_server, updates).await;
             }

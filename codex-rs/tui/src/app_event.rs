@@ -1148,6 +1148,14 @@ pub(crate) enum AppEvent {
     /// Update the current approvals reviewer in the running app and widget.
     UpdateApprovalsReviewer(ApprovalsReviewer),
 
+    /// Discover experimental features for the requesting popup only.
+    FetchExperimentalFeatures {
+        thread_id: ThreadId,
+        response_tx: tokio::sync::oneshot::Sender<
+            Result<Vec<codex_app_server_protocol::ExperimentalFeature>, String>,
+        >,
+    },
+
     /// Update feature flags and persist them to the top-level config.
     UpdateFeatureFlags {
         updates: Vec<(Feature, bool)>,
