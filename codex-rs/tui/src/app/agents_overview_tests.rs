@@ -10,6 +10,7 @@ use crate::test_support::test_path_buf;
 use crate::test_support::test_path_display;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::CurrentTimeReadParams;
+use codex_app_server_protocol::ReasoningSummaryTextDeltaNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::ThreadActiveFlag;
@@ -23,6 +24,8 @@ use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::ThreadUnsubscribeStatus;
+use codex_app_server_protocol::ToolRequestUserInputParams;
+use codex_app_server_protocol::ToolRequestUserInputQuestion;
 use codex_config::types::KeybindingSpec;
 use codex_config::types::KeybindingsSpec;
 use codex_config::types::TuiKeymap;
@@ -315,6 +318,7 @@ async fn shared_overview_keeps_rows_and_replays_changes_over_stale_reads() -> Re
         &app_server,
         request_id,
         Ok(AgentsOverviewThreadRefresh {
+            last_messages: HashMap::new(),
             threads: HashMap::from([
                 (retained, Some(retained_thread.clone())),
                 (archived, Some(archived_thread)),
@@ -337,6 +341,7 @@ async fn shared_overview_keeps_rows_and_replays_changes_over_stale_reads() -> Re
         &app_server,
         request_id,
         Ok(AgentsOverviewThreadRefresh {
+            last_messages: HashMap::new(),
             threads: HashMap::from([(retained, None)]),
             recent_seed_complete: true,
         }),
@@ -350,6 +355,50 @@ async fn shared_overview_keeps_rows_and_replays_changes_over_stale_reads() -> Re
         Err("temporarily unavailable".to_string()),
     );
     assert_eq!(app.agents_overview.threads, expected);
+
+    let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let stale_messages = HashMap::from([(retained, "Removed answer".into())]);
+    for event in [
+        AppServerEvent::ServerNotification(Box::new(ServerNotification::ThreadReverted(
+            codex_app_server_protocol::ThreadRevertedNotification {
+                thread_id: retained.to_string(),
+            },
+        ))),
+        AppServerEvent::Lagged { skipped: 1 },
+    ] {
+        let old_request = Uuid::new_v4();
+        app.agents_overview.request_id = Some(old_request);
+        app.agents_overview.activity.entry(retained).or_default();
+        app.agents_overview.last_messages = stale_messages.clone();
+        app.handle_app_server_event(&app_server, event).await;
+        assert!(!app.agents_overview.activity.contains_key(&retained));
+        assert!(app.agents_overview.last_messages.is_empty());
+        // Fresh activity must survive an older read arriving after invalidation.
+        app.track_agents_overview_notification(&reasoning_delta(
+            retained,
+            "new-reasoning",
+            "**Checking the revised task**",
+        ));
+        let current_request = app.agents_overview.request_id.unwrap();
+        for (request_id, last_messages) in [
+            (old_request, stale_messages.clone()),
+            (current_request, HashMap::new()),
+        ] {
+            app.apply_agents_overview_thread_refresh(
+                &app_server,
+                request_id,
+                Ok(AgentsOverviewThreadRefresh {
+                    threads: HashMap::new(),
+                    last_messages,
+                    recent_seed_complete: true,
+                }),
+            );
+            assert!(app.agents_overview.last_messages.is_empty());
+        }
+        assert!(app.agents_overview.activity.contains_key(&retained));
+        assert!(app.agents_overview.request_id.is_none());
+    }
     app_server.shutdown().await?;
     Ok(())
 }
@@ -383,6 +432,22 @@ async fn shared_overview_seeds_once_and_retains_locally_resumed_history() -> Res
             .expect("materialize historical session"),
         )?);
     }
+    let message_path = app_test_support::rollout_path(
+        &app.config.codex_home,
+        "2025-01-21T12-00-00",
+        &ids[20].to_string(),
+    );
+    let mut history = std::fs::read_to_string(&message_path)?;
+    history.push_str(
+        &serde_json::json!({
+            "timestamp": "2025-01-21T12:00:01Z",
+            "type": "event_msg",
+            "payload": { "type": "agent_message", "message": "Found the regression in the parser." }
+        })
+        .to_string(),
+    );
+    history.push('\n');
+    std::fs::write(message_path, history)?;
     let config = app.config.clone();
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
     for thread_id in [ids[0], ids[21]] {
@@ -409,6 +474,12 @@ async fn shared_overview_seeds_once_and_retains_locally_resumed_history() -> Res
     expected.insert(ids[0]);
     let retained: HashSet<_> = app.agents_overview.threads.keys().copied().collect();
     assert_eq!(retained, expected);
+    assert_eq!(
+        app.agents_overview.last_messages,
+        HashMap::from([(ids[20], "Found the regression in the parser.".to_string())])
+    );
+    let thread = app.agents_overview.threads[&ids[20]].as_ref().unwrap();
+    assert_eq!(thread.status, ThreadStatus::NotLoaded);
 
     let created = app_server.start_thread(&config).await?.session.thread_id;
     // Closing the view must not cancel a metadata refresh or forget unloaded entries.
@@ -593,6 +664,219 @@ async fn hidden_system_thread_does_not_refresh_shared_overview() {
     );
 
     app_server.shutdown().await.expect("shutdown app server");
+}
+
+#[tokio::test]
+async fn agents_overview_details_show_available_attention_without_expanding_rows() -> Result<()> {
+    let mut app = make_test_app().await;
+    let app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+    let [root, child, unloaded] = std::array::from_fn(|_| ThreadId::new());
+    let waiting = ThreadStatus::Active {
+        active_flags: vec![
+            ThreadActiveFlag::WaitingOnApproval,
+            ThreadActiveFlag::WaitingOnUserInput,
+        ],
+    };
+    // The child question takes priority over the generic waiting parent.
+    let mut threads = [
+        (root, None, "Repair authentication", waiting.clone()),
+        (child, Some(root), "Check dependencies", waiting),
+        (
+            unloaded,
+            None,
+            "Investigate parser",
+            ThreadStatus::NotLoaded,
+        ),
+    ]
+    .map(|(id, parent, title, status)| overview_thread(id, parent, title, status))
+    .to_vec();
+    threads[0].name = None;
+    threads[2].name = None;
+    threads[2].preview = "Investigate parser\nInclude edge cases\n".repeat(8);
+    app.agents_overview.threads = threads
+        .iter()
+        .cloned()
+        .map(|thread| (ThreadId::from_string(&thread.id).unwrap(), Some(thread)))
+        .collect();
+    app.agents_overview.last_messages.insert(
+        unloaded,
+        super::super::agents_overview_details::preview_text(
+            &"Found the regression\nin the parser. ".repeat(20),
+        ),
+    );
+    app.agents_overview.dispatched_requests.insert(
+        child,
+        vec![ServerRequest::ToolRequestUserInput {
+            request_id: RequestId::Integer(42),
+            params: ToolRequestUserInputParams {
+                thread_id: child.to_string(),
+                turn_id: "turn".into(),
+                item_id: "question".into(),
+                questions: vec![ToolRequestUserInputQuestion {
+                    id: "version".into(),
+                    header: "Version".into(),
+                    question: "Which dependency version should I use?".into(),
+                    is_other: false,
+                    is_secret: false,
+                    options: None,
+                }],
+                is_blocking: true,
+                auto_resolution_ms: None,
+            },
+        }],
+    );
+    let view = app.agents_overview_view(threads.clone(), Some(root));
+    app.agents_overview.visible_thread_ids = view.thread_ids();
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let project = test_path_display("/tmp/project");
+    let normalized_group = format!(
+        "/tmp/project  2{}",
+        " ".repeat(project.len().saturating_sub("/tmp/project".len()))
+    );
+    insta::with_settings!({snapshot_path => "../snapshots"}, {
+        insta::assert_snapshot!("agents_overview_attention", render_bottom_popup(&app.chat_widget, /*width*/ 96).replace(&format!("{project}  2"), &normalized_group).replace(&project, "/tmp/project"));
+    });
+    app.handle_app_server_event(
+        &app_server,
+        AppServerEvent::ServerNotification(Box::new(ServerNotification::ServerRequestResolved(
+            codex_app_server_protocol::ServerRequestResolvedNotification {
+                thread_id: child.to_string(),
+                request_id: RequestId::Integer(42),
+            },
+        ))),
+    )
+    .await;
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert!(!rendered.contains("Which dependency version"));
+    assert!(rendered.contains("Waiting for approval."));
+    assert!(app.thread_event_channels.is_empty());
+    assert!(app.agents_overview.request_id.is_none());
+
+    let view = app.agents_overview_view(threads, Some(unloaded));
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    insta::with_settings!({snapshot_path => "../snapshots"}, {
+        insta::assert_snapshot!("agents_overview_last_message", render_bottom_popup(&app.chat_widget, /*width*/ 96).replace(&format!("{project}  2"), &normalized_group).replace(&project, "/tmp/project"));
+    });
+    app.track_agents_overview_notification(&ServerNotification::ThreadReverted(
+        codex_app_server_protocol::ThreadRevertedNotification {
+            thread_id: unloaded.to_string(),
+        },
+    ));
+    assert!(!render_bottom_popup(&app.chat_widget, /*width*/ 96).contains("Last message"));
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+fn reasoning_delta(thread_id: ThreadId, item_id: &str, delta: &str) -> ServerNotification {
+    ServerNotification::ReasoningSummaryTextDelta(ReasoningSummaryTextDeltaNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "turn".into(),
+        item_id: item_id.into(),
+        summary_index: 0,
+        delta: delta.into(),
+    })
+}
+
+#[tokio::test]
+async fn agents_overview_reasoning_uses_existing_events_and_expires_with_attachment() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let mut thread = overview_thread(
+        thread_id,
+        /*parent_thread_id*/ None,
+        "Check startup performance",
+        ThreadStatus::Active {
+            active_flags: Vec::new(),
+        },
+    );
+    thread.preview.clear();
+    app.agents_overview
+        .threads
+        .insert(thread_id, Some(thread.clone()));
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 8));
+    let mut view = app.agents_overview_view(vec![thread.clone()], Some(thread_id));
+    view.handle_paste("Keep this draft".into());
+    app.agents_overview.visible_thread_ids = view.thread_ids();
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    for delta in ["**Checking", " cold-start regressions**\nFurther reasoning"] {
+        app.track_agents_overview_notification(&reasoning_delta(thread_id, "reasoning", delta));
+    }
+    let project = test_path_display("/tmp/project");
+    let normalized_group = format!(
+        "/tmp/project  1{}",
+        " ".repeat(project.len().saturating_sub("/tmp/project".len()))
+    );
+    insta::with_settings!({snapshot_path => "../snapshots"}, {
+        insta::assert_snapshot!("agents_overview_live_activity", render_bottom_popup(&app.chat_widget, /*width*/ 96).replace(&format!("{project}  1"), &normalized_group).replace(&project, "/tmp/project"));
+    });
+    assert!(app.agents_overview.request_id.is_none());
+
+    // A working child can stream through a server attachment without a local channel.
+    let parent = overview_thread(
+        ThreadId::new(),
+        /*parent_thread_id*/ None,
+        "Parent",
+        thread.status.clone(),
+    );
+    let parent_id = ThreadId::from_string(&parent.id).unwrap();
+    app.agents_overview
+        .threads
+        .insert(parent_id, Some(parent.clone()));
+    app.track_agents_overview_notification(&ServerNotification::ItemCompleted(
+        codex_app_server_protocol::ItemCompletedNotification {
+            thread_id: parent.id.clone(),
+            turn_id: "previous-turn".into(),
+            completed_at_ms: 0,
+            item: ThreadItem::AgentMessage {
+                id: "answer".into(),
+                text: "Previous answer".into(),
+                phase: None,
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+        },
+    ));
+    let channel = app.thread_event_channels.remove(&thread_id).unwrap();
+    let details = app.agents_overview_details(
+        &parent,
+        &HashMap::from([(parent.id.clone(), vec![&thread])]),
+    );
+    assert!(
+        details
+            .iter()
+            .any(|line| line.to_string().contains("Checking cold-start regressions"))
+    );
+    app.thread_event_channels.insert(thread_id, channel);
+
+    // A new, oversized header clears the previous one and cannot grow the parsing buffer indefinitely.
+    for delta in [format!("**{}", "界".repeat(10_000)), "**".into()] {
+        app.track_agents_overview_notification(&reasoning_delta(thread_id, "oversized", &delta));
+    }
+    assert_eq!(
+        app.agents_overview_details(&thread, &HashMap::new()),
+        Vec::<Line>::new()
+    );
+    app.track_agents_overview_notification(&reasoning_delta(
+        thread_id,
+        "next",
+        "**Running tests**",
+    ));
+    app.thread_event_channels
+        .get_mut(&thread_id)
+        .unwrap()
+        .mark_replay_only();
+    assert_eq!(
+        app.agents_overview_details(&thread, &HashMap::new()),
+        Vec::<Line>::new()
+    );
+    app.track_agents_overview_notification(&ServerNotification::ThreadClosed(
+        ThreadClosedNotification {
+            thread_id: thread_id.to_string(),
+        },
+    ));
+    assert!(!app.agents_overview.activity.contains_key(&thread_id));
 }
 
 #[tokio::test]

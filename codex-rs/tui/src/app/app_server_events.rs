@@ -68,15 +68,32 @@ impl App {
                 );
                 self.refresh_mcp_startup_expected_servers_from_config();
                 self.chat_widget.finish_mcp_startup_after_lag();
+                if let Some(task) = self.agents_overview.refresh_task.take() {
+                    task.abort();
+                }
+                self.agents_overview.request_id = None;
+                self.agents_overview.refresh_pending = false;
+                self.agents_overview.refresh_notifications.clear();
+                self.agents_overview.activity.clear();
+                self.agents_overview.last_messages.clear();
+                self.repaint_agents_overview();
                 self.refresh_agents_overview_threads(app_server_client);
             }
             AppServerEvent::ServerNotification(notification) => {
+                let request_resolved = matches!(
+                    notification.as_ref(),
+                    ServerNotification::ServerRequestResolved(_)
+                );
                 self.handle_server_notification_event(app_server_client, *notification)
                     .await;
+                if request_resolved {
+                    self.repaint_agents_overview();
+                }
             }
             AppServerEvent::ServerRequest(request) => {
                 self.handle_server_request_event(app_server_client, *request)
                     .await;
+                self.repaint_agents_overview();
             }
             AppServerEvent::Disconnected { message } => {
                 if self.begin_reconnect() {

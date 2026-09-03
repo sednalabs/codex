@@ -84,10 +84,16 @@ impl AgentsOverviewGroup {
 
 #[derive(Clone)]
 pub(super) struct AgentsOverviewRow {
+    pub(super) details: Vec<Line<'static>>,
     pub(super) thread: Thread,
     pub(super) thread_id: ThreadId,
     pub(super) group: AgentsOverviewGroup,
     pub(super) is_current: bool,
+}
+
+fn display_title(thread: &Thread) -> &str {
+    let title = thread.name.as_deref().unwrap_or(&thread.preview);
+    title.trim().lines().next().unwrap_or("Untitled task")
 }
 
 #[derive(Default)]
@@ -380,12 +386,6 @@ impl AgentsOverviewView {
             } else {
                 " ".into()
             };
-            let title = row
-                .thread
-                .name
-                .as_deref()
-                .or_else(|| (!row.thread.preview.is_empty()).then_some(row.thread.preview.as_str()))
-                .unwrap_or("Untitled task");
             let (status, dot) = Self::status(row);
             let current = if row.is_current { "  current" } else { "" };
             let mut spans = vec![
@@ -393,7 +393,7 @@ impl AgentsOverviewView {
                 " ".into(),
                 dot,
                 " ".into(),
-                title.into(),
+                display_title(&row.thread).into(),
                 current.dim(),
             ];
             if project_grouping {
@@ -409,10 +409,14 @@ impl AgentsOverviewView {
             return;
         };
         let (status, dot) = Self::status(row);
+        let width = usize::from(area.width);
         let mut lines = vec![
             Line::from("Task details".bold()),
             Line::default(),
-            Line::from(row.thread.name.as_deref().unwrap_or("Untitled task").bold()),
+            crate::line_truncation::truncate_line_with_ellipsis_if_overflow(
+                display_title(&row.thread).to_owned().bold().into(),
+                width,
+            ),
             Line::from(vec![dot, " ".into(), status.into()]),
             Line::default(),
             Line::from("Project".dim()),
@@ -428,23 +432,36 @@ impl AgentsOverviewView {
             lines.push("Branch".dim().into());
             lines.push(branch.clone().into());
         }
-        let preview = crate::text_formatting::truncate_text(
-            &row.thread.preview,
-            usize::from(area.width) * usize::from(area.height),
-        );
-        lines.extend([
-            Line::default(),
-            Line::from("Latest activity".dim()),
-            Line::from(match preview.as_str() {
-                "" => "No activity yet.",
+        let preview = crate::text_formatting::truncate_text(&row.thread.preview, width * 2);
+        lines.extend([Line::default(), Line::from("Prompt".dim())]);
+        let mut prompt = crate::wrapping::word_wrap_lines(
+            match preview.as_str() {
+                "" => "No prompt available.",
                 preview => preview,
-            }),
-        ]);
-        Paragraph::new(crate::wrapping::word_wrap_lines(
-            lines,
-            usize::from(area.width),
-        ))
-        .render(area, buf);
+            }
+            .lines()
+            .map(Line::from),
+            width,
+        );
+        if prompt.len() > 2 {
+            prompt.truncate(2);
+            prompt[1] = "…".dim().into();
+        }
+        lines.extend(prompt);
+        let details_start = crate::wrapping::word_wrap_lines(lines[..4].to_vec(), width).len();
+        let mut lines = crate::wrapping::word_wrap_lines(lines, width);
+        if self.state().connection_notice.is_none() {
+            let mut details = crate::wrapping::word_wrap_lines(row.details.clone(), width);
+            let available = usize::from(area.height).saturating_sub(lines.len());
+            if details.len() > available {
+                details.truncate(available);
+                if let Some(last) = details.last_mut() {
+                    *last = "…".dim().into();
+                }
+            }
+            lines.splice(details_start..details_start, details);
+        }
+        Paragraph::new(lines).render(area, buf);
     }
 }
 

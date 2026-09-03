@@ -128,6 +128,9 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             .map(|thread| Ok((ThreadId::from_string(&thread.id)?, Some(thread.clone()))))
             .collect::<Result<HashMap<_, _>>>()?;
         app.agents_overview.threads = stale_threads.clone();
+        app.agents_overview
+            .last_messages
+            .insert(selected, "Pre-disconnect answer".into());
         app.agents_overview.initialized = overview_initialized;
         let view = app.agents_overview_view(
             stale.clone(),
@@ -248,6 +251,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
         let disconnected = session.next_event().await.unwrap();
         app.handle_app_server_event(&session, disconnected).await;
         assert!(app.reconnect.offline);
+        assert!(app.agents_overview.last_messages.is_empty());
         assert!(refresh.await.unwrap_err().is_cancelled());
         assert_eq!(
             (
@@ -260,6 +264,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             &session,
             stale_request,
             Ok(AgentsOverviewThreadRefresh {
+                last_messages: HashMap::new(),
                 threads: HashMap::new(),
                 recent_seed_complete: false,
             }),
@@ -381,6 +386,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             &session,
             stale_request,
             Ok(AgentsOverviewThreadRefresh {
+                last_messages: HashMap::new(),
                 threads: stale_threads,
                 recent_seed_complete: true,
             }),
