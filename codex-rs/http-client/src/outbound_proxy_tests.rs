@@ -65,6 +65,9 @@ fn spawn_http_listener(
                 }
             };
             stream
+                .set_nonblocking(false)
+                .expect("HTTP stream should become blocking");
+            stream
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .expect("HTTP stream should get a read timeout");
             requests.push(read_http_message(&mut stream));
