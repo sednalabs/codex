@@ -94,6 +94,22 @@ def time_since(timestamp: str | None, now: datetime) -> str | None:
     return duration
 
 
+def summarize_output(output: Any) -> str:
+    if isinstance(output, str):
+        first = output.splitlines()[0] if output else ""
+        return shorten(first)
+    if isinstance(output, list):
+        if not output:
+            return "[]"
+        first = output[0]
+        if isinstance(first, str):
+            return f"[{shorten(first)}]"
+        return shorten(json.dumps(first, ensure_ascii=False))
+    if isinstance(output, dict):
+        return shorten(json.dumps(output, ensure_ascii=False))
+    return shorten(str(output))
+
+
 def summarize_record(obj: dict) -> str | None:
     ts = obj.get("timestamp", "?")
     typ = obj.get("type")
@@ -122,9 +138,8 @@ def summarize_record(obj: dict) -> str | None:
         name = payload.get("name")
         return f"{ts} call {name}"
     if item_type in {"function_call_output", "custom_tool_call_output"}:
-        out = payload.get("output", "")
-        first = out.splitlines()[0] if out else ""
-        return f"{ts} output {shorten(first)}"
+        output = payload.get("output", "")
+        return f"{ts} output {summarize_output(output)}"
     if item_type == "message":
         role = payload.get("role")
         texts = []
