@@ -263,7 +263,17 @@ impl LiveThread {
                     });
                     break;
                 }
-                Err(_err) if attempt_committed > 0 && committed < raw_items.len() => continue,
+                Err(err) if attempt_committed > 0 && committed < raw_items.len() => {
+                    warn!(
+                        thread_id = ?self.thread_id,
+                        ?err,
+                        attempt_committed,
+                        committed,
+                        total = raw_items.len(),
+                        "thread store append failed partially; retrying remaining suffix"
+                    );
+                    continue;
+                }
                 Err(err) => {
                     append_error = Some(err);
                     break;
@@ -281,11 +291,11 @@ impl LiveThread {
                 None,
             )
         };
-        if !committed_raw_items.is_empty()
-            && let Some(measurement) = measurement.as_ref()
-        {
-            self.persistence_telemetry
-                .record_batch(committed_raw_items, measurement);
+        if let Some(measurement) = measurement.as_ref() {
+            if !committed_raw_items.is_empty() {
+                self.persistence_telemetry
+                    .record_batch(committed_raw_items, measurement);
+            }
         }
         (items, append_error)
     }
