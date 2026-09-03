@@ -120,13 +120,10 @@ impl ThreadStore for GatedThreadStore {
             if self.partial_append_once.swap(false, Ordering::SeqCst) && !params.items.is_empty() {
                 let thread_id = params.thread_id;
                 let first = params.items.remove(0);
-                ThreadStore::append_items(
-                    self.inner.as_ref(),
-                    AppendThreadItemsParams {
-                        thread_id,
-                        items: vec![first],
-                    },
-                )
+                self.append_items(AppendThreadItemsParams {
+                    thread_id,
+                    items: vec![first],
+                })
                 .await?;
                 *committed = 1;
                 return Err(ThreadStoreError::Internal {
@@ -134,7 +131,7 @@ impl ThreadStore for GatedThreadStore {
                 });
             }
             let item_count = params.items.len();
-            ThreadStore::append_items(self.inner.as_ref(), params).await?;
+            self.append_items(params).await?;
             *committed = item_count;
             Ok(())
         })
