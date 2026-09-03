@@ -644,9 +644,11 @@ mod tests {
             )
             .await
             .expect_err("the original deadline must not reset after interleaved messages");
-        assert!(error
-            .to_string()
-            .contains("timed out waiting for exec-server websocket event"));
+        assert!(
+            error
+                .to_string()
+                .contains("timed out waiting for exec-server websocket event")
+        );
 
         server.await??;
         Ok(())
