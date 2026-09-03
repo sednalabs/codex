@@ -195,7 +195,14 @@ async fn run_remote_compact_task_inner(
         .await;
     match result {
         Ok(()) => Ok(()),
-        Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => Err(err),
+        Err(err)
+            if matches!(
+                err.details(),
+                CodexErrorDetails::TurnAborted | CodexErrorDetails::AutomaticTurnContextChanged
+            ) =>
+        {
+            Err(err)
+        }
         Err(err) => {
             sess.track_turn_codex_error(turn_context, &err);
             let event = EventMsg::Error(

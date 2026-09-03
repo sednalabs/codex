@@ -783,6 +783,10 @@ pub(crate) struct ChatWidget {
     external_editor_state: ExternalEditorState,
     last_rendered_user_message_display: Option<UserMessageDisplay>,
     last_non_retry_error: Option<(String, String)>,
+    /// Capability attached by the app-server to the current policy error. This is never
+    /// synthesized by the client and is cleared with the associated error.
+    automatic_turn_capability: Option<String>,
+    automatic_turn_trigger_id: Option<String>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]

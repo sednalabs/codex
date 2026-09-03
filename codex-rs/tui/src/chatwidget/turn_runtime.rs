@@ -387,7 +387,7 @@ impl ChatWidget {
         true
     }
 
-    pub(super) fn on_cyber_policy_error(&mut self, from_replay: bool) {
+    pub(super) fn on_cyber_policy_error(&mut self, from_replay: bool, capability: Option<String>) {
         // Policy enforcement remains server-side. These opt-in retries preserve the original
         // thread and context and use the normal submission path; do not rewrite or drop context,
         // switch models, or otherwise route around the policy decision here.
@@ -410,6 +410,8 @@ impl ChatWidget {
         // Keep the generated follow-up visible in the transcript without adding it to the user's
         // cross-session composer history.
         if should_auto_continue
+            && capability.is_some()
+            && self.automatic_turn_capability.is_some()
             && self.submit_user_message_with_history_record(
                 UserMessage::from(CYBER_POLICY_AUTO_CONTINUE_PROMPT),
                 UserMessageHistoryRecord::Override(UserMessageHistoryOverride {
@@ -477,6 +479,7 @@ impl ChatWidget {
         message: String,
         codex_error_info: Option<AppServerCodexErrorInfo>,
         from_replay: bool,
+        capability: Option<String>,
     ) {
         if codex_error_info
             .as_ref()
@@ -486,7 +489,7 @@ impl ChatWidget {
             .as_ref()
             .is_some_and(is_app_server_cyber_policy_error)
         {
-            self.on_cyber_policy_error(from_replay);
+            self.on_cyber_policy_error(from_replay, capability);
         } else if is_safety_access_block_message(&message)
             || serde_json::from_str::<serde_json::Value>(&message).is_ok_and(|response| {
                 response["error"]["code"].as_str() == Some("bio_policy")

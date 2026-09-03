@@ -81,6 +81,10 @@ pub(super) async fn run_remote_compact_attempt(
         CodexResponsesRequestKind::Compaction(compaction_metadata),
     );
     let mut capacity_retries = 0;
+    let expected_authority = sess
+        .services
+        .automatic_turn_provider_authority(&turn_context.sub_id)
+        .await;
     let new_history = loop {
         let result = sess
             .services
@@ -89,6 +93,7 @@ pub(super) async fn run_remote_compact_attempt(
                 &prompt,
                 &turn_context.model_info,
                 turn_state.clone(),
+                expected_authority,
                 CompactConversationRequestSettings {
                     effort: turn_context.reasoning_effort.clone(),
                     summary: turn_context.reasoning_summary,

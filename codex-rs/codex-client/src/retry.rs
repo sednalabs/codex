@@ -55,9 +55,25 @@ where
     F: Fn(Request, u64) -> Fut,
     Fut: Future<Output = Result<T, TransportError>>,
 {
+    run_with_retry_attempt(policy, move |attempt| op(make_req(), attempt)).await
+}
+
+/// Runs the observable application retry loop when each attempt must perform asynchronous setup
+/// before it can construct a request.
+///
+/// This is intentionally separate from any transport-internal recovery. The caller receives one
+/// bounded attempt number at a time, so authority resolution and request construction remain inside
+/// the same visible retry budget.
+pub async fn run_with_retry_attempt<T, F, Fut>(
+    policy: RetryPolicy,
+    mut op: F,
+) -> Result<T, TransportError>
+where
+    F: FnMut(u64) -> Fut,
+    Fut: Future<Output = Result<T, TransportError>>,
+{
     for attempt in 0..=policy.max_attempts {
-        let req = make_req();
-        match op(req, attempt).await {
+        match op(attempt).await {
             Ok(resp) => return Ok(resp),
             Err(err)
                 if policy

@@ -587,6 +587,14 @@ impl Session {
             Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
                 (None, Some(TurnAbortReason::Interrupted))
             }
+            Err(err)
+                if matches!(
+                    err.details(),
+                    CodexErrorDetails::AutomaticTurnContextChanged
+                ) =>
+            {
+                (None, Some(TurnAbortReason::Replaced))
+            }
             Err(err) => {
                 warn!(%err, "session task returned an unexpected error");
                 (None, None)

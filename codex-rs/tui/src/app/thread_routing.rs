@@ -645,6 +645,7 @@ impl App {
             }
             AppCommand::UserTurn {
                 items,
+                client_user_message_id,
                 cwd,
                 approval_policy,
                 approvals_reviewer,
@@ -663,7 +664,12 @@ impl App {
                     let mut retried_after_turn_mismatch = false;
                     loop {
                         match app_server
-                            .turn_steer(thread_id, steer_turn_id.clone(), items.to_vec())
+                            .turn_steer(
+                                thread_id,
+                                steer_turn_id.clone(),
+                                items.to_vec(),
+                                client_user_message_id.clone(),
+                            )
                             .await
                         {
                             Ok(_) => return Ok(true),
@@ -737,6 +743,7 @@ impl App {
                         .turn_start(
                             thread_id,
                             items.to_vec(),
+                            client_user_message_id.clone(),
                             cwd.clone(),
                             *approval_policy,
                             approvals_reviewer,

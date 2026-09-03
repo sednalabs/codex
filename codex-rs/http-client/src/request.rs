@@ -4,7 +4,96 @@ use http::HeaderValue;
 use http::Method;
 use serde::Serialize;
 use serde_json::Value;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
+
+/// Single-use authority retained until a concrete transport accepts ownership of a request.
+///
+/// Clones share one claim bit, so a retry, reconnect, or duplicate send cannot reuse authority
+/// admitted for an earlier attempt. The held value is intentionally opaque and never formatted.
+#[derive(Clone)]
+pub struct RequestInitiation {
+    state: Arc<RequestInitiationState>,
+}
+
+struct RequestInitiationState {
+    inner: Mutex<RequestInitiationInner>,
+}
+
+struct RequestInitiationInner {
+    claimed: bool,
+    authority: Option<Box<dyn Send + 'static>>,
+}
+
+impl std::fmt::Debug for RequestInitiation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RequestInitiation(<redacted>)")
+    }
+}
+
+impl RequestInitiation {
+    pub fn new<T: Send + 'static>(authority: T) -> Self {
+        Self {
+            state: Arc::new(RequestInitiationState {
+                inner: Mutex::new(RequestInitiationInner {
+                    claimed: false,
+                    authority: Some(Box::new(authority)),
+                }),
+            }),
+        }
+    }
+
+    /// Claims the one send that this authority snapshot admitted.
+    pub fn claim(&self) -> Result<ClaimedRequestInitiation, String> {
+        let mut inner = self
+            .state
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if inner.claimed {
+            return Err("request initiation authority was already consumed".to_string());
+        }
+        inner.claimed = true;
+        drop(inner);
+        Ok(ClaimedRequestInitiation {
+            initiation: Some(self.clone()),
+        })
+    }
+
+    /// Releases authority without admitting a send, for a pre-transport failure or cancellation.
+    pub fn cancel(&self) {
+        let mut inner = self
+            .state
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner.claimed = true;
+        inner.authority.take();
+    }
+}
+
+/// An exactly-once initiation claim. Dropping it releases authority if the transport fails before
+/// acknowledging request ownership.
+pub struct ClaimedRequestInitiation {
+    initiation: Option<RequestInitiation>,
+}
+
+impl ClaimedRequestInitiation {
+    pub fn acknowledge(mut self) {
+        if let Some(initiation) = self.initiation.take() {
+            initiation.cancel();
+        }
+    }
+}
+
+impl Drop for ClaimedRequestInitiation {
+    fn drop(&mut self) {
+        if let Some(initiation) = self.initiation.take() {
+            initiation.cancel();
+        }
+    }
+}
 
 /// A JSON request body serialized once into reference-counted bytes.
 ///
@@ -235,6 +324,28 @@ impl Request {
             headers,
             body: Some(bytes),
         })
+    }
+}
+
+#[cfg(test)]
+mod request_initiation_tests {
+    use super::RequestInitiation;
+
+    #[test]
+    fn cancellation_and_claim_are_single_use_and_secret_safe() {
+        let cancelled = RequestInitiation::new("authority-secret".to_string());
+        let stale = cancelled.clone();
+        cancelled.cancel();
+        assert!(stale.claim().is_err());
+
+        let claimed = RequestInitiation::new("other-secret".to_string());
+        let duplicate = claimed.clone();
+        claimed.claim().expect("first claim should succeed");
+        assert!(duplicate.claim().is_err());
+
+        let debug = format!("{cancelled:?} {claimed:?}");
+        assert!(!debug.contains("authority-secret"));
+        assert!(!debug.contains("other-secret"));
     }
 }
 

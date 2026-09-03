@@ -38,11 +38,13 @@ pub use crate::outbound_proxy::OutboundProxyRoute;
 pub use crate::outbound_proxy::RouteFailureClass;
 #[doc(hidden)]
 pub use crate::outbound_proxy::cache_system_proxy_route_for_test;
+pub use crate::request::ClaimedRequestInitiation;
 pub use crate::request::EncodedJsonBody;
 pub use crate::request::PreparedRequestBody;
 pub use crate::request::Request;
 pub use crate::request::RequestBody;
 pub use crate::request::RequestCompression;
+pub use crate::request::RequestInitiation;
 pub use crate::request::Response;
 pub use crate::route_aware_client_pool::RouteAwareClientPool;
 pub use crate::route_aware_client_pool::RouteAwareClientPoolError;

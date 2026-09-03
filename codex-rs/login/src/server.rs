@@ -21,6 +21,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
@@ -113,6 +114,7 @@ pub struct LoginServer {
     pub actual_port: u16,
     server_handle: tokio::task::JoinHandle<io::Result<()>>,
     shutdown_handle: ShutdownHandle,
+    staged_auth: Arc<Mutex<Option<AuthDotJson>>>,
 }
 
 impl LoginServer {
@@ -121,6 +123,17 @@ impl LoginServer {
         self.server_handle
             .await
             .map_err(|err| io::Error::other(format!("login server thread panicked: {err:?}")))?
+    }
+
+    pub async fn block_until_staged(self) -> io::Result<AuthDotJson> {
+        self.server_handle
+            .await
+            .map_err(|err| io::Error::other(format!("login server thread panicked: {err:?}")))??;
+        self.staged_auth
+            .lock()
+            .map_err(|_| io::Error::other("staged login auth lock is poisoned"))?
+            .take()
+            .ok_or_else(|| io::Error::other("login completed without staged credentials"))
     }
 
     /// Requests shutdown of the callback server.
@@ -149,6 +162,10 @@ impl ShutdownHandle {
 
 /// Starts a local callback server and returns the browser auth URL.
 pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
+    run_login_server_inner(opts, /*defer_persistence*/ false)
+}
+
+fn run_login_server_inner(opts: ServerOptions, defer_persistence: bool) -> io::Result<LoginServer> {
     let pkce = generate_pkce();
     let state = opts.force_state.clone().unwrap_or_else(generate_state);
 
@@ -197,9 +214,11 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
     };
 
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+    let staged_auth = Arc::new(Mutex::new(None));
     let server_handle = {
         let shutdown_notify = shutdown_notify.clone();
         let server = server;
+        let staged_auth = Arc::clone(&staged_auth);
         tokio::spawn(async move {
             let result = loop {
                 tokio::select! {
@@ -220,6 +239,8 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
                                 &pkce,
                                 actual_port,
                                 &state,
+                                &staged_auth,
+                                defer_persistence,
                             )
                             .await;
 
@@ -291,7 +312,12 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
         actual_port,
         server_handle,
         shutdown_handle: ShutdownHandle { shutdown_notify },
+        staged_auth,
     })
+}
+
+pub fn run_login_server_staged(opts: ServerOptions) -> io::Result<LoginServer> {
+    run_login_server_inner(opts, /*defer_persistence*/ true)
 }
 
 /// Internal callback handling outcome.
@@ -313,6 +339,8 @@ async fn process_request(
     pkce: &PkceCodes,
     actual_port: u16,
     state: &str,
+    staged_auth: &Arc<Mutex<Option<AuthDotJson>>>,
+    defer_persistence: bool,
 ) -> HandledRequest {
     let parsed_url = match url::Url::parse(&format!("http://localhost{url_raw}")) {
         Ok(u) => u,
@@ -413,17 +441,40 @@ async fn process_request(
                     )
                     .await
                     .ok();
-                    if let Err(err) = persist_tokens_async(
-                        &opts.codex_home,
+                    let staged = match build_auth_from_tokens_async(
                         api_key.clone(),
                         tokens.id_token.clone(),
                         tokens.access_token.clone(),
                         tokens.refresh_token.clone(),
-                        opts.cli_auth_credentials_store_mode,
-                        opts.auth_keyring_backend_kind,
                     )
                     .await
                     {
+                        Ok(auth) => auth,
+                        Err(err) => {
+                            eprintln!("Persist error: {err}");
+                            return login_error_response(
+                                "Sign-in completed but credentials could not be saved locally.",
+                                io::ErrorKind::Other,
+                                Some("persist_failed"),
+                                Some(&err.to_string()),
+                            );
+                        }
+                    };
+                    let persist_result = if defer_persistence {
+                        staged_auth
+                            .lock()
+                            .map_err(|_| io::Error::other("staged login auth lock is poisoned"))
+                            .map(|mut slot| *slot = Some(staged))
+                    } else {
+                        persist_auth_dot_json_async(
+                            &opts.codex_home,
+                            staged,
+                            opts.cli_auth_credentials_store_mode,
+                            opts.auth_keyring_backend_kind,
+                        )
+                        .await
+                    };
+                    if let Err(err) = persist_result {
                         eprintln!("Persist error: {err}");
                         return login_error_response(
                             "Sign-in completed but credentials could not be saved locally.",
@@ -859,18 +910,12 @@ pub(crate) async fn exchange_code_for_tokens(
     })
 }
 
-/// Persists exchanged credentials using the configured local auth store.
-pub(crate) async fn persist_tokens_async(
-    codex_home: &Path,
+pub(crate) async fn build_auth_from_tokens_async(
     api_key: Option<String>,
     id_token: String,
     access_token: String,
     refresh_token: String,
-    auth_credentials_store_mode: AuthCredentialsStoreMode,
-    keyring_backend_kind: AuthKeyringBackendKind,
-) -> io::Result<()> {
-    // Reuse existing synchronous logic but run it off the async runtime.
-    let codex_home = codex_home.to_path_buf();
+) -> io::Result<AuthDotJson> {
     tokio::task::spawn_blocking(move || {
         let mut tokens = TokenData {
             id_token: parse_chatgpt_jwt_claims(&id_token).map_err(io::Error::other)?,
@@ -884,7 +929,7 @@ pub(crate) async fn persist_tokens_async(
         {
             tokens.account_id = Some(acc.to_string());
         }
-        let auth = AuthDotJson {
+        Ok(AuthDotJson {
             auth_mode: Some(AuthMode::Chatgpt),
             openai_api_key: api_key,
             tokens: Some(tokens),
@@ -892,7 +937,20 @@ pub(crate) async fn persist_tokens_async(
             agent_identity: None,
             personal_access_token: None,
             bedrock_api_key: None,
-        };
+        })
+    })
+    .await
+    .map_err(|e| io::Error::other(format!("credential staging task failed: {e}")))?
+}
+
+pub(crate) async fn persist_auth_dot_json_async(
+    codex_home: &Path,
+    auth: AuthDotJson,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> io::Result<()> {
+    let codex_home = codex_home.to_path_buf();
+    tokio::task::spawn_blocking(move || {
         save_auth(
             &codex_home,
             &auth,

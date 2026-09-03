@@ -43,6 +43,7 @@ use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
@@ -88,6 +89,40 @@ pub async fn user_input_or_turn(
     op: Op,
     client_user_message_id: Option<String>,
 ) {
+    if let Some(expected_authority) = sess
+        .services
+        .automatic_turn_provider_authority(&sub_id)
+        .await
+        && sess
+            .services
+            .model_client
+            .current_provider_authority()
+            .await
+            .ok()
+            != Some(expected_authority)
+    {
+        sess.send_event_raw(Event {
+            id: sub_id.clone(),
+            msg: EventMsg::Error(ErrorEvent {
+                message: "automatic turn authentication changed before admission".to_string(),
+                codex_error_info: Some(CodexErrorInfo::Unauthorized),
+            }),
+        })
+        .await;
+        sess.send_event_raw(Event {
+            id: sub_id.clone(),
+            msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                turn_id: Some(sub_id),
+                reason: TurnAbortReason::Replaced,
+                provider_usage: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }),
+        })
+        .await;
+        return;
+    }
     user_input_or_turn_inner(sess, sub_id, op, client_user_message_id).await;
 }
 

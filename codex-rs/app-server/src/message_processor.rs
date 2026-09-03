@@ -312,6 +312,7 @@ impl MessageProcessor {
         let skills_watcher = SkillsWatcher::new(thread_manager.skills_service(), outgoing.clone());
 
         let pending_thread_unloads = Arc::new(Mutex::new(HashSet::new()));
+        let auth_admission = Arc::new(Mutex::new(()));
         let thread_watch_manager =
             crate::thread_status::ThreadWatchManager::new_with_outgoing(outgoing.clone());
         let thread_list_state_permit = Arc::new(Semaphore::new(/*permits*/ 1));
@@ -335,10 +336,12 @@ impl MessageProcessor {
             );
         let account_processor = AccountRequestProcessor::new(
             auth_manager.clone(),
+            Arc::clone(&auth_admission),
             Arc::clone(&thread_manager),
             outgoing.clone(),
             Arc::clone(&config),
             config_manager.clone(),
+            state_db.clone(),
         );
         let apps_processor = AppsRequestProcessor::new(
             auth_manager.clone(),
@@ -434,6 +437,7 @@ impl MessageProcessor {
         );
         let turn_processor = TurnRequestProcessor::new(
             auth_manager.clone(),
+            Arc::clone(&auth_admission),
             Arc::clone(&thread_manager),
             outgoing.clone(),
             analytics_events_client.clone(),
@@ -511,8 +515,8 @@ impl MessageProcessor {
         }
     }
 
-    pub(crate) fn clear_runtime_references(&self) {
-        self.account_processor.clear_external_auth();
+    pub(crate) async fn clear_runtime_references(&self) {
+        self.account_processor.clear_external_auth().await;
         self.apps_processor.shutdown();
         self.models_refresh_worker.shutdown();
         self.skills_watcher.shutdown();
@@ -648,6 +652,16 @@ impl MessageProcessor {
 
     pub(crate) fn thread_created_receiver(&self) -> broadcast::Receiver<ThreadId> {
         self.thread_processor.thread_created_receiver()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn config_snapshot_for_test(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<codex_core::ThreadConfigSnapshot> {
+        self.turn_processor
+            .config_snapshot_for_test(thread_id)
+            .await
     }
 
     pub(crate) async fn send_initialize_notifications_to_connection(

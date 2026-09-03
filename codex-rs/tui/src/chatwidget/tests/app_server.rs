@@ -1813,6 +1813,7 @@ async fn app_server_safety_access_errors_render_dedicated_notice() {
         let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
         chat.handle_non_retry_error(
             message, /*codex_error_info*/ None, /*from_replay*/ false,
+            /*capability*/ None,
         );
 
         let cells = drain_insert_history(&mut rx);

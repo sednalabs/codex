@@ -32,6 +32,7 @@ pub(crate) enum AppCommand {
     },
     UserTurn {
         items: Vec<UserInput>,
+        client_user_message_id: Option<String>,
         cwd: PathBuf,
         approval_policy: AskForApproval,
         approvals_reviewer: Option<ApprovalsReviewer>,
@@ -132,6 +133,7 @@ impl AppCommand {
     ) -> Self {
         Self::UserTurn {
             items,
+            client_user_message_id: None,
             cwd,
             approval_policy,
             approvals_reviewer: None,
@@ -144,6 +146,20 @@ impl AppCommand {
             collaboration_mode,
             personality,
         }
+    }
+
+    pub(crate) fn with_client_user_message_id(
+        mut self,
+        client_user_message_id: Option<String>,
+    ) -> Self {
+        if let Self::UserTurn {
+            client_user_message_id: current,
+            ..
+        } = &mut self
+        {
+            *current = client_user_message_id;
+        }
+        self
     }
 
     #[allow(clippy::too_many_arguments)]

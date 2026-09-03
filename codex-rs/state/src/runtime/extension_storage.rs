@@ -4,6 +4,8 @@ use sqlx::SqlitePool;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+mod automatic_turns;
+
 pub(crate) const USAGE_LEDGER_STORAGE_ID: ExtensionStorageId =
     ExtensionStorageId::new("usage-ledger");
 pub(crate) const PHASE2_ATTESTATION_STORAGE_ID: ExtensionStorageId =

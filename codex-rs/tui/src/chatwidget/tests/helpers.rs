@@ -430,20 +430,31 @@ pub(super) fn handle_error(
     message: impl Into<String>,
     codex_error_info: Option<CodexErrorInfo>,
 ) {
+    let turn_id = chat
+        .turn_lifecycle
+        .last_turn_id
+        .clone()
+        .unwrap_or_else(|| "turn-1".to_string());
+    let additional_details = codex_error_info
+        .as_ref()
+        .is_some_and(|info| matches!(info, &CodexErrorInfo::CyberPolicy))
+        .then(|| {
+            codex_protocol::automatic_turn::AutomaticTurnProvenance::capability_details(
+                &turn_id,
+                "test-capability",
+            )
+        })
+        .flatten();
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
                 message: message.into(),
                 codex_error_info,
-                additional_details: None,
+                additional_details,
             },
             will_retry: false,
             thread_id: thread_id(chat),
-            turn_id: chat
-                .turn_lifecycle
-                .last_turn_id
-                .clone()
-                .unwrap_or_else(|| "turn-1".to_string()),
+            turn_id,
         }),
         /*replay_kind*/ None,
     );

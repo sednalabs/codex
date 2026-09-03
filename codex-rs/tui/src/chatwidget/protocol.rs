@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::automatic_turn::AutomaticTurnProvenance;
 
 impl ChatWidget {
     pub(crate) fn handle_server_notification(
@@ -60,6 +61,8 @@ impl ChatWidget {
             ServerNotification::TurnStarted(notification) => {
                 self.turn_lifecycle.last_turn_id = Some(notification.turn.id);
                 self.last_non_retry_error = None;
+                self.automatic_turn_capability = None;
+                self.automatic_turn_trigger_id = None;
                 if !matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages)) {
                     self.on_task_started();
                 }
@@ -132,14 +135,25 @@ impl ChatWidget {
                         );
                     }
                 } else {
+                    (
+                        self.automatic_turn_trigger_id,
+                        self.automatic_turn_capability,
+                    ) = AutomaticTurnProvenance::trigger_and_capability_from_details(
+                        notification.error.additional_details.as_deref(),
+                    )
+                    .map_or((None, None), |(trigger, capability)| {
+                        (Some(trigger), Some(capability))
+                    });
                     self.last_non_retry_error = Some((
                         notification.turn_id.clone(),
                         notification.error.message.clone(),
                     ));
+                    let automatic_turn_capability = self.automatic_turn_capability.clone();
                     self.handle_non_retry_error(
                         notification.error.message,
                         notification.error.codex_error_info,
                         from_replay,
+                        automatic_turn_capability,
                     );
                 }
             }
@@ -284,6 +298,8 @@ impl ChatWidget {
                     );
                 }
                 self.last_non_retry_error = None;
+                self.automatic_turn_capability = None;
+                self.automatic_turn_trigger_id = None;
                 self.on_task_complete(
                     last_agent_message.map(|(_, _, text)| text),
                     notification.turn.duration_ms,
@@ -296,6 +312,8 @@ impl ChatWidget {
             }
             TurnStatus::Interrupted => {
                 self.last_non_retry_error = None;
+                self.automatic_turn_capability = None;
+                self.automatic_turn_trigger_id = None;
                 let reason = if self
                     .turn_lifecycle
                     .take_budget_limited(notification.turn.id.as_str())
@@ -312,15 +330,20 @@ impl ChatWidget {
                         == Some(&(notification.turn.id.clone(), error.message.clone()))
                     {
                         self.last_non_retry_error = None;
+                        self.automatic_turn_capability = None;
+                        self.automatic_turn_trigger_id = None;
                     } else {
                         self.handle_non_retry_error(
                             error.message,
                             error.codex_error_info,
                             replay_kind.is_some(),
+                            /*capability*/ None,
                         );
                     }
                 } else {
                     self.last_non_retry_error = None;
+                    self.automatic_turn_capability = None;
+                    self.automatic_turn_trigger_id = None;
                     self.finalize_turn();
                     self.cyber_policy_auto_continue_attempts = 0;
                     self.request_redraw();

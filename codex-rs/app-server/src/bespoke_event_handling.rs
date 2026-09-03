@@ -2,6 +2,8 @@ use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
 use crate::outgoing_message::ClientRequestResult;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
+use crate::outgoing_message::is_current_automatic_turn_principal;
+use crate::outgoing_message::parse_automatic_turn_connection_principal;
 use crate::request_processors::populate_thread_turns_from_history;
 use crate::request_processors::thread_from_stored_thread;
 use crate::request_processors::thread_settings_from_core_snapshot;
@@ -91,7 +93,9 @@ use codex_app_server_protocol::guardian_auto_approval_review_notification;
 use codex_app_server_protocol::item_event_to_server_notification;
 use codex_core::CodexThread;
 use codex_core::ThreadManager;
+use codex_core::automatic_turn_context_fingerprint;
 use codex_protocol::ThreadId;
+use codex_protocol::automatic_turn::AutomaticTurnProvenance;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::models::AdditionalPermissionProfile as CoreAdditionalPermissionProfile;
@@ -1023,19 +1027,108 @@ pub(crate) async fn apply_bespoke_event_handling(
                 return;
             }
 
+            let (additional_details, capability_owner) = if ev
+                .codex_error_info
+                .as_ref()
+                .is_some_and(|info| matches!(info, &CoreCodexErrorInfo::CyberPolicy))
+            {
+                // The state projection has already armed the ticket before this event is
+                // delivered. Read the exact server-selected trigger/capability pair and carry it
+                // through the existing internal details channel. Missing state fails closed.
+                match conversation.state_db() {
+                    Some(state_db) => match state_db
+                        .automatic_turn_capability_for_turn_with_principal(
+                            conversation_id,
+                            &event_turn_id,
+                        )
+                        .await
+                    {
+                        Some((trigger_turn_id, capability, principal)) => {
+                            let context_fingerprint = automatic_turn_context_fingerprint(
+                                &conversation.config_snapshot().await,
+                            );
+                            let contract_bound = state_db
+                                .bind_automatic_turn_capability_contract(
+                                    conversation_id,
+                                    &trigger_turn_id,
+                                    &capability,
+                                    "start",
+                                    /*expected_turn_id*/ None,
+                                    &context_fingerprint,
+                                )
+                                .await
+                                .unwrap_or(false);
+                            let subscribed = outgoing.connection_ids();
+                            let owner = principal
+                                .as_deref()
+                                .filter(|principal| is_current_automatic_turn_principal(principal))
+                                .and_then(parse_automatic_turn_connection_principal)
+                                .map(|(_, connection_id)| connection_id)
+                                .filter(|connection_id| subscribed.contains(connection_id));
+                            (
+                                contract_bound.then_some(owner).flatten().and_then(|_| {
+                                    AutomaticTurnProvenance::capability_details(
+                                        &trigger_turn_id,
+                                        &capability,
+                                    )
+                                }),
+                                owner,
+                            )
+                        }
+                        None => (None, None),
+                    },
+                    None => (None, None),
+                }
+            } else {
+                (None, None)
+            };
+
             let turn_error = TurnError {
                 message: ev.message,
                 codex_error_info: ev.codex_error_info.map(V2CodexErrorInfo::from),
-                additional_details: None,
+                additional_details,
             };
-            handle_error_notification(
-                conversation_id,
-                &event_turn_id,
-                turn_error,
-                &outgoing,
-                &thread_state,
-            )
-            .await;
+            if let Some(owner) = capability_owner {
+                let non_owners = outgoing
+                    .connection_ids()
+                    .iter()
+                    .copied()
+                    .filter(|connection_id| *connection_id != owner)
+                    .collect::<Vec<_>>();
+                if !non_owners.is_empty() {
+                    let mut non_owner_error = turn_error.clone();
+                    non_owner_error.additional_details = None;
+                    handle_error_notification(
+                        conversation_id,
+                        &event_turn_id,
+                        non_owner_error,
+                        &outgoing.for_connections(non_owners),
+                        &thread_state,
+                    )
+                    .await;
+                }
+                handle_error_notification(
+                    conversation_id,
+                    &event_turn_id,
+                    turn_error,
+                    &outgoing.for_connections(vec![owner]),
+                    &thread_state,
+                )
+                .await;
+            } else {
+                // Without a server-selected owner, fail closed and never broadcast a bearer
+                // capability. The event itself remains visible to all subscribers.
+                let mut redacted_error = turn_error;
+                redacted_error.additional_details = None;
+                handle_error_notification(
+                    conversation_id,
+                    &event_turn_id,
+                    redacted_error,
+                    &outgoing,
+                    &thread_state,
+                )
+                .await;
+            }
         }
         EventMsg::StreamError(ev) => {
             // We don't need to update the turn summary store for stream errors as they are intermediate error states for retries,
@@ -1716,7 +1809,12 @@ async fn handle_error_notification(
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
-    handle_error(conversation_id, error.clone(), thread_state).await;
+    // Keep the one-shot retry capability on the immediate Error notification only. It must not
+    // be copied into the later TurnCompleted summary, where it would be replayed to clients that
+    // cannot participate in the automatic operation.
+    let mut summary_error = error.clone();
+    summary_error.additional_details = None;
+    handle_error(conversation_id, summary_error, thread_state).await;
     outgoing
         .send_server_notification(ServerNotification::Error(ErrorNotification {
             error,
