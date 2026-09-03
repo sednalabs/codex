@@ -329,6 +329,7 @@ impl Session {
         turn_context: &TurnContext,
         selected_capability_roots: &[ResolvedSelectedCapabilityRoot],
         required_servers: &[String],
+        required_plugins: &HashSet<String>,
     ) -> Arc<codex_mcp::McpBinding> {
         let ready_selected_capability_roots =
             Self::ready_selected_capability_roots(selected_capability_roots);
@@ -365,7 +366,7 @@ impl Session {
         if let Some(binding) = self
             .services
             .mcp_runtime
-            .current_binding_with_required_servers(&required_servers)
+            .current_binding_with_requirements(&required_servers, required_plugins)
             .await
         {
             return binding;

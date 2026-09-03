@@ -9072,6 +9072,7 @@ async fn refresh_mcp_servers_uses_latest_state_for_existing_turns() {
             &turn_context,
             /*selected_capability_roots*/ &[],
             /*required_servers*/ &[],
+            /*required_plugins*/ &HashSet::new(),
         )
         .await;
 

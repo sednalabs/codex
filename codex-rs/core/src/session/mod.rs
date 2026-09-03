@@ -3459,6 +3459,7 @@ impl Session {
             turn_context,
             cancellation_token,
             /*required_servers*/ &[],
+            /*required_plugins*/ &HashSet::new(),
         )
         .await
     }
@@ -3468,9 +3469,15 @@ impl Session {
         turn_context: Arc<TurnContext>,
         cancellation_token: &CancellationToken,
         required_servers: &[String],
+        required_plugins: &HashSet<String>,
     ) -> CodexResult<Arc<StepContext>> {
         let step_context = self
-            .capture_step_context_inner(turn_context, cancellation_token, required_servers)
+            .capture_step_context_inner(
+                turn_context,
+                cancellation_token,
+                required_servers,
+                required_plugins,
+            )
             .await?;
         self.set_last_known_step_context(&step_context).await;
         Ok(step_context)
@@ -3487,6 +3494,7 @@ impl Session {
             turn_context,
             cancellation_token,
             /*required_servers*/ &[],
+            /*required_plugins*/ &HashSet::new(),
         )
         .await
     }
@@ -3497,6 +3505,7 @@ impl Session {
         turn_context: Arc<TurnContext>,
         cancellation_token: &CancellationToken,
         required_servers: &[String],
+        required_plugins: &HashSet<String>,
     ) -> CodexResult<Arc<StepContext>> {
         // Capture once before asynchronous planning; all request consumers
         // retain this immutable settings version even if the turn is updated.
@@ -3574,6 +3583,7 @@ impl Session {
                     turn_context.as_ref(),
                     &selected_capability_roots,
                     required_servers,
+                    required_plugins,
                 ),
                 turn::prepare_tool_recommendations(self.as_ref(), turn_context.as_ref()),
             )
