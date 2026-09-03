@@ -4,8 +4,10 @@
 //! against an in-memory store. Initialization may save tokenless client credentials, which
 //! this refresh adapter does not support.
 //!
-//! RMCP must hold the credential lock across its authoritative reread, token exchange, and
-//! save. Saves and clears require an active guard; no store operation reacquires the lock.
+//! Ordinary token reads use the cached credentials. Refresh-guard acquisition rereads
+//! the pinned store before RMCP exchanges the token and saves the result. Codex
+//! preparation rechecks freshness under that guard before asking RMCP to refresh.
+//! Saves and clears require an active guard; no store operation reacquires the lock.
 //! The runtime snapshot advances only for credentials compatible with this connection,
 //! so replacement logins still cause a rebuild.
 //! Synchronous store operations run off the Tokio workers so caller deadlines remain pollable.
@@ -22,10 +24,14 @@ use futures::future::BoxFuture;
 use oauth2::Scope;
 use oauth2::TokenResponse;
 use rmcp::transport::auth::AuthError;
+use rmcp::transport::auth::AuthorizationManager;
+use rmcp::transport::auth::CredentialRefreshGuard;
 use rmcp::transport::auth::CredentialStore;
 use rmcp::transport::auth::StoredCredentials;
 use tokio::sync::Mutex;
 use tracing::warn;
+
+use crate::oauth_http_client::PROACTIVE_REFRESH_TIMEOUT;
 
 use super::RefreshCredentialLock;
 use super::ResolvedOAuthCredentialStore;
@@ -33,10 +39,14 @@ use super::StoredOAuthTokens;
 use super::WrappedOAuthTokenResponse;
 use super::normalized_oauth_credentials;
 use super::refresh_expires_in_from_timestamp;
+use super::refresh_transaction::REFRESH_REQUEST_TIMEOUT;
+use super::token_needs_refresh;
+use super::validate_refresh_token_issuer;
 
 #[derive(Clone)]
 pub(crate) struct OAuthCredentialStore<K = DefaultKeyringStore> {
     inner: Arc<OAuthCredentialStoreInner<K>>,
+    held_refresh_guard: Option<Arc<RefreshCredentialLock>>,
 }
 
 struct OAuthCredentialStoreInner<K> {
@@ -67,6 +77,39 @@ impl<K: KeyringStore + Clone + 'static> OAuthCredentialStore<K> {
                 last_credentials: Mutex::new(Some(tokens)),
                 refresh_guard: Mutex::new(Weak::new()),
             }),
+            held_refresh_guard: None,
+        }
+    }
+
+    pub(crate) async fn refresh_if_needed(&self, manager: &mut AuthorizationManager) -> Result<()> {
+        let guard = self.acquire_transaction_guard().await?;
+        let tokens = self
+            .inner
+            .last_credentials
+            .lock()
+            .await
+            .clone()
+            .ok_or(AuthError::AuthorizationRequired)?;
+        if !token_needs_refresh(tokens.expires_at) {
+            return Ok(());
+        }
+        let metadata = manager.resolve_metadata().await?.metadata;
+        validate_refresh_token_issuer(&metadata, &tokens)?;
+        manager.set_metadata(metadata);
+        manager.configure_client_id(&tokens.client_id)?;
+        // Reuse the guard for RMCP's exchange and save after the locked freshness check.
+        manager.set_credential_store(Self {
+            inner: Arc::clone(&self.inner),
+            held_refresh_guard: Some(guard),
+        });
+        let result = PROACTIVE_REFRESH_TIMEOUT
+            .scope(REFRESH_REQUEST_TIMEOUT, manager.refresh_token())
+            .await;
+        manager.set_credential_store(self.clone());
+        match result {
+            Ok(_) => Ok(()),
+            Err(AuthError::TokenRefreshRejected(_)) => Err(AuthError::AuthorizationRequired.into()),
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -74,11 +117,27 @@ impl<K: KeyringStore + Clone + 'static> OAuthCredentialStore<K> {
         normalized_oauth_credentials(self.inner.last_credentials.lock().await.as_ref())
     }
 
-    pub(crate) async fn acquire_transaction_guard(&self) -> Result<Arc<RefreshCredentialLock>> {
+    pub(crate) async fn acquire_transaction_guard(
+        &self,
+    ) -> Result<Arc<RefreshCredentialLock>, AuthError> {
         let guard = Arc::new(
             RefreshCredentialLock::acquire_for_server(&self.inner.server_name, &self.inner.url)
-                .await?,
+                .await
+                .map_err(credential_store_error)?,
         );
+        let inner = Arc::clone(&self.inner);
+        let tokens = tokio::task::spawn_blocking(move || {
+            inner
+                .store
+                .load(&inner.keyring, &inner.server_name, &inner.url)
+        })
+        .await
+        .context("OAuth credential load task failed")
+        .map_err(credential_store_error)?
+        .map_err(credential_store_error)?
+        .ok_or(AuthError::AuthorizationRequired)?;
+        self.validate_connection(&tokens)?;
+        *self.inner.last_credentials.lock().await = Some(tokens);
         *self.inner.refresh_guard.lock().await = Arc::downgrade(&guard);
         Ok(guard)
     }
@@ -111,25 +170,13 @@ impl<K: KeyringStore + Clone + 'static> CredentialStore for OAuthCredentialStore
         Self: 'async_trait,
     {
         Box::pin(async move {
-            let inner = Arc::clone(&self.inner);
-            let Some(tokens) = tokio::task::spawn_blocking(move || {
-                inner
-                    .store
-                    .load(&inner.keyring, &inner.server_name, &inner.url)
-            })
-            .await
-            .context("OAuth credential load task failed")
-            .map_err(credential_store_error)?
-            .map_err(credential_store_error)?
-            else {
-                // Do not acknowledge removal as a live connection update: reconciliation
-                // must see that this connection still belongs to the previous credentials.
-                return Ok(None);
-            };
-            self.validate_connection(&tokens)?;
-            let credentials = rmcp_credentials(&tokens);
-            *self.inner.last_credentials.lock().await = Some(tokens);
-            Ok(Some(credentials))
+            Ok(self
+                .inner
+                .last_credentials
+                .lock()
+                .await
+                .as_ref()
+                .map(rmcp_credentials))
         })
     }
 
@@ -228,10 +275,26 @@ impl<K: KeyringStore + Clone + 'static> CredentialStore for OAuthCredentialStore
             .map_err(credential_store_error)
         })
     }
+
+    fn acquire_refresh_guard<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> BoxFuture<'async_trait, Result<Option<CredentialRefreshGuard>, AuthError>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let guard = match &self.held_refresh_guard {
+                Some(guard) => Arc::clone(guard),
+                None => self.acquire_transaction_guard().await?,
+            };
+            Ok(Some(CredentialRefreshGuard::new(guard)))
+        })
+    }
 }
 
 fn credential_store_error(error: anyhow::Error) -> AuthError {
-    AuthError::InternalError(format!("{error:#}"))
+    AuthError::CredentialStoreError(format!("{error:#}"))
 }
 
 fn rmcp_credentials(tokens: &StoredOAuthTokens) -> StoredCredentials {

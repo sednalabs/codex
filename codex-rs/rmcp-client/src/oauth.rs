@@ -16,13 +16,13 @@
 //!
 //! If the keyring is not available or fails, we fall back to CODEX_HOME/.credentials.json which is consistent with other coding CLI agents.
 
-#[cfg(test)]
 mod credential_store;
 mod ema_identity;
 mod issuer_binding;
 mod refresh_lock;
 mod refresh_transaction;
 mod resolved_store;
+mod runtime;
 mod store_lock;
 
 #[cfg(test)]
@@ -74,7 +74,6 @@ use tokio::sync::Mutex;
 
 use codex_utils_home_dir::find_codex_home;
 
-#[cfg(test)]
 pub(crate) use self::credential_store::OAuthCredentialStore;
 pub(crate) use self::ema_identity::stored_oidc_identity;
 pub(crate) use self::issuer_binding::validate_authorization_server_endpoints;
@@ -85,6 +84,7 @@ pub(crate) use self::resolved_store::ResolvedOAuthCredentialStore;
 pub(crate) use self::resolved_store::ResolvedOAuthTokens;
 pub(crate) use self::resolved_store::resolve_oauth_tokens_from_store_policy;
 use self::resolved_store::try_resolve_oauth_tokens_from_store_policy;
+pub(crate) use self::runtime::OAuthRuntime;
 
 const KEYRING_SERVICE: &str = "Codex MCP Credentials";
 const MCP_OAUTH_SECRET_PREFIX: &str = "MCP_OAUTH";
@@ -440,12 +440,13 @@ enum OAuthKeyringLoadError {
     Backend(#[from] anyhow::Error),
 }
 
-pub fn save_oauth_tokens(
+pub async fn save_oauth_tokens(
     server_name: &str,
     tokens: &StoredOAuthTokens,
     store_mode: OAuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<()> {
+    let _lock = RefreshCredentialLock::acquire_for_server(server_name, &tokens.url).await?;
     let keyring_store = DefaultKeyringStore;
     match store_mode {
         OAuthCredentialsStoreMode::Auto => save_oauth_tokens_with_keyring_with_fallback_to_file(
@@ -585,12 +586,13 @@ fn save_oauth_tokens_with_keyring_with_fallback_to_file<K: KeyringStore + Clone 
     }
 }
 
-pub fn delete_oauth_tokens(
+pub async fn delete_oauth_tokens(
     server_name: &str,
     url: &str,
     store_mode: OAuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<bool> {
+    let _lock = RefreshCredentialLock::acquire_for_server(server_name, url).await?;
     let keyring_store = DefaultKeyringStore;
     delete_oauth_tokens_from_keyring_and_file(
         &keyring_store,

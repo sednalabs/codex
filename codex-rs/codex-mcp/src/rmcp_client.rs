@@ -1088,11 +1088,6 @@ pub(crate) async fn make_rmcp_client(
     runtime_auth_provider: Option<SharedAuthProvider>,
     protocol_mode: McpProtocolMode,
 ) -> Result<RmcpClient, StartupOutcomeError> {
-    if oauth_refresh_mode == McpOAuthRefreshMode::Coordinated {
-        warn!(
-            "MCP OAuth refresh coordination is not available in this build; using legacy refresh"
-        );
-    }
     let config = server.config().clone();
     if matches!(config.auth, McpServerAuth::ChatGpt)
         && !config.is_local_environment()
@@ -1215,6 +1210,7 @@ pub(crate) async fn make_rmcp_client(
                 runtime_auth_provider,
                 protocol_mode,
                 redirect_mode,
+                oauth_refresh_mode,
             )
             .await
             .map_err(StartupOutcomeError::from)

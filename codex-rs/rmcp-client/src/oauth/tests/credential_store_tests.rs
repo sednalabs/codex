@@ -51,14 +51,22 @@ async fn mutations_require_and_retain_the_transaction_guard() -> Result<()> {
             store.save(credentials.clone()).await
         };
         assert!(
-            matches!(result, Err(AuthError::InternalError(error)) if error.contains("active refresh guard"))
+            matches!(result, Err(AuthError::CredentialStoreError(error)) if error.contains("active refresh guard"))
         );
         assert_eq!(
             load_oauth_tokens_from_file(&initial.server_name, &initial.url)?.is_none(),
             !clear,
         );
+        // Guard acquisition now rereads storage. Restore the deleted credential first,
+        // then delete it again under the guard so the queued save must recreate it.
+        save_oauth_tokens_to_file(&initial)?;
+        let guard = CredentialStore::acquire_refresh_guard(&store)
+            .await?
+            .expect("coordinated refresh guard");
+        if !clear {
+            store.clear().await?;
+        }
         let aggregate_lock = OAuthStoreLock::acquire_for_write(OAuthStore::File)?;
-        let guard = store.acquire_transaction_guard().await?;
         let mut mutation = if clear {
             store.clear()
         } else {
@@ -117,7 +125,7 @@ async fn save_publishes_only_persisted_credentials() -> Result<()> {
             .expect("durable keyring credentials");
         let mut expected = initial.clone();
         if fail_save {
-            assert!(matches!(result, Err(AuthError::InternalError(_))));
+            assert!(matches!(result, Err(AuthError::CredentialStoreError(_))));
         } else {
             result?;
             expected
@@ -156,9 +164,14 @@ async fn pinned_read_failure_does_not_adopt_fallback_credentials() -> Result<()>
         ResolvedOAuthCredentialStore::Keyring(AuthKeyringBackendKind::Direct),
         keyring,
     );
+    let cached = store.load().await?.expect("cached credentials");
+    assert_eq!(
+        cached.token_response.unwrap().access_token().secret(),
+        initial.token_response.0.access_token().secret()
+    );
     assert!(matches!(
-        store.load().await,
-        Err(AuthError::InternalError(_))
+        store.acquire_transaction_guard().await,
+        Err(AuthError::CredentialStoreError(_))
     ));
     assert_eq!(
         store.stored_credentials().await,
@@ -191,14 +204,21 @@ async fn replacement_or_removal_does_not_acknowledge_a_new_runtime_snapshot() ->
         replacement.issuer = issuer;
         save_oauth_tokens_to_file(&replacement)?;
         assert!(matches!(
-            store.load().await,
+            store.acquire_transaction_guard().await,
             Err(AuthError::AuthorizationRequired)
         ));
         assert_eq!(store.stored_credentials().await, original_snapshot);
     }
-    let _guard = store.acquire_transaction_guard().await?;
+    save_oauth_tokens_to_file(&initial)?;
+    let guard = store.acquire_transaction_guard().await?;
     store.clear().await?;
-    assert!(store.load().await?.is_none());
+    assert!(load_oauth_tokens_from_file(&initial.server_name, &initial.url)?.is_none());
+    drop(guard);
+    assert!(matches!(
+        store.acquire_transaction_guard().await,
+        Err(AuthError::AuthorizationRequired)
+    ));
+    assert!(store.load().await?.is_some());
     assert_eq!(store.stored_credentials().await, original_snapshot);
     Ok(())
 }
@@ -219,7 +239,7 @@ async fn storage_roundtrip_preserves_absolute_and_unknown_expiry() -> Result<()>
         (Some(future_received_at), Some(future_deadline)),
         (None, None),
     ] {
-        let _guard = store.acquire_transaction_guard().await?;
+        let guard = store.acquire_transaction_guard().await?;
         let mut credentials = store.load().await?.unwrap();
         credentials.token_received_at = received_at;
         credentials
@@ -236,6 +256,8 @@ async fn storage_roundtrip_preserves_absolute_and_unknown_expiry() -> Result<()>
             .0
             .set_expires_in(expected_deadline.map(|_| Duration::ZERO).as_ref());
         assert_tokens_match_without_expiry(&durable, &expected);
+        drop(guard);
+        let _guard = store.acquire_transaction_guard().await?;
         let reloaded = store.load().await?.unwrap();
         let expires_in = reloaded.token_response.unwrap().expires_in();
         if let Some(expected_deadline) = expected_deadline {
