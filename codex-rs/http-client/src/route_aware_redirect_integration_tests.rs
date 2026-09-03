@@ -99,6 +99,9 @@ fn spawn_response(
             }
         };
         stream
+            .set_nonblocking(false)
+            .expect("accepted HTTP stream should use blocking reads");
+        stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("read timeout");
         let request = read_http_headers(&mut stream);
