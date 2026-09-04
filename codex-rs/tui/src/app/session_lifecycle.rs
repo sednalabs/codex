@@ -718,7 +718,15 @@ impl App {
                 ThreadLivenessRefreshOutcome::Refreshed
             }
             Err(err) => {
-                if Self::is_terminal_thread_read_error(&err) && !has_replay_channel {
+                // Keep the primary/current row available for picker rendering even when a
+                // terminal read race means its metadata is no longer persisted. Removing that
+                // protected row would hide a valid lineage-truncation notice (and could leave the
+                // picker with no view at all) while the user is still on the session.
+                if Self::is_terminal_thread_read_error(&err)
+                    && !has_replay_channel
+                    && self.primary_thread_id != Some(thread_id)
+                    && self.active_thread_id != Some(thread_id)
+                {
                     self.remove_agent_picker_thread(thread_id);
                     return ThreadLivenessRefreshOutcome::TerminalPruned;
                 }
