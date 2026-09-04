@@ -64,6 +64,7 @@ pub(super) async fn make_test_app() -> App {
         windows_sandbox: WindowsSandboxState::default(),
         thread_event_channels: HashMap::new(),
         temporary_structured_requests: HashMap::new(),
+        pending_thread_titles: HashSet::new(),
         thread_event_listener_tasks: HashMap::new(),
         agent_navigation: AgentNavigationState::default(),
         agents_overview: Default::default(),

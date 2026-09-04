@@ -2582,16 +2582,20 @@ impl App {
                 self.temporary_structured_requests
                     .remove(&temporary_thread_id);
 
+                self.finish_thread_title_generation(thread_id, destination);
                 match destination {
-                    ThreadTitleDestination::Automatic { expected_title } => {
+                    ThreadTitleDestination::Automatic => {
                         if let Ok(response) = result
                             && let Some(title) = super::thread_title::parse_thread_title(&response)
-                            && self.chat_widget.thread_id() == Some(thread_id)
-                            && self.chat_widget.thread_name().as_deref()
-                                == Some(expected_title.as_str())
+                            && let Ok(thread) = app_server
+                                .thread_read(thread_id, /*include_turns*/ false)
+                                .await
+                            && thread.name.is_none()
                         {
                             match app_server.thread_set_name(thread_id, title.clone()).await {
-                                Ok(()) => self.chat_widget.expect_automatic_thread_name(title),
+                                Ok(()) => self
+                                    .chat_widget
+                                    .on_thread_name_updated(thread_id, Some(title)),
                                 Err(error) => {
                                     tracing::debug!(%error, "failed to apply generated thread title");
                                 }

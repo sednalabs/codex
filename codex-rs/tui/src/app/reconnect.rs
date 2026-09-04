@@ -265,6 +265,8 @@ impl App {
         self.pending_plugin_enabled_writes.clear();
         self.pending_hook_enabled_writes.clear();
         self.temporary_structured_requests.clear();
+        self.pending_thread_titles.clear();
+        self.sync_thread_title_progress();
         self.agents_overview.dispatched_requests.clear();
         self.agents_overview.request_id = None;
         self.agents_overview.refresh_pending = false;
