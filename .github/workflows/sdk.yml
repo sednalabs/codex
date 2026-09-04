@@ -59,7 +59,7 @@ jobs:
   sdks:
     if: ${{ inputs.run_typescript }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment:
       name: bazel
       deployment: false
