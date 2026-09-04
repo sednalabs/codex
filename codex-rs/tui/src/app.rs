@@ -126,8 +126,9 @@ use codex_app_server_protocol::SkillErrorInfo;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadItem;
-use codex_app_server_protocol::ThreadLoadedListParams;
+use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadMemoryMode;
+use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStartSource;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnError as AppServerTurnError;
@@ -230,8 +231,14 @@ mod thread_settings;
 
 use self::agent_navigation::AgentNavigationDirection;
 use self::agent_navigation::AgentNavigationState;
+use self::agent_navigation::AgentNavigationUpdate;
 use self::app_server_requests::PendingAppServerRequests;
-use self::loaded_threads::find_loaded_subagent_threads_for_primary;
+use self::loaded_threads::AGENT_PICKER_ROWS_PER_OPEN;
+use self::loaded_threads::LineagePageAdvance;
+use self::loaded_threads::LineagePageBudget;
+use self::loaded_threads::LoadedSubagentAccumulator;
+use self::loaded_threads::LoadedSubagentThread;
+use self::loaded_threads::MAX_RETAINED_SUBAGENT_LINEAGE;
 use self::pending_interactive_replay::PendingInteractiveReplayState;
 use self::platform_actions::*;
 use self::side::SideParentStatus;
@@ -580,6 +587,7 @@ pub(crate) struct App {
     active_thread_rx: Option<mpsc::Receiver<ThreadBufferedEvent>>,
     primary_thread_id: Option<ThreadId>,
     last_subagent_backfill_attempt: Option<ThreadId>,
+    subagent_backfill_progress: Option<session_lifecycle::LoadedSubagentBackfillProgress>,
     primary_session_configured: Option<ThreadSessionState>,
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
     pending_app_server_requests: PendingAppServerRequests,
@@ -1078,6 +1086,7 @@ See the Codex keymap documentation for supported actions and examples."
             active_thread_rx: None,
             primary_thread_id: None,
             last_subagent_backfill_attempt: None,
+            subagent_backfill_progress: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
             pending_app_server_requests: PendingAppServerRequests::default(),
@@ -1091,12 +1100,7 @@ See the Codex keymap documentation for supported actions and examples."
         }
         let initial_session_started_at = Instant::now();
         if let Some(started) = initial_started_thread {
-            let thread_id = started.session.thread_id;
-            if started.blocks_direct_input {
-                app.mark_primary_thread_parent_owned(thread_id);
-            }
-            app.enqueue_primary_thread_session(started.session, started.turns)
-                .await?;
+            let thread_id = app.attach_initial_started_thread(started).await?;
             if should_prompt_for_paused_goal_after_startup_resume {
                 app.maybe_prompt_resume_paused_goal_after_resume(&mut app_server, thread_id)
                     .await;

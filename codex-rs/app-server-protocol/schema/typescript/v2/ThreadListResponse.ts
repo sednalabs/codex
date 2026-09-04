@@ -5,6 +5,19 @@ import type { Thread } from "./Thread";
 
 export type ThreadListResponse = { data: Array<Thread>,
 /**
+ * True only when the server applied the requested `ancestorThreadId` filter.
+ *
+ * Older servers omit this field. Clients must treat an omitted acknowledgement as false.
+ */
+ancestorFilterApplied?: boolean,
+/**
+ * True when the raw descendant relation filled its bounded safety subset.
+ *
+ * The subset is selected before outer filters, so later, newer, or otherwise matching
+ * descendants may be omitted even when `data` is empty. Missing means false.
+ */
+relationLimitReached?: boolean,
+/**
  * Opaque cursor to pass to the next call to continue after the last item.
  * if None, there are no more items to return.
  */

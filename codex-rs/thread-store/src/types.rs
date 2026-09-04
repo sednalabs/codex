@@ -338,6 +338,9 @@ pub struct ThreadPage {
     pub items: Vec<StoredThread>,
     /// Opaque cursor to continue listing.
     pub next_cursor: Option<String>,
+    /// Whether the raw descendant relation filled its bounded safety subset.
+    #[serde(default)]
+    pub relation_limit_reached: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1011,6 +1014,24 @@ mod tests {
                 origin_url: Some(None),
             })
         );
+    }
+
+    #[test]
+    fn thread_page_relation_limit_defaults_false_and_round_trips_true() {
+        let legacy_page: ThreadPage = serde_json::from_value(json!({
+            "items": [],
+            "next_cursor": null,
+        }))
+        .expect("deserialize legacy thread page");
+        assert!(!legacy_page.relation_limit_reached);
+
+        let current_page: ThreadPage = serde_json::from_value(json!({
+            "items": [],
+            "next_cursor": null,
+            "relation_limit_reached": true,
+        }))
+        .expect("deserialize current thread page");
+        assert!(current_page.relation_limit_reached);
     }
 
     fn session_meta(history_mode: ThreadHistoryMode) -> RolloutItem {
