@@ -3993,6 +3993,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-mxc-sandbox"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "appcontainer_common",
+ "codex-protocol",
+ "learning_mode_windows",
+ "tracelogging",
+ "wxc_common",
+]
+
+[[package]]
 name = "codex-network-proxy"
 version = "0.0.0"
 dependencies = [
@@ -4331,7 +4343,7 @@ name = "codex-sandboxing"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "appcontainer_common",
+ "codex-mxc-sandbox",
  "codex-network-proxy",
  "codex-otel",
  "codex-protocol",
@@ -4347,7 +4359,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "tracelogging",
  "tracing",
  "url",
  "which 8.0.0",
