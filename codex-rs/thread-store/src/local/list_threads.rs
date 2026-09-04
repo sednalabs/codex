@@ -62,6 +62,7 @@ pub(super) async fn list_threads(
         .as_ref()
         .and_then(|cursor| serde_json::to_value(cursor).ok())
         .and_then(|value| value.as_str().map(str::to_owned));
+    let relation_limit_reached = page.relation_limit_reached;
     let mut items = page
         .items
         .into_iter()
@@ -85,7 +86,11 @@ pub(super) async fn list_threads(
         }
     }
 
-    Ok(ThreadPage { items, next_cursor })
+    Ok(ThreadPage {
+        items,
+        next_cursor,
+        relation_limit_reached,
+    })
 }
 
 pub(super) async fn list_rollout_threads(
@@ -251,6 +256,7 @@ mod tests {
 
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].model_provider, "test-provider");
+        assert!(!page.relation_limit_reached);
     }
 
     #[tokio::test]

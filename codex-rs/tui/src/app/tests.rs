@@ -55,6 +55,7 @@ use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
 use codex_app_server_protocol::FileUpdateChange;
+use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::McpServerElicitationRequest;
@@ -1426,6 +1427,325 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
 }
 
 #[tokio::test]
+async fn receiver_and_activity_ingress_share_navigation_and_metadata_cap() {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+    assert!(app.upsert_agent_picker_thread(
+        primary_thread_id,
+        Some("Main".to_string()),
+        Some("default".to_string()),
+        /*is_closed*/ false,
+    ));
+    let receiver_thread_ids = (0..codex_state::MAX_THREAD_RELATION_DESCENDANTS)
+        .map(|_| ThreadId::new())
+        .collect::<Vec<_>>();
+    let receiver_notification = ServerNotification::ItemStarted(ItemStartedNotification {
+        thread_id: primary_thread_id.to_string(),
+        turn_id: "turn-cap".to_string(),
+        started_at_ms: 0,
+        item: ThreadItem::CollabAgentToolCall {
+            id: "wait-cap".to_string(),
+            tool: codex_app_server_protocol::CollabAgentTool::Wait,
+            status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: primary_thread_id.to_string(),
+            receiver_thread_ids: receiver_thread_ids
+                .iter()
+                .map(ThreadId::to_string)
+                .collect(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
+            agents_states: HashMap::new(),
+        },
+    });
+
+    app.cache_collab_receiver_threads_for_notification(&receiver_notification);
+
+    let newest_receiver_thread_id = *receiver_thread_ids.last().expect("newest receiver id");
+    let oldest_thread_id = receiver_thread_ids[0];
+    let second_oldest_thread_id = receiver_thread_ids[1];
+    let retained_thread_id = receiver_thread_ids[2];
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids().len(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+    assert_eq!(
+        app.chat_widget.collab_agent_metadata_count(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+    assert!(
+        app.agent_navigation
+            .get(&newest_receiver_thread_id)
+            .is_some()
+    );
+    assert_eq!(app.agent_navigation.get(&oldest_thread_id), None);
+    assert!(!app.chat_widget.has_collab_agent_metadata(oldest_thread_id));
+    assert!(app.upsert_agent_picker_thread(
+        primary_thread_id,
+        Some("Main updated".to_string()),
+        Some("default".to_string()),
+        /*is_closed*/ false,
+    ));
+
+    let live_arrival_thread_id = ThreadId::new();
+    let live_arrival_activity = ServerNotification::ItemStarted(ItemStartedNotification {
+        thread_id: primary_thread_id.to_string(),
+        turn_id: "turn-live-arrival-activity".to_string(),
+        started_at_ms: 0,
+        item: ThreadItem::SubAgentActivity {
+            id: "activity-live-arrival".to_string(),
+            kind: codex_app_server_protocol::SubAgentActivityKind::Started,
+            agent_thread_id: live_arrival_thread_id.to_string(),
+            agent_path: "/root/live-arrival".to_string(),
+            model: None,
+            reasoning_effort: None,
+        },
+    });
+    let retained_activity = ServerNotification::ItemStarted(ItemStartedNotification {
+        thread_id: primary_thread_id.to_string(),
+        turn_id: "turn-retained-activity".to_string(),
+        started_at_ms: 0,
+        item: ThreadItem::SubAgentActivity {
+            id: "activity-retained".to_string(),
+            kind: codex_app_server_protocol::SubAgentActivityKind::Started,
+            agent_thread_id: retained_thread_id.to_string(),
+            agent_path: "/root/retained".to_string(),
+            model: Some("gpt-test".to_string()),
+            reasoning_effort: None,
+        },
+    });
+
+    app.cache_collab_receiver_threads_for_notification(&live_arrival_activity);
+    app.cache_collab_receiver_threads_for_notification(&retained_activity);
+
+    let nonactive_overcap_thread_id = ThreadId::new();
+    app.cache_collab_receiver_threads_for_notification(&ServerNotification::ItemCompleted(
+        ItemCompletedNotification {
+            thread_id: primary_thread_id.to_string(),
+            turn_id: "turn-nonactive-overcap".to_string(),
+            completed_at_ms: 0,
+            item: ThreadItem::SubAgentActivity {
+                id: "activity-nonactive-overcap".to_string(),
+                kind: codex_app_server_protocol::SubAgentActivityKind::Interrupted,
+                agent_thread_id: nonactive_overcap_thread_id.to_string(),
+                agent_path: "/root/nonactive-overcap".to_string(),
+                model: None,
+                reasoning_effort: None,
+            },
+        },
+    ));
+
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids().len(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+    assert_eq!(
+        app.chat_widget.collab_agent_metadata_count(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+    assert!(app.agent_navigation.get(&live_arrival_thread_id).is_some());
+    assert!(
+        app.chat_widget
+            .has_collab_agent_metadata(live_arrival_thread_id)
+    );
+    assert_eq!(app.agent_navigation.get(&second_oldest_thread_id), None);
+    assert!(
+        !app.chat_widget
+            .has_collab_agent_metadata(second_oldest_thread_id)
+    );
+    assert_eq!(app.agent_navigation.get(&nonactive_overcap_thread_id), None);
+    assert!(
+        !app.chat_widget
+            .has_collab_agent_metadata(nonactive_overcap_thread_id)
+    );
+    assert!(
+        app.chat_widget
+            .has_collab_agent_metadata(retained_thread_id)
+    );
+    assert_eq!(
+        app.agent_navigation
+            .get(&retained_thread_id)
+            .and_then(|entry| entry.agent_path.as_deref()),
+        Some("/root/retained")
+    );
+    assert!(
+        app.agent_navigation
+            .get(&retained_thread_id)
+            .is_some_and(|entry| entry.is_running)
+    );
+    assert_eq!(
+        app.agent_navigation
+            .get(&primary_thread_id)
+            .and_then(|entry| entry.agent_nickname.as_deref()),
+        Some("Main updated")
+    );
+    assert_eq!(app.active_thread_id, Some(primary_thread_id));
+}
+
+#[tokio::test]
+async fn active_authoritative_lineage_row_replaces_closed_row_at_capacity() {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+    assert!(app.upsert_agent_picker_thread(
+        primary_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    ));
+    let closed_thread_id = ThreadId::new();
+    assert!(app.upsert_agent_picker_thread(
+        closed_thread_id,
+        Some("Closed".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ true,
+    ));
+    for _ in 2..codex_state::MAX_THREAD_RELATION_DESCENDANTS {
+        assert!(app.upsert_agent_picker_thread(
+            ThreadId::new(),
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+            /*is_closed*/ false,
+        ));
+    }
+
+    let active_thread_id = ThreadId::new();
+    assert!(app.apply_loaded_subagent_thread(LoadedSubagentThread {
+        thread_id: active_thread_id,
+        agent_nickname: Some("Live".to_string()),
+        agent_role: Some("worker".to_string()),
+        agent_path: Some("/root/live".to_string()),
+        blocks_direct_input: true,
+        has_authoritative_input_capability: true,
+        is_running: true,
+        is_closed: false,
+    }));
+
+    assert_eq!(
+        app.agent_navigation.tracked_thread_ids().len(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+    assert_eq!(
+        app.chat_widget.collab_agent_metadata_count(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+    assert!(app.agent_navigation.get(&closed_thread_id).is_none());
+    assert!(!app.chat_widget.has_collab_agent_metadata(closed_thread_id));
+    let active = app
+        .agent_navigation
+        .get(&active_thread_id)
+        .expect("active authoritative row retained");
+    assert_eq!(active.agent_path.as_deref(), Some("/root/live"));
+    assert!(active.is_running);
+    assert!(app.agent_navigation.is_parent_owned(active_thread_id));
+    assert!(app.chat_widget.has_collab_agent_metadata(active_thread_id));
+    assert!(app.agent_navigation.get(&primary_thread_id).is_some());
+
+    let newer_live_thread_id = ThreadId::new();
+    assert!(
+        app.upsert_agent_picker_thread_retaining(
+            newer_live_thread_id,
+            Some("Newer".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+        )
+        .accepted()
+    );
+    assert!(app.agent_navigation.get(&active_thread_id).is_some());
+    assert!(app.agent_navigation.is_parent_owned(active_thread_id));
+    assert!(
+        app.agent_navigation
+            .get(&active_thread_id)
+            .is_some_and(|entry| entry.is_running)
+    );
+    assert!(app.chat_widget.has_collab_agent_metadata(active_thread_id));
+    assert_eq!(
+        app.chat_widget.collab_agent_metadata_count(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+}
+
+#[tokio::test]
+async fn side_thread_admission_at_capacity_evicts_safely_or_rejects_without_cache_drift() {
+    let mut evicting_app = make_test_app().await;
+    let retained_ids = (0..codex_state::MAX_THREAD_RELATION_DESCENDANTS)
+        .map(|_| ThreadId::new())
+        .collect::<Vec<_>>();
+    for thread_id in &retained_ids {
+        assert!(evicting_app.upsert_agent_picker_thread(
+            *thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+            /*is_closed*/ false,
+        ));
+    }
+    let admitted_side_thread_id = ThreadId::new();
+    assert!(evicting_app.admit_side_thread_to_picker(admitted_side_thread_id));
+    assert!(
+        evicting_app
+            .agent_navigation
+            .get(&retained_ids[0])
+            .is_none()
+    );
+    assert!(
+        !evicting_app
+            .chat_widget
+            .has_collab_agent_metadata(retained_ids[0])
+    );
+    assert!(
+        evicting_app
+            .agent_navigation
+            .get(&admitted_side_thread_id)
+            .is_some()
+    );
+    assert!(
+        evicting_app
+            .chat_widget
+            .has_collab_agent_metadata(admitted_side_thread_id)
+    );
+    assert_eq!(
+        evicting_app.agent_navigation.tracked_thread_ids().len(),
+        evicting_app.chat_widget.collab_agent_metadata_count()
+    );
+
+    let mut rejecting_app = make_test_app().await;
+    for _ in 0..codex_state::MAX_THREAD_RELATION_DESCENDANTS {
+        let thread_id = ThreadId::new();
+        assert!(rejecting_app.upsert_agent_picker_thread(
+            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+            /*is_closed*/ false,
+        ));
+        rejecting_app.agent_navigation.mark_running(thread_id);
+    }
+    let rejected_side_thread_id = ThreadId::new();
+    assert!(!rejecting_app.admit_side_thread_to_picker(rejected_side_thread_id));
+    assert!(
+        rejecting_app
+            .agent_navigation
+            .get(&rejected_side_thread_id)
+            .is_none()
+    );
+    assert!(
+        !rejecting_app
+            .chat_widget
+            .has_collab_agent_metadata(rejected_side_thread_id)
+    );
+    assert_eq!(
+        rejecting_app.agent_navigation.tracked_thread_ids().len(),
+        codex_state::MAX_THREAD_RELATION_DESCENDANTS
+    );
+    assert_eq!(
+        rejecting_app.agent_navigation.tracked_thread_ids().len(),
+        rejecting_app.chat_widget.collab_agent_metadata_count()
+    );
+}
+
+#[tokio::test]
 async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
@@ -1811,7 +2131,8 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
 }
 
 #[test]
-fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -> Result<()> {
+fn selected_and_initially_started_threads_preserve_v1_v2_capability_across_switches() -> Result<()>
+{
     const WORKER_THREADS: usize = 1;
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -1874,6 +2195,8 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                 "type": "session_meta",
                 "payload": serde_json::to_value(session_meta)?,
             });
+            // A session-meta-only child has an empty persisted preview. Lineage discovery must
+            // still find it so the server capability can distinguish pathless V1 from V2.
             std::fs::write(rollout_path, format!("{session_meta_line}\n"))?;
 
             assert!(
@@ -1954,13 +2277,11 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
             )
             .await?;
         assert!(resumed.blocks_direct_input);
-        app.replace_chat_widget_with_app_server_thread(
-            &mut tui,
-            resumed,
-            crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,
-            /*initial_user_message*/ None,
-        )
-        .await?;
+        app.reset_thread_event_state();
+        let initial_thread_id = app.attach_initial_started_thread(resumed).await?;
+        assert_eq!(initial_thread_id, child_thread_ids[1]);
+        assert!(app.agent_navigation.get(&initial_thread_id).is_some());
+        assert!(app.agent_navigation.is_parent_owned(initial_thread_id));
         while app_event_rx.try_recv().is_ok() {}
         app.chat_widget
             .restore_user_message_to_composer("direct resume stays view-only".into());
@@ -1968,6 +2289,28 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
+        assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
+        assert!(
+            !std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+        );
+
+        assert!(
+            app.attach_live_thread_for_selection(&mut app_server, child_thread_ids[0])
+                .await?
+        );
+        app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[0])
+            .await?;
+        app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[1])
+            .await?;
+        while app_event_rx.try_recv().is_ok() {}
+        assert_eq!(app.primary_thread_id, Some(child_thread_ids[1]));
+        assert!(app.agent_navigation.is_parent_owned(child_thread_ids[1]));
+        app.chat_widget
+            .restore_user_message_to_composer("switched-back primary stays view-only".into());
+        let draft = app.chat_widget.composer_text_with_pending();
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
         assert!(
             !std::iter::from_fn(|| app_event_rx.try_recv().ok())
@@ -2047,7 +2390,7 @@ fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() ->
 }
 
 #[tokio::test]
-async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_threads() {
+async fn should_attach_live_thread_for_selection_includes_closed_metadata_only_threads() {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     app.agent_navigation.upsert(
@@ -2059,7 +2402,7 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
         /*updated_at*/ None,
     );
 
-    assert!(!app.should_attach_live_thread_for_selection(thread_id));
+    assert!(app.should_attach_live_thread_for_selection(thread_id));
 
     app.agent_navigation.upsert(
         thread_id,
@@ -2076,6 +2419,57 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
     assert!(!app.should_attach_live_thread_for_selection(thread_id));
 }
 
+#[test]
+fn select_persisted_paginated_closed_thread_resumes_before_replay_fallback() -> Result<()> {
+    run_large_stack_app_test(|| async {
+        let mut app = make_test_app().await;
+        let codex_home = tempdir()?;
+        app.config.codex_home = codex_home.path().to_path_buf().abs();
+        app.config.sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
+        let thread_id = ThreadId::from_string(
+            &app_test_support::create_fake_paginated_rollout(
+                codex_home.path(),
+                "2026-01-01T00-00-00",
+                "2026-01-01T00:00:00Z",
+                "Saved paginated message",
+                Some(app.config.model_provider_id.as_str()),
+                /*git_info*/ None,
+            )
+            .expect("create paginated rollout"),
+        )?;
+        let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+        app.agent_navigation.upsert(
+            thread_id,
+            Some("saved".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ true,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        app.select_agent_thread(&mut tui, &mut app_server, thread_id)
+            .await?;
+
+        assert_eq!(app.active_thread_id, Some(thread_id));
+        let channel = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("paginated thread should have a live resumed channel");
+        assert_eq!(channel.attachment(), ThreadEventAttachment::Live);
+        {
+            let store = channel.store.lock().await;
+            assert_eq!(
+                store.session.as_ref().map(|session| session.thread_id),
+                Some(thread_id),
+                "the successful resume should seed the selected thread session"
+            );
+        }
+        app_server.shutdown().await?;
+        Ok(())
+    })
+}
+
 #[tokio::test]
 async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_threads() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
@@ -2085,20 +2479,23 @@ async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_thread
     .await
     .expect("embedded app server");
     let thread_id = ThreadId::new();
-    app.agent_navigation.upsert(
+    assert!(app.upsert_agent_picker_thread(
         thread_id,
         Some("Ghost".to_string()),
         Some("worker".to_string()),
         /*is_closed*/ false,
-        /*created_at*/ None,
-        /*updated_at*/ None,
-    );
+    ));
+    assert!(app.chat_widget.has_collab_agent_metadata(thread_id));
 
-    let is_available =
+    let outcome =
         Box::pin(app.refresh_agent_picker_thread_liveness(&mut app_server, thread_id)).await;
 
-    assert!(!is_available);
+    assert_eq!(
+        outcome,
+        crate::app::session_lifecycle::ThreadLivenessRefreshOutcome::TerminalPruned
+    );
     assert_eq!(app.agent_navigation.get(&thread_id), None);
+    assert!(!app.chat_widget.has_collab_agent_metadata(thread_id));
     assert!(!app.thread_event_channels.contains_key(&thread_id));
     Ok(())
 }
@@ -2181,7 +2578,7 @@ fn handle_start_side_seeds_navigation_before_thread_started() -> Result<()> {
 
 #[tokio::test]
 async fn select_uncached_agent_thread_still_refreshes_liveness() -> Result<()> {
-    let mut app = Box::pin(make_test_app()).await;
+    let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
         app.chat_widget.config_ref(),
     ))
@@ -2196,11 +2593,22 @@ async fn select_uncached_agent_thread_still_refreshes_liveness() -> Result<()> {
         /*updated_at*/ None,
     );
     let mut tui = crate::tui::test_support::make_test_tui()?;
+    while app_event_rx.try_recv().is_ok() {}
 
     Box::pin(app.select_agent_thread(&mut tui, &mut app_server, thread_id)).await?;
 
     assert_eq!(app.active_thread_id, None);
     assert_eq!(app.agent_navigation.get(&thread_id), None);
+    assert!(
+        std::iter::from_fn(|| app_event_rx.try_recv().ok()).any(|event| {
+            matches!(
+                event,
+                AppEvent::InsertHistoryCell(cell)
+                    if lines_to_single_string(&cell.transcript_lines(/*width*/ 80))
+                        .contains(&format!("Agent thread {thread_id} is no longer available."))
+            )
+        })
+    );
     app_server.shutdown().await?;
     Ok(())
 }
@@ -4367,14 +4775,12 @@ async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
         let side_thread_id = started.session.thread_id;
         app.side_threads
             .insert(side_thread_id, SideThreadState::new(ThreadId::new()));
-        app.agent_navigation.upsert(
+        assert!(app.upsert_agent_picker_thread(
             side_thread_id,
             Some("Side".to_string()),
             Some("side".to_string()),
             /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
-        );
+        ));
 
         assert!(
             app.discard_side_thread(&mut app_server, side_thread_id)
@@ -4382,6 +4788,7 @@ async fn discard_side_thread_removes_agent_navigation_entry() -> Result<()> {
         );
 
         assert_eq!(app.agent_navigation.get(&side_thread_id), None);
+        assert!(!app.chat_widget.has_collab_agent_metadata(side_thread_id));
         assert!(!app.side_threads.contains_key(&side_thread_id));
         Ok(())
     })
@@ -4759,6 +5166,7 @@ async fn make_test_app() -> App {
         active_thread_rx: None,
         primary_thread_id: None,
         last_subagent_backfill_attempt: None,
+        subagent_backfill_progress: None,
         primary_session_configured: None,
         pending_primary_events: VecDeque::new(),
         pending_app_server_requests: PendingAppServerRequests::default(),
@@ -4830,6 +5238,7 @@ async fn make_test_app_with_channels() -> (
             active_thread_rx: None,
             primary_thread_id: None,
             last_subagent_backfill_attempt: None,
+            subagent_backfill_progress: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
             pending_app_server_requests: PendingAppServerRequests::default(),
@@ -6875,6 +7284,7 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
     .await;
 
     assert!(app.agent_navigation.is_parent_owned(thread_id));
+    assert!(app.chat_widget.has_collab_agent_metadata(thread_id));
     assert_eq!(snapshot.session, Some(resumed_session.clone()));
     assert_eq!(snapshot.turns, resumed_turns);
 
