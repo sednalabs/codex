@@ -1630,12 +1630,13 @@ impl App {
                     .await;
 
                 if let Some(default_effort) = default_effort.as_ref()
-                    && let Err(err) = crate::config_update::write_config_batch(
+                    && let Err(err) = self.persist_model_defaults(
                         app_server.request_handle(),
                         crate::config_update::build_model_selection_edits(
                             model.as_str(),
                             Some(default_effort),
                         ),
+                        "default model and reasoning effort",
                     )
                     .await
                 {
@@ -2158,16 +2159,17 @@ impl App {
                 }
             }
             AppEvent::PersistModelSelection { model, effort } => {
-                match crate::config_update::write_config_batch(
+                match self.persist_model_defaults(
                     app_server.request_handle(),
                     crate::config_update::build_model_selection_edits(
                         model.as_str(),
                         effort.as_ref(),
                     ),
+                    "default model and reasoning effort",
                 )
                 .await
                 {
-                    Ok(_) => {
+                    Ok(()) => {
                         let effort_label = effort
                             .as_ref()
                             .map(std::string::ToString::to_string)
@@ -2260,10 +2262,10 @@ impl App {
                 let edits = crate::config_update::build_service_tier_selection_edits(
                     service_tier.as_deref(),
                 );
-                match crate::config_update::write_config_batch(app_server.request_handle(), edits)
+                match self.persist_model_defaults(app_server.request_handle(), edits, "default service tier")
                     .await
                 {
-                    Ok(_) => {
+                    Ok(()) => {
                         let message = if let Some(service_tier) = service_tier {
                             format!("Service tier set to {service_tier}")
                         } else {
@@ -2480,9 +2482,10 @@ impl App {
                 } else {
                     crate::config_update::clear_config_value(key_path)
                 };
-                if let Err(err) = crate::config_update::write_config_batch(
+                if let Err(err) = self.persist_model_defaults(
                     app_server.request_handle(),
                     vec![edit],
+                    "Plan mode reasoning effort",
                 )
                 .await
                 {
