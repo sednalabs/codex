@@ -718,6 +718,33 @@ access = "deny"
 }
 
 #[test]
+fn webmcp_requirements_preserve_managed_layer_precedence() {
+    for (lower, higher, expected) in [
+        ("true", "[browser_use]", true),
+        ("false", "[browser_use]", false),
+        ("true", "[browser_use]\nallow_webmcp = false", false),
+        ("false", "[browser_use]\nallow_webmcp = true", true),
+    ] {
+        let lower = format!("[browser_use]\nallow_webmcp = {lower}");
+        let composed = compose(vec![
+            layer("req_low", "Low", &lower),
+            layer("req_high", "High", higher),
+        ])
+        .expect("compose managed WebMCP policy");
+        assert_eq!(
+            composed,
+            Some(ConfigRequirementsToml {
+                browser_use: Some(crate::BrowserUseRequirementsToml {
+                    allow_webmcp: Some(expected),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        );
+    }
+}
+
+#[test]
 fn windows_requirements_use_regular_toml_merge() {
     let composed = compose(vec![
         layer(
