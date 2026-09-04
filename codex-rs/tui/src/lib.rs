@@ -119,6 +119,7 @@ mod collaboration_modes;
 mod color;
 mod config_update;
 pub(crate) mod custom_terminal;
+mod daybreak;
 mod experimental_features;
 mod permission_discovery;
 mod pets;
