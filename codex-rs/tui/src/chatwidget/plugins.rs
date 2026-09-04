@@ -1009,10 +1009,15 @@ impl ChatWidget {
         let selected_idx = self
             .bottom_pane
             .selected_index_for_active_view(PLUGINS_SELECTION_VIEW_ID);
+        let search_query = self
+            .selection_view_search_query(PLUGINS_SELECTION_VIEW_ID)
+            .filter(|query| !query.is_empty());
         self.plugins_active_tab_id = active_tab_id.clone();
+        let mut params = self.plugins_popup_params(response, active_tab_id, selected_idx);
+        params.initial_search_query = search_query;
         let _ = self.bottom_pane.replace_selection_view_if_active(
             PLUGINS_SELECTION_VIEW_ID,
-            self.plugins_popup_params(response, active_tab_id, selected_idx),
+            params,
         );
     }
 }
