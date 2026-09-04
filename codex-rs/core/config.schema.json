@@ -1020,6 +1020,9 @@
             "unified_exec": {
               "type": "boolean"
             },
+            "unified_exec_tty": {
+              "type": "boolean"
+            },
             "unified_exec_zsh_fork": {
               "type": "boolean"
             },
@@ -6376,6 +6379,9 @@
           "type": "boolean"
         },
         "unified_exec": {
+          "type": "boolean"
+        },
+        "unified_exec_tty": {
           "type": "boolean"
         },
         "unified_exec_zsh_fork": {
