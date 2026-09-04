@@ -1357,8 +1357,12 @@ fn lineage_backfill_persistent_cycle_refreshes_pathless_v2_child_per_open() -> R
         let primary_thread_id = ThreadId::new();
         let child_thread_id = ThreadId::new();
         configure_backfill_primary(&mut app, primary_thread_id);
-        let mut listed_child =
-            scripted_lineage_thread(&app.config, child_thread_id, primary_thread_id, 1);
+        let mut listed_child = scripted_lineage_thread(
+            &app.config,
+            child_thread_id,
+            primary_thread_id,
+            /*depth*/ 1,
+        );
         listed_child.can_accept_direct_input = None;
         let mut authoritative_child = listed_child.clone();
         authoritative_child.can_accept_direct_input = Some(false);
