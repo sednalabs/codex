@@ -1172,6 +1172,7 @@ impl AppServerSession {
                 params: ThreadMetadataUpdateParams {
                     thread_id: thread_id.to_string(),
                     project_id: None,
+                    daybreak_enabled: None,
                     git_info: Some(ThreadMetadataGitInfoUpdateParams {
                         sha: None,
                         branch: Some(Some(branch)),
@@ -3748,6 +3749,7 @@ mod tests {
                 section: None,
                 section_entered_at: None,
                 project_id: None,
+                daybreak_enabled: None,
                 history_mode: Default::default(),
                 model_provider: "openai".to_string(),
                 model: None,

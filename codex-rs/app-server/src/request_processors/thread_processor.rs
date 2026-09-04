@@ -33,24 +33,18 @@ const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
 const PAGINATED_FULL_HISTORY_DEPRECATION_SUMMARY: &str = "Full-history hydration is deprecated for paginated threads; use `excludeTurns: true`, then page with `thread/turns/list` and `thread/items/list`.";
 const PAGINATED_THREAD_READ_DEPRECATION_SUMMARY: &str = "Full-history hydration is deprecated for paginated threads; omit `includeTurns` or set it to `false`, then page with `thread/turns/list` and `thread/items/list`.";
 
-async fn stage_pending_project_metadata(
+async fn stage_pending_thread_metadata(
     thread_manager: &ThreadManager,
     thread_store: &dyn ThreadStore,
-    project_id: Option<&str>,
+    patch: StoreThreadMetadataPatch,
     operation: &'static str,
 ) -> Result<Option<ThreadId>, JSONRPCErrorError> {
-    let Some(project_id) = project_id else {
+    if patch.is_empty() {
         return Ok(None);
-    };
+    }
     let thread_id = thread_manager.reserve_thread_id();
     thread_store
-        .stage_pending_thread_metadata(
-            thread_id,
-            StoreThreadMetadataPatch {
-                project_id: Some(Some(project_id.to_string())),
-                ..Default::default()
-            },
-        )
+        .stage_pending_thread_metadata(thread_id, patch)
         .await
         .map_err(|error| match error {
             ThreadStoreError::Unsupported { .. } => {
@@ -62,7 +56,7 @@ async fn stage_pending_project_metadata(
     Ok(Some(thread_id))
 }
 
-async fn remove_pending_project_metadata(
+async fn remove_pending_thread_metadata(
     thread_store: &dyn ThreadStore,
     thread_id: Option<ThreadId>,
 ) {
@@ -70,7 +64,7 @@ async fn remove_pending_project_metadata(
         return;
     };
     if let Err(error) = thread_store.remove_pending_thread_metadata(thread_id).await {
-        warn!("failed to remove staged project metadata for {thread_id}: {error}");
+        warn!("failed to remove staged thread metadata for {thread_id}: {error}");
     }
 }
 
@@ -1449,10 +1443,13 @@ impl ThreadRequestProcessor {
         let reserved_thread_id = if start_options.config.ephemeral {
             None
         } else {
-            stage_pending_project_metadata(
+            stage_pending_thread_metadata(
                 listener_task_context.thread_manager.as_ref(),
                 thread_store.as_ref(),
-                project_id.as_deref(),
+                StoreThreadMetadataPatch {
+                    project_id: project_id.clone().map(Some),
+                    ..Default::default()
+                },
                 "thread/start",
             )
             .await?
@@ -1493,7 +1490,7 @@ impl ThreadRequestProcessor {
         } = match new_thread {
             Ok(new_thread) => new_thread,
             Err(err) => {
-                remove_pending_project_metadata(thread_store.as_ref(), reserved_thread_id).await;
+                remove_pending_thread_metadata(thread_store.as_ref(), reserved_thread_id).await;
                 return Err(match err.details() {
                     CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
                     CodexErrorDetails::UnsupportedOperation(message) => {
@@ -1884,6 +1881,7 @@ impl ThreadRequestProcessor {
             thread_id,
             project_id,
             git_info,
+            daybreak_enabled,
         } = params;
         let thread_uuid = ThreadId::from_string(&thread_id)
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
@@ -1906,7 +1904,7 @@ impl ThreadRequestProcessor {
             }
         }
 
-        if git_info.is_none() && project_id.is_none() {
+        if git_info.is_none() && project_id.is_none() && daybreak_enabled.is_none() {
             return Err(invalid_request(
                 "thread metadata update must include at least one field",
             ));
@@ -1984,6 +1982,7 @@ impl ThreadRequestProcessor {
             let patch = StoreThreadMetadataPatch {
                 git_info,
                 project_id: project_update.clone(),
+                daybreak_enabled,
                 ..Default::default()
             };
             let updated_thread = self
@@ -5032,10 +5031,14 @@ impl ThreadRequestProcessor {
         let reserved_thread_id = if config.ephemeral {
             None
         } else {
-            stage_pending_project_metadata(
+            stage_pending_thread_metadata(
                 self.thread_manager.as_ref(),
                 self.thread_store.as_ref(),
-                inherited_project_id.as_deref(),
+                StoreThreadMetadataPatch {
+                    project_id: inherited_project_id.clone().map(Some),
+                    daybreak_enabled: source_thread.daybreak_enabled,
+                    ..Default::default()
+                },
                 "thread/fork",
             )
             .await?
@@ -5077,7 +5080,7 @@ impl ThreadRequestProcessor {
         } = match new_thread {
             Ok(new_thread) => new_thread,
             Err(err) => {
-                remove_pending_project_metadata(self.thread_store.as_ref(), reserved_thread_id)
+                remove_pending_thread_metadata(self.thread_store.as_ref(), reserved_thread_id)
                     .await;
                 return Err(match err.details() {
                     CodexErrorDetails::Io(_) | CodexErrorDetails::Json(_) => {
@@ -6020,6 +6023,7 @@ pub(crate) fn thread_from_stored_thread(
         thread_source: thread.thread_source.map(Into::into),
         git_info,
         name: thread.name,
+        daybreak_enabled: thread.daybreak_enabled,
         turns: Vec::new(),
     };
     (thread, history)
@@ -6205,6 +6209,7 @@ fn build_thread_from_snapshot(
         thread_source: config_snapshot.thread_source.clone().map(Into::into),
         git_info: None,
         name: None,
+        daybreak_enabled: None,
         turns: Vec::new(),
     }
 }

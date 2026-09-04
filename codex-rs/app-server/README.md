@@ -196,7 +196,7 @@ Example with notification opt-out:
 - `thread/turns/list` — page through a stored thread’s turn history without resuming it; supports cursor-based pagination with `sortDirection`, `itemsView`, `nextCursor`, and `backwardsCursor`.
 - `thread/items/list` — page through persisted thread items without resuming the thread. Pass `turnId` to restrict results to one turn, or omit it to page items across the thread. The active thread store must support item pagination.
 - `thread/searchOccurrences` — experimental; find literal, case-insensitive matches in visible user messages and summary-selected final assistant messages within one paginated thread.
-- `thread/metadata/update` — patch stored thread metadata in sqlite; supports updating persisted `gitInfo` fields and experimental `projectId`, then returns the refreshed `thread`. Omit `projectId` to preserve assignment and pass an empty string to clear it.
+- `thread/metadata/update` — patch stored thread metadata in sqlite; supports updating persisted `gitInfo` fields, experimental `projectId`, and experimental `daybreakEnabled`, then returns the refreshed `thread`. Omit `projectId` to preserve assignment and pass an empty string to clear it.
 - `thread/section/move` — atomically move a thread into the section identified by `sectionId`, before another thread or at the end when `beforeThreadId` is `null`. Reordering within the same section preserves `sectionEnteredAt`; entering a different section resets it. Set `sectionId` to `null` to remove the thread from its section. Returns `{}` on success.
 - `thread/settings/update` — experimental; queue a partial update to a loaded thread’s next-turn settings without starting a turn or adding transcript items. Omitted fields leave settings unchanged; `serviceTier: null` clears the tier; deprecated `multiAgentMode` is ignored, while Ultra reasoning effort enables proactive multi-agent behavior; `sandboxPolicy` and `permissions` cannot be combined. Parent-owned Multi-Agent V2 subagents reject direct settings updates. Returns `{}` when the update is accepted and emits `thread/settings/updated` with the full effective settings only if they actually change. `turn/start` settings overrides emit the same notification when they change the stored settings.
 - `thread/memoryMode/set` — experimental; set a thread’s persisted memory eligibility to `"enabled"` or `"disabled"` for either a loaded thread or a stored rollout; returns `{}` on success.
@@ -844,6 +844,18 @@ Use `thread/metadata/update` to patch sqlite-backed `gitInfo` without resuming a
 { "id": 29, "result": {} }
 ```
 
+Experimental `daybreakEnabled` saves the client's on/off preference through `thread/metadata/update`. Omitted or null leaves the preference unchanged. The sqlite-backed `Thread.daybreakEnabled` is the source of truth: thread read/start/resume/fork responses return the saved value, or null when unset. Updates are persisted before the response. Saving a preference works before the first turn and does not require resuming the thread. Ephemeral threads are unsupported.
+
+| Client action | Daybreak behavior |
+| --- | --- |
+| Create a task | Copy the client's default on/off preference with `thread/metadata/update` before sending its first turn. |
+| Change the toggle | Save only that thread's preference through `thread/metadata/update`. An active turn keeps its original program. |
+| Start a turn | Compute `cyberAccessProgram` from the thread's preference and selected model. Starting or steering a turn never changes the saved toggle. |
+| Resume | Restore the saved preference, without applying the client's current default. |
+| Fork | Copy the parent's preference; later changes to either thread are independent. |
+
+The saved preference controls the client's toggle; app-server does not derive a request program from it. `turn/start` has no `daybreakEnabled` field.
+
 Experimental: use `thread/memoryMode/set` to change whether a thread remains eligible for future memory generation.
 
 ```json
@@ -1055,7 +1067,7 @@ You can optionally specify config overrides on the new turn. If specified, these
 
 `serviceTierForTurn` overrides the tier only when the request starts a new turn, without changing the thread's saved tier. Use `"default"` for standard speed, or omit it (or pass `null`) to inherit the thread's tier. It is ignored when the request steers an active turn. The existing `serviceTier` field still changes the tier for subsequent turns, including when both fields are supplied.
 
-Experimental `cyberAccessProgram` also applies only to the new turn. It accepts `standard`, `daybreakBlue`, or `daybreakRed`; omission preserves automatic backend behavior. For ChatGPT-authenticated requests through the built-in OpenAI provider, Codex sends the corresponding `standard`, `daybreak_blue`, or `daybreak_red` value in `access_programs.cyber` on Responses and remote-compaction requests. WebSocket `response.create` messages carry the choice per request, so changing it does not require reconnecting. The server still enforces workspace authorization and model restrictions. API-key and custom-provider requests omit this field. This field does not change the saved model or grant access.
+Experimental `cyberAccessProgram` applies only to the new turn and does not change the saved Daybreak choice. It accepts `standard`, `daybreakBlue`, or `daybreakRed`; omission preserves automatic backend behavior, regardless of `daybreakEnabled`. For ChatGPT-authenticated requests through the built-in OpenAI provider, Codex sends the corresponding `standard`, `daybreak_blue`, or `daybreak_red` value in `access_programs.cyber` on Responses and remote-compaction requests. WebSocket `response.create` messages carry the choice per request, so changing it does not require reconnecting. The server still enforces workspace authorization and model restrictions. API-key and custom-provider requests omit this field. Neither field changes the saved model or grants access.
 
 Child agents use the invoking turn's choice when spawned or started on a new follow-up, including after a reload. Input delivered into an already-running child turn does not change that turn's choice.
 

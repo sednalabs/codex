@@ -1311,6 +1311,7 @@ async fn dynamic_tool_requests_ignore_other_namespaces_and_dispatch_tui_namespac
             params: codex_app_server_protocol::ThreadMetadataUpdateParams {
                 thread_id: creation_source.to_string(),
                 project_id: Some(project.project.id.clone()),
+                daybreak_enabled: None,
                 git_info: None,
             },
         })
