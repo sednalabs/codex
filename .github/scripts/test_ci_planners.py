@@ -2233,6 +2233,665 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                 {"downstream_only.py": ["downstream-only"]},
             )
 
+    def test_registry_gate_projects_carry_onto_exact_live_tree_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+
+            (repo / "phantom.py").write_text("removed by both\n", encoding="utf-8")
+            (repo / "unchanged.py").write_text("base\n", encoding="utf-8")
+            (repo / "changed.py").write_text("base\n", encoding="utf-8")
+            base_sha = self.commit_all(repo, "base")
+
+            self.run_git(repo, "checkout", "-b", "upstream")
+            self.run_git(repo, "rm", "phantom.py")
+            (repo / "unchanged.py").write_text("shared result\n", encoding="utf-8")
+            (repo / "changed.py").write_text("upstream result\n", encoding="utf-8")
+            upstream_sha = self.commit_all(repo, "upstream changes")
+
+            self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+            self.run_git(repo, "rm", "phantom.py")
+            # This downstream change is byte-identical to upstream and must
+            # not be treated as an uncovered divergence.
+            (repo / "unchanged.py").write_text("shared result\n", encoding="utf-8")
+            # A different downstream edit to an upstream-modified path is a
+            # genuine downstream divergence and must remain visible.
+            (repo / "changed.py").write_text("downstream result\n", encoding="utf-8")
+            (repo / "downstream_only.py").write_text("downstream\n", encoding="utf-8")
+            downstream_sha = self.commit_all(repo, "downstream changes")
+
+            live_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo, upstream_sha, downstream_sha
+            )
+            merge_base = DOWNSTREAM_DIVERGENCE_AUDIT.merge_base_sha(
+                repo, upstream_sha, downstream_sha
+            )
+            carry_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo, merge_base, downstream_sha
+            )
+            projected_items = (
+                DOWNSTREAM_DIVERGENCE_AUDIT.downstream_carry_items_for_live_diff(
+                    live_items, carry_items
+                )
+            )
+            projected_paths = sorted(
+                {
+                    path
+                    for item in projected_items
+                    if item.is_code
+                    for path in item.paths
+                }
+            )
+
+            self.assertEqual(
+                projected_paths,
+                ["changed.py", "downstream_only.py"],
+            )
+
+    def test_registry_projection_ignores_docs_and_readme_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+
+            (repo / "README.md").write_text("base README\n", encoding="utf-8")
+            (repo / "docs").mkdir()
+            (repo / "docs" / "guide.md").write_text("base guide\n", encoding="utf-8")
+            base_sha = self.commit_all(repo, "base")
+
+            self.run_git(repo, "checkout", "-b", "upstream")
+            (repo / "README.md").write_text("upstream README\n", encoding="utf-8")
+            (repo / "docs" / "guide.md").write_text("upstream guide\n", encoding="utf-8")
+            upstream_sha = self.commit_all(repo, "upstream docs")
+
+            self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+            (repo / "README.md").write_text("downstream README\n", encoding="utf-8")
+            (repo / "docs" / "guide.md").write_text("downstream guide\n", encoding="utf-8")
+            downstream_sha = self.commit_all(repo, "downstream docs")
+
+            live_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo, upstream_sha, downstream_sha
+            )
+            carry_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
+                repo,
+                DOWNSTREAM_DIVERGENCE_AUDIT.merge_base_sha(
+                    repo, upstream_sha, downstream_sha
+                ),
+                downstream_sha,
+            )
+            projected_items = (
+                DOWNSTREAM_DIVERGENCE_AUDIT.downstream_carry_items_for_live_diff(
+                    live_items, carry_items
+                )
+            )
+
+            self.assertEqual(projected_items, [])
+            registry_state = DOWNSTREAM_DIVERGENCE_AUDIT.reconcile_registry(
+                {"_path": "docs/divergences/index.yaml", "divergences": []},
+                projected_items,
+            )
+            self.assertEqual(registry_state["uncovered_code_paths"], [])
+
+    def test_registry_projection_is_endpoint_precise_for_renames_copies_and_changes(
+        self,
+    ) -> None:
+        def item(status: str, *paths: str) -> DOWNSTREAM_DIVERGENCE_AUDIT.DiffItem:
+            return DOWNSTREAM_DIVERGENCE_AUDIT.DiffItem(
+                status=status,
+                paths=paths,
+                old_mode="100644",
+                new_mode="100644",
+                rename_score=status[1:] if len(status) > 1 else None,
+                is_code=True,
+            )
+
+        # The upstream endpoint differs from the downstream carry endpoint;
+        # only the shared destination is attributable to downstream.
+        live_items = [
+            item("R100", "upstream-renamed.py", "renamed.py"),
+            item("C100", "upstream-copied.py", "copied.py"),
+            item("R100", "source.py", "README.md"),
+            item("D", "deleted.py"),
+            item("A", "added.py"),
+            item("T", "typechanged.py"),
+        ]
+        carry_items = [
+            item("R100", "original.py", "renamed.py"),
+            item("C100", "source.py", "copied.py"),
+            item("C100", "other.py", "README.md"),
+            item("D", "deleted.py"),
+            item("A", "added.py"),
+            item("T", "typechanged.py"),
+        ]
+
+        projected_items = (
+            DOWNSTREAM_DIVERGENCE_AUDIT.downstream_carry_items_for_live_diff(
+                live_items, carry_items
+            )
+        )
+        projected_paths = [
+            path
+            for projected in projected_items
+            if projected.is_code
+            for path in projected.paths
+        ]
+
+        self.assertEqual(
+            projected_paths,
+            ["renamed.py", "copied.py", "deleted.py", "added.py", "typechanged.py"],
+        )
+        self.assertEqual(
+            DOWNSTREAM_DIVERGENCE_AUDIT.carry_endpoint_paths(carry_items[1]),
+            ("copied.py",),
+        )
+        self.assertNotIn("upstream-renamed.py", projected_paths)
+        self.assertNotIn("upstream-copied.py", projected_paths)
+
+        rename_projection = next(
+            projected
+            for projected in projected_items
+            if projected.paths == ("renamed.py",)
+        )
+        self.assertEqual(rename_projection.status, "M")
+        self.assertIsNone(rename_projection.rename_score)
+
+        copy_projection = next(
+            projected
+            for projected in projected_items
+            if projected.paths == ("copied.py",)
+        )
+        self.assertEqual(copy_projection.status, "M")
+        self.assertIsNone(copy_projection.rename_score)
+
+        documentation_projection = next(
+            projected
+            for projected in projected_items
+            if projected.paths == ("README.md",)
+        )
+        self.assertEqual(documentation_projection.status, "M")
+        self.assertIsNone(documentation_projection.rename_score)
+        self.assertFalse(documentation_projection.is_code)
+
+    def test_superseded_hunk_requires_complete_carry_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+
+            (repo / "carry.py").write_text(
+                "before\n\n\n\n\nend\n",
+                encoding="utf-8",
+            )
+            base_sha = self.commit_all(repo, "base")
+
+            self.run_git(repo, "checkout", "-b", "upstream")
+            (repo / "carry.py").write_text(
+                "before\nshared\n\n\n\n\nend\n",
+                encoding="utf-8",
+            )
+            upstream_sha = self.commit_all(repo, "upstream shared hunk")
+            upstream_hunk_header = DOWNSTREAM_DIVERGENCE_AUDIT.diff_hunks(
+                repo,
+                base_sha,
+                upstream_sha,
+                "carry.py",
+            )[0].header
+
+            self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+            (repo / "carry.py").write_text(
+                "before\nshared\n\n\n\n\nend\n",
+                encoding="utf-8",
+            )
+            downstream_sha = self.commit_all(repo, "downstream shared hunk")
+
+            registry = {
+                "divergences": [],
+                "superseded_hunks": [
+                    {
+                        "id": "shared-hunk",
+                        "path": "carry.py",
+                        "upstream_commit": upstream_sha,
+                        "hunk_header": upstream_hunk_header,
+                        "hunk_lines": ["+shared"],
+                    }
+                ],
+            }
+            DOWNSTREAM_DIVERGENCE_AUDIT.validate_registry(registry)
+            state = DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                repo,
+                registry,
+                upstream_sha,
+                base_sha,
+                downstream_sha,
+            )
+            self.assertEqual(state["superseded_carry_paths"], ["carry.py"])
+
+            live_items = [
+                DOWNSTREAM_DIVERGENCE_AUDIT.DiffItem(
+                    status="M",
+                    paths=("carry.py",),
+                    old_mode="100644",
+                    new_mode="100644",
+                    rename_score=None,
+                    is_code=True,
+                )
+            ]
+            carry_items = list(live_items)
+            self.assertEqual(
+                DOWNSTREAM_DIVERGENCE_AUDIT.downstream_carry_items_for_live_diff(
+                    live_items,
+                    carry_items,
+                    superseded_carry_paths=set(state["superseded_carry_paths"]),
+                ),
+                [],
+            )
+
+            (repo / "carry.py").write_text(
+                "before\nshared\n\n\n\n\nnew downstream\nend\n",
+                encoding="utf-8",
+            )
+            downstream_with_new_delta = self.commit_all(
+                repo, "downstream new delta"
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                r"declared hunk position/context is absent",
+            ):
+                DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                    repo,
+                    registry,
+                    upstream_sha,
+                    base_sha,
+                    downstream_with_new_delta,
+                )
+
+    def test_superseded_hunk_position_context_proof_rejects_relocation_duplicates_and_reorder(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+
+            base_text = "before\nanchor\nend\n"
+            upstream_text = "before\nshared-a\nshared-b\nanchor\nend\n"
+            (repo / "carry.py").write_text(base_text, encoding="utf-8")
+            base_sha = self.commit_all(repo, "base")
+
+            self.run_git(repo, "checkout", "-b", "upstream")
+            (repo / "carry.py").write_text(upstream_text, encoding="utf-8")
+            upstream_sha = self.commit_all(repo, "upstream shared hunk")
+            upstream_hunk_header = DOWNSTREAM_DIVERGENCE_AUDIT.diff_hunks(
+                repo,
+                base_sha,
+                upstream_sha,
+                "carry.py",
+            )[0].header
+
+            registry = {
+                "divergences": [],
+                "superseded_hunks": [
+                    {
+                        "id": "shared-hunk",
+                        "path": "carry.py",
+                        "upstream_commit": upstream_sha,
+                        "hunk_header": upstream_hunk_header,
+                        "hunk_lines": ["+shared-a", "+shared-b"],
+                    }
+                ],
+            }
+            DOWNSTREAM_DIVERGENCE_AUDIT.validate_registry(registry)
+
+            self.run_git(repo, "checkout", "-b", "downstream-valid", base_sha)
+            (repo / "carry.py").write_text(upstream_text, encoding="utf-8")
+            valid_downstream_sha = self.commit_all(repo, "downstream equivalent hunk")
+            valid_state = DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                repo,
+                registry,
+                upstream_sha,
+                base_sha,
+                valid_downstream_sha,
+            )
+            self.assertEqual(valid_state["superseded_carry_paths"], ["carry.py"])
+
+            drifted_registry = {
+                **registry,
+                "superseded_hunks": [
+                    {
+                        **registry["superseded_hunks"][0],
+                        "hunk_header": "@@ -2,2 +3,2 @@ fn moved_elsewhere(",
+                    }
+                ],
+            }
+            with self.assertRaisesRegex(
+                ValueError,
+                r"declared hunk header/body is absent from upstream",
+            ):
+                DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                    repo,
+                    drifted_registry,
+                    upstream_sha,
+                    base_sha,
+                    valid_downstream_sha,
+                )
+
+            invalid_variants = {
+                "relocated": "before\nanchor\nend\nshared-a\nshared-b\n",
+                "duplicated": (
+                    "before\nshared-a\nshared-b\nanchor\nshared-a\nshared-b\nend\n"
+                ),
+                "reordered": "before\nshared-b\nshared-a\nanchor\nend\n",
+            }
+            for label, downstream_text in invalid_variants.items():
+                with self.subTest(label=label):
+                    self.run_git(
+                        repo,
+                        "checkout",
+                        "-b",
+                        f"downstream-{label}",
+                        base_sha,
+                    )
+                    (repo / "carry.py").write_text(
+                        downstream_text,
+                        encoding="utf-8",
+                    )
+                    downstream_sha = self.commit_all(
+                        repo,
+                        f"downstream {label} hunk",
+                    )
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        r"declared hunk position/context is absent",
+                    ):
+                        DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                            repo,
+                            registry,
+                            upstream_sha,
+                            base_sha,
+                            downstream_sha,
+                        )
+
+    def test_superseded_hunk_requires_contextual_addition_only_evidence(self) -> None:
+        cases = {
+            "pure deletion": DOWNSTREAM_DIVERGENCE_AUDIT.DiffHunk(
+                "@@ -1,1 +0,0 @@",
+                ("-gone",),
+            ),
+            "zero context addition": DOWNSTREAM_DIVERGENCE_AUDIT.DiffHunk(
+                "@@ -0,0 +1,1 @@",
+                ("+added",),
+            ),
+            "replacement with deletion": DOWNSTREAM_DIVERGENCE_AUDIT.DiffHunk(
+                "@@ -1,1 +1,1 @@",
+                ("-old", "+new"),
+            ),
+            "no final newline marker": DOWNSTREAM_DIVERGENCE_AUDIT.DiffHunk(
+                "@@ -1,1 +1,2 @@",
+                (" context", "+added"),
+                no_newline_marker=True,
+            ),
+        }
+        for label, hunk in cases.items():
+            with self.subTest(label=label):
+                self.assertFalse(
+                    DOWNSTREAM_DIVERGENCE_AUDIT.is_safe_addition_hunk(hunk)
+                )
+
+    def test_superseded_hunk_requires_complete_line_boundaries(self) -> None:
+        hunk = DOWNSTREAM_DIVERGENCE_AUDIT.DiffHunk(
+            "@@ -1,2 +1,3 @@",
+            (" context", "+added", " tail"),
+        )
+        variants = {
+            "exact": (b"context\nadded\ntail\n", True),
+            "prefix-context-drift": (b"prefix-context\nadded\ntail\n", False),
+            "suffix-context-drift": (b"context\nadded\ntail-suffix\n", False),
+        }
+        for label, (contents, expected) in variants.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                self.run_git(repo, "init", "-b", "main")
+                self.run_git(repo, "config", "user.email", "ci@example.invalid")
+                self.run_git(repo, "config", "user.name", "CI")
+                (repo / "carry.py").write_bytes(contents)
+                commit_sha = self.commit_all(repo, label)
+                self.assertEqual(
+                    DOWNSTREAM_DIVERGENCE_AUDIT.file_contains_hunk_new_lines(
+                        repo, commit_sha, "carry.py", hunk
+                    ),
+                    expected,
+                )
+
+    def test_superseded_hunk_rejects_ambiguous_text_and_tree_metadata(self) -> None:
+        base_text = b"before\nanchor\nend\n"
+        updated_text = b"before\nshared\nanchor\nend\n"
+        variants: dict[str, tuple[bytes, bytes, str]] = {
+            "crlf": (
+                base_text,
+                b"before\r\nshared\r\nanchor\r\nend\r\n",
+                "bytes are binary",
+            ),
+            "final newline": (
+                base_text,
+                b"before\nshared\nanchor\nend",
+                "bytes are binary",
+            ),
+            "binary": (
+                base_text,
+                b"before\nshared\n\x00anchor\nend\n",
+                "bytes are binary",
+            ),
+        }
+
+        for label, (base_bytes, upstream_bytes, error_pattern) in variants.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                self.run_git(repo, "init", "-b", "main")
+                self.run_git(repo, "config", "user.email", "ci@example.invalid")
+                self.run_git(repo, "config", "user.name", "CI")
+
+                (repo / "carry.py").write_bytes(base_bytes)
+                base_sha = self.commit_all(repo, "base")
+                self.run_git(repo, "checkout", "-b", "upstream")
+                (repo / "carry.py").write_bytes(upstream_bytes)
+                upstream_sha = self.commit_all(repo, f"upstream {label}")
+                upstream_hunks = DOWNSTREAM_DIVERGENCE_AUDIT.diff_hunks(
+                    repo,
+                    base_sha,
+                    upstream_sha,
+                    "carry.py",
+                )
+                hunk_header = (
+                    upstream_hunks[0].header
+                    if upstream_hunks
+                    else "@@ -1,3 +1,4 @@"
+                )
+
+                self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+                (repo / "carry.py").write_bytes(upstream_bytes)
+                downstream_sha = self.commit_all(repo, f"downstream {label}")
+                registry = {
+                    "divergences": [],
+                    "superseded_hunks": [
+                        {
+                            "id": label,
+                            "path": "carry.py",
+                            "upstream_commit": upstream_sha,
+                            "hunk_header": hunk_header,
+                            "hunk_lines": ["+shared"],
+                        }
+                    ],
+                }
+
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                        repo,
+                        registry,
+                        upstream_sha,
+                        base_sha,
+                        downstream_sha,
+                    )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+            (repo / "carry.py").write_bytes(base_text)
+            base_sha = self.commit_all(repo, "base")
+            self.run_git(repo, "checkout", "-b", "upstream")
+            (repo / "carry.py").write_bytes(updated_text)
+            os.chmod(repo / "carry.py", 0o700)
+            upstream_sha = self.commit_all(repo, "upstream executable mode")
+            upstream_hunks = DOWNSTREAM_DIVERGENCE_AUDIT.diff_hunks(
+                repo,
+                base_sha,
+                upstream_sha,
+                "carry.py",
+            )
+
+            self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+            (repo / "carry.py").write_bytes(updated_text)
+            downstream_sha = self.commit_all(repo, "downstream content")
+            registry = {
+                "divergences": [],
+                "superseded_hunks": [
+                    {
+                        "id": "executable-mode",
+                        "path": "carry.py",
+                        "upstream_commit": upstream_sha,
+                        "hunk_header": upstream_hunks[0].header,
+                        "hunk_lines": ["+shared"],
+                    }
+                ],
+            }
+            with self.assertRaisesRegex(ValueError, "mode/type-stable|regular 100644"):
+                DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                    repo,
+                    registry,
+                    upstream_sha,
+                    base_sha,
+                    downstream_sha,
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.run_git(repo, "init", "-b", "main")
+            self.run_git(repo, "config", "user.email", "ci@example.invalid")
+            self.run_git(repo, "config", "user.name", "CI")
+            (repo / "carry.py").write_bytes(base_text)
+            base_sha = self.commit_all(repo, "base")
+            self.run_git(repo, "checkout", "-b", "upstream")
+            (repo / "carry.py").unlink()
+            (repo / "carry.py").symlink_to("target")
+            upstream_sha = self.commit_all(repo, "upstream symlink type")
+
+            self.run_git(repo, "checkout", "-b", "downstream", base_sha)
+            (repo / "carry.py").write_bytes(updated_text)
+            downstream_sha = self.commit_all(repo, "downstream content")
+            registry = {
+                "divergences": [],
+                "superseded_hunks": [
+                    {
+                        "id": "symlink-type",
+                        "path": "carry.py",
+                        "upstream_commit": upstream_sha,
+                        "hunk_header": "@@ -1,3 +1,4 @@",
+                        "hunk_lines": ["+shared"],
+                    }
+                ],
+            }
+            with self.assertRaisesRegex(ValueError, "regular 100644|mode/type-stable"):
+                DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                    repo,
+                    registry,
+                    upstream_sha,
+                    base_sha,
+                    downstream_sha,
+                )
+
+    def test_superseded_hunk_schema_rejects_stale_or_ambiguous_evidence(self) -> None:
+        cases = {
+            "short upstream sha": {
+                "id": "short-sha",
+                "path": "carry.py",
+                "upstream_commit": "c8ddb210",
+                "hunk_header": "@@ -1,1 +1,2 @@",
+                "hunk_lines": ["+shared"],
+            },
+            "missing diff marker": {
+                "id": "missing-marker",
+                "path": "carry.py",
+                "upstream_commit": "c8ddb210d2429cacacf86593e157114b00634f13",
+                "hunk_header": "@@ -1,1 +1,2 @@",
+                "hunk_lines": ["shared"],
+            },
+            "malformed hunk header": {
+                "id": "malformed-header",
+                "path": "carry.py",
+                "upstream_commit": "c8ddb210d2429cacacf86593e157114b00634f13",
+                "hunk_header": "not-a-hunk",
+                "hunk_lines": ["+shared"],
+            },
+        }
+        for label, declaration in cases.items():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(ValueError, "superseded_hunks"):
+                    DOWNSTREAM_DIVERGENCE_AUDIT.validate_registry(
+                        {"divergences": [], "superseded_hunks": [declaration]}
+                    )
+
+    def test_superseded_hunk_registry_binds_expected_literal_header(self) -> None:
+        registry = json.loads(
+            (REPO_ROOT / "docs/divergences/index.yaml").read_text(encoding="utf-8")
+        )
+        declaration = next(
+            entry
+            for entry in registry["superseded_hunks"]
+            if entry["id"] == "http-client-outbound-proxy-blocking-read-upstreamed"
+        )
+        self.assertEqual(
+            declaration["hunk_header"],
+            "@@ -64,6 +64,9 @@ fn spawn_http_listener(",
+        )
+
+    def test_superseded_hunk_no_enforce_is_fail_closed_for_malformed_evidence(
+        self,
+    ) -> None:
+        cases = {
+            "non-list": {"superseded_hunks": {"path": "carry.py"}},
+            "non-object entry": {"superseded_hunks": ["not-an-object"]},
+            "non-string path": {
+                "superseded_hunks": [
+                    {
+                        "id": "bad-path",
+                        "path": ["carry.py"],
+                        "upstream_commit": "c8ddb210d2429cacacf86593e157114b00634f13",
+                        "hunk_lines": ["+shared"],
+                    }
+                ]
+            },
+        }
+        for label, registry in cases.items():
+            with self.subTest(label=label):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    state = DOWNSTREAM_DIVERGENCE_AUDIT.verify_superseded_hunks(
+                        Path("."),
+                        registry,
+                        "unused",
+                        "unused",
+                        "unused",
+                        enforce=False,
+                    )
+                self.assertEqual(state, {"checks": [], "superseded_carry_paths": []})
+                self.assertIn("warning:", stderr.getvalue())
+
 
 class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
     workflow_path = REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"

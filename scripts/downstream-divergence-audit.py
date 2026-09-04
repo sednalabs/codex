@@ -5,6 +5,7 @@ import argparse
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -59,6 +60,7 @@ NON_CODE_EXACT = {
     "LICENSE",
     "LICENSE.md",
 }
+HUNK_HEADER_PATTERN = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(?: .*)?$")
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,32 @@ class DiffItem:
         if self.old_mode == self.new_mode:
             return self.old_mode
         return f"{self.old_mode} -> {self.new_mode}"
+
+
+@dataclass(frozen=True)
+class TreeEntry:
+    """Raw tree metadata for one exact path at one commit."""
+
+    mode: str
+    object_type: str
+    object_sha: str
+
+
+@dataclass(frozen=True)
+class DiffHunk:
+    """One unified-diff hunk with its location and surrounding context."""
+
+    header: str
+    body: tuple[str, ...]
+    no_newline_marker: bool = False
+
+    @property
+    def changed_lines(self) -> tuple[str, ...]:
+        return tuple(line for line in self.body if line.startswith(("+", "-")))
+
+    @property
+    def context_lines(self) -> tuple[str, ...]:
+        return tuple(line for line in self.body if line.startswith(" "))
 
 
 def main() -> int:
@@ -150,11 +178,28 @@ def main() -> int:
     downstream_carry_items = diff_items_between(
         repo, merge_base, snapshot_1["downstream"].sha
     )
+    supersession_state = verify_superseded_hunks(
+        repo,
+        registry,
+        snapshot_1["upstream"].sha,
+        merge_base,
+        snapshot_1["downstream"].sha,
+        enforce=args.enforce_registry,
+    )
+    downstream_carry_projected_items = downstream_carry_items_for_live_diff(
+        diff_items,
+        downstream_carry_items,
+        superseded_carry_paths=set(supersession_state["superseded_carry_paths"]),
+    )
     downstream_carry_code_items = [
-        item for item in downstream_carry_items if item.is_code
+        item for item in downstream_carry_projected_items if item.is_code
     ]
 
     registry_state = reconcile_registry(registry, downstream_carry_code_items)
+    registry_state["supersession_checks"] = supersession_state["checks"]
+    registry_state["superseded_carry_paths"] = supersession_state[
+        "superseded_carry_paths"
+    ]
     required_marker_checks = verify_required_markers(
         repo,
         snapshot_1["downstream"].sha,
@@ -462,6 +507,158 @@ def tree_sha(repo: Path, commit_sha: str) -> str:
     return result.stdout.strip()
 
 
+def tree_entry(repo: Path, commit_sha: str, path: str) -> TreeEntry | None:
+    """Return raw tree metadata for an exact path, if it exists."""
+
+    result = run_git_bytes(
+        repo,
+        ["ls-tree", "-r", "-z", "--full-tree", commit_sha, "--", path],
+        allow_failure=True,
+    )
+    if result.returncode != 0:
+        return None
+
+    expected_path = path.encode("utf-8")
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, entry_path = record.split(b"\t", 1)
+            mode, object_type, object_sha = metadata.split(b" ", 2)
+        except ValueError as error:
+            raise RuntimeError(
+                f"malformed tree metadata for {commit_sha}:{path}"
+            ) from error
+        if entry_path != expected_path:
+            continue
+        try:
+            return TreeEntry(
+                mode=mode.decode("ascii"),
+                object_type=object_type.decode("ascii"),
+                object_sha=object_sha.decode("ascii"),
+            )
+        except UnicodeDecodeError as error:
+            raise RuntimeError(
+                f"non-ASCII tree metadata for {commit_sha}:{path}"
+            ) from error
+    return None
+
+
+def read_blob_bytes(repo: Path, commit_sha: str, path: str) -> bytes | None:
+    """Read a path without text decoding or line-ending normalization."""
+
+    result = run_git_bytes(
+        repo,
+        ["show", f"{commit_sha}:{path}"],
+        allow_failure=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def diff_is_binary(repo: Path, left_sha: str, right_sha: str, path: str) -> bool:
+    """Fail closed when Git's raw line statistics classify a path as binary."""
+
+    result = run_git(
+        repo,
+        [
+            "diff",
+            "--no-ext-diff",
+            "--no-renames",
+            "--numstat",
+            left_sha,
+            right_sha,
+            "--",
+            path,
+        ],
+        capture_stdout=True,
+        allow_failure=True,
+    )
+    if result.returncode != 0:
+        return True
+    for line in result.stdout.splitlines():
+        fields = line.split("\t", 2)
+        if len(fields) >= 2 and fields[0] == "-" and fields[1] == "-":
+            return True
+    return False
+
+
+def is_safe_text_blob(blob: bytes) -> bool:
+    """Return whether bytes are unambiguous UTF-8 text with LF line endings."""
+
+    if b"\0" in blob or b"\r" in blob or not blob.endswith(b"\n"):
+        return False
+    try:
+        blob.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def validate_textual_supersession_path(
+    repo: Path,
+    path: str,
+    snapshots: list[tuple[str, str]],
+    diff_pairs: list[tuple[str, str, str]],
+) -> list[str]:
+    """Validate the narrow path class allowed by superseded-hunk evidence.
+
+    Supersession is intentionally limited to a stable, non-executable regular
+    file whose exact bytes are unambiguous text at every evidence snapshot.
+    Raw tree metadata and Git's binary classification are checked separately
+    so a content hunk cannot hide a mode, type, or binary path-level change.
+    """
+
+    errors: list[str] = []
+    entries: list[tuple[str, TreeEntry]] = []
+    for label, commit_sha in snapshots:
+        entry = tree_entry(repo, commit_sha, path)
+        if entry is None:
+            errors.append(f"{label} path entry is missing")
+            continue
+        entries.append((label, entry))
+
+    if entries:
+        first_label, first_entry = entries[0]
+        if first_entry.object_type != "blob" or first_entry.mode != "100644":
+            errors.append(
+                f"{first_label} path entry is not a regular 100644 file "
+                f"(mode={first_entry.mode}, type={first_entry.object_type})"
+            )
+        for label, entry in entries[1:]:
+            if (
+                entry.mode != first_entry.mode
+                or entry.object_type != first_entry.object_type
+            ):
+                errors.append(
+                    f"path tree metadata is not mode/type-stable at {label} "
+                    f"(expected mode={first_entry.mode}, "
+                    f"type={first_entry.object_type}; "
+                    f"got mode={entry.mode}, type={entry.object_type})"
+                )
+            if entry.object_type != "blob" or entry.mode != "100644":
+                errors.append(
+                    f"{label} path entry is not a regular 100644 file "
+                    f"(mode={entry.mode}, type={entry.object_type})"
+                )
+
+    for label, commit_sha in snapshots:
+        blob = read_blob_bytes(repo, commit_sha, path)
+        if blob is None:
+            continue
+        if not is_safe_text_blob(blob):
+            errors.append(
+                f"{label} path bytes are binary, non-UTF-8, CRLF/CR, "
+                "or missing a final LF"
+            )
+
+    for label, left_sha, right_sha in diff_pairs:
+        if diff_is_binary(repo, left_sha, right_sha, path):
+            errors.append(f"{label} raw diff classifies the path as binary")
+    return errors
+
+
 def diff_items_between(repo: Path, left_sha: str, right_sha: str) -> list[DiffItem]:
     result = run_git(
         repo,
@@ -560,6 +757,382 @@ def merge_base_sha(repo: Path, left_sha: str, right_sha: str) -> str:
     return result.stdout.strip()
 
 
+def downstream_carry_items_for_live_diff(
+    live_items: list[DiffItem],
+    carry_items: list[DiffItem],
+    *,
+    superseded_carry_paths: set[str] | frozenset[str] | None = None,
+) -> list[DiffItem]:
+    """Project downstream-carry provenance onto exact live code endpoints.
+
+    The merge-base-to-downstream diff describes everything changed by the
+    downstream history, including changes that upstream later made as well.
+    Reconcile only the exact upstream-to-downstream code endpoints whose paths
+    occur in that carry.  Copy sources are observations of an unchanged source,
+    so only the copied destination is carry provenance; rename, delete, add,
+    and type-change endpoints remain actionable.  Projecting the live item
+    paths (rather than retaining an entire rename/copy pair) prevents an
+    upstream-only endpoint from being attributed to downstream.  A projected
+    rename/copy with a partial endpoint set is normalized to a modification,
+    and ``is_code`` is recomputed from the projected paths so callers can filter
+    documentation-only projections before registry reconciliation.
+    """
+
+    carry_paths = {path for item in carry_items for path in carry_endpoint_paths(item)}
+    superseded_paths = superseded_carry_paths or set()
+    projected_items: list[DiffItem] = []
+    for item in live_items:
+        if not item.is_code:
+            continue
+        projected_paths = tuple(
+            path
+            for path in item.paths
+            if path in carry_paths and path not in superseded_paths
+        )
+        if not projected_paths:
+            continue
+        projected_status = item.status
+        projected_rename_score = item.rename_score
+        if item.status.startswith(("R", "C")) and len(projected_paths) != 2:
+            projected_status = "M"
+            projected_rename_score = None
+        projected_items.append(
+            DiffItem(
+                status=projected_status,
+                paths=projected_paths,
+                old_mode=item.old_mode,
+                new_mode=item.new_mode,
+                rename_score=projected_rename_score,
+                is_code=any(is_code_path(path) for path in projected_paths),
+            )
+        )
+    return projected_items
+
+
+def carry_endpoint_paths(item: DiffItem) -> tuple[str, ...]:
+    """Return paths whose tree state was changed by a carry diff item.
+
+    Git's copy status includes the unchanged source as its first endpoint;
+    treating that source as a downstream change creates false provenance when
+    upstream changed the source independently.  A rename removes its old
+    endpoint, while delete/add/type-change entries have one actionable path.
+    """
+
+    if item.status.startswith("C"):
+        return (item.paths[-1],)
+    return item.paths
+
+
+def diff_hunks(repo: Path, left_sha: str, right_sha: str, path: str) -> list[DiffHunk]:
+    """Return exact location- and context-bearing hunks for one path.
+
+    Unified-diff headers bind the old/new ranges and function context, while
+    the body retains surrounding context lines. No-newline annotations are
+    retained as metadata because they make byte-preserving carry proof unsafe.
+    """
+
+    result = run_git(
+        repo,
+        [
+            "diff",
+            "--no-ext-diff",
+            "--no-renames",
+            "--unified=3",
+            left_sha,
+            right_sha,
+            "--",
+            path,
+        ],
+        capture_stdout=True,
+    )
+    hunks: list[DiffHunk] = []
+    current_header: str | None = None
+    current: list[str] | None = None
+    current_no_newline_marker = False
+    for line in result.stdout.splitlines():
+        if line.startswith("@@ "):
+            if current_header is not None and current is not None:
+                hunks.append(
+                    DiffHunk(
+                        current_header,
+                        tuple(current),
+                        current_no_newline_marker,
+                    )
+                )
+            current_header = line
+            current = []
+            current_no_newline_marker = False
+        elif current is not None and line == "\\ No newline at end of file":
+            current_no_newline_marker = True
+        elif current is not None and line.startswith((" ", "+", "-")):
+            current.append(line)
+    if current_header is not None and current is not None:
+        hunks.append(
+            DiffHunk(current_header, tuple(current), current_no_newline_marker)
+        )
+    return hunks
+
+
+def is_safe_addition_hunk(hunk: DiffHunk) -> bool:
+    """Require contextual, addition-only hunks with no EOL ambiguity."""
+
+    changed_lines = hunk.changed_lines
+    return (
+        bool(hunk.body)
+        and bool(hunk.context_lines)
+        and bool(changed_lines)
+        and all(line.startswith("+") for line in changed_lines)
+        and not hunk.no_newline_marker
+    )
+
+
+def file_contains_hunk_new_lines(
+    repo: Path, commit_sha: str, path: str, hunk: DiffHunk
+) -> bool:
+    """Check one unique, byte-exact context/addition sequence in a tree."""
+
+    if not is_safe_addition_hunk(hunk):
+        return False
+    actual = read_blob_bytes(repo, commit_sha, path)
+    if actual is None or not is_safe_text_blob(actual):
+        return False
+    expected_lines = [
+        line[1:].encode("utf-8") for line in hunk.body if line.startswith((" ", "+"))
+    ]
+    expected = b"\n".join(expected_lines)
+    if not expected:
+        return False
+
+    matches: list[int] = []
+    offset = actual.find(expected)
+    while offset >= 0:
+        end = offset + len(expected)
+        starts_at_line_boundary = offset == 0 or actual[offset - 1] == 0x0A
+        ends_at_line_boundary = end == len(actual) or actual[end] == 0x0A
+        if starts_at_line_boundary and ends_at_line_boundary:
+            matches.append(offset)
+        offset = actual.find(expected, offset + 1)
+    return len(matches) == 1
+
+
+def is_ancestor(repo: Path, ancestor_sha: str, descendant_sha: str) -> bool:
+    result = run_git(
+        repo,
+        ["merge-base", "--is-ancestor", ancestor_sha, descendant_sha],
+        capture_stdout=False,
+        allow_failure=True,
+    )
+    return result.returncode == 0
+
+
+def verify_superseded_hunks(
+    repo: Path,
+    registry: dict[str, Any],
+    upstream_sha: str,
+    merge_base: str,
+    downstream_sha: str,
+    *,
+    enforce: bool = True,
+) -> dict[str, Any]:
+    """Validate exact upstreamed carry hunks before excluding their paths.
+
+    A declaration is effective only when its hunk appears in the bound
+    upstream commit, remains present in the current upstream tree, and appears
+    at the same unified-diff header and full context-bearing body in the current
+    merge-base-to-downstream carry diff. The exact header and body are the
+    authoritative guard against relocation, duplication, reordering, or context
+    mismatch; changed-line bodies alone cannot mask a different hunk position or
+    context. Every carry hunk for a declared path must be accounted for; an
+    additional downstream hunk therefore fails closed instead of being hidden
+    by a path-level supersession.
+    """
+
+    declarations = registry.get("superseded_hunks", [])
+    if declarations is None:
+        return {"checks": [], "superseded_carry_paths": []}
+    if not isinstance(declarations, list):
+        error = "superseded_hunks must be a list"
+        if enforce:
+            raise ValueError(
+                "superseded hunk evidence verification failed:\n- " + error
+            )
+        print(f"warning: {error}", file=sys.stderr)
+        return {"checks": [], "superseded_carry_paths": []}
+    if not declarations:
+        return {"checks": [], "superseded_carry_paths": []}
+
+    errors: list[str] = []
+    checks: list[dict[str, Any]] = []
+    declarations_by_path: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    resolved_hunks: dict[int, DiffHunk] = {}
+    for index, declaration in enumerate(declarations, start=1):
+        if not isinstance(declaration, dict):
+            errors.append(f"superseded_hunks[{index}] must be an object")
+            continue
+        path = declaration.get("path")
+
+        entry_id = str(declaration.get("id", "<unnamed>"))
+        upstream_commit = declaration.get("upstream_commit")
+        hunk_header_value = declaration.get("hunk_header")
+        hunk_lines_value = declaration.get("hunk_lines")
+        if not isinstance(path, str) or not isinstance(upstream_commit, str):
+            errors.append(f"{entry_id}: supersession identity is malformed")
+            continue
+        declarations_by_path.setdefault(path, []).append((index, declaration))
+        if not isinstance(hunk_header_value, str):
+            errors.append(f"{entry_id}: hunk_header is malformed")
+            continue
+        if not isinstance(hunk_lines_value, list) or not all(
+            isinstance(line, str) for line in hunk_lines_value
+        ):
+            errors.append(f"{entry_id}: hunk_lines is malformed")
+            continue
+        hunk_header = hunk_header_value
+        hunk_lines = tuple(hunk_lines_value)
+
+        if not is_ancestor(repo, upstream_commit, upstream_sha):
+            errors.append(
+                f"{entry_id}: upstream commit {upstream_commit} is not an ancestor "
+                f"of upstream snapshot {upstream_sha}"
+            )
+            continue
+        try:
+            upstream_parent = run_git(
+                repo,
+                ["rev-parse", f"{upstream_commit}^"],
+                capture_stdout=True,
+            ).stdout.strip()
+            path_safety_errors = validate_textual_supersession_path(
+                repo,
+                path,
+                [
+                    ("upstream parent", upstream_parent),
+                    ("upstream commit", upstream_commit),
+                    ("current upstream", upstream_sha),
+                    ("merge base", merge_base),
+                    ("downstream", downstream_sha),
+                ],
+                [
+                    (
+                        "upstream commit",
+                        upstream_parent,
+                        upstream_commit,
+                    ),
+                    ("downstream carry", merge_base, downstream_sha),
+                ],
+            )
+            if path_safety_errors:
+                errors.extend(f"{entry_id}: {error}" for error in path_safety_errors)
+                continue
+            upstream_hunks = diff_hunks(repo, upstream_parent, upstream_commit, path)
+        except RuntimeError as error:
+            errors.append(f"{entry_id}: cannot read upstream evidence: {error}")
+            continue
+
+        matching_upstream_hunks = [
+            hunk
+            for hunk in upstream_hunks
+            if hunk.header == hunk_header and hunk.changed_lines == hunk_lines
+        ]
+        if not matching_upstream_hunks:
+            errors.append(
+                f"{entry_id}: declared hunk header/body is absent from upstream "
+                f"{upstream_commit}"
+            )
+            continue
+        if len(matching_upstream_hunks) != 1:
+            errors.append(
+                f"{entry_id}: declared hunk is ambiguous in upstream commit "
+                f"{upstream_commit}"
+            )
+            continue
+        upstream_hunk = matching_upstream_hunks[0]
+        if not is_safe_addition_hunk(upstream_hunk):
+            errors.append(
+                f"{entry_id}: declared hunk must be a contextual, "
+                "textual addition-only hunk with no EOL ambiguity"
+            )
+            continue
+        if not file_contains_hunk_new_lines(repo, upstream_sha, path, upstream_hunk):
+            errors.append(
+                f"{entry_id}: declared hunk is absent from current upstream tree "
+                f"{upstream_sha}"
+            )
+            continue
+        resolved_hunks[index] = upstream_hunk
+
+        checks.append(
+            {
+                "id": entry_id,
+                "path": path,
+                "upstream_commit": upstream_commit,
+                "hunk_header": hunk_header,
+                "upstream_hunk_verified": True,
+                "context_verified": True,
+            }
+        )
+
+    superseded_carry_paths: list[str] = []
+    for path, path_declarations in declarations_by_path.items():
+        carry_hunks = diff_hunks(repo, merge_base, downstream_sha, path)
+        remaining = list(carry_hunks)
+        for index, declaration in path_declarations:
+            entry_id = str(declaration.get("id", "<unnamed>"))
+            expected_hunk = resolved_hunks.get(index)
+            if expected_hunk is None:
+                continue
+            matching_carry_indexes = [
+                carry_index
+                for carry_index, carry_hunk in enumerate(remaining)
+                if carry_hunk.header == expected_hunk.header
+                and carry_hunk.body == expected_hunk.body
+            ]
+            if not matching_carry_indexes:
+                errors.append(
+                    f"{entry_id}: declared hunk position/context is absent from "
+                    f"current downstream carry diff for {path}"
+                )
+                continue
+            if len(matching_carry_indexes) != 1:
+                errors.append(
+                    f"{entry_id}: declared hunk position/context is ambiguous in "
+                    f"current downstream carry diff for {path}"
+                )
+                continue
+            del remaining[matching_carry_indexes[0]]
+            for check in checks:
+                if check["id"] == entry_id and check["path"] == path:
+                    check["carry_hunk_verified"] = True
+        if remaining:
+            errors.append(
+                f"supersession for {path}: {len(remaining)} downstream carry hunk(s) "
+                "are not declared and cannot be masked"
+            )
+        elif (
+            path_declarations
+            and carry_hunks
+            and all(
+                index in resolved_hunks for index, _declaration in path_declarations
+            )
+        ):
+            superseded_carry_paths.append(path)
+
+    if errors:
+        if enforce:
+            raise ValueError(
+                "superseded hunk evidence verification failed:\n- "
+                + "\n- ".join(errors)
+            )
+        for error in errors:
+            print(f"warning: {error}", file=sys.stderr)
+        return {"checks": [], "superseded_carry_paths": []}
+
+    return {
+        "checks": checks,
+        "superseded_carry_paths": sorted(set(superseded_carry_paths)),
+    }
+
+
 def classify_mirror_health(
     repo: Path, mirror_sha: str, upstream_sha: str
 ) -> tuple[str, tuple[int, int]]:
@@ -591,6 +1164,7 @@ def load_registry(path: Path, enforce_registry: bool) -> dict[str, Any]:
 
 def validate_registry(registry: dict[str, Any]) -> None:
     errors: list[str] = []
+    validate_superseded_hunks(registry.get("superseded_hunks"), errors)
     for index, entry in enumerate(registry.get("divergences", []), start=1):
         entry_id = str(entry.get("id") or f"entry-{index}")
         if str(entry.get("status", "live")) != "live":
@@ -644,6 +1218,74 @@ def validate_registry(registry: dict[str, Any]) -> None:
 
     if errors:
         raise ValueError("invalid divergence registry:\n- " + "\n- ".join(errors))
+
+
+def validate_superseded_hunks(raw: Any, errors: list[str]) -> None:
+    if raw is None:
+        return
+    if not isinstance(raw, list):
+        errors.append("superseded_hunks must be a list")
+        return
+
+    seen_ids: set[str] = set()
+    for index, declaration in enumerate(raw, start=1):
+        prefix = f"superseded_hunks[{index}]"
+        if not isinstance(declaration, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+
+        missing = [
+            field
+            for field in (
+                "id",
+                "path",
+                "upstream_commit",
+                "hunk_header",
+                "hunk_lines",
+            )
+            if field not in declaration
+        ]
+        for field in missing:
+            errors.append(f"{prefix}: missing required field {field}")
+
+        entry_id = declaration.get("id")
+        if not non_empty_string(entry_id):
+            errors.append(f"{prefix}: id must be a non-empty string")
+        elif entry_id in seen_ids:
+            errors.append(f"{prefix}: duplicate id {entry_id}")
+        else:
+            seen_ids.add(entry_id)
+
+        path = declaration.get("path")
+        if not safe_repo_relative_posix_path(path):
+            errors.append(f"{prefix}: path must be a safe repo-relative POSIX path")
+
+        upstream_commit = declaration.get("upstream_commit")
+        if not (
+            isinstance(upstream_commit, str)
+            and len(upstream_commit) == 40
+            and all(char in "0123456789abcdef" for char in upstream_commit)
+        ):
+            errors.append(f"{prefix}: upstream_commit must be a lowercase full SHA")
+
+        hunk_header = declaration.get("hunk_header")
+        if not (
+            isinstance(hunk_header, str)
+            and HUNK_HEADER_PATTERN.fullmatch(hunk_header) is not None
+        ):
+            errors.append(f"{prefix}: hunk_header must be an exact unified-diff header")
+
+        hunk_lines = declaration.get("hunk_lines")
+        if not isinstance(hunk_lines, list) or not hunk_lines:
+            errors.append(f"{prefix}: hunk_lines must be a non-empty list")
+            continue
+        if not all(isinstance(line, str) and line for line in hunk_lines):
+            errors.append(f"{prefix}: hunk_lines entries must be non-empty strings")
+            continue
+        if not all(line.startswith("+") for line in hunk_lines):
+            errors.append(
+                f"{prefix}: hunk_lines entries must be addition-only unified-diff lines"
+            )
 
 
 def non_empty_string(value: Any) -> bool:
@@ -1128,6 +1770,31 @@ def run_git(
         raise RuntimeError(
             "git command failed: "
             f"{' '.join(args)}\nstdout={result.stdout.strip()}\nstderr={result.stderr.strip()}"
+        )
+    return result
+
+
+def run_git_bytes(
+    repo: Path,
+    args: list[str],
+    *,
+    allow_failure: bool = False,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run Git without decoding output so blob and tree bytes stay exact."""
+
+    env = os.environ.copy()
+    env["LC_ALL"] = "C"
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=False,
+        env=env,
+        check=False,
+    )
+    if result.returncode != 0 and not allow_failure:
+        raise RuntimeError(
+            "git command failed: "
+            f"{' '.join(args)}\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
         )
     return result
 
