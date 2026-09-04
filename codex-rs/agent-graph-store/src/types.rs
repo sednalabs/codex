@@ -1,3 +1,4 @@
+use codex_protocol::ThreadId;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -9,6 +10,15 @@ pub enum ThreadSpawnEdgeStatus {
     Open,
     /// The child thread has been closed from the parent/child graph's perspective.
     Closed,
+}
+
+/// Descendants returned by a bounded persisted-graph recovery query.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadSpawnDescendants {
+    /// Descendant thread identifiers retained by the bounded query.
+    pub thread_ids: Vec<ThreadId>,
+    /// Whether the recursive safety limit was reached.
+    pub relation_limit_reached: bool,
 }
 
 #[cfg(test)]

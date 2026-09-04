@@ -715,6 +715,7 @@ async fn test_list_conversations_latest_first() {
         next_cursor: None,
         num_scanned_files: 3,
         reached_scan_cap: false,
+        relation_limit_reached: false,
     };
 
     assert_eq!(page, expected);
@@ -852,6 +853,7 @@ async fn test_pagination_cursor() {
         next_cursor: Some(expected_cursor1.clone()),
         num_scanned_files: 3, // scanned 05, 04, and peeked at 03 before breaking
         reached_scan_cap: false,
+        relation_limit_reached: false,
     };
     assert_eq!(page1, expected_page1);
 
@@ -932,6 +934,7 @@ async fn test_pagination_cursor() {
         next_cursor: Some(expected_cursor2.clone()),
         num_scanned_files: 5, // scanned 05, 04 (anchor), 03, 02, and peeked at 01
         reached_scan_cap: false,
+        relation_limit_reached: false,
     };
     assert_eq!(page2, expected_page2);
 
@@ -981,6 +984,7 @@ async fn test_pagination_cursor() {
         next_cursor: None,
         num_scanned_files: 5, // scanned 05, 04 (anchor), 03, 02 (anchor), 01
         reached_scan_cap: false,
+        relation_limit_reached: false,
     };
     assert_eq!(page3, expected_page3);
 }
@@ -1156,6 +1160,7 @@ async fn test_get_thread_contents() {
         next_cursor: None,
         num_scanned_files: 1,
         reached_scan_cap: false,
+        relation_limit_reached: false,
     };
     assert_eq!(page, expected_page);
 
@@ -1548,6 +1553,7 @@ async fn test_timestamp_only_cursor_skips_same_second_filesystem_ties() {
         next_cursor: Some(expected_cursor1.clone()),
         num_scanned_files: 3, // scanned u3, u2, peeked u1
         reached_scan_cap: false,
+        relation_limit_reached: false,
     };
     assert_eq!(page1, expected_page1);
 
@@ -1570,6 +1576,7 @@ async fn test_timestamp_only_cursor_skips_same_second_filesystem_ties() {
         next_cursor: None,
         num_scanned_files: 3,
         reached_scan_cap: false,
+        relation_limit_reached: false,
     };
     assert_eq!(page2, expected_page2);
 }

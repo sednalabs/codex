@@ -190,8 +190,13 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
         root_thread_id: ThreadId,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<Vec<ThreadId>> {
-        self.list_thread_spawn_descendants_matching(root_thread_id, Some(status))
-            .await
+        self.list_thread_spawn_descendants_matching(
+            root_thread_id,
+            Some(status),
+            /*limit*/ None,
+        )
+        .await
+        .map(|descendants| descendants.thread_ids)
     }
 
     /// List all spawned descendants of `root_thread_id`.
@@ -201,8 +206,31 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
         &self,
         root_thread_id: ThreadId,
     ) -> anyhow::Result<Vec<ThreadId>> {
-        self.list_thread_spawn_descendants_matching(root_thread_id, /*status*/ None)
-            .await
+        self.list_thread_spawn_descendants_matching(
+            root_thread_id,
+            /*status*/ None,
+            /*limit*/ None,
+        )
+        .await
+        .map(|descendants| descendants.thread_ids)
+    }
+
+    /// List persisted descendants through the bounded recovery path.
+    ///
+    /// This path returns an explicit marker when the recursive safety bound is reached. Callers
+    /// that must preserve complete subtree semantics, such as archive or delete, must use the
+    /// complete legacy methods above instead of treating a bounded result as authoritative.
+    pub async fn list_thread_spawn_descendants_bounded(
+        &self,
+        root_thread_id: ThreadId,
+        status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
+    ) -> anyhow::Result<crate::ThreadSpawnDescendants> {
+        self.list_thread_spawn_descendants_matching(
+            root_thread_id,
+            status,
+            Some(crate::MAX_THREAD_RELATION_DESCENDANTS),
+        )
+        .await
     }
 
     /// Find a direct spawned child of `parent_thread_id` by canonical agent path.
@@ -230,6 +258,10 @@ LIMIT 2
     }
 
     /// Find a spawned descendant of `root_thread_id` by canonical agent path.
+    ///
+    /// This recovery lookup is safety-bounded. A missing result is therefore best-effort when the
+    /// persisted descendant graph exceeds the bound; exhaustive point lookup requires a future
+    /// indexed/continuation API.
     pub async fn find_thread_spawn_descendant_by_path(
         &self,
         root_thread_id: ThreadId,
@@ -241,10 +273,12 @@ WITH RECURSIVE subtree(child_thread_id) AS (
     SELECT child_thread_id
     FROM thread_spawn_edges
     WHERE parent_thread_id = ?
-    UNION ALL
+      AND child_thread_id != ?
+    UNION
     SELECT edge.child_thread_id
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    LIMIT ?
 )
 SELECT threads.id
 FROM subtree
@@ -255,6 +289,8 @@ LIMIT 2
             "#,
         )
         .bind(root_thread_id.to_string())
+        .bind(root_thread_id.to_string())
+        .bind(i64::try_from(crate::MAX_THREAD_RELATION_DESCENDANTS)?)
         .bind(agent_path)
         .fetch_all(self.pool.as_ref())
         .await?;
@@ -287,54 +323,92 @@ LIMIT 2
         &self,
         root_thread_id: ThreadId,
         status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
-    ) -> anyhow::Result<Vec<ThreadId>> {
+        limit: Option<usize>,
+    ) -> anyhow::Result<crate::ThreadSpawnDescendants> {
+        let root_thread_id = root_thread_id.to_string();
+        // Historical source backfill can produce A -> B -> A even though each child has only one
+        // incoming edge. Carry the visited ids through each branch so recursion is bounded by the
+        // finite reachable edge set, and seed it with the root so a cycle cannot return the root as
+        // its own descendant. The outer grouping is a defensive duplicate guard for malformed
+        // graphs while retaining the shortest breadth-first depth for deterministic ordering.
         let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
-WITH RECURSIVE subtree(child_thread_id, depth) AS (
-    SELECT child_thread_id, 1
+WITH RECURSIVE subtree(child_thread_id, depth, visited) AS (
+    SELECT child_thread_id, 1, ',' ||
+            "#,
+        );
+        builder.push_bind(root_thread_id.clone());
+        builder.push(
+            r#" || ',' || child_thread_id || ','
     FROM thread_spawn_edges
     WHERE parent_thread_id =
             "#,
         );
-        builder.push_bind(root_thread_id.to_string());
+        builder.push_bind(root_thread_id.clone());
+        builder.push(" AND child_thread_id != ");
+        builder.push_bind(root_thread_id);
         if let Some(status) = status {
             let status = status.to_string();
             builder.push(" AND status = ").push_bind(status.clone());
             builder.push(
                 r#"
     UNION ALL
-    SELECT edge.child_thread_id, subtree.depth + 1
+    SELECT edge.child_thread_id,
+           subtree.depth + 1,
+           subtree.visited || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-    WHERE status =
+    WHERE edge.status =
                 "#,
             );
             builder.push_bind(status);
+            builder.push(
+                r#"
+      AND instr(subtree.visited, ',' || edge.child_thread_id || ',') = 0
+                "#,
+            );
         } else {
             builder.push(
                 r#"
     UNION ALL
-    SELECT edge.child_thread_id, subtree.depth + 1
+    SELECT edge.child_thread_id,
+           subtree.depth + 1,
+           subtree.visited || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    WHERE instr(subtree.visited, ',' || edge.child_thread_id || ',') = 0
                 "#,
             );
+        }
+        if let Some(limit) = limit {
+            builder.push(" LIMIT ");
+            builder.push(limit.saturating_add(1).to_string());
         }
         builder.push(
             r#"
 )
-SELECT child_thread_id
+SELECT child_thread_id, MIN(depth) AS depth
 FROM subtree
+GROUP BY child_thread_id
 ORDER BY depth ASC, child_thread_id ASC
             "#,
         );
 
         let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
-        rows.into_iter()
+        let relation_limit_reached = limit.is_some_and(|limit| rows.len() > limit);
+        let mut thread_ids = rows
+            .into_iter()
             .map(|row| {
                 ThreadId::try_from(row.try_get::<String, _>("child_thread_id")?).map_err(Into::into)
             })
-            .collect()
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        if let Some(limit) = limit {
+            thread_ids.truncate(limit);
+        }
+        Ok(crate::ThreadSpawnDescendants {
+            thread_ids,
+            relation_limit_reached,
+        })
     }
 
     async fn insert_thread_spawn_edge_if_absent(
@@ -486,12 +560,28 @@ ON CONFLICT(child_thread_id) DO NOTHING
         filters: ThreadFilterOptions<'_>,
         relation_filter: Option<crate::ThreadRelationFilter>,
     ) -> anyhow::Result<crate::ThreadsPage> {
+        // Keep the raw relation-bound check and the bounded page query in one read transaction.
+        // Otherwise a child inserted between the two statements could make the page truncate
+        // while the response still reports relation_limit_reached = false.
+        let mut tx = self.pool.begin().await?;
+        let relation_limit_reached = match relation_filter {
+            Some(crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)) => {
+                let mut relation_builder = QueryBuilder::<Sqlite>::new("");
+                push_descendant_subtree_cte(&mut relation_builder, ancestor_thread_id);
+                relation_builder.push("SELECT COUNT(*) AS relation_count FROM subtree");
+                let row = relation_builder.build().fetch_one(&mut *tx).await?;
+                let relation_count: i64 = row.try_get("relation_count")?;
+                relation_count
+                    >= i64::try_from(crate::MAX_THREAD_RELATION_DESCENDANTS.saturating_add(1))?
+            }
+            _ => false,
+        };
         let limit = page_size.saturating_add(1);
 
         let mut builder = QueryBuilder::<Sqlite>::new("");
         push_list_threads_query(&mut builder, filters, relation_filter, limit);
 
-        let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
+        let rows = builder.build().fetch_all(&mut *tx).await?;
         let mut items = Vec::with_capacity(rows.len());
         let mut parent_thread_ids = std::collections::HashMap::new();
         for row in rows {
@@ -515,12 +605,15 @@ ON CONFLICT(child_thread_id) DO NOTHING
         } else {
             None
         };
-        Ok(ThreadsPage {
+        let page = ThreadsPage {
             items,
             parent_thread_ids,
             next_anchor,
             num_scanned_rows,
-        })
+            relation_limit_reached,
+        };
+        tx.commit().await?;
+        Ok(page)
     }
 
     /// List thread ids using the underlying database (no rollout scanning).
@@ -1218,24 +1311,7 @@ fn push_list_threads_query(
     limit: usize,
 ) {
     if let Some(crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)) = relation_filter {
-        builder.push(
-            r#"
-WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
-    SELECT child_thread_id, parent_thread_id
-    FROM thread_spawn_edges
-    WHERE parent_thread_id =
-"#,
-        );
-        builder.push_bind(ancestor_thread_id.to_string());
-        builder.push(
-            r#"
-    UNION
-    SELECT edge.child_thread_id, edge.parent_thread_id
-    FROM thread_spawn_edges AS edge
-    JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-)
-"#,
-        );
+        push_descendant_subtree_cte(builder, ancestor_thread_id);
     }
     push_thread_select_columns(builder);
     // SQLite may otherwise reorder these joins and scan the global timestamp index before
@@ -1251,7 +1327,12 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
     };
     let include_thread_id_tiebreaker =
         relation_filter.is_some() || filters.sort_key == SortKey::RecencyAt;
-    push_thread_filters(builder, filters, include_thread_id_tiebreaker);
+    push_thread_filters_with_preview(
+        builder,
+        filters,
+        include_thread_id_tiebreaker,
+        /*include_empty_preview*/ relation_filter.is_some(),
+    );
     match relation_filter {
         Some(crate::ThreadRelationFilter::DirectChildrenOf(parent_thread_id)) => {
             builder.push(" AND listed_edge.parent_thread_id = ");
@@ -1280,6 +1361,39 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
         order_by_index,
         include_thread_id_tiebreaker,
         limit,
+    );
+}
+
+fn push_descendant_subtree_cte(builder: &mut QueryBuilder<Sqlite>, ancestor_thread_id: ThreadId) {
+    builder.push(
+        r#"
+WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
+    SELECT child_thread_id, parent_thread_id
+    FROM thread_spawn_edges
+    WHERE parent_thread_id =
+"#,
+    );
+    builder.push_bind(ancestor_thread_id.to_string());
+    // Keep the recursive work table itself bounded before the outer sort and pagination. The
+    // extra tuple is the sentinel that lets a 3,200-row consumer detect truncation.
+    builder.push(
+        r#"
+    UNION
+    SELECT edge.child_thread_id, edge.parent_thread_id
+    FROM thread_spawn_edges AS edge
+    JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    LIMIT
+"#,
+    );
+    builder.push(
+        crate::MAX_THREAD_RELATION_DESCENDANTS
+            .saturating_add(1)
+            .to_string(),
+    );
+    builder.push(
+        r#"
+)
+"#,
     );
 }
 
@@ -1356,6 +1470,20 @@ pub(super) fn push_thread_filters<'a>(
     options: ThreadFilterOptions<'a>,
     include_thread_id_tiebreaker: bool,
 ) {
+    push_thread_filters_with_preview(
+        builder,
+        options,
+        include_thread_id_tiebreaker,
+        /*include_empty_preview*/ false,
+    );
+}
+
+fn push_thread_filters_with_preview<'a>(
+    builder: &mut QueryBuilder<Sqlite>,
+    options: ThreadFilterOptions<'a>,
+    include_thread_id_tiebreaker: bool,
+    include_empty_preview: bool,
+) {
     let ThreadFilterOptions {
         archived_only,
         allowed_sources,
@@ -1373,7 +1501,9 @@ pub(super) fn push_thread_filters<'a>(
     } else {
         builder.push(" AND threads.archived = 0");
     }
-    builder.push(" AND threads.preview <> ''");
+    if !include_empty_preview {
+        builder.push(" AND threads.preview <> ''");
+    }
     if let Some(is_pinned) = is_pinned {
         builder.push(" AND threads.is_pinned = ");
         builder.push_bind(is_pinned);

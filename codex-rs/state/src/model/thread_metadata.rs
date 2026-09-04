@@ -60,6 +60,20 @@ pub struct ThreadsPage {
     pub next_anchor: Option<Anchor>,
     /// The number of rows scanned to produce this page.
     pub num_scanned_rows: usize,
+    /// Whether the raw descendant relation filled its bounded safety subset.
+    ///
+    /// Relation queries retain one sentinel row beyond the consumer cap so callers can report
+    /// that additional descendants may exist without expanding the query or memory budget.
+    pub relation_limit_reached: bool,
+}
+
+/// Persisted spawn descendants returned by a bounded recovery query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadSpawnDescendants {
+    /// Descendant thread identifiers retained by the bounded query.
+    pub thread_ids: Vec<ThreadId>,
+    /// Whether the bounded recursive work table reached its safety limit.
+    pub relation_limit_reached: bool,
 }
 
 /// The outcome of extracting metadata from a rollout.

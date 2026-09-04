@@ -1055,7 +1055,24 @@ impl App {
             sub_agent_activity_item(notification).and_then(sub_agent_activity_display)
         {
             let thread_id = activity.thread_id;
-            self.agent_navigation.record_sub_agent_activity(activity);
+            let update = if activity.is_running_hint {
+                let protected = [self.primary_thread_id, self.active_thread_id]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                self.agent_navigation
+                    .record_sub_agent_activity_retaining(activity, &protected)
+            } else if self.agent_navigation.record_sub_agent_activity(activity) {
+                AgentNavigationUpdate::Accepted { evicted: None }
+            } else {
+                AgentNavigationUpdate::Rejected
+            };
+            if let Some(evicted) = update.evicted() {
+                self.chat_widget.remove_collab_agent_metadata(evicted);
+            }
+            if !update.accepted() {
+                return;
+            }
             self.sync_agent_picker_identity(thread_id);
             self.sync_active_agent_label();
             return;
@@ -1082,7 +1099,7 @@ impl App {
                 continue;
             }
 
-            self.upsert_agent_picker_thread(
+            self.upsert_agent_picker_thread_retaining(
                 thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
                 /*is_closed*/ false,
             );
@@ -1128,12 +1145,15 @@ impl App {
         session.reasoning_effort = model_settings.reasoning_effort;
         session.message_history = None;
         session.rollout_path = rollout_path;
-        self.upsert_agent_picker_thread(
+        let accepted = self.upsert_agent_picker_thread_retaining(
             thread_id,
             notification.thread.agent_nickname.clone(),
             notification.thread.agent_role.clone(),
             /*is_closed*/ false,
         );
+        if !accepted.accepted() {
+            return Some(session);
+        }
         self.agent_navigation
             .set_agent_path(thread_id, source_agent_path(&notification.thread.source));
         self.agent_navigation.update_identity(
@@ -1281,7 +1301,7 @@ impl App {
         let thread_id = session.thread_id;
         self.primary_thread_id = Some(thread_id);
         self.primary_session_configured = Some(session.clone());
-        self.upsert_agent_picker_thread(
+        self.upsert_agent_picker_thread_retaining(
             thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
             /*is_closed*/ false,
         );
@@ -1414,6 +1434,24 @@ impl App {
         started: AppServerStartedThread,
         snapshot: &mut ThreadEventSnapshot,
     ) {
+        let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+        if !self
+            .upsert_agent_picker_thread_retaining(
+                thread_id,
+                existing_entry
+                    .as_ref()
+                    .and_then(|entry| entry.agent_nickname.clone()),
+                existing_entry.and_then(|entry| entry.agent_role),
+                /*is_closed*/ false,
+            )
+            .accepted()
+        {
+            tracing::warn!(
+                %thread_id,
+                "snapshot refresh could not retain thread in bounded picker cache"
+            );
+            return;
+        }
         if started.blocks_direct_input {
             self.agent_navigation.mark_parent_owned(thread_id);
         }

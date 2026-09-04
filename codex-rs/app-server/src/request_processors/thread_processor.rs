@@ -2072,6 +2072,7 @@ impl ThreadRequestProcessor {
             parent_thread_id,
             ancestor_thread_id,
         } = params;
+        let ancestor_filter_applied = ancestor_thread_id.is_some().then_some(true);
         let cwd_filters = normalize_thread_list_cwd_filters(cwd)?;
         let relation_filter = match (parent_thread_id, ancestor_thread_id) {
             (Some(_), Some(_)) => {
@@ -2100,7 +2101,7 @@ impl ThreadRequestProcessor {
             ThreadSortKey::RecencyAt => StoreThreadSortKey::RecencyAt,
         };
         let sort_direction = sort_direction.unwrap_or(SortDirection::Desc);
-        let (stored_threads, next_cursor) = self
+        let (stored_threads, next_cursor, relation_limit_reached) = self
             .list_threads_common(
                 requested_page_size,
                 cursor,
@@ -2156,6 +2157,10 @@ impl ThreadRequestProcessor {
         }
         Ok(ThreadListResponse {
             data,
+            ancestor_filter_applied,
+            relation_limit_reached: ancestor_filter_applied
+                .is_some()
+                .then_some(relation_limit_reached),
             next_cursor,
             backwards_cursor,
         })
@@ -4833,7 +4838,7 @@ impl ThreadRequestProcessor {
         sort_key: StoreThreadSortKey,
         sort_direction: SortDirection,
         filters: ThreadListFilters,
-    ) -> Result<(Vec<StoredThread>, Option<String>), JSONRPCErrorError> {
+    ) -> Result<(Vec<StoredThread>, Option<String>, bool), JSONRPCErrorError> {
         let ThreadListFilters {
             model_providers,
             source_kinds,
@@ -4851,6 +4856,7 @@ impl ThreadRequestProcessor {
         let mut remaining = requested_page_size;
         let mut items = Vec::with_capacity(requested_page_size);
         let mut next_cursor: Option<String> = None;
+        let mut relation_limit_reached = false;
 
         let model_provider_filter = match model_providers {
             Some(providers) => {
@@ -4895,6 +4901,7 @@ impl ThreadRequestProcessor {
                 })
                 .await
                 .map_err(thread_store_list_error)?;
+            relation_limit_reached |= page.relation_limit_reached;
 
             let mut filtered = Vec::with_capacity(page.items.len());
             for it in page.items {
@@ -4943,7 +4950,7 @@ impl ThreadRequestProcessor {
             cursor_obj = Some(cursor_val);
         }
 
-        Ok((items, next_cursor))
+        Ok((items, next_cursor, relation_limit_reached))
     }
 }
 

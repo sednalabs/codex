@@ -986,7 +986,7 @@ async fn thread_list_relation_filters_read_spawn_graph_from_state_db() -> Result
         builder.cwd = codex_home.path().to_path_buf();
         builder.cli_version = Some("0.0.0".to_string());
         let mut metadata = builder.build(model_provider);
-        metadata.preview = Some("child thread".to_string());
+        metadata.preview = (thread_id == older_child_id).then(|| "child thread".to_string());
         metadata.first_user_message = metadata.preview.clone();
         state_db.upsert_thread(&metadata).await?;
     }
@@ -1026,6 +1026,11 @@ async fn thread_list_relation_filters_read_spawn_graph_from_state_db() -> Result
     )
     .await?;
 
+    assert_eq!(first_page.ancestor_filter_applied, None);
+    assert_eq!(second_page.ancestor_filter_applied, None);
+    assert_eq!(first_page.relation_limit_reached, None);
+    assert_eq!(second_page.relation_limit_reached, None);
+
     assert_eq!(
         first_page
             .data
@@ -1034,6 +1039,7 @@ async fn thread_list_relation_filters_read_spawn_graph_from_state_db() -> Result
             .collect::<Vec<_>>(),
         vec![newer_child_id.to_string()]
     );
+    assert_eq!(first_page.data[0].preview, "");
     assert_eq!(
         second_page
             .data
@@ -1078,6 +1084,8 @@ async fn thread_list_relation_filters_read_spawn_graph_from_state_db() -> Result
         /*source_kinds*/ None,
     )
     .await?;
+    assert_eq!(descendants.ancestor_filter_applied, Some(true));
+    assert_eq!(descendants.relation_limit_reached, Some(false));
     assert_eq!(
         descendants
             .data

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::AgentGraphStore;
 use crate::AgentGraphStoreError;
 use crate::AgentGraphStoreFuture;
+use crate::ThreadSpawnDescendants;
 use crate::ThreadSpawnEdgeStatus;
 
 /// SQLite-backed implementation of [`AgentGraphStore`] using an existing state runtime.
@@ -105,6 +106,26 @@ impl AgentGraphStore for LocalAgentGraphStore {
                     .await
                     .map_err(internal_error),
             }
+        })
+    }
+
+    fn list_thread_spawn_descendants_bounded(
+        &self,
+        root_thread_id: ThreadId,
+        status_filter: Option<ThreadSpawnEdgeStatus>,
+    ) -> AgentGraphStoreFuture<'_, ThreadSpawnDescendants> {
+        Box::pin(async move {
+            self.state_db
+                .list_thread_spawn_descendants_bounded(
+                    root_thread_id,
+                    status_filter.map(to_state_status),
+                )
+                .await
+                .map(|descendants| ThreadSpawnDescendants {
+                    thread_ids: descendants.thread_ids,
+                    relation_limit_reached: descendants.relation_limit_reached,
+                })
+                .map_err(internal_error)
         })
     }
 }
