@@ -102,7 +102,13 @@ impl ExecServerHarness {
         command.stdout(Stdio::piped());
         command.stderr(Stdio::inherit());
         command.kill_on_drop(true);
-        command.env("CODEX_HOME", codex_home.path());
+        if !command
+            .as_std()
+            .get_envs()
+            .any(|(key, value)| key == "CODEX_HOME" && value.is_some())
+        {
+            command.env("CODEX_HOME", codex_home.path());
+        }
         let mut child = command.spawn()?;
 
         let websocket_url = read_listen_url_from_stdout(&mut child).await?;
