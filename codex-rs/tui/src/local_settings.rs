@@ -27,6 +27,7 @@ impl From<&Config> for LocalSettings {
             tui: Tui {
                 notification_settings: config.tui_notifications.clone(),
                 animations: config.animations,
+                whimsy: config.tui_whimsy,
                 show_tooltips: config.show_tooltips,
                 auto_recap: config.tui_auto_recap,
                 disable_paste_burst: Some(config.disable_paste_burst),

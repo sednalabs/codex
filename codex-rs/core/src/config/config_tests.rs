@@ -1256,6 +1256,7 @@ fn config_toml_deserializes_model_availability_nux() {
         Tui {
             notification_settings: TuiNotificationSettings::default(),
             animations: true,
+            whimsy: true,
             show_tooltips: true,
             auto_recap: true,
             disable_paste_burst: None,
@@ -4269,6 +4270,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
         Tui {
             notification_settings: TuiNotificationSettings::default(),
             animations: true,
+            whimsy: true,
             show_tooltips: true,
             auto_recap: true,
             disable_paste_burst: None,

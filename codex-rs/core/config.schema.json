@@ -4150,6 +4150,11 @@
           "default": false,
           "description": "Start the composer in Vim mode (`Normal`) by default. Defaults to `false`.",
           "type": "boolean"
+        },
+        "whimsy": {
+          "default": true,
+          "description": "Enable decorative effects such as Astra composer stars. Also requires animations. Defaults to `true`.",
+          "type": "boolean"
         }
       },
       "type": "object"

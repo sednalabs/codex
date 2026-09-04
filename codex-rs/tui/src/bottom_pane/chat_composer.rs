@@ -316,6 +316,7 @@ mod history_search;
 mod popup_state;
 mod reconnect;
 mod slash_input;
+mod sparkle;
 mod vim_history;
 mod vim_search;
 
@@ -526,6 +527,7 @@ pub(crate) struct ChatComposer {
     effort_tier: Option<EffortTier>,
     effort_animation_style: Option<IgnitionStyle>,
     effort_ignition: Option<EffortIgnition>,
+    astra_sparkle: Option<sparkle::Sparkle>,
     effort_status_line_transition: Option<EffortStatusLineTransition>,
     effort_observed: bool,
     luna_reserve_active: bool,
@@ -706,6 +708,7 @@ impl ChatComposer {
             effort_tier: None,
             effort_animation_style: None,
             effort_ignition: None,
+            astra_sparkle: None,
             effort_status_line_transition: None,
             effort_observed: false,
             luna_reserve_active: false,
@@ -5062,6 +5065,14 @@ impl ChatComposer {
             {
                 frame_requester.schedule_frame_in(IGNITION_FRAME_TICK);
             }
+        }
+        drop(state);
+        if self.astra_sparkle.is_some() {
+            self.render_sparkle(
+                composer_rect,
+                self.cursor_pos_with_textarea_right_reserve(area, textarea_right_reserve),
+                buf,
+            );
         }
     }
 }
