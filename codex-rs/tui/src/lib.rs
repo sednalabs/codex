@@ -123,6 +123,7 @@ mod experimental_features;
 mod permission_discovery;
 mod pets;
 pub use custom_terminal::Terminal;
+mod assistant_directives;
 mod auto_review_denials;
 mod cwd_prompt;
 mod debug_config;
