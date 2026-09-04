@@ -145,10 +145,6 @@ async fn guardian_session_inherits_parent_http_fallback(
     ticket_issued: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
-    skip_if_wine_exec!(
-        Ok(()),
-        "Guardian approval actions require host-native paths"
-    );
 
     let server = start_mock_server().await;
     let websocket_fallback = Mock::given(method("GET"))
@@ -272,6 +268,19 @@ async fn guardian_session_inherits_parent_http_fallback(
             );
         }
     }
+    let guardian_context = guardian_request.message_input_texts("user").join("\n");
+    let executor_cwd = test
+        .executor_environment()
+        .selection()
+        .cwd
+        .inferred_native_path_string();
+    assert!(
+        guardian_context.contains(&format!(
+            "\"cwd\": \"{}\"",
+            executor_cwd.replace('\\', r"\\")
+        )),
+        "Guardian omitted the executor-native cwd from its planned action: {guardian_context}"
+    );
     test.codex.shutdown_and_wait().await?;
 
     Ok(())

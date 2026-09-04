@@ -3273,7 +3273,7 @@ async fn guardian_completed_notification_publishes_review_event_with_thread_meta
                 GuardianApprovalReviewAction::Command {
                     source: AppServerGuardianCommandSource::Shell,
                     command: "echo hi".to_string(),
-                    cwd: test_path_buf("/tmp").abs(),
+                    cwd: test_path_buf("/tmp").abs().into(),
                 },
             ))),
             &mut events,
