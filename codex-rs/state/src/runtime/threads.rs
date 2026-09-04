@@ -241,7 +241,8 @@ WITH RECURSIVE subtree(child_thread_id) AS (
     SELECT child_thread_id
     FROM thread_spawn_edges
     WHERE parent_thread_id = ?
-    UNION ALL
+      AND child_thread_id != ?
+    UNION
     SELECT edge.child_thread_id
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
@@ -254,6 +255,7 @@ ORDER BY threads.id
 LIMIT 2
             "#,
         )
+        .bind(root_thread_id.to_string())
         .bind(root_thread_id.to_string())
         .bind(agent_path)
         .fetch_all(self.pool.as_ref())
@@ -288,43 +290,68 @@ LIMIT 2
         root_thread_id: ThreadId,
         status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
     ) -> anyhow::Result<Vec<ThreadId>> {
+        let root_thread_id = root_thread_id.to_string();
+        // Historical source backfill can produce A -> B -> A even though each child has only one
+        // incoming edge. Carry the visited ids through each branch so recursion is bounded by the
+        // finite reachable edge set, and seed it with the root so a cycle cannot return the root as
+        // its own descendant. Keep this full-list API uncapped; callers rely on receiving every
+        // reachable descendant. The outer grouping is a defensive duplicate guard for malformed
+        // graphs while retaining the shortest breadth-first depth for deterministic ordering.
         let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
-WITH RECURSIVE subtree(child_thread_id, depth) AS (
-    SELECT child_thread_id, 1
+WITH RECURSIVE subtree(child_thread_id, depth, visited) AS (
+    SELECT child_thread_id, 1, ',' ||
+            "#,
+        );
+        builder.push_bind(root_thread_id.clone());
+        builder.push(
+            r#" || ',' || child_thread_id || ','
     FROM thread_spawn_edges
     WHERE parent_thread_id =
             "#,
         );
-        builder.push_bind(root_thread_id.to_string());
+        builder.push_bind(root_thread_id.clone());
+        builder.push(" AND child_thread_id != ");
+        builder.push_bind(root_thread_id);
         if let Some(status) = status {
             let status = status.to_string();
             builder.push(" AND status = ").push_bind(status.clone());
             builder.push(
                 r#"
     UNION ALL
-    SELECT edge.child_thread_id, subtree.depth + 1
+    SELECT edge.child_thread_id,
+           subtree.depth + 1,
+           subtree.visited || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-    WHERE status =
+    WHERE edge.status =
                 "#,
             );
             builder.push_bind(status);
+            builder.push(
+                r#"
+      AND instr(subtree.visited, ',' || edge.child_thread_id || ',') = 0
+                "#,
+            );
         } else {
             builder.push(
                 r#"
     UNION ALL
-    SELECT edge.child_thread_id, subtree.depth + 1
+    SELECT edge.child_thread_id,
+           subtree.depth + 1,
+           subtree.visited || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    WHERE instr(subtree.visited, ',' || edge.child_thread_id || ',') = 0
                 "#,
             );
         }
         builder.push(
             r#"
 )
-SELECT child_thread_id
+SELECT child_thread_id, MIN(depth) AS depth
 FROM subtree
+GROUP BY child_thread_id
 ORDER BY depth ASC, child_thread_id ASC
             "#,
         );
@@ -1218,24 +1245,7 @@ fn push_list_threads_query(
     limit: usize,
 ) {
     if let Some(crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)) = relation_filter {
-        builder.push(
-            r#"
-WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
-    SELECT child_thread_id, parent_thread_id
-    FROM thread_spawn_edges
-    WHERE parent_thread_id =
-"#,
-        );
-        builder.push_bind(ancestor_thread_id.to_string());
-        builder.push(
-            r#"
-    UNION
-    SELECT edge.child_thread_id, edge.parent_thread_id
-    FROM thread_spawn_edges AS edge
-    JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-)
-"#,
-        );
+        push_descendant_subtree_cte(builder, ancestor_thread_id);
     }
     push_thread_select_columns(builder);
     // SQLite may otherwise reorder these joins and scan the global timestamp index before
@@ -1280,6 +1290,36 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
         order_by_index,
         include_thread_id_tiebreaker,
         limit,
+    );
+}
+
+fn push_descendant_subtree_cte(builder: &mut QueryBuilder<Sqlite>, ancestor_thread_id: ThreadId) {
+    builder.push(
+        r#"
+WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
+    SELECT child_thread_id, parent_thread_id
+    FROM thread_spawn_edges
+    WHERE parent_thread_id =
+"#,
+    );
+    builder.push_bind(ancestor_thread_id.to_string());
+    // Keep the recursive work table itself bounded before the outer sort and pagination. The
+    // extra tuple is the sentinel that lets a 3,200-row consumer detect truncation.
+    builder.push(
+        r#"
+    UNION
+    SELECT edge.child_thread_id, edge.parent_thread_id
+    FROM thread_spawn_edges AS edge
+    JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    ORDER BY 1, 2
+    LIMIT
+"#,
+    );
+    builder.push(crate::MAX_THREAD_RELATION_DESCENDANTS.saturating_add(1));
+    builder.push(
+        r#"
+)
+"#,
     );
 }
 
