@@ -24,6 +24,7 @@ use time::OffsetDateTime;
 use time::format_description::FormatItem;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
+use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
@@ -36,6 +37,8 @@ use tracing::warn;
 
 use super::ARCHIVED_SESSIONS_SUBDIR;
 use super::SESSIONS_SUBDIR;
+use super::command_admission::RolloutCommandAdmission;
+use super::command_admission::RolloutCommandAdmissionError;
 use super::compression;
 use super::list::Cursor;
 use super::list::SortDirection;
@@ -49,6 +52,7 @@ use super::list::get_threads_in_root;
 use super::list::parse_cursor;
 use super::list::parse_timestamp_uuid_from_filename;
 use super::metadata;
+use super::mutation_authority::RolloutMutationAuthority;
 use super::ordinal::RolloutOrdinalState;
 use super::ordinal::ordinal_state_for_rollout;
 use super::session_index::find_thread_names_by_ids;
@@ -85,6 +89,8 @@ use codex_utils_path as path_utils;
 pub struct RolloutRecorder {
     tx: Sender<RolloutCmd>,
     writer_task: Arc<RolloutWriterTask>,
+    #[cfg(test)]
+    mutation_authority: RolloutMutationAuthority,
     pub(crate) rollout_path: PathBuf,
 }
 
@@ -115,6 +121,10 @@ pub enum RolloutRecorderParams {
 
 enum RolloutCmd {
     AddItems(Vec<RolloutItem>),
+    AppendItemsCommitted {
+        items: Vec<RolloutItem>,
+        ack: oneshot::Sender<(std::io::Result<()>, usize)>,
+    },
     Persist {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
@@ -124,13 +134,27 @@ enum RolloutCmd {
     },
     Shutdown {
         ack: oneshot::Sender<std::io::Result<()>>,
+        /// Sent after an error only when the writer will continue receiving commands.
+        continuing: oneshot::Sender<()>,
     },
+}
+
+enum TerminalCommandOutcome {
+    Terminated(std::io::Result<()>),
+    Retryable(IoError),
+}
+
+enum WriterContinuationRace {
+    WriterStopped(std::io::Result<()>),
+    Continuing,
+    SignalLost,
 }
 
 /// Observable state for the background rollout writer task.
 struct RolloutWriterTask {
     handle: Mutex<Option<JoinHandle<()>>>,
     terminal_failure: Mutex<Option<Arc<IoError>>>,
+    command_admission: RolloutCommandAdmission,
 }
 
 impl RolloutWriterTask {
@@ -139,6 +163,7 @@ impl RolloutWriterTask {
         Self {
             handle: Mutex::new(None),
             terminal_failure: Mutex::new(None),
+            command_admission: RolloutCommandAdmission::new(),
         }
     }
 
@@ -149,6 +174,173 @@ impl RolloutWriterTask {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = Some(handle);
+    }
+
+    async fn reserve_data<'a>(
+        &self,
+        tx: &'a Sender<RolloutCmd>,
+    ) -> std::io::Result<(
+        crate::command_admission::RolloutDataAdmission,
+        mpsc::Permit<'a, RolloutCmd>,
+    )> {
+        let admission =
+            self.command_admission.acquire_data().await.map_err(|_| {
+                IoError::other("rollout writer terminal command was already committed")
+            })?;
+        let permit = tx.reserve().await.map_err(|err| {
+            self.terminal_failure().unwrap_or_else(|| {
+                IoError::other(format!("failed to reserve rollout command: {err}"))
+            })
+        })?;
+        Ok((admission, permit))
+    }
+
+    /// Reserve bounded-channel capacity before transferring shutdown ownership to the writer.
+    async fn reserve_shutdown(self: &Arc<Self>, tx: &Sender<RolloutCmd>) -> TerminalCommandOutcome {
+        let terminal_admission = match self.command_admission.acquire_terminal().await {
+            Ok(admission) => admission,
+            Err(RolloutCommandAdmissionError::Terminal) => {
+                return TerminalCommandOutcome::Terminated(Err(IoError::other(
+                    "rollout writer terminal command was already committed",
+                )));
+            }
+        };
+        let permit = match tx.reserve().await {
+            Ok(permit) => permit,
+            Err(err) => {
+                let command_result = Err(IoError::other(format!(
+                    "failed to reserve rollout shutdown command: {err}"
+                )));
+                let transition = terminal_admission.commit(|| {});
+                let Some(custody) = self.take_handle() else {
+                    return self.sealed_terminal_outcome(
+                        transition,
+                        command_result,
+                        Err(IoError::other("rollout writer task handle is unavailable")),
+                    );
+                };
+                return self.sealed_terminal_outcome(
+                    transition,
+                    command_result,
+                    custody.wait().await,
+                );
+            }
+        };
+
+        let (ack, ack_rx) = oneshot::channel();
+        let (continuing, continuing_rx) = oneshot::channel();
+        let transition = terminal_admission.commit(|| {
+            permit.send(RolloutCmd::Shutdown { ack, continuing });
+        });
+
+        let Some(custody) = self.take_handle() else {
+            return self.sealed_terminal_outcome(
+                transition,
+                Err(IoError::other("rollout writer task handle is unavailable")),
+                Ok(()),
+            );
+        };
+        let owner = Arc::clone(self);
+        tokio::spawn(async move {
+            owner
+                .finish_shutdown(transition, custody, ack_rx, continuing_rx)
+                .await
+        })
+        .await
+        .unwrap_or_else(|err| {
+            TerminalCommandOutcome::Terminated(Err(IoError::other(format!(
+                "rollout shutdown ownership task failed: {err}"
+            ))))
+        })
+    }
+
+    async fn finish_shutdown(
+        self: Arc<Self>,
+        transition: crate::command_admission::RolloutTerminalTransition,
+        mut custody: WriterHandleCustody,
+        ack_rx: oneshot::Receiver<std::io::Result<()>>,
+        mut continuing_rx: oneshot::Receiver<()>,
+    ) -> TerminalCommandOutcome {
+        match ack_rx.await {
+            Ok(Ok(())) => self.sealed_terminal_outcome(transition, Ok(()), custody.wait().await),
+            Ok(Err(err)) => {
+                let race = match custody.handle.as_mut() {
+                    Some(handle) => {
+                        tokio::select! {
+                            biased;
+                            result = handle => WriterContinuationRace::WriterStopped(
+                                writer_join_result(result)
+                            ),
+                            continued = &mut continuing_rx => {
+                                if continued.is_ok() {
+                                    WriterContinuationRace::Continuing
+                                } else {
+                                    WriterContinuationRace::SignalLost
+                                }
+                            }
+                        }
+                    }
+                    None => WriterContinuationRace::WriterStopped(Err(IoError::other(
+                        "rollout writer task handle is unavailable",
+                    ))),
+                };
+                match race {
+                    WriterContinuationRace::WriterStopped(task_result) => {
+                        custody.handle = None;
+                        self.sealed_terminal_outcome(transition, Err(err), task_result)
+                    }
+                    WriterContinuationRace::Continuing => {
+                        drop(custody);
+                        transition.reopen();
+                        TerminalCommandOutcome::Retryable(err)
+                    }
+                    WriterContinuationRace::SignalLost => {
+                        self.sealed_terminal_outcome(transition, Err(err), custody.wait().await)
+                    }
+                }
+            }
+            Err(err) => self.sealed_terminal_outcome(
+                transition,
+                Err(IoError::other(format!(
+                    "failed waiting for rollout shutdown: {err}"
+                ))),
+                custody.wait().await,
+            ),
+        }
+    }
+
+    fn take_handle(self: &Arc<Self>) -> Option<WriterHandleCustody> {
+        let mut guard = self
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.take().map(|handle| WriterHandleCustody {
+            owner: Arc::clone(self),
+            handle: Some(handle),
+        })
+    }
+
+    fn terminal_outcome(
+        &self,
+        command_result: std::io::Result<()>,
+        task_result: std::io::Result<()>,
+    ) -> TerminalCommandOutcome {
+        let result = match self.terminal_failure() {
+            Some(err) => Err(err),
+            None => task_result.and(command_result),
+        };
+        TerminalCommandOutcome::Terminated(result)
+    }
+
+    fn sealed_terminal_outcome(
+        &self,
+        transition: crate::command_admission::RolloutTerminalTransition,
+        command_result: std::io::Result<()>,
+        task_result: std::io::Result<()>,
+    ) -> TerminalCommandOutcome {
+        let outcome = self.terminal_outcome(command_result, task_result);
+        transition.seal();
+        outcome
     }
 
     /// Remember a terminal task failure for future recorder API calls.
@@ -168,6 +360,44 @@ impl RolloutWriterTask {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.as_ref().map(|err| clone_io_error(err.as_ref()))
     }
+}
+
+struct WriterHandleCustody {
+    owner: Arc<RolloutWriterTask>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl WriterHandleCustody {
+    async fn wait(mut self) -> std::io::Result<()> {
+        let result = match self.handle.as_mut() {
+            Some(handle) => writer_join_result(handle.await),
+            None => Err(IoError::other("rollout writer task handle is unavailable")),
+        };
+        self.handle = None;
+        result
+    }
+}
+
+impl Drop for WriterHandleCustody {
+    fn drop(&mut self) {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        let mut guard = self
+            .owner
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.is_none() {
+            *guard = Some(handle);
+        } else {
+            error!("rollout writer task handle custody was already restored");
+        }
+    }
+}
+
+fn writer_join_result(result: Result<(), tokio::task::JoinError>) -> std::io::Result<()> {
+    result.map_err(|err| IoError::other(format!("rollout writer task failed: {err}")))
 }
 
 fn clone_io_error(err: &IoError) -> IoError {
@@ -794,6 +1024,7 @@ impl RolloutRecorder {
         config: &impl RolloutConfigView,
         params: RolloutRecorderParams,
     ) -> std::io::Result<Self> {
+        let mutation_authority = RolloutMutationAuthority::new();
         // Clone the cwd for the spawned task to collect git info asynchronously.
         let cwd = config.cwd().to_path_buf();
         let state = match params {
@@ -868,12 +1099,18 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
+                    repair_offset: None,
+                    mutation_authority: mutation_authority.clone(),
                 }
             }
             RolloutRecorderParams::Resume { path } => {
-                let (path, file, ordinal_state) = open_rollout_for_append(path.as_path()).await?;
+                let (path, file, ordinal_state) = open_rollout_for_append_with_authority(
+                    path.as_path(),
+                    mutation_authority.clone(),
+                )
+                .await?;
                 RolloutWriterState {
-                    writer: Some(JsonlWriter { file }),
+                    writer: Some(JsonlWriter::new(file, mutation_authority.clone())),
                     deferred_log_file_info: None,
                     pending_items: Vec::new(),
                     meta: None,
@@ -881,6 +1118,8 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
+                    repair_offset: None,
+                    mutation_authority: mutation_authority.clone(),
                 }
             }
         };
@@ -915,6 +1154,8 @@ impl RolloutRecorder {
         Ok(Self {
             tx,
             writer_task,
+            #[cfg(test)]
+            mutation_authority,
             rollout_path,
         })
     }
@@ -927,14 +1168,39 @@ impl RolloutRecorder {
         if items.is_empty() {
             return Ok(());
         }
-        self.tx
-            .send(RolloutCmd::AddItems(items.to_vec()))
-            .await
-            .map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
-                    IoError::other(format!("failed to queue rollout items: {e}"))
-                })
+        let (admission, permit) = self.writer_task.reserve_data(&self.tx).await?;
+        admission.commit(|| permit.send(RolloutCmd::AddItems(items.to_vec())));
+        Ok(())
+    }
+
+    /// Append canonical items and report the exact leading prefix committed before return.
+    ///
+    /// Here committed means that the line was written and flushed for process-visible consistency;
+    /// it does not promise survival of an OS crash or power loss. On error, `committed` is still
+    /// updated. Callers may safely retry only the remaining suffix.
+    pub async fn record_canonical_items_committed(
+        &self,
+        items: &[RolloutItem],
+        committed: &mut usize,
+    ) -> std::io::Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let (ack, ack_rx) = oneshot::channel();
+        let (admission, permit) = self.writer_task.reserve_data(&self.tx).await?;
+        admission.commit(|| {
+            permit.send(RolloutCmd::AppendItemsCommitted {
+                items: items.to_vec(),
+                ack,
+            });
+        });
+        let (result, durable_count) = ack_rx.await.map_err(|err| {
+            self.writer_task.terminal_failure().unwrap_or_else(|| {
+                IoError::other(format!("failed waiting for rollout append: {err}"))
             })
+        })?;
+        *committed = durable_count;
+        result
     }
 
     /// Materialize the rollout file and persist all buffered items.
@@ -943,14 +1209,8 @@ impl RolloutRecorder {
     /// and a later `persist()` or `flush()` can retry opening and writing the rollout file.
     pub async fn persist(&self) -> std::io::Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(RolloutCmd::Persist { ack: tx })
-            .await
-            .map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
-                    IoError::other(format!("failed to queue rollout persist: {e}"))
-                })
-            })?;
+        let (admission, permit) = self.writer_task.reserve_data(&self.tx).await?;
+        admission.commit(|| permit.send(RolloutCmd::Persist { ack: tx }));
         rx.await.map_err(|e| {
             self.writer_task.terminal_failure().unwrap_or_else(|| {
                 IoError::other(format!("failed waiting for rollout persist: {e}"))
@@ -964,14 +1224,8 @@ impl RolloutRecorder {
     /// retrying. This returns an error only when that retry also fails or the writer task is gone.
     pub async fn flush(&self) -> std::io::Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(RolloutCmd::Flush { ack: tx })
-            .await
-            .map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
-                    IoError::other(format!("failed to queue rollout flush: {e}"))
-                })
-            })?;
+        let (admission, permit) = self.writer_task.reserve_data(&self.tx).await?;
+        admission.commit(|| permit.send(RolloutCmd::Flush { ack: tx }));
         rx.await.map_err(|e| {
             self.writer_task
                 .terminal_failure()
@@ -1065,27 +1319,10 @@ impl RolloutRecorder {
     ///
     /// If draining fails, the writer stays alive so callers can continue retrying flush/shutdown.
     pub async fn shutdown(&self) -> std::io::Result<()> {
-        let (tx_done, rx_done) = oneshot::channel();
-        match self.tx.send(RolloutCmd::Shutdown { ack: tx_done }).await {
-            Ok(_) => rx_done.await.map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
-                    IoError::other(format!("failed waiting for rollout shutdown: {e}"))
-                })
-            })??,
-            Err(e) => {
-                if let Some(err) = self.writer_task.terminal_failure() {
-                    warn!(
-                        "failed to send rollout shutdown command because writer task failed: {err}"
-                    );
-                    return Err(err);
-                }
-                warn!("failed to send rollout shutdown command: {e}");
-                return Err(IoError::other(format!(
-                    "failed to send rollout shutdown command: {e}"
-                )));
-            }
-        };
-        Ok(())
+        match self.writer_task.reserve_shutdown(&self.tx).await {
+            TerminalCommandOutcome::Terminated(result) => result,
+            TerminalCommandOutcome::Retryable(err) => Err(err),
+        }
     }
 }
 
@@ -1584,26 +1821,41 @@ fn precompute_log_file_info(
     })
 }
 
+#[cfg(test)]
 fn open_log_file(path: &Path) -> std::io::Result<File> {
+    open_log_file_with_authority(path, RolloutMutationAuthority::new())
+}
+
+fn open_log_file_with_authority(
+    path: &Path,
+    authority: RolloutMutationAuthority,
+) -> std::io::Result<File> {
     let refresh_modified_time = !compression::plain_rollout_path(path).try_exists()?;
-    let path = compression::materialize_rollout_for_append_blocking(path)?;
-    let Some(parent) = path.parent() else {
-        return Err(IoError::other(format!(
-            "rollout path has no parent: {}",
-            path.display()
-        )));
-    };
-    fs::create_dir_all(parent)?;
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .open(path)?;
-    if refresh_modified_time {
-        file.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))?;
-    }
-    ensure_rollout_is_newline_terminated(&mut file)?;
-    Ok(file)
+    let custody = authority
+        .admit()
+        .map_err(|err| IoError::other(format!("rollout mutation admission failed: {err:?}")))?;
+    let result = (|| {
+        let path = compression::materialize_rollout_for_append_blocking(path)?;
+        let Some(parent) = path.parent() else {
+            return Err(IoError::other(format!(
+                "rollout path has no parent: {}",
+                path.display()
+            )));
+        };
+        fs::create_dir_all(parent)?;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(path)?;
+        if refresh_modified_time {
+            file.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))?;
+        }
+        ensure_rollout_is_newline_terminated(&mut file)?;
+        Ok(file)
+    })();
+    drop(custody);
+    result
 }
 
 /// Mutable state owned by the background rollout writer.
@@ -1620,11 +1872,31 @@ struct RolloutWriterState {
     rollout_path: PathBuf,
     ordinal_state: RolloutOrdinalState,
     last_logged_error: Option<String>,
+    /// Byte boundary before an append whose immediate rollback failed.
+    ///
+    /// No subsequent item may be retried until reopening has restored this boundary.
+    repair_offset: Option<u64>,
+    mutation_authority: RolloutMutationAuthority,
 }
 
 impl RolloutWriterState {
     fn add_items(&mut self, items: Vec<RolloutItem>) {
         self.pending_items.extend(items);
+    }
+
+    async fn append_items_committed(
+        &mut self,
+        items: Vec<RolloutItem>,
+    ) -> (std::io::Result<()>, usize) {
+        let pending_before = self.pending_items.len();
+        let item_count = items.len();
+        self.add_items(items);
+        let result = self.write_pending_with_recovery("append").await;
+        let written_total = pending_before
+            .saturating_add(item_count)
+            .saturating_sub(self.pending_items.len());
+        let committed = written_total.saturating_sub(pending_before).min(item_count);
+        (result, committed)
     }
 
     async fn flush_if_materialized(&mut self) {
@@ -1648,10 +1920,12 @@ impl RolloutWriterState {
     }
 
     async fn shutdown(&mut self) -> std::io::Result<()> {
-        if self.is_deferred() && self.pending_items.is_empty() {
-            return Ok(());
+        if !(self.is_deferred() && self.pending_items.is_empty()) {
+            self.write_pending_with_recovery("shutdown").await?;
         }
-        self.write_pending_with_recovery("shutdown").await
+        self.mutation_authority.revoke().await;
+        self.writer = None;
+        Ok(())
     }
 
     async fn write_pending_with_recovery(&mut self, operation: &str) -> std::io::Result<()> {
@@ -1686,6 +1960,12 @@ impl RolloutWriterState {
     }
 
     fn enter_recovery_mode(&mut self, err: &IoError) {
+        if let Some(repair) = err
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<RolloutAppendRepair>())
+        {
+            self.repair_offset = Some(repair.offset);
+        }
         let message = err.to_string();
         if self.last_logged_error.as_ref() != Some(&message) {
             error!(
@@ -1710,10 +1990,16 @@ impl RolloutWriterState {
             .as_ref()
             .map(|info| info.path.as_path())
             .unwrap_or(self.rollout_path.as_path());
-        let file = open_log_file(path)?;
-        self.writer = Some(JsonlWriter {
-            file: tokio::fs::File::from_std(file),
-        });
+        let file = open_log_file_with_authority(path, self.mutation_authority.clone())?;
+        let mut writer = JsonlWriter::new(
+            tokio::fs::File::from_std(file),
+            self.mutation_authority.clone(),
+        );
+        if let Some(offset) = self.repair_offset {
+            writer.repair_to_offset(offset).await?;
+            self.repair_offset = None;
+        }
+        self.writer = Some(writer);
         self.deferred_log_file_info = None;
         Ok(())
     }
@@ -1739,9 +2025,6 @@ impl RolloutWriterState {
 
         self.write_pending_items_once().await?;
 
-        if let Some(writer) = self.writer.as_mut() {
-            writer.file.flush().await?;
-        }
         Ok(())
     }
 
@@ -1788,19 +2071,23 @@ async fn rollout_writer(
                 state.add_items(items);
                 state.flush_if_materialized().await;
             }
+            RolloutCmd::AppendItemsCommitted { items, ack } => {
+                let _ = ack.send(state.append_items_committed(items).await);
+            }
             RolloutCmd::Persist { ack } => {
                 let _ = ack.send(state.persist().await);
             }
             RolloutCmd::Flush { ack } => {
                 let _ = ack.send(state.flush().await);
             }
-            RolloutCmd::Shutdown { ack } => match state.shutdown().await {
+            RolloutCmd::Shutdown { ack, continuing } => match state.shutdown().await {
                 Ok(()) => {
                     let _ = ack.send(Ok(()));
                     break;
                 }
                 Err(err) => {
                     let _ = ack.send(Err(err));
+                    let _ = continuing.send(());
                 }
             },
         }
@@ -1847,30 +2134,46 @@ pub async fn append_rollout_item_to_path(
     rollout_path: &Path,
     item: &RolloutItem,
 ) -> std::io::Result<()> {
-    let (_rollout_path, file, ordinal_state) = open_rollout_for_append(rollout_path).await?;
+    let mutation_authority = RolloutMutationAuthority::new();
+    let (_rollout_path, file, ordinal_state) =
+        open_rollout_for_append_with_authority(rollout_path, mutation_authority.clone()).await?;
     let ordinal = ordinal_state.current()?;
-    let mut writer = JsonlWriter { file };
-    writer.write_rollout_item(item, ordinal).await
+    let mut writer = JsonlWriter::new(file, mutation_authority.clone());
+    let result = writer.write_rollout_item(item, ordinal).await;
+    mutation_authority.revoke().await;
+    result
 }
 
-async fn open_rollout_for_append(
+async fn open_rollout_for_append_with_authority(
     path: &Path,
+    authority: RolloutMutationAuthority,
 ) -> std::io::Result<(PathBuf, tokio::fs::File, RolloutOrdinalState)> {
     let refresh_modified_time =
         !tokio::fs::try_exists(compression::plain_rollout_path(path)).await?;
-    let path = compression::materialize_rollout_for_append(path).await?;
+    let path = compression::plain_rollout_path(path);
     let path_for_open = path.clone();
     let (file, ordinal_state) = tokio::task::spawn_blocking(move || {
-        let mut file = File::options()
-            .read(true)
-            .append(true)
-            .open(path_for_open.as_path())?;
-        if refresh_modified_time {
-            file.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))?;
-        }
-        ensure_rollout_is_newline_terminated(&mut file)?;
-        let ordinal_state = ordinal_state_for_rollout(&mut file, path_for_open.as_path())?;
-        Ok::<_, std::io::Error>((file, ordinal_state))
+        let custody = authority
+            .admit()
+            .map_err(|err| IoError::other(format!("rollout mutation admission failed: {err:?}")))?;
+        let result = (|| {
+            let path_for_open =
+                compression::materialize_rollout_for_append_blocking(path_for_open.as_path())?;
+            let mut file = File::options()
+                .read(true)
+                .append(true)
+                .open(path_for_open.as_path())?;
+            if refresh_modified_time {
+                file.set_times(
+                    std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
+                )?;
+            }
+            ensure_rollout_is_newline_terminated(&mut file)?;
+            let ordinal_state = ordinal_state_for_rollout(&mut file, path_for_open.as_path())?;
+            Ok::<_, std::io::Error>((file, ordinal_state))
+        })();
+        drop(custody);
+        result
     })
     .await
     .map_err(IoError::other)??;
@@ -1893,8 +2196,46 @@ fn ensure_rollout_is_newline_terminated(file: &mut File) -> std::io::Result<()> 
 }
 
 struct JsonlWriter {
-    file: tokio::fs::File,
+    file: Arc<tokio::sync::Mutex<tokio::fs::File>>,
+    mutation_authority: RolloutMutationAuthority,
+    #[cfg(test)]
+    write_gate: Option<JsonlWriteGate>,
+    #[cfg(test)]
+    write_fault: Option<JsonlWriteFault>,
 }
+
+#[cfg(test)]
+#[derive(Clone)]
+struct JsonlWriteGate {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum JsonlWriteFault {
+    PartialWriteThenError(usize),
+    FlushErrorAfterWrite,
+}
+
+#[derive(Debug)]
+struct RolloutAppendRepair {
+    offset: u64,
+    append_error: String,
+    repair_error: String,
+}
+
+impl std::fmt::Display for RolloutAppendRepair {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "rollout append failed at byte {} ({}) and rollback failed ({})",
+            self.offset, self.append_error, self.repair_error
+        )
+    }
+}
+
+impl std::error::Error for RolloutAppendRepair {}
 
 #[derive(serde::Serialize)]
 struct RolloutLineRef<'a> {
@@ -1906,6 +2247,38 @@ struct RolloutLineRef<'a> {
 }
 
 impl JsonlWriter {
+    fn new(file: tokio::fs::File, mutation_authority: RolloutMutationAuthority) -> Self {
+        Self {
+            file: Arc::new(tokio::sync::Mutex::new(file)),
+            mutation_authority,
+            #[cfg(test)]
+            write_gate: None,
+            #[cfg(test)]
+            write_fault: None,
+        }
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the owned continuation deliberately holds the file lock for the complete repair transaction"
+    )]
+    async fn repair_to_offset(&mut self, offset: u64) -> std::io::Result<()> {
+        let custody = self
+            .mutation_authority
+            .admit()
+            .map_err(|err| IoError::other(format!("rollout mutation admission failed: {err:?}")))?;
+        let file = Arc::clone(&self.file);
+        tokio::spawn(async move {
+            let _custody = custody;
+            let mut file = file.lock().await;
+            file.set_len(offset).await?;
+            file.seek(SeekFrom::End(0)).await?;
+            file.flush().await
+        })
+        .await
+        .map_err(|err| IoError::other(format!("rollout repair task failed: {err}")))?
+    }
+
     async fn write_rollout_item(
         &mut self,
         rollout_item: &RolloutItem,
@@ -1925,12 +2298,78 @@ impl JsonlWriter {
         };
         self.write_line(&line).await
     }
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the owned continuation deliberately holds the file lock through append and rollback"
+    )]
     async fn write_line(&mut self, item: &impl serde::Serialize) -> std::io::Result<()> {
         let mut json = serde_json::to_string(item)?;
         json.push('\n');
-        self.file.write_all(json.as_bytes()).await?;
-        self.file.flush().await?;
-        Ok(())
+        let custody = self
+            .mutation_authority
+            .admit()
+            .map_err(|err| IoError::other(format!("rollout mutation admission failed: {err:?}")))?;
+        let file = Arc::clone(&self.file);
+        #[cfg(test)]
+        let write_gate = self.write_gate.clone();
+        #[cfg(test)]
+        let write_fault = self.write_fault.take();
+        tokio::spawn(async move {
+            // This owned continuation retains both filesystem and mutation custody if the outer
+            // caller is cancelled. Revocation therefore waits for the exact admitted write.
+            let _custody = custody;
+            #[cfg(test)]
+            if let Some(write_gate) = write_gate {
+                write_gate.entered.notify_one();
+                write_gate.release.notified().await;
+            }
+            let mut file = file.lock().await;
+            let offset = file.seek(SeekFrom::End(0)).await?;
+            let append_result = async {
+                #[cfg(test)]
+                if let Some(JsonlWriteFault::PartialWriteThenError(byte_count)) = write_fault {
+                    let byte_count = byte_count.min(json.len());
+                    file.write_all(&json.as_bytes()[..byte_count]).await?;
+                    return Err(IoError::other("scripted partial rollout append"));
+                }
+                file.write_all(json.as_bytes()).await?;
+                #[cfg(test)]
+                if matches!(write_fault, Some(JsonlWriteFault::FlushErrorAfterWrite)) {
+                    return Err(IoError::other("scripted rollout flush failure"));
+                }
+                // `flush` makes a successful append visible to this process. It deliberately does
+                // not claim power-loss durability; callers requiring that contract need sync_data
+                // or sync_all at a separately specified persistence boundary.
+                file.flush().await
+            }
+            .await;
+            let Err(append_error) = append_result else {
+                return Ok(());
+            };
+
+            // Retrying an unchanged item is safe only after restoring its exact byte boundary.
+            // This also removes a complete line when the only failed step was `flush`, preventing
+            // an acknowledgement-loss retry from duplicating the line.
+            let repair_result = async {
+                file.set_len(offset).await?;
+                file.seek(SeekFrom::End(0)).await?;
+                file.flush().await
+            }
+            .await;
+            match repair_result {
+                Ok(()) => Err(append_error),
+                Err(repair_error) => Err(IoError::new(
+                    append_error.kind(),
+                    RolloutAppendRepair {
+                        offset,
+                        append_error: append_error.to_string(),
+                        repair_error: repair_error.to_string(),
+                    },
+                )),
+            }
+        })
+        .await
+        .map_err(|err| IoError::other(format!("rollout append task failed: {err}")))?
     }
 }
 

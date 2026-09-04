@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::config::RolloutConfig;
+use crate::mutation_authority::MutationAdmissionError;
 use chrono::TimeZone;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
@@ -24,12 +25,421 @@ use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::fs;
 use std::fs::File;
+use std::future::Future;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::task::Poll;
 use std::time::Duration;
 use tempfile::TempDir;
+use tokio::sync::Barrier;
 use uuid::Uuid;
+
+fn tracked_writer(future: impl Future<Output = ()> + Send + 'static) -> Arc<RolloutWriterTask> {
+    let writer_task = Arc::new(RolloutWriterTask::new());
+    writer_task.set_handle(tokio::spawn(future));
+    writer_task
+}
+
+async fn assert_pending_once<F: Future>(mut future: Pin<&mut F>) {
+    std::future::poll_fn(|cx| match future.as_mut().poll(cx) {
+        Poll::Pending => Poll::Ready(()),
+        Poll::Ready(_) => panic!("terminal command completed before its barrier opened"),
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn terminal_reservation_preserves_order_and_post_commit_cancel_fails_closed() {
+    let (tx, mut rx) = mpsc::channel(1);
+    tx.send(RolloutCmd::AddItems(Vec::new())).await.unwrap();
+    let reader_gate = Arc::new(Barrier::new(2));
+    let ack_gate = Arc::new(Barrier::new(2));
+    let exit_gate = Arc::new(Barrier::new(2));
+    let writer_task = tracked_writer({
+        let reader_gate = Arc::clone(&reader_gate);
+        let ack_gate = Arc::clone(&ack_gate);
+        let exit_gate = Arc::clone(&exit_gate);
+        async move {
+            reader_gate.wait().await;
+            assert!(matches!(rx.recv().await, Some(RolloutCmd::AddItems(_))));
+            let Some(RolloutCmd::Shutdown { ack, .. }) = rx.recv().await else {
+                panic!("shutdown must follow the command that consumed bounded capacity");
+            };
+            ack.send(Ok(())).unwrap();
+            ack_gate.wait().await;
+            exit_gate.wait().await;
+        }
+    });
+
+    let mut attempt = Box::pin(writer_task.reserve_shutdown(&tx));
+    assert_pending_once(attempt.as_mut()).await;
+    reader_gate.wait().await;
+    tokio::select! {
+        _ = &mut attempt => panic!("shutdown completed before writer exit"),
+        _ = ack_gate.wait() => {}
+    }
+    assert_pending_once(attempt.as_mut()).await;
+    assert!(writer_task.command_admission.is_terminal());
+    drop(attempt);
+    assert!(matches!(
+        writer_task.reserve_shutdown(&tx).await,
+        TerminalCommandOutcome::Terminated(Err(_))
+    ));
+    exit_gate.wait().await;
+}
+
+#[tokio::test]
+async fn cancelling_capacity_wait_leaves_admission_and_writer_active() {
+    let (tx, mut rx) = mpsc::channel(1);
+    tx.send(RolloutCmd::AddItems(Vec::new())).await.unwrap();
+    let reader_gate = Arc::new(Barrier::new(2));
+    let writer_task = tracked_writer({
+        let reader_gate = Arc::clone(&reader_gate);
+        async move {
+            reader_gate.wait().await;
+            assert!(matches!(rx.recv().await, Some(RolloutCmd::AddItems(_))));
+        }
+    });
+    let mut attempt = Box::pin(writer_task.reserve_shutdown(&tx));
+    assert_pending_once(attempt.as_mut()).await;
+    drop(attempt);
+    assert!(!writer_task.command_admission.is_terminal());
+    reader_gate.wait().await;
+    writer_task.take_handle().unwrap().wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_committed_shutdown_reopens_after_retryable_writer_error() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let first_command_received = Arc::new(tokio::sync::Notify::new());
+    let release_retryable_error = Arc::new(tokio::sync::Notify::new());
+    let writer_task = tracked_writer({
+        let first_command_received = Arc::clone(&first_command_received);
+        let release_retryable_error = Arc::clone(&release_retryable_error);
+        async move {
+            let Some(RolloutCmd::Shutdown { ack, continuing }) = rx.recv().await else {
+                panic!("first shutdown command must be committed");
+            };
+            first_command_received.notify_one();
+            release_retryable_error.notified().await;
+            let _ = ack.send(Err(IoError::other("retryable terminal drain")));
+            let _ = continuing.send(());
+
+            let Some(RolloutCmd::Shutdown { ack, .. }) = rx.recv().await else {
+                panic!("retry shutdown command must be admitted");
+            };
+            let _ = ack.send(Ok(()));
+        }
+    });
+
+    let mut first_shutdown = Box::pin(writer_task.reserve_shutdown(&tx));
+    tokio::select! {
+        _ = &mut first_shutdown => panic!("shutdown completed before retryable drain result"),
+        _ = first_command_received.notified() => {}
+    }
+    assert!(writer_task.command_admission.is_terminal());
+    drop(first_shutdown);
+    release_retryable_error.notify_one();
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while writer_task.command_admission.is_terminal() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("owned terminal continuation should reopen admission");
+    let retry = tokio::time::timeout(Duration::from_secs(5), writer_task.reserve_shutdown(&tx))
+        .await
+        .expect("retry shutdown should complete");
+    assert!(matches!(retry, TerminalCommandOutcome::Terminated(Ok(()))));
+}
+
+async fn recorder_with_deferred_rollout(home: &Path) -> std::io::Result<RolloutRecorder> {
+    RolloutRecorder::new(
+        &test_config(home),
+        RolloutRecorderParams::new(
+            ThreadId::new(),
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            "test_originator".to_string(),
+            BaseInstructions::default(),
+            Vec::new(),
+        ),
+    )
+    .await
+}
+
+async fn wait_until_authority_is_closed(authority: &RolloutMutationAuthority) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match authority.admit() {
+                Err(MutationAdmissionError::AdmissionClosed) => return,
+                Err(MutationAdmissionError::CounterOverflow) => {
+                    panic!("mutation admission counter overflow")
+                }
+                Ok(custody) => drop(custody),
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("mutation authority should close");
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_exact_admitted_write_and_blocks_stale_generation() {
+    let home = TempDir::new().expect("temp dir");
+    let recorder = recorder_with_deferred_rollout(home.path()).await.unwrap();
+    let admitted_path = home.path().join("admitted-write.jsonl");
+    File::create(&admitted_path).expect("create admitted-write target");
+    let admitted_file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&admitted_path)
+        .expect("open admitted-write target");
+    let gate = JsonlWriteGate {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    let mut admitted_writer = JsonlWriter::new(
+        tokio::fs::File::from_std(admitted_file),
+        recorder.mutation_authority.clone(),
+    );
+    admitted_writer.write_gate = Some(gate.clone());
+    let write = tokio::spawn(async move {
+        admitted_writer
+            .write_rollout_item(&agent_message_item("admitted write"), None)
+            .await
+    });
+    gate.entered.notified().await;
+    let shutdown = tokio::spawn({
+        let recorder = recorder.clone();
+        async move { recorder.shutdown().await }
+    });
+
+    wait_until_authority_is_closed(&recorder.mutation_authority).await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown completed before its exact admitted write drained"
+    );
+    write.abort();
+    assert!(
+        !shutdown.is_finished(),
+        "cancelling the outer append released mutation custody"
+    );
+    gate.release.notify_one();
+    shutdown.await.expect("join shutdown").expect("shutdown");
+    assert!(
+        fs::read_to_string(&admitted_path)
+            .expect("read admitted write")
+            .contains("admitted write"),
+        "owned continuation must finish the admitted write after caller cancellation"
+    );
+    assert_eq!(
+        recorder.mutation_authority.admit().err(),
+        Some(MutationAdmissionError::AdmissionClosed)
+    );
+    let stale_path = home.path().join("stale-generation.jsonl");
+    File::create(&stale_path).expect("create stale target");
+    let stale_file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&stale_path)
+        .expect("open stale target");
+    let mut stale_writer = JsonlWriter::new(
+        tokio::fs::File::from_std(stale_file),
+        recorder.mutation_authority.clone(),
+    );
+    stale_writer
+        .write_rollout_item(&agent_message_item("stale write"), None)
+        .await
+        .expect_err("revoked generation must reject actual filesystem append");
+    assert!(fs::read(&stale_path).expect("read stale target").is_empty());
+    recorder
+        .record_canonical_items(&[agent_message_item("stale command")])
+        .await
+        .expect_err("terminal recorder must reject stale-generation append");
+}
+
+#[tokio::test]
+async fn cancelled_shutdown_keeps_revocation_owned_until_admitted_write_drains() {
+    let home = TempDir::new().expect("temp dir");
+    let recorder = recorder_with_deferred_rollout(home.path()).await.unwrap();
+    let custody = recorder
+        .mutation_authority
+        .admit()
+        .expect("admit simulated filesystem write");
+    let shutdown = tokio::spawn({
+        let recorder = recorder.clone();
+        async move { recorder.shutdown().await }
+    });
+    wait_until_authority_is_closed(&recorder.mutation_authority).await;
+    shutdown.abort();
+    drop(custody);
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let finished = recorder
+                .writer_task
+                .handle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(|handle| handle.is_finished());
+            if finished {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("writer should finish after admitted write drains");
+    assert_eq!(
+        recorder.mutation_authority.admit().err(),
+        Some(MutationAdmissionError::AdmissionClosed)
+    );
+}
+
+#[tokio::test]
+async fn failed_precommit_open_releases_mutation_custody_for_retry() {
+    let home = TempDir::new().expect("temp dir");
+    let authority = RolloutMutationAuthority::new();
+    let blocker = home.path().join("not-a-directory");
+    File::create(&blocker).expect("create parent blocker");
+    open_log_file_with_authority(&blocker.join("rollout.jsonl"), authority.clone())
+        .expect_err("blocked parent must fail before writer commit");
+    drop(authority.admit().expect("failed open must release custody"));
+}
+
+#[tokio::test]
+async fn failed_async_write_releases_mutation_custody_for_retry() {
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    File::create(&rollout_path).expect("create rollout");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(&rollout_path)
+        .expect("open read-only rollout");
+    let authority = RolloutMutationAuthority::new();
+    let mut writer = JsonlWriter::new(tokio::fs::File::from_std(file), authority.clone());
+    writer
+        .write_rollout_item(&agent_message_item("write failure"), None)
+        .await
+        .expect_err("read-only writer must fail");
+    drop(
+        authority
+            .admit()
+            .expect("failed write must release custody"),
+    );
+}
+
+#[tokio::test]
+async fn partial_line_failure_rolls_back_before_retry_and_reports_one_commit() {
+    assert_scripted_line_failure_is_retried_once(JsonlWriteFault::PartialWriteThenError(17)).await;
+}
+
+#[tokio::test]
+async fn flush_failure_rolls_back_complete_line_before_retry_and_reports_one_commit() {
+    assert_scripted_line_failure_is_retried_once(JsonlWriteFault::FlushErrorAfterWrite).await;
+}
+
+async fn assert_scripted_line_failure_is_retried_once(write_fault: JsonlWriteFault) {
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .open(&rollout_path)
+        .expect("open rollout");
+    let mutation_authority = RolloutMutationAuthority::new();
+    let mut writer = JsonlWriter::new(tokio::fs::File::from_std(file), mutation_authority.clone());
+    writer.write_fault = Some(write_fault);
+    let mut state = RolloutWriterState {
+        writer: Some(writer),
+        deferred_log_file_info: None,
+        pending_items: Vec::new(),
+        meta: None,
+        cwd: home.path().to_path_buf(),
+        rollout_path: rollout_path.clone(),
+        ordinal_state: RolloutOrdinalState::Legacy,
+        last_logged_error: None,
+        repair_offset: None,
+        mutation_authority,
+    };
+
+    let marker = "transactional-line-marker";
+    let (result, committed) = state
+        .append_items_committed(vec![agent_message_item(marker)])
+        .await;
+    result.expect("reopened retry should succeed");
+    assert_eq!(committed, 1);
+    drop(state);
+
+    let text = fs::read_to_string(rollout_path).expect("read rollout");
+    assert_eq!(
+        text.matches(marker).count(),
+        1,
+        "item must not be duplicated"
+    );
+    assert_eq!(text.lines().count(), 1, "partial JSONL must be removed");
+    serde_json::from_str::<serde_json::Value>(&text).expect("line must remain valid JSON");
+}
+
+#[tokio::test]
+async fn failed_shutdown_drain_keeps_authority_open_until_successful_retry() {
+    let home = TempDir::new().expect("temp dir");
+    let blocker = home.path().join("not-a-directory");
+    File::create(&blocker).expect("create parent blocker");
+    let rollout_path = blocker.join("rollout.jsonl");
+    let read_only_path = home.path().join("read-only.jsonl");
+    File::create(&read_only_path).expect("create read-only rollout");
+    let read_only_file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(&read_only_path)
+        .expect("open read-only rollout");
+    let mutation_authority = RolloutMutationAuthority::new();
+    let mut state = RolloutWriterState {
+        writer: Some(JsonlWriter::new(
+            tokio::fs::File::from_std(read_only_file),
+            mutation_authority.clone(),
+        )),
+        deferred_log_file_info: None,
+        pending_items: vec![agent_message_item("retry terminal drain")],
+        meta: None,
+        cwd: home.path().to_path_buf(),
+        rollout_path: rollout_path.clone(),
+        ordinal_state: RolloutOrdinalState::Legacy,
+        last_logged_error: None,
+        repair_offset: None,
+        mutation_authority: mutation_authority.clone(),
+    };
+
+    state
+        .shutdown()
+        .await
+        .expect_err("write and reopen failures must leave shutdown retryable");
+    drop(
+        mutation_authority
+            .admit()
+            .expect("failed terminal drain must keep authority open"),
+    );
+
+    fs::remove_file(&blocker).expect("remove parent blocker");
+    fs::create_dir(&blocker).expect("replace blocker with directory");
+    state.shutdown().await.expect("retry terminal drain");
+    assert_eq!(
+        mutation_authority.admit().err(),
+        Some(MutationAdmissionError::AdmissionClosed)
+    );
+    assert!(
+        fs::read_to_string(&rollout_path)
+            .expect("read retried terminal drain")
+            .contains("retry terminal drain")
+    );
+}
 
 fn test_config(codex_home: &Path) -> RolloutConfig {
     RolloutConfig {
@@ -161,7 +571,10 @@ async fn opening_existing_rollout_preserves_modified_time() -> std::io::Result<(
     drop(open_log_file(&rollout_path)?);
     assert_eq!(fs::metadata(&rollout_path)?.modified()?, modified);
 
-    drop(open_rollout_for_append(&rollout_path).await?);
+    drop(
+        open_rollout_for_append_with_authority(&rollout_path, RolloutMutationAuthority::new())
+            .await?,
+    );
     assert_eq!(fs::metadata(&rollout_path)?.modified()?, modified);
     Ok(())
 }
@@ -783,10 +1196,12 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
     let rollout_path = home.path().join("rollout.jsonl");
     File::create(&rollout_path)?;
     let read_only_file = std::fs::OpenOptions::new().read(true).open(&rollout_path)?;
+    let mutation_authority = RolloutMutationAuthority::new();
     let mut state = RolloutWriterState {
-        writer: Some(JsonlWriter {
-            file: tokio::fs::File::from_std(read_only_file),
-        }),
+        writer: Some(JsonlWriter::new(
+            tokio::fs::File::from_std(read_only_file),
+            mutation_authority.clone(),
+        )),
         deferred_log_file_info: None,
         pending_items: Vec::new(),
         meta: None,
@@ -794,6 +1209,8 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
         rollout_path: rollout_path.clone(),
         ordinal_state: RolloutOrdinalState::Legacy,
         last_logged_error: None,
+        repair_offset: None,
+        mutation_authority,
     };
     state.add_items(vec![RolloutItem::EventMsg(EventMsg::AgentMessage(
         AgentMessageEvent {

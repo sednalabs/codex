@@ -11,6 +11,7 @@ use codex_rollout::persisted_rollout_items;
 use tokio::sync::Mutex;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
+use tokio::sync::oneshot;
 use tracing::warn;
 
 use crate::AppendThreadItemsParams;
@@ -40,8 +41,16 @@ pub struct LiveThread {
     thread_store: Arc<dyn ThreadStore>,
     // Keep canonical writes and their derived metadata projection ordered across cloned handles.
     persistence_operation_semaphore: Arc<Semaphore>,
+    // A cancelled caller drops its acknowledgement receiver, not the owned append. Retain that
+    // exact result so retrying the same batch observes the receipt instead of appending twice.
+    lost_append_result: Arc<Mutex<Option<LostAppendResult>>>,
     metadata_sync: Arc<Mutex<ThreadMetadataSync>>,
     persistence_telemetry: RolloutPersistenceTelemetry,
+}
+
+struct LostAppendResult {
+    batch_identity: Vec<u8>,
+    result: ThreadStoreResult<()>,
 }
 
 /// Owns a live thread while session initialization is still fallible.
@@ -107,6 +116,7 @@ impl LiveThread {
             history_mode,
             thread_store,
             persistence_operation_semaphore: Arc::new(Semaphore::new(1)),
+            lost_append_result: Arc::new(Mutex::new(None)),
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
@@ -185,6 +195,7 @@ impl LiveThread {
             history_mode,
             thread_store,
             persistence_operation_semaphore: Arc::new(Semaphore::new(1)),
+            lost_append_result: Arc::new(Mutex::new(None)),
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
@@ -196,10 +207,95 @@ impl LiveThread {
         fields(item_count = raw_items.len())
     )]
     pub async fn append_items(&self, raw_items: &[RolloutItem]) -> ThreadStoreResult<()> {
-        let _operation_permit = self.acquire_persistence_operation().await?;
-        let items = self.persist_appended_items(raw_items).await?;
-        if items.is_empty() {
+        let operation_permit = self.acquire_persistence_operation().await?;
+        if raw_items.is_empty() {
             return Ok(());
+        }
+        let batch_identity =
+            serde_json::to_vec(raw_items).map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to identify append batch: {err}"),
+            })?;
+        if let Some(lost_result) = self.lost_append_result.lock().await.take() {
+            if lost_result.batch_identity == batch_identity {
+                return lost_result.result;
+            }
+            if lost_result.result.is_err() {
+                *self.lost_append_result.lock().await = Some(lost_result);
+                return Err(ThreadStoreError::Internal {
+                    message: "a cancelled append failed with an unobserved result; retry its original item batch before appending different items".to_string(),
+                });
+            }
+            // A different next batch proves this is continuation rather than retry. The prior
+            // owned operation already completed both canonical append and metadata projection.
+        }
+
+        let owned_items = raw_items.to_vec();
+        let receipt_identity = batch_identity;
+        let live_thread = self.clone();
+        let (ack, ack_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            // Keep the serialization permit through both acknowledgement delivery and lost-result
+            // publication. A following caller therefore cannot miss the receipt in between them.
+            let result = live_thread.append_items_serialized(&owned_items).await;
+            if let Err(result) = ack.send(result) {
+                *live_thread.lost_append_result.lock().await = Some(LostAppendResult {
+                    batch_identity: receipt_identity,
+                    result,
+                });
+            }
+            drop(operation_permit);
+        });
+        ack_rx.await.map_err(|err| ThreadStoreError::Internal {
+            message: format!("append continuation stopped before acknowledgement: {err}"),
+        })?
+    }
+
+    async fn append_items_serialized(&self, raw_items: &[RolloutItem]) -> ThreadStoreResult<()> {
+        let mut committed = 0;
+        let mut append_error = None;
+        while committed < raw_items.len() {
+            let remaining = raw_items.len() - committed;
+            let mut attempt_committed = 0;
+            let result = self
+                .thread_store
+                .append_items_committed(
+                    AppendThreadItemsParams {
+                        thread_id: self.thread_id,
+                        items: raw_items[committed..].to_vec(),
+                    },
+                    &mut attempt_committed,
+                )
+                .await;
+            if attempt_committed > remaining {
+                append_error = Some(ThreadStoreError::Internal {
+                    message: format!(
+                        "thread store reported invalid append progress: {attempt_committed}/{remaining}"
+                    ),
+                });
+                break;
+            }
+            committed += attempt_committed;
+            match result {
+                Ok(()) if attempt_committed == remaining => break,
+                Ok(()) => {
+                    append_error = Some(ThreadStoreError::Internal {
+                        message: "thread store returned incomplete append success".to_string(),
+                    });
+                    break;
+                }
+                Err(_err) if attempt_committed > 0 && committed < raw_items.len() => continue,
+                Err(err) => {
+                    append_error = Some(err);
+                    break;
+                }
+            }
+        }
+        let items = self.filtered_committed_items(&raw_items[..committed]);
+        if committed > 0 {
+            self.record_persistence_measurement(&raw_items[..committed]);
+        }
+        if items.is_empty() {
+            return append_error.map_or(Ok(()), Err);
         }
         let update = self
             .metadata_sync
@@ -219,7 +315,20 @@ impl LiveThread {
                 .await
                 .mark_pending_update_applied(&update);
         }
-        Ok(())
+        append_error.map_or(Ok(()), Err)
+    }
+
+    fn filtered_committed_items(&self, raw_items: &[RolloutItem]) -> Vec<RolloutItem> {
+        persisted_rollout_items(raw_items, self.history_mode)
+    }
+
+    fn record_persistence_measurement(&self, raw_items: &[RolloutItem]) {
+        if !self.persistence_telemetry.is_enabled() {
+            return;
+        }
+        let (_items, measurement) = measure_and_filter_rollout_items(raw_items, self.history_mode);
+        self.persistence_telemetry
+            .record_batch(raw_items, &measurement);
     }
 
     async fn persist_appended_items(
