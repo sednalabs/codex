@@ -107,6 +107,14 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
     // Keep the in-process runtime's delivery tier aligned with the client
     // facade: transcript deltas and completed items are authoritative and
     // must not be lost when the bounded consumer queue is saturated.
+    //
+    // The current downstream protocol has no `ThreadQueueChanged` variant or
+    // async-delivery discriminator on `ItemCompleted`, unlike upstream's
+    // current protocol. Consequently every downstream `ItemCompleted` is
+    // retained here. When the protocol is synced, add `ThreadQueueChanged`
+    // and narrow `ItemCompleted` to `AgentMessage { delivery: Some(Async) }`
+    // in one reviewed classifier update; do not claim upstream equivalence
+    // for this older downstream schema.
     matches!(
         notification,
         ServerNotification::TurnCompleted(_)

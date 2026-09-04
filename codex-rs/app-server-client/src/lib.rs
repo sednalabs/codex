@@ -139,6 +139,12 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
 /// Both the in-process and remote transports delegate to this function so the
 /// classification stays in sync.
 pub(crate) fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
+    // This classifier intentionally follows the current downstream schema.
+    // Upstream now has `ThreadQueueChanged` and an async delivery field on
+    // `ItemCompleted`; those variants are absent downstream at this base, so
+    // all current ItemCompleted notifications stay in the required tier.
+    // Reconcile this predicate as part of the future protocol sync rather
+    // than importing an upstream-only type into this bounded facade lane.
     matches!(
         notification,
         ServerNotification::TurnCompleted(_)
