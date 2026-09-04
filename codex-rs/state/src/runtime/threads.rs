@@ -528,7 +528,6 @@ ON CONFLICT(child_thread_id) DO NOTHING
         let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
         let mut items = Vec::with_capacity(rows.len());
         let mut parent_thread_ids = std::collections::HashMap::new();
-        let relation_limit_reached = relation_filter.is_some_and(|_| rows.len() > page_size);
         for row in rows {
             let item = ThreadRow::try_from_row(&row).and_then(ThreadMetadata::try_from)?;
             if relation_filter.is_some()
