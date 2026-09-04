@@ -552,10 +552,19 @@ ON CONFLICT(child_thread_id) DO NOTHING
         filters: ThreadFilterOptions<'_>,
         relation_filter: Option<crate::ThreadRelationFilter>,
     ) -> anyhow::Result<crate::ThreadsPage> {
+        // Keep the raw relation-bound check and the bounded page query in one read transaction.
+        // Otherwise a child inserted between the two statements could make the page truncate
+        // while the response still reports relation_limit_reached = false.
+        let mut tx = self.pool.begin().await?;
         let relation_limit_reached = match relation_filter {
             Some(crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)) => {
-                self.descendant_relation_limit_reached(ancestor_thread_id)
-                    .await?
+                let mut relation_builder = QueryBuilder::<Sqlite>::new("");
+                push_descendant_subtree_cte(&mut relation_builder, ancestor_thread_id);
+                relation_builder.push("SELECT COUNT(*) AS relation_count FROM subtree");
+                let row = relation_builder.build().fetch_one(&mut *tx).await?;
+                let relation_count: i64 = row.try_get("relation_count")?;
+                relation_count
+                    >= i64::try_from(crate::MAX_THREAD_RELATION_DESCENDANTS.saturating_add(1))?
             }
             _ => false,
         };
@@ -564,7 +573,7 @@ ON CONFLICT(child_thread_id) DO NOTHING
         let mut builder = QueryBuilder::<Sqlite>::new("");
         push_list_threads_query(&mut builder, filters, relation_filter, limit);
 
-        let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
+        let rows = builder.build().fetch_all(&mut *tx).await?;
         let mut items = Vec::with_capacity(rows.len());
         let mut parent_thread_ids = std::collections::HashMap::new();
         for row in rows {
@@ -588,31 +597,15 @@ ON CONFLICT(child_thread_id) DO NOTHING
         } else {
             None
         };
-        Ok(ThreadsPage {
+        let page = ThreadsPage {
             items,
             parent_thread_ids,
             next_anchor,
             num_scanned_rows,
             relation_limit_reached,
-        })
-    }
-
-    /// Reports whether the deterministic raw descendant safety subset filled completely.
-    ///
-    /// This is deliberately evaluated before archived/source/cwd/search filters. The bounded raw
-    /// subset may omit later, newer, or otherwise matching descendants once it reaches the cap,
-    /// even when the filtered page itself is empty.
-    async fn descendant_relation_limit_reached(
-        &self,
-        ancestor_thread_id: ThreadId,
-    ) -> anyhow::Result<bool> {
-        let mut builder = QueryBuilder::<Sqlite>::new("");
-        push_descendant_subtree_cte(&mut builder, ancestor_thread_id);
-        builder.push("SELECT COUNT(*) AS relation_count FROM subtree");
-        let row = builder.build().fetch_one(self.pool.as_ref()).await?;
-        let relation_count: i64 = row.try_get("relation_count")?;
-        Ok(relation_count
-            >= i64::try_from(crate::MAX_THREAD_RELATION_DESCENDANTS.saturating_add(1))?)
+        };
+        tx.commit().await?;
+        Ok(page)
     }
 
     /// List thread ids using the underlying database (no rollout scanning).
