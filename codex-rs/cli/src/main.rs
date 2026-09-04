@@ -24,8 +24,6 @@ use codex_exec::Cli as ExecCli;
 use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
 use codex_exec_server::ExecServerRuntimePaths;
-use codex_exec_server::ExecServerTelemetry;
-use codex_exec_server::RemoteEnvironmentConfig;
 use codex_execpolicy::ExecPolicyCheckCommand;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
@@ -54,6 +52,10 @@ mod cloud_config;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
 mod doctor;
+#[cfg(test)]
+#[path = "exec_server_args_tests.rs"]
+mod exec_server_args_tests;
+mod exec_server_auth;
 mod exec_server_telemetry;
 mod marketplace_cmd;
 mod mcp_cmd;
@@ -639,6 +641,17 @@ struct ExecServerCommand {
     )]
     remote: Option<String>,
 
+    /// Transport used for the remote executor connection.
+    #[arg(
+        long = "remote-transport",
+        value_enum,
+        default_value_t = ExecServerRemoteTransport::Noise,
+        requires = "exec_server_remote",
+        requires_if("direct", "aws_sigv4"),
+        global = true
+    )]
+    remote_transport: ExecServerRemoteTransport,
+
     /// Environment id to attach to when registering remotely.
     #[arg(long = "environment-id", value_name = "ID", global = true)]
     environment_id: Option<String>,
@@ -651,9 +664,42 @@ struct ExecServerCommand {
     #[arg(
         long = "use-agent-identity-auth",
         requires = "exec_server_remote",
+        conflicts_with = "aws_sigv4",
         global = true
     )]
     use_agent_identity_auth: bool,
+
+    /// Sign Direct registration and WebSocket handshake requests with AWS SigV4.
+    #[arg(long = "aws-sigv4", requires = "exec_server_remote", global = true)]
+    aws_sigv4: bool,
+
+    /// AWS profile used for SigV4 authentication.
+    #[arg(
+        long = "aws-profile",
+        value_name = "PROFILE",
+        requires = "aws_sigv4",
+        global = true
+    )]
+    aws_profile: Option<String>,
+
+    /// AWS signing region. Uses the SDK region chain when omitted.
+    #[arg(
+        long = "aws-region",
+        value_name = "REGION",
+        requires = "aws_sigv4",
+        global = true
+    )]
+    aws_region: Option<String>,
+
+    /// AWS signing service.
+    #[arg(
+        long = "aws-service",
+        value_name = "SERVICE",
+        default_value = "execute-api",
+        requires = "aws_sigv4",
+        global = true
+    )]
+    aws_service: String,
 
     /// Exit when the parent-owned standard-input pipe closes.
     #[arg(
@@ -663,6 +709,37 @@ struct ExecServerCommand {
         global = true
     )]
     exit_on_stdin_close: bool,
+}
+
+impl ExecServerCommand {
+    fn validate_remote_transport(&self) -> anyhow::Result<()> {
+        match (self.remote_transport, self.aws_sigv4) {
+            (ExecServerRemoteTransport::Noise, true) => {
+                anyhow::bail!("--aws-sigv4 requires --remote-transport direct");
+            }
+            (ExecServerRemoteTransport::Direct, false) => {
+                anyhow::bail!("--remote-transport direct requires --aws-sigv4");
+            }
+            (ExecServerRemoteTransport::Noise, false)
+            | (ExecServerRemoteTransport::Direct, true) => {}
+        }
+        if self.remote_transport == ExecServerRemoteTransport::Direct
+            && matches!(
+                self.command.as_ref(),
+                Some(ExecServerSubcommand::Forward { .. })
+            )
+        {
+            anyhow::bail!("direct exec-server transport does not support forwarding");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+enum ExecServerRemoteTransport {
+    #[default]
+    Noise,
+    Direct,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -1863,6 +1940,7 @@ async fn run_exec_server_command(
     root_config_overrides: &CliConfigOverrides,
     strict_config: bool,
 ) -> anyhow::Result<()> {
+    cmd.validate_remote_transport()?;
     let codex_self_exe = arg0_paths
         .codex_self_exe
         .clone()
@@ -1880,7 +1958,41 @@ async fn run_exec_server_command(
             /*enable_workload_identity*/ true,
         )
         .await?;
+        let direct_transport = cmd.remote_transport == ExecServerRemoteTransport::Direct;
         let (_otel, telemetry) = exec_server_telemetry::init(Some(&config));
+        let auth_provider = if cmd.aws_sigv4 {
+            exec_server_auth::aws_sigv4_auth_provider(codex_aws_auth::AwsAuthConfig {
+                profile: cmd.aws_profile,
+                region: cmd.aws_region,
+                service: cmd.aws_service,
+            })
+            .await?
+        } else {
+            load_exec_server_remote_auth_provider(&config, &base_url, cmd.use_agent_identity_auth)
+                .await?
+        };
+        let mut remote_config = codex_exec_server::RemoteEnvironmentConfig::new_with_transport(
+            base_url,
+            environment_id,
+            if direct_transport {
+                codex_exec_server::RemoteEnvironmentTransport::Direct
+            } else {
+                codex_exec_server::RemoteEnvironmentTransport::Noise
+            },
+            auth_provider,
+            config.http_client_factory(),
+        )?;
+        if let Some(name) = cmd.name {
+            remote_config.name = name;
+        }
+        remote_config.request_dispatch_mode = cmd.request_dispatch_mode;
+        let remote_config = remote_config.with_telemetry(telemetry);
+        let parent_lifetime = if cmd.exit_on_stdin_close {
+            exec_server_telemetry::ParentLifetime::StdinPipe
+        } else {
+            exec_server_telemetry::ParentLifetime::Independent
+        };
+        let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
         #[cfg(target_os = "macos")]
         let runtime_paths = runtime_paths.with_allowed_symlinked_codex_home(
             codex_config::allowed_symlinked_codex_home(
@@ -1888,13 +2000,33 @@ async fn run_exec_server_command(
                 &config.codex_home,
             ),
         );
-        run_remote_exec_server(
-            cmd,
-            base_url,
-            environment_id,
-            &config,
-            runtime_paths,
-            telemetry,
+        exec_server_telemetry::run_until_shutdown(
+            async move {
+                let shutdown = async move {
+                    let _ = shutdown_receiver.await;
+                };
+                match cmd.command {
+                    Some(ExecServerSubcommand::Forward { connect }) => {
+                        codex_exec_server::run_remote_environment_forward_until_shutdown(
+                            remote_config,
+                            connect,
+                            shutdown,
+                        )
+                        .await
+                    }
+                    None => {
+                        codex_exec_server::run_remote_environment_until_shutdown(
+                            remote_config,
+                            runtime_paths,
+                            shutdown,
+                        )
+                        .await
+                    }
+                }
+                .map_err(anyhow::Error::new)
+            },
+            parent_lifetime,
+            exec_server_telemetry::ShutdownBehavior::Graceful(shutdown_sender),
         )
         .await
     } else {
@@ -1938,66 +2070,6 @@ async fn run_exec_server_command(
         );
         run.await.map_err(anyhow::Error::from_boxed)
     }
-}
-
-async fn run_remote_exec_server(
-    cmd: ExecServerCommand,
-    base_url: String,
-    environment_id: String,
-    config: &Config,
-    runtime_paths: ExecServerRuntimePaths,
-    telemetry: ExecServerTelemetry,
-) -> anyhow::Result<()> {
-    let auth_provider =
-        load_exec_server_remote_auth_provider(config, &base_url, cmd.use_agent_identity_auth)
-            .await?;
-    let mut remote_config = RemoteEnvironmentConfig::new(
-        base_url,
-        environment_id,
-        auth_provider,
-        config.http_client_factory(),
-    )?;
-    if let Some(name) = cmd.name {
-        remote_config.name = name;
-    }
-    remote_config.request_dispatch_mode = cmd.request_dispatch_mode;
-    let remote_config = remote_config.with_telemetry(telemetry);
-    let parent_lifetime = if cmd.exit_on_stdin_close {
-        exec_server_telemetry::ParentLifetime::StdinPipe
-    } else {
-        exec_server_telemetry::ParentLifetime::Independent
-    };
-    let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
-    let shutdown = async move {
-        let _ = shutdown_receiver.await;
-    };
-    let run = async move {
-        match cmd.command {
-            Some(ExecServerSubcommand::Forward { connect }) => {
-                codex_exec_server::run_remote_environment_forward_until_shutdown(
-                    remote_config,
-                    connect,
-                    shutdown,
-                )
-                .await
-            }
-            None => {
-                codex_exec_server::run_remote_environment_until_shutdown(
-                    remote_config,
-                    runtime_paths,
-                    shutdown,
-                )
-                .await
-            }
-        }
-    };
-    exec_server_telemetry::run_until_shutdown(
-        run,
-        parent_lifetime,
-        exec_server_telemetry::ShutdownBehavior::Graceful(shutdown_sender),
-    )
-    .await?;
-    Ok(())
 }
 
 async fn load_exec_server_remote_auth_provider(

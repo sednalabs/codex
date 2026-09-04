@@ -201,6 +201,7 @@ pub use protocol::WriteResponse;
 pub use protocol::WriteStatus;
 pub use regular_file::read_sensitive_file_to_string;
 pub use remote::RemoteEnvironmentConfig;
+pub use remote::RemoteEnvironmentTransport;
 pub use remote::run_remote_environment;
 pub use remote::run_remote_environment_forward_until_shutdown;
 pub use remote::run_remote_environment_until_shutdown;
