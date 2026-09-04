@@ -250,6 +250,10 @@ LIMIT 2
     }
 
     /// Find a spawned descendant of `root_thread_id` by canonical agent path.
+    ///
+    /// This recovery lookup is safety-bounded. A missing result is therefore best-effort when the
+    /// persisted descendant graph exceeds the bound; exhaustive point lookup requires a future
+    /// indexed/continuation API.
     pub async fn find_thread_spawn_descendant_by_path(
         &self,
         root_thread_id: ThreadId,
