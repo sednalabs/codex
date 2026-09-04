@@ -34,7 +34,7 @@ class OutputSummarizationTest(unittest.TestCase):
         cases = [
             ("first\nsecond", "first"),
             (["first", "second"], "[first]"),
-            ([{"type": "text", "text": "ready"}], '{"type": "text", "text": "ready"}'),
+            ([{"type": "text", "text": "ready"}], '[{"type": "text", "text": "ready"}]'),
             ({"success": True}, '{"success": true}'),
             (7, "7"),
             (None, "None"),

@@ -103,8 +103,10 @@ def summarize_output(output: Any) -> str:
             return "[]"
         first = output[0]
         if isinstance(first, str):
-            return f"[{shorten(first)}]"
-        return shorten(json.dumps(first, ensure_ascii=False))
+            summary = shorten(first)
+        else:
+            summary = shorten(json.dumps(first, ensure_ascii=False))
+        return f"[{summary}]"
     if isinstance(output, dict):
         return shorten(json.dumps(output, ensure_ascii=False))
     return shorten(str(output))
