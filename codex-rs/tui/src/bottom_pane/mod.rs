@@ -1365,6 +1365,14 @@ impl BottomPane {
             .and_then(|view| view.selected_index())
     }
 
+    pub(crate) fn search_query_for_active_view(&self, view_id: &'static str) -> Option<String> {
+        self.view_stack
+            .last()
+            .filter(|view| view.view_id() == Some(view_id))
+            .and_then(|view| view.search_query())
+            .map(ToOwned::to_owned)
+    }
+
     pub(crate) fn active_tab_id_for_active_view(&self, view_id: &'static str) -> Option<&str> {
         self.view_stack
             .last()
