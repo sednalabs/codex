@@ -16,6 +16,7 @@ use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_extension_api::ExtensionDataInit;
 use codex_features::Feature;
+use codex_history::ResponseItemEnvelope;
 use codex_protocol::intersect_effective_permission_profiles;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_utils_path_uri::PathUri;
@@ -932,7 +933,19 @@ impl AgentControl {
         // Scrub inherited hints and replace only the parent's developer-instruction fragment.
         // Compaction stores response items separately, so sanitize both top-level messages and
         // compacted replacement histories with the same policy.
-        let retain_forked_item = |response_item: &mut ResponseItem, replaced: &mut bool| {
+        let retain_forked_item = |envelope: &mut ResponseItemEnvelope, replaced: &mut bool| {
+            if config.features.enabled(Feature::GuardianThreadContext)
+                && multi_agent_version == MultiAgentVersion::V2
+                && matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "user")
+            {
+                // Persist the scope of every inherited user message, including the suffix
+                // after a checkpoint. Resume must not recapture it as local authorization.
+                envelope
+                    .metadata
+                    .get_or_insert_default()
+                    .inherited_user_message = true;
+            }
+            let response_item = &mut envelope.item;
             if matches!(response_item, ResponseItem::AgentMessage { .. }) {
                 return false;
             }
@@ -1016,7 +1029,12 @@ impl AgentControl {
                     // Parent-local review evidence must not become the child's authorization.
                     // Root user authorization is collected separately by the host.
                     compacted.guardian_history = None;
-                    compacted.retained_context = None;
+                    // Only V2 fetches root authorization live. Its local scope starts known-empty;
+                    // V1 must remain incomplete when inherited authorization has been stripped.
+                    compacted.retained_context =
+                        (config.features.enabled(Feature::GuardianThreadContext)
+                            && multi_agent_version == MultiAgentVersion::V2)
+                            .then(codex_history::RetainedContext::default);
                     if let Some(replacement_history) = compacted.replacement_history.as_mut() {
                         // Matches before this checkpoint cannot survive its replacement history.
                         replaced_parent_developer_instructions = false;

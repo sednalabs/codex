@@ -8783,7 +8783,10 @@ where
         session_configuration.session_source.clone(),
     );
 
-    let state = SessionState::new(session_configuration.clone());
+    let mut state = SessionState::new(session_configuration.clone());
+    if config.features.enabled(Feature::GuardianThreadContext) {
+        state.history.enable_user_message_retention();
+    }
     let (environment_manager, resolved_turn_environments) =
         resolved_environments_for_configuration(&session_configuration, &default_environments)
             .await;

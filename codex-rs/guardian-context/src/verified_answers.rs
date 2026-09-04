@@ -2,6 +2,7 @@
 //! Omit a record atomically when it cannot fit; never truncate a restriction out of a grant.
 
 use codex_history::RetainedContext;
+use codex_history::RetainedContextEntry;
 use codex_history::VerifiedAnswer;
 
 use crate::GuardianRootMessage;
@@ -19,9 +20,13 @@ pub struct RenderedVerifiedAnswers {
 pub fn render_verified_answers(context: &RetainedContext) -> RenderedVerifiedAnswers {
     let mut complete = context.verified_answers_complete();
     let mut fragments = Vec::new();
-    for answer in context.verified_answers() {
+    for (order, entry) in context.ordered_entries().enumerate() {
+        let RetainedContextEntry::VerifiedAnswer(answer) = entry else {
+            continue;
+        };
         if let Some(text) = render_verified_answer(answer) {
-            fragments.push(text);
+            // The bounded order label is framing, not part of the existing answer budget.
+            fragments.push(format!("Retained source order: {order}\n{text}"));
         } else {
             complete = false;
         }

@@ -2760,7 +2760,8 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt(
     );
 
     let history = test.codex.conversation_history_snapshot().await;
-    let retained = serde_json::to_value(history.retained_context())?;
+    assert_eq!(history.retained_context().is_some(), thread_context_enabled);
+    let retained = serde_json::to_value(history.retained_context().cloned().unwrap_or_default())?;
     assert_eq!(
         retained["user_messages"]
             .as_array()

@@ -1385,9 +1385,17 @@ async fn spawn_agent_without_fork_from_paginated_parent_stays_fresh_and_paginate
         .expect("parent shutdown should submit");
 }
 
+#[test_case::test_case(true; "thread context enabled")]
+#[test_case::test_case(false; "thread context disabled")]
 #[tokio::test]
-async fn spawn_agent_fork_drops_inherited_token_usage_state() {
-    let harness = AgentControlHarness::new().await;
+async fn spawn_agent_fork_drops_inherited_token_usage_state(thread_context_enabled: bool) {
+    let mut harness = AgentControlHarness::new().await;
+    let _ = harness.config.features.disable(Feature::MultiAgentV2);
+    harness
+        .config
+        .features
+        .set_enabled(Feature::GuardianThreadContext, thread_context_enabled)
+        .expect("test context mode");
     let (parent_thread_id, parent_thread) = harness.start_paginated_thread().await;
     let parent_usage = TokenUsage {
         total_tokens: 120,
@@ -1445,6 +1453,15 @@ async fn spawn_agent_fork_drops_inherited_token_usage_state() {
         total_tokens: 80,
         ..TokenUsage::default()
     };
+    assert!(
+        !child_thread
+            .session
+            .clone_history()
+            .await
+            .retained_context()
+            .user_messages_complete(),
+        "V1 forks lack complete retained authorization in both context modes"
+    );
     let turn_context = child_thread.session.new_default_turn().await;
     child_thread
         .session
@@ -2121,7 +2138,6 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(
     );
     let mut inherited_context = codex_history::RetainedContext::default();
     if thread_context_enabled {
-        inherited_context.restore(/*checkpoint*/ None);
         inherited_context.reserve_order();
     } else {
         inherited_context.mark_user_messages_incomplete();

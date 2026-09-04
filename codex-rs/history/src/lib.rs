@@ -66,6 +66,10 @@ pub struct CodexHarnessMetadata {
     /// Thread acceptance order, independent of when queued user input reaches model history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_input_order: Option<u64>,
+
+    /// Copied parent context stays model-visible but must not become child-local authorization.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inherited_user_message: bool,
 }
 
 impl ResponseItemEnvelope {

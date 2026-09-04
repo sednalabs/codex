@@ -373,6 +373,23 @@ impl ExtensionMetrics for RecordingMetrics {
     }
 }
 
+fn user_instruction(text: &str) -> ResponseItem {
+    ResponseItem::Message {
+        id: Some(ResponseItemId::new("msg")),
+        role: "user".to_owned(),
+        content: vec![ContentItem::InputText {
+            text: text.to_owned(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
+            content_item_kinds: Some(vec![codex_protocol::models::ContentItemKind(
+                "user.text".to_owned(),
+            )]),
+            ..Default::default()
+        }),
+    }
+}
+
 struct TestConversationHistory(Vec<ResponseItem>);
 
 struct TestRetainedHistory {
@@ -1089,7 +1106,7 @@ async fn sample_configured_conversation_history_with_source(
         )
         .await?;
     }
-    let conversation_history = TestConversationHistory(conversation_history);
+    let conversation_history = test.codex.conversation_history_snapshot().await;
 
     registry.tool_lifecycle_contributors()[0]
         .on_tool_start(ToolStartInput {
@@ -1102,7 +1119,7 @@ async fn sample_configured_conversation_history_with_source(
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &tool_payload,
-            conversation_history: Arc::new(conversation_history),
+            conversation_history,
             source,
         })
         .await;
@@ -1491,15 +1508,7 @@ max_tool_transcript_tokens = 128
 max_recent_non_user_entries = 8
 "#;
     let conversation_history = vec![
-        ResponseItem::Message {
-            id: None,
-            role: "user".to_owned(),
-            content: vec![ContentItem::InputText {
-                text: "Review the pending action.".to_owned(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        },
+        user_instruction("Review the pending action."),
         ResponseItem::Reasoning {
             id: None,
             summary: vec![ReasoningItemReasoningSummary::SummaryText {
@@ -1812,6 +1821,8 @@ max_recent_non_user_entries = 8
 async fn contributor_includes_transcript_images_by_default() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
+    let user_image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGPgEpEDAABoAD1UCKP3AAAAAElFTkSuQmCC";
+    let tool_image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOQE+ECAACQAD304kFaAAAAAElFTkSuQmCC";
     let history = vec![
         ResponseItem::Message {
             id: None,
@@ -1821,11 +1832,20 @@ async fn contributor_includes_transcript_images_by_default() -> Result<()> {
                     text: "Review what is shown on screen.".to_owned(),
                 },
                 ContentItem::InputImage {
-                    image_url: "data:image/png;base64,user-screenshot".to_owned(),
+                    image_url: user_image.to_owned(),
                     detail: Some(ImageDetail::High),
                 },
             ],
             phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "screenshot".to_owned(),
+            namespace: None,
+            arguments: "{}".to_owned(),
+            encrypted_function_args: None,
+            call_id: "previous-call".to_owned(),
             internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::FunctionCallOutput {
@@ -1838,8 +1858,8 @@ async fn contributor_includes_transcript_images_by_default() -> Result<()> {
                     text: "Screenshot captured.".to_owned(),
                 },
                 FunctionCallOutputContentItem::InputImage {
-                    image_url: "data:image/png;base64,tool-screenshot".to_owned(),
-                    detail: Some(ImageDetail::Low),
+                    image_url: tool_image.to_owned(),
+                    detail: Some(ImageDetail::High),
                 },
             ]),
             internal_chat_message_metadata_passthrough: None,
@@ -1866,11 +1886,11 @@ enabled = true
         [
             json!({
                 "type": "input_image",
-                "image_url": "data:image/png;base64,user-screenshot",
+                "image_url": user_image,
             }),
             json!({
                 "type": "input_image",
-                "image_url": "data:image/png;base64,tool-screenshot",
+                "image_url": tool_image,
             }),
         ]
     );
@@ -1900,15 +1920,7 @@ async fn contributor_uses_model_defaults_and_preserves_local_overrides() -> Resu
         max_parent_compaction_tokens: Some(384),
     };
     let conversation_history = vec![
-        ResponseItem::Message {
-            id: None,
-            role: "user".to_owned(),
-            content: vec![ContentItem::InputText {
-                text: "Review the pending action.".to_owned(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        },
+        user_instruction("Review the pending action."),
         ResponseItem::Reasoning {
             id: None,
             summary: vec![ReasoningItemReasoningSummary::SummaryText {
@@ -2019,18 +2031,19 @@ async fn contributor_uses_model_defaults_and_preserves_local_overrides() -> Resu
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn contributor_samples_tool_calls_with_the_existing_luna_pool() -> Result<()> {
+    assert_luna_pool_context(/*thread_context_enabled*/ true).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_contributor_samples_tool_calls_with_the_existing_luna_pool() -> Result<()> {
+    assert_luna_pool_context(/*thread_context_enabled*/ false).await
+}
+
+async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let conversation_history = vec![
-        ResponseItem::Message {
-            id: None,
-            role: "user".to_owned(),
-            content: vec![ContentItem::InputText {
-                text: "Inspect the repository guidelines.".to_owned(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        },
+        user_instruction("Inspect the repository guidelines."),
         ResponseItem::Reasoning {
             id: None,
             summary: vec![ReasoningItemReasoningSummary::SummaryText {
@@ -2067,10 +2080,12 @@ async fn contributor_samples_tool_calls_with_the_existing_luna_pool() -> Result<
             internal_chat_message_metadata_passthrough: None,
         },
     ];
-    let (request, test, registry) = sample_conversation_history(
+    let (request, test, registry) = sample_configured_conversation_history(
         conversation_history,
         r#"{"path":"README.md"}"#,
         Some(TEST_GUARDIAN_POLICY),
+        &format!("[features]\nguardian_thread_context = {thread_context_enabled}\n"),
+        /*model_defaults*/ None,
     )
     .await?;
     let thread_id = test.session_configured.thread_id;
@@ -2126,28 +2141,35 @@ async fn contributor_samples_tool_calls_with_the_existing_luna_pool() -> Result<
             }],
         })
     );
-    assert_eq!(
-        request["input"][2]["content"],
-        json!([
-            {"type": "input_text", "text": ">>> TRANSCRIPT START\n"},
-            {"type": "input_text", "text": "[1] user: Inspect the repository guidelines.\n"},
-            {"type": "input_text", "text": "[2] tool list_dir call: {\"path\":\".\"}\n"},
-            {"type": "input_text", "text": "[3] tool list_dir result: README.md\n"},
-            {"type": "input_text", "text": "[4] tool read_file call: {\"path\":\"README.md\"}\n"},
-            {"type": "input_text", "text": ">>> TRANSCRIPT END\n\n"},
-            {
-                "type": "input_text",
-                "text": "The Codex agent has requested the following action:\n"
-            },
-            {"type": "input_text", "text": ">>> APPROVAL REQUEST START\n"},
-            {"type": "input_text", "text": "Planned action JSON:\n"},
-            {
-                "type": "input_text",
-                "text": "{\n  \"path\": \"README.md\",\n  \"tool\": \"read_file\"\n}\n"
-            },
-            {"type": "input_text", "text": ">>> APPROVAL REQUEST END\n"},
-        ])
-    );
+    let mut expected_content = json!([
+        {"type": "input_text", "text": ">>> RETAINED USER INSTRUCTIONS START\nHost: Retained source order labels across instructions and verified answers reflect original acceptance, not section order. Later instructions may revoke earlier grants.\n"},
+        {"type": "input_text", "text": "Retained source order: 0\nuser: Inspect the repository guidelines.\n"},
+        {"type": "input_text", "text": ">>> RETAINED USER INSTRUCTIONS END\n"},
+        {"type": "input_text", "text": ">>> TRANSCRIPT START\n"},
+        {"type": "input_text", "text": "[1] user: Inspect the repository guidelines.\n"},
+        {"type": "input_text", "text": "[2] tool list_dir call: {\"path\":\".\"}\n"},
+        {"type": "input_text", "text": "[3] tool list_dir result: README.md\n"},
+        {"type": "input_text", "text": "[4] tool read_file call: {\"path\":\"README.md\"}\n"},
+        {"type": "input_text", "text": ">>> TRANSCRIPT END\n\n"},
+        {
+            "type": "input_text",
+            "text": "The Codex agent has requested the following action:\n"
+        },
+        {"type": "input_text", "text": ">>> APPROVAL REQUEST START\n"},
+        {"type": "input_text", "text": "Planned action JSON:\n"},
+        {
+            "type": "input_text",
+            "text": "{\n  \"path\": \"README.md\",\n  \"tool\": \"read_file\"\n}\n"
+        },
+        {"type": "input_text", "text": ">>> APPROVAL REQUEST END\n"},
+    ]);
+    if !thread_context_enabled {
+        expected_content
+            .as_array_mut()
+            .expect("content array")
+            .drain(..3);
+    }
+    assert_eq!(request["input"][2]["content"], expected_content);
     let score = tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
         loop {
             if let Some(score) = thread_store.get::<SecurityRiskScore>() {
@@ -3154,15 +3176,7 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
             internal_chat_message_metadata_passthrough: None,
         },
         latest_compaction.clone(),
-        ResponseItem::Message {
-            id: None,
-            role: "user".to_owned(),
-            content: vec![ContentItem::InputText {
-                text: "Inspect the repository guidelines.".to_owned(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        },
+        user_instruction("Inspect the repository guidelines."),
     ]);
 
     Box::pin(
@@ -3331,15 +3345,7 @@ async fn contributor_can_disable_parent_compaction_reuse() -> Result<()> {
     };
     let conversation_history = vec![
         oversized_compaction,
-        ResponseItem::Message {
-            id: None,
-            role: "user".to_owned(),
-            content: vec![ContentItem::InputText {
-                text: "Inspect the repository guidelines.".to_owned(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        },
+        user_instruction("Inspect the repository guidelines."),
     ];
     let configuration = "[features]\nguardian_thread_context = true\n\n[features.guardianv2]\nenabled = true\nreuse_parent_compaction = false\nmax_parent_compaction_tokens = 256\n";
     let (request, test, _registry) = sample_configured_conversation_history(

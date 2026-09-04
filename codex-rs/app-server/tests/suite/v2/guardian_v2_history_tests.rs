@@ -56,9 +56,10 @@ use super::user_input_request_events;
 use super::wait_for_luna_request;
 
 #[derive(Clone, Copy)]
-enum AnswerSize {
+enum EvidenceSize {
     Normal,
-    Oversized,
+    OversizedAnswer,
+    OversizedInstruction,
 }
 
 #[derive(Clone, Copy)]
@@ -67,25 +68,26 @@ enum ContextPath {
     ThreadOwned,
 }
 
-#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("matching"), 0, AnswerSize::Normal; "compatible checkpoint")]
-#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("different"), 0, AnswerSize::Normal; "incompatible checkpoint")]
-#[test_case(ContextPath::ThreadOwned, Some("matching"), None, 0, AnswerSize::Normal; "unknown Luna compatibility")]
-#[test_case(ContextPath::ThreadOwned, Some("matching"), Some(""), 0, AnswerSize::Normal; "empty Luna compatibility")]
-#[test_case(ContextPath::ThreadOwned, None, Some("matching"), 0, AnswerSize::Normal; "unknown producer remains unknown after model switch")]
-#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("matching"), 140, AnswerSize::Normal; "source call evicted")]
-#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("matching"), 0, AnswerSize::Oversized; "incomplete answers reject fresh low score")]
-#[test_case(ContextPath::Legacy, Some("matching"), Some("matching"), 0, AnswerSize::Normal; "legacy answers remain runtime only")]
-#[test_case(ContextPath::Legacy, Some("matching"), Some("different"), 0, AnswerSize::Normal; "legacy incompatible checkpoint still samples")]
-#[test_case(ContextPath::Legacy, Some("matching"), None, 0, AnswerSize::Normal; "legacy unknown Luna compatibility still samples")]
-#[test_case(ContextPath::Legacy, Some("matching"), Some("matching"), 140, AnswerSize::Normal; "legacy source call evicted")]
-#[test_case(ContextPath::Legacy, Some("matching"), Some("matching"), 0, AnswerSize::Oversized; "legacy answer truncation")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("matching"), 0, EvidenceSize::OversizedInstruction; "instruction budget preserves fresh low score")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("matching"), 0, EvidenceSize::Normal; "compatible checkpoint")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("different"), 0, EvidenceSize::Normal; "incompatible checkpoint")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), None, 0, EvidenceSize::Normal; "unknown Luna compatibility")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), Some(""), 0, EvidenceSize::Normal; "empty Luna compatibility")]
+#[test_case(ContextPath::ThreadOwned, None, Some("matching"), 0, EvidenceSize::Normal; "unknown producer remains unknown after model switch")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("matching"), 140, EvidenceSize::Normal; "source call evicted")]
+#[test_case(ContextPath::ThreadOwned, Some("matching"), Some("matching"), 0, EvidenceSize::OversizedAnswer; "incomplete answers reject fresh low score")]
+#[test_case(ContextPath::Legacy, Some("matching"), Some("matching"), 0, EvidenceSize::Normal; "legacy answers remain runtime only")]
+#[test_case(ContextPath::Legacy, Some("matching"), Some("different"), 0, EvidenceSize::Normal; "legacy incompatible checkpoint still samples")]
+#[test_case(ContextPath::Legacy, Some("matching"), None, 0, EvidenceSize::Normal; "legacy unknown Luna compatibility still samples")]
+#[test_case(ContextPath::Legacy, Some("matching"), Some("matching"), 140, EvidenceSize::Normal; "legacy source call evicted")]
+#[test_case(ContextPath::Legacy, Some("matching"), Some("matching"), 0, EvidenceSize::OversizedAnswer; "legacy answer truncation")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollback(
     context_path: ContextPath,
     parent_hash: Option<&str>,
     luna_hash: Option<&str>,
     tool_traffic: usize,
-    answer_size: AnswerSize,
+    evidence_size: EvidenceSize,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -94,9 +96,17 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
     const SUMMARY: &str = "Repository inspection was summarized.";
     let compatible = parent_hash == Some("matching") && luna_hash == parent_hash;
     let requires_sync = matches!(context_path, ContextPath::ThreadOwned) && !compatible;
-    let answer = match answer_size {
-        AnswerSize::Normal => USER_INPUT_RESTRICTION.to_owned(),
-        AnswerSize::Oversized => "Never publish this repository publicly. ".repeat(200),
+    let oversized_instruction = matches!(evidence_size, EvidenceSize::OversizedInstruction);
+    let answer = match evidence_size {
+        EvidenceSize::Normal | EvidenceSize::OversizedInstruction => {
+            USER_INPUT_RESTRICTION.to_owned()
+        }
+        EvidenceSize::OversizedAnswer => "Never publish this repository publicly. ".repeat(200),
+    };
+    let restriction = if oversized_instruction {
+        RESTRICTION.repeat(150)
+    } else {
+        RESTRICTION.to_owned()
     };
     let expected_output = format!("\"echoed\":\"{EVIDENCE}\"");
     let parent_requests = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -108,11 +118,11 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
         "encrypted_content": "encrypted summary"
     });
     let rejects_incomplete_score = matches!(
-        (context_path, answer_size),
-        (ContextPath::ThreadOwned, AnswerSize::Oversized)
+        (context_path, evidence_size),
+        (ContextPath::ThreadOwned, EvidenceSize::OversizedAnswer)
     );
     let classifier = Arc::new(MockResponsesState {
-        luna_score: if rejects_incomplete_score || requires_sync {
+        luna_score: if rejects_incomplete_score || oversized_instruction || requires_sync {
             0.0
         } else {
             1.0
@@ -270,7 +280,7 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
     let thread_id = thread.id.clone();
 
     for (index, prompt) in [
-        RESTRICTION,
+        restriction.as_str(),
         "Recheck the repository.",
         "Inspect after resume.",
         "Inspect after partial rollback.",
@@ -419,10 +429,14 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
             .split_once(">>> TRANSCRIPT END")
             .expect("transcript end")
             .0;
-        assert!(
-            transcript.contains(prompt),
-            "current user input missing: {transcript}"
-        );
+        if index == 0 && oversized_instruction {
+            assert!(content.contains("some retained user instructions are unavailable"));
+        } else {
+            assert!(
+                transcript.contains(prompt),
+                "current user input missing: {transcript}"
+            );
+        }
 
         {
             let parent = parent_requests.lock().expect("request log lock");
@@ -527,12 +541,12 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
                             panic!("missing {consumer} answers at step {index}: {text}")
                         })
                         .1;
-                    match answer_size {
-                        AnswerSize::Normal => {
+                    match evidence_size {
+                        EvidenceSize::Normal | EvidenceSize::OversizedInstruction => {
                             assert!(answers.contains("assistant: Can I keep using the browser?"));
                             assert!(answers.contains(&format!("user: {USER_INPUT_RESTRICTION}")));
                         }
-                        AnswerSize::Oversized => match context_path {
+                        EvidenceSize::OversizedAnswer => match context_path {
                             ContextPath::ThreadOwned => {
                                 assert!(
                                     answers.contains("some verified user answers are unavailable")
@@ -555,7 +569,7 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
             }
         }
         classifier.allow_luna.notify_one();
-        if rejects_incomplete_score || (index == 0 && requires_sync) {
+        if rejects_incomplete_score || oversized_instruction || (index == 0 && requires_sync) {
             // Wait for host publication, not merely a mock response. The next action must
             // see a fresh low score with unchanged authorization, rather than a stale score.
             let path = thread.path.as_ref().expect("legacy rollout path");
@@ -578,7 +592,14 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
             })
             .await?;
         }
-        if rejects_incomplete_score {
+        if rejects_incomplete_score || oversized_instruction {
+            let notice = match evidence_size {
+                EvidenceSize::OversizedInstruction => {
+                    "some retained user instructions are unavailable"
+                }
+                EvidenceSize::OversizedAnswer => "some verified user answers are unavailable",
+                EvidenceSize::Normal => unreachable!("incomplete evidence fixture"),
+            };
             let completed = app_server
                 .start_turn_and_wait_for_completion(TurnStartParams {
                     thread_id: thread_id.clone(),
@@ -588,21 +609,19 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
                 .await?;
             assert_eq!(completed.turn.status, TurnStatus::Completed);
             let fresh_sample = wait_for_luna_request(&classifier, /*index*/ 2).await?;
-            assert!(
-                fresh_sample
-                    .to_string()
-                    .contains("some verified user answers are unavailable")
-            );
+            assert!(fresh_sample.to_string().contains(notice));
             let reviews = review_requests.lock().expect("request log lock");
             assert_eq!(
                 reviews.len(),
-                2,
-                "an incomplete fresh score must still require sync review"
+                1 + usize::from(rejects_incomplete_score),
+                "only incomplete verified answers require another sync review"
             );
             assert!(
-                reviews[1]
+                reviews
+                    .last()
+                    .expect("initial sync review")
                     .to_string()
-                    .contains("some verified user answers are unavailable")
+                    .contains(notice)
             );
             classifier.allow_luna.notify_one();
             break;

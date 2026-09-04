@@ -87,6 +87,7 @@ struct SharedConversationHistory {
     items: Arc<Vec<ResponseItemEnvelope>>,
     review_history: Option<TranscriptHistory>,
     retained_context: Arc<RetainedContext>,
+    expose_retained_context: bool,
     history_version: u64,
     user_message_revision: u64,
 }
@@ -112,7 +113,8 @@ impl ConversationHistorySnapshot for SharedConversationHistory {
     }
 
     fn retained_context(&self) -> Option<&RetainedContext> {
-        Some(&self.retained_context)
+        self.expose_retained_context
+            .then_some(&self.retained_context)
     }
 
     fn review_items(&self) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_> {
@@ -174,6 +176,7 @@ impl ContextManager {
             items: Arc::clone(&self.items),
             review_history: self.review_history.clone(),
             retained_context: Arc::clone(&self.retained_context),
+            expose_retained_context: self.retain_user_messages,
             history_version: self.history_version,
             user_message_revision: self.user_message_revision,
         })
@@ -329,7 +332,9 @@ impl ContextManager {
             }
             Arc::make_mut(&mut self.items).push(processed);
             if crate::context::is_user_authorization_message(item) {
-                if self.retain_user_messages
+                if !self.retain_user_messages {
+                    Arc::make_mut(&mut self.retained_context).mark_user_messages_incomplete();
+                } else if !metadata.is_some_and(|metadata| metadata.inherited_user_message)
                     && let ResponseItem::Message {
                         content,
                         internal_chat_message_metadata_passthrough,
@@ -365,8 +370,6 @@ impl ContextManager {
                         },
                         metadata.and_then(|metadata| metadata.user_input_order),
                     );
-                } else {
-                    Arc::make_mut(&mut self.retained_context).mark_user_messages_incomplete();
                 }
                 self.user_message_revision = self.user_message_revision.saturating_add(1);
             }
