@@ -405,6 +405,35 @@ async fn run_guardian_review(
         return decision;
     }
 
+    let runtime = super::runtime::ReviewRuntime {
+        session,
+        context,
+        review_id,
+        request,
+        reasons,
+        options,
+    };
+    codex_extension_api::SynchronousApprovalReviewer::review(
+        &runtime,
+        codex_protocol::approvals::GuardianReviewReason::Policy,
+    )
+    .await
+}
+
+/// Runs the existing synchronous reviewer without choosing policy or reusing a score.
+pub(super) async fn run_synchronous_review(
+    runtime: super::runtime::ReviewRuntime,
+    _review_reason: codex_protocol::approvals::GuardianReviewReason,
+) -> ReviewDecision {
+    let super::runtime::ReviewRuntime {
+        session,
+        context,
+        review_id,
+        request,
+        reasons,
+        options,
+    } = runtime;
+    let turn = Arc::clone(context.turn());
     let GuardianReviewOptions {
         plugin_attribution_override,
         approval_request_source,
@@ -777,6 +806,7 @@ async fn run_guardian_review(
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct GuardianReviewOptions {
     pub(crate) plugin_attribution_override: Option<PluginCommandAttribution>,
     pub(crate) approval_request_source: GuardianApprovalRequestSource,

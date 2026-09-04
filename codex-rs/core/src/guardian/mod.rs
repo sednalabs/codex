@@ -18,6 +18,7 @@ mod metrics;
 mod prompt;
 mod review;
 mod review_session;
+mod runtime;
 
 use std::sync::Arc;
 use std::time::Duration;

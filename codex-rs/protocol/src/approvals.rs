@@ -185,6 +185,23 @@ pub struct NetworkPolicyAmendment {
     pub action: NetworkPolicyRuleAction,
 }
 
+/// Why this approval needs a fresh Guardian assessment.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardianReviewReason {
+    Policy,
+    FreshRequired,
+    MissingScore,
+    StaleScore,
+    InvalidScore,
+    IncompatibleCompaction,
+    ElevatedRisk,
+    ScoringFailure,
+    AuthorizationChanged,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct GuardianAssessmentEvent {
     /// Stable identifier for this guardian review lifecycle.
