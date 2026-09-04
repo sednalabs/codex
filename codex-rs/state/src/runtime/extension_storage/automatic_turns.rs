@@ -396,6 +396,8 @@ impl StateRuntime {
     /// Atomically admit one validated automatic operation. The capability remains in the
     /// eligibility row until the corresponding user item is projected, but the admission marker
     /// makes concurrent requests for the same ticket mutually exclusive.
+    // Keep persistence, provenance, authorization, and replay identities explicit and separate.
+    #[allow(clippy::too_many_arguments)]
     pub async fn reserve_automatic_turn_capability(
         &self,
         thread_id: ThreadId,
@@ -625,6 +627,8 @@ impl StateRuntime {
         Ok(())
     }
 
+    // Keep persistence, provenance, authorization, and replay identities explicit and separate.
+    #[allow(clippy::too_many_arguments)]
     async fn insert_validated_automatic_turn(
         &self,
         thread_id: ThreadId,
