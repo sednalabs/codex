@@ -31,8 +31,6 @@ use codex_extension_api::ThreadOriginator;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
-use codex_extension_api::ToolName;
-use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
 use codex_guardian_context::ContextTarget;
@@ -43,7 +41,8 @@ use codex_model_provider::create_model_provider;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::mcp::is_node_repl_backed_server;
-use codex_protocol::mcp::is_node_repl_backed_tool;
+use codex_protocol::openai_models::GuardianReviewMode;
+use codex_protocol::openai_models::GuardianScope;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::TruncationPolicy;
@@ -54,7 +53,8 @@ use super::action::GuardianAction;
 use super::action::RenderedAction;
 use super::authorization::ScoreAuthorization;
 use super::config::GuardianV2Config;
-use super::config::GuardianV2ReviewScope;
+use super::coverage::GuardianPolicy;
+use super::coverage::UnscoredAction;
 use super::metrics::REVIEW_FALLBACK_METRIC;
 use super::metrics::TOOL_CALL_LAG_METRIC;
 use super::metrics::record_classification;
@@ -70,38 +70,6 @@ use super::truncation::ClassificationTruncations;
 use super::trusted_skills::TrustedSkillInvocations;
 use super::trusted_skills::TrustedSkillRoots;
 use super::trusted_tools::trusted_tool_context;
-
-fn should_classify_tool(
-    tool_name: &ToolName,
-    payload: &ToolPayload,
-    review_scope: GuardianV2ReviewScope,
-) -> bool {
-    let GuardianV2ReviewScope::Standard {
-        sandboxed_exec_commands,
-    } = review_scope
-    else {
-        return is_node_repl_backed_tool(&tool_name.name, tool_name.namespace.as_deref());
-    };
-    if sandboxed_exec_commands
-        || !tool_name.is_default_namespace()
-        || tool_name.name != "exec_command"
-    {
-        return true;
-    }
-
-    matches!(
-        payload,
-        ToolPayload::Function { arguments }
-            if serde_json::from_str::<serde_json::Value>(arguments)
-                .ok()
-                .is_some_and(|arguments| {
-                    arguments
-                        .get("sandbox_permissions")
-                        .and_then(serde_json::Value::as_str)
-                        == Some("require_escalated")
-                })
-    )
-}
 
 /// Explains why Guardian v2 requires synchronous approval review.
 #[derive(Debug, Eq, PartialEq)]
@@ -141,12 +109,11 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
         input: ThreadStartInput<'a, Config>,
     ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
-            if !input.config.features.enabled(Feature::GuardianV2)
-                || !input.config.features.enabled(Feature::GuardianApproval)
-            {
+            if !input.config.features.enabled(Feature::GuardianApproval) {
                 return;
             }
 
+            let model = input.thread_store.get::<ModelInfo>();
             let thread_id = input.thread_store.level_id().to_string();
             let guardian_config = match GuardianV2Config::resolve(input.config) {
                 Ok(config) => config,
@@ -159,6 +126,17 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                     return;
                 }
             };
+            let mut policy = guardian_config.policy_for_model(model.as_deref());
+            if model.as_ref().is_some_and(|model| {
+                input
+                    .config
+                    .config_layer_stack
+                    .requirements()
+                    .auto_review_required_for_model(&model.slug)
+            }) {
+                policy.enforce_required_model();
+            }
+            let scoring_enabled = policy.scoring_enabled();
             let luna_compaction_hash = if let Some(thread_manager) = self.thread_manager.upgrade() {
                 thread_manager
                     .get_models_manager()
@@ -192,7 +170,7 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                 metrics: input.extension_metrics.clone(),
             };
 
-            if guardian_config.transcript.include_images {
+            if scoring_enabled && guardian_config.transcript.include_images {
                 input
                     .thread_store
                     .get_or_init(NodeReplReviewEvidence::default)
@@ -202,10 +180,6 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
             let sampler = input
                 .thread_store
                 .get_or_init(|| LunaSampler::new(sampler_config));
-            let guardian_v2_enabled = GuardianV2Enabled {
-                computer_use_only: guardian_config.review_scope
-                    == GuardianV2ReviewScope::ComputerUseOnly,
-            };
             input.thread_store.insert(guardian_config);
             input.thread_store.insert(GuardianV2ScoreProgress {
                 metrics: input.extension_metrics.clone(),
@@ -218,11 +192,14 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
             input
                 .thread_store
                 .insert(TrustedSkillRoots::from_config(input.config));
-            input.thread_store.insert(guardian_v2_enabled);
+            if scoring_enabled {
+                input.thread_store.insert(GuardianV2Enabled);
+            }
 
             // Keep the sampler available for later automatic review, but do not
             // prewarm while User approval mode or Full Access is selected.
-            if input.config.approvals_reviewer == ApprovalsReviewer::AutoReview
+            if scoring_enabled
+                && input.config.approvals_reviewer == ApprovalsReviewer::AutoReview
                 && !has_full_access(
                     input.config.permissions.approval_policy.value(),
                     &input.config.permissions.effective_permission_profile(),
@@ -273,30 +250,22 @@ impl ApprovalReviewContributor for GuardianV2Extension {
         extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
     ) -> ExtensionFuture<'a, Option<ReviewDecision>> {
         Box::pin(async move {
-            thread_store.get::<GuardianV2Enabled>()?;
+            let model = thread_store.get::<ModelInfo>();
             let guardian_config = thread_store.get::<GuardianV2Config>()?;
+            let policy = guardian_config.policy_for_model(model.as_deref());
+            let action = serde_json::from_str::<serde_json::Value>(prompt).unwrap_or_default();
+            let scope = GuardianPolicy::review_scope(&action);
+            if scope.map_or(policy.other_tools, |scope| policy.mode(scope))
+                != GuardianReviewMode::Adaptive
+            {
+                record_fast_decision(extension_metrics.as_deref(), "deferred", "out_of_scope");
+                return None;
+            }
             let guardian_evidence = thread_store.get_or_init(GuardianReviewEvidence::default);
             let thread_context_enabled = guardian_evidence.uses_thread_owned_context();
             let mut initial_cua_call = false;
-            if guardian_config.review_scope == GuardianV2ReviewScope::ComputerUseOnly {
-                let Ok(action) = serde_json::from_str::<serde_json::Value>(prompt) else {
-                    record_fast_decision(extension_metrics.as_deref(), "deferred", "out_of_scope");
-                    return None;
-                };
-                if action.get("tool").and_then(serde_json::Value::as_str) != Some("mcp_tool_call")
-                    || !action
-                        .get("server")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(is_node_repl_backed_server)
-                    || !thread_store
-                        .get::<ModelInfo>()
-                        .is_some_and(|model| model.node_repl_auto_review_required)
-                {
-                    record_fast_decision(extension_metrics.as_deref(), "deferred", "out_of_scope");
-                    return None;
-                }
-                // Legacy mode keeps the first REPL execution's review bypass.
-                // Thread-owned context first checks whether Luna can use the checkpoint.
+            if scope == Some(GuardianScope::ComputerUse) && policy.initial_cua_call {
+                // Thread-owned context checks checkpoint compatibility before the first CUA allowance.
                 initial_cua_call = action.get("tool_name").and_then(serde_json::Value::as_str)
                     == Some("js")
                     && action
@@ -319,7 +288,14 @@ impl ApprovalReviewContributor for GuardianV2Extension {
             } else if thread_store.get::<ModelInfo>().is_some() {
                 let manager = self.thread_manager.upgrade()?;
                 let thread_id = ThreadId::from_string(thread_store.level_id()).ok()?;
-                let thread = manager.get_thread(thread_id).await.ok()?;
+                let Ok(thread) = manager.get_thread(thread_id).await else {
+                    record_fast_decision(
+                        extension_metrics.as_deref(),
+                        "deferred",
+                        "scoring_failure",
+                    );
+                    return None;
+                };
                 let config = thread.config().await;
                 let model = thread_store.get::<ModelInfo>()?;
                 if config
@@ -345,10 +321,6 @@ impl ApprovalReviewContributor for GuardianV2Extension {
                 record_fast_decision(extension_metrics.as_deref(), "deferred", "scoring_failure");
                 return None;
             };
-            let root_authorization = thread
-                .guardian_root_snapshot()
-                .await
-                .map(|snapshot| snapshot.authorization_version);
             let history = thread.conversation_history_snapshot().await;
             if thread_context_enabled {
                 let sampler = thread_store.get::<LunaSampler>()?;
@@ -366,10 +338,7 @@ impl ApprovalReviewContributor for GuardianV2Extension {
                 record_fast_decision(extension_metrics.as_deref(), "approved", "initial_cua_call");
                 return Some(ReviewDecision::Approved);
             }
-            let current_authorization = ScoreAuthorization {
-                local: guardian_evidence.authorization_version(history.as_ref()),
-                root: root_authorization,
-            };
+            let current_authorization = ScoreAuthorization::current(&thread).await;
             if !current_authorization.local.retained_context_complete
                 || current_authorization
                     .root
@@ -473,6 +442,10 @@ impl GuardianV2Extension {
     }
 
     async fn score_tool(&self, input: ToolStartInput<'_>) {
+        // Polling a code cell does not introduce another action or age its score.
+        if input.tool_name.is_default_namespace() && input.tool_name.name == "wait" {
+            return;
+        }
         let classification_started_at = Instant::now();
         let Some(sampler) = input.thread_store.get::<LunaSampler>() else {
             return;
@@ -483,11 +456,34 @@ impl GuardianV2Extension {
         let Some(score_progress) = input.thread_store.get::<GuardianV2ScoreProgress>() else {
             return;
         };
-        if !should_classify_tool(input.tool_name, input.payload, guardian_config.review_scope) {
-            if guardian_config.review_scope != GuardianV2ReviewScope::ComputerUseOnly {
-                score_progress
-                    .latest_tool_call
-                    .fetch_add(/*val*/ 1, Ordering::Relaxed);
+        let parent_model = input.thread_store.get::<ModelInfo>();
+        let policy = guardian_config.policy_for_model(parent_model.as_deref());
+        if !policy.scoring_enabled() {
+            input.thread_store.remove::<GuardianV2Enabled>();
+        }
+        let mcp_server = input
+            .mcp_tool
+            .map(|tool| tool.tool_info().server_name.as_str());
+        let scope = mcp_server
+            .map(GuardianScope::for_mcp_server)
+            .or_else(|| GuardianScope::for_tool(input.tool_name));
+        if !policy.scores_tool(input.tool_name, input.payload, scope) {
+            match policy.unscored_action {
+                UnscoredAction::Ignore => {}
+                UnscoredAction::AgeScore => {
+                    score_progress
+                        .latest_tool_call
+                        .fetch_add(/*val*/ 1, Ordering::Relaxed);
+                }
+                UnscoredAction::InvalidateScore => {
+                    let index = score_progress
+                        .latest_tool_call
+                        .fetch_add(/*val*/ 1, Ordering::Relaxed)
+                        .saturating_add(/*rhs*/ 1);
+                    score_progress
+                        .latest_failed_tool_call
+                        .fetch_max(index, Ordering::Release);
+                }
             }
             return;
         }
@@ -505,7 +501,7 @@ impl GuardianV2Extension {
         let tool_call_index = score_progress
             .latest_tool_call
             .fetch_add(/*val*/ 1, Ordering::Relaxed)
-            .saturating_add(1);
+            .saturating_add(/*rhs*/ 1);
         let event_sink = Arc::clone(&self.event_sink);
         let thread_id = input.thread_store.level_id().to_owned();
         let turn_id = input.turn_id.to_owned();
@@ -546,23 +542,17 @@ impl GuardianV2Extension {
         };
         // Use the live reviewer, not the startup config or per-app reviewer overrides.
         let snapshot = thread.config_snapshot().await;
-        let parent_model = input.thread_store.get::<ModelInfo>();
         if snapshot.full_access
             || thread.approvals_reviewer_for_turn(input.turn_id).await == ApprovalsReviewer::User
-            || (guardian_config.review_scope == GuardianV2ReviewScope::ComputerUseOnly
-                && !parent_model
-                    .as_ref()
-                    .is_some_and(|model| model.node_repl_auto_review_required))
         {
-            // A skipped call invalidates older scores, including ones still in flight
-            // when switching to a model that does not require REPL review.
+            // A skipped call invalidates older scores, including ones still in flight.
             score_progress
                 .latest_failed_tool_call
                 .fetch_max(tool_call_index, Ordering::Release);
             return;
         }
-        // Computer-use-only scores cannot approve other tools for required models.
-        if guardian_config.review_scope != GuardianV2ReviewScope::ComputerUseOnly
+        // A required model keeps synchronous review outside its CUA allowance.
+        if !(scope == Some(GuardianScope::ComputerUse) && policy.initial_cua_call)
             && parent_model.as_ref().is_some_and(|model| {
                 config
                     .config_layer_stack
@@ -573,6 +563,7 @@ impl GuardianV2Extension {
             input.thread_store.remove::<SecurityRiskScore>();
             return;
         }
+        input.thread_store.insert(GuardianV2Enabled);
         let model_defaults = parent_model
             .as_ref()
             .and_then(|model| model.model_messages.as_ref())
@@ -689,6 +680,7 @@ impl GuardianV2Extension {
             .transcript
             .images(input.conversation_history.review_items(), node_repl_images);
 
+        let score_authorization = ScoreAuthorization::current(&thread).await;
         tokio::spawn(async move {
             let mut truncations = ClassificationTruncations::default();
             let trusted_tool_context = match mcp_tool.as_ref() {
@@ -715,6 +707,8 @@ impl GuardianV2Extension {
             let score_authorization = ScoreAuthorization {
                 local: authorization_version,
                 root: root_authorization_version,
+                model: parent_model.clone(),
+                ..score_authorization
             };
             let transcript = match guardian_config.transcript.build_context(
                 ContextTarget::Async,

@@ -1069,14 +1069,7 @@ async fn track_turn_resolved_config_analytics(
                 .services
                 .thread_extension_data
                 .get::<codex_extension_api::GuardianV2Enabled>()
-                .is_some_and(|state| {
-                    state.computer_use_only
-                        || !turn_context
-                            .config
-                            .config_layer_stack
-                            .requirements()
-                            .auto_review_required_for_model(&turn_context.model_info().slug)
-                }),
+                .is_some(),
             sandbox_network_access: turn_context.network_sandbox_policy().is_enabled(),
             collaboration_mode: turn_context.mode(),
             personality: turn_context.personality(),

@@ -116,6 +116,10 @@ async fn resumed_thread_does_not_wait_for_guardian_websocket_warmup() -> Result<
         .with_extra_config("[features.guardianv2]\nenabled = true")
         .enable_feature(Feature::GuardianApproval)
         .write(codex_home.path())?;
+    let config = load_default_config_for_test(&codex_home).await;
+    let mut model = codex_core::test_support::construct_model_info_offline(MODEL, &config);
+    model.node_repl_auto_review_required = true;
+    write_models_cache_with_models(codex_home.path(), vec![model])?;
     let thread_id = create_fake_rollout(
         codex_home.path(),
         "2025-01-05T12-00-00",
