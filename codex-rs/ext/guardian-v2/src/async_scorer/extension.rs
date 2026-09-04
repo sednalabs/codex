@@ -85,14 +85,14 @@ enum ClassificationOutcome {
 }
 
 #[derive(Default)]
-struct GuardianV2ScoreProgress {
-    latest_tool_call: AtomicUsize,
+pub(super) struct GuardianV2ScoreProgress {
+    pub(super) latest_tool_call: AtomicUsize,
     // Setup and reset calls must not consume the first JS execution allowance.
-    js_executions: AtomicUsize,
-    latest_scored_tool_call: AtomicUsize,
-    latest_failed_tool_call: AtomicUsize,
+    pub(super) js_executions: AtomicUsize,
+    pub(super) latest_scored_tool_call: AtomicUsize,
+    pub(super) latest_failed_tool_call: AtomicUsize,
     // Serialize successful score publication with its authorization metadata.
-    authorization: Mutex<Option<ScoreAuthorization>>,
+    pub(super) authorization: Mutex<Option<ScoreAuthorization>>,
     metrics: Option<Arc<dyn ExtensionMetrics>>,
 }
 
@@ -959,7 +959,7 @@ enum ParentCompactionError {
 }
 
 // Sampling and fast approval must apply the same checkpoint eligibility policy.
-fn requires_sync_for_compaction(
+pub(super) fn requires_sync_for_compaction(
     config: &GuardianV2Config,
     history: &dyn ConversationHistorySnapshot,
     sampler: &LunaSampler,
@@ -1026,9 +1026,12 @@ pub fn install(
     let extension = Arc::new(GuardianV2Extension {
         auth_manager,
         event_sink: registry.event_sink(),
-        thread_manager,
+        thread_manager: thread_manager.clone(),
     });
     registry.thread_lifecycle_contributor(extension.clone());
+    registry.approval_review_contributor(Arc::new(super::approval::GuardianApprovalReviewer {
+        thread_manager,
+    }));
     registry.approval_review_contributor(extension.clone());
     registry.skill_invocation_contributor(extension.clone());
     registry.tool_lifecycle_contributor(extension);
