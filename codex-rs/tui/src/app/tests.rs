@@ -5948,6 +5948,49 @@ async fn resize_reflow_wraps_transcript_early_when_pet_is_enabled() {
 }
 
 #[tokio::test]
+async fn closing_fullscreen_inline_overlay_restores_history_once() -> Result<()> {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    app.transcript_cells = vec![plain_line_cell("Previous conversation")];
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    tui.set_alt_screen_enabled(/*enabled*/ false);
+    let screen_size = tui.terminal.last_known_screen_size;
+    tui.insert_history_lines(vec![Line::from("Previous conversation")]);
+    app.render_chat_widget_frame(&mut tui, screen_size)?;
+
+    // Content-height popups keep the existing history without rebuilding scrollback.
+    let popup_height = screen_size.height - 1;
+    tui.draw(popup_height, |_| {})?;
+    app.render_chat_widget_frame(&mut tui, screen_size)?;
+    assert!(app.last_rendered_history_tail.is_none());
+
+    tui.enter_alt_screen()?;
+    tui.draw(screen_size.height, |_| {})?;
+    tui.leave_alt_screen()?;
+    app.render_chat_widget_frame(&mut tui, screen_size)?;
+
+    assert!(tui.terminal.viewport_area.height < screen_size.height);
+    assert!(tui.terminal.viewport_area.y > 0);
+    let tail = app
+        .last_rendered_history_tail
+        .as_ref()
+        .expect("fullscreen exit rebuilt history");
+    assert_snapshot!(
+        tail.lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        @"Previous conversation"
+    );
+
+    let deferred = vec![Line::from("Pending history").into()];
+    app.deferred_history_lines = deferred.clone();
+    app.render_chat_widget_frame(&mut tui, screen_size)?;
+    assert_eq!(app.deferred_history_lines, deferred);
+    Ok(())
+}
+
+#[tokio::test]
 async fn copy_picker_opening_preserves_terminal_scrollback_without_reflow() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let response = "Existing response\n\n```rust\nkeep_scrollback();\n```";
