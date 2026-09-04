@@ -19,10 +19,9 @@ const BASE_CLI_BUG_ISSUE_URL: &str =
 /// Internal routing link for employee feedback follow-ups. This must not be shown to external users.
 const CODEX_FEEDBACK_INTERNAL_URL: &str = "http://go/codex-feedback-internal";
 
-/// The target audience for feedback follow-up instructions.
+/// The target audience for feedback disclosure and follow-up instructions.
 ///
-/// This is used strictly for messaging/links after feedback upload completes. It
-/// must not change feedback upload behavior itself.
+/// This controls displayed copy and links, not feedback upload behavior.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FeedbackAudience {
     OpenAiEmployee,
@@ -60,7 +59,7 @@ pub(crate) fn feedback_success_cell(
     let issue_url = issue_url_for_category(category, thread_id, feedback_audience);
     let mut lines = vec![Line::from(match issue_url.as_ref() {
         Some(_) if feedback_audience == FeedbackAudience::OpenAiEmployee => {
-            format!("{prefix} Please report this in #codex-feedback:")
+            format!("{prefix} You can share this in #codex-feedback:")
         }
         Some(_) => format!("{prefix} Please open an issue using the following URL:"),
         None => format!("{prefix} Thanks for the feedback!"),
@@ -71,10 +70,15 @@ pub(crate) fn feedback_success_cell(
                 "".into(),
                 Line::from(vec!["  ".into(), url.cyan().underlined()]),
                 "".into(),
-                Line::from("  Share this and add some info about your problem:"),
                 Line::from(vec![
-                    "    ".into(),
-                    format!("https://go/codex-feedback/{thread_id}").bold(),
+                    "  Sentry Feedback ID: ".into(),
+                    thread_id.to_string().bold(),
+                ]),
+                Line::from(vec![
+                    "  Sentry URL: ".into(),
+                    format!("https://go/codex-feedback/{thread_id}")
+                        .cyan()
+                        .underlined(),
                 ]),
             ]);
         }
@@ -352,7 +356,7 @@ mod tests {
                     if symbol.is_empty() {
                         line.push(' ');
                     } else {
-                        line.push_str(symbol);
+                        line.push_str(&crate::terminal_hyperlinks::strip_osc8(symbol));
                     }
                 }
                 line.trim_end().to_string()
@@ -520,10 +524,7 @@ mod tests {
             ),
             /*width*/ 120,
         );
-        assert_eq!(
-            rendered,
-            "• Feedback uploaded. Please report this in #codex-feedback:\n\n  http://go/codex-feedback-internal\n\n  Share this and add some info about your problem:\n    https://go/codex-feedback/thread-2"
-        );
+        insta::assert_snapshot!("feedback_success_employee", rendered);
     }
 
     #[test]

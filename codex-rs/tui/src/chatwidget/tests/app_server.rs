@@ -813,6 +813,7 @@ async fn live_app_server_turn_started_sets_feedback_turn_id() {
     chat.open_feedback_note(
         crate::app_event::FeedbackCategory::Bug,
         /*include_logs*/ false,
+        crate::bottom_pane::FeedbackAudience::External,
     );
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 

@@ -997,20 +997,14 @@ impl ChatWidget {
         &mut self,
         category: crate::app_event::FeedbackCategory,
         include_logs: bool,
-    ) {
-        self.show_feedback_note(category, include_logs);
-    }
-
-    fn show_feedback_note(
-        &mut self,
-        category: crate::app_event::FeedbackCategory,
-        include_logs: bool,
+        feedback_audience: crate::bottom_pane::FeedbackAudience,
     ) {
         let view = crate::bottom_pane::FeedbackNoteView::new(
             category,
             self.turn_lifecycle.last_turn_id.clone(),
             self.app_event_tx.clone(),
             include_logs,
+            feedback_audience,
         );
         self.bottom_pane.show_view(Box::new(view));
         self.request_redraw();
