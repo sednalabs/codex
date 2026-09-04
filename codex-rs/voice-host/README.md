@@ -1,10 +1,11 @@
 # Private voice helper foundation
 
 `codex-voice-host` establishes the inherited-pipe lifecycle for the proposed
-bundled voice process. It does not open devices, negotiate
-WebRTC, or enable voice in the TUI. The existing CLI is unchanged.
+bundled voice process and owns WebRTC negotiation. It does not open devices or
+enable voice in the TUI. The existing CLI is unchanged.
 
-Frames are a big-endian u32 length followed by at most 256 bytes of JSON. The
+Frames are a big-endian u32 length followed by at most 128 KiB of JSON. SDP is
+limited to 64 KiB and redacted in diagnostics. The
 parent sends `hello` with protocol `1` and the helper's exact `buildCommit` before
 receiving `ready`. It then sends `close` and receives `closed` before process exit.
 After `ready`, the parent may send `initializeRuntime` once. `runtimeReady` means
@@ -14,6 +15,12 @@ the helper to exit without a readiness response or raw native diagnostics. The
 client terminates the helper if initialization fails or exceeds its deadline.
 Unknown fields, incompatible builds, invalid order and oversized frames fail
 closed without echoing input. EOF exits even when the main worker cannot progress.
+
+After `ready`, `startTransport` gathers an `offer`; `applyAnswer` returns
+`transportReady` only when the ordered `oai-events` channel opens. This can run
+without native audio initialization and does not establish audio readiness.
+Negotiation has a deadline; `close` tears down the peer before acknowledging exit.
+UDP and TCP peer tests use real sockets, without a backend or audio devices.
 
 Bazel stamps the binary with `STABLE_GIT_COMMIT`. Cargo builders must provide the
 same variable; an unstamped source build reports `dev` via `--build-commit` and is

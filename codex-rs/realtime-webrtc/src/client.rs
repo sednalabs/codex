@@ -28,6 +28,32 @@ pub struct VoiceHost {
 }
 
 impl VoiceHost {
+    /// Gather an offer in the helper. This establishes neither connectivity nor audio readiness.
+    pub async fn start_transport(mut self) -> Result<(Self, crate::SessionDescription)> {
+        let response = self
+            .request(Message::StartTransport {}, Duration::from_secs(/*secs*/ 20))
+            .await?;
+        let Message::Offer { sdp } = response else {
+            anyhow::bail!("unexpected voice helper response");
+        };
+        Ok((self, sdp))
+    }
+
+    /// Return only when the peer's ordered event channel has opened.
+    pub async fn apply_answer(mut self, sdp: crate::SessionDescription) -> Result<Self> {
+        let response = self
+            .request(
+                Message::ApplyAnswer { sdp },
+                Duration::from_secs(/*secs*/ 20),
+            )
+            .await?;
+        ensure!(
+            response == Message::TransportReady {},
+            "unexpected voice helper response"
+        );
+        Ok(self)
+    }
+
     /// Initialize the packaged native runtime without opening devices or starting a session.
     pub async fn initialize_runtime(mut self) -> Result<Self> {
         self.exchange(
@@ -103,15 +129,21 @@ impl VoiceHost {
         expected: Message,
         deadline: Duration,
     ) -> Result<()> {
+        ensure!(
+            self.request(request, deadline).await? == expected,
+            "unexpected voice helper response"
+        );
+        Ok(())
+    }
+
+    async fn request(&mut self, request: Message, deadline: Duration) -> Result<Message> {
         timeout(deadline, async {
             self.process
                 .writer_sender()
                 .send(encode_frame(&request)?)
                 .await
                 .map_err(|_| anyhow::anyhow!("voice helper input closed"))?;
-            let response = self.output.next().await?;
-            ensure!(response == expected, "unexpected voice helper response");
-            Ok(())
+            Ok(self.output.next().await?)
         })
         .await?
     }

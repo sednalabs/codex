@@ -1,4 +1,4 @@
-//! Bounded, same-build lifecycle protocol; this stage carries no audio or credentials.
+//! Bounded same-build controls and redacted signaling; audio never crosses this pipe.
 
 use std::io;
 use std::io::Read;
@@ -6,7 +6,35 @@ use std::io::Read;
 use serde::Deserialize;
 use serde::Serialize;
 
-pub const MAX_FRAME_BYTES: usize = 256;
+pub const MAX_FRAME_BYTES: usize = 128 * 1024;
+
+/// SDP contains ICE credentials. Bound it at construction and never expose it in diagnostics.
+#[derive(Deserialize, PartialEq, Serialize)]
+#[serde(try_from = "String")]
+pub struct SessionDescription(String);
+
+impl TryFrom<String> for SessionDescription {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() || value.len() > 64 * 1024 {
+            return Err("invalid voice session description length");
+        }
+        Ok(Self(value))
+    }
+}
+
+impl std::fmt::Debug for SessionDescription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SessionDescription([REDACTED])")
+    }
+}
+
+impl SessionDescription {
+    pub fn into_sdp(self) -> String {
+        self.0
+    }
+}
 
 /// Fixed child settings prevent native initialization from scanning system plugins or caches.
 pub const RUNTIME_ENVIRONMENT: [(&str, &str); 7] = [
@@ -34,9 +62,17 @@ pub enum Message {
     Ready {},
     InitializeRuntime {},
     RuntimeReady {},
+    StartTransport {},
+    Offer { sdp: SessionDescription },
+    ApplyAnswer { sdp: SessionDescription },
+    TransportReady {},
     Close {},
     Closed {},
 }
+
+#[cfg(test)]
+#[path = "protocol_tests.rs"]
+mod tests;
 
 pub fn encode_frame(message: &Message) -> io::Result<Vec<u8>> {
     let payload = serde_json::to_vec(message)?;
