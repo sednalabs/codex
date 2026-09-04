@@ -513,6 +513,13 @@ ON CONFLICT(child_thread_id) DO NOTHING
         filters: ThreadFilterOptions<'_>,
         relation_filter: Option<crate::ThreadRelationFilter>,
     ) -> anyhow::Result<crate::ThreadsPage> {
+        let relation_limit_reached = match relation_filter {
+            Some(crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)) => {
+                self.descendant_relation_limit_reached(ancestor_thread_id)
+                    .await?
+            }
+            _ => false,
+        };
         let limit = page_size.saturating_add(1);
 
         let mut builder = QueryBuilder::<Sqlite>::new("");
@@ -521,6 +528,7 @@ ON CONFLICT(child_thread_id) DO NOTHING
         let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
         let mut items = Vec::with_capacity(rows.len());
         let mut parent_thread_ids = std::collections::HashMap::new();
+        let relation_limit_reached = relation_filter.is_some_and(|_| rows.len() > page_size);
         for row in rows {
             let item = ThreadRow::try_from_row(&row).and_then(ThreadMetadata::try_from)?;
             if relation_filter.is_some()
@@ -547,7 +555,26 @@ ON CONFLICT(child_thread_id) DO NOTHING
             parent_thread_ids,
             next_anchor,
             num_scanned_rows,
+            relation_limit_reached,
         })
+    }
+
+    /// Reports whether the deterministic raw descendant safety subset filled completely.
+    ///
+    /// This is deliberately evaluated before archived/source/cwd/search filters. The bounded raw
+    /// subset may omit later, newer, or otherwise matching descendants once it reaches the cap,
+    /// even when the filtered page itself is empty.
+    async fn descendant_relation_limit_reached(
+        &self,
+        ancestor_thread_id: ThreadId,
+    ) -> anyhow::Result<bool> {
+        let mut builder = QueryBuilder::<Sqlite>::new("");
+        push_descendant_subtree_cte(&mut builder, ancestor_thread_id);
+        builder.push("SELECT COUNT(*) AS relation_count FROM subtree");
+        let row = builder.build().fetch_one(self.pool.as_ref()).await?;
+        let relation_count: i64 = row.try_get("relation_count")?;
+        Ok(relation_count
+            >= i64::try_from(crate::MAX_THREAD_RELATION_DESCENDANTS.saturating_add(1))?)
     }
 
     /// List thread ids using the underlying database (no rollout scanning).
