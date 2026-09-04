@@ -60,9 +60,7 @@ NON_CODE_EXACT = {
     "LICENSE",
     "LICENSE.md",
 }
-HUNK_HEADER_PATTERN = re.compile(
-    r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(?: .*)?$"
-)
+HUNK_HEADER_PATTERN = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(?: .*)?$")
 
 
 @dataclass(frozen=True)
@@ -780,11 +778,7 @@ def downstream_carry_items_for_live_diff(
     documentation-only projections before registry reconciliation.
     """
 
-    carry_paths = {
-        path
-        for item in carry_items
-        for path in carry_endpoint_paths(item)
-    }
+    carry_paths = {path for item in carry_items for path in carry_endpoint_paths(item)}
     superseded_paths = superseded_carry_paths or set()
     projected_items: list[DiffItem] = []
     for item in live_items:
@@ -829,9 +823,7 @@ def carry_endpoint_paths(item: DiffItem) -> tuple[str, ...]:
     return item.paths
 
 
-def diff_hunks(
-    repo: Path, left_sha: str, right_sha: str, path: str
-) -> list[DiffHunk]:
+def diff_hunks(repo: Path, left_sha: str, right_sha: str, path: str) -> list[DiffHunk]:
     """Return exact location- and context-bearing hunks for one path.
 
     Unified-diff headers bind the old/new ranges and function context, while
@@ -904,15 +896,23 @@ def file_contains_hunk_new_lines(
     actual = read_blob_bytes(repo, commit_sha, path)
     if actual is None or not is_safe_text_blob(actual):
         return False
-    expected = b"".join(
-        line[1:].encode("utf-8") + b"\n"
-        for line in hunk.body
-        if line.startswith((" ", "+"))
-    )
+    expected_lines = [
+        line[1:].encode("utf-8") for line in hunk.body if line.startswith((" ", "+"))
+    ]
+    expected = b"\n".join(expected_lines)
     if not expected:
         return False
-    first = actual.find(expected)
-    return first >= 0 and actual.find(expected, first + 1) == -1
+
+    matches: list[int] = []
+    offset = actual.find(expected)
+    while offset >= 0:
+        end = offset + len(expected)
+        starts_at_line_boundary = offset == 0 or actual[offset - 1] == 0x0A
+        ends_at_line_boundary = end == len(actual) or actual[end] == 0x0A
+        if starts_at_line_boundary and ends_at_line_boundary:
+            matches.append(offset)
+        offset = actual.find(expected, offset + 1)
+    return len(matches) == 1
 
 
 def is_ancestor(repo: Path, ancestor_sha: str, descendant_sha: str) -> bool:
@@ -1022,13 +1022,9 @@ def verify_superseded_hunks(
                 ],
             )
             if path_safety_errors:
-                errors.extend(
-                    f"{entry_id}: {error}" for error in path_safety_errors
-                )
+                errors.extend(f"{entry_id}: {error}" for error in path_safety_errors)
                 continue
-            upstream_hunks = diff_hunks(
-                repo, upstream_parent, upstream_commit, path
-            )
+            upstream_hunks = diff_hunks(repo, upstream_parent, upstream_commit, path)
         except RuntimeError as error:
             errors.append(f"{entry_id}: cannot read upstream evidence: {error}")
             continue
@@ -1057,9 +1053,7 @@ def verify_superseded_hunks(
                 "textual addition-only hunk with no EOL ambiguity"
             )
             continue
-        if not file_contains_hunk_new_lines(
-            repo, upstream_sha, path, upstream_hunk
-        ):
+        if not file_contains_hunk_new_lines(repo, upstream_sha, path, upstream_hunk):
             errors.append(
                 f"{entry_id}: declared hunk is absent from current upstream tree "
                 f"{upstream_sha}"
@@ -1114,8 +1108,12 @@ def verify_superseded_hunks(
                 f"supersession for {path}: {len(remaining)} downstream carry hunk(s) "
                 "are not declared and cannot be masked"
             )
-        elif path_declarations and carry_hunks and all(
-            index in resolved_hunks for index, _declaration in path_declarations
+        elif (
+            path_declarations
+            and carry_hunks
+            and all(
+                index in resolved_hunks for index, _declaration in path_declarations
+            )
         ):
             superseded_carry_paths.append(path)
 
@@ -1275,9 +1273,7 @@ def validate_superseded_hunks(raw: Any, errors: list[str]) -> None:
             isinstance(hunk_header, str)
             and HUNK_HEADER_PATTERN.fullmatch(hunk_header) is not None
         ):
-            errors.append(
-                f"{prefix}: hunk_header must be an exact unified-diff header"
-            )
+            errors.append(f"{prefix}: hunk_header must be an exact unified-diff header")
 
         hunk_lines = declaration.get("hunk_lines")
         if not isinstance(hunk_lines, list) or not hunk_lines:

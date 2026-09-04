@@ -2642,6 +2642,31 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                     DOWNSTREAM_DIVERGENCE_AUDIT.is_safe_addition_hunk(hunk)
                 )
 
+    def test_superseded_hunk_requires_complete_line_boundaries(self) -> None:
+        hunk = DOWNSTREAM_DIVERGENCE_AUDIT.DiffHunk(
+            "@@ -1,2 +1,3 @@",
+            (" context", "+added", " tail"),
+        )
+        variants = {
+            "exact": (b"context\nadded\ntail\n", True),
+            "prefix-context-drift": (b"prefix-context\nadded\ntail\n", False),
+            "suffix-context-drift": (b"context\nadded\ntail-suffix\n", False),
+        }
+        for label, (contents, expected) in variants.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                self.run_git(repo, "init", "-b", "main")
+                self.run_git(repo, "config", "user.email", "ci@example.invalid")
+                self.run_git(repo, "config", "user.name", "CI")
+                (repo / "carry.py").write_bytes(contents)
+                commit_sha = self.commit_all(repo, label)
+                self.assertEqual(
+                    DOWNSTREAM_DIVERGENCE_AUDIT.file_contains_hunk_new_lines(
+                        repo, commit_sha, "carry.py", hunk
+                    ),
+                    expected,
+                )
+
     def test_superseded_hunk_rejects_ambiguous_text_and_tree_metadata(self) -> None:
         base_text = b"before\nanchor\nend\n"
         updated_text = b"before\nshared\nanchor\nend\n"
@@ -2721,7 +2746,7 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
             base_sha = self.commit_all(repo, "base")
             self.run_git(repo, "checkout", "-b", "upstream")
             (repo / "carry.py").write_bytes(updated_text)
-            os.chmod(repo / "carry.py", 0o755)
+            os.chmod(repo / "carry.py", 0o750)
             upstream_sha = self.commit_all(repo, "upstream executable mode")
             upstream_hunks = DOWNSTREAM_DIVERGENCE_AUDIT.diff_hunks(
                 repo,
