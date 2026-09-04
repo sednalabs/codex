@@ -1322,7 +1322,12 @@ fn push_list_threads_query(
     };
     let include_thread_id_tiebreaker =
         relation_filter.is_some() || filters.sort_key == SortKey::RecencyAt;
-    push_thread_filters(builder, filters, include_thread_id_tiebreaker);
+    push_thread_filters_with_preview(
+        builder,
+        filters,
+        include_thread_id_tiebreaker,
+        /*include_empty_preview*/ relation_filter.is_some(),
+    );
     match relation_filter {
         Some(crate::ThreadRelationFilter::DirectChildrenOf(parent_thread_id)) => {
             builder.push(" AND listed_edge.parent_thread_id = ");
@@ -1460,6 +1465,20 @@ pub(super) fn push_thread_filters<'a>(
     options: ThreadFilterOptions<'a>,
     include_thread_id_tiebreaker: bool,
 ) {
+    push_thread_filters_with_preview(
+        builder,
+        options,
+        include_thread_id_tiebreaker,
+        /*include_empty_preview*/ false,
+    );
+}
+
+fn push_thread_filters_with_preview<'a>(
+    builder: &mut QueryBuilder<Sqlite>,
+    options: ThreadFilterOptions<'a>,
+    include_thread_id_tiebreaker: bool,
+    include_empty_preview: bool,
+) {
     let ThreadFilterOptions {
         archived_only,
         allowed_sources,
@@ -1477,7 +1496,9 @@ pub(super) fn push_thread_filters<'a>(
     } else {
         builder.push(" AND threads.archived = 0");
     }
-    builder.push(" AND threads.preview <> ''");
+    if !include_empty_preview {
+        builder.push(" AND threads.preview <> ''");
+    }
     if let Some(is_pinned) = is_pinned {
         builder.push(" AND threads.is_pinned = ");
         builder.push_bind(is_pinned);
