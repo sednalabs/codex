@@ -332,6 +332,11 @@ enum HandledRequest {
     },
 }
 
+// Keep these security-sensitive callback inputs explicit: each is independently validated or
+// controls a distinct auth, redirect, PKCE, persistence, or lifecycle boundary. Grouping them
+// into a context object would obscure those boundaries without changing the flow, so this narrow
+// allowance documents the intentional shape rather than relaxing the lint for the module.
+#[allow(clippy::too_many_arguments)]
 async fn process_request(
     url_raw: &str,
     opts: &ServerOptions,
