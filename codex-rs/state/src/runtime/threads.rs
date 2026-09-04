@@ -190,8 +190,9 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
         root_thread_id: ThreadId,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<Vec<ThreadId>> {
-        self.list_thread_spawn_descendants_matching(root_thread_id, Some(status))
+        self.list_thread_spawn_descendants_matching(root_thread_id, Some(status), None)
             .await
+            .map(|descendants| descendants.thread_ids)
     }
 
     /// List all spawned descendants of `root_thread_id`.
@@ -201,8 +202,27 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
         &self,
         root_thread_id: ThreadId,
     ) -> anyhow::Result<Vec<ThreadId>> {
-        self.list_thread_spawn_descendants_matching(root_thread_id, /*status*/ None)
+        self.list_thread_spawn_descendants_matching(root_thread_id, /*status*/ None, None)
             .await
+            .map(|descendants| descendants.thread_ids)
+    }
+
+    /// List persisted descendants through the bounded recovery path.
+    ///
+    /// This path returns an explicit marker when the recursive safety bound is reached. Callers
+    /// that must preserve complete subtree semantics, such as archive or delete, must use the
+    /// complete legacy methods above instead of treating a bounded result as authoritative.
+    pub async fn list_thread_spawn_descendants_bounded(
+        &self,
+        root_thread_id: ThreadId,
+        status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
+    ) -> anyhow::Result<crate::ThreadSpawnDescendants> {
+        self.list_thread_spawn_descendants_matching(
+            root_thread_id,
+            status,
+            Some(crate::MAX_THREAD_RELATION_DESCENDANTS),
+        )
+        .await
     }
 
     /// Find a direct spawned child of `parent_thread_id` by canonical agent path.
@@ -291,17 +311,14 @@ LIMIT 2
         &self,
         root_thread_id: ThreadId,
         status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
-    ) -> anyhow::Result<Vec<ThreadId>> {
+        limit: Option<usize>,
+    ) -> anyhow::Result<crate::ThreadSpawnDescendants> {
         let root_thread_id = root_thread_id.to_string();
         // Historical source backfill can produce A -> B -> A even though each child has only one
         // incoming edge. Carry the visited ids through each branch so recursion is bounded by the
         // finite reachable edge set, and seed it with the root so a cycle cannot return the root as
-        // its own descendant. Bound the recursive work table so recovery and subtree consumers do
-        // not materialize an unbounded persisted graph. The outer grouping is a defensive
-        // duplicate guard for malformed graphs while retaining the shortest breadth-first depth
-        // for deterministic ordering. This legacy Vec-returning API has no truncation marker; the
-        // relation-filtered thread-list API is the authoritative path when callers need to detect
-        // that the safety bound was reached.
+        // its own descendant. The outer grouping is a defensive duplicate guard for malformed
+        // graphs while retaining the shortest breadth-first depth for deterministic ordering.
         let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
 WITH RECURSIVE subtree(child_thread_id, depth, visited) AS (
@@ -351,12 +368,10 @@ WITH RECURSIVE subtree(child_thread_id, depth, visited) AS (
                 "#,
             );
         }
-        builder.push(
-            r#"
-LIMIT
-            "#,
-        );
-        builder.push(crate::MAX_THREAD_RELATION_DESCENDANTS.to_string());
+        if let Some(limit) = limit {
+            builder.push(" LIMIT ");
+            builder.push(limit.saturating_add(1).to_string());
+        }
         builder.push(
             r#"
 )
@@ -368,11 +383,20 @@ ORDER BY depth ASC, child_thread_id ASC
         );
 
         let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
-        rows.into_iter()
+        let relation_limit_reached = limit.is_some_and(|limit| rows.len() > limit);
+        let mut thread_ids = rows
+            .into_iter()
             .map(|row| {
                 ThreadId::try_from(row.try_get::<String, _>("child_thread_id")?).map_err(Into::into)
             })
-            .collect()
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        if let Some(limit) = limit {
+            thread_ids.truncate(limit);
+        }
+        Ok(crate::ThreadSpawnDescendants {
+            thread_ids,
+            relation_limit_reached,
+        })
     }
 
     async fn insert_thread_spawn_edge_if_absent(

@@ -67,6 +67,15 @@ pub struct ThreadsPage {
     pub relation_limit_reached: bool,
 }
 
+/// Persisted spawn descendants returned by a bounded recovery query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadSpawnDescendants {
+    /// Descendant thread identifiers retained by the bounded query.
+    pub thread_ids: Vec<ThreadId>,
+    /// Whether the bounded recursive work table reached its safety limit.
+    pub relation_limit_reached: bool,
+}
+
 /// The outcome of extracting metadata from a rollout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractionOutcome {

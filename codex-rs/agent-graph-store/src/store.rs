@@ -4,6 +4,7 @@ use std::pin::Pin;
 use codex_protocol::ThreadId;
 
 use crate::AgentGraphStoreResult;
+use crate::ThreadSpawnDescendants;
 use crate::ThreadSpawnEdgeStatus;
 
 /// Future returned by [`AgentGraphStore`] operations.
@@ -57,4 +58,24 @@ pub trait AgentGraphStore: Send + Sync {
         root_thread_id: ThreadId,
         status_filter: Option<ThreadSpawnEdgeStatus>,
     ) -> AgentGraphStoreFuture<'_, Vec<ThreadId>>;
+
+    /// List persisted descendants through a bounded recovery path.
+    ///
+    /// Implementations should report when the recursive safety limit was reached. The default
+    /// keeps storage implementations source-compatible, but cannot provide a limit marker; such
+    /// implementations must only be used where an unbounded legacy result is acceptable.
+    fn list_thread_spawn_descendants_bounded(
+        &self,
+        root_thread_id: ThreadId,
+        status_filter: Option<ThreadSpawnEdgeStatus>,
+    ) -> AgentGraphStoreFuture<'_, ThreadSpawnDescendants> {
+        Box::pin(async move {
+            self.list_thread_spawn_descendants(root_thread_id, status_filter)
+                .await
+                .map(|thread_ids| ThreadSpawnDescendants {
+                    thread_ids,
+                    relation_limit_reached: false,
+                })
+        })
+    }
 }
