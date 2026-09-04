@@ -353,6 +353,7 @@ pub(crate) enum AppEvent {
     CopySelection {
         text: Arc<str>,
         label: String,
+        format: crate::clipboard_copy::CopyFormat,
     },
 
     /// Persist a submitted prompt in the cross-session message history.

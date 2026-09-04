@@ -114,6 +114,7 @@ mod branch_summary;
 mod chatwidget;
 mod cli;
 mod clipboard_copy;
+mod clipboard_html;
 mod clipboard_paste;
 mod collaboration_modes;
 mod color;
