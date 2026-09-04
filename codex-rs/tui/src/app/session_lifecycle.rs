@@ -253,6 +253,18 @@ fn agent_picker_subtitle(
 
 impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
+        // A previously completed, truncated backfill already refreshed every retained row during
+        // its bounded recovery. Reopening the picker must not issue an identical burst of reads;
+        // a subsequent lifecycle event will invalidate this cache when new lineage is observed.
+        let retained_lineage_refreshes_complete = self
+            .subagent_backfill_progress
+            .as_ref()
+            .is_some_and(|progress| {
+                progress.listing_complete
+                    && progress.truncated
+                    && progress.pending_refresh_thread_ids.is_empty()
+                    && progress.loaded_fallback.is_none()
+            });
         let backfill = self.backfill_loaded_subagent_threads(app_server).await;
         let lineage_truncated = backfill.status == LoadedSubagentBackfillStatus::Truncated
             || self
@@ -266,9 +278,11 @@ impl App {
             .take(AGENT_PICKER_ROWS_PER_OPEN)
             .copied()
             .collect::<Vec<_>>();
-        for thread_id in untracked_channel_ids {
-            self.refresh_agent_picker_thread_liveness(app_server, thread_id)
-                .await;
+        if !retained_lineage_refreshes_complete {
+            for thread_id in untracked_channel_ids {
+                self.refresh_agent_picker_thread_liveness(app_server, thread_id)
+                    .await;
+            }
         }
         let (picker_thread_ids, picker_has_more) = self.agent_navigation.next_picker_thread_ids(
             self.primary_thread_id,
@@ -310,7 +324,9 @@ impl App {
                 } else if has_terminal_snapshot {
                     self.agent_navigation.mark_stopped(thread_id);
                 }
-            } else if !backfill.refreshed_thread_ids.contains(&thread_id) {
+            } else if !retained_lineage_refreshes_complete
+                && !backfill.refreshed_thread_ids.contains(&thread_id)
+            {
                 self.refresh_agent_picker_thread_liveness(app_server, thread_id)
                     .await;
             }
@@ -352,15 +368,17 @@ impl App {
                 ));
         }
 
-        for thread_id in picker_thread_ids.iter().copied() {
-            if path_backed_thread_ids.contains(&thread_id)
-                || self.side_threads.contains_key(&thread_id)
-                || backfill.refreshed_thread_ids.contains(&thread_id)
-            {
-                continue;
+        if !retained_lineage_refreshes_complete {
+            for thread_id in picker_thread_ids.iter().copied() {
+                if path_backed_thread_ids.contains(&thread_id)
+                    || self.side_threads.contains_key(&thread_id)
+                    || backfill.refreshed_thread_ids.contains(&thread_id)
+                {
+                    continue;
+                }
+                self.refresh_agent_picker_thread_liveness(app_server, thread_id)
+                    .await;
             }
-            self.refresh_agent_picker_thread_liveness(app_server, thread_id)
-                .await;
         }
 
         let has_non_primary_agent_thread = self

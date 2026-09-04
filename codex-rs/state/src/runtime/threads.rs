@@ -190,9 +190,13 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
         root_thread_id: ThreadId,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<Vec<ThreadId>> {
-        self.list_thread_spawn_descendants_matching(root_thread_id, Some(status), None)
-            .await
-            .map(|descendants| descendants.thread_ids)
+        self.list_thread_spawn_descendants_matching(
+            root_thread_id,
+            Some(status),
+            /*limit*/ None,
+        )
+        .await
+        .map(|descendants| descendants.thread_ids)
     }
 
     /// List all spawned descendants of `root_thread_id`.
@@ -202,9 +206,13 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
         &self,
         root_thread_id: ThreadId,
     ) -> anyhow::Result<Vec<ThreadId>> {
-        self.list_thread_spawn_descendants_matching(root_thread_id, /*status*/ None, None)
-            .await
-            .map(|descendants| descendants.thread_ids)
+        self.list_thread_spawn_descendants_matching(
+            root_thread_id,
+            /*status*/ None,
+            /*limit*/ None,
+        )
+        .await
+        .map(|descendants| descendants.thread_ids)
     }
 
     /// List persisted descendants through the bounded recovery path.
