@@ -246,6 +246,7 @@ WITH RECURSIVE subtree(child_thread_id) AS (
     SELECT edge.child_thread_id
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    LIMIT ?
 )
 SELECT threads.id
 FROM subtree
@@ -257,6 +258,7 @@ LIMIT 2
         )
         .bind(root_thread_id.to_string())
         .bind(root_thread_id.to_string())
+        .bind(i64::try_from(crate::MAX_THREAD_RELATION_DESCENDANTS)?)
         .bind(agent_path)
         .fetch_all(self.pool.as_ref())
         .await?;
@@ -294,9 +296,12 @@ LIMIT 2
         // Historical source backfill can produce A -> B -> A even though each child has only one
         // incoming edge. Carry the visited ids through each branch so recursion is bounded by the
         // finite reachable edge set, and seed it with the root so a cycle cannot return the root as
-        // its own descendant. Keep this full-list API uncapped; callers rely on receiving every
-        // reachable descendant. The outer grouping is a defensive duplicate guard for malformed
-        // graphs while retaining the shortest breadth-first depth for deterministic ordering.
+        // its own descendant. Bound the recursive work table so recovery and subtree consumers do
+        // not materialize an unbounded persisted graph. The outer grouping is a defensive
+        // duplicate guard for malformed graphs while retaining the shortest breadth-first depth
+        // for deterministic ordering. This legacy Vec-returning API has no truncation marker; the
+        // relation-filtered thread-list API is the authoritative path when callers need to detect
+        // that the safety bound was reached.
         let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
 WITH RECURSIVE subtree(child_thread_id, depth, visited) AS (
@@ -346,6 +351,12 @@ WITH RECURSIVE subtree(child_thread_id, depth, visited) AS (
                 "#,
             );
         }
+        builder.push(
+            r#"
+LIMIT
+            "#,
+        );
+        builder.push(crate::MAX_THREAD_RELATION_DESCENDANTS.to_string());
         builder.push(
             r#"
 )
