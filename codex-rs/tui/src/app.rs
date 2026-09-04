@@ -226,6 +226,7 @@ mod input;
 mod loaded_threads;
 mod misalignment_policy;
 mod model_defaults;
+mod new_session;
 mod pending_interactive_replay;
 mod permission_shortcuts;
 mod pets;

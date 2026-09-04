@@ -831,10 +831,18 @@ impl App {
         // Start a fresh in-memory session while preserving resumability via persisted rollout
         // history. If an initial message is provided, `enqueue_primary_thread_session` suppresses it
         // until the new session is configured and any replayed turns have been rendered.
-        self.refresh_in_memory_config_from_disk_best_effort("starting a new thread")
-            .await;
-        let model = self.chat_widget.current_model().to_string();
-        let mut config = self.fresh_session_config();
+        let mut config = match self.load_new_session_config(app_server).await {
+            Ok(config) => config,
+            Err(err) => {
+                if let Some(message) = initial_user_message {
+                    self.chat_widget.restore_user_message_to_composer(message);
+                }
+                self.chat_widget
+                    .add_error_message(format!("Failed to read new session defaults: {err}"));
+                tui.frame_requester().schedule_frame();
+                return;
+            }
+        };
         apply_managed_new_thread_defaults(
             &mut config,
             app_server.managed_new_thread_defaults(),
@@ -847,15 +855,6 @@ impl App {
             self.chat_widget.thread_name(),
             self.chat_widget.rollout_path().as_deref(),
         );
-        self.shutdown_current_thread(app_server).await;
-        let tracked_thread_ids: Vec<ThreadId> =
-            self.thread_event_channels.keys().copied().collect();
-        for thread_id in tracked_thread_ids {
-            if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
-                tracing::warn!("failed to unsubscribe tracked thread {thread_id}: {err}");
-            }
-        }
-        self.config = config.clone();
         match app_server
             .start_thread_with_session_start_source(
                 &config,
@@ -865,6 +864,17 @@ impl App {
             .await
         {
             Ok(mut started) => {
+                self.shutdown_current_thread(app_server).await;
+                let tracked_thread_ids: Vec<ThreadId> =
+                    self.thread_event_channels.keys().copied().collect();
+                for thread_id in tracked_thread_ids {
+                    if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
+                        tracing::warn!("failed to unsubscribe tracked thread {thread_id}: {err}");
+                    }
+                }
+                self.local_settings = crate::local_settings::LocalSettings::from(&config);
+                self.config = config;
+
                 let name_error = if let Some(name) = new_thread_name {
                     match app_server
                         .thread_set_name(started.session.thread_id, name.clone())
@@ -913,7 +923,9 @@ impl App {
                 self.chat_widget.add_error_message(format!(
                     "Failed to start a fresh session through the app server: {err}"
                 ));
-                self.config.model = Some(model);
+                if let Some(message) = initial_user_message {
+                    self.chat_widget.restore_user_message_to_composer(message);
+                }
             }
         }
         tui.frame_requester().schedule_frame();
