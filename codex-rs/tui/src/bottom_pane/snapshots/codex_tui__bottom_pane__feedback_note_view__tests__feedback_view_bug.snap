@@ -1,8 +1,8 @@
 ---
-source: tui/src/bottom_pane/feedback_view.rs
+source: tui/src/bottom_pane/feedback_note_view_tests.rs
 expression: rendered
 ---
-▌ Tell us more (good result)
+▌ Tell us more (bug)
 ▌
 ▌ (optional) Write a short description to help us further
 

@@ -137,6 +137,7 @@ pub(crate) use list_selection_view::popup_content_width;
 pub(crate) use list_selection_view::side_by_side_layout_widths;
 pub(crate) use memories_settings_view::MemoriesSettingsView;
 use slash_commands::ServiceTierCommand;
+mod feedback_note_view;
 mod feedback_view;
 mod hooks_browser_view;
 pub(crate) use feedback_view::FeedbackAudience;
@@ -166,7 +167,7 @@ mod selection_tabs;
 mod startup;
 mod textarea;
 mod unified_exec_footer;
-pub(crate) use feedback_view::FeedbackNoteView;
+pub(crate) use feedback_note_view::FeedbackNoteView;
 pub(crate) use hooks_browser_view::HooksBrowserView;
 pub(crate) use selection_tabs::SelectionTab;
 
