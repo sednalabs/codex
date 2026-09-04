@@ -22,6 +22,7 @@ async fn resolve_runtime_model_provider_base_url(provider: &ModelProviderInfo) -
 
 fn spawn_startup_thread_start(
     app_server: &AppServerSession,
+    local_settings: crate::local_settings::LocalSettings,
     config: Config,
     app_event_tx: AppEventSender,
 ) {
@@ -32,6 +33,7 @@ fn spawn_startup_thread_start(
     tokio::spawn(async move {
         let result = crate::app_server_session::start_thread_with_request_handle(
             request_handle,
+            &local_settings,
             config,
             thread_params_mode,
             remote_cwd_override,
@@ -288,7 +290,12 @@ impl App {
             | SessionSelection::Exit
             | SessionSelection::AgentsOverview => {
                 if !start_in_agents_overview {
-                    spawn_startup_thread_start(&app_server, config.clone(), app_event_tx.clone());
+                    spawn_startup_thread_start(
+                        &app_server,
+                        local_settings.clone(),
+                        config.clone(),
+                        app_event_tx.clone(),
+                    );
                 }
                 // Count a startup tooltip once the initial chat widget can render it.
                 let startup_tooltip_override = if start_in_agents_overview {

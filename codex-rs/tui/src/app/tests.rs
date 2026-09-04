@@ -702,7 +702,16 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
 
-    app.lookup_message_history_entry(thread_id, /*offset*/ 0, /*log_id*/ 1)
+    let local_home = tempfile::tempdir()?;
+    app.local_settings.codex_home = AbsolutePathBuf::from_absolute_path(local_home.path())?;
+    let history_config = codex_message_history::HistoryConfig::new(
+        app.local_settings.codex_home.clone(),
+        &app.local_settings.history,
+    );
+    codex_message_history::append_entry("local prompt", thread_id, &history_config).await?;
+    let (log_id, _) = codex_message_history::history_metadata(&history_config).await;
+
+    app.lookup_message_history_entry(thread_id, /*offset*/ 0, log_id)
         .await?;
 
     let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
@@ -722,13 +731,13 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
         event,
         HistoryLookupResponse::Entry {
             offset: 0,
-            log_id: 1,
-            entry: None,
+            log_id,
+            entry: Some("local prompt".to_string()),
         }
     );
 
-    let cursor = codex_message_history::HistoryBatchCursor::new(/*end_offset*/ 10);
-    app.lookup_message_history_batch(thread_id, cursor, /*log_id*/ 1)
+    let cursor = codex_message_history::HistoryBatchCursor::new(/*end_offset*/ 1);
+    app.lookup_message_history_batch(thread_id, cursor, log_id)
         .await?;
     let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
         .await
@@ -744,7 +753,15 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
     assert_eq!(routed_thread_id, thread_id);
     assert_eq!(
         event,
-        HistoryLookupResponse::BatchError { cursor, log_id: 1 }
+        HistoryLookupResponse::Batch {
+            cursor,
+            log_id,
+            entries: vec![HistoryBatchEntryResponse {
+                offset: 0,
+                entry: Some("local prompt".to_string()),
+            }],
+            next_older_cursor: None,
+        }
     );
 
     Ok(())

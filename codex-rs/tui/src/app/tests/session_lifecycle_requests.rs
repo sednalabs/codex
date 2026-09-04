@@ -532,6 +532,7 @@ async fn external_transport_registers_dynamic_tools_and_finds_task_mentions() ->
     assert!(app_server.task_tools_available(started.session.thread_id));
     let startup = crate::app_server_session::start_thread_with_request_handle(
         app_server.request_handle(),
+        &app.local_settings,
         app.config.clone(),
         crate::app_server_session::ThreadParamsMode::Embedded,
         /*remote_cwd_override*/ None,
@@ -690,6 +691,7 @@ async fn local_daemon_registers_approval_gated_mcp_tools_for_both_start_paths() 
     assert!(app_server.task_tools_available(thread_id));
     let startup = crate::app_server_session::start_thread_with_request_handle(
         app_server.request_handle(),
+        &app.local_settings,
         app.config.clone(),
         crate::app_server_session::ThreadParamsMode::Embedded,
         /*remote_cwd_override*/ None,
@@ -1050,6 +1052,7 @@ async fn older_external_server_starts_without_unsupported_dynamic_tools_or_histo
     assert!(!app_server.task_tools_available(started.session.thread_id));
     let startup = crate::app_server_session::start_thread_with_request_handle(
         app_server.request_handle(),
+        &app.local_settings,
         app.config.clone(),
         crate::app_server_session::ThreadParamsMode::Embedded,
         /*remote_cwd_override*/ None,
