@@ -62,6 +62,10 @@ pub struct CodexHarnessMetadata {
     /// Producer compatibility for an opaque compaction item, never the currently selected model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_model_hash: Option<String>,
+
+    /// Thread acceptance order, independent of when queued user input reaches model history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_input_order: Option<u64>,
 }
 
 impl ResponseItemEnvelope {

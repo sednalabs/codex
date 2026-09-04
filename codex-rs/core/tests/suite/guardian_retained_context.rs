@@ -51,6 +51,7 @@ async fn record_answer(
     server: &MockServer,
     call_id: &str,
     answer: &str,
+    acceptance_order: u64,
 ) -> Result<VerifiedAnswer> {
     let question = format!("May I publish {call_id}?");
     mount_sse_sequence(
@@ -109,8 +110,10 @@ async fn record_answer(
         }],
     };
     thread.ensure_rollout_materialized().await;
-    let event =
-        RolloutItem::RetainedContext(RetainedContextEvent::VerifiedAnswer(retained.clone()));
+    let event = RolloutItem::RetainedContext(RetainedContextEvent::VerifiedAnswer {
+        answer: retained.clone(),
+        acceptance_order: Some(acceptance_order),
+    });
     // Repeated delivery must not duplicate evidence during replay.
     thread.append_rollout_items(&[event.clone(), event]).await?;
     Ok(retained)
@@ -299,6 +302,9 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
+    // Rebuild from source events before there is a compaction checkpoint. The answer
+    // was persisted first, but the accepted steering instruction must retain order 1.
+    let thread = resume(&test, &test.codex).await?;
     assert_eq!(answers[0].turn_id, answers[1].turn_id);
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 3);
@@ -316,7 +322,7 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
             );
         }
     }
-    let history = test.codex.conversation_history_snapshot().await;
+    let history = thread.conversation_history_snapshot().await;
     let user_messages = [INITIAL, STEER]
         .into_iter()
         .enumerate()
@@ -336,7 +342,7 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
                 .and_then(ResponseItem::id)
                 .expect("original user-message identity");
             json!({
-                "order": index * 2, "turn_id": answers[index].turn_id,
+                "order": index, "turn_id": answers[index].turn_id,
                 "message_id": message_id.as_str(), "text": text, "complete": true,
             })
         })
@@ -346,7 +352,7 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
         .enumerate()
         .map(|(index, answer)| {
             let mut value = json!(answer);
-            value["order"] = json!(index * 2 + 1);
+            value["order"] = json!(index + 2);
             value
         })
         .collect::<Vec<_>>();
@@ -360,19 +366,24 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
             "verified_answers": [], "incomplete": false, "next_order": 0,
         });
         answers.clear();
-        assert!(
-            load_context(&test, &test.codex)
-                .await?
-                .iter()
-                .all(|item| !matches!(item, RolloutItem::RetainedContext(_)))
-        );
+        for item in load_context(&test, &thread).await? {
+            assert!(!matches!(item, RolloutItem::RetainedContext(_)));
+            if let RolloutItem::ResponseItem(envelope) = item {
+                assert!(
+                    envelope
+                        .metadata
+                        .as_ref()
+                        .is_none_or(|metadata| metadata.user_input_order.is_none())
+                );
+            }
+        }
     }
     assert_eq!(serde_json::to_value(history.retained_context())?, expected);
     assert_eq!(
-        serde_json::to_value(compact_and_assert_answers(&test, &test.codex, &answers).await?)?,
+        serde_json::to_value(compact_and_assert_answers(&test, &thread, &answers).await?)?,
         expected
     );
-    let compacted = test.codex.conversation_history_snapshot().await;
+    let compacted = thread.conversation_history_snapshot().await;
     for message in &user_messages {
         assert_eq!(
             compacted
@@ -382,7 +393,7 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
             "only thread-owned context preserves original user-message identity"
         );
     }
-    let mut thread = Arc::clone(&test.codex);
+    let mut thread = thread;
     for &remaining in rollback_counts {
         let remaining = if thread_context_enabled { remaining } else { 0 };
         thread = resume(&test, &thread).await?;
@@ -407,11 +418,9 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
         expected["verified_answers"]
             .as_array_mut()
             .expect("expected retained verified answers")
-            .truncate(remaining);
+            .clear();
         assert_eq!(
-            serde_json::to_value(
-                compact_and_assert_answers(&test, &thread, &answers[..remaining]).await?
-            )?,
+            serde_json::to_value(compact_and_assert_answers(&test, &thread, &[]).await?)?,
             expected
         );
     }
@@ -537,11 +546,12 @@ async fn retained_answers_rollback_only_the_steered_instruction() -> Result<()> 
         .with_history_mode(ThreadHistoryMode::Legacy)
         .with_config(|config| {
             config.experimental_thread_store = ThreadStoreConfig::Local;
-            for feature in [
-                Feature::TokenBudget,
-                Feature::DefaultModeRequestUserInput,
-                Feature::GuardianThreadContext,
-            ] {
+            // Legacy saved answers use their source calls, not acceptance-order metadata.
+            config
+                .features
+                .disable(Feature::GuardianThreadContext)
+                .expect("legacy evidence fixture");
+            for feature in [Feature::TokenBudget, Feature::DefaultModeRequestUserInput] {
                 config
                     .features
                     .enable(feature)
@@ -653,7 +663,10 @@ async fn retained_answers_rollback_only_the_steered_instruction() -> Result<()> 
                 .iter()
                 .cloned()
                 .map(|answer| {
-                    RolloutItem::RetainedContext(RetainedContextEvent::VerifiedAnswer(answer))
+                    RolloutItem::RetainedContext(RetainedContextEvent::VerifiedAnswer {
+                        answer,
+                        acceptance_order: None,
+                    })
                 })
                 .collect::<Vec<_>>(),
         )
@@ -714,6 +727,7 @@ async fn retained_answers_cross_real_session_boundaries(
         &server,
         "before-compact",
         "Only publish privately.",
+        /*acceptance_order*/ 1,
     )
     .await?;
     let thread = resume(&test, &test.codex).await?;
@@ -724,6 +738,7 @@ async fn retained_answers_cross_real_session_boundaries(
         &server,
         "after-compact",
         "Do not publish after all.",
+        /*acceptance_order*/ 3,
     )
     .await?;
     thread.flush_rollout().await?;
@@ -756,7 +771,10 @@ async fn retained_answers_cross_real_session_boundaries(
     events.dedup();
     assert_eq!(
         events,
-        vec![RetainedContextEvent::VerifiedAnswer(after.clone())]
+        vec![RetainedContextEvent::VerifiedAnswer {
+            answer: after.clone(),
+            acceptance_order: Some(3)
+        }]
     );
     let thread = resume(&test, &thread).await?;
     let expected = [before.clone(), after];

@@ -187,6 +187,10 @@ impl ContextManager {
         self.retain_user_messages = true;
     }
 
+    pub(crate) fn reserve_input_order(&mut self) -> u64 {
+        Arc::make_mut(&mut self.retained_context).reserve_order()
+    }
+
     pub(crate) fn record_retained_context(&mut self, event: &RetainedContextEvent) -> bool {
         if !Arc::make_mut(&mut self.retained_context).record(event) {
             return false;
@@ -359,6 +363,7 @@ impl ContextManager {
                             text,
                             complete,
                         },
+                        metadata.and_then(|metadata| metadata.user_input_order),
                     );
                 } else {
                     Arc::make_mut(&mut self.retained_context).mark_user_messages_incomplete();
@@ -536,6 +541,10 @@ impl ContextManager {
         let first_removed_message_id = snapshot[cut_idx]
             .id()
             .map(codex_protocol::ResponseItemId::as_str);
+        let acceptance_order = snapshot[cut_idx]
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.user_input_order);
         let mut review_history = self.review_history.take();
         if let Some(history) = &mut review_history {
             history.truncate_before(&snapshot[cut_idx].item);
@@ -577,7 +586,11 @@ impl ContextManager {
             .filter_map(|item| item.turn_id())
             .collect::<Vec<_>>();
         if self.retain_user_messages {
-            Arc::make_mut(&mut retained_context).rollback(&removed_turns, first_removed_message_id);
+            Arc::make_mut(&mut retained_context).rollback(
+                &removed_turns,
+                first_removed_message_id,
+                acceptance_order,
+            );
         } else {
             Arc::make_mut(&mut retained_context).retain_answers(|answer| {
                 // Legacy answers follow their original call, not later steers in the same turn.

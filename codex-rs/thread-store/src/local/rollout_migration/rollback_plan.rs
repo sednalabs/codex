@@ -42,7 +42,14 @@ struct PendingUserResponse {
 struct InstructionBoundary {
     record_index: usize,
     message_id: Option<ResponseItemId>,
+    acceptance_order: Option<u64>,
     alive: bool,
+}
+
+struct RetainedFactSource {
+    record_index: usize,
+    turn_id: String,
+    acceptance_order: Option<u64>,
 }
 
 /// Compact plan keyed by parsed source-record index.
@@ -97,7 +104,7 @@ pub(super) struct RollbackPlanner {
     pending_delivery_boundary: Option<usize>,
     turn_boundaries: HashMap<String, usize>,
     call_boundaries: HashMap<(String, String), Option<usize>>,
-    retained_fact_sources: Vec<(usize, String)>,
+    retained_fact_sources: Vec<RetainedFactSource>,
     compactions: Vec<CompactionFrame>,
     model_replay: ModelReplayPlanner,
 }
@@ -154,6 +161,10 @@ impl RollbackPlanner {
                 } else if rollback::counts_as_boundary(&response.item) {
                     let boundary = self.start_boundary(index);
                     self.boundaries[boundary].message_id = response.id().cloned();
+                    self.boundaries[boundary].acceptance_order = response
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.user_input_order);
                     if let ResponseItem::Message { role, content, .. } = &response.item
                         && role == "user"
                     {
@@ -247,9 +258,10 @@ impl RollbackPlanner {
                 self.assign_targeted_record(index, Some(record.turn_id.as_str()));
             }
             RolloutItem::WorldState(_) | RolloutItem::RealtimeItem(_) => {}
-            RolloutItem::RetainedContext(codex_rollout::RetainedContextEvent::VerifiedAnswer(
+            RolloutItem::RetainedContext(codex_rollout::RetainedContextEvent::VerifiedAnswer {
                 answer,
-            )) => {
+                acceptance_order,
+            }) => {
                 let source = (answer.turn_id.clone(), answer.call_id.clone());
                 // A late answer still belongs to its call's instruction boundary, even
                 // if the same running turn has since received another user steer.
@@ -260,8 +272,11 @@ impl RollbackPlanner {
                 }
                 self.call_boundaries
                     .insert(source, self.record_boundaries[index]);
-                self.retained_fact_sources
-                    .push((index, answer.turn_id.clone()));
+                self.retained_fact_sources.push(RetainedFactSource {
+                    record_index: index,
+                    turn_id: answer.turn_id.clone(),
+                    acceptance_order: *acceptance_order,
+                });
             }
             RolloutItem::SecurityRiskScore(_) => self.record_boundaries[index] = None,
         }
@@ -308,6 +323,7 @@ impl RollbackPlanner {
         self.boundaries.push(InstructionBoundary {
             record_index: index,
             message_id: None,
+            acceptance_order: None,
             alive: true,
         });
         let had_prior_boundary = !self.boundary_stack.is_empty();
@@ -364,6 +380,18 @@ impl RollbackPlanner {
         }
         if let Some(boundary) = first_removed_boundary {
             let source = &self.boundaries[boundary];
+            if let Some(order) = source.acceptance_order {
+                // An answer may have been persisted before the queued instruction
+                // accepted ahead of it. Both are removed at that acceptance boundary.
+                for fact in &self.retained_fact_sources {
+                    if fact
+                        .acceptance_order
+                        .is_some_and(|accepted| accepted >= order)
+                    {
+                        self.record_boundaries[fact.record_index] = Some(boundary);
+                    }
+                }
+            }
             let removed_turns = self
                 .turn_boundaries
                 .iter()
@@ -372,29 +400,29 @@ impl RollbackPlanner {
                 .chain(
                     self.retained_fact_sources
                         .iter()
-                        .filter(|(index, _)| {
-                            self.record_boundaries[*index]
+                        .filter(|fact| {
+                            self.record_boundaries[fact.record_index]
                                 .is_some_and(|boundary| removed_boundaries.contains(&boundary))
                         })
-                        .map(|(_, turn_id)| turn_id.as_str()),
+                        .map(|fact| fact.turn_id.as_str()),
                 )
                 .collect::<Vec<_>>();
-            // A checkpoint before this instruction cannot contain evidence from it.
+            // Accepted answers can precede a queued instruction in the rollout,
+            // including in checkpoints. Legacy evidence uses the recorded boundary.
             // Later checkpoints have not been observed yet and already reflect this rollback.
-            for frame in self
-                .compactions
-                .iter_mut()
-                .rev()
-                .take_while(|frame| frame.record_index >= source.record_index)
-            {
+            for frame in self.compactions.iter_mut().rev().take_while(|frame| {
+                source.acceptance_order.is_some() || frame.record_index >= source.record_index
+            }) {
                 if let Some(context) = &mut frame.item.retained_context {
-                    if context
-                        .ordered_entries()
-                        .any(|entry| matches!(entry, RetainedContextEntry::UserMessage(_)))
+                    if source.acceptance_order.is_some()
+                        || context
+                            .ordered_entries()
+                            .any(|entry| matches!(entry, RetainedContextEntry::UserMessage(_)))
                     {
                         context.rollback(
                             &removed_turns,
                             source.message_id.as_ref().map(ResponseItemId::as_str),
+                            source.acceptance_order,
                         );
                     } else {
                         // Checkpoints written without instruction retention keep the legacy

@@ -2,14 +2,17 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 fn publish_answer() -> RetainedContextEvent {
-    RetainedContextEvent::VerifiedAnswer(VerifiedAnswer {
-        turn_id: "turn-1".to_owned(),
-        call_id: "ask-1".to_owned(),
-        questions: vec![VerifiedQuestionAnswer {
-            question: "Publish?".to_owned(),
-            answer: "Yes, but never publicly.".to_owned(),
-        }],
-    })
+    RetainedContextEvent::VerifiedAnswer {
+        answer: VerifiedAnswer {
+            turn_id: "turn-1".to_owned(),
+            call_id: "ask-1".to_owned(),
+            questions: vec![VerifiedQuestionAnswer {
+                question: "Publish?".to_owned(),
+                answer: "Yes, but never publicly.".to_owned(),
+            }],
+        },
+        acceptance_order: None,
+    }
 }
 
 #[test]
@@ -18,12 +21,15 @@ fn retained_evidence_preserves_order_through_checkpoint_and_rollback() {
     let first = publish_answer();
     assert!(context.record(&first));
     let before_restriction = context.clone();
-    context.record_user_message(RetainedUserMessage {
-        turn_id: "revocation-turn".to_owned(),
-        message_id: Some("revocation".to_owned()),
-        text: "Do not publish after all.".to_owned(),
-        complete: true,
-    });
+    context.record_user_message(
+        RetainedUserMessage {
+            turn_id: "revocation-turn".to_owned(),
+            message_id: Some("revocation".to_owned()),
+            text: "Do not publish after all.".to_owned(),
+            complete: true,
+        },
+        /*acceptance_order*/ None,
+    );
     let snapshot = context.clone();
     assert!(!context.record(&first));
     assert_eq!(context, snapshot);
@@ -43,7 +49,11 @@ fn retained_evidence_preserves_order_through_checkpoint_and_rollback() {
             .collect::<Vec<_>>(),
         vec!["Yes, but never publicly.", "Do not publish after all."]
     );
-    restored.rollback(&["revocation-turn"], Some("revocation"));
+    restored.rollback(
+        &["revocation-turn"],
+        Some("revocation"),
+        /*acceptance_order*/ None,
+    );
     assert_eq!(
         restored,
         RetainedContext {
@@ -61,24 +71,31 @@ fn retained_families_enforce_storage_limits_without_changing_snapshots() {
     let snapshot = context.clone();
 
     for index in 2..=10 {
-        context.record(&RetainedContextEvent::VerifiedAnswer(VerifiedAnswer {
-            turn_id: "turn-2".to_owned(),
-            call_id: format!("ask-{index}"),
-            questions: vec![VerifiedQuestionAnswer {
-                question: "Continue?".to_owned(),
-                answer: "Yes".to_owned(),
-            }],
-        }));
+        context.record(&RetainedContextEvent::VerifiedAnswer {
+            answer: VerifiedAnswer {
+                turn_id: "turn-2".to_owned(),
+                call_id: format!("ask-{index}"),
+                questions: vec![VerifiedQuestionAnswer {
+                    question: "Continue?".to_owned(),
+                    answer: "Yes".to_owned(),
+                }],
+            },
+            acceptance_order: None,
+        });
     }
     assert!(!context.verified_answers_complete());
     assert_eq!(context.verified_answers().count(), MAX_FAMILY_RECORDS);
-    context.rollback(&["turn-2"], /*first_removed_message_id*/ None);
+    context.rollback(
+        &["turn-2"],
+        /*first_removed_message_id*/ None,
+        /*acceptance_order*/ None,
+    );
     assert_eq!(context.verified_answers().count(), 0);
     assert!(!context.verified_answers_complete());
 
     let mut restored = snapshot.clone();
     let mut oversized = first.clone();
-    let RetainedContextEvent::VerifiedAnswer(answer) = &mut oversized;
+    let RetainedContextEvent::VerifiedAnswer { answer, .. } = &mut oversized;
     answer.questions[0].answer = "a".repeat(MAX_RECORD_BYTES);
     restored.record(&oversized);
     assert!(!restored.verified_answers_complete());
@@ -100,12 +117,15 @@ fn retained_families_enforce_storage_limits_without_changing_snapshots() {
         "Yes, but never publicly."
     );
     for index in 0..=MAX_FAMILY_RECORDS {
-        restored.record_user_message(RetainedUserMessage {
-            turn_id: "later-turn".to_owned(),
-            message_id: Some(format!("message-{index}")),
-            text: "Keep the repository private.".to_owned(),
-            complete: true,
-        });
+        restored.record_user_message(
+            RetainedUserMessage {
+                turn_id: "later-turn".to_owned(),
+                message_id: Some(format!("message-{index}")),
+                text: "Keep the repository private.".to_owned(),
+                complete: true,
+            },
+            /*acceptance_order*/ None,
+        );
     }
     assert!(!restored.user_messages_complete());
     assert_eq!(
@@ -115,12 +135,29 @@ fn retained_families_enforce_storage_limits_without_changing_snapshots() {
             .count(),
         MAX_FAMILY_RECORDS
     );
-    restored.record_user_message(RetainedUserMessage {
-        turn_id: "oversized-turn".to_owned(),
-        message_id: Some("oversized-message".to_owned()),
-        text: "restriction ".repeat(MAX_RECORD_BYTES),
-        complete: true,
-    });
+    let recent = restored.clone();
+    restored.record_user_message(
+        RetainedUserMessage {
+            turn_id: "earlier-turn".to_owned(),
+            message_id: Some("delayed-message".to_owned()),
+            text: "An older queued instruction.".to_owned(),
+            complete: true,
+        },
+        Some(0),
+    );
+    assert_eq!(
+        restored, recent,
+        "delayed old input must not evict newer evidence"
+    );
+    restored.record_user_message(
+        RetainedUserMessage {
+            turn_id: "oversized-turn".to_owned(),
+            message_id: Some("oversized-message".to_owned()),
+            text: "restriction ".repeat(MAX_RECORD_BYTES),
+            complete: true,
+        },
+        /*acceptance_order*/ None,
+    );
     let Some(RetainedContextEntry::UserMessage(message)) = restored.ordered_entries().next_back()
     else {
         panic!("latest user evidence");
@@ -130,7 +167,7 @@ fn retained_families_enforce_storage_limits_without_changing_snapshots() {
 
 #[test]
 fn legacy_checkpoints_mark_user_messages_incomplete() {
-    let RetainedContextEvent::VerifiedAnswer(answer) = publish_answer();
+    let RetainedContextEvent::VerifiedAnswer { answer, .. } = publish_answer();
     let mut wire = serde_json::json!({
         "verified_answers": [answer], "incomplete": false
     });
@@ -149,4 +186,54 @@ fn legacy_checkpoints_mark_user_messages_incomplete() {
     let mut restored = RetainedContext::default();
     restored.restore(/*checkpoint*/ None);
     assert!(!restored.user_messages_complete());
+}
+
+#[test]
+fn accepted_order_survives_delayed_recording_and_checkpoint_replay() {
+    let mut context = RetainedContext::default();
+    // Rejected/canceled input consumes a sequence but never becomes evidence.
+    context.reserve_order();
+    let steer_order = context.reserve_order();
+    let answer_order = context.reserve_order();
+    let RetainedContextEvent::VerifiedAnswer { answer, .. } = publish_answer();
+    let event = RetainedContextEvent::VerifiedAnswer {
+        answer,
+        acceptance_order: Some(answer_order),
+    };
+    context.record(&event);
+    let checkpoint = context.clone();
+    let instruction = RetainedUserMessage {
+        turn_id: "turn-1".to_owned(),
+        message_id: Some("steer".to_owned()),
+        text: "Keep the repository private.".to_owned(),
+        complete: true,
+    };
+    context.record_user_message(instruction.clone(), Some(steer_order));
+    let mut resumed = RetainedContext::default();
+    resumed.restore(Some(&checkpoint));
+    resumed.record_user_message(instruction, Some(steer_order));
+    assert_eq!(resumed, context);
+    assert_eq!(
+        resumed
+            .ordered_entries()
+            .map(|entry| match entry {
+                RetainedContextEntry::UserMessage(message) => message.text.as_str(),
+                RetainedContextEntry::VerifiedAnswer(answer) => answer.questions[0].answer.as_str(),
+            })
+            .collect::<Vec<_>>(),
+        vec!["Keep the repository private.", "Yes, but never publicly."],
+    );
+    // This checkpoint predates model delivery of the queued instruction. Rollback
+    // still removes its later-accepted answer using the persisted boundary order.
+    let mut before_delivery = checkpoint;
+    before_delivery.rollback(&["turn-1"], Some("steer"), Some(steer_order));
+    resumed.rollback(&["turn-1"], Some("steer"), Some(steer_order));
+    assert_eq!(before_delivery, resumed);
+    assert_eq!(
+        resumed,
+        RetainedContext {
+            next_order: 3,
+            ..Default::default()
+        }
+    );
 }

@@ -73,11 +73,17 @@ impl std::fmt::Debug for VerifiedAnswer {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RetainedContextEvent {
-    VerifiedAnswer(VerifiedAnswer),
+    VerifiedAnswer {
+        #[serde(flatten)]
+        answer: VerifiedAnswer,
+        /// Absent in legacy events, which retain their recorded ordering.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acceptance_order: Option<u64>,
+    },
 }
 
 /// Bounded snapshot of retained families, persisted with the parent compaction checkpoint.
-/// Facts live until their source instruction is rolled back; compaction does not expire them.
+/// Facts live until their instruction boundary is rolled back; compaction does not expire them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RetainedContext {
     verified_answers: VecDeque<Ordered<VerifiedAnswer>>,
@@ -98,6 +104,9 @@ fn legacy_user_messages_incomplete() -> bool {
 }
 
 fn bound_family<T: Serialize>(items: &mut VecDeque<Ordered<T>>, incomplete: &mut bool) {
+    // Queued instructions can be recorded after later-accepted answers. Evict by
+    // acceptance order, not by the order in which persistence happened to finish.
+    items.make_contiguous().sort_by_key(|entry| entry.order);
     while items.len() > MAX_FAMILY_RECORDS
         || serde_json::to_vec(items).map_or(true, |bytes| bytes.len() > MAX_FAMILY_BYTES)
     {
@@ -124,7 +133,7 @@ impl RetainedContextEvent {
     /// Bounds a persisted event before it enters the rollout or the live snapshot.
     pub fn bound(&mut self) {
         match self {
-            Self::VerifiedAnswer(answer) => {
+            Self::VerifiedAnswer { answer, .. } => {
                 if serde_json::to_vec(answer).map_or(true, |bytes| bytes.len() > MAX_RECORD_BYTES) {
                     answer.questions.clear();
                     // IDs are correlation metadata, not model-visible authorization text.
@@ -141,6 +150,19 @@ impl RetainedContextEvent {
 }
 
 impl RetainedContext {
+    /// Reserves order without retaining pending input that hooks may reject or cancel.
+    pub fn reserve_order(&mut self) -> u64 {
+        let order = self.next_order;
+        self.next_order = self.next_order.saturating_add(1);
+        order
+    }
+
+    fn record_order(&mut self, acceptance_order: Option<u64>) -> u64 {
+        let order = acceptance_order.unwrap_or(self.next_order);
+        self.next_order = self.next_order.max(order.saturating_add(1));
+        order
+    }
+
     pub fn verified_answers(&self) -> impl DoubleEndedIterator<Item = &VerifiedAnswer> {
         self.verified_answers.iter().map(|entry| &entry.value)
     }
@@ -186,8 +208,13 @@ impl RetainedContext {
         entries.into_iter().map(|(_, entry)| entry)
     }
 
-    /// Records the already-persisted user item; checkpoint/suffix replay uses this same path.
-    pub fn record_user_message(&mut self, mut message: RetainedUserMessage) {
+    /// Records a delivered user item with its acceptance order. Legacy items without
+    /// this metadata use recording order; checkpoint/suffix replay uses the same path.
+    pub fn record_user_message(
+        &mut self,
+        mut message: RetainedUserMessage,
+        acceptance_order: Option<u64>,
+    ) {
         message.bound();
         if let Some(index) = self.user_messages.iter().position(|entry| {
             message.message_id.is_some() && entry.value.message_id == message.message_id
@@ -197,11 +224,11 @@ impl RetainedContext {
             }
             self.user_messages.remove(index);
         }
+        let order = self.record_order(acceptance_order);
         self.user_messages.push_back(Ordered {
-            order: self.next_order,
+            order,
             value: message,
         });
-        self.next_order = self.next_order.saturating_add(1);
         bound_family(&mut self.user_messages, &mut self.user_messages_incomplete);
     }
 
@@ -210,7 +237,10 @@ impl RetainedContext {
         let mut event = event.clone();
         event.bound();
         match event {
-            RetainedContextEvent::VerifiedAnswer(answer) => {
+            RetainedContextEvent::VerifiedAnswer {
+                answer,
+                acceptance_order,
+            } => {
                 if let Some(index) = self.verified_answers.iter().position(|existing| {
                     existing.value.turn_id == answer.turn_id
                         && existing.value.call_id == answer.call_id
@@ -220,11 +250,11 @@ impl RetainedContext {
                     }
                     self.verified_answers.remove(index);
                 }
+                let order = self.record_order(acceptance_order);
                 self.verified_answers.push_back(Ordered {
-                    order: self.next_order,
+                    order,
                     value: answer,
                 });
-                self.next_order = self.next_order.saturating_add(1);
                 bound_family(
                     &mut self.verified_answers,
                     &mut self.verified_answers_incomplete,
@@ -242,9 +272,12 @@ impl RetainedContext {
             ..Self::default()
         });
         for entry in &mut self.verified_answers {
-            let mut event = RetainedContextEvent::VerifiedAnswer(entry.value.clone());
+            let mut event = RetainedContextEvent::VerifiedAnswer {
+                answer: entry.value.clone(),
+                acceptance_order: Some(entry.order),
+            };
             event.bound();
-            let RetainedContextEvent::VerifiedAnswer(answer) = event;
+            let RetainedContextEvent::VerifiedAnswer { answer, .. } = event;
             entry.value = answer;
             self.next_order = self.next_order.max(entry.order.saturating_add(1));
         }
@@ -264,15 +297,23 @@ impl RetainedContext {
         self.verified_answers.retain(|answer| keep(&answer.value));
     }
 
-    /// Rolls back at the original user-message boundary, including facts delivered after it.
+    /// Rolls back at the original user-message boundary, including later-accepted facts.
+    /// The explicit order also covers checkpoints made before a queued message was delivered.
     /// Steering can share a turn ID. Legacy sources without message identity fall back to
     /// source-turn removal and cannot establish complete retained user instructions.
-    pub fn rollback(&mut self, turn_ids: &[&str], first_removed_message_id: Option<&str>) {
-        if let Some(order) = first_removed_message_id.and_then(|id| {
-            self.user_messages
-                .iter()
-                .find(|message| message.value.message_id.as_deref() == Some(id))
-                .map(|message| message.order)
+    pub fn rollback(
+        &mut self,
+        turn_ids: &[&str],
+        first_removed_message_id: Option<&str>,
+        acceptance_order: Option<u64>,
+    ) {
+        if let Some(order) = acceptance_order.or_else(|| {
+            first_removed_message_id.and_then(|id| {
+                self.user_messages
+                    .iter()
+                    .find(|message| message.value.message_id.as_deref() == Some(id))
+                    .map(|message| message.order)
+            })
         }) {
             self.verified_answers.retain(|entry| entry.order < order);
             self.user_messages.retain(|entry| entry.order < order);

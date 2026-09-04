@@ -1230,7 +1230,12 @@ async fn migration_preserves_answers_before_a_rolled_back_steer() {
         checkpoint
             .verified_answers()
             .cloned()
-            .map(codex_rollout::RetainedContextEvent::VerifiedAnswer)
+            .map(
+                |answer| codex_rollout::RetainedContextEvent::VerifiedAnswer {
+                    answer,
+                    acceptance_order: None,
+                }
+            )
             .collect::<Vec<_>>(),
         answers[..1]
     );
@@ -1272,6 +1277,15 @@ async fn migration_preserves_reverse_replay_anchor_after_pre_compaction_rollback
 
 #[tokio::test]
 async fn migration_preserves_same_turn_evidence_across_rollback_checkpoints() {
+    assert_migrated_evidence_order(/*steer_order*/ None).await;
+}
+
+#[tokio::test]
+async fn migration_removes_answers_accepted_after_a_queued_steer() {
+    assert_migrated_evidence_order(Some(1)).await;
+}
+
+async fn assert_migrated_evidence_order(steer_order: Option<u64>) {
     const INITIAL: &str = "Never publish publicly.";
     const STEER: &str = "Also inspect the README.";
     let home = TempDir::new().expect("create Codex home");
@@ -1299,10 +1313,10 @@ async fn migration_preserves_same_turn_evidence_across_rollback_checkpoints() {
     let retained = json!({
         "user_messages": [
             {"order": 0, "turn_id": "shared-turn", "message_id": "msg_initial", "text": INITIAL, "complete": true},
-            {"order": 2, "turn_id": "shared-turn", "message_id": "msg_steer", "text": STEER, "complete": true}
+            {"order": steer_order.unwrap_or(2), "turn_id": "shared-turn", "message_id": "msg_steer", "text": STEER, "complete": true}
         ],
         "verified_answers": [
-            {"order": 1, "turn_id": "shared-turn", "call_id": "before", "questions": [{"question": "Publish?", "answer": "Only privately."}]},
+            {"order": if steer_order.is_some() { 2 } else { 1 }, "turn_id": "shared-turn", "call_id": "before", "questions": [{"question": "Publish?", "answer": "Only privately."}]},
             {"order": 3, "turn_id": "shared-turn", "call_id": "after", "questions": [{"question": "Publish the README?", "answer": "Do not publish it."}]}
         ],
         "incomplete": false, "user_messages_incomplete": false, "next_order": 4
@@ -1315,8 +1329,26 @@ async fn migration_preserves_same_turn_evidence_across_rollback_checkpoints() {
         .expect("retained checkpoint")
         .verified_answers()
         .cloned()
-        .map(codex_rollout::RetainedContextEvent::VerifiedAnswer)
+        .map(|answer| {
+            let acceptance_order =
+                steer_order.map(|_| if answer.call_id == "before" { 2 } else { 3 });
+            codex_rollout::RetainedContextEvent::VerifiedAnswer {
+                answer,
+                acceptance_order,
+            }
+        })
         .collect::<Vec<_>>();
+    let mut before_retained = retained.clone();
+    before_retained["user_messages"]
+        .as_array_mut()
+        .expect("user messages")
+        .truncate(/*len*/ 1);
+    before_retained["verified_answers"]
+        .as_array_mut()
+        .expect("verified answers")
+        .truncate(/*len*/ 1);
+    before_retained["next_order"] = json!(if steer_order.is_some() { 3 } else { 2 });
+    let remaining_answers = usize::from(steer_order.is_none());
     let mut expected = retained;
     expected["user_messages"]
         .as_array_mut()
@@ -1325,13 +1357,13 @@ async fn migration_preserves_same_turn_evidence_across_rollback_checkpoints() {
     expected["verified_answers"]
         .as_array_mut()
         .expect("verified answers")
-        .truncate(/*len*/ 1);
+        .truncate(remaining_answers);
     let mut before_expected = expected.clone();
-    before_expected["next_order"] = json!(2);
+    before_expected["next_order"] = before_retained["next_order"].clone();
     let mut before_steer = checkpoint.clone();
     before_steer.replacement_history = Some(vec![initial.clone().into()]);
     before_steer.retained_context =
-        Some(serde_json::from_value(before_expected.clone()).expect("pre-steer checkpoint"));
+        Some(serde_json::from_value(before_retained).expect("pre-steer checkpoint"));
     let mut after_rollback = before_steer.clone();
     after_rollback.retained_context =
         Some(serde_json::from_value(expected.clone()).expect("post-rollback checkpoint"));
@@ -1345,7 +1377,15 @@ async fn migration_preserves_same_turn_evidence_across_rollback_checkpoints() {
             user_message(INITIAL),
             RolloutItem::RetainedContext(answers[0].clone()),
             RolloutItem::Compacted(before_steer),
-            rollout_response_item(steer),
+            RolloutItem::ResponseItem(codex_rollout::ResponseItemEnvelope {
+                item: steer,
+                metadata: steer_order.map(|order| {
+                    serde_json::from_value(json!({
+                        "user_input_order": order
+                    }))
+                    .expect("acceptance metadata")
+                }),
+            }),
             user_message(STEER),
             RolloutItem::RetainedContext(answers[1].clone()),
             completed("shared-turn"),
@@ -1399,7 +1439,7 @@ async fn migration_preserves_same_turn_evidence_across_rollback_checkpoints() {
                 _ => None,
             })
             .collect::<Vec<_>>(),
-        vec![answers[0].clone()]
+        answers[..remaining_answers]
     );
 }
 
