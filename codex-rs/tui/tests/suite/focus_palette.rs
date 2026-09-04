@@ -90,7 +90,7 @@ async fn interactive_startup_honors_codex_home_symlink_opt_out() -> Result<()> {
         ]),
     )
     .await;
-    let _completion_mock = responses::mount_sse_once_match(
+    let completion_mock = responses::mount_sse_once_match(
         &server,
         body_string_contains(r#"\"thread_source\":\"user\""#),
         responses::sse(vec![
@@ -129,6 +129,13 @@ async fn interactive_startup_honors_codex_home_symlink_opt_out() -> Result<()> {
     while Instant::now() < deadline {
         terminal.read_output(Duration::from_millis(/*millis*/ 50))?;
         if terminal.screen_contains("symlink-opt-out-ready") {
+            let tool_output = completion_mock
+                .function_call_output_text("write")
+                .context("missing symlink write tool output")?;
+            ensure!(
+                tool_output.contains("Process exited with code 0"),
+                "{tool_output}"
+            );
             assert_eq!(std::fs::read(target.path().join("ready.txt"))?, b"ready");
             return Ok(());
         }
