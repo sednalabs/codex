@@ -98,13 +98,13 @@ pub(crate) fn render_markdown_agent_with_links_cwd_and_visualizations(
         rewritten.trusted_file_links.contains_key(destination)
             || crate::markdown_render::hide_web_link_destination(destination)
     };
-    let mut lines =
-        crate::markdown_render::render_markdown_lines_with_width_cwd_and_hidden_link_destinations(
-            &normalized,
-            width,
-            cwd,
-            &is_hidden_link_destination,
-        );
+    let mut lines = crate::markdown_render::render_streaming_markdown_lines_with_width_and_cwd(
+        &normalized,
+        width,
+        cwd,
+        &is_hidden_link_destination,
+    )
+    .lines;
     for hyperlink in lines.iter_mut().flat_map(|line| &mut line.hyperlinks) {
         if let Some(link) = rewritten.trusted_file_links.get(&hyperlink.destination) {
             hyperlink.retarget_to_trusted_file(&link.destination);

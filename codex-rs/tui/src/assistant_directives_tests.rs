@@ -3,6 +3,7 @@
 use super::AssistantDirective;
 use super::QuoteEscaping;
 use super::parse_assistant_directive;
+use super::parse_assistant_directive_with_budget;
 use pretty_assertions::assert_eq;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -82,5 +83,54 @@ fn rejects_ambiguous_or_incomplete_directives() {
             parse_assistant_directive(source, QuoteEscaping::Backslash),
             None
         );
+    }
+}
+
+#[test]
+fn malformed_retries_exhaust_the_shared_scan_budget() {
+    let source = format!(
+        "codex-file-citation {} x bad}}",
+        ":a{k=".repeat(/*n*/ 16_000)
+    );
+    let mut remaining = source.len() * 4;
+    let mut attempts = 0;
+    for (offset, _) in source.match_indices(':') {
+        if remaining == 0 {
+            break;
+        }
+        assert_eq!(
+            parse_assistant_directive_with_budget(
+                &source[offset..],
+                QuoteEscaping::Literal,
+                &mut remaining,
+            ),
+            None,
+        );
+        attempts += 1;
+    }
+    assert!(attempts <= 8, "retried {attempts} long malformed values");
+    assert_eq!(remaining, 0);
+}
+
+#[test]
+fn scan_budget_counts_inspected_values_not_the_unread_suffix() {
+    let tail = "x".repeat(/*n*/ 16_000);
+    let raw = ":artifact{path=report.xlsx}";
+    let source = format!("{raw}{tail}");
+    let mut remaining = 64;
+    assert_eq!(
+        parse_assistant_directive_with_budget(&source, QuoteEscaping::Literal, &mut remaining),
+        parse_assistant_directive(raw, QuoteEscaping::Literal),
+    );
+    for source in [
+        format!(":artifact{{path=\"{tail}"),
+        format!(":artifact{{path={tail}"),
+    ] {
+        let mut remaining = 64;
+        assert_eq!(
+            parse_assistant_directive_with_budget(&source, QuoteEscaping::Literal, &mut remaining),
+            None,
+        );
+        assert_eq!(remaining, 0);
     }
 }
