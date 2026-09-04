@@ -1337,11 +1337,14 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
     SELECT edge.child_thread_id, edge.parent_thread_id
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-    ORDER BY 1, 2
     LIMIT
 "#,
     );
-    builder.push(crate::MAX_THREAD_RELATION_DESCENDANTS.saturating_add(1));
+    builder.push(
+        crate::MAX_THREAD_RELATION_DESCENDANTS
+            .saturating_add(1)
+            .to_string(),
+    );
     builder.push(
         r#"
 )
