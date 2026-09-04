@@ -11,6 +11,7 @@ use codex_extension_items::ExtensionItem;
 use codex_extension_items::image_generation::ImageGenerationFailure;
 use codex_extension_items::image_generation::ImageGenerationItem;
 use codex_protocol::AgentPath;
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::items::ReasoningItem;
@@ -18,6 +19,8 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::mcp::McpResourceOrigin;
 use codex_protocol::mcp::McpResourceOriginCheckpoint;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AskForApproval;
@@ -1265,6 +1268,139 @@ async fn migration_preserves_reverse_replay_anchor_after_pre_compaction_rollback
         })
         .expect("retained compaction");
     assert!(replacement_history.is_empty());
+}
+
+#[tokio::test]
+async fn migration_preserves_same_turn_evidence_across_rollback_checkpoints() {
+    const INITIAL: &str = "Never publish publicly.";
+    const STEER: &str = "Also inspect the README.";
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let [initial, steer] =
+        [("initial", INITIAL), ("steer", STEER)].map(|(id, text)| ResponseItem::Message {
+            id: Some(ResponseItemId::with_suffix("msg", id)),
+            role: "user".to_owned(),
+            content: vec![ContentItem::InputText {
+                text: text.to_owned(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: Some(
+                InternalChatMessageMetadataPassthrough {
+                    turn_id: Some("shared-turn".to_owned()),
+                    content_item_kinds: Some(vec![ContentItemKind("user.text".to_owned())]),
+                    ..Default::default()
+                },
+            ),
+        });
+    let RolloutItem::Compacted(mut checkpoint) = compacted(vec![initial.clone(), steer.clone()])
+    else {
+        unreachable!("compacted helper creates a checkpoint");
+    };
+    let retained = json!({
+        "user_messages": [
+            {"order": 0, "turn_id": "shared-turn", "message_id": "msg_initial", "text": INITIAL, "complete": true},
+            {"order": 2, "turn_id": "shared-turn", "message_id": "msg_steer", "text": STEER, "complete": true}
+        ],
+        "verified_answers": [
+            {"order": 1, "turn_id": "shared-turn", "call_id": "before", "questions": [{"question": "Publish?", "answer": "Only privately."}]},
+            {"order": 3, "turn_id": "shared-turn", "call_id": "after", "questions": [{"question": "Publish the README?", "answer": "Do not publish it."}]}
+        ],
+        "incomplete": false, "user_messages_incomplete": false, "next_order": 4
+    });
+    checkpoint.retained_context =
+        Some(serde_json::from_value(retained.clone()).expect("retained fixture"));
+    let answers = checkpoint
+        .retained_context
+        .as_ref()
+        .expect("retained checkpoint")
+        .verified_answers()
+        .cloned()
+        .map(codex_rollout::RetainedContextEvent::VerifiedAnswer)
+        .collect::<Vec<_>>();
+    let mut expected = retained;
+    expected["user_messages"]
+        .as_array_mut()
+        .expect("user messages")
+        .truncate(/*len*/ 1);
+    expected["verified_answers"]
+        .as_array_mut()
+        .expect("verified answers")
+        .truncate(/*len*/ 1);
+    let mut before_expected = expected.clone();
+    before_expected["next_order"] = json!(2);
+    let mut before_steer = checkpoint.clone();
+    before_steer.replacement_history = Some(vec![initial.clone().into()]);
+    before_steer.retained_context =
+        Some(serde_json::from_value(before_expected.clone()).expect("pre-steer checkpoint"));
+    let mut after_rollback = before_steer.clone();
+    after_rollback.retained_context =
+        Some(serde_json::from_value(expected.clone()).expect("post-rollback checkpoint"));
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::Cli,
+        vec![
+            started("shared-turn"),
+            rollout_response_item(initial.clone()),
+            user_message(INITIAL),
+            RolloutItem::RetainedContext(answers[0].clone()),
+            RolloutItem::Compacted(before_steer),
+            rollout_response_item(steer),
+            user_message(STEER),
+            RolloutItem::RetainedContext(answers[1].clone()),
+            completed("shared-turn"),
+            started("compaction-turn"),
+            RolloutItem::Compacted(checkpoint),
+            completed("compaction-turn"),
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 1,
+            })),
+            // This checkpoint already contains the correct live rollback result.
+            started("post-rollback-compaction"),
+            RolloutItem::Compacted(after_rollback),
+            completed("post-rollback-compaction"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate same-turn rollback");
+    let migrated = read_rollout(&path);
+    let checkpoints = migrated
+        .iter()
+        .filter_map(|line| match &line.item {
+            RolloutItem::Compacted(item) => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        checkpoints
+            .iter()
+            .map(
+                |checkpoint| serde_json::to_value(&checkpoint.retained_context)
+                    .expect("retained context")
+            )
+            .collect::<Vec<_>>(),
+        vec![before_expected, expected.clone(), expected]
+    );
+    assert_eq!(
+        checkpoints
+            .last()
+            .expect("latest checkpoint")
+            .replacement_history,
+        Some(vec![initial.into()])
+    );
+    assert_eq!(
+        migrated
+            .into_iter()
+            .filter_map(|line| match line.item {
+                RolloutItem::RetainedContext(event) => Some(event),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![answers[0].clone()]
+    );
 }
 
 #[tokio::test]

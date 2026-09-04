@@ -17,7 +17,7 @@ pub struct RenderedVerifiedAnswers {
 
 /// Renders each response with its original source roles and the existing approximate per-answer budget.
 pub fn render_verified_answers(context: &RetainedContext) -> RenderedVerifiedAnswers {
-    let mut complete = context.is_complete();
+    let mut complete = context.verified_answers_complete();
     let mut fragments = Vec::new();
     for answer in context.verified_answers() {
         if let Some(text) = render_verified_answer(answer) {

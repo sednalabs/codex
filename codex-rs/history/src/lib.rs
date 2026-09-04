@@ -161,7 +161,9 @@ mod guardian_history;
 mod retained_context;
 
 pub use retained_context::RetainedContext;
+pub use retained_context::RetainedContextEntry;
 pub use retained_context::RetainedContextEvent;
+pub use retained_context::RetainedUserMessage;
 pub use retained_context::VerifiedAnswer;
 pub use retained_context::VerifiedQuestionAnswer;
 mod rollout_payload;

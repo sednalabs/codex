@@ -2101,10 +2101,9 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
         ),
         "a subagent must not inherit its parent review checkpoint",
     );
-    assert_eq!(
-        history.retained_context(),
-        &codex_history::RetainedContext::default()
-    );
+    let mut expected_retained_context = codex_history::RetainedContext::default();
+    expected_retained_context.mark_user_messages_incomplete();
+    assert_eq!(history.retained_context(), &expected_retained_context);
     assert!(
         history_contains_text(history.raw_items(), "compacted parent summary"),
         "forked child history should retain compacted non-hint content"

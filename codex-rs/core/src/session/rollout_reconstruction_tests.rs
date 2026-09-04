@@ -1488,6 +1488,7 @@ async fn reconstruct_history_legacy_compaction_without_replacement_history_does_
             }],
         });
     let mut retained = codex_history::RetainedContext::default();
+    retained.mark_user_messages_incomplete();
     retained.record(&answer);
     let rollout_items = vec![
         RolloutItem::ResponseItem(user_message("before compact").into()),

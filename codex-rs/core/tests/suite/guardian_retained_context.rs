@@ -1,6 +1,6 @@
-//! Retained-answer lifecycle through real sessions and the durable thread-store boundary.
-//! Typed fixtures enter via the public rollout append API to isolate storage from producer
-//! wiring; compaction, resume, rollback and child forks use production paths.
+//! Retained-instruction and answer lifecycles through real sessions and durable checkpoints.
+//! Real user input covers steering, compaction and rollback; legacy replay fixtures also use
+//! the public rollout append API. Resume and child forks use production paths.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,11 +13,15 @@ use codex_core::config::ThreadStoreConfig;
 use codex_features::Feature;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
+use codex_history::RetainedContext;
 use codex_history::RetainedContextEvent;
 use codex_history::RolloutItem;
 use codex_history::VerifiedAnswer;
 use codex_history::VerifiedQuestionAnswer;
+use codex_protocol::ResponseItemId;
 use codex_protocol::mcp::ClientMcpExtensions;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -25,6 +29,7 @@ use codex_protocol::request_user_input::RequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::LoadThreadHistoryParams;
+use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_function_call_with_namespace;
@@ -149,7 +154,7 @@ async fn compact_and_assert_answers(
     test: &TestCodex,
     thread: &CodexThread,
     expected: &[VerifiedAnswer],
-) -> Result<()> {
+) -> Result<RetainedContext> {
     // Inspect live state by persisting a real compaction checkpoint, not a private getter.
     // Repeating this after resume/rollback also catches checkpoint resurrection.
     thread.submit(Op::Compact).await?;
@@ -172,6 +177,355 @@ async fn compact_and_assert_answers(
         actual.verified_answers().cloned().collect::<Vec<_>>(),
         expected
     );
+    Ok(actual.clone())
+}
+
+#[test_case(ThreadHistoryMode::Legacy, true; "enabled legacy rollback")]
+#[test_case(ThreadHistoryMode::Paginated, true; "enabled paginated resume")]
+#[test_case(ThreadHistoryMode::Legacy, false; "disabled legacy rollback")]
+#[test_case(ThreadHistoryMode::Paginated, false; "disabled paginated resume")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retained_instructions_keep_identity_across_compaction_and_resume(
+    history_mode: ThreadHistoryMode,
+    thread_context_enabled: bool,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    const INITIAL: &str = "Never publish publicly.";
+    const STEER: &str = "Also inspect the README.";
+    // Paginated history supports checkpoint resume, but not the full-history read
+    // used by ThreadRollback. Exercise rollback on its supported legacy path.
+    let rollback_counts: &[usize] = match history_mode {
+        ThreadHistoryMode::Legacy => &[1, 0],
+        ThreadHistoryMode::Paginated => &[],
+    };
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(move |config| {
+            config.experimental_thread_store = ThreadStoreConfig::Local;
+            config
+                .features
+                .set_enabled(Feature::GuardianThreadContext, thread_context_enabled)
+                .expect("test context mode");
+            // Exercise local compaction's rebuilt user messages, not an opaque checkpoint.
+            config.model_provider.name = "Local compaction test provider".to_owned();
+            config
+                .features
+                .disable(Feature::TokenBudget)
+                .expect("use local compaction");
+            config
+                .features
+                .enable(Feature::DefaultModeRequestUserInput)
+                .expect("enable request_user_input");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let questions = [
+        ("before-steer", "Publish?", "Only privately."),
+        ("after-steer", "Publish the README?", "Do not publish it."),
+    ];
+    let mut responses = questions
+        .iter()
+        .map(|(call_id, question, _)| {
+            sse(vec![
+                ev_function_call(
+                    call_id,
+                    "request_user_input",
+                    &json!({"questions": [{
+                        "id": "publish", "header": "Publish", "question": question,
+                        "options": [
+                            {"label": "Yes", "description": "Publish privately."},
+                            {"label": "No", "description": "Keep local."}
+                        ]
+                    }]})
+                    .to_string(),
+                ),
+                ev_completed(call_id),
+            ])
+        })
+        .collect::<Vec<_>>();
+    responses.push(sse(vec![ev_completed("done")]));
+    responses.extend((0..=rollback_counts.len()).map(|index| {
+        sse(vec![
+            ev_assistant_message(&format!("summary-{index}"), "Compacted inspection context."),
+            ev_completed(&format!("compact-{index}")),
+        ])
+    }));
+    let response_mock = mount_sse_sequence(&server, responses).await;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: INITIAL.to_owned(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let mut answers = Vec::new();
+    for (call_id, question, answer) in questions {
+        let request = wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::RequestUserInput(request) => Some(request.clone()),
+            _ => None,
+        })
+        .await;
+        if answers.is_empty() {
+            test.codex
+                .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                    text: STEER.to_owned(),
+                    text_elements: Vec::new(),
+                }]))
+                .await?;
+        }
+        test.codex
+            .submit(Op::UserInputAnswer {
+                id: request.turn_id.clone(),
+                response: RequestUserInputResponse {
+                    answers: HashMap::from([(
+                        "publish".to_owned(),
+                        RequestUserInputAnswer {
+                            answers: vec![answer.to_owned()],
+                        },
+                    )]),
+                },
+            })
+            .await?;
+        answers.push(VerifiedAnswer {
+            turn_id: request.turn_id,
+            call_id: call_id.to_owned(),
+            questions: vec![VerifiedQuestionAnswer {
+                question: question.to_owned(),
+                answer: answer.to_owned(),
+            }],
+        });
+    }
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(answers[0].turn_id, answers[1].turn_id);
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].has_message_with_input_texts("user", |texts| texts == [INITIAL]));
+    for (index, request) in requests.iter().skip(1).enumerate() {
+        assert!(request.has_message_with_input_texts("user", |texts| texts == [STEER]));
+        for answer in &answers[..=index] {
+            let (output, _) = request
+                .function_call_output_content_and_success(&answer.call_id)
+                .context("answer tool output")?;
+            let output: serde_json::Value = serde_json::from_str(&output.context("answer text")?)?;
+            assert_eq!(
+                output,
+                json!({"answers": {"publish": {"answers": [answer.questions[0].answer]}}})
+            );
+        }
+    }
+    let history = test.codex.conversation_history_snapshot().await;
+    let user_messages = [INITIAL, STEER]
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let message_id = history
+                .items()
+                .find(|item| {
+                    matches!(
+                        item,
+                        ResponseItem::Message { role, content, .. }
+                            if role == "user" && matches!(
+                                content.as_slice(),
+                                [ContentItem::InputText { text: body }] if body == text
+                            )
+                    )
+                })
+                .and_then(ResponseItem::id)
+                .expect("original user-message identity");
+            json!({
+                "order": index * 2, "turn_id": answers[index].turn_id,
+                "message_id": message_id.as_str(), "text": text, "complete": true,
+            })
+        })
+        .collect::<Vec<_>>();
+    let ordered_answers = answers
+        .iter()
+        .enumerate()
+        .map(|(index, answer)| {
+            let mut value = json!(answer);
+            value["order"] = json!(index * 2 + 1);
+            value
+        })
+        .collect::<Vec<_>>();
+    let mut expected = json!({
+        "user_messages": user_messages, "user_messages_incomplete": false,
+        "verified_answers": ordered_answers, "incomplete": false, "next_order": 4,
+    });
+    if !thread_context_enabled {
+        expected = json!({
+            "user_messages": [], "user_messages_incomplete": true,
+            "verified_answers": [], "incomplete": false, "next_order": 0,
+        });
+        answers.clear();
+        assert!(
+            load_context(&test, &test.codex)
+                .await?
+                .iter()
+                .all(|item| !matches!(item, RolloutItem::RetainedContext(_)))
+        );
+    }
+    assert_eq!(serde_json::to_value(history.retained_context())?, expected);
+    assert_eq!(
+        serde_json::to_value(compact_and_assert_answers(&test, &test.codex, &answers).await?)?,
+        expected
+    );
+    let compacted = test.codex.conversation_history_snapshot().await;
+    for message in &user_messages {
+        assert_eq!(
+            compacted
+                .items()
+                .any(|item| item.id().map(ResponseItemId::as_str) == message["message_id"].as_str()),
+            thread_context_enabled,
+            "only thread-owned context preserves original user-message identity"
+        );
+    }
+    let mut thread = Arc::clone(&test.codex);
+    for &remaining in rollback_counts {
+        let remaining = if thread_context_enabled { remaining } else { 0 };
+        thread = resume(&test, &thread).await?;
+        assert_eq!(
+            serde_json::to_value(
+                thread
+                    .conversation_history_snapshot()
+                    .await
+                    .retained_context()
+            )?,
+            expected
+        );
+        thread.submit(Op::ThreadRollback { num_turns: 1 }).await?;
+        wait_for_event(&thread, |event| {
+            matches!(event, EventMsg::ThreadRolledBack(_))
+        })
+        .await;
+        expected["user_messages"]
+            .as_array_mut()
+            .expect("expected retained user messages")
+            .truncate(remaining);
+        expected["verified_answers"]
+            .as_array_mut()
+            .expect("expected retained verified answers")
+            .truncate(remaining);
+        assert_eq!(
+            serde_json::to_value(
+                compact_and_assert_answers(&test, &thread, &answers[..remaining]).await?
+            )?,
+            expected
+        );
+    }
+    thread = resume(&test, &thread).await?;
+    assert_eq!(
+        serde_json::to_value(
+            thread
+                .conversation_history_snapshot()
+                .await
+                .retained_context()
+        )?,
+        expected
+    );
+    thread.shutdown_and_wait().await?;
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 4 + rollback_counts.len());
+    assert!(requests[3].has_message_with_input_texts("user", |texts| texts == [STEER]));
+    if history_mode == ThreadHistoryMode::Legacy {
+        assert!(requests[4].has_message_with_input_texts("user", |texts| texts == [INITIAL]));
+        assert!(!requests[4].has_message_with_input_texts("user", |texts| texts == [STEER]));
+        assert!(!requests[5].has_message_with_input_texts("user", |texts| texts == [INITIAL]));
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disabled_capture_stays_incomplete_after_compaction_and_enabled_resume() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.experimental_thread_store = ThreadStoreConfig::Local;
+            config
+                .features
+                .disable(Feature::GuardianThreadContext)
+                .expect("disable instruction capture");
+            config
+                .features
+                .disable(Feature::TokenBudget)
+                .expect("use local compaction");
+            config.model_provider.name = "Local compaction test provider".to_owned();
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_completed("initial-turn")]),
+            sse(vec![
+                ev_assistant_message("summary", "Compacted context."),
+                ev_completed("compact"),
+            ]),
+            sse(vec![
+                ev_assistant_message("summary-again", "Compacted context."),
+                ev_completed("compact-again"),
+            ]),
+        ],
+    )
+    .await;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Never publish publicly.".to_owned(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let checkpoint = compact_and_assert_answers(&test, &test.codex, &[]).await?;
+    assert!(!checkpoint.user_messages_complete());
+    assert_eq!(checkpoint.ordered_entries().count(), 0);
+
+    let thread_id = test.codex.session_configured().thread_id;
+    test.codex.shutdown_and_wait().await?;
+    test.thread_manager.remove_thread(&thread_id).await;
+    let items: Vec<RolloutItem> = serde_json::from_value(serde_json::to_value(
+        load_context(&test, &test.codex).await?,
+    )?)?;
+    let mut config = test.config.clone();
+    config
+        .features
+        .enable(Feature::GuardianThreadContext)
+        .expect("enable instruction capture on resume");
+    let resumed = test
+        .thread_manager
+        .resume_thread_with_history(
+            config,
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: thread_id,
+                history: Arc::new(items),
+                rollout_path: None,
+            }),
+            test.thread_manager.auth_manager(),
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await?
+        .thread;
+    assert!(
+        !resumed
+            .conversation_history_snapshot()
+            .await
+            .retained_context()
+            .expect("resumed retained context")
+            .user_messages_complete()
+    );
+    assert!(
+        !compact_and_assert_answers(&test, &resumed, &[])
+            .await?
+            .user_messages_complete()
+    );
+    resumed.shutdown_and_wait().await?;
     Ok(())
 }
 
@@ -183,7 +537,11 @@ async fn retained_answers_rollback_only_the_steered_instruction() -> Result<()> 
         .with_history_mode(ThreadHistoryMode::Legacy)
         .with_config(|config| {
             config.experimental_thread_store = ThreadStoreConfig::Local;
-            for feature in [Feature::TokenBudget, Feature::DefaultModeRequestUserInput] {
+            for feature in [
+                Feature::TokenBudget,
+                Feature::DefaultModeRequestUserInput,
+                Feature::GuardianThreadContext,
+            ] {
                 config
                     .features
                     .enable(feature)
@@ -341,6 +699,7 @@ async fn retained_answers_cross_real_session_boundaries(
                 Feature::DefaultModeRequestUserInput,
                 Feature::Collab,
                 Feature::MultiAgentV2,
+                Feature::GuardianThreadContext,
             ] {
                 config
                     .features

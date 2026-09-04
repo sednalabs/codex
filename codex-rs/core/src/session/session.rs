@@ -1266,6 +1266,9 @@ impl Session {
                 session_configuration.clone(),
                 initial_auto_compact_window_ids,
             );
+            if config.features.enabled(Feature::GuardianThreadContext) {
+                state.history.enable_user_message_retention();
+            }
             state.base_instructions_provenance = base_instructions_provenance.clone();
             let managed_network_requirements_configured = config
                 .config_layer_stack

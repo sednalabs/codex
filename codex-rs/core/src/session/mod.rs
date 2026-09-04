@@ -1590,7 +1590,9 @@ impl Session {
             state
                 .history
                 .restore_guardian_history(guardian_history.as_ref());
-            state.history.restore_retained_context(&retained_context);
+            state
+                .history
+                .restore_retained_context(Some(&retained_context));
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
             }

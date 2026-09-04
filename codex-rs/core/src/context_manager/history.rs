@@ -61,6 +61,8 @@ pub(crate) struct ContextManager {
     review_history: Option<TranscriptHistory>,
     /// Host facts independent of the model window; snapshots share immutable state.
     retained_context: Arc<RetainedContext>,
+    /// Live and replay instruction capture are enabled together by the session feature flag.
+    retain_user_messages: bool,
     /// Bumped whenever history is rewritten, such as compaction or rollback.
     history_version: u64,
     /// Monotonic user-input/reset revision, independent of compaction's history generation.
@@ -156,6 +158,7 @@ impl ContextManager {
             items: Arc::new(Vec::new()),
             review_history: None,
             retained_context: Arc::default(),
+            retain_user_messages: false,
             history_version: 0,
             user_message_revision: 0,
             token_info: TokenUsageInfo::new_or_append(
@@ -180,6 +183,10 @@ impl ContextManager {
         &self.retained_context
     }
 
+    pub(crate) fn enable_user_message_retention(&mut self) {
+        self.retain_user_messages = true;
+    }
+
     pub(crate) fn record_retained_context(&mut self, event: &RetainedContextEvent) -> bool {
         if !Arc::make_mut(&mut self.retained_context).record(event) {
             return false;
@@ -188,7 +195,7 @@ impl ContextManager {
         true
     }
 
-    pub(crate) fn restore_retained_context(&mut self, checkpoint: &RetainedContext) {
+    pub(crate) fn restore_retained_context(&mut self, checkpoint: Option<&RetainedContext>) {
         Arc::make_mut(&mut self.retained_context).restore(checkpoint);
     }
 
@@ -318,6 +325,44 @@ impl ContextManager {
             }
             Arc::make_mut(&mut self.items).push(processed);
             if crate::context::is_user_authorization_message(item) {
+                if self.retain_user_messages
+                    && let ResponseItem::Message {
+                        content,
+                        internal_chat_message_metadata_passthrough,
+                        ..
+                    } = item
+                {
+                    let mut complete = internal_chat_message_metadata_passthrough
+                        .as_ref()
+                        .and_then(|metadata| metadata.content_item_kinds.as_ref())
+                        .is_some_and(|kinds| {
+                            kinds.len() == content.len()
+                                && kinds.iter().all(|kind| kind.0.starts_with("user."))
+                        });
+                    let text = content
+                        .iter()
+                        .filter_map(|content| match content {
+                            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                                Some(text.as_str())
+                            }
+                            _ => {
+                                complete = false;
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Arc::make_mut(&mut self.retained_context).record_user_message(
+                        codex_history::RetainedUserMessage {
+                            turn_id: item.turn_id().unwrap_or_default().to_owned(),
+                            message_id: item.id().map(|id| id.as_str().to_owned()),
+                            text,
+                            complete,
+                        },
+                    );
+                } else {
+                    Arc::make_mut(&mut self.retained_context).mark_user_messages_incomplete();
+                }
                 self.user_message_revision = self.user_message_revision.saturating_add(1);
             }
         }
@@ -488,6 +533,9 @@ impl ContextManager {
             user_positions[user_positions.len() - n_from_end]
         };
 
+        let first_removed_message_id = snapshot[cut_idx]
+            .id()
+            .map(codex_protocol::ResponseItemId::as_str);
         let mut review_history = self.review_history.take();
         if let Some(history) = &mut review_history {
             history.truncate_before(&snapshot[cut_idx].item);
@@ -528,18 +576,21 @@ impl ContextManager {
             .iter()
             .filter_map(|item| item.turn_id())
             .collect::<Vec<_>>();
-        Arc::make_mut(&mut retained_context).retain_answers(|answer| {
-            // A steer creates an instruction boundary, not a new turn ID. Replay exposes
-            // the original calls from rolled-back checkpoints, so prefer the exact source.
-            if let Some(source_index) = snapshot.iter().rposition(|item| {
-                item.turn_id() == Some(answer.turn_id.as_str())
-                    && matches!(&item.item, ResponseItem::FunctionCall { call_id, .. }
-                        if call_id == &answer.call_id)
-            }) {
-                return source_index < cut_idx;
-            }
-            !removed_turns.contains(&answer.turn_id.as_str())
-        });
+        if self.retain_user_messages {
+            Arc::make_mut(&mut retained_context).rollback(&removed_turns, first_removed_message_id);
+        } else {
+            Arc::make_mut(&mut retained_context).retain_answers(|answer| {
+                // Legacy answers follow their original call, not later steers in the same turn.
+                if let Some(source_index) = snapshot.iter().rposition(|item| {
+                    item.turn_id() == Some(answer.turn_id.as_str())
+                        && matches!(&item.item, ResponseItem::FunctionCall { call_id, .. }
+                            if call_id == &answer.call_id)
+                }) {
+                    return source_index < cut_idx;
+                }
+                !removed_turns.contains(&answer.turn_id.as_str())
+            });
+        }
         self.replace_annotated(retained_items);
         self.retained_context = retained_context;
         self.review_history = review_history;
