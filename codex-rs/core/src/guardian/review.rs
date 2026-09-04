@@ -962,6 +962,7 @@ pub(crate) fn spawn_approval_request_review(
 pub(super) struct GuardianReviewSessionConfig {
     pub(super) spawn_config: crate::config::Config,
     pub(super) node_repl_policy: GuardianNodeReplPolicy,
+    pub(super) compaction_model_hash: Option<String>,
     model: String,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
     default_review_model_id: String,
@@ -1063,6 +1064,7 @@ pub(super) async fn guardian_review_session_config(
     }
     Ok(GuardianReviewSessionConfig {
         spawn_config,
+        compaction_model_hash: guardian_model_info.comp_hash.clone(),
         node_repl_policy: GuardianNodeReplPolicy::from_model_messages(
             guardian_model_info.model_messages.as_ref(),
         ),
@@ -1121,6 +1123,7 @@ async fn run_guardian_review_session_before_deadline(
                 reasons,
                 schema,
                 model: session_config.model,
+                compaction_model_hash: session_config.compaction_model_hash,
                 reasoning_effort: session_config.reasoning_effort,
                 guardian_default_review_model_id: session_config.default_review_model_id,
                 guardian_catalog_contains_auto_review: session_config.catalog_contains_auto_review,

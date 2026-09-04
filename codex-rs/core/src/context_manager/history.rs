@@ -1,6 +1,8 @@
 //! Parent model history and bounded host-owned context facts.
 //! Compaction replaces only the model window. Snapshots include retained facts atomically;
 //! checkpoint replay and source-call rollback share their live lifecycle.
+//! Oversized instructions keep an incomplete excerpt for bounded root review, including
+//! sources recovered from legacy Guardian checkpoints before their raw history is dropped.
 
 use crate::context::ContextualUserFragment;
 use crate::context::ModelSwitchInstructions;
@@ -11,6 +13,9 @@ use crate::context_manager::normalize;
 use crate::event_mapping::has_non_contextual_dev_message_content;
 use crate::event_mapping::is_contextual_dev_message_content;
 use crate::event_mapping::is_contextual_user_message_content;
+use crate::event_mapping::parse_turn_item;
+use crate::guardian::GUARDIAN_MAX_ROOT_MESSAGE_TOKENS;
+use crate::guardian::guardian_truncate_text;
 use crate::session::turn_context::TurnContext;
 use crate::utils::json::serialized_json_bytes;
 use base64::Engine;
@@ -25,6 +30,7 @@ use codex_history::GuardianHistoryCheckpoint;
 use codex_history::ResponseItemEnvelope;
 use codex_history::RetainedContext;
 use codex_history::RetainedContextEvent;
+use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
@@ -57,7 +63,7 @@ pub(crate) struct ContextManager {
     /// The oldest items are at the beginning of the vector. Snapshots share the vector until a
     /// caller needs to mutate it, avoiding deep copies for read-only history consumers.
     items: Arc<Vec<ResponseItemEnvelope>>,
-    /// Starts at the first compaction; ordinary history snapshots need no second payload copy.
+    /// Legacy-only history, started at first compaction. Thread-owned mode reads parent context.
     review_history: Option<TranscriptHistory>,
     /// Host facts independent of the model window; snapshots share immutable state.
     retained_context: Arc<RetainedContext>,
@@ -207,15 +213,42 @@ impl ContextManager {
     }
 
     pub(crate) fn guardian_history_checkpoint(&self) -> Option<GuardianHistoryCheckpoint> {
+        if self.retain_user_messages {
+            return None;
+        }
         self.review_history
             .as_ref()
             .map(|history| GuardianHistoryCheckpoint(history.items().cloned().collect()))
     }
 
-    pub(crate) fn restore_guardian_history(
+    pub(crate) fn restore_review_context(
         &mut self,
+        retained_context: Option<&RetainedContext>,
         checkpoint: Option<&GuardianHistoryCheckpoint>,
     ) {
+        self.restore_retained_context(retained_context);
+        if self.retain_user_messages {
+            // Older retained checkpoints cleared oversized instructions. Recover their
+            // bounded root excerpts before discarding the legacy source transcript.
+            let items = &self.items;
+            Arc::make_mut(&mut self.retained_context).recover_user_message_excerpts(|id| {
+                // Prefer the backup over a compacted copy that retains the original ID.
+                let original = checkpoint
+                    .into_iter()
+                    .flat_map(|checkpoint| &checkpoint.0)
+                    .chain(items.iter().map(|envelope| &envelope.item))
+                    .find(|item| item.id().is_some_and(|item_id| item_id.as_str() == id));
+                let Some(TurnItem::UserMessage(original)) = original.and_then(parse_turn_item)
+                else {
+                    return None;
+                };
+                Some(
+                    guardian_truncate_text(&original.message(), GUARDIAN_MAX_ROOT_MESSAGE_TOKENS).0,
+                )
+            });
+            self.review_history = None;
+            return;
+        }
         let generation = self
             .review_history
             .as_ref()
@@ -361,6 +394,12 @@ impl ContextManager {
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
+                    // Keep the same bounded text that child reviewers receive before
+                    // compaction, instead of letting storage discard a large source.
+                    // Local instruction sections still omit incomplete originals whole.
+                    let (text, truncated) =
+                        guardian_truncate_text(&text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS);
+                    complete &= !truncated;
                     Arc::make_mut(&mut self.retained_context).record_user_message(
                         codex_history::RetainedUserMessage {
                             turn_id: item.turn_id().unwrap_or_default().to_owned(),
@@ -489,7 +528,7 @@ impl ContextManager {
 
     /// Compaction changes the model's history without changing the user's authorization.
     pub(crate) fn replace_compacted(&mut self, items: Vec<ResponseItemEnvelope>) {
-        if self.review_history.is_none() {
+        if !self.retain_user_messages && self.review_history.is_none() {
             let mut retained = TranscriptHistory::new(self.history_version.saturating_add(1));
             for item in self.raw_items().filter(|item| {
                 !matches!(item, ResponseItem::Message { role, content, .. }

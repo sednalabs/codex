@@ -11,6 +11,7 @@ use crate::compact::is_summary_message;
 use crate::context::GuardianReviewEvidence;
 use crate::context::is_contextual_user_fragment;
 use crate::event_mapping::parse_turn_item;
+use crate::guardian::GUARDIAN_MAX_ROOT_MESSAGE_TOKENS;
 use crate::guardian::guardian_truncate_text;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -22,7 +23,6 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::MultiAgentVersion;
 
 const MAX_ROOT_MESSAGES: usize = 8;
-const MAX_ROOT_MESSAGE_TOKENS: usize = 900;
 
 impl AgentControl {
     /// Returns bounded root conversation and authorization state for a MultiAgent V2 worker.
@@ -57,8 +57,8 @@ impl AgentControl {
                 .filter_map(|entry| match entry {
                     codex_history::RetainedContextEntry::UserMessage(message) => {
                         let text = if message.text.is_empty() && !message.complete {
-                            // Storage may omit a large instruction. After parent compaction,
-                            // Guardian history can still retain that exact source message.
+                            // Older records may omit a large instruction. Recover that exact
+                            // source while it remains available in the parent context.
                             let original = message.message_id.as_deref().and_then(|id| {
                                 root_history.raw_items().chain(history.review_items()).find(
                                     |item| item.id().is_some_and(|item_id| item_id.as_str() == id),
@@ -84,7 +84,7 @@ impl AgentControl {
                         .then(|| {
                             latest_user_turn_id = Some(message.turn_id.clone());
                             GuardianRootMessage::User(
-                                guardian_truncate_text(&text, MAX_ROOT_MESSAGE_TOKENS).0,
+                                guardian_truncate_text(&text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS).0,
                             )
                         })
                     }
@@ -113,7 +113,7 @@ impl AgentControl {
                         })
                         .collect::<String>();
                     Some(GuardianRootMessage::Assistant(
-                        guardian_truncate_text(&text, MAX_ROOT_MESSAGE_TOKENS).0,
+                        guardian_truncate_text(&text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS).0,
                     ))
                 })
                 .collect::<Vec<_>>();
@@ -147,7 +147,8 @@ impl AgentControl {
                         .then(|| {
                             latest_user_turn_id = item.turn_id().map(str::to_owned);
                             GuardianRootMessage::User(
-                                guardian_truncate_text(&message, MAX_ROOT_MESSAGE_TOKENS).0,
+                                guardian_truncate_text(&message, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS)
+                                    .0,
                             )
                         })
                     }
@@ -162,7 +163,7 @@ impl AgentControl {
                             })
                             .collect::<String>();
                         Some(GuardianRootMessage::Assistant(
-                            guardian_truncate_text(&text, MAX_ROOT_MESSAGE_TOKENS).0,
+                            guardian_truncate_text(&text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS).0,
                         ))
                     }
                     (_, ResponseItem::FunctionCall { call_id, .. }) => root_evidence

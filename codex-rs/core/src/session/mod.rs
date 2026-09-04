@@ -1591,10 +1591,7 @@ impl Session {
             );
             state
                 .history
-                .restore_guardian_history(guardian_history.as_ref());
-            state
-                .history
-                .restore_retained_context(Some(&retained_context));
+                .restore_review_context(Some(&retained_context), guardian_history.as_ref());
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
             }

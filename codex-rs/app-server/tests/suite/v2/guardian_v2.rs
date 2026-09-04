@@ -937,8 +937,8 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         .expect("root thread lock should not be poisoned") = Some(thread_id.clone());
     let mut turn_input = vec![UserInput::Text {
         text: if matches!(lifecycle, ThreadLifecycle::RootUserInputCompaction) {
-            // The retained record omits this payload; recover it from Guardian history
-            // after compaction removes it from the live model window.
+            // Exceed the full-text storage cap; the bounded root excerpt must survive
+            // after compaction removes the original from the live model window.
             format!("{USER_CONTEXT}\n{}", "Context detail. ".repeat(1_200))
         } else {
             USER_CONTEXT.to_owned()

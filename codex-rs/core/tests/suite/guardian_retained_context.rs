@@ -17,6 +17,7 @@ use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
+use codex_history::GuardianHistoryCheckpoint;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RetainedContext;
@@ -210,18 +211,34 @@ async fn compact_and_assert_answers(
     Ok(actual.clone())
 }
 
-#[test_case(ThreadHistoryMode::Legacy, true; "enabled legacy rollback")]
-#[test_case(ThreadHistoryMode::Paginated, true; "enabled paginated resume")]
-#[test_case(ThreadHistoryMode::Legacy, false; "disabled legacy rollback")]
-#[test_case(ThreadHistoryMode::Paginated, false; "disabled paginated resume")]
+#[derive(Clone, Copy)]
+enum InstructionSize {
+    Normal,
+    Oversized,
+}
+
+#[test_case(ThreadHistoryMode::Legacy, true, InstructionSize::Normal; "enabled legacy rollback")]
+#[test_case(ThreadHistoryMode::Paginated, true, InstructionSize::Normal; "enabled paginated resume")]
+#[test_case(ThreadHistoryMode::Legacy, false, InstructionSize::Normal; "disabled legacy rollback")]
+#[test_case(ThreadHistoryMode::Paginated, false, InstructionSize::Normal; "disabled paginated resume")]
+#[test_case(ThreadHistoryMode::Legacy, true, InstructionSize::Oversized; "oversized instruction rollback")]
+#[test_case(ThreadHistoryMode::Paginated, true, InstructionSize::Oversized; "oversized instruction resume")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retained_instructions_keep_identity_across_compaction_and_resume(
     history_mode: ThreadHistoryMode,
     thread_context_enabled: bool,
+    instruction_size: InstructionSize,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     const INITIAL: &str = "Never publish publicly.";
     const STEER: &str = "Also inspect the README.";
+    let initial = match instruction_size {
+        InstructionSize::Normal => INITIAL.to_owned(),
+        InstructionSize::Oversized => format!(
+            "{INITIAL}\n{}\nNever upload logs.",
+            "Project detail. ".repeat(2_000)
+        ),
+    };
     // Paginated history supports checkpoint resume, but not the full-history read
     // used by ThreadRollback. Exercise rollback on its supported legacy path.
     let rollback_counts: &[usize] = match history_mode {
@@ -284,7 +301,7 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
     let response_mock = mount_sse_sequence(&server, responses).await;
     test.codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: INITIAL.to_owned(),
+            text: initial.clone(),
             text_elements: Vec::new(),
         }]))
         .await?;
@@ -335,7 +352,7 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
     assert_eq!(answers[0].turn_id, answers[1].turn_id);
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 3);
-    assert!(requests[0].has_message_with_input_texts("user", |texts| texts == [INITIAL]));
+    assert!(requests[0].has_message_with_input_texts("user", |texts| texts == [initial.as_str()]));
     for (index, request) in requests.iter().skip(1).enumerate() {
         assert!(request.has_message_with_input_texts("user", |texts| texts == [STEER]));
         for answer in &answers[..=index] {
@@ -350,7 +367,7 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
         }
     }
     let history = thread.conversation_history_snapshot().await;
-    let user_messages = [INITIAL, STEER]
+    let user_messages = [initial.as_str(), STEER]
         .into_iter()
         .enumerate()
         .map(|(index, text)| {
@@ -370,7 +387,9 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
                 .expect("original user-message identity");
             json!({
                 "order": index, "turn_id": answers[index].turn_id,
-                "message_id": message_id.as_str(), "text": text, "complete": true,
+                "message_id": message_id.as_str(),
+                "text": codex_guardian_context::truncate_text(text, /*max_tokens*/ 900),
+                "complete": index != 0 || matches!(instruction_size, InstructionSize::Normal),
             })
         })
         .collect::<Vec<_>>();
@@ -481,10 +500,149 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
     assert_eq!(requests.len(), 4 + rollback_counts.len());
     assert!(requests[3].has_message_with_input_texts("user", |texts| texts == [STEER]));
     if history_mode == ThreadHistoryMode::Legacy {
-        assert!(requests[4].has_message_with_input_texts("user", |texts| texts == [INITIAL]));
+        assert!(
+            requests[4].has_message_with_input_texts("user", |texts| texts == [initial.as_str()])
+        );
         assert!(!requests[4].has_message_with_input_texts("user", |texts| texts == [STEER]));
-        assert!(!requests[5].has_message_with_input_texts("user", |texts| texts == [INITIAL]));
+        assert!(
+            !requests[5].has_message_with_input_texts("user", |texts| texts == [initial.as_str()])
+        );
     }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum LegacyInstructionSource {
+    GuardianHistory,
+    ModelWindow,
+    Missing,
+}
+
+#[test_case(ThreadHistoryMode::Legacy, LegacyInstructionSource::GuardianHistory; "legacy backup")]
+#[test_case(ThreadHistoryMode::Paginated, LegacyInstructionSource::GuardianHistory; "paginated backup")]
+#[test_case(ThreadHistoryMode::Legacy, LegacyInstructionSource::ModelWindow; "legacy window")]
+#[test_case(ThreadHistoryMode::Paginated, LegacyInstructionSource::ModelWindow; "paginated window")]
+#[test_case(ThreadHistoryMode::Legacy, LegacyInstructionSource::Missing; "legacy missing source")]
+#[test_case(ThreadHistoryMode::Paginated, LegacyInstructionSource::Missing; "paginated missing source")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_checkpoint_recovers_root_excerpt_before_discarding_backup(
+    history_mode: ThreadHistoryMode,
+    source_location: LegacyInstructionSource,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config.experimental_thread_store = ThreadStoreConfig::Local;
+            config
+                .features
+                .enable(Feature::GuardianThreadContext)
+                .expect("enable retained instructions");
+            config
+                .features
+                .disable(Feature::TokenBudget)
+                .expect("use local compaction");
+            config.model_provider.name = "Local compaction test provider".to_owned();
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_completed("initial-turn")]),
+            sse(vec![
+                ev_assistant_message("summary", "Compacted context."),
+                ev_completed("compact"),
+            ]),
+            sse(vec![
+                ev_assistant_message("summary-again", "Compacted context."),
+                ev_completed("compact-again"),
+            ]),
+        ],
+    )
+    .await;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: format!(
+                "Never publish publicly.\n{}\nNever upload logs.",
+                "Project detail. ".repeat(2_000)
+            ),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let snapshot = test.codex.conversation_history_snapshot().await;
+    let source = snapshot
+        .items()
+        .find(|item| matches!(item, ResponseItem::Message { role, .. } if role == "user"))
+        .cloned()
+        .context("original instruction")?;
+    let mut expected = compact_and_assert_answers(&test, &test.codex, &[]).await?;
+    let mut checkpoint = load_context(&test, &test.codex)
+        .await?
+        .into_iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::Compacted(checkpoint) => Some(checkpoint),
+            _ => None,
+        })
+        .context("compaction checkpoint")?;
+    // Pre-cutover checkpoints cleared retained text over 16 KiB and kept its raw
+    // source in the Guardian backup. Persist that old wire format for real replay.
+    let mut legacy = serde_json::to_value(&expected)?;
+    legacy["user_messages"][0]["text"] = json!("");
+    let legacy: RetainedContext = serde_json::from_value(legacy)?;
+    checkpoint.retained_context = Some(legacy.clone());
+    let window = checkpoint
+        .replacement_history
+        .as_mut()
+        .context("compacted model window")?;
+    window.retain(|item| item.id() != source.id());
+    match source_location {
+        LegacyInstructionSource::GuardianHistory => {
+            // Compaction can leave a shorter copy with the same ID in the model window.
+            let mut shortened = source.clone();
+            let ResponseItem::Message { content, .. } = &mut shortened else {
+                unreachable!("original instruction is a user message");
+            };
+            *content = vec![ContentItem::InputText {
+                text: "Never publish publicly.".to_owned(),
+            }];
+            window.push(shortened.into());
+            checkpoint.guardian_history = Some(GuardianHistoryCheckpoint(vec![source]));
+        }
+        LegacyInstructionSource::ModelWindow => window.push(source.into()),
+        LegacyInstructionSource::Missing => expected = legacy,
+    }
+    test.codex
+        .append_rollout_items(&[RolloutItem::Compacted(checkpoint)])
+        .await?;
+    let resumed = resume(&test, &test.codex).await?;
+    assert_eq!(
+        resumed
+            .conversation_history_snapshot()
+            .await
+            .retained_context(),
+        Some(&expected)
+    );
+    // The excerpt must survive another compaction and resume after the backup is gone.
+    assert_eq!(
+        compact_and_assert_answers(&test, &resumed, &[]).await?,
+        expected
+    );
+    let resumed = resume(&test, &resumed).await?;
+    assert_eq!(
+        resumed
+            .conversation_history_snapshot()
+            .await
+            .retained_context(),
+        Some(&expected)
+    );
+    resumed.shutdown_and_wait().await?;
     Ok(())
 }
 

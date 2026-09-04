@@ -857,7 +857,7 @@ fn encrypted_parent_compaction_rejects_invalid_latest_item() {
                 [&older, latest].into_iter(),
                 DEFAULT_PARENT_COMPACTION_TOKENS,
             ),
-            Ok(None),
+            Err(ParentCompactionError::Unusable),
             "an unusable latest summary must not resurrect older context"
         );
     }
@@ -3335,7 +3335,7 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn contributor_can_disable_parent_compaction_reuse() -> Result<()> {
+async fn legacy_contributor_can_disable_parent_compaction_reuse() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let oversized_compaction = ResponseItem::Compaction {
@@ -3347,7 +3347,7 @@ async fn contributor_can_disable_parent_compaction_reuse() -> Result<()> {
         oversized_compaction,
         user_instruction("Inspect the repository guidelines."),
     ];
-    let configuration = "[features]\nguardian_thread_context = true\n\n[features.guardianv2]\nenabled = true\nreuse_parent_compaction = false\nmax_parent_compaction_tokens = 256\n";
+    let configuration = "[features]\nguardian_thread_context = false\n\n[features.guardianv2]\nenabled = true\nreuse_parent_compaction = false\nmax_parent_compaction_tokens = 256\n";
     let (request, test, _registry) = sample_configured_conversation_history(
         conversation_history,
         r#"{"path":"README.md"}"#,

@@ -54,6 +54,7 @@ use crate::config::Permissions;
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianFollowupReviewReminder;
 use crate::context::GuardianNodeReplPolicy;
+use crate::context_manager::ContextManager;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::image_preparation::ImagePreparationMode;
 use crate::image_preparation::ImageResizeNoticeMode;
@@ -113,6 +114,7 @@ pub(crate) struct GuardianReviewSessionParams {
     pub(crate) reasons: ApprovalRequestReasons,
     pub(crate) schema: Value,
     pub(crate) model: String,
+    pub(crate) compaction_model_hash: Option<String>,
     pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
     pub(crate) guardian_default_review_model_id: String,
     pub(crate) guardian_catalog_contains_auto_review: bool,
@@ -230,6 +232,9 @@ impl GuardianReviewSessionReuseKey {
             parent_history_version: if spawn_config
                 .features
                 .enabled(Feature::GuardianReuseParentCompaction)
+                || spawn_config
+                    .features
+                    .enabled(Feature::GuardianThreadContext)
             {
                 parent_history_version
             } else {
@@ -280,31 +285,62 @@ impl GuardianReviewSessionReuseKey {
     }
 }
 
-fn encrypted_parent_compaction<'a, I>(items: I) -> Option<ResponseItem>
-where
-    I: IntoIterator<Item = &'a ResponseItem>,
-    I::IntoIter: DoubleEndedIterator,
-{
-    let item = items.into_iter().rev().find(|item| {
+fn encrypted_parent_compaction(
+    history: &ContextManager,
+    features: &ManagedFeatures,
+    reviewer_compaction_hash: Option<&str>,
+) -> anyhow::Result<Option<ResponseItem>> {
+    let strict = features.enabled(Feature::GuardianThreadContext);
+    if !strict && !features.enabled(Feature::GuardianReuseParentCompaction) {
+        return Ok(None);
+    }
+    let Some(envelope) = history.annotated_items().iter().rev().find(|envelope| {
         matches!(
-            item,
+            envelope.item,
             ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
         )
-    })?;
+    }) else {
+        return Ok(None);
+    };
 
-    match item {
+    let item = &envelope.item;
+    let valid = match item {
         ResponseItem::Compaction {
             id: Some(_),
             encrypted_content,
             ..
-        } if !encrypted_content.is_empty() => Some(item.clone()),
+        } if !encrypted_content.is_empty() => true,
         ResponseItem::ContextCompaction {
             id: Some(_),
             encrypted_content: Some(encrypted_content),
             ..
-        } if !encrypted_content.is_empty() => Some(item.clone()),
-        _ => None,
+        } if !encrypted_content.is_empty() => true,
+        _ => false,
+    };
+    if !valid && !strict {
+        return Ok(None);
     }
+    anyhow::ensure!(
+        valid,
+        "parent compaction checkpoint is unusable for Guardian review"
+    );
+    if strict {
+        // A resumed parent may now use a different model. Compare the actual
+        // checkpoint producer with the selected reviewer, not the live parent model.
+        let producer_hash = envelope
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.compaction_model_hash.as_deref());
+        anyhow::ensure!(
+            producer_hash
+                .zip(reviewer_compaction_hash)
+                .is_some_and(|(producer, reviewer)| {
+                    !producer.is_empty() && producer == reviewer
+                }),
+            "parent compaction checkpoint is incompatible with the Guardian review model or its compatibility is unknown"
+        );
+    }
+    Ok(Some(item.clone()))
 }
 
 pub(crate) fn prompt_cache_key_override_for_review_session(
@@ -446,11 +482,11 @@ impl GuardianReviewSessionManager {
                 } else {
                     None
                 };
-            let parent_compaction = spawn_config
-                .features
-                .enabled(Feature::GuardianReuseParentCompaction)
-                .then(|| encrypted_parent_compaction(parent_history.raw_items()))
-                .flatten();
+            let parent_compaction = encrypted_parent_compaction(
+                &parent_history,
+                &spawn_config.features,
+                session_config.compaction_model_hash.as_deref(),
+            )?;
             let parent_context = GuardianReviewContext::from(parent_turn);
             let mut reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
                 &spawn_config,
@@ -551,12 +587,19 @@ impl GuardianReviewSessionManager {
         } else {
             None
         };
-        let parent_compaction = params
-            .spawn_config
-            .features
-            .enabled(Feature::GuardianReuseParentCompaction)
-            .then(|| encrypted_parent_compaction(parent_history.raw_items()))
-            .flatten();
+        let parent_compaction = match encrypted_parent_compaction(
+            &parent_history,
+            &params.spawn_config.features,
+            params.compaction_model_hash.as_deref(),
+        ) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                return (
+                    GuardianReviewSessionOutcome::PromptBuildFailed(error),
+                    GuardianReviewAnalyticsResult::without_session(),
+                );
+            }
+        };
         let mut next_reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
             &params.spawn_config,
             params.parent_session.user_instructions().await,
@@ -581,7 +624,10 @@ impl GuardianReviewSessionManager {
         .await
         {
             Ok(mut state) => {
-                if parent_compaction.is_none()
+                if !params
+                    .parent_session
+                    .enabled(Feature::GuardianThreadContext)
+                    && parent_compaction.is_none()
                     && let Some(trunk) = state.trunk.as_ref()
                 {
                     // Without a decryptable summary, the existing reviewer may

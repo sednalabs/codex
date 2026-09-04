@@ -232,6 +232,25 @@ impl RetainedContext {
         bound_family(&mut self.user_messages, &mut self.user_messages_incomplete);
     }
 
+    /// Recovers omitted text from an exact source without changing identity, order, or
+    /// completeness. Recovered excerpts must still satisfy the retained storage limits.
+    pub fn recover_user_message_excerpts(
+        &mut self,
+        mut excerpt_for_id: impl FnMut(&str) -> Option<String>,
+    ) {
+        for entry in &mut self.user_messages {
+            let message = &mut entry.value;
+            if message.text.is_empty()
+                && !message.complete
+                && let Some(text) = message.message_id.as_deref().and_then(&mut excerpt_for_id)
+            {
+                message.text = text;
+                message.bound();
+            }
+        }
+        bound_family(&mut self.user_messages, &mut self.user_messages_incomplete);
+    }
+
     /// Same-event delivery is idempotent; changed contents replace that source's record.
     pub fn record(&mut self, event: &RetainedContextEvent) -> bool {
         let mut event = event.clone();

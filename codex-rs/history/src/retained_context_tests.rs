@@ -16,7 +16,7 @@ fn publish_answer() -> RetainedContextEvent {
 }
 
 #[test]
-fn retained_evidence_preserves_order_through_checkpoint_and_rollback() {
+fn retained_evidence_preserves_order_through_recovery_checkpoint_and_rollback() {
     let mut context = RetainedContext::default();
     let first = publish_answer();
     assert!(context.record(&first));
@@ -25,11 +25,19 @@ fn retained_evidence_preserves_order_through_checkpoint_and_rollback() {
         RetainedUserMessage {
             turn_id: "revocation-turn".to_owned(),
             message_id: Some("revocation".to_owned()),
-            text: "Do not publish after all.".to_owned(),
-            complete: true,
+            text: String::new(),
+            complete: false,
         },
         /*acceptance_order*/ None,
     );
+    let mut expected = context.clone();
+    expected.user_messages[0].value.text = "Do not publish after all.".to_owned();
+    context.recover_user_message_excerpts(|id| {
+        assert_eq!(id, "revocation");
+        Some("Do not publish after all.".to_owned())
+    });
+    assert_eq!(context, expected);
+    context.recover_user_message_excerpts(|_| panic!("existing text must not be replaced"));
     let snapshot = context.clone();
     assert!(!context.record(&first));
     assert_eq!(context, snapshot);
@@ -163,6 +171,29 @@ fn retained_families_enforce_storage_limits_without_changing_snapshots() {
         panic!("latest user evidence");
     };
     assert_eq!((&message.text, message.complete), (&String::new(), false));
+}
+
+#[test]
+fn recovered_excerpts_obey_record_and_family_limits() {
+    let mut context = RetainedContext::default();
+    for index in 0..MAX_FAMILY_RECORDS {
+        context.record_user_message(
+            RetainedUserMessage {
+                turn_id: "turn-1".to_owned(),
+                message_id: Some(format!("message-{index}")),
+                text: String::new(),
+                complete: false,
+            },
+            /*acceptance_order*/ None,
+        );
+    }
+    let unchanged = context.clone();
+    context.recover_user_message_excerpts(|_| Some("x".repeat(MAX_RECORD_BYTES)));
+    assert_eq!(context, unchanged);
+    context.recover_user_message_excerpts(|_| Some("x".repeat(MAX_RECORD_BYTES - 1_024)));
+    assert!(context.user_messages_incomplete);
+    assert!(context.user_messages.len() < MAX_FAMILY_RECORDS);
+    assert!(serde_json::to_vec(&context.user_messages).unwrap().len() <= MAX_FAMILY_BYTES);
 }
 
 #[test]
