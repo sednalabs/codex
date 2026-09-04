@@ -3015,7 +3015,8 @@ async fn experimental_features_popup_snapshot() {
             enabled: true,
         },
         ExperimentalFeatureItem {
-            feature: Some(Feature::Worktrees),
+            key: Feature::Worktrees.key().to_string(),
+            writable: true,
             name: worktrees.experimental_menu_name().unwrap().to_string(),
             description: worktrees.experimental_menu_description().unwrap().to_string(),
             enabled: false,
