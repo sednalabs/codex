@@ -2746,7 +2746,7 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
             base_sha = self.commit_all(repo, "base")
             self.run_git(repo, "checkout", "-b", "upstream")
             (repo / "carry.py").write_bytes(updated_text)
-            os.chmod(repo / "carry.py", 0o750)
+            os.chmod(repo / "carry.py", 0o700)
             upstream_sha = self.commit_all(repo, "upstream executable mode")
             upstream_hunks = DOWNSTREAM_DIVERGENCE_AUDIT.diff_hunks(
                 repo,
