@@ -747,6 +747,8 @@ fn json_header_value(value: &Value) -> Option<HeaderValue> {
     HeaderValue::from_str(&value).ok()
 }
 
+// The stream helper keeps each websocket lifecycle input explicit at this boundary.
+#[allow(clippy::too_many_arguments)]
 async fn run_websocket_response_stream(
     ws_stream: &mut WsStream,
     tx_event: mpsc::Sender<std::result::Result<ResponseEvent, ApiError>>,
