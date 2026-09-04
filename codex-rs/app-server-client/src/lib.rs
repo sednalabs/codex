@@ -852,11 +852,6 @@ impl InProcessAppServerClient {
             worker_handle,
         } = self;
         let mut worker_handle = worker_handle;
-        // Drop the caller-facing receiver before asking the worker to shut
-        // down. That unblocks any pending must-deliver `event_tx.send(..)`
-        // so the worker can reach `handle.shutdown()` instead of timing out
-        // and getting aborted with the runtime still attached.
-        drop(event_rx);
         let (response_tx, response_rx) = oneshot::channel();
         if command_tx
             .send(ClientCommand::Shutdown { response_tx })
@@ -872,6 +867,10 @@ impl InProcessAppServerClient {
                 })??;
             }
         }
+        // Release the caller-facing receiver only after the shutdown response
+        // has been delivered. This prevents the consumer-closed path from
+        // winning the race against an explicit `ClientCommand::Shutdown`.
+        drop(event_rx);
 
         if let Err(_elapsed) = timeout(IN_PROCESS_SHUTDOWN_TIMEOUT, &mut worker_handle).await {
             worker_handle.abort();
@@ -1049,7 +1048,8 @@ mod tests {
     use futures::SinkExt;
     use futures::StreamExt;
     use pretty_assertions::assert_eq;
-    use std::ops::{Deref, DerefMut};
+    use std::ops::Deref;
+    use std::ops::DerefMut;
     use std::path::Path;
     use tempfile::TempDir;
     use tokio::net::TcpListener;
@@ -2833,6 +2833,39 @@ mod tests {
             .await
             .expect("shutdown should not wait for the 5s fallback timeout")
             .expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn shutdown_delivers_response_before_releasing_event_receiver() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let response_sent_while_event_receiver_open = Arc::new(AtomicBool::new(false));
+        let response_sent = Arc::clone(&response_sent_while_event_receiver_open);
+        let worker_handle = tokio::spawn(async move {
+            let Some(ClientCommand::Shutdown { response_tx }) = command_rx.recv().await else {
+                panic!("expected shutdown command");
+            };
+            assert!(!event_tx.is_closed());
+            response_tx
+                .send(Ok(()))
+                .expect("shutdown response receiver should be alive");
+            response_sent.store(true, Ordering::Release);
+            event_tx.closed().await;
+        });
+        let client = InProcessAppServerClient {
+            command_tx,
+            event_rx,
+            worker_handle,
+        };
+
+        timeout(Duration::from_secs(1), client.shutdown())
+            .await
+            .expect("shutdown should complete")
+            .expect("shutdown should deliver its response before releasing events");
+        assert!(response_sent_while_event_receiver_open.load(Ordering::Acquire));
     }
 
     #[tokio::test(start_paused = true)]
