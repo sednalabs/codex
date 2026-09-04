@@ -2402,11 +2402,10 @@ impl App {
                 }
             }
             AppEvent::FetchExperimentalFeatures { thread_id, response_tx } => {
-                crate::experimental_features::fetch(
-                    app_server.request_handle(),
-                    thread_id,
-                    response_tx,
-                );
+                self.fetch_experimental_features(app_server, thread_id, response_tx);
+            }
+            AppEvent::SaveExperimentalFeatures { thread_id, updates, response_tx } => {
+                self.save_experimental_features(app_server, thread_id, updates, response_tx);
             }
             AppEvent::UpdateFeatureFlags { updates } => {
                 self.update_feature_flags(app_server, updates).await;

@@ -219,6 +219,7 @@ mod config_persistence;
 mod connector_mentions;
 mod event_dispatch;
 mod exit_summary;
+mod experimental_features;
 mod file_change_approvals;
 mod history_pagination;
 mod history_ui;
@@ -537,6 +538,7 @@ struct InitialHistoryReplayBuffer {
 }
 
 pub(crate) struct App {
+    feature_write_lock: Arc<tokio::sync::Mutex<()>>,
     model_catalog: Arc<ModelCatalog>,
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) app_event_tx: AppEventSender,
