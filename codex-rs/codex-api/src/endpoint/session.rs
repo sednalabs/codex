@@ -76,7 +76,7 @@ impl<T: HttpTransport> ProviderRequestAttempt<T> {
     }
 }
 
-type ProviderRequestAttemptFuture<T: HttpTransport> =
+type ProviderRequestAttemptFuture<T> =
     Pin<Box<dyn Future<Output = Result<ProviderRequestAttempt<T>, TransportError>> + Send>>;
 
 /// Produces one independently resolved, immutable setup for each application attempt.
