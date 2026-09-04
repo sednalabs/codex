@@ -1056,6 +1056,9 @@
             "workspace_owner_usage_nudge": {
               "type": "boolean"
             },
+            "worktrees": {
+              "type": "boolean"
+            },
             "write_stdin_approval": {
               "type": "boolean"
             }
@@ -6405,6 +6408,9 @@
           "type": "boolean"
         },
         "workspace_owner_usage_nudge": {
+          "type": "boolean"
+        },
+        "worktrees": {
           "type": "boolean"
         },
         "write_stdin_approval": {
