@@ -525,6 +525,12 @@ pub(super) async fn run_synchronous_review(
 
     let schema = guardian_output_schema();
     let terminal_action = action_summary.clone();
+    let root_authorization_version = session
+        .services
+        .agent_control
+        .root_user_authorization(session.thread_id)
+        .await
+        .map(|snapshot| snapshot.authorization_version);
     let review_evidence = if let Some(evidence) = session
         .services
         .thread_extension_data
@@ -534,12 +540,6 @@ pub(super) async fn run_synchronous_review(
         // stale even if it later completes against a newer prompt snapshot.
         let history = session.conversation_history_snapshot().await;
         let authorization_version = evidence.authorization_version(history.as_ref());
-        let root_authorization_version = session
-            .services
-            .agent_control
-            .root_user_authorization(session.thread_id)
-            .await
-            .map(|snapshot| snapshot.authorization_version);
         format_guardian_action_pretty(&request).ok().map(|action| {
             (
                 evidence,
@@ -551,7 +551,7 @@ pub(super) async fn run_synchronous_review(
     } else {
         None
     };
-    let (outcome, analytics_result) = Box::pin(run_guardian_review_session_with_retry(
+    let (mut outcome, analytics_result) = Box::pin(run_guardian_review_session_with_retry(
         session.clone(),
         context,
         request,
@@ -561,6 +561,19 @@ pub(super) async fn run_synchronous_review(
         GUARDIAN_REVIEW_MAX_ATTEMPTS,
     ))
     .await;
+    if session.enabled(Feature::GuardianThreadContext)
+        && matches!(&outcome, GuardianReviewOutcome::Completed(assessment) if assessment.outcome == GuardianAssessmentOutcome::Allow)
+        && root_authorization_version
+            != session
+                .services
+                .agent_control
+                .root_user_authorization(session.thread_id)
+                .await
+                .map(|snapshot| snapshot.authorization_version)
+    {
+        // A completed approval cannot outlive the root evidence it evaluated.
+        outcome = GuardianReviewOutcome::Error(GuardianReviewError::Cancelled);
+    }
 
     let completed_at_ms = now_unix_timestamp_ms();
     let completed_review = matches!(&outcome, GuardianReviewOutcome::Completed(_));

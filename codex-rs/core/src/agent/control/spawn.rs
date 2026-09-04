@@ -15,6 +15,7 @@ use crate::tools::handlers::multi_agents_common::build_agent_resume_config;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_extension_api::ExtensionDataInit;
+use codex_features::Feature;
 use codex_protocol::intersect_effective_permission_profiles;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_utils_path_uri::PathUri;
@@ -104,7 +105,11 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_reference_context_item:
     }
 }
 
-fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[String]) -> bool {
+fn retain_forked_developer_message(
+    item: &mut ResponseItem,
+    usage_hint_texts: &[String],
+    features: &crate::config::ManagedFeatures,
+) -> bool {
     if !matches!(item, ResponseItem::Message { role, .. } if role == "developer") {
         return true;
     }
@@ -113,11 +118,20 @@ fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[
         return false;
     };
     content.retain(|content_item| {
+        if features.enabled(Feature::GuardianThreadContext)
+            && content_item.kind().0 == "guardian.approved_action"
+        {
+            return false;
+        }
         let ContentItem::InputText { text } = content_item.content() else {
             return true;
         };
 
         !(MultiAgentRoleInstructions::matches_text(text)
+            || (features.enabled(Feature::GuardianThreadContext)
+                && text.starts_with(
+                    crate::guardian::AUTO_REVIEW_DENIED_ACTION_APPROVAL_DEVELOPER_PREFIX,
+                ))
             || MultiAgentModeInstructions::matches_text(text)
             || CurrentTimeReminder::matches_text(text)
             || usage_hint_texts
@@ -925,6 +939,7 @@ impl AgentControl {
             if !retain_forked_developer_message(
                 response_item,
                 &multi_agent_v2_usage_hint_texts_to_filter,
+                &config.features,
             ) {
                 return false;
             }

@@ -684,6 +684,13 @@ impl GuardianV2Extension {
         let rendered_images = guardian_config
             .transcript
             .images(input.conversation_history.review_items(), node_repl_images);
+        // Capture root evidence before background metadata resolution or model I/O.
+        // Later root changes invalidate this sample through its captured authorization version.
+        let root_snapshot = if thread_context_enabled {
+            thread.guardian_root_snapshot().await
+        } else {
+            None
+        };
 
         let score_authorization = ScoreAuthorization::current(&thread).await;
         tokio::spawn(async move {
@@ -694,7 +701,11 @@ impl GuardianV2Extension {
                 }
                 None => None,
             };
-            let root_snapshot = thread.guardian_root_snapshot().await;
+            let root_snapshot = if thread_context_enabled {
+                root_snapshot
+            } else {
+                thread.guardian_root_snapshot().await
+            };
             let mut trusted_skills = TrustedSkillInvocations::default();
             for path in local_trusted_skill_paths.iter().chain(
                 root_snapshot

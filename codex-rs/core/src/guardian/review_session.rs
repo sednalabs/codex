@@ -194,6 +194,7 @@ struct GuardianReviewSessionReuseKey {
     // Only include settings that affect spawned-session behavior and parent
     // history rewrites that invalidate existing reviewer context.
     parent_history_version: u64,
+    root_authorization_version: Option<crate::codex_thread::GuardianAuthorizationVersion>,
     node_repl_auto_review_required: bool,
     node_repl_policy: String,
     model: Option<String>,
@@ -225,6 +226,7 @@ impl GuardianReviewSessionReuseKey {
         parent_history_version: u64,
     ) -> Self {
         Self {
+            root_authorization_version: None,
             parent_history_version: if spawn_config
                 .features
                 .enabled(Feature::GuardianReuseParentCompaction)
@@ -433,13 +435,24 @@ impl GuardianReviewSessionManager {
                 guardian_review_session_config(&parent_session, &parent_turn).await?;
             let spawn_config = session_config.spawn_config;
             let parent_history = parent_session.clone_history().await;
+            let root_authorization_version =
+                if parent_session.enabled(Feature::GuardianThreadContext) {
+                    parent_session
+                        .services
+                        .agent_control
+                        .root_user_authorization(parent_session.thread_id)
+                        .await
+                        .map(|snapshot| snapshot.authorization_version)
+                } else {
+                    None
+                };
             let parent_compaction = spawn_config
                 .features
                 .enabled(Feature::GuardianReuseParentCompaction)
                 .then(|| encrypted_parent_compaction(parent_history.raw_items()))
                 .flatten();
             let parent_context = GuardianReviewContext::from(parent_turn);
-            let reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
+            let mut reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
                 &spawn_config,
                 parent_session.user_instructions().await,
                 parent_history.history_version(),
@@ -452,6 +465,7 @@ impl GuardianReviewSessionManager {
                     .node_repl_auto_review_required,
             )
             .with_node_repl_policy(&session_config.node_repl_policy);
+            reuse_key.root_authorization_version = root_authorization_version;
             let spawn_cancel_token = self.cancellation_token.child_token();
             let spawn_cancel_guard = spawn_cancel_token.clone().drop_guard();
             let review_session = spawn_guardian_review_session(
@@ -523,6 +537,20 @@ impl GuardianReviewSessionManager {
     ) -> (GuardianReviewSessionOutcome, GuardianReviewAnalyticsResult) {
         let deadline = params.deadline;
         let parent_history = params.parent_session.clone_history().await;
+        let root_authorization_version = if params
+            .parent_session
+            .enabled(Feature::GuardianThreadContext)
+        {
+            params
+                .parent_session
+                .services
+                .agent_control
+                .root_user_authorization(params.parent_session.thread_id)
+                .await
+                .map(|snapshot| snapshot.authorization_version)
+        } else {
+            None
+        };
         let parent_compaction = params
             .spawn_config
             .features
@@ -543,6 +571,7 @@ impl GuardianReviewSessionManager {
                 .node_repl_auto_review_required,
         )
         .with_node_repl_policy(&params.node_repl_policy);
+        next_reuse_key.root_authorization_version = root_authorization_version;
         let mut spawned_trunk = false;
         let trunk_candidate = match run_before_review_deadline(
             deadline,
