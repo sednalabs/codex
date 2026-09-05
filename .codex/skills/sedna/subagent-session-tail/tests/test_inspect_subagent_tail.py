@@ -29,5 +29,21 @@ class TimestampParsingTest(unittest.TestCase):
         )
 
 
+class OutputSummarizationTest(unittest.TestCase):
+    def test_summarizes_string_list_dict_and_scalar_outputs(self) -> None:
+        cases = [
+            ("first\nsecond", "first"),
+            (["first", "second"], "[first]"),
+            ([{"type": "text", "text": "ready"}], '[{"type": "text", "text": "ready"}]'),
+            ({"success": True}, '{"success": true}'),
+            (7, "7"),
+            (None, "None"),
+        ]
+
+        for output, expected in cases:
+            with self.subTest(output=output):
+                self.assertEqual(inspect_subagent_tail.summarize_output(output), expected)
+
+
 if __name__ == "__main__":
     unittest.main()

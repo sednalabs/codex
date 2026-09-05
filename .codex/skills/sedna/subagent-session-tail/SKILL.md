@@ -7,6 +7,11 @@ description: Inspect one running or recently completed subagent cheaply by exact
 
 Use this skill to answer one narrow orchestration question without broad log trawling: is the child still active, already done, or quiet enough that the parent should inspect deeper or send one bounded poke?
 
+Never interrupt, cancel, close, or abandon a running child because it is
+"taking too long". Elapsed time alone is not evidence. Inspect the exact child
+first; if the lookup is missing, ambiguous, or stale, inspect more deeply or
+send one bounded follow-up instead of jumping to interruption.
+
 ## Operating Model
 
 - Prefer exact `child-thread-id` from `list_agents` when available.
@@ -35,6 +40,7 @@ Use this skill to answer one narrow orchestration question without broad log tra
 ## Decision Map
 
 - `keep waiting`: `session_state` is `active` and the tail or usage heartbeat is still advancing, or the child is clearly inside a long tool call or build.
+- `keep waiting`: also use this when the child has produced its bounded patch and is running agreed seam-local validation.
 - `inspect more deeply`: the helper finds no session, `matched_session_files` is greater than `1`, `session_state` is `unknown`, or the terminal marker and recent events do not line up cleanly.
 - `send a bounded follow-up`: `session_state` is still `active` or `unknown`, the tail is quiet or stale, usage is flat, and there is no obvious long-running tool call explaining the silence.
 - `completed`: the lane reached `task_complete`; say so explicitly before summarizing the tail.
@@ -67,7 +73,9 @@ scripts/inspect_subagent_tail.py --child-thread-id <thread-id> --tail 8 --no-usa
 - If `session_state` is `completed` or `interrupted`, say so explicitly before summarizing the tail.
 - If you call the lane `blocked` or `idle`, tie that label to the helper output and recent events instead of guessing from silence alone.
 - If the tail is quiet, `session_state` is still `active`, and the ledger is flat, that is the moment to consider a gentle poke.
+- Recommend interruption only when the evidence shows a real conflict, explicit stuck/error state, or operator-requested cancellation condition that a bounded follow-up cannot handle safely.
 - If the child is still actively compiling or waiting on a long tool call, do not interrupt just to ask for status.
+- If the child has patched the seam and is running agreed narrow validation, keep waiting unless the tail shows staleness, drift, or a real blocker.
 
 ## Finish Line
 
@@ -78,3 +86,6 @@ Report only:
 - whether the lane looks active, completed, interrupted, blocked, or idle
 - whether the usage ledger is still moving
 - the next action: keep waiting, inspect more deeply, or send a bounded follow-up
+
+Use this skill before poking or interrupting an existing child when the only
+question is whether it is still making progress.

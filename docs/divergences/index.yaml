@@ -1396,26 +1396,25 @@
     },
     {
       "id": "agent-orchestration-skills",
-      "title": "Agent orchestration skills and sidecar templates",
+      "title": "Agent workflow helpers and runtime-coupled session tail",
       "status": "live",
       "category": "mcp",
       "surface_type": "agent-facing",
       "surface": [
         "babysit-pr babysitter skill",
-        "codex-orchestrator skill template",
-        "sidecar-review-loop and subagent-session-tail helpers"
+        "workflow-run babysitter helpers",
+        "subagent-session-tail runtime helper"
       ],
       "files": [
         ".codex/skills/babysit-pr/agents/openai.yaml",
         ".codex/skills/babysit-pr/scripts/gh_pr_watch.py",
         ".codex/skills/babysit-gh-workflow-run/",
-        ".codex/skills/sedna/codex-orchestrator/agents/openai.yaml",
-        ".codex/skills/sedna/sidecar-review-loop/agents/openai.yaml",
+        ".codex/skills/sedna/subagent-session-tail/SKILL.md",
         ".codex/skills/sedna/subagent-session-tail/agents/openai.yaml",
         ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py",
-        ".codex/skills/"
+        ".codex/skills/sedna/subagent-session-tail/tests/test_inspect_subagent_tail.py"
       ],
-      "behavior": "Downstream publishes tailored skill templates and helpers that orchestrate babysitting, sidecar review loops, and subagent session tails.",
+      "behavior": "Downstream publishes bounded babysitter helpers and the runtime-coupled subagent session-tail inspector. Semantic orchestration and review policy are intentionally external user-policy concerns, not public fork carry.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1426,16 +1425,17 @@
         "py_compile of gh_pr_watch.py, gh_workflow_run_watch.py, gh_dispatch_and_watch.py, and inspect_subagent_tail.py",
         "test_gh_workflow_run_watch.py",
         "test_gh_dispatch_and_watch.py",
+        "test_inspect_subagent_tail.py",
         "inspect_subagent_tail.py --help"
       ],
       "owner": "downstream",
-      "notes": "Keeps the downstream agent orchestration surface explicit and discoverable.",
+      "notes": "The public fork retains only helpers coupled to Codex workflow or session formats. The former public codex-orchestrator and sidecar-review-loop bundles were retired so user policy has one semantic owner.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "agent-workflow-skill",
       "hotspot_files": [
 
       ],
-      "extraction_target": "operator-owned agent workflow skills"
+      "extraction_target": "runtime-coupled agent workflow helpers"
     },
     {
       "id": "skill-loader-fixture-hermeticity",

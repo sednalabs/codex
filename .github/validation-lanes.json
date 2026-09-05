@@ -2653,9 +2653,10 @@
       "allowed_paths": [
         ".codex/skills/babysit-pr/**",
         ".codex/skills/babysit-gh-workflow-run/**",
-        ".codex/skills/sedna/subagent-session-tail/**",
-        ".codex/skills/sedna/codex-orchestrator/**",
-        ".codex/skills/sedna/sidecar-review-loop/**",
+        ".codex/skills/sedna/**",
+        ".github/scripts/validation-lanes/agent-workflow-sanity.sh",
+        ".github/validation-lanes.json",
+        "docs/carry-divergence-ledger.md",
         "docs/downstream-regression-matrix.md",
         "docs/divergences/index.yaml",
         "justfile"
@@ -2663,9 +2664,7 @@
       "required_any_paths": [
         ".codex/skills/babysit-pr/**",
         ".codex/skills/babysit-gh-workflow-run/**",
-        ".codex/skills/sedna/subagent-session-tail/**",
-        ".codex/skills/sedna/codex-orchestrator/**",
-        ".codex/skills/sedna/sidecar-review-loop/**"
+        ".codex/skills/sedna/subagent-session-tail/**"
       ]
     },
     {
