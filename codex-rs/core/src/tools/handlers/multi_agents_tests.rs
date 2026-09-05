@@ -4715,6 +4715,60 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_native_wait_allows_zero_timeout_until_terminal_event() {
+    let (session, turn, target_id, _root, target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 0;
+            config.multi_agent_v2.max_wait_timeout_ms = 10_000;
+            config.multi_agent_v2.default_wait_timeout_ms = 0;
+        })
+        .await;
+
+    let wait_task = tokio::spawn({
+        let session = session.clone();
+        let turn = turn.clone();
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({
+                        "targets": [target_id.to_string()],
+                        "timeout_ms": 0,
+                        "native_event_wait": true,
+                    })),
+                ))
+                .await
+        }
+    });
+
+    target
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("shutdown should submit");
+
+    let output = timeout(Duration::from_secs(1), wait_task)
+        .await
+        .expect("zero-timeout native wait should remain armed until terminal event")
+        .expect("wait task should join")
+        .expect("native wait should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+
+    assert_eq!(result.requested_ids, vec![target_id]);
+    assert!(result.pending_ids.is_empty());
+    assert_eq!(
+        result.completion_reason,
+        CollabWaitingCompletionReason::Terminal
+    );
+    assert!(!result.timed_out);
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_wait_agent_rejects_timeout_above_configured_max() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();

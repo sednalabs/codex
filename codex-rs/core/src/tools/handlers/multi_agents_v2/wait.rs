@@ -175,11 +175,6 @@ impl Handler {
             turn.config.multi_agent_v2.max_wait_timeout_ms,
             turn.config.multi_agent_v2.default_wait_timeout_ms,
         )?;
-        if args.native_event_wait && timeout_ms == 0 {
-            return Err(FunctionCallError::RespondToModel(
-                "native_event_wait requires a positive lease timeout".to_string(),
-            ));
-        }
         let (mut input_activity_rx, pending_input_activity) = session
             .input_queue
             .subscribe_activity(/*turn_state*/ None)
