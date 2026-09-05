@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Watch GitHub Actions workflow runs for remote validation babysitting."""
 
-import io
 import argparse
+import copy
+import io
 import json
 import os
 import re
@@ -163,6 +164,9 @@ FOLLOWED_RUN_RELIST_MULTIPLIER = 5
 FOLLOWED_RUN_RELIST_MIN_SECONDS = 60
 HOST_MISMATCH_RECHECK_MIN_SECONDS = 60
 DEFAULT_RETRY_SETTLE_SECONDS = 90
+# A run-id target follows the latest attempt for that id.  Revalidate a cached
+# terminal success periodically so reruns and head changes cannot stay hidden.
+TERMINAL_SUCCESS_REVALIDATION_MIN_SECONDS = 60
 
 _GH_ENV = None
 
@@ -1238,6 +1242,26 @@ def _followed_run_relist_interval_seconds(poll_seconds):
 
 def _host_mismatch_recheck_interval_seconds(poll_seconds):
     return max(HOST_MISMATCH_RECHECK_MIN_SECONDS, int(max(1, poll_seconds)) * FOLLOWED_RUN_RELIST_MULTIPLIER)
+
+
+def _terminal_success_revalidation_interval_seconds(poll_seconds):
+    return max(
+        TERMINAL_SUCCESS_REVALIDATION_MIN_SECONDS,
+        int(max(1, poll_seconds)) * FOLLOWED_RUN_RELIST_MULTIPLIER,
+    )
+
+
+def _run_attempt(run_view):
+    """Return the API's attempt identity, tolerating older fixture spellings."""
+    value = _dict_or_empty(run_view).get("attempt")
+    if value is None:
+        value = _dict_or_empty(run_view).get("runAttempt")
+    if value is None:
+        value = _dict_or_empty(run_view).get("run_attempt")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def view_run(repo, run_id):
@@ -2826,7 +2850,7 @@ def normalize_snapshot(
         "resolved_ref": resolved_ref,
         "run": {
             "id": run_view.get("databaseId"),
-            "attempt": run_view.get("attempt"),
+            "attempt": _run_attempt(run_view),
             "number": run_view.get("number"),
             "name": str(run_view.get("displayTitle") or run_view.get("name") or ""),
             "workflow_name": str(run_view.get("workflowName") or target.get("workflow", "")),
@@ -3040,6 +3064,32 @@ def target_state_from_target(args, target, repo, remembered):
     state = remembered.setdefault(key, {})
     gemini_cache = remembered.setdefault("__gemini_cache__", {})
     if target["kind"] == TARGET_KIND_RUN_ID:
+        now = int(time.time())
+        success_cache = state.get("terminal_success_cache")
+        revalidate_after = _terminal_success_revalidation_interval_seconds(
+            getattr(args, "poll_seconds", 10)
+        )
+        if isinstance(success_cache, dict):
+            cached_run_id = int(success_cache.get("run_id") or 0)
+            cached_head_sha = str(success_cache.get("head_sha") or "")
+            expected_head_sha = target.get("head_sha")
+            cache_age = max(0, now - int(success_cache.get("observed_at") or 0))
+            identity_matches = (
+                cached_run_id == int(target["run_id"])
+                and (not expected_head_sha or _matches_head_sha_prefix(cached_head_sha, expected_head_sha))
+            )
+            cached_snapshot = success_cache.get("snapshot")
+            if (
+                identity_matches
+                and cache_age < revalidate_after
+                and isinstance(cached_snapshot, dict)
+            ):
+                # Keep the cached observation immutable; acknowledgement handling
+                # annotates snapshots in place.
+                return _apply_acknowledged_actions(
+                    copy.deepcopy(cached_snapshot), getattr(args, "ack_action", [])
+                )
+
         run_view = view_run(repo, target["run_id"])
         snapshot = normalize_snapshot(
             run_view,
@@ -3049,6 +3099,25 @@ def target_state_from_target(args, target, repo, remembered):
             resolved_ref=str(run_view.get("headBranch") or str(target.get("ref") or "")),
             gemini_disabled=args.no_gemini_diagnosis,
         )
+        expected_head_sha = str(target.get("head_sha") or "").strip()
+        observed_head_sha = str(run_view.get("headSha") or "").strip()
+        if expected_head_sha and not _matches_head_sha_prefix(
+            observed_head_sha, expected_head_sha
+        ):
+            # A run-id target must never turn a stale or incomplete head read
+            # into terminal-success evidence for the requested candidate.
+            snapshot["actions"] = ["stop_run_head_mismatch"]
+        if snapshot.get("actions") == ["stop_run_succeeded"]:
+            state["terminal_success_cache"] = {
+                "run_id": int(run_view.get("databaseId") or target["run_id"]),
+                "head_sha": str(run_view.get("headSha") or ""),
+                "run_attempt": _run_attempt(run_view),
+                "observed_at": now,
+                "snapshot": copy.deepcopy(snapshot),
+            }
+        else:
+            # Nonterminal and failed observations must remain fresh every poll.
+            state.pop("terminal_success_cache", None)
         state["last_run_id"] = int(run_view.get("databaseId") or target["run_id"])
         if snapshot.get("actions") == ["diagnose_run_failure"]:
             run_id = int(run_view.get("databaseId") or target["run_id"])
@@ -3389,6 +3458,32 @@ def _payload_has_pending_retry_settle(payload, retry_state, settle_seconds):
     return pending
 
 
+def _payload_all_terminal_success(payload):
+    targets = _list_or_empty(payload.get("targets"))
+    if not targets or any(not isinstance(target, dict) for target in targets):
+        return False
+    return all(
+        _list_or_empty(target.get("actions")) == ["stop_run_succeeded"]
+        for target in targets
+    )
+
+
+def _invalidate_cached_terminal_successes(targets, remembered):
+    invalidated = False
+    for target in targets:
+        try:
+            key = target_to_display_key(target)
+        except Exception:  # noqa: BLE001 - malformed target data must not stop the watcher.
+            continue
+        state = remembered.get(key)
+        if not isinstance(state, dict):
+            continue
+        if isinstance(state.get("terminal_success_cache"), dict):
+            state.pop("terminal_success_cache", None)
+            invalidated = True
+    return invalidated
+
+
 def emit(payload):
     sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
     sys.stdout.flush()
@@ -3400,6 +3495,13 @@ def watch_until_action(args, repo):
     retry_state = {}
     while True:
         payload = resolve_snapshot(args, repo, targets, remembered)
+        if args.wait_for == "all_done" and _payload_all_terminal_success(payload):
+            # A bounded cache is safe for ordinary waiting, but aggregate
+            # terminal success needs one authoritative final read.  A rerun can
+            # otherwise become pending within the cache window and be hidden
+            # while a sibling target finishes.
+            if _invalidate_cached_terminal_successes(targets, remembered):
+                payload = resolve_snapshot(args, repo, targets, remembered)
         if args.require_terminal_run and _payload_has_pending_retry_settle(
             payload,
             retry_state,
