@@ -235,7 +235,16 @@ def fingerprint_command(repository: str, permissions: Mapping[str, Any] | Sequen
             data = path.read_bytes()
         except OSError as exc:
             raise BrokerError("command source could not be read") from exc
-        source_entries.append({"path": key, "sha256": hashlib.sha256(data).hexdigest()})
+        source_entries.append(
+            {
+                "path": key,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "mode": stat.S_IMODE(path.stat().st_mode),
+                "uid": path.stat().st_uid,
+                "dev": path.stat().st_dev,
+                "ino": path.stat().st_ino,
+            }
+        )
     payload = {"argv": list(argv), "executable": str(Path(executable).resolve()), "repository": repo, "permissions": perms, "sources": source_entries}
     return hashlib.sha256(_json_bytes(payload)).hexdigest()
 
@@ -421,6 +430,7 @@ class GitHubAppBroker:
         self._child_runner = child_runner
         self._clock = clock
         self._record: TokenRecord | None = None
+        self._pending_cleanup_token: str | None = None
         self._closed = False
         atexit.register(self._atexit_revoke)
 
@@ -589,14 +599,21 @@ class GitHubAppBroker:
             return {"attempted": True, "revoked": False, "error": _redact(exc, (token,))}
 
     def get_installation_token(self) -> TokenRecord:
+        if self._closed:
+            raise BrokerError("broker is closed")
+        if self._pending_cleanup_token is not None:
+            raise BrokerError("installation token cleanup is pending")
         if self._record and self._clock() < self._record.expires_epoch - REFRESH_THRESHOLD_SECONDS:
             return self._record
         if self._record is not None:
             old_token = self._record.token
-            self._record = None
             revocation = self._revoke_token_once(old_token)
             if not revocation["revoked"]:
+                self._pending_cleanup_token = old_token
+                self._record = None
+                self._closed = True
                 raise BrokerError("cached installation token could not be revoked before refresh")
+            self._record = None
         self._validate_app()
         self._validate_installation()
         response, payload = self._request_json(
@@ -630,6 +647,8 @@ class GitHubAppBroker:
             if isinstance(issued_token, str) and issued_token:
                 cleanup = self._revoke_token_once(issued_token)
                 if not cleanup["revoked"]:
+                    self._pending_cleanup_token = issued_token
+                    self._closed = True
                     raise BrokerError("installation token response was rejected and revocation was not proven") from exc
             raise
         rate_headers = {key: value for key, value in response.headers.items() if key.lower().startswith("x-ratelimit-")}
@@ -645,6 +664,8 @@ class GitHubAppBroker:
         if not isinstance(expected_fingerprint, str) or actual != expected_fingerprint:
             raise BrokerError("command fingerprint mismatch")
         record = self.get_installation_token()
+        if fingerprint_command(self.repository, self.permissions, argv) != expected_fingerprint:
+            raise BrokerError("command fingerprint changed before child execution")
         child_env = _without_ambient_tokens(os.environ)
         child_env["GH_TOKEN"] = record.token
         try:
@@ -658,18 +679,23 @@ class GitHubAppBroker:
         return {"identity": self.public_identity(record), "returncode": returncode, "stdout": stdout, "stderr": stderr}
 
     def revoke(self) -> dict[str, Any]:
-        if self._record is None:
+        token = self._pending_cleanup_token or (self._record.token if self._record is not None else None)
+        if token is None:
             self._closed = True
             return {"attempted": False, "revoked": False}
-        token = self._record.token
-        try:
-            return self._revoke_token_once(token)
-        finally:
+        result = self._revoke_token_once(token)
+        if result["revoked"]:
+            self._pending_cleanup_token = None
             self._record = None
             self._closed = True
+        else:
+            self._pending_cleanup_token = token
+            self._record = None
+            self._closed = True
+        return result
 
     def _atexit_revoke(self) -> None:
-        if self._record is not None and not self._closed:
+        if self._record is not None or self._pending_cleanup_token is not None:
             self.revoke()
 
     def close(self) -> dict[str, Any]:

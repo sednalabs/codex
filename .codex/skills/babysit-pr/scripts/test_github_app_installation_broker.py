@@ -116,8 +116,9 @@ class BrokerTests(unittest.TestCase):
         record = broker.get_installation_token()
         self.assertEqual({"metadata": "read", "contents": "read"}, dict(record.permissions))
         post = next(call for call in fake.calls if call[0] == "POST")
-        self.assertEqual({"repositories": ["codex"], "permissions": {"contents": "read", "metadata": "read"}}, json.loads(post[3]))
-        self.assertNotIn("write", json.dumps(post[3]))
+        request_payload = json.loads(post[3].decode("utf-8"))
+        self.assertEqual({"repositories": ["codex"], "permissions": {"contents": "read", "metadata": "read"}}, request_payload)
+        self.assertNotIn("write", json.dumps(request_payload))
 
     def test_app_and_installation_identity_and_read_only_ceiling_are_verified(self):
         fake = FakeGitHub()
@@ -138,6 +139,13 @@ class BrokerTests(unittest.TestCase):
 
         fake = FakeGitHub()
         fake.installation["permissions"]["contents"] = "write"
+        directory, broker = make_broker(fake)
+        self.addCleanup(directory.cleanup)
+        with self.assertRaises(BrokerError):
+            broker.get_installation_token()
+
+        fake = FakeGitHub()
+        del fake.installation["permissions"]["administration"]
         directory, broker = make_broker(fake)
         self.addCleanup(directory.cleanup)
         with self.assertRaises(BrokerError):
@@ -175,6 +183,68 @@ class BrokerTests(unittest.TestCase):
         self.assertLess(methods.index("DELETE"), len(methods) - 1)
         self.assertEqual("DELETE", methods[3])
         self.assertEqual("POST", methods[-1])
+
+    def test_failed_refresh_revocation_is_sticky_and_terminal(self):
+        fake = FakeGitHub()
+        clock = FakeClock()
+        directory, broker = make_broker(fake, clock)
+        self.addCleanup(directory.cleanup)
+        first = broker.get_installation_token()
+        clock.value = first.expires_epoch - 119
+        delete_attempts = 0
+
+        def revoke_fails_then_succeeds(method, url, headers, data):
+            nonlocal delete_attempts
+            if method == "DELETE":
+                delete_attempts += 1
+                if delete_attempts == 1:
+                    return HttpResult(500, {}, b"{}", url)
+            return fake(method, url, headers, data)
+
+        broker._requester = revoke_fails_then_succeeds
+        with self.assertRaises(BrokerError):
+            broker.get_installation_token()
+        with self.assertRaises(BrokerError):
+            broker.get_installation_token()
+        command = ["/bin/echo", "x"]
+        fingerprint = fingerprint_command(broker.repository, broker.permissions, command)
+        with self.assertRaises(BrokerError):
+            broker.execute(command, fingerprint)
+        self.assertEqual(1, len([call for call in fake.calls if call[0] == "POST"]))
+        receipt = broker.close()
+        self.assertTrue(receipt["revoked"])
+        self.assertEqual(2, delete_attempts)
+        with self.assertRaises(BrokerError):
+            broker.get_installation_token()
+
+    def test_invalid_post_with_failed_cleanup_is_sticky_and_nonsecret(self):
+        fake = FakeGitHub()
+        directory, broker = make_broker(fake)
+        self.addCleanup(directory.cleanup)
+
+        def invalid_post_cleanup_fails(method, url, headers, data):
+            if method == "DELETE":
+                return HttpResult(500, {}, b"{}", url)
+            response = fake(method, url, headers, data)
+            if method == "POST":
+                payload = json.loads(response.body)
+                payload["repository_selection"] = "all"
+                return HttpResult(response.status, response.headers, json.dumps(payload).encode(), response.url)
+            return response
+
+        broker._requester = invalid_post_cleanup_fails
+        with self.assertRaises(BrokerError):
+            broker.get_installation_token()
+        with self.assertRaises(BrokerError):
+            broker.get_installation_token()
+        command = ["/bin/echo", "x"]
+        fingerprint = fingerprint_command(broker.repository, broker.permissions, command)
+        with self.assertRaises(BrokerError):
+            broker.execute(command, fingerprint)
+        self.assertEqual(1, len([call for call in fake.calls if call[0] == "POST"]))
+        receipt = broker.close()
+        self.assertFalse(receipt["revoked"])
+        self.assertEqual(1, len([call for call in fake.calls if call[0] == "POST"]))
 
     def test_invalid_minted_token_is_revoked_before_failure(self):
         fake = FakeGitHub()
@@ -259,11 +329,57 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(0, info.st_mode & 0o077)
         self.assertEqual(os.stat(broker.key_path).st_ino, info.st_ino)
         completed = mock.Mock(returncode=0, stdout=b"signature", stderr=b"")
+        broker._jwt = GitHubAppBroker._jwt.__get__(broker, GitHubAppBroker)
         with mock.patch("subprocess.run", return_value=completed) as run:
             jwt = broker._jwt()
         self.assertTrue(jwt.count(".") == 2)
         self.assertEqual("/usr/bin/openssl", run.call_args.args[0][0])
         self.assertEqual(1, len(run.call_args.kwargs["pass_fds"]))
+
+    def test_close_is_terminal(self):
+        fake = FakeGitHub()
+        directory, broker = make_broker(fake)
+        self.addCleanup(directory.cleanup)
+        broker.close()
+        with self.assertRaises(BrokerError):
+            broker.get_installation_token()
+        with self.assertRaises(BrokerError):
+            broker.execute(["/bin/echo", "x"], "wrong")
+
+    def test_source_identity_change_after_mint_rejects_child(self):
+        fake = FakeGitHub()
+        directory, broker = make_broker(fake)
+        self.addCleanup(directory.cleanup)
+        with tempfile.TemporaryDirectory() as temp:
+            script = Path(temp) / "run.sh"
+            script.write_text("#!/bin/sh\necho ok\n")
+            script.chmod(0o755)
+            command = ["/bin/sh", str(script)]
+            fingerprint = fingerprint_command(broker.repository, broker.permissions, command)
+            original_get = broker.get_installation_token
+
+            def mint_then_mutate():
+                record = original_get()
+                script.write_text("#!/bin/sh\necho changed\n")
+                return record
+
+            broker.get_installation_token = mint_then_mutate
+            child = mock.Mock(return_value=(0, b"", b""))
+            broker._child_runner = child
+            with self.assertRaises(BrokerError):
+                broker.execute(command, fingerprint)
+            child.assert_not_called()
+
+    def test_source_mode_change_changes_fingerprint_without_content_change(self):
+        with tempfile.TemporaryDirectory() as temp:
+            script = Path(temp) / "run.sh"
+            script.write_text("#!/bin/sh\necho ok\n")
+            script.chmod(0o700)
+            command = ["/bin/sh", str(script)]
+            before = fingerprint_command("example-org/codex", {"metadata": "read"}, command)
+            script.chmod(0o755)
+            after = fingerprint_command("example-org/codex", {"metadata": "read"}, command)
+            self.assertNotEqual(before, after)
 
     def test_revocation_success_and_failure_are_nonsecret(self):
         fake = FakeGitHub()

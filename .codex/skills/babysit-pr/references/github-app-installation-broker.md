@@ -10,13 +10,14 @@ live installation or production commissioning.
 
 The broker requires an App ID, installation ID, installation account, one
 `OWNER/REPOSITORY` selection, and an explicit permission object. The permitted
-permission values are `read` for `metadata`, `contents`, `pull_requests`,
-`merge_queues`, `checks`, `actions`, `statuses`, and (only when explicitly
-requested) `administration`. Unknown permissions and all write or admin values
-are rejected. Before minting, the installation endpoint is checked for the
-expected App/installation/account identity and for a grant covering every
-requested permission. The access-token request always carries exactly one
-repository name and the requested subset.
+permission values are `read` for exactly these eight App and installation
+grants: `metadata`, `contents`, `pull_requests`, `merge_queues`, `checks`,
+`actions`, `statuses`, and `administration`. Unknown permissions and all write
+or admin values are rejected. Before minting, the installation endpoint is
+checked for the expected App/installation/account identity and this exact
+grant ceiling. Each access token may request a subset; the request always
+carries exactly one repository name and that requested subset. Branch
+protection parity requires requesting `administration:read` in that subset.
 
 The private key is loaded only from the fixed basename below the systemd
 `CREDENTIALS_DIRECTORY` (normally supplied with `LoadCredential=`). Arbitrary
@@ -43,9 +44,14 @@ permissions, rate-limit headers, exit status, and redacted output. There is no
 PAT fallback and no App-user-token fallback.
 
 The cached token is reused until the positive near-expiry threshold, then
-refreshed once. It is never persisted. Normal and exceptional exits call
-`DELETE /installation/token`; revocation failure is reported as a non-secret
-status and must be treated as an operational follow-up, not silently ignored.
+refreshed once. It is never persisted. Refresh retains the cached token until
+revocation succeeds; an unproven revocation or invalid-issued-token cleanup
+enters sticky terminal pending-cleanup state, rejects further mint/execute
+operations, and allows `close()`/atexit to retry cleanup. After `close()` (even
+after a failed close), the broker is terminal and rejects normal use.
+Normal and exceptional exits call `DELETE /installation/token`; revocation
+failure is reported as a non-secret status and must be treated as an
+operational follow-up, not silently ignored.
 HTTP requests use the GitHub API version header, HTTPS origin pinning,
 redirect/cross-host rejection, bounded response bodies, strict JSON/type
 checks, and finite timeouts.
@@ -54,12 +60,14 @@ Example (with generic credential naming):
 
 ```sh
 python3 github_app_installation_broker.py fingerprint \
-  --app-id 123 --installation-id 456 --account example-org \
+  --app-id 123 --app-slug sedna-codex-delivery-coordinator \
+  --installation-id 456 --account example-org \
   --repo example-org/codex --permissions '{"metadata":"read","contents":"read"}' \
   -- /usr/local/bin/codex-pr-observer --once
 
 python3 github_app_installation_broker.py exec \
-  --app-id 123 --installation-id 456 --account example-org \
+  --app-id 123 --app-slug sedna-codex-delivery-coordinator \
+  --installation-id 456 --account example-org \
   --repo example-org/codex --permissions '{"metadata":"read","contents":"read"}' \
   --fingerprint BOUND_FINGERPRINT -- /usr/local/bin/codex-pr-observer --once
 ```
