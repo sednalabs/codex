@@ -78,13 +78,11 @@ jobs:
           unexpected_cargo_lines="$(grep -E '^[-+]' <<<"${cargo_lock_diff}" | grep -Ev '^(---|\+\+\+|[-+]version = "0\.23\.(42|43)"|[-+]checksum = "(3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138|0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06)"|[-+] \"getrandom 0\.(4\.3|3\.4)\",")' || true)"
           test -z "${unexpected_cargo_lines}"
           git diff --binary > dependency-lock-export.patch
-          {
-            cat dependency-lock-export.identity
-            printf 'generated_head_sha=%s\n' "$(git rev-parse HEAD)"
-            printf 'changed_paths=%s\n' "$(paste -sd, dependency-lock-export.paths)"
-            printf 'diff_stat=%s\n' "$(git diff --stat | tr '\n' ' ')"
-            sha256sum dependency-lock-export.patch
-          } > dependency-lock-export.proof
+          printf 'base_sha=%s\n' "$(git rev-parse HEAD)" > dependency-lock-export.proof
+          printf 'generated_head_sha=%s\n' "$(git rev-parse HEAD)" >> dependency-lock-export.proof
+          printf 'changed_paths=%s\n' "$(paste -sd, dependency-lock-export.paths)" >> dependency-lock-export.proof
+          printf 'diff_stat=%s\n' "$(git diff --stat | tr '\n' ' ')" >> dependency-lock-export.proof
+          sha256sum dependency-lock-export.patch >> dependency-lock-export.proof
 
       - name: Upload generated products and proof
         uses: actions/upload-artifact@v7
