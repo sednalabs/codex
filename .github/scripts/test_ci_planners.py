@@ -5718,7 +5718,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             '"codex-rs-core"',
             '"codex-rs-tui"',
             '"codex-rs-services"',
-            '"codex-rs-rest"',
+            '"codex-rs-rest-a"',
+            '"codex-rs-rest-b"',
+            '"codex-rs-rest-c"',
+            '"codex-rs-rest-d"',
             '"tools"',
         ):
             self.assertIn(rust_scope, select_run)
@@ -5816,7 +5819,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "codex-rs-core",
             "codex-rs-tui",
             "codex-rs-services",
-            "codex-rs-rest",
+            "codex-rs-rest-a",
+            "codex-rs-rest-b",
+            "codex-rs-rest-c",
+            "codex-rs-rest-d",
             "tools",
         ):
             self.assertIn(f"{rust_scope})", scoped_rust_config_run)
@@ -5843,7 +5849,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         for service_path in service_paths:
             self.assertIn(service_path, scoped_rust_config_run)
-            self.assertIn(f"{service_path}/**", scoped_rust_config_run)
         service_case = re.search(
             r"codex-rs-services\)\s+scope_paths=\(\s*(.*?)\s*\)\s+scope_ignores=\(\)",
             scoped_rust_config_run,
@@ -5851,20 +5856,51 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIsNotNone(service_case)
         self.assertEqual(tuple(service_case.group(1).split()), service_paths)
-        rest_case = re.search(
-            r"codex-rs-rest\)\s+scope_paths=\(codex-rs\)\s+scope_ignores=\(\s*(.*?)\s*\)",
-            scoped_rust_config_run,
-            re.DOTALL,
+        rest_scopes = (
+            "codex-rs-rest-a",
+            "codex-rs-rest-b",
+            "codex-rs-rest-c",
+            "codex-rs-rest-d",
         )
-        self.assertIsNotNone(rest_case)
+        for rust_scope in rest_scopes:
+            self.assertIn(f"{rust_scope})", scoped_rust_config_run)
+        rest_paths = {
+            scope: [
+                line.strip()
+                for line in re.search(
+                    rf"{scope}\)\s+scope_paths=\(\s*(.*?)\s*\)\s+scope_ignores=\(\)",
+                    scoped_rust_config_run,
+                    re.DOTALL,
+                ).group(1).split()
+            ]
+            for scope in rest_scopes
+        }
+        all_rest_paths = sum((rest_paths.values()), [])
+        self.assertEqual(len(all_rest_paths), len(set(all_rest_paths)))
+        tracked_codex_rs_dirs = set(
+            subprocess.run(
+                ["git", "ls-tree", "-d", "--name-only", "HEAD:codex-rs"],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+        )
         self.assertEqual(
-            {item.strip("'\"") for item in rest_case.group(1).split()},
-            {"codex-rs/core/**", "codex-rs/tui/**"}
-            | {f"{service_path}/**" for service_path in service_paths},
+            set(rest_paths["codex-rs-rest-a"])
+            | set(rest_paths["codex-rs-rest-b"])
+            | set(rest_paths["codex-rs-rest-c"])
+            | set(rest_paths["codex-rs-rest-d"]),
+            {
+                f"codex-rs/{path}"
+                for path in tracked_codex_rs_dirs
+                if path not in {
+                    "core",
+                    "tui",
+                    *(service_path.split("/", 1)[1] for service_path in service_paths),
+                }
+            },
         )
-        self.assertIn("scope_paths=(codex-rs)", scoped_rust_config_run)
-        self.assertIn("codex-rs/core/**", scoped_rust_config_run)
-        self.assertIn("codex-rs/tui/**", scoped_rust_config_run)
         self.assertIn("security-and-quality", scoped_rust_config_run)
         self.assertIn("paths-ignore:", scoped_rust_config_run)
         self.assertIn('> "${RUST_CONFIG}"', scoped_rust_config_run)
@@ -5873,15 +5909,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "codex-rs-core": ["codex-rs/core"],
             "codex-rs-tui": ["codex-rs/tui"],
             "codex-rs-services": list(service_paths),
-            "codex-rs-rest": ["codex-rs"],
+            **rest_paths,
             "tools": ["tools"],
         }
-        expected_rest_ignores = [
-            ".github/codeql/rust-computer-use-contract/test/**",
-            "codex-rs/core/**",
-            "codex-rs/tui/**",
-            *(f"{service_path}/**" for service_path in service_paths),
-        ]
         with tempfile.TemporaryDirectory() as tmp_dir:
             for rust_scope, expected_paths in expected_scope_paths.items():
                 config_path = Path(tmp_dir) / f"{rust_scope}.yml"
@@ -5904,11 +5934,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                         "name": f"codex-codeql-rust-{rust_scope}",
                         "queries": [{"uses": "security-and-quality"}],
                         "paths": expected_paths,
-                        "paths-ignore": (
-                            expected_rest_ignores
-                            if rust_scope == "codex-rs-rest"
-                            else [".github/codeql/rust-computer-use-contract/test/**"]
-                        ),
+                        "paths-ignore": [".github/codeql/rust-computer-use-contract/test/**"],
                         "threat-models": "local",
                     },
                 )
