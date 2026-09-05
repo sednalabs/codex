@@ -895,11 +895,11 @@ fn wait_output_schema_v2(capabilities: ToolRuntimeCapabilities) -> Value {
         required.push("pending_ids".to_string());
     }
     if include_completion_reason {
-            properties.insert(
-                "completion_reason".to_string(),
-                json!({
-                    "type": "string",
-                    "enum": ["terminal", "mailbox", "timeout", "subscription_loss"],
+        properties.insert(
+            "completion_reason".to_string(),
+            json!({
+                "type": "string",
+                "enum": ["terminal", "mailbox", "timeout", "subscription_loss"],
                 "description": "Why the wait call returned."
             }),
         );
