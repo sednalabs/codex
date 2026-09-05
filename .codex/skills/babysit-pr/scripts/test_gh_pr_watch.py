@@ -1,5 +1,6 @@
 import argparse
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -106,7 +107,7 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     monkeypatch.setattr(
         gh_pr_watch,
         "get_authenticated_login",
-        lambda: call_order.append("auth") or "octocat",
+        lambda *args, **kwargs: call_order.append("auth") or "octocat",
     )
     monkeypatch.setattr(
         gh_pr_watch,
@@ -163,7 +164,7 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     args = argparse.Namespace(
         pr="123",
         repo=None,
-        state_file=str(tmp_path / "watcher-state.json"),
+        state_file=f"{tmp_path.name}-watcher-state.json",
         ignore_review_thread=[],
         max_flaky_retries=3,
         reset_seen_feedback=False,
@@ -173,6 +174,129 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
 
     assert call_order.index("review") < call_order.index("checks")
     assert call_order.index("review") < call_order.index("workflow")
+
+
+def test_collect_snapshot_discovers_pending_workflow_failures_and_reuses_completed_jobs(
+    monkeypatch, tmp_path
+):
+    """Workflow-only failures must be actionable before the PR rollup settles."""
+    pr = sample_pr()
+    workflow_calls = []
+    job_calls = []
+    runs = iter(
+        [
+            [workflow_run(99, run_attempt=1)],
+            [workflow_run(99, run_attempt=1)],
+            [workflow_run(99, run_attempt=2)],
+        ]
+    )
+
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_args, **_kwargs: pr)
+    monkeypatch.setattr(gh_pr_watch, "detect_local_git_context", lambda: {})
+    monkeypatch.setattr(gh_pr_watch, "load_state", lambda _path: ({}, True))
+    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_args: "octocat")
+    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(gh_pr_watch, "get_review_threads", lambda *_args: [])
+    monkeypatch.setattr(
+        gh_pr_watch, "partition_unresolved_review_threads", lambda *_args: ([], [])
+    )
+    monkeypatch.setattr(gh_pr_watch, "build_actionable_review_items", lambda *_args: [])
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "get_pr_checks",
+        lambda *_args, **_kwargs: [{"bucket": "pending", "state": "PENDING"}],
+    )
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "get_workflow_runs_for_sha",
+        lambda repo, head_sha: workflow_calls.append((repo, head_sha)) or next(runs),
+    )
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "get_jobs_for_run",
+        lambda repo, run_id: job_calls.append((repo, run_id))
+        or [{"id": 501, "name": "unit", "conclusion": "failure"}],
+    )
+    monkeypatch.setattr(gh_pr_watch, "save_state", lambda *_args: None)
+    args = argparse.Namespace(
+        pr="123",
+        repo="openai/codex",
+        state_file=f"{tmp_path.name}-watcher-state.json",
+        ignore_review_thread=[],
+        max_flaky_retries=3,
+        reset_seen_feedback=False,
+    )
+    cache = {}
+
+    first, _ = gh_pr_watch.collect_snapshot(args, cache=cache)
+    second, _ = gh_pr_watch.collect_snapshot(args, cache=cache)
+    rerun, _ = gh_pr_watch.collect_snapshot(args, cache=cache)
+
+    assert first["checks"]["all_terminal"] is False
+    assert first["failed_runs"] == [{
+        "run_id": 99,
+        "workflow_name": "",
+        "status": "completed",
+        "conclusion": "failure",
+        "html_url": "",
+    }]
+    assert first["actions"] == ["diagnose_ci_failure"]
+    assert second["actions"] == ["diagnose_ci_failure"]
+    assert rerun["actions"] == ["diagnose_ci_failure"]
+    assert workflow_calls == [("openai/codex", "abc123")] * 3
+    assert job_calls == [("openai/codex", 99), ("openai/codex", 99)]
+
+
+def test_collect_snapshot_discovers_current_head_before_terminal_readiness(
+    monkeypatch, tmp_path
+):
+    first_pr = sample_pr()
+    second_pr = sample_pr()
+    second_pr["head_sha"] = "def456"
+    prs = iter([first_pr, second_pr])
+    workflow_heads = []
+    check_summaries = iter(
+        [
+            [{"bucket": "pending", "state": "PENDING"}],
+            [{"bucket": "pass", "state": "SUCCESS"}],
+        ]
+    )
+
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_args, **_kwargs: next(prs))
+    monkeypatch.setattr(gh_pr_watch, "detect_local_git_context", lambda: {})
+    monkeypatch.setattr(gh_pr_watch, "load_state", lambda _path: ({}, True))
+    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_args: "octocat")
+    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(gh_pr_watch, "get_review_threads", lambda *_args: [])
+    monkeypatch.setattr(
+        gh_pr_watch, "partition_unresolved_review_threads", lambda *_args: ([], [])
+    )
+    monkeypatch.setattr(gh_pr_watch, "build_actionable_review_items", lambda *_args: [])
+    monkeypatch.setattr(
+        gh_pr_watch, "get_pr_checks", lambda *_args, **_kwargs: next(check_summaries)
+    )
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "get_workflow_runs_for_sha",
+        lambda _repo, head_sha: workflow_heads.append(head_sha) or [],
+    )
+    monkeypatch.setattr(gh_pr_watch, "save_state", lambda *_args: None)
+    args = argparse.Namespace(
+        pr="123",
+        repo="openai/codex",
+        state_file=f"{tmp_path.name}-watcher-state.json",
+        ignore_review_thread=[],
+        max_flaky_retries=3,
+        reset_seen_feedback=False,
+    )
+
+    pending, _ = gh_pr_watch.collect_snapshot(args, cache={})
+    terminal, _ = gh_pr_watch.collect_snapshot(args, cache={})
+
+    assert pending["actions"] == ["idle"]
+    assert terminal["checks"]["all_terminal"] is True
+    assert terminal["actions"] == ["stop_ready_to_merge"]
+    assert workflow_heads == ["abc123", "def456"]
 
 
 def test_recommend_actions_prioritizes_review_comments():
@@ -281,7 +405,7 @@ def test_run_watch_keeps_polling_open_ready_to_merge_pr(monkeypatch):
     monkeypatch.setattr(
         gh_pr_watch,
         "collect_snapshot",
-        lambda args: (snapshot, Path("/tmp/codex-babysit-pr-state.json")),
+        lambda args, cache=None: (snapshot, Path("/tmp/codex-babysit-pr-state.json")),
     )
     monkeypatch.setattr(
         gh_pr_watch,
@@ -361,6 +485,33 @@ def test_failed_jobs_include_direct_logs_endpoint(monkeypatch):
     ]
 
 
+def test_failed_jobs_reuses_completed_run_attempt(monkeypatch):
+    calls = []
+    jobs = [{"id": 555, "name": "unit", "status": "completed", "conclusion": "failure"}]
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "get_jobs_for_run",
+        lambda repo, run_id: calls.append((repo, run_id)) or jobs,
+    )
+    run = {
+        "id": 99,
+        "name": "CI",
+        "status": "completed",
+        "conclusion": "failure",
+        "run_attempt": 2,
+        "head_sha": "abc123",
+    }
+    cache = {}
+    first = gh_pr_watch.failed_jobs_from_workflow_runs(
+        "openai/codex", [run], "abc123", cache=cache
+    )
+    second = gh_pr_watch.failed_jobs_from_workflow_runs(
+        "openai/codex", [run], "abc123", cache=cache
+    )
+    assert first == second
+    assert calls == [("openai/codex", 99)]
+
+
 def test_parse_args_watch_until_terminal_implies_terminal_checks(monkeypatch):
     monkeypatch.setattr(
         gh_pr_watch.sys,
@@ -435,7 +586,7 @@ def test_watch_until_action_is_silent_by_default(monkeypatch, tmp_path, capsys):
             (action_snapshot, tmp_path / "state.json"),
         ]
     )
-    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", lambda args: next(snapshots))
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", lambda args, cache=None: next(snapshots))
     monkeypatch.setattr(gh_pr_watch.time, "sleep", lambda _seconds: None)
     args = argparse.Namespace(
         poll_seconds=30,
@@ -481,7 +632,7 @@ def test_watch_until_action_waits_for_terminal_ci_failure(
             (terminal_failure, tmp_path / "state.json"),
         ]
     )
-    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", lambda args: next(snapshots))
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", lambda args, cache=None: next(snapshots))
     monkeypatch.setattr(gh_pr_watch.time, "sleep", lambda _seconds: None)
     args = argparse.Namespace(
         poll_seconds=30,
@@ -535,7 +686,7 @@ def install_retry_snapshot(monkeypatch, snapshot):
     monkeypatch.setattr(
         gh_pr_watch,
         "collect_snapshot",
-        lambda _args: (snapshot, Path("/tmp/codex-babysit-pr-state.json")),
+        lambda _args, cache=None: (snapshot, Path("/tmp/codex-babysit-pr-state.json")),
     )
     monkeypatch.setattr(gh_pr_watch, "load_state", lambda _path: ({}, True))
     monkeypatch.setattr(gh_pr_watch, "save_state", lambda *_args: None)
@@ -737,7 +888,9 @@ def test_retry_does_not_accept_stale_post_rerun_readback(monkeypatch):
 
 
 def test_retry_stops_on_ambiguous_command_without_second_mutation(monkeypatch):
-    install_retry_snapshot(monkeypatch, retry_snapshot(99, 100))
+    snapshot = retry_snapshot(99, 100)
+    snapshot["retry_state"]["max_flaky_retries"] = 1
+    install_retry_snapshot(monkeypatch, snapshot)
     state = {"retries_by_sha": {}}
     monkeypatch.setattr(gh_pr_watch, "load_state", lambda _path: (state, False))
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_args, **_kwargs: sample_pr())
@@ -764,6 +917,7 @@ def test_retry_stops_on_ambiguous_command_without_second_mutation(monkeypatch):
     assert len(mutation_calls) == 1
     assert state["retries_by_sha"]["abc123"] == 1
 
+    snapshot["retry_state"]["current_sha_retries_used"] = 1
     second = gh_pr_watch.retry_failed_now(
         retry_args(99, 100, max_flaky_retries=1)
     )
