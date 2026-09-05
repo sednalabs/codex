@@ -1,6 +1,6 @@
 use super::message_tool::MessageDeliveryMode;
 use super::message_tool::SendMessageArgs;
-use super::message_tool::handle_message_items_tool;
+use super::message_tool::handle_message_submission;
 use super::*;
 use crate::tools::handlers::multi_agents_spec::create_send_message_tool;
 use codex_tools::ToolSpec;

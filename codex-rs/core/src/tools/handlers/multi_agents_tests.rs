@@ -3317,9 +3317,7 @@ async fn multi_agent_v2_send_message_rejects_null_payload_before_target_lookup()
     };
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel(
-            "send_message field `message` can't be null".to_string()
-        )
+        FunctionCallError::RespondToModel("send_message field `message` can't be null".to_string())
     );
 }
 

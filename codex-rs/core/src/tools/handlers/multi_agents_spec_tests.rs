@@ -392,7 +392,9 @@ fn send_message_tool_requires_encrypted_scalar_message_and_interrupt_schema() {
     assert!(properties.contains_key("target"));
     assert!(properties.contains_key("message"));
     assert_eq!(
-        properties.get("message").and_then(|schema| schema.encrypted),
+        properties
+            .get("message")
+            .and_then(|schema| schema.encrypted),
         Some(true)
     );
     assert!(properties.contains_key("interrupt"));
