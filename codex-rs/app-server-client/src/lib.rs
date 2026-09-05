@@ -172,8 +172,10 @@ enum ForwardEventResult {
 ///
 /// Lossless events (transcript deltas, item/turn completions) block until the
 /// consumer drains capacity. Best-effort events use `try_send` and increment
-/// `skipped_events` on failure. When a lag marker needs to be flushed before a
-/// lossless event, the flush itself blocks so the marker is never lost.
+/// `skipped_events` on failure; a dropped lag marker contributes its contained
+/// count so loss accounting remains cumulative across both bounded queues.
+/// When a lag marker needs to be flushed before a lossless event, the flush
+/// itself blocks so the marker is never lost.
 ///
 async fn forward_in_process_event(
     event_tx: &mpsc::Sender<InProcessServerEvent>,
@@ -204,7 +206,7 @@ async fn forward_in_process_event(
                     *skipped_events = 0;
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    *skipped_events = skipped_events.saturating_add(1);
+                    *skipped_events = skipped_events.saturating_add(skipped_event_count(&event));
                     warn!("dropping in-process app-server event because consumer queue is full");
                     return ForwardEventResult::Continue;
                 }
@@ -227,7 +229,7 @@ async fn forward_in_process_event(
     match event_tx.try_send(event) {
         Ok(()) => ForwardEventResult::Continue,
         Err(mpsc::error::TrySendError::Full(event)) => {
-            *skipped_events = skipped_events.saturating_add(1);
+            *skipped_events = skipped_events.saturating_add(skipped_event_count(&event));
             warn!("dropping in-process app-server event because consumer queue is full");
             debug_assert!(
                 !matches!(event, InProcessServerEvent::ServerRequest(_)),
@@ -236,6 +238,13 @@ async fn forward_in_process_event(
             ForwardEventResult::Continue
         }
         Err(mpsc::error::TrySendError::Closed(_)) => ForwardEventResult::DisableStream,
+    }
+}
+
+fn skipped_event_count(event: &InProcessServerEvent) -> usize {
+    match event {
+        InProcessServerEvent::Lagged { skipped } => *skipped,
+        _ => 1,
     }
 }
 
@@ -1703,6 +1712,39 @@ mod tests {
                 notification
             )) if notification.turn.status == codex_app_server_protocol::TurnStatus::Completed
         ));
+    }
+
+    #[tokio::test]
+    async fn forward_in_process_event_preserves_nested_lag_counts() {
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        event_tx
+            .send(InProcessServerEvent::Lagged { skipped: 3 })
+            .await
+            .expect("initial lag marker should enqueue");
+
+        // The lower delivery layer can report a loss marker of its own. If
+        // the facade queue is also full, retain that marker's full count.
+        let mut skipped_events = 4;
+        let result = forward_in_process_event(
+            &event_tx,
+            &mut skipped_events,
+            InProcessServerEvent::Lagged { skipped: 5 },
+        )
+        .await;
+        assert_eq!(result, ForwardEventResult::Continue);
+        assert_eq!(skipped_events, 9);
+
+        // A marker dropped without an earlier accumulated count must retain
+        // its own count as well.
+        let mut skipped_events = 0;
+        let result = forward_in_process_event(
+            &event_tx,
+            &mut skipped_events,
+            InProcessServerEvent::Lagged { skipped: 7 },
+        )
+        .await;
+        assert_eq!(result, ForwardEventResult::Continue);
+        assert_eq!(skipped_events, 7);
     }
 
     #[tokio::test]
