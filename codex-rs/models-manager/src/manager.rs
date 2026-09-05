@@ -1,6 +1,7 @@
 use super::cache::ModelsCacheManager;
 use crate::collaboration_mode_presets::builtin_collaboration_mode_presets;
 use crate::config::ModelsManagerConfig;
+use crate::instruction_overlay;
 use crate::model_info;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
@@ -255,7 +256,7 @@ impl OpenAiModelsManager {
         endpoint_client: Arc<dyn ModelsEndpointClient>,
         auth_manager: Option<Arc<AuthManager>>,
     ) -> Self {
-        let remote_models = load_remote_models_from_file().unwrap_or_default();
+        let remote_models = overlay_models(load_remote_models_from_file().unwrap_or_default());
         Self {
             remote_models: RwLock::new(remote_models),
             etag: RwLock::new(None),
@@ -420,6 +421,7 @@ impl OpenAiModelsManager {
 
     /// Replace the cached remote models and rebuild the derived presets list.
     async fn apply_remote_models(&self, models: Vec<ModelInfo>) {
+        let models = overlay_models(models);
         // Use the remote models list as the source of truth if it contains at least one
         // non-hidden model and the user is using ChatGPT auth.
         let should_use_remote_models_only = !models.is_empty()
@@ -436,7 +438,7 @@ impl OpenAiModelsManager {
             return;
         }
 
-        let mut existing_models = load_remote_models_from_file().unwrap_or_default();
+        let mut existing_models = overlay_models(load_remote_models_from_file().unwrap_or_default());
         for model in models {
             if let Some(existing_index) = existing_models
                 .iter()
@@ -478,6 +480,16 @@ impl OpenAiModelsManager {
         );
         true
     }
+}
+
+fn overlay_models(models: Vec<ModelInfo>) -> Vec<ModelInfo> {
+    models
+        .into_iter()
+        .map(|mut model| {
+            instruction_overlay::apply(&mut model, Some("openai-compatible"));
+            model
+        })
+        .collect()
 }
 
 impl ModelsManager for StaticModelsManager {
