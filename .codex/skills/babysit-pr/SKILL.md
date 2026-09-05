@@ -14,7 +14,99 @@ Babysit a PR persistently until one of these terminal outcomes occurs:
 
 Do not stop merely because a single snapshot returns `idle` while checks are still pending.
 
+## Protected queue coordinator contract
+
+When this skill is used as the read-only coordinator for a protected queue, one
+coordinator owns the queue view and its handoff record. The observer's cutline
+is one exact queue-entry snapshot; it does not claim queue throughput, merge
+authority, or a ready horizon. Keep independent entries moving when another
+entry is `UNMERGEABLE`: isolate that state to the PR owner, record its exact
+blocker, and leave the other entries eligible for their own owner-controlled
+progress.
+
+Each entry must carry one exact identity record before it is watched:
+repository and PR number, PR owner, head SHA, base ref and base SHA, an
+explicit queue-entry reference and synthetic candidate SHA/source, static
+ancestry evidence proving that the synthetic candidate contains the exact PR
+head and current base, the complete workflow run/attempt set, and the active
+protection ruleset IDs, conditions, and revision. A queue ID is not a queue
+ref; neither is a PR head a synthetic `G`. A display branch, a green check, or
+an owner name without these bindings is not an entry identity.
+
+Stage identity is kept separate across the delivery path:
+
+| Stage | Required identity |
+| --- | --- |
+| `validation-ref` | Exact repository/ref and workflow input, with the full candidate SHA and its run/`G` identity; a ref name alone is only a selector. |
+| `pull_request` | Repository/PR, PR owner, full head SHA, base ref/SHA, workflow/run/`G`, and the `pull_request` event. |
+| `merge_group` | Queue entry/ref, synthetic candidate SHA, selected workflow/run/`G`, and ancestry proving the exact PR head and current base are included. |
+| `post-main` | Resulting merge SHA on `main`, selected post-main workflow/run/`G`, and the `push` event; this is fresh evidence after landing, not a reused PR or queue result. |
+
+Workflow/run aliases are normalized as one identity record: conflicting aliases
+or duplicate run IDs invalidate the complete set, and workflow reads must consume
+all provider pages before conclusions are drawn. A queue entry reference must be
+present as an authoritative field and must be distinct from the provider queue ID.
+
+`ALLGREEN` is a scoped queue-readiness label only. It is emitted only when the
+exact synthetic `merge_group` candidate has exactly one terminal-successful
+`merge_group` run for each of `CI required` and `CodeQL required`, with matching
+full SHA and positive attempt, no unrelated/empty runs, static ancestry proof,
+and applicable ruleset identity. It never authorizes a merge or substitutes
+for fresh post-main proof when landing applies.
+
+Use the bundled `gh_pr_watch.py` in one helper-owned blocking mode
+(`--watch-until-action` for an owner that may need to act, or
+`--watch-until-terminal` for a delegated check wait) only for a separately
+owned PR-local wait. The queue observer is strictly one-shot and never invokes
+that helper: its receipt schema is not compatible with the PR watcher receipt,
+and it cannot accept or validate invented provenance fields. The helper covers
+PR-local checks/reviews only; it is not a merge-queue, ruleset, or synthetic
+candidate event watcher. Do not recreate any cadence with repeated `--once`
+calls, raw `gh`/API polling, or a second watcher. After any separately-owned
+helper wake, rehydrate the queue, ruleset, head, and run surfaces and bind a
+new wait before relying on the result.
+
+Stop the affected wait and rebind before any further conclusion after a new
+head SHA, base SHA/ref, validation ref, queue entry/candidate or queue head,
+run/`G`, owner, required workflow, or ruleset/protection revision appears. A
+changed or removed queue candidate, a stale run, or an `UNMERGEABLE` result
+invalidates that entry's prior evidence; it does not invalidate independent
+entries. Never borrow an older exact-SHA result for a successor candidate.
+
+The coordinator is an observer and handoff surface, not a mutation authority.
+It must not bypass protection, direct merge, rebase/update branches, resolve
+review threads, cancel or rerun unrelated work, alter queue/ruleset settings,
+or perform raw polling against a provider. Report the exact owner action and
+evidence needed instead. Existing PR babysitter repair, review, retry, and landing
+semantics below remain in force for an explicitly authorized owner; observing
+an entry or emitting `ALLGREEN` grants none of that authority.
+
 ## Operating Model
+
+### Merge-queue observer boundary
+
+The bundled `gh_merge_queue_shepherd.py` is read-only and one-shot. It does
+not enqueue, dequeue, merge, rerun, or alter rulesets. A snapshot with missing
+queue ref, synthetic source, ancestry, required workflow evidence, ruleset
+conditions/revision, or recognized queue state is deliberately unbound.
+Ancestry is accepted only from the allowlisted `hosted-static-ancestry-v1`
+schema; a caller-provided or `fabricated` source is never evidence. The
+GraphQL adapter exposes only fields returned authoritatively by the provider;
+it does not derive a queue ref from an entry ID or a synthetic SHA from a raw
+head field. Its supported query currently returns the entry ID, position,
+state, base commit, synthetic head commit, and pull-request identity. It does
+not return `queueEntryRef`, queue attempt, or `ancestryEvidence`; those fields
+remain unbound and are reported as an explicit external hosted prerequisite.
+When the provider cannot return the required structural evidence, the runbook
+outcome is `identity_mismatch_rebind_required` and a hosted follow-up must
+obtain that evidence before claiming `ALLGREEN`.
+
+The observer does not implement a delegated wait. PR-local helper output is
+kept on its own owner-controlled surface and is never treated as a queue
+identity receipt. This prevents the bundled `gh_pr_watch.py` receipt (which
+lacks queue-observer helper/version/mode, run-set, required-conclusion,
+thread-state, and fingerprint fields) from being accepted as if it supplied
+queue evidence.
 
 - Use `--watch-until-terminal` for delegated wait seams when current-head checks must finish before handoff. Use `--watch-until-action` for a repair owner that should wake on review feedback or a failure that can be acted on immediately.
 - Use `--watch` only when the lane is actively consuming the live JSONL stream in the foreground.
