@@ -5623,7 +5623,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertEqual(
             (create_step.get("with") or {}).get("body-path"),
-            "sync-models-json-update/summary.md",
+            "sync-models-json-payload/summary.md",
         )
 
     def test_codeql_advanced_workflow_is_authoritative_hardened_setup(self) -> None:
