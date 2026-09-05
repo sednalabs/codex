@@ -463,7 +463,7 @@ def test_watch_until_action_is_silent_by_default(monkeypatch, tmp_path, capsys):
             (action_snapshot, tmp_path / "state.json"),
         ]
     )
-    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", lambda args: next(snapshots))
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", lambda args, cache=None: next(snapshots))
     monkeypatch.setattr(gh_pr_watch.time, "sleep", lambda _seconds: None)
     args = argparse.Namespace(
         poll_seconds=30,
@@ -509,7 +509,7 @@ def test_watch_until_action_waits_for_terminal_ci_failure(
             (terminal_failure, tmp_path / "state.json"),
         ]
     )
-    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", lambda args: next(snapshots))
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", lambda args, cache=None: next(snapshots))
     monkeypatch.setattr(gh_pr_watch.time, "sleep", lambda _seconds: None)
     args = argparse.Namespace(
         poll_seconds=30,
@@ -563,7 +563,7 @@ def install_retry_snapshot(monkeypatch, snapshot):
     monkeypatch.setattr(
         gh_pr_watch,
         "collect_snapshot",
-        lambda _args: (snapshot, Path("/tmp/codex-babysit-pr-state.json")),
+        lambda _args, cache=None: (snapshot, Path("/tmp/codex-babysit-pr-state.json")),
     )
     monkeypatch.setattr(gh_pr_watch, "load_state", lambda _path: ({}, True))
     monkeypatch.setattr(gh_pr_watch, "save_state", lambda *_args: None)
@@ -766,6 +766,7 @@ def test_retry_does_not_accept_stale_post_rerun_readback(monkeypatch):
 
 def test_retry_stops_on_ambiguous_command_without_second_mutation(monkeypatch):
     snapshot = retry_snapshot(99, 100)
+    snapshot["retry_state"]["max_flaky_retries"] = 1
     install_retry_snapshot(monkeypatch, snapshot)
     state = {"retries_by_sha": {}}
     monkeypatch.setattr(gh_pr_watch, "load_state", lambda _path: (state, False))
