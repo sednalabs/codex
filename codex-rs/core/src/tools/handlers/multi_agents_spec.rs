@@ -197,8 +197,11 @@ pub fn create_send_message_tool() -> ToolSpec {
             )),
         ),
         (
-            "items".to_string(),
-            create_collab_text_input_items_schema().with_encrypted(),
+            "message".to_string(),
+            JsonSchema::string(Some(
+                "Message text to queue on the target agent.".to_string(),
+            ))
+            .with_encrypted(),
         ),
         (
             "interrupt".to_string(),
@@ -211,13 +214,13 @@ pub fn create_send_message_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: "Send a text message to an existing agent. Use `items` for text content and `interrupt=true` to stop the current task before queueing the message. Does not trigger a new turn."
+        description: "Send a text message to an existing agent. Use `interrupt=true` to stop the current task before queueing the message. Does not trigger a new turn."
             .to_string(),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(
             properties,
-            Some(vec!["target".to_string(), "items".to_string()]),
+            Some(vec!["target".to_string(), "message".to_string()]),
             Some(false.into()),
         ),
         output_schema: Some(send_message_output_schema()),

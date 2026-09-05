@@ -41,9 +41,55 @@ impl MessageDeliveryMode {
 /// Input for the MultiAgentV2 `send_message` tool.
 pub(crate) struct SendMessageArgs {
     pub(crate) target: String,
-    pub(crate) items: Vec<UserInput>,
+    /// The published V2 contract is an encrypted scalar. The untagged form
+    /// keeps direct callers compatible with the pre-fix structured payload
+    /// while allowing the Responses transport's opaque ciphertext string.
+    #[serde(default)]
+    pub(crate) message: Option<SendMessagePayload>,
+    /// Compatibility for payloads produced by the pre-fix `items` schema.
+    #[serde(default)]
+    pub(crate) items: Option<SendMessagePayload>,
     #[serde(default)]
     pub(crate) interrupt: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum SendMessagePayload {
+    /// An opaque Responses encrypted scalar. It is forwarded without parsing.
+    Scalar(String),
+    /// The pre-fix structured representation, which only supported text items.
+    TextItems(Vec<UserInput>),
+}
+
+impl SendMessageArgs {
+    pub(crate) fn into_parts(self) -> Result<(String, String, bool), FunctionCallError> {
+        let Self {
+            target,
+            message,
+            items,
+            interrupt,
+        } = self;
+        let message = match (message, items) {
+            (Some(_), Some(_)) => Err(FunctionCallError::RespondToModel(
+                "send_message accepts either message or legacy items, not both".to_string(),
+            )),
+            (Some(payload), None) | (None, Some(payload)) => payload.into_message(),
+            (None, None) => Err(FunctionCallError::RespondToModel(
+                "missing field `message`".to_string(),
+            )),
+        }?;
+        Ok((target, message, interrupt))
+    }
+}
+
+impl SendMessagePayload {
+    fn into_message(self) -> Result<String, FunctionCallError> {
+        match self {
+            Self::Scalar(message) => message_content(message),
+            Self::TextItems(items) => message_content_from_items("send_message", items),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,7 +177,7 @@ fn message_content_from_items(
     message_content(text_segments.join("\n"))
 }
 
-fn handle_message_submission(
+pub(crate) fn handle_message_submission(
     invocation: ToolInvocation,
     mode: MessageDeliveryMode,
     target: String,
