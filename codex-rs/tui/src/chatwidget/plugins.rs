@@ -1015,7 +1015,12 @@ impl ChatWidget {
         self.plugins_active_tab_id = active_tab_id.clone();
         let mut params =
             self.plugins_popup_params(response, active_tab_id, selected_idx);
-        params.initial_search_query = search_query;
+        // Only carry the filter when the refreshed response retained the
+        // active tab. If it disappeared, the picker falls back to another tab
+        // and the old tab's query must not hide unrelated rows.
+        if params.initial_tab_id.is_some() {
+            params.initial_search_query = search_query;
+        }
         let _ = self.bottom_pane.replace_selection_view_if_active(
             PLUGINS_SELECTION_VIEW_ID,
             params,
