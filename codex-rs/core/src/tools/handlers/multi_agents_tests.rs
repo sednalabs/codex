@@ -5185,13 +5185,12 @@ async fn multi_agent_v2_wait_agent_wakes_on_terminal_child_event() {
 
 #[tokio::test]
 async fn multi_agent_v2_wait_agent_all_waits_for_each_terminal_child_event() {
-    let (session, turn, first_id, _root, first, manager) =
-        multi_agent_v2_wait_context(|config| {
-            config.multi_agent_v2.min_wait_timeout_ms = 1;
-            config.multi_agent_v2.max_wait_timeout_ms = 10_000;
-            config.multi_agent_v2.default_wait_timeout_ms = 10_000;
-        })
-        .await;
+    let (session, turn, first_id, _root, first, manager) = multi_agent_v2_wait_context(|config| {
+        config.multi_agent_v2.min_wait_timeout_ms = 1;
+        config.multi_agent_v2.max_wait_timeout_ms = 10_000;
+        config.multi_agent_v2.default_wait_timeout_ms = 10_000;
+    })
+    .await;
     let second = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
         .await
