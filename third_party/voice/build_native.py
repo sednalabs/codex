@@ -379,6 +379,9 @@ class NativeBuild:
                 }
             )
         else:
+            if self.args.target.endswith("apple-darwin"):
+                # Libtool's partial links need -r, which ld64.lld does not support.
+                environment["CC"] += " -fuse-ld=/usr/bin/ld"
             for name in ("ar", "ranlib"):
                 if name in self.toolchain:
                     path = str(self.toolchain[name])
@@ -408,6 +411,13 @@ class NativeBuild:
                         + "\n"
                     )
                     environment[name] = f"@{response}"
+            if self.args.target.endswith("unknown-linux-gnu"):
+                # Libtool otherwise drops Clang's declared CRT/runtime options.
+                environment["AM_LTLDFLAGS"] = shlex.join(
+                    argument
+                    for flag in self.flags["LDFLAGS"]
+                    for argument in ("-Xcompiler", flag)
+                )
         self.run(
             "libffi-configure",
             [

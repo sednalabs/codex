@@ -65,8 +65,8 @@ and use `pkg-config --define-prefix` for libffi/PCRE2/zlib metadata too. Only th
 required native metadata is exported; capture Opus uses `opusic-sys`. Native
 library loader paths are not changed by SDK export. These build inputs do not replace the
 separate runtime projection and are never copied into users' Codex packages.
-Cargo/Bazel native providers, final helper linkage and moved-package execution
-remain separate integration work; exporting an SDK does not enable voice.
+Final helper linkage and moved-package execution remain separate integration
+work; exporting an SDK does not enable voice.
 
 The Rust GStreamer bindings also link GLib's GIO library. Its pkg-config metadata
 is included in the SDK, and runtime preparation treats its loader identity as an
@@ -75,6 +75,25 @@ pinned GLib build; it is not another source package or a GStreamer plugin. Its
 transitive imports must satisfy the same private-library and system-import checks.
 
 ## Native build recipe
+
+`bazel build //third_party/voice:native_prefix` runs this same recipe with
+Bazel-declared source archives, C/C++ compiler and SDK flags, LLVM ranlib,
+CMake, Make, pkg-config and Python. It supports matching native macOS and Linux
+GNU 2.28 toolchain targets on x64/ARM64; Windows continues to use the standalone
+recipe below. The macOS minimum comes from the selected CcToolchain. This manual
+target is not part of ordinary wildcard CLI builds.
+Mac libffi partial links require Apple's `/usr/bin/ld` from Command Line Tools;
+the LLVM compiler and normal final-link flags remain in use.
+
+The root registers the existing pinned built-Make toolchain for all foreign_cc
+Make consumers, including pkg-config's bootstrap, instead of selecting host Make.
+The recipe still needs the host's standard Unix utilities and `/bin/bash`;
+it is not a fully hermetic build.
+
+The target exports raw `prefix.tar` and a `built.json` receipt (the `receipt`
+output group). These are build inputs, not a relocatable SDK or runtime package.
+No Rust GStreamer build-script annotations or helper loader-path changes are
+provided by this target. Upstream build failure logs appear in the action output.
 
 `build_native.py` runs the unmodified upstream build systems in a new output
 directory, using the same archives. Unix builds accept repeated `--c-flag=...`,

@@ -1,4 +1,5 @@
 load("@rules_foreign_cc//toolchains/native_tools:native_tools_toolchain.bzl", "native_tool_toolchain")
+load(":native.bzl", "native_prefix")
 load(":pkg_config.bzl", "pkg_config")
 
 # All native build consumers must receive the same pinned source manifest.
@@ -47,6 +48,14 @@ filegroup(
         ":source_inputs",
     ],
     visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "native_recipe",
+    srcs = [
+        "build_native.py",
+        ":source_inputs",
+    ],
 )
 
 alias(
@@ -102,4 +111,69 @@ native_tool_toolchain(
     path = "$(execpath :pkg_config)",
     tags = ["manual"],
     target = ":pkg_config",
+)
+
+filegroup(
+    name = "archives",
+    srcs = [
+        "@voice_archive_glib//file",
+        "@voice_archive_gst_plugins_base//file",
+        "@voice_archive_gst_plugins_good//file",
+        "@voice_archive_gstreamer//file",
+        "@voice_archive_libffi//file",
+        "@voice_archive_meson//file",
+        "@voice_archive_ninja//file",
+        "@voice_archive_opus//file",
+        "@voice_archive_pcre2//file",
+        "@voice_archive_proxy_libintl//file",
+        "@voice_archive_zlib//file",
+    ],
+    tags = ["manual"],
+)
+
+# Configure probes execute target binaries: constrain each action's host too.
+_NATIVE_PLATFORMS = [
+    ("macos", "aarch64", "apple-darwin"),
+    ("macos", "x86_64", "apple-darwin"),
+    ("linux", "aarch64", "unknown-linux-gnu"),
+    ("linux", "x86_64", "unknown-linux-gnu"),
+]
+
+[
+    config_setting(
+        name = os + "_" + cpu,
+        constraint_values = [
+            "@platforms//os:" + os,
+            "@platforms//cpu:" + cpu,
+        ] + (["@llvm//constraints/libc:gnu.2.28"] if os == "linux" else []),
+    )
+    for os, cpu, _ in _NATIVE_PLATFORMS
+]
+
+[
+    native_prefix(
+        name = "native_prefix_" + os + "_" + cpu,
+        archives = [":archives"],
+        exec_compatible_with = [
+            "@platforms//os:" + os,
+            "@platforms//cpu:" + cpu,
+        ],
+        tags = ["manual"],
+        target = cpu + "-" + suffix,
+        target_compatible_with = select({
+            ":" + os + "_" + cpu: [],
+            "//conditions:default": ["@platforms//:incompatible"],
+        }),
+    )
+    for os, cpu, suffix in _NATIVE_PLATFORMS
+]
+
+alias(
+    name = "native_prefix",
+    actual = select({
+        ":" + os + "_" + cpu: ":native_prefix_" + os + "_" + cpu
+        for os, cpu, _ in _NATIVE_PLATFORMS
+    }),
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
 )

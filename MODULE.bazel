@@ -110,6 +110,10 @@ osx.frameworks(names = [
     "AVFAudio",
     "AVRouting",
     "CFNetwork",
+    "Cocoa",
+    "CoreData",
+    "PrintCore",
+    "Symbols",
     "FontServices",
     "AudioUnit",
     "CoreAudio",
@@ -156,6 +160,13 @@ single_version_override(
     ],
     version = "0.15.1",
 )
+
+bazel_dep(name = "rules_python", version = "1.7.0")
+
+voice_python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+voice_python.defaults(python_version = "3.11")
+voice_python.toolchain(python_version = "3.12")
+use_repo(voice_python, "python_3_12")
 
 # Use the existing pinned Make build for foreign_cc consumers, including the
 # native voice pkg-config bootstrap, instead of a PATH-provided Make.
@@ -491,6 +502,17 @@ include("//bazel/modules:wine.MODULE.bazel")
 voice_sources = use_extension("//third_party/voice:extensions.bzl", "voice_sources")
 use_repo(
     voice_sources,
+    "voice_archive_glib",
+    "voice_archive_gst_plugins_base",
+    "voice_archive_gst_plugins_good",
+    "voice_archive_gstreamer",
+    "voice_archive_libffi",
+    "voice_archive_meson",
+    "voice_archive_ninja",
+    "voice_archive_opus",
+    "voice_archive_pcre2",
+    "voice_archive_proxy_libintl",
+    "voice_archive_zlib",
     "voice_glib",
     "voice_gst_plugins_base",
     "voice_gst_plugins_good",

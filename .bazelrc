@@ -83,6 +83,8 @@ common --jobs=30
 # configurations include this group; CI configs override TestRunner below
 # when tests must remain local on their runner.
 common:remote --strategy=remote
+# Native Mac voice actions need the local Apple tools; Linux remains remote.
+common:macos --strategy=VoiceNativePrefix=remote,sandboxed,local
 common:remote --extra_execution_platforms=//:rbe
 common:remote --jobs=800
 # TODO(team): Evaluate if this actually helps, zbarsky is not sure, everything seems bottlenecked on `core` either way.
