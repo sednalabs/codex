@@ -954,10 +954,10 @@ fn is_browser_dynamic_tool(tool: &DynamicToolSpec) -> bool {
     tool.namespace.is_none()
         && ((tool.name == BROWSER_OBSERVE_TOOL_NAME || tool.name == BROWSER_STEP_TOOL_NAME)
             || tool
-            .capability
-            .as_ref()
-            .and_then(|capability| capability.family.as_deref())
-            == Some(COMPUTER_USE_ADAPTER_BROWSER))
+                .capability
+                .as_ref()
+                .and_then(|capability| capability.family.as_deref())
+                == Some(COMPUTER_USE_ADAPTER_BROWSER))
 }
 
 fn get_service_tier(
