@@ -879,6 +879,9 @@
             "realtime_conversation": {
               "type": "boolean"
             },
+            "reasoning_effort_override": {
+              "type": "boolean"
+            },
             "recommended_plugins": {
               "type": "boolean"
             },
@@ -6269,6 +6272,9 @@
           "type": "boolean"
         },
         "realtime_conversation": {
+          "type": "boolean"
+        },
+        "reasoning_effort_override": {
           "type": "boolean"
         },
         "recommended_plugins": {

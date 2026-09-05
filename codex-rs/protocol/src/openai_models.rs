@@ -41,6 +41,8 @@ pub use guardian::GuardianScope;
 
 #[path = "openai_models/guardian_v2.rs"]
 mod guardian_v2;
+#[path = "openai_models/reasoning_effort.rs"]
+mod reasoning_effort;
 
 pub use guardian_v2::GuardianV2ModelConfig;
 pub use guardian_v2::GuardianV2TranscriptModelConfig;
@@ -1020,7 +1022,6 @@ mod tests {
             multi_agent_reasoning_effort: None,
         }
     }
-
     fn personality_variables() -> ModelInstructionsVariables {
         ModelInstructionsVariables {
             personality_default: Some("default".to_string()),

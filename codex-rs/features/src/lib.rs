@@ -324,6 +324,8 @@ pub enum Feature {
     ContextManagement,
     /// Track and report a shared token budget across a session's agent threads.
     RolloutBudget,
+    /// Append trusted response configuration items when the selected reasoning effort changes.
+    ReasoningEffortOverride,
     /// Add current-time reminders to model-visible context.
     CurrentTimeReminder,
     /// Route MCP tool approval prompts through the MCP elicitation request path.
@@ -1604,6 +1606,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RolloutBudget,
         key: "rollout_budget",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::ReasoningEffortOverride,
+        key: "reasoning_effort_override",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

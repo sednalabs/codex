@@ -413,6 +413,10 @@ pub(crate) async fn run_turn(
                 .record_step_world_state_if_changed(&world_state, step_context.as_ref())
                 .await?;
 
+            // Keep the override after accepted input so ordinary turn rollback removes it too.
+            sess.record_reasoning_effort_override(step_context.as_ref())
+                .await;
+
             // Construct the input that we will send to the model.
             let sampling_request_input: Vec<ResponseItem> = async {
                 sess.clone_history()
