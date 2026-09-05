@@ -1671,9 +1671,7 @@ async fn plugins_popup_refresh_clears_query_when_active_tab_disappears() {
 
     // Move from All Plugins through Installed and OpenAI Curated to the
     // marketplace-specific tab, then type a query unique to that tab.
-    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
-    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
-    chat.handle_key_event(KeyEvent::from(KeyCode::Right));
+    select_plugins_tab_containing(&mut chat, /*width*/ 100, "Repo Marketplace.");
     type_plugins_search_query(&mut chat, "repo");
 
     let refreshed = plugins_test_response(vec![plugins_test_curated_marketplace(vec![
@@ -1729,9 +1727,7 @@ async fn plugins_popup_refresh_clears_query_for_remote_fallback_tab() {
     let cwd = chat.config.cwd.clone();
     chat.on_plugins_loaded(
         cwd.to_path_buf(),
-        Ok(plugins_test_response(vec![plugins_test_curated_marketplace(
-            Vec::new(),
-        )])),
+        Ok(plugins_test_response(vec![plugins_test_curated_marketplace(Vec::new())])),
     );
 
     let popup = render_bottom_popup(&chat, /*width*/ 100);
