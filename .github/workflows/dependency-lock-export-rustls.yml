@@ -60,23 +60,31 @@ jobs:
           set -euo pipefail
           git diff --unified=0 -- codex-rs/Cargo.lock
           git diff --check
+          printf 'guard=diff_check_pass\n'
           git diff --name-only > dependency-lock-export.paths
           expected_paths=$'MODULE.bazel.lock\ncodex-rs/Cargo.lock'
           test "$(cat dependency-lock-export.paths)" = "${expected_paths}"
+          printf 'guard=paths_pass\n'
           cargo_lock_diff="$(git diff -- codex-rs/Cargo.lock)"
           ! grep -E -q '^[-+].*\b(h2|landlock|rtrb|sqlx|strum|serial_test|heck)\b' <<<"${cargo_lock_diff}"
+          printf 'guard=forbidden_pass\n'
           changed_package_headers="$(git diff -- codex-rs/Cargo.lock | grep -E '^[-+]name = ' || true)"
           test -z "${changed_package_headers}"
+          printf 'guard=headers_pass\n'
           test "$(grep -E -c '^[-+][[:space:]]*version =' <<<"${cargo_lock_diff}")" = 2
           test "$(grep -E -c '^[-+][[:space:]]*checksum =' <<<"${cargo_lock_diff}")" = 2
+          printf 'guard=field_counts_pass\n'
           test "$(grep -F -c -- '-version = "0.23.42"' <<<"${cargo_lock_diff}")" = 1
           test "$(grep -F -c -- '+version = "0.23.43"' <<<"${cargo_lock_diff}")" = 1
           test "$(grep -F -c -- '-checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"' <<<"${cargo_lock_diff}")" = 1
           test "$(grep -F -c -- '+checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"' <<<"${cargo_lock_diff}")" = 1
+          printf 'guard=exact_rustls_fields_pass\n'
           test "$(grep -F -c -- '- \"getrandom 0.4.3\",' <<<"${cargo_lock_diff}")" = 1
           test "$(grep -F -c -- '+ \"getrandom 0.3.4\",' <<<"${cargo_lock_diff}")" = 1
+          printf 'guard=exact_coupled_edge_pass\n'
           unexpected_cargo_lines="$(grep -E '^[-+]' <<<"${cargo_lock_diff}" | grep -Ev '^(---|\+\+\+|[-+]version = "0\.23\.(42|43)"|[-+]checksum = "(3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138|0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06)"|[-+] \"getrandom 0\.(4\.3|3\.4)\",")' || true)"
           test -z "${unexpected_cargo_lines}"
+          printf 'guard=unexpected_lines_pass\n'
           git diff --binary > dependency-lock-export.patch
           cat dependency-lock-export.identity > dependency-lock-export.proof
           printf 'generated_head_sha=' >> dependency-lock-export.proof
