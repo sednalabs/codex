@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import subprocess
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ import macos_runtime
 from prepare_built_runtime import prepare_archive, prepare_built
 from runtime import digest
 import test_macos_runtime
+import test_sdk
 
 
 class BuiltRuntimeTests(unittest.TestCase):
@@ -124,6 +126,11 @@ class BuiltRuntimeTests(unittest.TestCase):
         fixture = test_macos_runtime.RuntimeTests("runTest")
         self.addCleanup(fixture.doCleanups)
         fixture.setUp()
+        sdk_fixture = test_sdk.SdkTests("runTest")
+        self.addCleanup(sdk_fixture.doCleanups)
+        sdk_fixture.setUp()
+        for relative in ("include", "lib/glib-2.0", "lib/pkgconfig"):
+            shutil.copytree(sdk_fixture.prefix / relative, fixture.prefix / relative)
         self.receipt.write_text(json.dumps({**self.build, "target": fixture.target}))
         library = next((fixture.prefix / "lib").glob("*.dylib"))
         (library.parent / "development-alias.dylib").symlink_to(library.name)
@@ -137,6 +144,9 @@ class BuiltRuntimeTests(unittest.TestCase):
                 output = self.root / f"runtime-{state}"
                 if state == "empty":
                     output.mkdir()
+                sdk_output = self.root / f"sdk-{state}"
+                if state == "empty":
+                    sdk_output.mkdir()
                 subprocess.run(
                     [
                         sys.executable,
@@ -151,10 +161,28 @@ class BuiltRuntimeTests(unittest.TestCase):
                         fixture.target,
                         "--output",
                         str(output),
+                        "--sdk-output",
+                        str(sdk_output),
                     ],
                     check=True,
                 )
+                sdk_manifest = json.loads((sdk_output / "sdk.json").read_text())
+                self.assertEqual(
+                    {
+                        record["path"]: record["sha256"]
+                        for record in sdk_manifest["files"]
+                    },
+                    {
+                        path.relative_to(sdk_output).as_posix(): digest(path)
+                        for path in sdk_output.rglob("*")
+                        if path.is_file() and path.name != "sdk.json"
+                    },
+                )
                 manifest = json.loads((output / "runtime.json").read_text())
+                self.assertEqual(
+                    (sdk_manifest["sourceCommit"], sdk_manifest["target"]),
+                    (manifest["sourceCommit"], manifest["target"]),
+                )
                 self.assertEqual(manifest["sourceCommit"], "a" * 40)
                 self.assertEqual(manifest["target"], fixture.target)
                 self.assertTrue(

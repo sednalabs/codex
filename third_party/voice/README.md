@@ -195,6 +195,19 @@ This manual target requires the same host inspection/signing tools as the standa
 platform preparer. It does not link Rust, change Windows builds, assemble a CLI
 package, or enable voice. The prepared runtime is the input to those later steps.
 
+The `native_sdk` output exports the existing development SDK from that same
+inspected build. Unix Bazel Rust bindings keep their upstream pkg-config version
+checks, restricted to this SDK and the declared pkg-config executable. The
+supported `system-deps` search-path override directs linking to `native_link`'s
+prepared libraries; its GStreamer linker-flag override removes the SDK's absolute
+rpath. Standard CcInfo supplies relative Bazel runpaths and explicit runfiles.
+Canonical ABI names and development aliases stay together, including transitive
+native dependencies. No host library fallback or version-probe bypass is used.
+Plugins and their manifest are exported beside those same canonical libraries;
+bindings and plugin imports must resolve to one physical copy of each library.
+Cargo still consumes an explicitly supplied SDK; Windows MSVC and final installed
+helper loader paths remain separate packaging steps. This does not enable voice.
+
 ## Private Windows runtime preparation
 
 `windows_runtime.py` takes the same arguments for x64/ARM64 MSVC build prefixes.

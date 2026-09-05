@@ -647,6 +647,94 @@ crate.annotation(
 
 inject_repo(crate, "alsa_lib")
 
+# Keep upstream pkg-config version probes, but link only the prepared runtime.
+# system-deps applies these path/flag overrides after a successful version probe.
+[
+    crate.annotation(
+        build_script_data = [
+            "//third_party/voice:native_link",
+            "//third_party/voice:native_sdk",
+        ],
+        build_script_env = {
+            "PKG_CONFIG": "$(execpath @@//third_party/voice:pkg_config)",
+            "PKG_CONFIG_LIBDIR": "$(execpath @@//third_party/voice:native_sdk)/lib/pkgconfig",
+            "PKG_CONFIG_PATH": "",
+        } | {
+            "SYSTEM_DEPS_" + key + "_SEARCH_NATIVE": "$(execpath @@//third_party/voice:native_link)/.."
+            for key in keys
+        } | {
+            # GStreamer's .pc files add an absolute rpath; CcInfo supplies the
+            # relative Bazel runpath instead. Library/version checks still run.
+            "SYSTEM_DEPS_" + key + "_LDFLAGS": ""
+            for key in keys
+            if key.startswith("GSTREAMER_")
+        },
+        build_script_tools = ["//third_party/voice:pkg_config"],
+        crate = name,
+        gen_build_script = "on",
+        version = version,
+        deps = ["//third_party/voice:native_link"],
+    )
+    for name, version, keys in [
+        (
+            "glib-sys",
+            "0.22.8",
+            [
+                "GLIB_2_0",
+                "GOBJECT_2_0",
+            ],
+        ),
+        (
+            "gobject-sys",
+            "0.22.6",
+            ["GOBJECT_2_0"],
+        ),
+        (
+            "gio-sys",
+            "0.22.8",
+            ["GIO_2_0"],
+        ),
+        (
+            "gstreamer-sys",
+            "0.25.2",
+            ["GSTREAMER_1_0"],
+        ),
+        (
+            "gstreamer-base-sys",
+            "0.25.3",
+            ["GSTREAMER_BASE_1_0"],
+        ),
+        (
+            "gstreamer-app-sys",
+            "0.25.0",
+            ["GSTREAMER_APP_1_0"],
+        ),
+        (
+            "gstreamer-audio-sys",
+            "0.25.3",
+            ["GSTREAMER_AUDIO_1_0"],
+        ),
+        (
+            "glib-sys",
+            "0.22.9",
+            [
+                "GLIB_2_0",
+                "GOBJECT_2_0",
+            ],
+        ),
+        (
+            "gobject-sys",
+            "0.22.9",
+            ["GOBJECT_2_0"],
+        ),
+        (
+            "gio-sys",
+            "0.22.9",
+            ["GIO_2_0"],
+        ),
+    ]
+]
+
 bazel_dep(name = "v8", version = "15.0.245.2")
 archive_override(
     module_name = "v8",

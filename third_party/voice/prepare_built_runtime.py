@@ -15,9 +15,10 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime import digest
+from sdk import export_sdk
 
 
-def prepare_built(prefix, build_receipt, status, target, output):
+def prepare_built(prefix, build_receipt, status, target, output, *, sdk_output=None):
     prefix = prefix.resolve(strict=True)
     if build_receipt.stat().st_size > 1024 * 1024 or status.stat().st_size > 65536:
         raise ValueError("native build metadata exceeds limits")
@@ -86,15 +87,19 @@ def prepare_built(prefix, build_receipt, status, target, output):
             )
         )
         platform.project(prefix, receipts, target, output)
+        if sdk_output is not None:
+            export_sdk(prefix, receipts, target, sdk_output)
 
 
-def prepare_archive(archive, build_receipt, status, target, output):
+def prepare_archive(archive, build_receipt, status, target, output, *, sdk_output=None):
     # Archives preserve native aliases through Bazel's cache and sandbox links.
     with tempfile.TemporaryDirectory(prefix="voice-prefix-") as temporary:
         prefix = Path(temporary)
         with tarfile.open(archive) as source:
             source.extractall(prefix, filter="data")
-        prepare_built(prefix, build_receipt, status, target, output)
+        prepare_built(
+            prefix, build_receipt, status, target, output, sdk_output=sdk_output
+        )
 
 
 if __name__ == "__main__":
@@ -102,12 +107,23 @@ if __name__ == "__main__":
     for name in ("prefix", "build-receipt", "status", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--target", required=True)
+    parser.add_argument("--sdk-output", type=Path)
     args = parser.parse_args()
     # Executors may leave the TreeArtifact absent or create an empty directory.
     try:
         args.output.rmdir()
     except FileNotFoundError:
         pass
+    if args.sdk_output is not None:
+        try:
+            args.sdk_output.rmdir()
+        except FileNotFoundError:
+            pass
     prepare_archive(
-        args.prefix, args.build_receipt, args.status, args.target, args.output
+        args.prefix,
+        args.build_receipt,
+        args.status,
+        args.target,
+        args.output,
+        sdk_output=args.sdk_output,
     )

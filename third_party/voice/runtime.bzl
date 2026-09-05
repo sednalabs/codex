@@ -7,6 +7,7 @@ def _native_runtime_impl(ctx):
     prefix = ctx.attr.prefix[DefaultInfo].files.to_list()[0]
     receipt = ctx.attr.prefix[OutputGroupInfo].receipt.to_list()[0]
     output = ctx.actions.declare_directory(ctx.label.name)
+    sdk = ctx.actions.declare_directory(ctx.label.name + "_sdk")
     ctx.actions.run(
         executable = python.interpreter,
         arguments = [
@@ -21,18 +22,23 @@ def _native_runtime_impl(ctx):
             ctx.attr.target,
             "--output",
             output.path,
+            "--sdk-output",
+            sdk.path,
         ],
         inputs = depset(
             [prefix, receipt, ctx.info_file, ctx.file._driver, python.interpreter] + ctx.files._preparers,
             transitive = [python.files],
         ),
-        outputs = [output],
+        outputs = [output, sdk],
         env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
         execution_requirements = {"no-remote-exec": "1", "no-remote-cache": "1"} if ctx.attr.target.endswith("apple-darwin") else {},
         mnemonic = "VoiceNativeRuntime",
         progress_message = "Preparing private voice runtime for " + ctx.attr.target,
     )
-    return [DefaultInfo(files = depset([output]))]
+    return [
+        DefaultInfo(files = depset([output])),
+        OutputGroupInfo(sdk = depset([sdk])),
+    ]
 
 native_runtime = rule(
     implementation = _native_runtime_impl,
