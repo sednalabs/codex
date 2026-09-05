@@ -8,8 +8,10 @@ Native runtime backends are supplied by external providers. Android is the
 first implemented provider and now uses a shared provider bridge for TUI and
 `codex exec`. Browser is a registered adapter with a shared provider bridge
 that can either invoke an operator-configured command or use the built-in
-Playwright backend for `backend=auto`, `browser`, `chrome`, or `chromium`.
-Desktop is a registered adapter for cleanroom macOS Screen
+Playwright backend for `backend=auto`, `browser`, or `chromium`. A configured
+command provider may claim `backend=chrome` for signed-in Chrome/extension/CDP
+integration; Playwright never claims that backend.
+Desktop is a registered adapter for independent macOS Screen
 Recording/Accessibility-style runtimes and future native desktop providers.
 
 ## Ownership Boundaries
@@ -151,8 +153,10 @@ aliases:
 
 Browser tools include a `backend` hint with values such as `auto`, `browser`,
 `chrome`, `chromium`, and `iab`. `auto` lets the provider choose the best
-available browser backend. `browser`/`chrome`/`chromium` can be served by the
+available browser backend. `browser` and `chromium` can be served by the
 built-in Playwright provider when it is configured for local Chrome or Chromium.
+`chrome` requires a provider that explicitly claims that backend, such as an
+external signed-in Chrome/extension/CDP provider; Playwright never claims it.
 `iab` is intended for the Codex app in-app browser and requires a provider that
 declares that backend. The hint is part of the provider contract. Command
 providers can still claim exact backends or wildcard routing for hosted,
@@ -162,7 +166,7 @@ The browser provider bridge is intentionally pluggable and now supports both
 the original single-provider configuration and a provider registry:
 
 - `CODEX_BROWSER_COMPUTER_USE_PROVIDER=playwright` enables the embedded
-  Playwright bridge for `backend=auto`, `browser`, `chrome`, and `chromium`.
+  Playwright bridge for `backend=auto`, `browser`, and `chromium`.
   The bridge launches a persistent browser profile, serializes access to that
   profile, executes bounded browser actions, and returns the viewport
   screenshot as native `inputImage` content. This backend requires `node` and a
@@ -343,7 +347,7 @@ desktop providers, or repair configuration.
 - `desktop_step`: performs one or more bounded desktop UI actions, then
   returns a fresh post-action screenshot observation.
 
-Desktop is the cleanroom adapter for macOS Screen Recording and Accessibility
+Desktop is the independent provider adapter for macOS Screen Recording and Accessibility
 runtime providers. It intentionally uses a provider command behind the TUI
 seam rather than linking provider implementation into Codex core. Configure it
 with `CODEX_DESKTOP_COMPUTER_USE_COMMAND` or
@@ -393,25 +397,14 @@ prompts, Screen Recording/Accessibility state, lock-screen behavior, app
 focus, screenshot capture, UI-tree generation, and input synthesis all remain
 provider responsibilities.
 
-## Cleanroom Provider Work
+## Provider Contracts
 
-Native desktop/browser providers should be implemented as cleanroom provider
-adapters behind the command-provider or future provider-registry seams. Public
-documentation, the open Codex protocol, public OS/browser APIs, and sanitized
-behavioral requirements are acceptable inputs. Raw third-party implementation
-artifacts, private endpoints, signing material, account data, browser profile
-data, and copied implementation text are not acceptable tracked inputs.
-
-See [`native-computer-use-contracts.md`](native-computer-use-contracts.md) for
-the sanitized macOS desktop, Windows/browser-shell, Chrome-extension, and
-bundled-plugin contracts derived from the discovery lane.
-
-When binary inspection is legally permitted for interoperability, error
-correction, or security analysis, keep it in a separate discovery lane. The
-implementation lane should receive only neutral requirements such as provider
-capabilities, state transitions, request/response fields, permission states,
-and failure modes. Do not commit raw inspection notes or generated decompiled
-artifacts to this repository.
+Native desktop and browser providers implement the interfaces described in
+[`native-computer-use-contracts.md`](native-computer-use-contracts.md) behind
+the command-provider or provider-registry seams. Codex owns the canonical
+schemas, transcript events, lifecycle propagation, and native image-output
+contract; runtime providers own environment-specific capability and
+permissions.
 
 These tools are installed from dynamic thread tools supplied through app-server
 thread start, resume, or fork requests. When the tool has no namespace and the

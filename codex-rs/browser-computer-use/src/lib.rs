@@ -144,12 +144,20 @@ pub async fn handle_browser_computer_use_for_codex_home(
 
     let requested_backend = requested_backend(&params.arguments);
     let Some(provider) = config.provider_for_backend(requested_backend).cloned() else {
-        return BrowserComputerUseOutcome::Handled(failed_response(format!(
-            "Browser backend `{requested_backend}` is not available from configured browser computer-use providers. Configure `{ENV_COMMAND}` or add a matching provider to ~/.codex/browser-computer-use.json."
-        )));
+        return BrowserComputerUseOutcome::Handled(with_browser_metadata(
+            failed_response(format!(
+                "Browser backend `{requested_backend}` is not available from configured browser computer-use providers. Configure `{ENV_COMMAND}` or add a matching provider to ~/.codex/browser-computer-use.json."
+            )),
+            "none",
+            requested_backend,
+            "unavailable",
+        ));
     };
 
     let request_timeout = provider.timeout;
+    let provider_id = provider.id.clone();
+    let provider_kind = provider.kind();
+    let profile = provider.profile_label().to_string();
     let response = match timeout(request_timeout, handle_with_provider(params, provider)).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => failed_response(err),
@@ -158,7 +166,12 @@ pub async fn handle_browser_computer_use_for_codex_home(
             request_timeout.as_secs()
         )),
     };
-    BrowserComputerUseOutcome::Handled(response)
+    BrowserComputerUseOutcome::Handled(with_browser_metadata(
+        response,
+        &provider_id,
+        requested_backend,
+        &format!("{provider_kind}:{profile}"),
+    ))
 }
 
 fn default_codex_home() -> Option<PathBuf> {
@@ -537,10 +550,35 @@ impl ConfiguredBrowserProvider {
     }
 
     fn supports_backend(&self, backend: &str) -> bool {
+        if matches!(&self.provider, BrowserProvider::Playwright(_)) {
+            return self
+                .backends
+                .iter()
+                .any(|configured| configured.eq_ignore_ascii_case(backend));
+        }
+
         self.backends.is_empty()
             || self.backends.iter().any(|configured| {
                 configured == BACKEND_WILDCARD || configured.eq_ignore_ascii_case(backend)
             })
+    }
+
+    fn kind(&self) -> &'static str {
+        match &self.provider {
+            BrowserProvider::Command(_) => PROVIDER_COMMAND,
+            BrowserProvider::Playwright(_) => PROVIDER_PLAYWRIGHT,
+        }
+    }
+
+    fn profile_label(&self) -> &str {
+        match &self.provider {
+            BrowserProvider::Command(_) => "external",
+            BrowserProvider::Playwright(config) => match config.isolation.as_deref() {
+                Some(iso @ ("thread" | "shared" | "environment" | "call")) => iso,
+                Some(_) => "configured",
+                None => "thread",
+            },
+        }
     }
 }
 
@@ -703,6 +741,11 @@ impl BrowserProviderConfigFile {
                 wildcard_backends()
             }
         });
+        let backends = if provider_name == PROVIDER_PLAYWRIGHT {
+            normalize_playwright_backends(backends)
+        } else {
+            backends
+        };
         let id = self.id.clone().unwrap_or_else(|| provider_name.to_string());
 
         match provider_name {
@@ -867,9 +910,54 @@ fn default_playwright_backends() -> Vec<String> {
     vec![
         BACKEND_AUTO.to_string(),
         BACKEND_BROWSER.to_string(),
-        BACKEND_CHROME.to_string(),
         BACKEND_CHROMIUM.to_string(),
     ]
+}
+
+fn normalize_playwright_backends(backends: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for backend in backends {
+        if backend == BACKEND_WILDCARD {
+            for default_backend in default_playwright_backends() {
+                if !normalized.contains(&default_backend) {
+                    normalized.push(default_backend);
+                }
+            }
+        } else if !backend.eq_ignore_ascii_case(BACKEND_CHROME) && !normalized.contains(&backend) {
+            normalized.push(backend);
+        }
+    }
+    normalized
+}
+
+fn with_browser_metadata(
+    mut response: ComputerUseCallResponse,
+    provider: &str,
+    backend: &str,
+    profile: &str,
+) -> ComputerUseCallResponse {
+    let provider = safe_metadata_value(provider);
+    let backend = safe_metadata_value(backend);
+    let profile = safe_metadata_value(profile);
+    append_text(
+        &mut response.content_items,
+        &format!("\n\nbrowser_metadata: provider={provider} backend={backend} profile={profile}"),
+    );
+    response
+}
+
+fn safe_metadata_value(value: &str) -> String {
+    let mut sanitized = value
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+        .take(64)
+        .collect::<String>();
+    if sanitized.is_empty() {
+        sanitized.push_str("unknown");
+    }
+    sanitized
 }
 
 fn platform_matches_current(platform: &str) -> bool {
@@ -1172,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_playwright_provider_claims_chrome_browser_backend_aliases() {
+    fn legacy_playwright_provider_does_not_claim_chrome_backend() {
         let config = BrowserRuntimeConfig::from_sources(
             Some(BrowserRuntimeConfigFile {
                 provider: Some(PROVIDER_PLAYWRIGHT.to_string()),
@@ -1202,9 +1290,69 @@ mod tests {
 
         assert!(config.provider_for_backend(BACKEND_AUTO).is_some());
         assert!(config.provider_for_backend(BACKEND_BROWSER).is_some());
-        assert!(config.provider_for_backend(BACKEND_CHROME).is_some());
+        assert!(config.provider_for_backend(BACKEND_CHROME).is_none());
         assert!(config.provider_for_backend(BACKEND_CHROMIUM).is_some());
         assert!(config.provider_for_backend("iab").is_none());
+    }
+
+    #[test]
+    fn explicit_playwright_chrome_backend_is_rejected() {
+        let config = BrowserRuntimeConfig::from_sources(
+            Some(BrowserRuntimeConfigFile {
+                provider: None,
+                command: None,
+                node: None,
+                node_path: None,
+                timeout_secs: None,
+                state_dir: None,
+                headless: None,
+                executable_path: None,
+                channel: None,
+                display: None,
+                capture_mode: None,
+                isolation: None,
+                viewport_width: None,
+                viewport_height: None,
+                artifact_dir: None,
+                artifact_policy: None,
+                allow_call_extra_http_headers: None,
+                service_profiles: None,
+                providers: Some(vec![BrowserProviderConfigFile {
+                    id: Some("playwright".to_string()),
+                    provider: Some(PROVIDER_PLAYWRIGHT.to_string()),
+                    command: None,
+                    node: None,
+                    node_path: None,
+                    timeout_secs: None,
+                    state_dir: None,
+                    headless: None,
+                    executable_path: None,
+                    channel: None,
+                    display: None,
+                    capture_mode: None,
+                    isolation: None,
+                    viewport_width: None,
+                    viewport_height: None,
+                    artifact_dir: None,
+                    artifact_policy: None,
+                    allow_call_extra_http_headers: None,
+                    service_profiles: None,
+                    backends: Some(vec![
+                        BACKEND_CHROME.to_string(),
+                        BACKEND_WILDCARD.to_string(),
+                    ]),
+                    platforms: None,
+                }]),
+                routing: None,
+            }),
+            BrowserRuntimeEnv::default(),
+        )
+        .expect("configured providers");
+
+        assert!(config.provider_for_backend(BACKEND_CHROME).is_none());
+        assert!(config.provider_for_backend(BACKEND_AUTO).is_some());
+        assert!(config.provider_for_backend(BACKEND_BROWSER).is_some());
+        assert!(config.provider_for_backend(BACKEND_CHROMIUM).is_some());
     }
 
     #[test]
