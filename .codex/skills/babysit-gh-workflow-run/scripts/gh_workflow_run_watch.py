@@ -3458,6 +3458,32 @@ def _payload_has_pending_retry_settle(payload, retry_state, settle_seconds):
     return pending
 
 
+def _payload_all_terminal_success(payload):
+    targets = _list_or_empty(payload.get("targets"))
+    if not targets or any(not isinstance(target, dict) for target in targets):
+        return False
+    return all(
+        _list_or_empty(target.get("actions")) == ["stop_run_succeeded"]
+        for target in targets
+    )
+
+
+def _invalidate_cached_terminal_successes(targets, remembered):
+    invalidated = False
+    for target in targets:
+        try:
+            key = target_to_display_key(target)
+        except Exception:  # noqa: BLE001 - malformed target data must not stop the watcher.
+            continue
+        state = remembered.get(key)
+        if not isinstance(state, dict):
+            continue
+        if isinstance(state.get("terminal_success_cache"), dict):
+            state.pop("terminal_success_cache", None)
+            invalidated = True
+    return invalidated
+
+
 def emit(payload):
     sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
     sys.stdout.flush()
@@ -3469,6 +3495,13 @@ def watch_until_action(args, repo):
     retry_state = {}
     while True:
         payload = resolve_snapshot(args, repo, targets, remembered)
+        if args.wait_for == "all_done" and _payload_all_terminal_success(payload):
+            # A bounded cache is safe for ordinary waiting, but aggregate
+            # terminal success needs one authoritative final read.  A rerun can
+            # otherwise become pending within the cache window and be hidden
+            # while a sibling target finishes.
+            if _invalidate_cached_terminal_successes(targets, remembered):
+                payload = resolve_snapshot(args, repo, targets, remembered)
         if args.require_terminal_run and _payload_has_pending_retry_settle(
             payload,
             retry_state,

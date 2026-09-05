@@ -1021,6 +1021,72 @@ class GeminiWatcherTests(unittest.TestCase):
         emit.assert_called_once_with(terminal_payload_without_logs)
         sleep.assert_not_called()
 
+    def test_watch_until_action_final_success_barrier_observes_same_head_rerun(self):
+        args = types.SimpleNamespace(
+            require_terminal_run=False,
+            wait_for="all_done",
+            poll_seconds=1,
+            ack_action=[],
+            verbose_details=False,
+        )
+        target = {
+            "kind": MODULE.TARGET_KIND_RUN_ID,
+            "run_id": 42,
+            "head_sha": "abc123",
+            "spec": "run-id=42,head-sha=abc123",
+        }
+
+        def payload(actions, status, attempt):
+            return {
+                "actions": actions,
+                "summary": {"targets_idle": 1 if actions == ["idle"] else 0},
+                "targets": [
+                    {
+                        "target": target,
+                        "actions": actions,
+                        "run": {
+                            "id": 42,
+                            "attempt": attempt,
+                            "head_sha": "abc123",
+                            "status": status,
+                            "conclusion": "success" if status == "completed" else "",
+                        },
+                    }
+                ],
+            }
+
+        snapshots = iter(
+            [
+                payload(["stop_run_succeeded"], "completed", 1),
+                payload(["idle"], "in_progress", 2),
+                payload(["stop_run_succeeded"], "completed", 2),
+            ]
+        )
+        remembered_seeded = False
+
+        def resolve(_args, _repo, _targets, remembered):
+            nonlocal remembered_seeded
+            if not remembered_seeded:
+                remembered[MODULE.target_to_display_key(target)] = {
+                    "terminal_success_cache": {"run_id": 42}
+                }
+                remembered_seeded = True
+            return next(snapshots)
+
+        with patch.object(MODULE, "build_targets", return_value=[target]), patch.object(
+            MODULE, "resolve_snapshot", side_effect=resolve
+        ) as resolve_mock, patch.object(MODULE, "emit") as emit, patch.object(
+            MODULE.time, "sleep", return_value=None
+        ) as sleep:
+            MODULE.watch_until_action(args, "sednalabs/codex")
+
+        self.assertEqual(resolve_mock.call_count, 3)
+        emitted = emit.call_args.args[0]
+        self.assertEqual(emitted["targets"][0]["run"]["attempt"], 2)
+        self.assertEqual(emitted["targets"][0]["run"]["status"], "completed")
+        self.assertEqual(emitted["actions"], ["stop_run_succeeded"])
+        sleep.assert_called_once_with(1)
+
     def test_watch_until_terminal_mode_stays_until_terminal(self):
         with patch.object(
             sys,
