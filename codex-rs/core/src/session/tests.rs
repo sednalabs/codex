@@ -455,6 +455,28 @@ fn assert_browser_merge_preserves_persistent_tool() {
 }
 
 #[test]
+fn namespaced_browser_named_tool_is_preserved_as_a_persistent_tool() {
+    let active_browser =
+        dynamic_tool_for_merge_test("browser_step", /*persist_on_resume*/ false, true);
+    let namespaced_persistent_tool = DynamicToolSpec {
+        namespace: Some("vendor".to_string()),
+        name: "browser_step".to_string(),
+        description: "vendor browser helper".to_string(),
+        input_schema: json!({"type": "object"}),
+        defer_loading: false,
+        persist_on_resume: true,
+        capability: None,
+    };
+
+    let merged = merge_dynamic_tools(
+        vec![active_browser.clone()],
+        vec![namespaced_persistent_tool.clone()],
+    );
+
+    assert_eq!(merged, vec![active_browser, namespaced_persistent_tool]);
+}
+
+#[test]
 fn resumed_thread_browser_tools_retain_persistent_dynamic_tools() {
     assert_browser_merge_preserves_persistent_tool();
 }
