@@ -895,11 +895,11 @@ fn wait_output_schema_v2(capabilities: ToolRuntimeCapabilities) -> Value {
         required.push("pending_ids".to_string());
     }
     if include_completion_reason {
-        properties.insert(
-            "completion_reason".to_string(),
-            json!({
-                "type": "string",
-                "enum": ["terminal", "mailbox", "timeout"],
+            properties.insert(
+                "completion_reason".to_string(),
+                json!({
+                    "type": "string",
+                    "enum": ["terminal", "mailbox", "timeout", "subscription_loss"],
                 "description": "Why the wait call returned."
             }),
         );
@@ -1346,6 +1346,18 @@ fn wait_agent_tool_parameters_v2(
                 ],
                 Some("Whether the wait completes when any requested agent reaches terminal status or only after all requested agents are terminal.".to_string()),
             ),
+        );
+    }
+
+    if capabilities
+        .wait_agent
+        .is_some_and(|capability| capability.native_event_wait)
+    {
+        properties.insert(
+            "native_event_wait".to_string(),
+            JsonSchema::boolean(Some(
+                "Keep this invocation pending across internal lease expiries until a target event, mailbox input, cancellation, or subscription loss. When true, timeout_ms is an internal lease window rather than a user-visible timeout.".to_string(),
+            )),
         );
     }
 
