@@ -639,10 +639,7 @@ pub(crate) fn construct_model_info_from_candidates(
     config: &ModelsManagerConfig,
 ) -> ModelInfo {
     construct_model_info_from_candidates_with_overlay(
-        model,
-        candidates,
-        config,
-        /*apply_overlay*/
+        model, candidates, config, /*apply_overlay*/
         false,
     )
 }
