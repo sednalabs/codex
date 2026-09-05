@@ -183,8 +183,9 @@ jobs:
 
       - name: Install Rust toolchain
         if: ${{ needs.scope.outputs.clippy == 'true' }}
-        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # pinned action revision
         with:
+          toolchain: 1.96.0
           target: x86_64-unknown-linux-gnu
           components: clippy
 
