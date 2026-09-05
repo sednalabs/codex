@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Read-only, fail-closed observation of one protected merge-queue entry.
 
-The PR watcher may provide one blocking PR-local wait, but it does not watch
-queue/ruleset/head transitions.  This module therefore never polls or mutates;
-after a wake the caller must obtain a fresh queue snapshot.
+This module is deliberately one-shot.  It never delegates to the PR watcher,
+polls, or mutates; callers must obtain a fresh authoritative queue snapshot
+when a separately-owned PR-local wait wakes.
 """
 
 from __future__ import annotations
@@ -14,8 +14,6 @@ import hashlib
 import json
 import re
 import subprocess
-import sys
-from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
@@ -29,20 +27,13 @@ QUEUE_FAILURE_ACTION = "queue_terminal_failure"
 IDLE_ACTION = "idle"
 UNKNOWN_QUEUE_STATE_ACTION = "queue_state_unknown_fail_closed"
 REQUIRED_WORKFLOWS = ("CI required", "CodeQL required")
-RECOGNIZED_WATCH_EXITS = {
-    "action_required",
-    "stop_pr_closed",
-    "stop_ready_to_merge",
-    "stop_exhausted_retries",
-}
-DELEGATED_WATCH_HELPER = "gh_pr_watch.py"
-DELEGATED_WATCH_HELPER_VERSION = "1.1.0-head-guard"
-DELEGATED_WATCH_MODE = "watch-until-action"
 ACTIVE_QUEUE_STATES = {"AWAITING_CHECKS", "QUEUED", "IN_PROGRESS", "EXPECTED_HEAD_SHA", "PENDING"}
 UNMERGEABLE_STATES = {"UNMERGEABLE", "UNMERGEABLE_PR", "CONFLICTING"}
 FAILED_QUEUE_STATES = {"FAILED", "REMOVED", "CANCELLED", "ERROR"}
 KNOWN_QUEUE_STATES = ACTIVE_QUEUE_STATES | UNMERGEABLE_STATES | FAILED_QUEUE_STATES
 FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
+RUN_ID = re.compile(r"^[1-9][0-9]*$")
+ALLOWED_ANCESTRY_SOURCES = {"hosted-static-ancestry-v1"}
 
 MERGE_QUEUE_QUERY = """
 query($owner: String!, $name: String!) {
@@ -202,18 +193,24 @@ def normalize_workflow_runs(runs: Iterable[Mapping[str, Any]] | None) -> list[di
     for run in runs or []:
         if not isinstance(run, Mapping):
             run = {}
+        run_id, run_id_alias_conflict = _resolve_aliases(
+            [(run, ("id", "databaseId", "run_id"))], normalize=_positive_id
+        )
         attempt = _first(run, "run_attempt", "runAttempt", "attempt")
         if isinstance(attempt, str) and attempt.strip().isdigit():
             attempt = int(attempt.strip())
-        normalized.append({
-            "run_id": _positive_id(_first(run, "id", "databaseId", "run_id")),
+        row = {
+            "run_id": _positive_id(run_id),
             "workflow": _text(_first(run, "workflow", "workflow_name", "workflowName", "name")),
             "event": _text(_first(run, "event", "event_name")),
             "head_sha": _text(_first(run, "head_sha", "headSha", "headShaOid", "sha")),
             "status": _upper(_first(run, "status", "state")),
             "conclusion": _lower(_first(run, "conclusion", "result")),
             "run_attempt": attempt,
-        })
+        }
+        if run_id_alias_conflict:
+            row["run_id_alias_conflict"] = True
+        normalized.append(row)
     return sorted(normalized, key=lambda row: (row["run_id"], row["workflow"]))
 
 
@@ -222,12 +219,27 @@ def workflow_evidence(runs: Iterable[Mapping[str, Any]] | None, synthetic_sha: s
     reasons: set[str] = set()
     selected: dict[str, dict[str, Any]] = {}
     attempts: set[int] = set()
+    run_id_counts: dict[str, int] = {}
+    for row in rows:
+        run_id = row["run_id"]
+        if run_id:
+            run_id_counts[run_id] = run_id_counts.get(run_id, 0) + 1
     if not rows:
         reasons.add("empty_run_set")
     for row in rows:
+        run_id = row["run_id"]
+        run_id_valid = bool(RUN_ID.fullmatch(run_id))
+        duplicate_run_id = bool(run_id and run_id_counts.get(run_id, 0) > 1)
+        run_id_alias_conflict = bool(row.get("run_id_alias_conflict"))
         name = row["workflow"]
-        if not row["run_id"]:
+        if not run_id:
             reasons.add("run_id_missing")
+        elif not run_id_valid:
+            reasons.add("run_id_malformed")
+        if run_id_alias_conflict:
+            reasons.add("run_id_alias_conflict")
+        if duplicate_run_id:
+            reasons.add("duplicate_run_id")
         if name not in REQUIRED_WORKFLOWS:
             reasons.add("unrelated_workflow")
         if row["event"] != "merge_group":
@@ -241,6 +253,11 @@ def workflow_evidence(runs: Iterable[Mapping[str, Any]] | None, synthetic_sha: s
             reasons.add("run_attempt_missing")
         else:
             attempts.add(attempt)
+        # Required-workflow selection happens only after the provider identity
+        # has supplied one well-formed, unique run identifier.  A malformed or
+        # repeated ID can never satisfy a required conclusion by position.
+        if not run_id_valid or duplicate_run_id or run_id_alias_conflict:
+            continue
         if name in selected:
             reasons.add("duplicate_required_workflow")
         else:
@@ -271,55 +288,170 @@ def normalize_queue_entry(raw: Mapping[str, Any] | None) -> dict[str, Any] | Non
         return None
     if not isinstance(raw, Mapping):
         raise QueueObserverError("queue entry payload is not an object")
-    group = _first(raw, "merge_group", "mergeGroup")
+    conflicts: list[str] = []
+    group, group_conflict = _resolve_aliases(
+        [(raw, ("merge_group", "mergeGroup"))],
+        normalize=lambda value: dict(value) if isinstance(value, Mapping) else value,
+    )
+    if group_conflict:
+        conflicts.append("merge_group")
     group = group if isinstance(group, Mapping) else {}
-    ancestry = _first(raw, "ancestry_evidence", "ancestryEvidence", "containment_evidence", "containment", "ancestry")
+    ancestry, ancestry_conflict = _resolve_aliases(
+        [(raw, ("ancestry_evidence", "ancestryEvidence", "containment_evidence", "containment", "ancestry"))],
+        normalize=lambda value: dict(value) if isinstance(value, Mapping) else value,
+    )
+    if ancestry_conflict:
+        conflicts.append("ancestry")
     ancestry = ancestry if isinstance(ancestry, Mapping) else {}
-    attempt = _first(raw, "attempt", "run_attempt", "runAttempt", "queue_attempt")
-    if isinstance(attempt, str) and attempt.strip().isdigit():
-        attempt = int(attempt.strip())
-    return {
-        "queue_entry_id": _positive_id(_first(raw, "id", "databaseId", "queue_entry_id", "queueEntryId")),
-        "queue_entry_ref": _text(_first(raw, "queue_entry_ref", "queueEntryRef")),
-        "state": _upper(_first(raw, "state", "status")),
-        "position": _first(raw, "position", "queue_position"),
+    queue_entry_id, alias_conflict = _resolve_aliases(
+        [(raw, ("id", "databaseId", "queue_entry_id", "queueEntryId"))], normalize=_positive_id
+    )
+    if alias_conflict:
+        conflicts.append("queue_entry_id")
+    queue_entry_ref, alias_conflict = _resolve_aliases(
+        [(raw, ("queue_entry_ref", "queueEntryRef"))], normalize=_text
+    )
+    if alias_conflict:
+        conflicts.append("queue_entry_ref")
+    state, alias_conflict = _resolve_aliases(
+        [(raw, ("state", "status"))], normalize=_upper
+    )
+    if alias_conflict:
+        conflicts.append("state")
+    position, alias_conflict = _resolve_aliases(
+        [(raw, ("position", "queue_position"))]
+    )
+    if alias_conflict:
+        conflicts.append("position")
+    attempt, alias_conflict = _resolve_aliases(
+        [(raw, ("attempt", "run_attempt", "runAttempt", "queue_attempt"))], normalize=_normalize_attempt
+    )
+    if alias_conflict:
+        conflicts.append("attempt")
+    synthetic_sha, alias_conflict = _resolve_aliases(
+        [
+            (raw, ("merge_group_sha", "mergeGroupSha", "synthetic_sha")),
+            (group, ("head_sha", "headSha", "oid", "sha")),
+        ],
+        normalize=_text,
+    )
+    if alias_conflict:
+        conflicts.append("synthetic_sha")
+    base_sha, alias_conflict = _resolve_aliases(
+        [
+            (raw, ("merge_group_base_sha", "mergeGroupBaseSha", "base_sha", "baseSha")),
+            (group, ("base_sha", "baseSha", "base_oid", "baseOid")),
+        ],
+        normalize=_text,
+    )
+    if alias_conflict:
+        conflicts.append("base_sha")
+    base_ref, alias_conflict = _resolve_aliases(
+        [(raw, ("base_ref", "baseRefName")), (group, ("base_ref", "baseRefName"))], normalize=_text
+    )
+    if alias_conflict:
+        conflicts.append("base_ref")
+    synthetic_source, alias_conflict = _resolve_aliases(
+        [(raw, ("merge_group_source", "synthetic_source")), (group, ("source",))], normalize=_text
+    )
+    if alias_conflict:
+        conflicts.append("synthetic_source")
+    pull_requests, alias_conflict = _resolve_aliases(
+        [
+            (raw, ("pull_requests", "pullRequests", "entries")),
+            (group, ("pull_requests", "pullRequests", "entries")),
+        ],
+        normalize=_nodes,
+    )
+    if alias_conflict:
+        conflicts.append("pull_requests")
+    result = {
+        "queue_entry_id": _positive_id(queue_entry_id),
+        "queue_entry_ref": _text(queue_entry_ref),
+        "state": _upper(state),
+        "position": position,
         "attempt": attempt,
-        "synthetic_sha": _text(_first(raw, "merge_group_sha", "mergeGroupSha", "synthetic_sha")
-                                or _first(group, "head_sha", "headSha", "oid", "sha")),
-        "base_sha": _text(_first(raw, "merge_group_base_sha", "mergeGroupBaseSha")
-                           or _first(group, "base_sha", "baseSha", "base_oid", "baseOid")
-                           or _first(raw, "base_sha", "baseSha")),
-        "base_ref": _text(_first(raw, "base_ref", "baseRefName") or _first(group, "base_ref", "baseRefName")),
-        "synthetic_source": _text(_first(raw, "merge_group_source", "synthetic_source") or _first(group, "source")),
+        "synthetic_sha": _text(synthetic_sha),
+        "base_sha": _text(base_sha),
+        "base_ref": _text(base_ref),
+        "synthetic_source": _text(synthetic_source),
         "ancestry": dict(ancestry),
         "merge_group": dict(group),
-        "pull_requests": _nodes(_first(raw, "pull_requests", "pullRequests", "entries")
-                                 or _first(group, "pull_requests", "pullRequests", "entries") or []),
+        "pull_requests": list(pull_requests or []),
     }
+    if conflicts:
+        result["alias_conflicts"] = sorted(set(conflicts))
+    return result
 
 
 def normalize_candidate(raw: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise QueueObserverError("queue candidate payload is not an object")
-    number = _first(raw, "pr_number", "number", "pull_request_number", "pullRequestNumber")
+    conflicts: list[str] = []
+    nested, nested_conflict = _resolve_aliases(
+        [(raw, ("queue_entry", "queueEntry", "merge_queue_entry", "mergeQueueEntry"))],
+        normalize=lambda value: dict(value) if isinstance(value, Mapping) else value,
+    )
+    if nested_conflict:
+        conflicts.append("queue_entry")
+    nested = nested if isinstance(nested, Mapping) else {}
+    number, alias_conflict = _resolve_aliases(
+        [(raw, ("pr_number", "number", "pull_request_number", "pullRequestNumber"))], normalize=_normalize_number
+    )
+    if alias_conflict:
+        conflicts.append("pr_number")
     try:
         number = int(number) if number is not None else None
     except (TypeError, ValueError):
         number = None
-    nested = _first(raw, "queue_entry", "queueEntry", "merge_queue_entry", "mergeQueueEntry")
-    nested = nested if isinstance(nested, Mapping) else {}
-    return {
+    owner, alias_conflict = _resolve_aliases(
+        [(raw, ("owner", "author", "user")), (nested, ("owner", "author", "user"))], normalize=_login
+    )
+    if alias_conflict:
+        conflicts.append("owner")
+    head_sha, alias_conflict = _resolve_aliases(
+        [(raw, ("head_sha", "headSha", "headRefOid")), (nested, ("head_sha", "headSha", "headRefOid"))], normalize=_text
+    )
+    if alias_conflict:
+        conflicts.append("head_sha")
+    base_sha, alias_conflict = _resolve_aliases(
+        [(raw, ("base_sha", "baseSha", "baseRefOid")), (nested, ("base_sha", "baseSha", "baseRefOid"))], normalize=_text
+    )
+    if alias_conflict:
+        conflicts.append("base_sha")
+    base_ref, alias_conflict = _resolve_aliases(
+        [(raw, ("base_ref", "baseRefName")), (nested, ("base_ref", "baseRefName"))], normalize=_text
+    )
+    if alias_conflict:
+        conflicts.append("base_ref")
+    queue_entry_id, alias_conflict = _resolve_aliases(
+        [(raw, ("queue_entry_id", "queueEntryId")), (nested, ("queue_entry_id", "queueEntryId", "id", "databaseId"))], normalize=_positive_id
+    )
+    if alias_conflict:
+        conflicts.append("queue_entry_id")
+    state, alias_conflict = _resolve_aliases(
+        [(raw, ("state", "status")), (nested, ("state", "status"))], normalize=_upper
+    )
+    if alias_conflict:
+        conflicts.append("state")
+    merge_group_sha, alias_conflict = _resolve_aliases(
+        [(raw, ("merge_group_sha", "mergeGroupSha", "synthetic_sha")), (nested, ("merge_group_sha", "mergeGroupSha", "synthetic_sha"))], normalize=_text
+    )
+    if alias_conflict:
+        conflicts.append("merge_group_sha")
+    result = {
         "pr_number": number,
-        "owner": _login(_first(raw, "owner", "author", "user")),
-        "head_sha": _text(_first(raw, "head_sha", "headSha", "headRefOid")),
-        "base_sha": _text(_first(raw, "base_sha", "baseSha", "baseRefOid")),
-        "base_ref": _text(_first(raw, "base_ref", "baseRefName")),
-        "queue_entry_id": _positive_id(_first(raw, "queue_entry_id", "queueEntryId")
-                                         or _first(nested, "queue_entry_id", "queueEntryId")),
-        "state": _upper(_first(raw, "state", "status") or _first(nested, "state", "status")),
-        "merge_group_sha": _text(_first(raw, "merge_group_sha", "mergeGroupSha", "synthetic_sha")
-                                  or _first(nested, "merge_group_sha", "mergeGroupSha", "synthetic_sha")),
+        "owner": _login(owner),
+        "head_sha": _text(head_sha),
+        "base_sha": _text(base_sha),
+        "base_ref": _text(base_ref),
+        "queue_entry_id": _positive_id(queue_entry_id),
+        "state": _upper(state),
+        "merge_group_sha": _text(merge_group_sha),
     }
+    if conflicts:
+        result["alias_conflicts"] = sorted(set(conflicts))
+    return result
 
 
 def candidate_is_owner(candidate: Mapping[str, Any], owner: Mapping[str, Any]) -> bool:
@@ -337,6 +469,50 @@ def classify_candidates(candidates: Iterable[Mapping[str, Any]] | None, owner: M
 
 
 classify_queue_candidates = classify_candidates
+
+
+def _resolve_aliases(
+    sources: Iterable[tuple[Mapping[str, Any], Iterable[str]]],
+    *,
+    normalize: Callable[[Any], Any] = lambda value: value,
+) -> tuple[Any, bool]:
+    """Resolve aliases without allowing conflicting provider shapes to win.
+
+    Provider responses sometimes expose both REST-style and GraphQL-style
+    names.  Empty aliases are ignored, but two distinct non-empty values are a
+    structural contradiction.  The caller receives ``None`` for a conflict so
+    normal binding validation fails closed instead of selecting the first key.
+    """
+
+    values: list[Any] = []
+    for mapping, names in sources:
+        if not isinstance(mapping, Mapping):
+            continue
+        for name in names:
+            if name not in mapping or mapping[name] is None:
+                continue
+            value = normalize(mapping[name])
+            if value in (None, "", []):
+                continue
+            values.append(value)
+    if not values:
+        return None, False
+    first = values[0]
+    conflict = any(_canonical(value) != _canonical(first) for value in values[1:])
+    return (None if conflict else first), conflict
+
+
+def _normalize_attempt(value: Any) -> Any:
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return value
+
+
+def _normalize_number(value: Any) -> Any:
+    try:
+        return int(value) if value is not None and not isinstance(value, bool) else value
+    except (TypeError, ValueError):
+        return value
 
 
 def owner_identity_from_pr(pr: Mapping[str, Any]) -> dict[str, Any]:
@@ -372,6 +548,7 @@ def build_binding(pr: Mapping[str, Any], queue_entry: Mapping[str, Any] | None, 
         "queue_state": _upper((queue or {}).get("state")),
         "queue_attempt": (queue or {}).get("attempt"),
         "ancestry": dict((queue or {}).get("ancestry") or {}),
+        "queue_alias_conflicts": list((queue or {}).get("alias_conflicts") or []),
         "workflow_run_ids": [run["run_id"] for run in runs],
         "workflow_runs": runs,
         "ruleset_generation": _text(ruleset_readback.get("generation")),
@@ -383,8 +560,12 @@ def build_binding(pr: Mapping[str, Any], queue_entry: Mapping[str, Any] | None, 
 def binding_missing(binding: Mapping[str, Any], *, require_queue: bool = True) -> list[str]:
     required = ["repository", "pr_number", "owner", "head_sha", "base_sha", "base_ref"]
     if require_queue:
-        required += ["queue_entry_id", "queue_entry_ref", "merge_group_sha", "merge_group_source", "queue_base_sha", "queue_base_ref", "queue_state"]
+        required += ["queue_entry_id", "queue_entry_ref", "merge_group_sha", "merge_group_source", "queue_base_sha", "queue_base_ref", "queue_state", "queue_attempt"]
     missing = [name for name in required if binding.get(name) in (None, "", [])]
+    alias_conflicts = list(binding.get("queue_alias_conflicts") or [])
+    if alias_conflicts:
+        missing.append("queue_alias_conflict")
+        missing.extend(f"queue_alias_conflict_{field}" for field in alias_conflicts)
     if not binding.get("ruleset_generation"):
         missing.append("ruleset_generation")
     ids = list(binding.get("ruleset_ids") or [])
@@ -395,6 +576,9 @@ def binding_missing(binding: Mapping[str, Any], *, require_queue: bool = True) -
             missing.append(f"{field}_full")
     if not require_queue:
         return missing
+    attempt = binding.get("queue_attempt")
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt <= 0:
+        missing.append("queue_attempt_valid")
     for field in ("merge_group_sha", "queue_base_sha"):
         if binding.get(field) and not _is_full_sha(binding[field]):
             missing.append(f"{field}_full")
@@ -415,18 +599,21 @@ def binding_missing(binding: Mapping[str, Any], *, require_queue: bool = True) -
         for field in ("contains_pr_head", "contains_base", "complete", "verified"):
             if ancestry.get(field) is not True:
                 missing.append(f"ancestry_{field}")
-        if not _text(ancestry.get("source")):
+        source = _text(ancestry.get("source"))
+        if not source:
             missing.append("ancestry_source")
+        elif source not in ALLOWED_ANCESTRY_SOURCES:
+            missing.append("ancestry_source_untrusted")
     return missing
 
 
 def compare_bindings(previous: Mapping[str, Any] | None, current: Mapping[str, Any]) -> dict[str, Any]:
     previous = previous or {}
-    fields = ("repository", "pr_number", "owner", "head_sha", "base_sha", "base_ref", "queue_entry_id", "queue_entry_ref", "merge_group_sha", "merge_group_source", "queue_base_sha", "queue_base_ref", "queue_state", "queue_attempt", "ancestry", "ruleset_generation", "ruleset_ids")
+    fields = ("repository", "pr_number", "owner", "head_sha", "base_sha", "base_ref", "queue_entry_id", "queue_entry_ref", "merge_group_sha", "merge_group_source", "queue_base_sha", "queue_base_ref", "queue_state", "queue_attempt", "ancestry", "queue_alias_conflicts", "ruleset_generation", "ruleset_ids")
     changed = {field: {"previous": previous.get(field), "current": current.get(field)} for field in fields if previous.get(field) not in (None, "", []) and current.get(field) not in (None, "", []) and previous.get(field) != current.get(field)}
     head_replaced = "head_sha" in changed
     ruleset_changed = "ruleset_generation" in changed
-    queue_changed = any(field in changed for field in ("queue_entry_id", "queue_entry_ref", "merge_group_sha", "queue_base_sha", "queue_state", "queue_attempt", "ancestry"))
+    queue_changed = any(field in changed for field in ("queue_entry_id", "queue_entry_ref", "merge_group_sha", "queue_base_sha", "queue_state", "queue_attempt", "ancestry", "queue_alias_conflicts"))
     base_mismatch = bool(current.get("base_sha") and current.get("queue_base_sha") and current["base_sha"] != current["queue_base_sha"])
     ref_mismatch = bool(current.get("base_ref") and current.get("queue_base_ref") and current["base_ref"] != current["queue_base_ref"])
     return {"valid": not changed and not base_mismatch and not ref_mismatch, "changed": changed, "head_replaced": head_replaced, "ruleset_changed": ruleset_changed, "queue_identity_changed": queue_changed, "queue_base_mismatch": base_mismatch, "queue_base_ref_mismatch": ref_mismatch, "invalidated_workflow_run_ids": list(previous.get("workflow_run_ids") or []) if head_replaced or queue_changed or ruleset_changed else []}
@@ -438,7 +625,7 @@ validate_identity_binding = compare_bindings
 def _candidate_status_action(owner: Sequence[Mapping[str, Any]], independent: Sequence[Mapping[str, Any]], unknown: Sequence[Mapping[str, Any]], queue_state: str) -> tuple[list[str], str]:
     if queue_state not in KNOWN_QUEUE_STATES:
         return [UNKNOWN_QUEUE_STATE_ACTION], "unknown_queue_state"
-    if unknown or any(_upper(x.get("state")) not in KNOWN_QUEUE_STATES for x in (*owner, *independent)):
+    if unknown or any(x.get("alias_conflicts") or _upper(x.get("state")) not in KNOWN_QUEUE_STATES for x in (*owner, *independent)):
         return [UNKNOWN_QUEUE_STATE_ACTION], "unknown_candidate_state"
     if queue_state in UNMERGEABLE_STATES or any(_upper(x.get("state")) in UNMERGEABLE_STATES for x in owner):
         return [OWNER_UNMERGEABLE_ACTION], "owner_unmergeable"
@@ -466,6 +653,11 @@ def reconcile_snapshot(*, pr: Mapping[str, Any], queue_entry: Mapping[str, Any] 
     actions, disposition = ([IDENTITY_MISMATCH_ACTION], "identity_unbound") if missing or not ruleset["matches_observed"] or queue_absent else ([HEAD_REPLACED_ACTION], "head_replaced") if comparison["head_replaced"] else ([RULESET_CHANGED_ACTION if comparison["ruleset_changed"] else IDENTITY_MISMATCH_ACTION], "identity_changed") if comparison["ruleset_changed"] or comparison["queue_identity_changed"] else ([IDENTITY_MISMATCH_ACTION], "queue_base_mismatch") if comparison["queue_base_mismatch"] or comparison["queue_base_ref_mismatch"] else _candidate_status_action(classified["owner"], classified["independent"], classified["unknown"], binding.get("queue_state", ""))
     workflow_mismatches = [run for run in binding.get("workflow_runs", []) if binding.get("merge_group_sha") and run.get("head_sha") != binding.get("merge_group_sha")]
     owner_missing = [x for x in classified["owner"] if any(not x.get(field) for field in ("owner", "head_sha", "base_sha", "queue_entry_id", "merge_group_sha", "base_ref")) or any(not _is_full_sha(x.get(field)) for field in ("head_sha", "base_sha", "merge_group_sha"))]
+    owner_missing.extend(
+        {"reason": "candidate_alias_conflict", "fields": list(x.get("alias_conflicts") or [])}
+        for x in classified["owner"]
+        if x.get("alias_conflicts")
+    )
     if not classified["owner"] and not queue_absent:
         owner_missing.append({"reason": "owner_pr_candidate_missing"})
     owner_mismatch = [x for x in classified["owner"] if any(x.get(field) and binding.get(bind) and x.get(field) != binding.get(bind) for field, bind in (("owner", "owner"), ("head_sha", "head_sha"), ("base_sha", "base_sha"), ("base_ref", "base_ref"), ("queue_entry_id", "queue_entry_id"), ("merge_group_sha", "merge_group_sha")))]
@@ -479,6 +671,9 @@ def reconcile_snapshot(*, pr: Mapping[str, Any], queue_entry: Mapping[str, Any] 
         actions, disposition = [IDENTITY_MISMATCH_ACTION], "workflow_evidence_invalid"
     identity_valid = not missing and not queue_absent and ruleset["matches_observed"] and not workflow_mismatches and not owner_mismatch and not owner_missing and not classified["unknown"] and comparison["valid"]
     allgreen = identity_valid and workflow["valid"] and binding.get("queue_state") not in (UNMERGEABLE_STATES | FAILED_QUEUE_STATES) and not any(_upper(x.get("state")) in (UNMERGEABLE_STATES | FAILED_QUEUE_STATES) for x in classified["owner"])
+    external_evidence_required = [
+        field for field in ("queue_entry_ref", "queue_attempt", "ancestry") if field in missing
+    ]
     return {
         "helper_version": HELPER_VERSION, "read_only": True, "repository": binding.get("repository"),
         "pr": {"number": binding.get("pr_number"), "owner": binding.get("owner"), "head_sha": binding.get("head_sha"), "base_sha": binding.get("base_sha"), "base_ref": binding.get("base_ref")},
@@ -486,9 +681,9 @@ def reconcile_snapshot(*, pr: Mapping[str, Any], queue_entry: Mapping[str, Any] 
         "merge_group": {"queue_entry_ref": binding.get("queue_entry_ref"), "synthetic_sha": binding.get("merge_group_sha"), "synthetic_source": binding.get("merge_group_source"), "base_sha": binding.get("queue_base_sha"), "base_ref": binding.get("queue_base_ref"), "attempt": binding.get("queue_attempt"), "ancestry": binding.get("ancestry")},
         "workflow_runs": binding.get("workflow_runs", []), "workflow_run_ids": binding.get("workflow_run_ids", []), "workflow_evidence": workflow,
         "labels": ["ALLGREEN"] if allgreen else [], "allgreen": allgreen,
-        "wait_contract": {"helper": DELEGATED_WATCH_HELPER, "mode": DELEGATED_WATCH_MODE, "queue_event_coverage": "not-covered", "requires_authoritative_rehydration": True},
+        "wait_contract": {"mode": "one-shot", "delegation": "disabled", "pr_local_coverage": "not-covered", "queue_event_coverage": "not-covered", "requires_authoritative_rehydration": True},
         "ruleset": ruleset, "ruleset_generation": binding.get("ruleset_generation"), "thread_state": dict(thread_state) if isinstance(thread_state, Mapping) else {}, "binding": binding,
-        "identity": {"missing": missing, "queue_absent": queue_absent, "comparison": comparison, "workflow_mismatches": workflow_mismatches, "owner_candidate_mismatches": owner_mismatch, "owner_candidate_missing": owner_missing, "valid": identity_valid},
+        "identity": {"missing": missing, "external_evidence_required": external_evidence_required, "queue_absent": queue_absent, "comparison": comparison, "workflow_mismatches": workflow_mismatches, "owner_candidate_mismatches": owner_mismatch, "owner_candidate_missing": owner_missing, "valid": identity_valid},
         "candidates": classified, "disposition": disposition, "actions": actions,
         "continuation": {"owner_entry_continues": bool(classified["owner"]), "independent_entries_continue": True, "provider_mutation": False},
     }
@@ -539,7 +734,11 @@ class ReadOnlyGitHubProvider:
             candidates.append({"number": number, "author": pull.get("author"), "headRefOid": pull.get("headRefOid"), "baseRefOid": pull.get("baseRefOid"), "baseRefName": pull.get("baseRefName"), "queueEntryId": entry.get("id"), "mergeGroupSha": synthetic, "state": entry.get("state")})
             if number == self.pr_number:
                 base = entry.get("baseCommit") if isinstance(entry.get("baseCommit"), Mapping) else {}
-                owner_entry = {"id": entry.get("id"), "queueEntryRef": entry.get("queueEntryRef"), "position": entry.get("position"), "state": entry.get("state"), "merge_group_sha": synthetic, "merge_group_source": "MergeQueueEntry.headCommit.oid", "attempt": entry.get("attempt"), "ancestry": entry.get("ancestryEvidence"), "baseSha": base.get("oid"), "baseRefName": pull.get("baseRefName")}
+                # The query intentionally asks only for fields in the
+                # provider's supported schema.  queueEntryRef, attempt, and
+                # ancestryEvidence are not returned here and must remain
+                # unbound rather than being inferred from an ID or SHA.
+                owner_entry = {"id": entry.get("id"), "position": entry.get("position"), "state": entry.get("state"), "merge_group_sha": synthetic, "merge_group_source": "MergeQueueEntry.headCommit.oid", "baseSha": base.get("oid"), "baseRefName": pull.get("baseRefName")}
         if owner_entry is not None:
             owner_entry["pullRequests"] = candidates
         return owner_entry
@@ -594,79 +793,18 @@ def _pr_repo_and_number(pr: str, repo: str | None) -> tuple[str, int]:
     return resolved, int(parts[3])
 
 
-def delegate_bounded_watcher(pr: str, repo: str | None = None, *, runner: Callable[..., Any] | None = None) -> dict[str, Any]:
-    command = [sys.executable, str(Path(__file__).with_name("gh_pr_watch.py")), "--pr", pr]
-    if repo:
-        command += ["--repo", repo]
-    command += ["--watch-until-action"]
-    try:
-        completed = (runner or subprocess.run)(command, check=True, capture_output=True, text=True)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise QueueObserverError(f"bounded PR watcher failed: {exc}") from exc
-    try:
-        receipt = json.loads(completed.stdout or "")
-    except json.JSONDecodeError as exc:
-        raise QueueObserverError("bounded PR watcher returned invalid JSON") from exc
-    if not isinstance(receipt, dict):
-        raise QueueObserverError("bounded PR watcher returned a non-object receipt")
-    return receipt
-
-
-def delegated_receipt_fingerprint(receipt: Mapping[str, Any]) -> str:
-    return _digest({key: receipt.get(key) for key in ("helper", "helper_version", "mode", "read_only", "queue_event_coverage", "owner", "run_set", "required_conclusions", "thread_state", "exit_reason")})
-
-
-def validate_delegated_receipt(receipt: Mapping[str, Any], current: Mapping[str, Any]) -> dict[str, Any]:
-    if not isinstance(receipt, Mapping):
-        raise QueueObserverError("delegated watcher returned a non-object receipt")
-    required = ("helper", "helper_version", "mode", "read_only", "queue_event_coverage", "owner", "run_set", "required_conclusions", "thread_state", "exit_reason", "fingerprint")
-    missing = [key for key in required if key not in receipt]
-    if missing:
-        raise QueueObserverError("delegated watcher receipt omitted provenance: " + ",".join(missing))
-    if receipt["helper"] != DELEGATED_WATCH_HELPER or receipt["helper_version"] != DELEGATED_WATCH_HELPER_VERSION or receipt["mode"] != DELEGATED_WATCH_MODE:
-        raise QueueObserverError("delegated watcher helper/mode identity mismatch")
-    if receipt["read_only"] is not True or receipt["queue_event_coverage"] != "pr_local_only":
-        raise QueueObserverError("delegated watcher does not provide bounded read-only PR-local coverage")
-    if _text(receipt["exit_reason"]) not in RECOGNIZED_WATCH_EXITS:
-        raise QueueObserverError("delegated watcher returned an unrecognized exit")
-    current_pr = current.get("pr") if isinstance(current, Mapping) else None
-    if not isinstance(current_pr, Mapping):
-        raise QueueObserverError("current snapshot omitted PR identity")
-    expected_owner = {"repository": current.get("repository"), "pr_number": current_pr.get("number"), "owner": current_pr.get("owner"), "head_sha": current_pr.get("head_sha"), "base_sha": current_pr.get("base_sha")}
-    if receipt["owner"] != expected_owner:
-        raise QueueObserverError("delegated watcher owner identity mismatch")
-    delegated = receipt.get("snapshot", {}).get("pr") if isinstance(receipt.get("snapshot"), Mapping) else None
-    delegated_identity = {"repository": delegated.get("repo", delegated.get("repository")) if isinstance(delegated, Mapping) else None, "pr_number": delegated.get("number", delegated.get("pr_number")) if isinstance(delegated, Mapping) else None, "owner": delegated.get("owner") if isinstance(delegated, Mapping) else None, "head_sha": delegated.get("head_sha") if isinstance(delegated, Mapping) else None, "base_sha": delegated.get("base_sha") if isinstance(delegated, Mapping) else None}
-    if delegated_identity != expected_owner:
-        raise QueueObserverError("delegated watcher snapshot identity mismatch")
-    if (current.get("workflow_evidence") or {}).get("valid") is not True or receipt["run_set"] != [{"run_id": x.get("run_id"), "attempt": x.get("run_attempt")} for x in current.get("workflow_runs", [])]:
-        raise QueueObserverError("delegated watcher run set/attempt mismatch")
-    if receipt["required_conclusions"] != {name: "success" for name in REQUIRED_WORKFLOWS}:
-        raise QueueObserverError("delegated watcher required conclusions mismatch")
-    if not isinstance(receipt["thread_state"], Mapping) or not receipt["thread_state"] or dict(receipt["thread_state"]) != dict(current.get("thread_state") or {}):
-        raise QueueObserverError("delegated watcher thread state is not current")
-    if receipt["fingerprint"] != delegated_receipt_fingerprint(receipt):
-        raise QueueObserverError("delegated watcher provenance fingerprint mismatch")
-    return {"validated": True, "helper": receipt["helper"], "helper_version": receipt["helper_version"], "mode": receipt["mode"], "queue_event_coverage": receipt["queue_event_coverage"], "exit_reason": receipt["exit_reason"], "identity": expected_owner, "run_set": receipt["run_set"], "thread_state": dict(receipt["thread_state"]), "fingerprint": receipt["fingerprint"]}
-
-
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Observe GitHub merge-queue state without mutation")
-    parser.add_argument("--pr", required=True); parser.add_argument("--repo"); parser.add_argument("--once", action="store_true"); parser.add_argument("--watch-until-action", action="store_true"); parser.add_argument("--allow-no-queue", action="store_true")
+    parser.add_argument("--pr", required=True); parser.add_argument("--repo"); parser.add_argument("--once", action="store_true"); parser.add_argument("--allow-no-queue", action="store_true")
     args = parser.parse_args(argv)
-    if args.once and args.watch_until_action:
-        parser.error("choose only one of --once or --watch-until-action")
-    if not args.once and not args.watch_until_action:
+    if not args.once:
         args.once = True
     return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv); repo, number = _pr_repo_and_number(args.pr, args.repo)
-    delegated = delegate_bounded_watcher(args.pr, args.repo) if args.watch_until_action else None
     snapshot = snapshot_from_provider(ReadOnlyGitHubProvider(repo, number), require_queue=not args.allow_no_queue)
-    if delegated is not None:
-        snapshot["delegated_pr_watcher"] = validate_delegated_receipt(delegated, snapshot)
     print(json.dumps(snapshot, sort_keys=True, indent=2)); return 0
 
 

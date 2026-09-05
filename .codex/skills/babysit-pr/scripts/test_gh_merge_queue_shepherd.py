@@ -1,5 +1,4 @@
 import importlib.util
-import json
 from pathlib import Path
 
 import pytest
@@ -455,52 +454,110 @@ def test_pr_provider_rejects_mismatched_endpoint_identity():
         provider.read_pr()
 
 
-def test_delegate_uses_one_blocking_helper_invocation_and_decodes_receipt():
-    calls = []
+def test_observer_is_one_shot_and_does_not_accept_watch_delegation():
+    args = queue.parse_args(["--pr", "750", "--repo", "sednalabs/codex"])
+    assert args.once is True
+    with pytest.raises(SystemExit):
+        queue.parse_args(
+            ["--pr", "750", "--repo", "sednalabs/codex", "--watch-until-action"]
+        )
 
-    class Completed:
-        stdout = json.dumps(
-            {
-                "exit_reason": "action_required",
-                "snapshot": {
-                    "pr": {
-                        "repo": "sednalabs/codex",
-                        "number": 750,
-                        "head_sha": PR_HEAD,
-                        "base_sha": BASE_SHA,
+
+def test_provider_projection_leaves_unsupported_queue_evidence_unbound():
+    provider = queue.ReadOnlyGitHubProvider(
+        "sednalabs/codex",
+        750,
+        runner=lambda command: {
+            "number": 750,
+            "user": {"login": "branch-owner"},
+            "head": {"sha": PR_HEAD},
+            "base": {"ref": "main", "sha": BASE_SHA},
+        }
+        if "pulls/750" in command[1]
+        else {
+            "data": {
+                "repository": {
+                    "mergeQueue": {
+                        "entries": {
+                            "nodes": [
+                                {
+                                    "id": "queue-entry-750",
+                                    "position": 1,
+                                    "state": "AWAITING_CHECKS",
+                                    "baseCommit": {"oid": BASE_SHA},
+                                    "headCommit": {"oid": SYNTHETIC_G},
+                                    "pullRequest": {
+                                        "number": 750,
+                                        "author": {"login": "branch-owner"},
+                                        "headRefOid": PR_HEAD,
+                                        "baseRefOid": BASE_SHA,
+                                        "baseRefName": "main",
+                                    },
+                                }
+                            ]
+                        }
                     }
-                },
+                }
             }
-        )
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return Completed()
-
-    receipt = queue.delegate_bounded_watcher(
-        "https://github.com/sednalabs/codex/pull/750",
-        runner=fake_run,
+        },
     )
-    assert receipt["exit_reason"] == "action_required"
-    assert len(calls) == 1
-    assert calls[0][0][-1] == "--watch-until-action"
-    assert calls[0][1]["check"] is True
+    entry = provider.read_queue_entry()
+    assert "queueEntryRef" not in entry
+    assert "attempt" not in entry
+    assert "ancestryEvidence" not in entry
+    current = queue.reconcile_snapshot(
+        pr=sample_pr(),
+        queue_entry=entry,
+        candidates=entry["pullRequests"],
+        workflow_runs=sample_runs(),
+        rulesets=sample_ruleset(),
+    )
+    assert current["allgreen"] is False
+    assert current["identity"]["external_evidence_required"] == [
+        "queue_entry_ref",
+        "queue_attempt",
+        "ancestry",
+    ]
 
 
-def test_delegated_receipt_mismatch_fails_closed():
-    before = snapshot()
-    with pytest.raises(queue.QueueObserverError, match="provenance"):
-        queue.validate_delegated_receipt(
-            {
-                "exit_reason": "action_required",
-                "snapshot": {
-                    "pr": {
-                        "repo": "sednalabs/codex",
-                        "number": 750,
-                        "head_sha": "6" * 40,
-                        "base_sha": BASE_SHA,
-                    }
-                },
-            },
-            before,
-        )
+def test_duplicate_or_malformed_run_ids_are_rejected_before_workflow_selection():
+    runs = [
+        {**sample_runs()[0], "id": 1001},
+        {**sample_runs()[1], "id": 1001, "workflow": "CodeQL required"},
+    ]
+    evidence = queue.workflow_evidence(runs, SYNTHETIC_G)
+    assert evidence["valid"] is False
+    assert "duplicate_run_id" in evidence["reasons"]
+    assert evidence["selected"] == []
+
+    malformed = queue.workflow_evidence(
+        [{**sample_runs()[0], "id": "run-1001"}, sample_runs()[1]], SYNTHETIC_G
+    )
+    assert malformed["valid"] is False
+    assert "run_id_malformed" in malformed["reasons"]
+    assert "CI required" in malformed["missing_workflows"]
+
+
+def test_conflicting_queue_aliases_fail_closed_instead_of_first_nonempty_value():
+    current = snapshot(
+        queue_entry={
+            **sample_queue(),
+            "merge_group_base_sha": "6" * 40,
+            "mergeGroupSha": "7" * 40,
+        }
+    )
+    assert current["allgreen"] is False
+    assert "queue_alias_conflict" in current["identity"]["missing"]
+    assert "queue_alias_conflict_base_sha" in current["identity"]["missing"]
+    assert "queue_alias_conflict_synthetic_sha" in current["identity"]["missing"]
+
+
+def test_unallowlisted_ancestry_source_fails_closed():
+    current = snapshot(
+        queue_entry={
+            **sample_queue(),
+            "ancestry": {**sample_queue()["ancestry"], "source": "fabricated"},
+        }
+    )
+    assert current["allgreen"] is False
+    assert "ancestry_source_untrusted" in current["identity"]["missing"]

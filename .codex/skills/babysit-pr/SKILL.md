@@ -51,13 +51,15 @@ for fresh post-main proof when landing applies.
 
 Use the bundled `gh_pr_watch.py` in one helper-owned blocking mode
 (`--watch-until-action` for an owner that may need to act, or
-`--watch-until-terminal` for a delegated check wait). That helper covers
+`--watch-until-terminal` for a delegated check wait) only for a separately
+owned PR-local wait. The queue observer is strictly one-shot and never invokes
+that helper: its receipt schema is not compatible with the PR watcher receipt,
+and it cannot accept or validate invented provenance fields. The helper covers
 PR-local checks/reviews only; it is not a merge-queue, ruleset, or synthetic
-candidate event watcher. The queue observer therefore records this limitation
-and fails closed unless delegated provenance is complete. Do not recreate any
-cadence with repeated `--once` calls, raw `gh`/API polling, or a second watcher.
-After any helper wake, rehydrate the queue, ruleset, head, and run surfaces and
-bind a new wait before relying on the result.
+candidate event watcher. Do not recreate any cadence with repeated `--once`
+calls, raw `gh`/API polling, or a second watcher. After any separately-owned
+helper wake, rehydrate the queue, ruleset, head, and run surfaces and bind a
+new wait before relying on the result.
 
 Stop the affected wait and rebind before any further conclusion after a new
 head SHA, base SHA/ref, validation ref, queue entry/candidate or queue head,
@@ -81,18 +83,25 @@ an entry or emitting `ALLGREEN` grants none of that authority.
 The bundled `gh_merge_queue_shepherd.py` is read-only and one-shot. It does
 not enqueue, dequeue, merge, rerun, or alter rulesets. A snapshot with missing
 queue ref, synthetic source, ancestry, required workflow evidence, ruleset
-conditions/revision, or recognized queue state is deliberately unbound. The
+conditions/revision, or recognized queue state is deliberately unbound.
+Ancestry is accepted only from the allowlisted `hosted-static-ancestry-v1`
+schema; a caller-provided or `fabricated` source is never evidence. The
 GraphQL adapter exposes only fields returned authoritatively by the provider;
 it does not derive a queue ref from an entry ID or a synthetic SHA from a raw
-head field. When the provider cannot return the required structural evidence,
-the runbook outcome is `identity_mismatch_rebind_required` and a hosted
-follow-up must obtain that evidence before claiming `ALLGREEN`.
+head field. Its supported query currently returns the entry ID, position,
+state, base commit, synthetic head commit, and pull-request identity. It does
+not return `queueEntryRef`, queue attempt, or `ancestryEvidence`; those fields
+remain unbound and are reported as an explicit external hosted prerequisite.
+When the provider cannot return the required structural evidence, the runbook
+outcome is `identity_mismatch_rebind_required` and a hosted follow-up must
+obtain that evidence before claiming `ALLGREEN`.
 
-The optional delegated wait is a single blocking PR-local helper invocation.
-Its receipt must include helper/version/mode, a read-only marker, exact owner,
-run IDs and attempts, required conclusions, current thread state, recognized
-exit, and a provenance fingerprint. Missing or stale fields fail closed; the
-delegated helper never supplies queue-event coverage.
+The observer does not implement a delegated wait. PR-local helper output is
+kept on its own owner-controlled surface and is never treated as a queue
+identity receipt. This prevents the bundled `gh_pr_watch.py` receipt (which
+lacks queue-observer helper/version/mode, run-set, required-conclusion,
+thread-state, and fingerprint fields) from being accepted as if it supplied
+queue evidence.
 
 - Use `--watch-until-terminal` for delegated wait seams when current-head checks must finish before handoff. Use `--watch-until-action` for a repair owner that should wake on review feedback or a failure that can be acted on immediately.
 - Use `--watch` only when the lane is actively consuming the live JSONL stream in the foreground.
