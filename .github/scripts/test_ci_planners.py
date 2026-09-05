@@ -8141,7 +8141,7 @@ class RustCiModeScriptTests(unittest.TestCase):
             outputs = run_script(
                 SCRIPTS_DIR / "resolve_rust_ci_mode.py",
                 "--repo-root", str(self.repo.root), "--event-name", "merge_group",
-                "--merge-group-comparison-complete", "false",
+                "--merge-group-comparison-complete", "true",
                 "--merge-group-files-json", json.dumps(files),
                 "--merge-group-status-json", json.dumps(["R100", "D"] if len(files) == 2 else ["D"]),
                 "--merge-group-line-count", "2",
