@@ -164,7 +164,7 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     args = argparse.Namespace(
         pr="123",
         repo=None,
-        state_file="watcher-state.json",
+        state_file=f"{tmp_path.name}-watcher-state.json",
         ignore_review_thread=[],
         max_flaky_retries=3,
         reset_seen_feedback=False,
