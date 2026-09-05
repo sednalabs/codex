@@ -1727,7 +1727,9 @@ async fn plugins_popup_refresh_clears_query_for_remote_fallback_tab() {
     let cwd = chat.config.cwd.clone();
     chat.on_plugins_loaded(
         cwd.to_path_buf(),
-        Ok(plugins_test_response(vec![plugins_test_curated_marketplace(Vec::new())])),
+        Ok(plugins_test_response(vec![
+            plugins_test_curated_marketplace(Vec::new()),
+        ])),
     );
 
     let popup = render_bottom_popup(&chat, /*width*/ 100);
