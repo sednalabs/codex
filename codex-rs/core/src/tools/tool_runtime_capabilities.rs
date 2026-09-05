@@ -53,6 +53,11 @@ pub(crate) struct WaitAgentCapability {
     pub(crate) pending_ids: bool,
     pub(crate) completion_reason: bool,
     pub(crate) mailbox_wake: bool,
+    /// Keep the tool invocation pending across internal lease expiries.
+    ///
+    /// This is deliberately opt-in: V1 and the ordinary V2 timeout contract
+    /// continue to return a tool result when their lease expires.
+    pub(crate) native_event_wait: bool,
 }
 
 impl WaitAgentCapability {
@@ -62,6 +67,7 @@ impl WaitAgentCapability {
             pending_ids: true,
             completion_reason: true,
             mailbox_wake: true,
+            native_event_wait: true,
         }
     }
 }
@@ -131,6 +137,7 @@ impl ToolRuntimeCapabilities {
                 pending_ids: left.pending_ids || right.pending_ids,
                 completion_reason: left.completion_reason || right.completion_reason,
                 mailbox_wake: left.mailbox_wake || right.mailbox_wake,
+                native_event_wait: left.native_event_wait || right.native_event_wait,
             }),
             (Some(capability), None) | (None, Some(capability)) => Some(capability),
             (None, None) => None,
@@ -235,6 +242,7 @@ mod tests {
                 pending_ids: false,
                 completion_reason: false,
                 mailbox_wake: false,
+                native_event_wait: false,
             }),
             ..ToolRuntimeCapabilities::upstream_default()
         });
@@ -255,7 +263,23 @@ mod tests {
                 pending_ids: false,
                 completion_reason: false,
                 mailbox_wake: false,
+                native_event_wait: false,
             })
         );
+    }
+
+    #[test]
+    fn native_event_wait_capability_is_exposed_by_downstream_runtime() {
+        assert!(WaitAgentCapability::downstream_default().native_event_wait);
+
+        let provider = TestProvider(ToolRuntimeCapabilities {
+            wait_agent: Some(WaitAgentCapability {
+                native_event_wait: true,
+                ..WaitAgentCapability::downstream_default()
+            }),
+            ..ToolRuntimeCapabilities::upstream_default()
+        });
+        let merged = merge_tool_runtime_capabilities(&[&provider]);
+        assert!(merged.wait_agent.is_some_and(|capability| capability.native_event_wait));
     }
 }
