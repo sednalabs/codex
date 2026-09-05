@@ -5,6 +5,7 @@ use crate::session::input_queue::InputQueueActivity;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::handlers::multi_agents_common::MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
@@ -40,8 +41,9 @@ pub(crate) fn resolve_wait_timeout_ms(
     max_wait_timeout_ms: i64,
     default_wait_timeout_ms: i64,
 ) -> Result<i64, FunctionCallError> {
-    let min_timeout_ms = min_wait_timeout_ms.clamp(0, MAX_WAIT_TIMEOUT_MS);
-    let max_timeout_ms = max_wait_timeout_ms.clamp(min_timeout_ms, MAX_WAIT_TIMEOUT_MS);
+    let min_timeout_ms = min_wait_timeout_ms.clamp(0, MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS);
+    let max_timeout_ms =
+        max_wait_timeout_ms.clamp(min_timeout_ms, MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS);
     let default_timeout_ms = default_wait_timeout_ms.clamp(min_timeout_ms, max_timeout_ms);
 
     match requested_timeout_ms {
