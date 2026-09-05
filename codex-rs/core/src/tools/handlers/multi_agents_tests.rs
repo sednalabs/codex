@@ -4695,7 +4695,8 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
             turn,
             "wait_agent",
             function_payload(json!({
-                "targets": [target_id.to_string()]
+                "targets": [target_id.to_string()],
+                "native_event_wait": true
             })),
         )),
     )
