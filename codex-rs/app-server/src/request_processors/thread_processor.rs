@@ -3346,9 +3346,7 @@ impl ThreadRequestProcessor {
                 .subscribed_connection_ids(thread_id)
                 .await
                 .contains(&connection_id);
-            if !already_subscribed
-                && let Some(notification) = started_notification.clone()
-            {
+            if !already_subscribed && let Some(notification) = started_notification.clone() {
                 self.outgoing
                     .send_server_notification_to_connections(
                         &[connection_id],
