@@ -856,6 +856,7 @@ impl AccountRequestProcessor {
     #[expect(
         clippy::await_holding_invalid_type,
         clippy::expect_used,
+        clippy::too_many_arguments,
         reason = "the active-login and auth admission guards serialize credential completion; staged auth is required by the success invariant"
     )]
     async fn send_chatgpt_login_completion_notifications(
