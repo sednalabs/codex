@@ -1242,8 +1242,12 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
         .refresh_available_models(RefreshStrategy::Online, &DEFAULT_HTTP_CLIENT_FACTORY)
         .await
         .expect("remote refresh succeeds");
+    let template_config = ModelsManagerConfig {
+        personality_enabled: true,
+        ..ModelsManagerConfig::default()
+    };
     let info = manager
-        .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
+        .get_model_info("codex-auto-review", &template_config)
         .await;
     assert!(!info.get_model_instructions(None).contains(sentence));
     assert!(!info
@@ -1254,6 +1258,12 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
         .contains(sentence));
     assert_eq!(info.display_name, original_display);
     assert_eq!(endpoint.fetch_count(), 1);
+
+    let disabled_info = manager
+        .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
+        .await;
+    assert!(!disabled_info.get_model_instructions(None).contains(sentence));
+    assert!(disabled_info.model_messages.is_none());
 
     let cache_bytes = tokio::fs::read(home.path().join("models_cache.json"))
         .await
@@ -1267,9 +1277,15 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
         .await
         .expect("cache load succeeds");
     let cached_info = cached_manager
-        .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
+        .get_model_info("codex-auto-review", &template_config)
         .await;
     assert!(!cached_info.get_model_instructions(None).contains(sentence));
+    assert!(!cached_info
+        .model_messages
+        .as_ref()
+        .and_then(|messages| messages.instructions_template.as_ref())
+        .expect("cached template")
+        .contains(sentence));
     assert_eq!(cache_endpoint.fetch_count(), 0);
 
     let suffix_info = manager
