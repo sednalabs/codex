@@ -161,6 +161,9 @@ use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
+use codex_tools::BROWSER_OBSERVE_TOOL_NAME;
+use codex_tools::BROWSER_STEP_TOOL_NAME;
+use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
 use codex_tools::ToolName;
 use codex_utils_output_truncation::TruncationPolicy;
 use futures::future::BoxFuture;
@@ -664,14 +667,15 @@ impl Session {
             .or_else(|| conversation_history.get_base_instructions().map(|s| s.text))
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality));
 
-        // Respect thread-start tools. When missing (resumed/forked threads), read from the db
-        // first, then fall back to rollout-file tools.
-        let persisted_tools = if dynamic_tools.is_empty() {
-            let thread_id = match &conversation_history {
-                InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
-                InitialHistory::Forked(_) => conversation_history.forked_from_id(),
-                InitialHistory::New | InitialHistory::Cleared => None,
-            };
+        // Respect thread-start tools. For resumed/forked threads, read from the db first, then
+        // fall back to rollout-file tools. Freshly-derived Browser tools must not suppress
+        // unrelated persistent tools from the thread.
+        let thread_id = match &conversation_history {
+            InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
+            InitialHistory::Forked(_) => conversation_history.forked_from_id(),
+            InitialHistory::New | InitialHistory::Cleared => None,
+        };
+        let persisted_tools = {
             match thread_id {
                 Some(thread_id) => {
                     let state_db_ctx = if config.ephemeral {
@@ -699,21 +703,15 @@ impl Session {
                 }
                 None => None,
             }
-        } else {
-            None
         };
         // Dynamic tools are defined at thread start and persisted in rollout session metadata.
-        let dynamic_tools = if dynamic_tools.is_empty() {
-            persisted_tools
-                .filter(|tools| !tools.is_empty())
-                .or_else(|| conversation_history.get_dynamic_tools())
-                .unwrap_or_default()
-                .into_iter()
-                .filter(should_restore_dynamic_tool_on_resume)
-                .collect()
-        } else {
-            dynamic_tools
-        };
+        // Freshly-derived Browser tools replace stale Browser entries, while unrelated
+        // persistent tools remain available.
+        let persisted_tools = persisted_tools
+            .filter(|tools| !tools.is_empty())
+            .or_else(|| conversation_history.get_dynamic_tools())
+            .unwrap_or_default();
+        let dynamic_tools = merge_dynamic_tools(dynamic_tools, persisted_tools);
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
         let collaboration_mode = CollaborationMode {
@@ -930,6 +928,36 @@ fn should_restore_dynamic_tool_on_resume(
                 .and_then(|capability| capability.capability_scope.as_deref()),
             Some("environment")
         )
+}
+
+fn merge_dynamic_tools(
+    mut active_tools: Vec<DynamicToolSpec>,
+    persisted_tools: Vec<DynamicToolSpec>,
+) -> Vec<DynamicToolSpec> {
+    for tool in persisted_tools
+        .into_iter()
+        .filter(should_restore_dynamic_tool_on_resume)
+    {
+        if is_browser_dynamic_tool(&tool)
+            || active_tools
+                .iter()
+                .any(|active| active.namespace == tool.namespace && active.name == tool.name)
+        {
+            continue;
+        }
+        active_tools.push(tool);
+    }
+    active_tools
+}
+
+fn is_browser_dynamic_tool(tool: &DynamicToolSpec) -> bool {
+    tool.name == BROWSER_OBSERVE_TOOL_NAME
+        || tool.name == BROWSER_STEP_TOOL_NAME
+        || tool
+            .capability
+            .as_ref()
+            .and_then(|capability| capability.family.as_deref())
+            == Some(COMPUTER_USE_ADAPTER_BROWSER)
 }
 
 fn get_service_tier(
