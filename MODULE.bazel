@@ -27,6 +27,7 @@ single_version_override(
     patch_strip = 1,
     patches = [
         "//patches:windows-support-remote-case-aliases.patch",
+        "//patches:windows-support-native-tools.patch",
     ],
     version = "0.2.0",
 )
