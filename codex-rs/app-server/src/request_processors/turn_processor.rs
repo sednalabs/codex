@@ -375,6 +375,10 @@ impl TurnRequestProcessor {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is an independent field of the persisted automatic-turn capability contract"
+    )]
     async fn validate_automatic_turn_capability(
         &self,
         request_id: &ConnectionRequestId,
@@ -789,17 +793,18 @@ impl TurnRequestProcessor {
                 "automatic turn capability no longer matches the server-canonical context",
             ));
         }
-        if !automatic_turn && settings_context_changed {
-            if let Some(state_db) = thread.state_db() {
-                state_db
-                    .invalidate_automatic_turn_capabilities_for_thread(thread_id)
-                    .await
-                    .map_err(|err| {
-                        internal_error(format!(
-                            "failed to invalidate automatic turn capabilities before turn settings enqueue: {err}"
-                        ))
-                    })?;
-            }
+        if !automatic_turn
+            && settings_context_changed
+            && let Some(state_db) = thread.state_db()
+        {
+            state_db
+                .invalidate_automatic_turn_capabilities_for_thread(thread_id)
+                .await
+                .map_err(|err| {
+                    internal_error(format!(
+                        "failed to invalidate automatic turn capabilities before turn settings enqueue: {err}"
+                    ))
+                })?;
         }
         let parent_permission_profile_override =
             thread_settings.permission_profile.clone().or_else(|| {
@@ -1896,7 +1901,7 @@ fn automatic_turn_start_settings_match_current(
     let approval_matches = params
         .approval_policy
         .as_ref()
-        .is_none_or(|approval| approval.clone().to_core() == snapshot.approval_policy);
+        .is_none_or(|approval| approval.to_core() == snapshot.approval_policy);
     let reviewer_matches = params
         .approvals_reviewer
         .as_ref()
@@ -1957,6 +1962,17 @@ fn automatic_turn_start_settings_match_current(
         && collaboration_matches
 }
 
+fn xcode_26_4_mcp_elicitations_auto_deny(
+    client_name: Option<&str>,
+    client_version: Option<&str>,
+) -> bool {
+    // Xcode 26.4 shipped before app-server MCP elicitation requests were
+    // client-visible. Keep elicitations auto-denied for that client line.
+    // TODO: Remove this compatibility hack once Xcode 26.4 ages out.
+    client_name == Some("Xcode")
+        && client_version.is_some_and(|version| version.starts_with("26.4"))
+}
+
 #[cfg(test)]
 mod automatic_turn_validation_tests {
     use super::*;
@@ -2001,15 +2017,4 @@ mod automatic_turn_validation_tests {
         ));
         assert!(!is_automatic_turn_capability(Some("ordinary-client-id")));
     }
-}
-
-fn xcode_26_4_mcp_elicitations_auto_deny(
-    client_name: Option<&str>,
-    client_version: Option<&str>,
-) -> bool {
-    // Xcode 26.4 shipped before app-server MCP elicitation requests were
-    // client-visible. Keep elicitations auto-denied for that client line.
-    // TODO: Remove this compatibility hack once Xcode 26.4 ages out.
-    client_name == Some("Xcode")
-        && client_version.is_some_and(|version| version.starts_with("26.4"))
 }

@@ -14,6 +14,7 @@ class ClassifyCiPathsTests(unittest.TestCase):
         scope = classify([])
         self.assertTrue(scope.force_full_blocking)
         self.assertTrue(scope.force_full_codeql)
+        self.assertTrue(scope.clippy)
         self.assertTrue(scope.cargo_deny)
         self.assertTrue(scope.repo_policy)
         self.assertTrue(scope.repo_package)
@@ -27,6 +28,7 @@ class ClassifyCiPathsTests(unittest.TestCase):
         scope = classify(["README.md"])
         self.assertTrue(scope.repo_readme)
         self.assertFalse(scope.cargo_deny)
+        self.assertFalse(scope.clippy)
         self.assertFalse(scope.repo_policy)
         self.assertFalse(scope.repo_package)
         self.assertFalse(scope.repo_format)
@@ -36,6 +38,7 @@ class ClassifyCiPathsTests(unittest.TestCase):
 
     def test_cargo_manifest_selects_dependency_policy_and_rust_consumers(self) -> None:
         scope = classify(["codex-rs/core/Cargo.toml"])
+        self.assertTrue(scope.clippy)
         self.assertTrue(scope.cargo_deny)
         self.assertTrue(scope.repo_policy)
         self.assertTrue(scope.repo_format)
@@ -63,6 +66,12 @@ class ClassifyCiPathsTests(unittest.TestCase):
     def test_workflow_change_selects_actions_codeql(self) -> None:
         scope = classify([".github/workflows/docs-sanity.yml"])
         self.assertEqual(scope.codeql_languages, ("actions",))
+
+    def test_workflow_changes_select_required_clippy(self) -> None:
+        self.assertTrue(classify([".github/workflows/docs-sanity.yml"]).clippy)
+
+    def test_unrelated_python_change_does_not_select_required_clippy(self) -> None:
+        self.assertFalse(classify(["sdk/python/src/openai_codex/client.py"]).clippy)
 
     def test_codeql_config_change_forces_all_codeql_languages(self) -> None:
         scope = classify([".github/codeql/codeql-config.yml"])
