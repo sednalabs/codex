@@ -494,3 +494,240 @@ def test_watch_until_action_waits_for_terminal_ci_failure(
     receipt = json.loads(capsys.readouterr().out)
     assert receipt["polls_completed"] == 2
     assert receipt["snapshot"]["checks"]["all_terminal"] is True
+
+
+def retry_snapshot(*run_ids, checks=None):
+    return {
+        "pr": sample_pr(),
+        "checks": sample_checks(**(checks or {"failed_count": 1})),
+        "failed_runs": [{"run_id": run_id} for run_id in run_ids],
+        "retry_state": {
+            "current_sha_retries_used": 0,
+            "max_flaky_retries": 3,
+        },
+    }
+
+
+def retry_args(*run_ids, expected_head_sha="abc123", max_flaky_retries=3):
+    return argparse.Namespace(
+        pr="https://github.com/openai/codex/pull/123",
+        repo="openai/codex",
+        expected_head_sha=expected_head_sha,
+        run_ids=[str(run_id) for run_id in run_ids] or None,
+        max_flaky_retries=max_flaky_retries,
+    )
+
+
+def install_retry_snapshot(monkeypatch, snapshot):
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "collect_snapshot",
+        lambda _args: (snapshot, Path("/tmp/codex-babysit-pr-state.json")),
+    )
+    monkeypatch.setattr(gh_pr_watch, "load_state", lambda _path: ({}, True))
+    monkeypatch.setattr(gh_pr_watch, "save_state", lambda *_args: None)
+
+
+def test_retry_rejects_pr_head_change_before_mutation(monkeypatch):
+    install_retry_snapshot(monkeypatch, retry_snapshot(99))
+    current_pr = sample_pr()
+    current_pr["head_sha"] = "changed"
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_args, **_kwargs: current_pr)
+    mutation_calls = []
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "gh_text",
+        lambda *args, **kwargs: mutation_calls.append((args, kwargs)),
+    )
+
+    result = gh_pr_watch.retry_failed_now(retry_args(99))
+
+    assert result["reason"] == "pr_head_mismatch"
+    assert result["rerun_attempted"] is False
+    assert mutation_calls == []
+
+
+def test_retry_rejects_run_head_mismatch_before_mutation(monkeypatch):
+    install_retry_snapshot(monkeypatch, retry_snapshot(99))
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_args, **_kwargs: sample_pr())
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "get_workflow_run",
+        lambda *_args: {
+            "id": 99,
+            "head_sha": "different",
+            "status": "completed",
+            "conclusion": "failure",
+        },
+    )
+    mutation_calls = []
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "gh_text",
+        lambda *args, **kwargs: mutation_calls.append((args, kwargs)),
+    )
+
+    result = gh_pr_watch.retry_failed_now(retry_args(99))
+
+    assert result["reason"] == "run_head_mismatch"
+    assert result["rerun_attempted"] is False
+    assert mutation_calls == []
+
+
+def test_retry_rejects_stale_or_replaced_run_before_mutation(monkeypatch):
+    install_retry_snapshot(monkeypatch, retry_snapshot(99))
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_args, **_kwargs: sample_pr())
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "get_workflow_run",
+        lambda *_args: {
+            "id": 100,
+            "head_sha": "abc123",
+            "status": "completed",
+            "conclusion": "failure",
+        },
+    )
+    mutation_calls = []
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "gh_text",
+        lambda *args, **kwargs: mutation_calls.append((args, kwargs)),
+    )
+
+    result = gh_pr_watch.retry_failed_now(retry_args(99))
+
+    assert result["reason"] == "run_id_mismatch"
+    assert result["rerun_attempted"] is False
+    assert mutation_calls == []
+
+
+@pytest.mark.parametrize(
+    ("pr_flags", "expected_reason"),
+    [
+        ({"closed": True}, "pr_closed_or_merged"),
+        ({"merged": True}, "pr_closed_or_merged"),
+    ],
+)
+def test_retry_rejects_closed_or_merged_pr(monkeypatch, pr_flags, expected_reason):
+    install_retry_snapshot(monkeypatch, retry_snapshot(99))
+    current_pr = sample_pr()
+    current_pr.update(pr_flags)
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_args, **_kwargs: current_pr)
+    mutation_calls = []
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "gh_text",
+        lambda *args, **kwargs: mutation_calls.append((args, kwargs)),
+    )
+
+    result = gh_pr_watch.retry_failed_now(retry_args(99))
+
+    assert result["reason"] == expected_reason
+    assert result["rerun_attempted"] is False
+    assert mutation_calls == []
+
+
+@pytest.mark.parametrize(
+    ("run_overrides", "expected_reason"),
+    [
+        ({"status": "in_progress", "conclusion": ""}, "run_not_terminal"),
+        ({"status": "completed", "conclusion": "startup_failure"}, "run_startup_blocked"),
+    ],
+)
+def test_retry_rejects_pending_or_startup_blocked_run(
+    monkeypatch, run_overrides, expected_reason
+):
+    install_retry_snapshot(monkeypatch, retry_snapshot(99))
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_args, **_kwargs: sample_pr())
+    run = {
+        "id": 99,
+        "head_sha": "abc123",
+        "status": "completed",
+        "conclusion": "failure",
+    }
+    run.update(run_overrides)
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_run", lambda *_args: run)
+    mutation_calls = []
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "gh_text",
+        lambda *args, **kwargs: mutation_calls.append((args, kwargs)),
+    )
+
+    result = gh_pr_watch.retry_failed_now(retry_args(99))
+
+    assert result["reason"] == expected_reason
+    assert result["rerun_attempted"] is False
+    assert mutation_calls == []
+
+
+def test_retry_performs_exactly_one_rerun_and_reports_new_attempt_identity(monkeypatch):
+    install_retry_snapshot(monkeypatch, retry_snapshot(99))
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_args, **_kwargs: sample_pr())
+    run_reads = iter(
+        [
+            {
+                "id": 99,
+                "head_sha": "abc123",
+                "status": "completed",
+                "conclusion": "failure",
+                "run_attempt": 1,
+            },
+            {
+                "id": 99,
+                "head_sha": "abc123",
+                "status": "in_progress",
+                "conclusion": None,
+                "run_attempt": 2,
+            },
+        ]
+    )
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_run", lambda *_args: next(run_reads))
+    mutation_calls = []
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "gh_text",
+        lambda *args, **kwargs: mutation_calls.append((args, kwargs)) or "",
+    )
+
+    result = gh_pr_watch.retry_failed_now(retry_args(99))
+
+    assert result["reason"] == "rerun_triggered"
+    assert result["rerun_attempted"] is True
+    assert result["rerun_count"] == 1
+    assert result["rerun_run_ids"] == [99]
+    assert len(mutation_calls) == 1
+    assert mutation_calls[0][0] == (["run", "rerun", "99", "--failed"],)
+    assert result["attempts"][0]["new_attempt"] is True
+    assert result["attempts"][0]["attempt_identity"] == "99:2"
+    assert result["action_fingerprint"]["binding"]["selected_failed_run_ids"] == ["99"]
+
+
+def test_retry_stops_on_ambiguous_command_without_second_mutation(monkeypatch):
+    install_retry_snapshot(monkeypatch, retry_snapshot(99, 100))
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_args, **_kwargs: sample_pr())
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "get_workflow_run",
+        lambda _repo, run_id: {
+            "id": int(run_id),
+            "head_sha": "abc123",
+            "status": "completed",
+            "conclusion": "failure",
+            "run_attempt": 1,
+        },
+    )
+    mutation_calls = []
+
+    def ambiguous_command(*args, **kwargs):
+        mutation_calls.append((args, kwargs))
+        raise gh_pr_watch.GhCommandError("provider response was ambiguous")
+
+    monkeypatch.setattr(gh_pr_watch, "gh_text", ambiguous_command)
+
+    result = gh_pr_watch.retry_failed_now(retry_args(99, 100))
+
+    assert result["reason"] == "rerun_command_ambiguous"
+    assert result["rerun_attempted"] is False
+    assert result["rerun_count"] == 0
+    assert len(mutation_calls) == 1

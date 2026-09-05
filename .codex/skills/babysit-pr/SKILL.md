@@ -86,8 +86,20 @@ python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr auto --watch
 ### Trigger flaky retry cycle (only when watcher indicates)
 
 ```bash
-python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr auto --retry-failed-now
+python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py \
+  --pr <pr-url> --retry-failed-now --expected-head-sha <headRefOid> \
+  --run-id <failed-run-id>
 ```
+
+Retry mode requires the exact caller-observed PR head SHA. Repeat `--run-id` to
+select a bounded set of failed workflow runs; when omitted, the current
+snapshot's failed run IDs are bound into the receipt. Immediately before any
+rerun, the helper re-reads the PR and every selected run and fails closed on a
+head, lifecycle, run identity, terminal-state, or rerunnable-conclusion
+mismatch. Each admitted run is mutated at most once. A successful rerun is
+followed by an authoritative run readback that reports `run_attempt` and the
+derived attempt identity when GitHub exposes it; an ambiguous provider command
+failure stops without a second mutation.
 
 ### Explicit PR target
 
