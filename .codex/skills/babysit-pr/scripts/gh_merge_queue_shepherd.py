@@ -498,7 +498,6 @@ def reconcile_snapshot(
     classified = classify_candidates(normalized_candidates, owner)
 
     actions: list[str]
-    disposition = "identity_unbound"
     if missing or not ruleset_readback["matches_observed"] or queue_absent:
         actions = [IDENTITY_MISMATCH_ACTION]
         disposition = "identity_unbound"
