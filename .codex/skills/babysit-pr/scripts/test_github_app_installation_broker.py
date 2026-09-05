@@ -354,7 +354,7 @@ class BrokerTests(unittest.TestCase):
             script = Path(temp) / "run.sh"
             script.write_text("#!/bin/sh\necho ok\n")
             script.chmod(0o755)
-            command = ["/bin/sh", str(script)]
+            command = [str(Path("/bin/sh").resolve(strict=True)), str(script)]
             fingerprint = fingerprint_command(broker.repository, broker.permissions, command)
             original_get = broker.get_installation_token
 
@@ -375,7 +375,7 @@ class BrokerTests(unittest.TestCase):
             script = Path(temp) / "run.sh"
             script.write_text("#!/bin/sh\necho ok\n")
             script.chmod(0o700)
-            command = ["/bin/sh", str(script)]
+            command = [str(Path("/bin/sh").resolve(strict=True)), str(script)]
             before = fingerprint_command("example-org/codex", {"metadata": "read"}, command)
             script.chmod(0o755)
             after = fingerprint_command("example-org/codex", {"metadata": "read"}, command)
