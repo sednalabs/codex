@@ -232,23 +232,7 @@ def fingerprint_command(repository: str, permissions: Mapping[str, Any] | Sequen
         seen.add(key)
         _validate_source(path)
         try:
-            source_fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            try:
-                opened = os.fstat(source_fd)
-                current = path.stat()
-                if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
-                    raise BrokerError("command source changed while it was opened")
-                chunks = []
-                while True:
-                    chunk = os.read(source_fd, 64 * 1024)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                data = b"".join(chunks)
-            finally:
-                os.close(source_fd)
-        except BrokerError:
-            raise
+            data = path.read_bytes()
         except OSError as exc:
             raise BrokerError("command source could not be read") from exc
         source_entries.append(
@@ -316,6 +300,20 @@ def _validate_credentials_directory(path: Path) -> None:
         raise BrokerError("CREDENTIALS_DIRECTORY must not be accessible to group or other users")
     if info.st_uid not in {0, os.geteuid()}:
         raise BrokerError("CREDENTIALS_DIRECTORY owner is not trusted")
+
+
+def _production_credentials_directory(value: str | None) -> Path:
+    if not isinstance(value, str) or not value:
+        raise BrokerError("CREDENTIALS_DIRECTORY is required")
+    root = os.path.realpath("/run/credentials")
+    canonical = os.path.realpath(value)
+    try:
+        contained = os.path.commonpath((root, canonical)) == root
+    except ValueError:
+        contained = False
+    if not contained or canonical == root:
+        raise BrokerError("production CREDENTIALS_DIRECTORY escaped /run/credentials")
+    return Path(canonical)
 
 
 def _run_child_bounded(argv: Sequence[str], environment: Mapping[str, str]) -> tuple[int, bytes, bytes]:
@@ -419,7 +417,12 @@ class GitHubAppBroker:
         if owner.lower() != self.account.lower():
             raise BrokerError("selected repository is outside the installation account")
         self.permissions = _normalise_permissions(permissions)
-        self.credentials_directory = Path(credentials_directory or os.environ.get("CREDENTIALS_DIRECTORY", ""))
+        if requester is None:
+            if credentials_directory is not None:
+                raise BrokerError("production credentials must come from CREDENTIALS_DIRECTORY")
+            self.credentials_directory = _production_credentials_directory(os.environ.get("CREDENTIALS_DIRECTORY"))
+        else:
+            self.credentials_directory = Path(credentials_directory or os.environ.get("CREDENTIALS_DIRECTORY", ""))
         if not str(self.credentials_directory) or str(self.credentials_directory) == ".":
             raise BrokerError("CREDENTIALS_DIRECTORY is required")
         _validate_credentials_directory(self.credentials_directory)

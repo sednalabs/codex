@@ -17,6 +17,7 @@ from github_app_installation_broker import (
     HttpResult,
     MAX_HTTP_BODY,
     _run_child_bounded,
+    _production_credentials_directory,
     _validate_private_key,
     build_jwt_claims,
     fingerprint_command,
@@ -320,6 +321,22 @@ class BrokerTests(unittest.TestCase):
             GitHubAppBroker(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"}, credentials_directory=directory.name, api_base_url="https://evil.example", requester=None)
         with self.assertRaises(BrokerError):
             GitHubAppBroker(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"}, credentials_directory=directory.name, key_basename="other.pem", requester=fake)
+
+    def test_production_credentials_root_boundary_precedes_filesystem_validation(self):
+        kwargs = dict(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"})
+        for value in ("/tmp/credentials", "/run/credentials/../etc", "/run/credentials-unit"):
+            with mock.patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": value}, clear=False), mock.patch("github_app_installation_broker._validate_credentials_directory") as validate:
+                with self.assertRaises(BrokerError):
+                    GitHubAppBroker(**kwargs)
+                validate.assert_not_called()
+
+    def test_canonical_production_credentials_path_reaches_validation(self):
+        kwargs = dict(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"})
+        with mock.patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": "/run/credentials/unit.service"}, clear=False), mock.patch("github_app_installation_broker._validate_credentials_directory") as validate:
+            broker = GitHubAppBroker(**kwargs)
+        validate.assert_called_once()
+        self.assertEqual("/run/credentials/unit.service", str(broker.credentials_directory))
+        self.assertEqual("/run/credentials/unit.service", str(_production_credentials_directory("/run/credentials/unit.service")))
 
     def test_private_key_mode_owner_and_fd_identity_are_checked_without_signing_secret(self):
         fake = FakeGitHub()
