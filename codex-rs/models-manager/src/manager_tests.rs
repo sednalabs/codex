@@ -1316,5 +1316,4 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
         .get_model_info("codex-auto-review-v2", &ModelsManagerConfig::default())
         .await;
     assert!(suffix_info.get_model_instructions(None).contains(sentence));
-
 }
