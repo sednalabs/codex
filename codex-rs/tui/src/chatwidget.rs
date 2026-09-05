@@ -178,16 +178,9 @@ use tracing::debug;
 use tracing::warn;
 
 const DEFAULT_MODEL_DISPLAY_NAME: &str = "loading";
-const MULTI_AGENT_ENABLE_TITLE: &str = "Enable subagents?";
-const MULTI_AGENT_ENABLE_YES: &str = "Yes, enable";
-const MULTI_AGENT_ENABLE_NO: &str = "Not now";
-const MULTI_AGENT_ENABLE_NOTICE: &str = "Subagents will be enabled in the next session.";
 const TRUSTED_ACCESS_FOR_CYBER_VERIFICATION_WARNING: &str = "Your conversations have multiple flags for possible cybersecurity risk. Responses may take longer because extra safety checks are on. To get authorized for security work, join the Trusted Access for Cyber program: https://chatgpt.com/cyber";
-const MEMORIES_DOC_URL: &str = "https://developers.openai.com/codex/memories";
-const MEMORIES_ENABLE_TITLE: &str = "Enable memories?";
-const MEMORIES_ENABLE_YES: &str = "Yes, enable";
-const MEMORIES_ENABLE_NO: &str = "Not now";
 const MEMORIES_ENABLE_NOTICE: &str = "Memories will be enabled in the next session.";
+const MEMORIES_DOC_URL: &str = "https://developers.openai.com/codex/memories";
 const PLAN_MODE_REASONING_SCOPE_TITLE: &str = "Apply reasoning change";
 const PLAN_MODE_REASONING_SCOPE_PLAN_ONLY: &str = "Apply to Plan mode override";
 const PLAN_MODE_REASONING_SCOPE_ALL_MODES: &str = "Apply to global default and Plan mode override";
@@ -1064,44 +1057,48 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    pub(crate) fn open_multi_agent_enable_prompt(&mut self) {
-        let items = vec![
-            SelectionItem {
-                name: MULTI_AGENT_ENABLE_YES.to_string(),
-                description: Some(
-                    "Save the setting now. You will need a new session to use it.".to_string(),
-                ),
-                actions: vec![Box::new(|tx| {
-                    tx.send(AppEvent::UpdateFeatureFlags {
-                        updates: vec![(Feature::Collab, true)],
-                    });
-                    tx.send(AppEvent::InsertHistoryCell(Box::new(
-                        history_cell::new_warning_event(MULTI_AGENT_ENABLE_NOTICE.to_string()),
-                    )));
-                })],
-                dismiss_on_select: true,
-                ..Default::default()
-            },
-            SelectionItem {
-                name: MULTI_AGENT_ENABLE_NO.to_string(),
-                description: Some("Keep subagents disabled.".to_string()),
-                dismiss_on_select: true,
-                ..Default::default()
-            },
-        ];
-
+    pub(crate) fn open_feature_enable_prompt(&mut self, feature: Feature) {
+        let (label, name) = match feature {
+            Feature::Collab => ("Subagents", "subagents"),
+            Feature::MemoryTool => ("Memories", "memories"),
+            _ => return,
+        };
         self.bottom_pane.show_selection_view(SelectionViewParams {
-            title: Some(MULTI_AGENT_ENABLE_TITLE.to_string()),
-            subtitle: Some("Subagents are currently disabled in your config.".to_string()),
+            title: Some(format!("Enable {name}?")),
+            subtitle: Some(format!("{label} are disabled in this TUI session.")),
+            footer_note: (feature == Feature::MemoryTool).then(|| {
+                Line::from(vec![
+                    "Learn more: ".dim(),
+                    MEMORIES_DOC_URL.cyan().underlined(),
+                ])
+            }),
             footer_hint: Some(standard_popup_hint_line()),
-            items,
+            items: vec![
+                SelectionItem {
+                    name: "Yes, enable".to_string(),
+                    description: Some(
+                        "Save on the server for new threads. This thread is unchanged.".to_string(),
+                    ),
+                    actions: vec![Box::new(move |tx| {
+                        tx.send(AppEvent::EnableFeatureForNewThreads(feature));
+                    })],
+                    dismiss_on_select: true,
+                    ..Default::default()
+                },
+                SelectionItem {
+                    name: "Not now".to_string(),
+                    description: Some(format!("Keep {name} disabled.")),
+                    dismiss_on_select: true,
+                    ..Default::default()
+                },
+            ],
             ..Default::default()
         });
     }
 
     pub(crate) fn open_memories_popup(&mut self) {
         if !self.config.features.enabled(Feature::MemoryTool) {
-            self.open_memories_enable_prompt();
+            self.open_feature_enable_prompt(Feature::MemoryTool);
             return;
         }
 
@@ -1112,42 +1109,6 @@ impl ChatWidget {
             self.bottom_pane.list_keymap(),
         );
         self.bottom_pane.show_view(Box::new(view));
-    }
-
-    pub(crate) fn open_memories_enable_prompt(&mut self) {
-        let items = vec![
-            SelectionItem {
-                name: MEMORIES_ENABLE_YES.to_string(),
-                description: Some(
-                    "Save the setting now. You will need a new session to use it.".to_string(),
-                ),
-                actions: vec![Box::new(|tx| {
-                    tx.send(AppEvent::UpdateFeatureFlags {
-                        updates: vec![(Feature::MemoryTool, true)],
-                    });
-                })],
-                dismiss_on_select: true,
-                ..Default::default()
-            },
-            SelectionItem {
-                name: MEMORIES_ENABLE_NO.to_string(),
-                description: Some("Keep memories disabled.".to_string()),
-                dismiss_on_select: true,
-                ..Default::default()
-            },
-        ];
-
-        self.bottom_pane.show_selection_view(SelectionViewParams {
-            title: Some(MEMORIES_ENABLE_TITLE.to_string()),
-            subtitle: Some("Memories are currently disabled in your config.".to_string()),
-            footer_note: Some(Line::from(vec![
-                "Learn more: ".dim(),
-                MEMORIES_DOC_URL.cyan().underlined(),
-            ])),
-            footer_hint: Some(standard_popup_hint_line()),
-            items,
-            ..Default::default()
-        });
     }
 
     pub(crate) fn set_memory_settings(&mut self, use_memories: bool, generate_memories: bool) {

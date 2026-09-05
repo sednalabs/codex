@@ -1127,7 +1127,7 @@ impl App {
     }
 }
 
-fn overridden_write_message(write_response: &ConfigWriteResponse) -> &str {
+pub(super) fn overridden_write_message(write_response: &ConfigWriteResponse) -> &str {
     write_response
         .overridden_metadata
         .as_ref()

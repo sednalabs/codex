@@ -2408,6 +2408,10 @@ impl App {
             AppEvent::SaveExperimentalFeatures { thread_id, updates, response_tx } => {
                 self.save_experimental_features(app_server, thread_id, updates, response_tx);
             }
+            AppEvent::EnableFeatureForNewThreads(feature) => {
+                self.enable_feature_for_new_threads(tui, app_server, feature)
+                    .await;
+            }
             AppEvent::UpdateFeatureFlags { updates } => {
                 self.update_feature_flags(app_server, updates).await;
             }

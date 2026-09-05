@@ -139,7 +139,7 @@ impl App {
             if let Some(primary_thread_id) = self.primary_thread_id {
                 self.refresh_agent_picker_threads(app_server, primary_thread_id);
             }
-            self.chat_widget.open_multi_agent_enable_prompt();
+            self.chat_widget.open_feature_enable_prompt(Feature::Collab);
             return;
         }
 

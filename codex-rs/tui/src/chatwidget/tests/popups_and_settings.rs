@@ -3177,61 +3177,33 @@ async fn experimental_popup_loading_snapshot() {
 }
 
 #[tokio::test]
-async fn multi_agent_enable_prompt_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-
-    chat.open_multi_agent_enable_prompt();
-
-    let popup = render_bottom_popup(&chat, /*width*/ 80);
-    assert_chatwidget_snapshot!("multi_agent_enable_prompt", popup);
-}
-
-#[tokio::test]
-async fn multi_agent_enable_prompt_updates_feature_and_emits_notice() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-
-    chat.open_multi_agent_enable_prompt();
-    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
-
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::UpdateFeatureFlags { updates }) if updates == vec![(Feature::Collab, true)]
-    );
-    let cell = match rx.try_recv() {
-        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
-        other => panic!("expected InsertHistoryCell event, got {other:?}"),
-    };
-    let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 120));
-    assert!(rendered.contains("Subagents will be enabled in the next session."));
-}
-
-#[tokio::test]
-async fn memories_enable_prompt_snapshot() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.set_feature_enabled(Feature::MemoryTool, /*enabled*/ false);
-
-    chat.open_memories_popup();
-
-    let popup = render_bottom_popup(&chat, /*width*/ 80);
-    assert_chatwidget_snapshot!("memories_enable_prompt", popup);
-}
-
-#[tokio::test]
-async fn memories_enable_prompt_updates_feature_without_notice() {
+async fn feature_enable_prompts_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::MemoryTool, /*enabled*/ false);
 
-    chat.open_memories_popup();
+    chat.open_feature_enable_prompt(Feature::Collab);
+    assert_chatwidget_snapshot!(
+        "multi_agent_enable_prompt",
+        render_bottom_popup(&chat, /*width*/ 80)
+    );
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
-
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::UpdateFeatureFlags { updates }) if updates == vec![(Feature::MemoryTool, true)]
+        Ok(AppEvent::EnableFeatureForNewThreads(Feature::Collab))
     );
-    assert!(
-        rx.try_recv().is_err(),
-        "memory enable prompt should not emit the success notice before persistence succeeds"
+
+    chat.open_memories_popup();
+    assert_chatwidget_snapshot!(
+        "memories_enable_prompt",
+        render_bottom_popup(&chat, /*width*/ 80)
     );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::EnableFeatureForNewThreads(Feature::MemoryTool))
+    );
+    assert!(rx.try_recv().is_err());
+    assert!(!chat.has_active_view());
 }
 
 #[tokio::test]

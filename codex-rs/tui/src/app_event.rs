@@ -1180,6 +1180,9 @@ pub(crate) enum AppEvent {
         response_tx: tokio::sync::oneshot::Sender<Result<FeatureWriteResult, String>>,
     },
 
+    /// Save an enable prompt on the app server without changing the current thread.
+    EnableFeatureForNewThreads(Feature),
+
     /// Update memory settings and persist them to config.toml.
     UpdateMemorySettings {
         use_memories: bool,

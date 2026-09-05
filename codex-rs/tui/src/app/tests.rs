@@ -2654,7 +2654,7 @@ async fn select_uncached_agent_thread_still_refreshes_liveness() -> Result<()> {
 }
 
 #[tokio::test]
-async fn open_agent_picker_prompts_to_enable_multi_agent_when_disabled() -> Result<()> {
+async fn open_agent_picker_prompts_when_subagents_disabled() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
         app.chat_widget.config_ref(),
@@ -2664,24 +2664,8 @@ async fn open_agent_picker_prompts_to_enable_multi_agent_when_disabled() -> Resu
     let _ = app.config.features.disable(Feature::Collab);
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
-    app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    assert_matches!(
-        app_event_rx.try_recv(),
-        Ok(AppEvent::UpdateFeatureFlags { updates }) if updates == vec![(Feature::Collab, true)]
-    );
-    let cell = match app_event_rx.try_recv() {
-        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
-        other => panic!("expected InsertHistoryCell event, got {other:?}"),
-    };
-    let rendered = cell
-        .display_lines(/*width*/ 120)
-        .into_iter()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("Subagents will be enabled in the next session."));
+    assert!(app.chat_widget.has_active_view());
+    assert!(app_event_rx.try_recv().is_err());
     Ok(())
 }
 
