@@ -1188,7 +1188,10 @@ async fn openai_overlay_preserves_unrelated_metadata_and_static_catalog_preceden
     let original_display = candidate.display_name.clone();
     let original_priority = candidate.priority;
     let mut transformed = candidate.clone();
-    instruction_overlay::apply(&mut transformed, Some("openai-compatible"));
+    assert_eq!(
+        instruction_overlay::apply_openai_compatible(&mut transformed),
+        instruction_overlay::OverlayOutcome::Applied
+    );
     assert!(!transformed.base_instructions.contains(sentence));
     assert!(!transformed
         .model_messages
@@ -1259,6 +1262,18 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
     assert_eq!(info.display_name, original_display);
     assert_eq!(endpoint.fetch_count(), 1);
 
+    let configured_info = manager
+        .get_model_info(
+            "codex-auto-review",
+            &ModelsManagerConfig {
+                base_instructions: Some("operator base".to_string()),
+                ..ModelsManagerConfig::default()
+            },
+        )
+        .await;
+    assert_eq!(configured_info.base_instructions, "operator base");
+    assert!(configured_info.model_messages.is_none());
+
     let disabled_info = manager
         .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
         .await;
@@ -1292,4 +1307,5 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
         .get_model_info("codex-auto-review-v2", &ModelsManagerConfig::default())
         .await;
     assert!(suffix_info.get_model_instructions(None).contains(sentence));
+
 }

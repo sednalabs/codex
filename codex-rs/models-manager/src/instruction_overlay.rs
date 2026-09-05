@@ -7,38 +7,37 @@
 use codex_protocol::openai_models::ModelInfo;
 
 const CODEX_AUTO_REVIEW_SLUG: &str = "codex-auto-review";
-const OPENAI_COMPATIBLE_PROVIDER: &str = "openai-compatible";
 const BLOCKING_WAIT_SENTENCE: &str =
     "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
 
-/// Apply the Sedna fork overlay to one fully composed provider model.
-///
-/// All guards are fail-closed: a missing or unexpected provider marker, a
-/// non-exact slug, or an absent instruction field leaves the descriptor alone.
-pub(crate) fn apply(model: &mut ModelInfo, provider_marker: Option<&str>) {
-    if provider_marker != Some(OPENAI_COMPATIBLE_PROVIDER)
-        || model.slug != CODEX_AUTO_REVIEW_SLUG
-    {
-        return;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OverlayOutcome {
+    NotApplicable,
+    Applied,
+    TargetMatchedSentenceAbsent,
+}
+
+/// Apply the fork overlay to one fully composed OpenAI-compatible model.
+pub(crate) fn apply_openai_compatible(model: &mut ModelInfo) -> OverlayOutcome {
+    if model.slug != CODEX_AUTO_REVIEW_SLUG {
+        return OverlayOutcome::NotApplicable;
     }
 
-    // The overlay contract requires the provider's template. Without it there
-    // is no safe way to prove that the effective prompt is the intended one.
-    if model
-        .model_messages
-        .as_ref()
-        .and_then(|messages| messages.instructions_template.as_ref())
-        .is_none()
-    {
-        return;
-    }
-
+    let mut applied = model.base_instructions.contains(BLOCKING_WAIT_SENTENCE);
     model.base_instructions = remove_sentence(&model.base_instructions);
     if let Some(messages) = model.model_messages.as_mut()
         && let Some(template) = messages.instructions_template.as_mut()
     {
+        applied |= template.contains(BLOCKING_WAIT_SENTENCE);
         *template = remove_sentence(template);
     }
+    let outcome = if applied {
+        OverlayOutcome::Applied
+    } else {
+        OverlayOutcome::TargetMatchedSentenceAbsent
+    };
+    tracing::debug!(model = %model.slug, outcome = ?outcome, "openai-compatible instruction overlay");
+    outcome
 }
 
 fn remove_sentence(instructions: &str) -> String {
@@ -73,7 +72,7 @@ mod tests {
     fn exact_openai_model_is_transformed_in_both_instruction_sources() {
         let source = format!("before {BLOCKING_WAIT_SENTENCE} after");
         let mut model = model(CODEX_AUTO_REVIEW_SLUG, &source, Some(&source));
-        apply(&mut model, Some(OPENAI_COMPATIBLE_PROVIDER));
+        assert_eq!(apply_openai_compatible(&mut model), OverlayOutcome::Applied);
         assert_eq!(model.base_instructions, "before  after");
         assert_eq!(
             model.model_messages.unwrap().instructions_template,
@@ -84,23 +83,27 @@ mod tests {
     #[test]
     fn missing_marker_or_non_exact_slug_is_unchanged() {
         let source = format!("before {BLOCKING_WAIT_SENTENCE} after");
-        for (slug, marker) in [
-            (CODEX_AUTO_REVIEW_SLUG, None),
-            ("codex-auto-review-v2", Some(OPENAI_COMPATIBLE_PROVIDER)),
+        for (slug,) in [
+            ("custom",),
+            ("codex-auto-review-v2",),
         ] {
             let mut model = model(slug, &source, Some(&source));
             let original = model.clone();
-            apply(&mut model, marker);
+            assert_eq!(apply_openai_compatible(&mut model), OverlayOutcome::NotApplicable);
             assert_eq!(model, original);
         }
     }
 
     #[test]
-    fn missing_template_is_unchanged() {
-        let source = format!("before {BLOCKING_WAIT_SENTENCE} after");
-        let mut model = model(CODEX_AUTO_REVIEW_SLUG, &source, None);
-        let original = model.clone();
-        apply(&mut model, Some(OPENAI_COMPATIBLE_PROVIDER));
-        assert_eq!(model, original);
+    fn exact_target_without_sentence_reports_drift() {
+        let mut model = model(CODEX_AUTO_REVIEW_SLUG, "already clean", Some("also clean"));
+        assert_eq!(
+            apply_openai_compatible(&mut model),
+            OverlayOutcome::TargetMatchedSentenceAbsent
+        );
+        assert_eq!(
+            apply_openai_compatible(&mut model),
+            OverlayOutcome::TargetMatchedSentenceAbsent
+        );
     }
 }

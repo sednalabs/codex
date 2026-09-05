@@ -305,7 +305,7 @@ impl ModelsManager for OpenAiModelsManager {
                 model,
                 &remote_models,
                 config,
-                config.base_instructions.is_none(),
+                true,
             )
         })
     }
@@ -660,7 +660,7 @@ fn construct_model_info_from_candidates_with_overlay(
         model_info::model_info_from_slug(model)
     };
     if apply_overlay {
-        instruction_overlay::apply(&mut model_info, Some("openai-compatible"));
+        let _outcome = instruction_overlay::apply_openai_compatible(&mut model_info);
     }
     model_info::with_config_overrides(model_info, config)
 }
