@@ -98,8 +98,10 @@ rerun, the helper re-reads the PR and every selected run and fails closed on a
 head, lifecycle, run identity, terminal-state, or rerunnable-conclusion
 mismatch. Each admitted run is mutated at most once. A successful rerun is
 followed by an authoritative run readback that reports `run_attempt` and the
-derived attempt identity when GitHub exposes it; an ambiguous provider command
-failure stops without a second mutation.
+derived attempt identity when GitHub exposes it; the receipt is inconclusive
+unless the attempt is strictly newer than the pre-mutation attempt. The run's
+authoritative `pull_requests` association must include the selected PR. An
+ambiguous provider command failure stops without a second mutation.
 
 ### Explicit PR target
 

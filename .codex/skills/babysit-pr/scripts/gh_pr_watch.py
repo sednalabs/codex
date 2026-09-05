@@ -1397,7 +1397,7 @@ def validate_retry_pr(pr, current_pr, expected_head_sha):
     return None
 
 
-def validate_retry_run(run, selected_run_id, expected_head_sha):
+def validate_retry_run(run, selected_run_id, expected_head_sha, expected_pr_number=None):
     """Return a typed mismatch reason for an authoritative run re-read."""
     if not isinstance(run, dict):
         return "run_read_invalid"
@@ -1405,8 +1405,29 @@ def validate_retry_run(run, selected_run_id, expected_head_sha):
         return "run_id_mismatch"
     if str(run.get("head_sha") or "") != str(expected_head_sha):
         return "run_head_mismatch"
+    if expected_pr_number is not None:
+        pull_requests = run.get("pull_requests")
+        if not isinstance(pull_requests, list) or not pull_requests:
+            return "run_pr_association_missing"
+        try:
+            expected_pr_number = int(expected_pr_number)
+        except (TypeError, ValueError):
+            return "pr_read_invalid"
+        associated_numbers = set()
+        for associated_pr in pull_requests:
+            if not isinstance(associated_pr, dict):
+                continue
+            try:
+                associated_numbers.add(int(associated_pr.get("number")))
+            except (TypeError, ValueError):
+                continue
+        if expected_pr_number not in associated_numbers:
+            return "run_pr_mismatch"
     if str(run.get("status") or "").lower() != "completed":
         return "run_not_terminal"
+    run_attempt = run.get("run_attempt")
+    if not isinstance(run_attempt, int) or run_attempt <= 0:
+        return "run_attempt_unobservable"
     conclusion = str(run.get("conclusion") or "").lower()
     if conclusion not in RERUNNABLE_FAILURE_CONCLUSIONS:
         if conclusion == "startup_failure":
@@ -1443,6 +1464,13 @@ def readback_rerun_attempt(repo, run_id, previous_run):
         readback_state = "mismatch"
     if str(current_run.get("head_sha") or "") != str(previous_run.get("head_sha") or ""):
         readback_state = "mismatch"
+    if readback_state == "observed" and (
+        not isinstance(previous_attempt, int)
+        or previous_attempt <= 0
+        or not isinstance(run_attempt, int)
+        or run_attempt <= previous_attempt
+    ):
+        readback_state = "inconclusive"
     return {
         "readback_state": readback_state,
         "run_id": observed_id or str(run_id),
@@ -1721,7 +1749,12 @@ def retry_failed_now(args):
                 "error": str(err),
             }
             return result
-        run_reason = validate_retry_run(current_run, run_id, expected_head_sha)
+        run_reason = validate_retry_run(
+            current_run,
+            run_id,
+            expected_head_sha,
+            expected_pr_number=pr["number"],
+        )
         if run_reason:
             result["reason"] = run_reason
             result["receipt"]["validation"] = {
@@ -1759,7 +1792,11 @@ def retry_failed_now(args):
         readback = readback_rerun_attempt(pr["repo"], run_id, previous_run)
         result["attempts"].append(readback)
         if readback.get("readback_state") != "observed":
-            result["reason"] = "post_rerun_readback_failed"
+            result["reason"] = (
+                "post_rerun_readback_inconclusive"
+                if readback.get("readback_state") == "inconclusive"
+                else "post_rerun_readback_failed"
+            )
             result["receipt"]["mutation"] = "completed_readback_failed"
             return result
 
