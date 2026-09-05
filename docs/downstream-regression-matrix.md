@@ -69,6 +69,11 @@ Focused targeted lanes for iterative work on the current carry seams:
 - `codex.custom-prompts-targeted`
 - `codex.mcp-safety-targeted`
 - `codex.agent-workflow-sanity`
+  - Compiles `github_app_installation_broker.py` and runs its secret-free
+    mock contract tests. The lane covers selected-repository/read-only
+    permission reduction, JWT claim construction, in-memory token reuse and
+    refresh, ambient-token stripping, command/path fingerprint safety,
+    response bounds, redaction, revocation, and the no-PAT fallback boundary.
 - `codex.shell-tool-mcp-ci`
 - `codex.build-policy-sanity`
 - `codex.core-persisted-subagent-descendants-targeted`
