@@ -1650,13 +1650,11 @@ def collect_snapshot(args, cache=None):
     # After resolving `--pr auto`, reuse the concrete PR number.
     checks = get_pr_checks(str(pr["number"]), repo=pr["repo"])
     checks_summary = summarize_checks(checks)
-    # While checks are still pending, their authoritative state is sufficient
-    # to keep the watcher idle.  Defer the separate workflow-run discovery
-    # (and any job fan-out) until checks are terminal; discovery is still
-    # performed on every terminal snapshot so new/retried runs are not missed.
-    workflow_runs = []
-    if checks_summary["all_terminal"]:
-        workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
+    # Discover workflow runs on every snapshot.  A pending check rollup can
+    # coexist with an early, orphaned, startup, or rerun failure that is only
+    # visible through the workflow API; suppressing that discovery hides the
+    # failure and can incorrectly return idle.
+    workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(
         pr["repo"], workflow_runs, pr["head_sha"], cache=cache
