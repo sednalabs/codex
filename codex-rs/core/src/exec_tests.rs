@@ -1156,7 +1156,7 @@ fn linux_sandbox_detached_children_requires_explicit_opt_in() -> Result<()> {
         &PermissionProfile::read_only(),
         &cwd,
         &[],
-        &Some(sandbox_exe),
+        &Some(sandbox_exe.clone()),
         /*use_legacy_landlock*/ false,
         SandboxProcessLifetime::TerminateWithParent,
     )?;
