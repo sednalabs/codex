@@ -3322,6 +3322,11 @@ impl ThreadRequestProcessor {
                     &config_snapshot,
                     live_thread.rollout_path(),
                 );
+                // The async creation broadcast does not carry the originating
+                // multi-agent version. Leave this capability unknown so clients
+                // conservatively derive V2 subagent restrictions from the source
+                // instead of advertising direct input as allowed.
+                thread.can_accept_direct_input = None;
                 thread.forked_from_id = config_snapshot
                     .forked_from_thread_id
                     .map(|id| id.to_string());
