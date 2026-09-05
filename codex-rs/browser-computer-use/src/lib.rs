@@ -552,7 +552,7 @@ impl ConfiguredBrowserProvider {
     fn supports_backend(&self, backend: &str) -> bool {
         if matches!(&self.provider, BrowserProvider::Playwright(_)) {
             return self.backends.iter().any(|configured| {
-                configured == BACKEND_WILDCARD || configured.eq_ignore_ascii_case(backend)
+                configured.eq_ignore_ascii_case(backend)
             });
         }
 
@@ -573,9 +573,7 @@ impl ConfiguredBrowserProvider {
         match &self.provider {
             BrowserProvider::Command(_) => "external",
             BrowserProvider::Playwright(config) => match config.isolation.as_deref() {
-                Some("thread" | "shared" | "environment" | "call") => {
-                    config.isolation.as_deref().unwrap_or("thread")
-                }
+                Some(iso @ ("thread" | "shared" | "environment" | "call")) => iso,
                 Some(_) => "configured",
                 None => "thread",
             },
@@ -916,13 +914,21 @@ fn default_playwright_backends() -> Vec<String> {
 }
 
 fn normalize_playwright_backends(backends: Vec<String>) -> Vec<String> {
-    backends
-        .into_iter()
-        .filter(|backend| {
-            !backend.eq_ignore_ascii_case(BACKEND_CHROME)
-                && backend != BACKEND_WILDCARD
-        })
-        .collect()
+    let mut normalized = Vec::new();
+    for backend in backends {
+        if backend == BACKEND_WILDCARD {
+            for default_backend in default_playwright_backends() {
+                if !normalized.contains(&default_backend) {
+                    normalized.push(default_backend);
+                }
+            }
+        } else if !backend.eq_ignore_ascii_case(BACKEND_CHROME)
+            && !normalized.contains(&backend)
+        {
+            normalized.push(backend);
+        }
+    }
+    normalized
 }
 
 fn with_browser_metadata(
@@ -1345,7 +1351,9 @@ mod tests {
         .expect("configured providers");
 
         assert!(config.provider_for_backend(BACKEND_CHROME).is_none());
-        assert!(config.provider_for_backend(BACKEND_AUTO).is_none());
+        assert!(config.provider_for_backend(BACKEND_AUTO).is_some());
+        assert!(config.provider_for_backend(BACKEND_BROWSER).is_some());
+        assert!(config.provider_for_backend(BACKEND_CHROMIUM).is_some());
     }
 
     #[test]
