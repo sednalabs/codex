@@ -78,6 +78,7 @@ pub use inference_observation::INFERENCE_CALL_ID_MAX_BYTES;
 pub use inference_observation::INFERENCE_CALL_STRING_MAX_BYTES;
 pub use inference_observation::InferenceCallEvent;
 pub use inference_observation::InferenceCallField;
+pub use inference_observation::InferenceCallSource;
 pub use inference_observation::InferenceCallStatus;
 pub use inference_observation::InferenceCallTransport;
 
