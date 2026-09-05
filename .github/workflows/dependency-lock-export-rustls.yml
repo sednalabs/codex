@@ -1,0 +1,89 @@
+name: Temporary rustls lock export
+
+on:
+  push:
+    branches:
+      - validation/dep-train-rustls-0-23-43-20260905
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Exact repository commit to regenerate from
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    name: Export exact rustls lock products
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.base_sha || '201a21935fd1b31bba75bbdfe8bed4b694271991' }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify source identity
+        shell: bash
+        env:
+          EXPECTED_BASE_SHA: ${{ inputs.base_sha || '201a21935fd1b31bba75bbdfe8bed4b694271991' }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          test "${actual_sha}" = "${EXPECTED_BASE_SHA}"
+          printf 'base_sha=%s\n' "${actual_sha}" > dependency-lock-export.identity
+
+      - name: Regenerate Cargo rustls lock product
+        working-directory: codex-rs
+        shell: bash
+        run: cargo update -p rustls@0.23.42 --precise 0.23.43
+
+      - name: Verify generated Cargo lock
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
+          cargo metadata --locked --format-version 1 >/dev/null
+
+      - name: Regenerate Bazel module lock product
+        shell: bash
+        run: bazel mod deps --lockfile_mode=update
+
+      - name: Prove bounded generated set
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff --name-only > dependency-lock-export.paths
+          expected_paths=$'MODULE.bazel.lock\ncodex-rs/Cargo.lock'
+          test "$(cat dependency-lock-export.paths)" = "${expected_paths}"
+          ! git diff -- codex-rs/Cargo.lock | grep -E -q '^[-+].*\b(h2|landlock|rtrb|sqlx|strum|serial_test|heck)\b'
+          changed_package_headers="$(git diff -- codex-rs/Cargo.lock | grep -E '^[-+]name = ' || true)"
+          test -z "${changed_package_headers}"
+          test "$(git diff -- codex-rs/Cargo.lock | grep -E -c '^[-+][[:space:]]*version =')" = 2
+          test "$(git diff -- codex-rs/Cargo.lock | grep -E -c '^[-+][[:space:]]*checksum =')" = 2
+          git diff --binary > dependency-lock-export.patch
+          {
+            cat dependency-lock-export.identity
+            printf 'generated_head_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'changed_paths=%s\n' "$(paste -sd, dependency-lock-export.paths)"
+            printf 'diff_stat=%s\n' "$(git diff --stat | tr '\n' ' ')"
+            sha256sum dependency-lock-export.patch
+          } > dependency-lock-export.proof
+
+      - name: Upload generated products and proof
+        uses: actions/upload-artifact@v7
+        with:
+          name: dependency-lock-export-rustls-0.23.43
+          path: |
+            dependency-lock-export.patch
+            dependency-lock-export.paths
+            dependency-lock-export.identity
+            dependency-lock-export.proof
+          if-no-files-found: error
+          retention-days: 7
