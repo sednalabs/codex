@@ -524,7 +524,7 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
     }) = create_wait_agent_tool_v2(WaitAgentTimeoutOptions {
         default_timeout_ms: 30_000,
         min_timeout_ms: 10_000,
-        max_timeout_ms: 3_600_000,
+        max_timeout_ms: 7_200_000,
     })
     else {
         panic!("wait_agent should be a function tool");
@@ -546,7 +546,7 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
             .get("timeout_ms")
             .and_then(|schema| schema.description.as_deref()),
         Some(
-            "Optional timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits to avoid busy polling."
+            "Optional timeout in milliseconds. Defaults to 30000, min 10000, max 7200000. Prefer longer waits to avoid busy polling."
         )
     );
     assert_eq!(parameters.required.as_ref(), None);

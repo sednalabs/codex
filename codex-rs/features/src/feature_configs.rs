@@ -58,13 +58,13 @@ pub struct MultiAgentV2ConfigToml {
     #[schemars(range(min = 1))]
     pub max_concurrent_threads_per_session: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 0, max = 3600000))]
+    #[schemars(range(min = 0, max = 7200000))]
     pub min_wait_timeout_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 0, max = 3600000))]
+    #[schemars(range(min = 0, max = 7200000))]
     pub max_wait_timeout_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 0, max = 3600000))]
+    #[schemars(range(min = 0, max = 7200000))]
     pub default_wait_timeout_ms: Option<i64>,
     /// Milliseconds before unloading an idle terminal agent. Set to `0` to disable unloading.
     #[serde(skip_serializing_if = "Option::is_none")]
