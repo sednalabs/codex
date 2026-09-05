@@ -1207,7 +1207,13 @@ async fn openai_overlay_preserves_unrelated_metadata_and_static_catalog_preceden
         models: vec![static_candidate.clone()],
     });
     let static_info = static_manager
-        .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
+        .get_model_info(
+            "codex-auto-review",
+            &ModelsManagerConfig {
+                personality_enabled: true,
+                ..ModelsManagerConfig::default()
+            },
+        )
         .await;
     assert_eq!(static_info, static_candidate);
 
@@ -1249,7 +1255,11 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
     let info = manager
         .get_model_info("codex-auto-review", &template_config)
         .await;
-    assert!(!info.get_model_instructions(/*personality*/ None).contains(sentence));
+    assert!(
+        !info
+            .get_model_instructions(/*personality*/ None)
+            .contains(sentence)
+    );
     assert!(
         !info
             .model_messages
@@ -1301,7 +1311,11 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
     let cached_info = cached_manager
         .get_model_info("codex-auto-review", &template_config)
         .await;
-    assert!(!cached_info.get_model_instructions(/*personality*/ None).contains(sentence));
+    assert!(
+        !cached_info
+            .get_model_instructions(/*personality*/ None)
+            .contains(sentence)
+    );
     assert!(
         !cached_info
             .model_messages
@@ -1315,5 +1329,9 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
     let suffix_info = manager
         .get_model_info("codex-auto-review-v2", &ModelsManagerConfig::default())
         .await;
-    assert!(suffix_info.get_model_instructions(/*personality*/ None).contains(sentence));
+    assert!(
+        suffix_info
+            .get_model_instructions(/*personality*/ None)
+            .contains(sentence)
+    );
 }
