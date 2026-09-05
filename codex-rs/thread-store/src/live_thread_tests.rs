@@ -2,6 +2,7 @@
 
 use std::any::Any;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -44,6 +45,7 @@ use crate::StoredThreadHistory;
 use crate::ThreadPage;
 use crate::ThreadPersistenceMetadata;
 use crate::ThreadStore;
+use crate::ThreadStoreError;
 use crate::ThreadStoreFuture;
 use crate::UpdateThreadMetadataParams;
 
@@ -60,6 +62,8 @@ struct GatedThreadStore {
     release_gated_append: Notify,
     persist_completed: Notify,
     second_metadata_applied: Notify,
+    partial_append_once: AtomicBool,
+    fail_metadata_update_once: AtomicBool,
 }
 
 impl GatedThreadStore {
@@ -74,6 +78,8 @@ impl GatedThreadStore {
             release_gated_append: Notify::new(),
             persist_completed: Notify::new(),
             second_metadata_applied: Notify::new(),
+            partial_append_once: AtomicBool::new(false),
+            fail_metadata_update_once: AtomicBool::new(false),
         }
     }
 }
@@ -98,9 +104,35 @@ impl ThreadStore for GatedThreadStore {
             if append_index == self.gated_append_index {
                 self.gated_append_persisted.notify_one();
                 self.release_gated_append.notified().await;
-            } else if append_index == self.gated_append_index + 1 {
+            } else if self.gated_append_index.checked_add(1) == Some(append_index) {
                 self.next_append_persisted.notify_one();
             }
+            Ok(())
+        })
+    }
+
+    fn append_items_committed<'a>(
+        &'a self,
+        mut params: AppendThreadItemsParams,
+        committed: &'a mut usize,
+    ) -> ThreadStoreFuture<'a, ()> {
+        Box::pin(async move {
+            if self.partial_append_once.swap(false, Ordering::SeqCst) && !params.items.is_empty() {
+                let thread_id = params.thread_id;
+                let first = params.items.remove(0);
+                self.append_items(AppendThreadItemsParams {
+                    thread_id,
+                    items: vec![first],
+                })
+                .await?;
+                *committed = 1;
+                return Err(ThreadStoreError::Internal {
+                    message: "scripted partial append".to_string(),
+                });
+            }
+            let item_count = params.items.len();
+            self.append_items(params).await?;
+            *committed = item_count;
             Ok(())
         })
     }
@@ -151,6 +183,13 @@ impl ThreadStore for GatedThreadStore {
         &self,
         params: UpdateThreadMetadataParams,
     ) -> ThreadStoreFuture<'_, StoredThread> {
+        if self.fail_metadata_update_once.swap(false, Ordering::SeqCst) {
+            return Box::pin(async {
+                Err(ThreadStoreError::Internal {
+                    message: "scripted metadata projection failure".to_string(),
+                })
+            });
+        }
         Box::pin(async move {
             let applies_second_settings = params.patch.model.as_deref() == Some(SECOND_MODEL);
             let thread = ThreadStore::update_thread_metadata(self.inner.as_ref(), params).await?;
@@ -394,6 +433,112 @@ async fn persist_waits_for_append_observation_before_flushing_pending_metadata()
     );
 }
 
+#[tokio::test]
+async fn partial_append_retries_only_the_uncommitted_suffix() {
+    let (_home, gated_store, live_thread) = local_test_live_thread().await;
+    gated_store
+        .partial_append_once
+        .store(true, Ordering::SeqCst);
+    let expected = [
+        user_message_item("first partial item"),
+        user_message_item("second partial item"),
+        user_message_item("third partial item"),
+    ];
+
+    live_thread
+        .append_items(&expected)
+        .await
+        .expect("partial append should retry the suffix");
+    live_thread.flush().await.expect("flush live thread");
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            gated_store.next_append_persisted.notified()
+        )
+        .await
+        .is_err(),
+        "max sentinel must not emit a next-append notification"
+    );
+
+    let history = live_thread
+        .load_history(/*include_archived*/ true)
+        .await
+        .expect("load canonical history");
+    let messages = history
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::UserMessage(event)) => Some(event.message.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        messages,
+        [
+            "first partial item".to_string(),
+            "second partial item".to_string(),
+            "third partial item".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn metadata_projection_failure_is_retried_without_reappending_history() {
+    let (_home, gated_store, live_thread) = local_test_live_thread().await;
+    gated_store
+        .fail_metadata_update_once
+        .store(true, Ordering::SeqCst);
+    let item = user_message_item("metadata retry");
+
+    live_thread
+        .append_items(std::slice::from_ref(&item))
+        .await
+        .expect_err("scripted metadata projection failure");
+    live_thread
+        .flush()
+        .await
+        .expect("retry metadata projection");
+
+    let history = live_thread
+        .load_history(/*include_archived*/ true)
+        .await
+        .expect("load canonical history");
+    let messages = history
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::UserMessage(event)) => Some(event.message.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(messages, ["metadata retry".to_string()]);
+}
+
+async fn local_test_live_thread() -> (TempDir, Arc<GatedThreadStore>, LiveThread) {
+    let home = TempDir::new().expect("temp dir");
+    let config = LocalThreadStoreConfig {
+        codex_home: home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(home.path().abs()),
+        default_model_provider_id: "test-provider".to_string(),
+    };
+    let runtime = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await
+    .expect("state db should initialize");
+    let local_store = Arc::new(LocalThreadStore::new(config, Some(runtime)));
+    let gated_store = Arc::new(GatedThreadStore::new(local_store, usize::MAX));
+    let thread_id = ThreadId::new();
+    let live_thread = LiveThread::create(
+        gated_store.clone(),
+        create_thread_params(thread_id, home.path()),
+    )
+    .await
+    .expect("create live thread");
+    (home, gated_store, live_thread)
+}
+
 fn create_thread_params(thread_id: ThreadId, cwd: &std::path::Path) -> CreateThreadParams {
     CreateThreadParams {
         session_id: thread_id.into(),
@@ -462,4 +607,13 @@ fn compacted_item() -> RolloutItem {
         previous_window_id: None,
         window_id: None,
     })
+}
+
+fn user_message_item(message: &str) -> RolloutItem {
+    RolloutItem::EventMsg(EventMsg::UserMessage(
+        codex_protocol::protocol::UserMessageEvent {
+            message: message.to_string(),
+            ..Default::default()
+        },
+    ))
 }
