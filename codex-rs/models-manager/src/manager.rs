@@ -305,7 +305,8 @@ impl ModelsManager for OpenAiModelsManager {
                 model,
                 &remote_models,
                 config,
-                /*apply_overlay*/ true,
+                /*apply_overlay*/
+                true,
             )
         })
     }
@@ -641,7 +642,8 @@ pub(crate) fn construct_model_info_from_candidates(
         model,
         candidates,
         config,
-        /*apply_overlay*/ false,
+        /*apply_overlay*/
+        false,
     )
 }
 
