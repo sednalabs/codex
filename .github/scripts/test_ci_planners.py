@@ -8099,6 +8099,55 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertIn("invalid JSON input for changed-files", proc.stderr)
         self.assertNotIn("Traceback", proc.stderr)
 
+    def test_merge_group_complete_docs_delta_uses_lightweight_route(self) -> None:
+        outputs = run_script(
+            SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+            "--repo-root", str(self.repo.root), "--event-name", "merge_group",
+            "--merge-group-comparison-complete", "true",
+            "--merge-group-files-json", json.dumps(["README.md", "docs/ci.md"]),
+            "--merge-group-status-json", json.dumps(["A", "M"]),
+            "--merge-group-line-count", "12",
+        )
+        self.assertEqual(outputs["validation_mode"], "light_merge_group")
+        self.assertEqual(outputs["run_incremental_validation"], "true")
+        self.assertEqual(
+            outputs["incremental_lanes"],
+            "codex.downstream-docs-check,codex.downstream-divergence-audit",
+        )
+        self.assertEqual(outputs["run_general"], "false")
+
+    def test_merge_group_incomplete_or_non_docs_delta_stays_full(self) -> None:
+        cases = [
+            ("false", ["README.md"], "1"),
+            ("true", ["codex-rs/core/src/lib.rs"], "1"),
+            ("true", ["docs/ci.md"], ""),
+            ("true", None, "1"),
+        ]
+        for complete, files, lines in cases:
+            with self.subTest(complete=complete, files=files, lines=lines):
+                args = [
+                    "--repo-root", str(self.repo.root), "--event-name", "merge_group",
+                    "--merge-group-comparison-complete", complete,
+                    "--merge-group-files-json", "not-json" if files is None else json.dumps(files),
+                    "--merge-group-status-json", json.dumps(["M"] * len(files)) if files is not None else "not-json",
+                    "--merge-group-line-count", lines,
+                ]
+                outputs = run_script(SCRIPTS_DIR / "resolve_rust_ci_mode.py", *args)
+                self.assertEqual(outputs["validation_mode"], "full")
+                self.assertEqual(outputs["run_incremental_validation"], "false")
+
+    def test_merge_group_rename_delete_and_uncertain_metadata_stays_full(self) -> None:
+        for files in (["docs/old.md", "docs/new.md"], ["docs/deleted.md"]):
+            outputs = run_script(
+                SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+                "--repo-root", str(self.repo.root), "--event-name", "merge_group",
+                "--merge-group-comparison-complete", "false",
+                "--merge-group-files-json", json.dumps(files),
+                "--merge-group-status-json", json.dumps(["R100", "D"] if len(files) == 2 else ["D"]),
+                "--merge-group-line-count", "2",
+            )
+            self.assertEqual(outputs["validation_mode"], "full")
+
     def test_light_initial_routes_small_openai_models_pr_to_exact_lane(self) -> None:
         outputs = self.run_rust_ci_mode(
             event_action="opened",
