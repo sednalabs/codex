@@ -5677,13 +5677,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertEqual(
             plan_checkout.get("if"),
-            "${{ github.event_name == 'pull_request' }}",
+            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
         )
         self.assertEqual(plan_checkout.get("uses"), "actions/checkout@v7")
         self.assertEqual(
             plan_checkout.get("with") or {},
             {
-                "ref": "${{ github.event.pull_request.head.sha }}",
+                "ref": "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
                 "fetch-depth": "1",
                 "persist-credentials": "false",
             },
@@ -5692,13 +5692,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
             step for step in plan_steps if step.get("name") == "Select CodeQL languages"
         )
         self.assertEqual(select_step.get("id"), "plan")
+        self.assertEqual(
+            select_step.get("env") or {},
+            {
+                "BASE_SHA": "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}",
+                "HEAD_SHA": "${{ github.event.pull_request.head.sha || github.sha }}",
+            },
+        )
         select_run = select_step.get("run") or ""
         self.assertIn(
             'full_languages=\'["actions","c-cpp","javascript-typescript","python","rust"]\'',
             select_run,
         )
         self.assertIn(
-            "if [[ '${{ github.event_name }}' != 'pull_request' ]]; then",
+            "if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then",
             select_run,
         )
         self.assertIn('git fetch --no-tags --depth=1 origin "${BASE_SHA}"', select_run)
@@ -5711,7 +5718,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             '"codex-rs-core"',
             '"codex-rs-tui"',
             '"codex-rs-services"',
-            '"codex-rs-rest"',
+            '"codex-rs-rest-a"',
+            '"codex-rs-rest-b"',
+            '"codex-rs-rest-c"',
+            '"codex-rs-rest-d"',
             '"tools"',
         ):
             self.assertIn(rust_scope, select_run)
@@ -5809,7 +5819,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "codex-rs-core",
             "codex-rs-tui",
             "codex-rs-services",
-            "codex-rs-rest",
+            "codex-rs-rest-a",
+            "codex-rs-rest-b",
+            "codex-rs-rest-c",
+            "codex-rs-rest-d",
             "tools",
         ):
             self.assertIn(f"{rust_scope})", scoped_rust_config_run)
@@ -5836,7 +5849,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         for service_path in service_paths:
             self.assertIn(service_path, scoped_rust_config_run)
-            self.assertIn(f"{service_path}/**", scoped_rust_config_run)
         service_case = re.search(
             r"codex-rs-services\)\s+scope_paths=\(\s*(.*?)\s*\)\s+scope_ignores=\(\)",
             scoped_rust_config_run,
@@ -5844,20 +5856,51 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIsNotNone(service_case)
         self.assertEqual(tuple(service_case.group(1).split()), service_paths)
-        rest_case = re.search(
-            r"codex-rs-rest\)\s+scope_paths=\(codex-rs\)\s+scope_ignores=\(\s*(.*?)\s*\)",
-            scoped_rust_config_run,
-            re.DOTALL,
+        rest_scopes = (
+            "codex-rs-rest-a",
+            "codex-rs-rest-b",
+            "codex-rs-rest-c",
+            "codex-rs-rest-d",
         )
-        self.assertIsNotNone(rest_case)
+        for rust_scope in rest_scopes:
+            self.assertIn(f"{rust_scope})", scoped_rust_config_run)
+        rest_paths = {
+            scope: [
+                line.strip()
+                for line in re.search(
+                    rf"{scope}\)\s+scope_paths=\(\s*(.*?)\s*\)\s+scope_ignores=\(\)",
+                    scoped_rust_config_run,
+                    re.DOTALL,
+                ).group(1).split()
+            ]
+            for scope in rest_scopes
+        }
+        all_rest_paths = sum((rest_paths.values()), [])
+        self.assertEqual(len(all_rest_paths), len(set(all_rest_paths)))
+        tracked_codex_rs_dirs = set(
+            subprocess.run(
+                ["git", "ls-tree", "-d", "--name-only", "HEAD:codex-rs"],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+        )
         self.assertEqual(
-            {item.strip("'\"") for item in rest_case.group(1).split()},
-            {"codex-rs/core/**", "codex-rs/tui/**"}
-            | {f"{service_path}/**" for service_path in service_paths},
+            set(rest_paths["codex-rs-rest-a"])
+            | set(rest_paths["codex-rs-rest-b"])
+            | set(rest_paths["codex-rs-rest-c"])
+            | set(rest_paths["codex-rs-rest-d"]),
+            {
+                f"codex-rs/{path}"
+                for path in tracked_codex_rs_dirs
+                if path not in {
+                    "core",
+                    "tui",
+                    *(service_path.split("/", 1)[1] for service_path in service_paths),
+                }
+            },
         )
-        self.assertIn("scope_paths=(codex-rs)", scoped_rust_config_run)
-        self.assertIn("codex-rs/core/**", scoped_rust_config_run)
-        self.assertIn("codex-rs/tui/**", scoped_rust_config_run)
         self.assertIn("security-and-quality", scoped_rust_config_run)
         self.assertIn("paths-ignore:", scoped_rust_config_run)
         self.assertIn('> "${RUST_CONFIG}"', scoped_rust_config_run)
@@ -5866,15 +5909,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "codex-rs-core": ["codex-rs/core"],
             "codex-rs-tui": ["codex-rs/tui"],
             "codex-rs-services": list(service_paths),
-            "codex-rs-rest": ["codex-rs"],
+            **rest_paths,
             "tools": ["tools"],
         }
-        expected_rest_ignores = [
-            ".github/codeql/rust-computer-use-contract/test/**",
-            "codex-rs/core/**",
-            "codex-rs/tui/**",
-            *(f"{service_path}/**" for service_path in service_paths),
-        ]
         with tempfile.TemporaryDirectory() as tmp_dir:
             for rust_scope, expected_paths in expected_scope_paths.items():
                 config_path = Path(tmp_dir) / f"{rust_scope}.yml"
@@ -5897,11 +5934,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                         "name": f"codex-codeql-rust-{rust_scope}",
                         "queries": [{"uses": "security-and-quality"}],
                         "paths": expected_paths,
-                        "paths-ignore": (
-                            expected_rest_ignores
-                            if rust_scope == "codex-rs-rest"
-                            else [".github/codeql/rust-computer-use-contract/test/**"]
-                        ),
+                        "paths-ignore": [".github/codeql/rust-computer-use-contract/test/**"],
                         "threat-models": "local",
                     },
                 )
@@ -7482,6 +7515,89 @@ class ValidationPlanScriptTests(unittest.TestCase):
             {"types": ["checks_requested"]},
         )
 
+    def test_blocking_ci_scope_routes_pull_requests_and_merge_groups(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blocking-ci.yml")
+        scope_job = (payload.get("jobs") or {}).get("scope") or {}
+        scope_steps = scope_job.get("steps") or []
+        checkout_step = next(
+            step
+            for step in scope_steps
+            if step.get("name") == "Checkout PR head for path classification"
+        )
+        self.assertEqual(
+            checkout_step.get("if"),
+            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
+        )
+        self.assertEqual(
+            checkout_step.get("with") or {},
+            {
+                "ref": "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
+                "fetch-depth": "1",
+                "persist-credentials": "false",
+            },
+        )
+        classify_step = next(
+            step for step in scope_steps if step.get("name") == "Classify blocking CI scope"
+        )
+        self.assertEqual(
+            classify_step.get("env") or {},
+            {
+                "BASE_SHA": "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}",
+                "HEAD_SHA": "${{ github.event.pull_request.head.sha || github.sha }}",
+            },
+        )
+        classify_run = classify_step.get("run") or ""
+        self.assertIn(
+            "if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then",
+            classify_run,
+        )
+        self.assertIn("classify_ci_paths.py --base-sha", classify_run)
+        self.assertIn("Unable to fetch PR base; running full blocking CI.", classify_run)
+        self.assertIn("Unable to classify PR paths; running full blocking CI.", classify_run)
+
+    def test_blocking_ci_clippy_required_lane_is_path_aware_and_fail_closed(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blocking-ci.yml")
+        triggers = payload.get("on") or {}
+        self.assertIn("pull_request", triggers)
+        self.assertEqual(
+            triggers.get("merge_group"),
+            {"types": ["checks_requested"]},
+        )
+        jobs = payload.get("jobs") or {}
+        scope = jobs.get("scope") or {}
+        outputs = scope.get("outputs") or {}
+        self.assertEqual(outputs.get("clippy"), "${{ steps.scope.outputs.clippy }}")
+        scope_run = next(
+            step for step in scope.get("steps") or [] if step.get("name") == "Classify blocking CI scope"
+        ).get("run") or ""
+        self.assertIn('echo "clippy=true"', scope_run)
+        self.assertIn('"clippy",', scope_run)
+        self.assertIn("if ! plan=", scope_run)
+
+        clippy = jobs.get("clippy-required") or {}
+        self.assertEqual(clippy.get("name"), "Linux full Clippy")
+        self.assertEqual(clippy.get("needs"), "scope")
+        self.assertEqual(clippy.get("if"), "${{ always() }}")
+        steps = clippy.get("steps") or []
+        verify = next(step for step in steps if step.get("name") == "Verify Clippy scope classification")
+        verify_run = verify.get("run") or ""
+        self.assertIn('[[ "${SCOPE_RESULT}" == "success" ]]', verify_run)
+        self.assertIn("Unknown Clippy scope classification", verify_run)
+        command = next(
+            step for step in steps
+            if step.get("name") == "cargo clippy --target x86_64-unknown-linux-gnu --all-features --tests --profile dev -- -D warnings"
+        )
+        self.assertEqual(
+            command.get("run"),
+            "cargo clippy --target x86_64-unknown-linux-gnu --all-features --tests --profile dev -- -D warnings",
+        )
+        self.assertEqual(
+            command.get("if"),
+            "${{ needs.scope.outputs.clippy == 'true' }}",
+        )
+        required = jobs.get("required") or {}
+        self.assertIn("clippy-required", required.get("needs") or [])
+
     def test_merge_group_concurrency_is_sha_scoped_and_not_cancelled(self) -> None:
         merge_group_workflows = []
         for workflow_path in sorted((REPO_ROOT / ".github/workflows").glob("*.y*ml")):
@@ -8008,6 +8124,67 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("invalid JSON input for changed-files", proc.stderr)
         self.assertNotIn("Traceback", proc.stderr)
+
+    def test_merge_group_complete_docs_delta_uses_lightweight_route(self) -> None:
+        outputs = run_script(
+            SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+            "--repo-root", str(self.repo.root), "--event-name", "merge_group",
+            "--merge-group-comparison-complete", "true",
+            "--merge-group-files-json", json.dumps(["README.md", "docs/ci.md"]),
+            "--merge-group-status-json", json.dumps(["A", "M"]),
+            "--merge-group-line-count", "12",
+        )
+        self.assertEqual(outputs["validation_mode"], "light_merge_group")
+        self.assertEqual(outputs["run_incremental_validation"], "true")
+        self.assertEqual(
+            outputs["incremental_lanes"],
+            "codex.downstream-docs-check,codex.downstream-divergence-audit",
+        )
+        self.assertEqual(outputs["run_general"], "false")
+
+    def test_merge_group_incomplete_or_non_docs_delta_stays_full(self) -> None:
+        cases = [
+            ("false", ["README.md"], "1"),
+            ("true", ["codex-rs/core/src/lib.rs"], "1"),
+            ("true", ["docs/ci.md"], ""),
+            ("true", None, "1"),
+        ]
+        for complete, files, lines in cases:
+            with self.subTest(complete=complete, files=files, lines=lines):
+                args = [
+                    "--repo-root", str(self.repo.root), "--event-name", "merge_group",
+                    "--merge-group-comparison-complete", complete,
+                    "--merge-group-files-json", "not-json" if files is None else json.dumps(files),
+                    "--merge-group-status-json", json.dumps(["M"] * len(files)) if files is not None else "not-json",
+                    "--merge-group-line-count", lines,
+                ]
+                outputs = run_script(SCRIPTS_DIR / "resolve_rust_ci_mode.py", *args)
+                self.assertEqual(outputs["validation_mode"], "full")
+                self.assertEqual(outputs["run_incremental_validation"], "false")
+
+    def test_merge_group_rename_delete_and_uncertain_metadata_stays_full(self) -> None:
+        for files in (["docs/old.md", "docs/new.md"], ["docs/deleted.md"]):
+            outputs = run_script(
+                SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+                "--repo-root", str(self.repo.root), "--event-name", "merge_group",
+                "--merge-group-comparison-complete", "true",
+                "--merge-group-files-json", json.dumps(files),
+                "--merge-group-status-json", json.dumps(["R100", "D"] if len(files) == 2 else ["D"]),
+                "--merge-group-line-count", "2",
+            )
+            self.assertEqual(outputs["validation_mode"], "full")
+
+    def test_merge_group_unknown_or_malformed_line_count_stays_full(self) -> None:
+        for count in ("10000", "not-a-count"):
+            outputs = run_script(
+                SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+                "--repo-root", str(self.repo.root), "--event-name", "merge_group",
+                "--merge-group-comparison-complete", "true",
+                "--merge-group-files-json", json.dumps(["docs/ci.md"]),
+                "--merge-group-status-json", json.dumps(["M"]),
+                "--merge-group-line-count", count,
+            )
+            self.assertEqual(outputs["validation_mode"], "full")
 
     def test_light_initial_routes_small_openai_models_pr_to_exact_lane(self) -> None:
         outputs = self.run_rust_ci_mode(

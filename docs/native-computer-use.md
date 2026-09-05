@@ -8,7 +8,9 @@ Native runtime backends are supplied by external providers. Android is the
 first implemented provider and now uses a shared provider bridge for TUI and
 `codex exec`. Browser is a registered adapter with a shared provider bridge
 that can either invoke an operator-configured command or use the built-in
-Playwright backend for `backend=auto`, `browser`, `chrome`, or `chromium`.
+Playwright backend for `backend=auto`, `browser`, or `chromium`. A configured
+command provider may claim `backend=chrome` for signed-in Chrome/extension/CDP
+integration; Playwright never claims that backend.
 Desktop is a registered adapter for cleanroom macOS Screen
 Recording/Accessibility-style runtimes and future native desktop providers.
 
@@ -151,8 +153,10 @@ aliases:
 
 Browser tools include a `backend` hint with values such as `auto`, `browser`,
 `chrome`, `chromium`, and `iab`. `auto` lets the provider choose the best
-available browser backend. `browser`/`chrome`/`chromium` can be served by the
+available browser backend. `browser` and `chromium` can be served by the
 built-in Playwright provider when it is configured for local Chrome or Chromium.
+`chrome` requires a provider that explicitly claims that backend, such as an
+external signed-in Chrome/extension/CDP provider; Playwright never claims it.
 `iab` is intended for the Codex app in-app browser and requires a provider that
 declares that backend. The hint is part of the provider contract. Command
 providers can still claim exact backends or wildcard routing for hosted,
@@ -162,7 +166,7 @@ The browser provider bridge is intentionally pluggable and now supports both
 the original single-provider configuration and a provider registry:
 
 - `CODEX_BROWSER_COMPUTER_USE_PROVIDER=playwright` enables the embedded
-  Playwright bridge for `backend=auto`, `browser`, `chrome`, and `chromium`.
+  Playwright bridge for `backend=auto`, `browser`, and `chromium`.
   The bridge launches a persistent browser profile, serializes access to that
   profile, executes bounded browser actions, and returns the viewport
   screenshot as native `inputImage` content. This backend requires `node` and a

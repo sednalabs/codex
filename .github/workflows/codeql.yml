@@ -41,10 +41,10 @@ jobs:
       selected_languages: ${{ steps.plan.outputs.selected_languages }}
     steps:
       - name: Checkout PR head for path classification
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -52,7 +52,7 @@ jobs:
         id: plan
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
@@ -82,7 +82,10 @@ jobs:
                       "codex-rs-core",
                       "codex-rs-tui",
                       "codex-rs-services",
-                      "codex-rs-rest",
+                      "codex-rs-rest-a",
+                      "codex-rs-rest-b",
+                      "codex-rs-rest-c",
+                      "codex-rs-rest-d",
                       "tools",
                   ):
                       include.append(
@@ -123,9 +126,9 @@ jobs:
 
           full_languages='["actions","c-cpp","javascript-typescript","python","rust"]'
 
-          # Scheduled scans, pushes, merge-queue attempts, and manual runs keep
-          # full repository coverage. Only PRs are path scoped.
-          if [[ '${{ github.event_name }}' != 'pull_request' ]]; then
+          # Scheduled scans, pushes, and manual runs keep full repository
+          # coverage. Pull requests and merge-queue attempts are path scoped.
+          if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then
             emit_matrix "${full_languages}"
             exit 0
           fi
@@ -292,31 +295,47 @@ jobs:
               )
               scope_ignores=()
               ;;
-            codex-rs-rest)
-              scope_paths=(codex-rs)
-              scope_ignores=(
-                'codex-rs/core/**'
-                'codex-rs/tui/**'
-                'codex-rs/app-server/**'
-                'codex-rs/app-server-client/**'
-                'codex-rs/app-server-daemon/**'
-                'codex-rs/app-server-protocol/**'
-                'codex-rs/app-server-test-client/**'
-                'codex-rs/app-server-transport/**'
-                'codex-rs/bwrap/**'
-                'codex-rs/exec/**'
-                'codex-rs/exec-server/**'
-                'codex-rs/file-watcher/**'
-                'codex-rs/http-client/**'
-                'codex-rs/linux-sandbox/**'
-                'codex-rs/network-proxy/**'
-                'codex-rs/process-hardening/**'
-                'codex-rs/sandboxing/**'
-                'codex-rs/shell-command/**'
-                'codex-rs/shell-escalation/**'
-                'codex-rs/terminal-detection/**'
-                'codex-rs/windows-sandbox-rs/**'
+            codex-rs-rest-a)
+              scope_paths=(
+                codex-rs/.cargo codex-rs/analytics codex-rs/arg0 codex-rs/browser-computer-use
+                codex-rs/cloud-tasks codex-rs/code-mode-host codex-rs/codex-client
+                codex-rs/collaboration-mode-templates codex-rs/core-api codex-rs/exec-server-protocol
+                codex-rs/features codex-rs/git-utils codex-rs/lmstudio codex-rs/message-history
+                codex-rs/ollama codex-rs/protocol codex-rs/rmcp-client codex-rs/secrets
+                codex-rs/test-binary-support codex-rs/utils
               )
+              scope_ignores=()
+              ;;
+            codex-rs-rest-b)
+              scope_paths=(
+                codex-rs/.config codex-rs/android-computer-use codex-rs/async-utils codex-rs/chatgpt
+                codex-rs/cloud-tasks-client codex-rs/code-mode-protocol codex-rs/codex-experimental-api-macros
+                codex-rs/config codex-rs/core-plugins codex-rs/execpolicy codex-rs/feedback codex-rs/hooks
+                codex-rs/login codex-rs/model-provider codex-rs/otel codex-rs/realtime-webrtc codex-rs/rollout
+                codex-rs/skills codex-rs/thread-manager-sample codex-rs/v8-poc
+              )
+              scope_ignores=()
+              ;;
+            codex-rs-rest-c)
+              scope_paths=(
+                codex-rs/agent-graph-store codex-rs/ansi-escape codex-rs/aws-auth codex-rs/cli
+                codex-rs/cloud-tasks-mock-client codex-rs/codex-api codex-rs/codex-home codex-rs/connectors
+                codex-rs/core-skills codex-rs/ext codex-rs/file-search codex-rs/install-context codex-rs/mcp-server
+                codex-rs/model-provider-info codex-rs/plugin codex-rs/response-debug-context codex-rs/rollout-trace
+                codex-rs/state codex-rs/thread-store codex-rs/vendor
+              )
+              scope_ignores=()
+              ;;
+            codex-rs-rest-d)
+              scope_paths=(
+                codex-rs/agent-identity codex-rs/apply-patch codex-rs/backend-client codex-rs/cloud-config
+                codex-rs/code-mode codex-rs/codex-backend-openapi-models codex-rs/codex-mcp
+                codex-rs/context-fragments codex-rs/docs codex-rs/external-agent-migration codex-rs/file-system
+                codex-rs/keyring-store codex-rs/memories codex-rs/models-manager codex-rs/prompts
+                codex-rs/responses-api-proxy codex-rs/scripts codex-rs/stdio-to-uds codex-rs/uds
+                codex-rs/tools codex-rs/websocket-client
+              )
+              scope_ignores=()
               ;;
             tools)
               scope_paths=(tools)

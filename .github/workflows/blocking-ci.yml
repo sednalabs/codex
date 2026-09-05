@@ -27,14 +27,15 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Classify PR paths once for reusable workflows that do not have their own
-  # planner. Pushes and merge-queue attempts intentionally run the full scope.
-  # Any classifier failure also fails open to full validation rather than
-  # silently dropping a lane.
+  # Classify pull-request and merge-queue paths once for reusable workflows
+  # that do not have their own planner. Pushes intentionally run the full
+  # scope. Any classifier failure also fails open to full validation rather
+  # than silently dropping a lane.
   scope:
     name: Blocking CI scope
     runs-on: ubuntu-24.04
     outputs:
+      clippy: ${{ steps.scope.outputs.clippy }}
       cargo_deny: ${{ steps.scope.outputs.cargo_deny }}
       repo_policy: ${{ steps.scope.outputs.repo_policy }}
       repo_package: ${{ steps.scope.outputs.repo_package }}
@@ -44,10 +45,10 @@ jobs:
       sdk_typescript: ${{ steps.scope.outputs.sdk_typescript }}
     steps:
       - name: Checkout PR head for path classification
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -55,13 +56,14 @@ jobs:
         id: scope
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
 
           set_full_scope() {
             {
+              echo "clippy=true"
               echo "cargo_deny=true"
               echo "repo_policy=true"
               echo "repo_package=true"
@@ -72,7 +74,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           }
 
-          if [[ '${{ github.event_name }}' != 'pull_request' ]]; then
+          if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then
             set_full_scope
             exit 0
           fi
@@ -101,6 +103,7 @@ jobs:
 
           plan = json.loads(os.environ["PLAN_JSON"])
           for key in (
+              "clippy",
               "cargo_deny",
               "repo_policy",
               "repo_package",
@@ -131,6 +134,75 @@ jobs:
     with:
       run_cargo_deny: ${{ needs.scope.outputs.cargo_deny == 'true' }}
     secrets: inherit
+
+  clippy-required:
+    name: Linux full Clippy
+    needs: scope
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Verify Clippy scope classification
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          RUN_CLIPPY: ${{ needs.scope.outputs.clippy || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${SCOPE_RESULT}" == "success" ]] || {
+            echo "Blocking CI scope classification did not succeed: ${SCOPE_RESULT}" >&2
+            exit 1
+          }
+          case "${RUN_CLIPPY}" in
+            true) echo "Rust-affecting or CI-surface changes require Linux full Clippy." ;;
+            false) echo "No Rust-affecting or CI-surface changes; required Clippy lane is intentionally skipped." ;;
+            *) echo "Unknown Clippy scope classification: ${RUN_CLIPPY}" >&2; exit 1 ;;
+          esac
+
+      - name: Checkout candidate
+        if: ${{ needs.scope.outputs.clippy == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Prepare hosted Rust build
+        if: ${{ needs.scope.outputs.clippy == 'true' }}
+        uses: ./.github/actions/setup-ci
+
+      - name: Install Linux build dependencies
+        if: ${{ needs.scope.outputs.clippy == 'true' }}
+        shell: bash
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - name: Install Rust toolchain
+        if: ${{ needs.scope.outputs.clippy == 'true' }}
+        uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d # 1.96.0
+        with:
+          target: x86_64-unknown-linux-gnu
+          components: clippy
+
+      - name: Ensure Rust target installed
+        if: ${{ needs.scope.outputs.clippy == 'true' }}
+        shell: bash
+        working-directory: codex-rs
+        run: rustup target add x86_64-unknown-linux-gnu
+
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        if: ${{ needs.scope.outputs.clippy == 'true' }}
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: cargo clippy --target x86_64-unknown-linux-gnu --all-features --tests --profile dev -- -D warnings
+        if: ${{ needs.scope.outputs.clippy == 'true' }}
+        shell: bash
+        working-directory: codex-rs
+        run: cargo clippy --target x86_64-unknown-linux-gnu --all-features --tests --profile dev -- -D warnings
 
   codespell:
     name: Codespell
@@ -171,6 +243,7 @@ jobs:
       - bazel
       - blob-size-policy
       - cargo-deny
+      - clippy-required
       - codespell
       - repo-checks
       - rust-ci

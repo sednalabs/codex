@@ -128,6 +128,29 @@ decisions.
   carry when upstream provides an equivalent publication and retained-cleanup
   contract.
 
+### Read-only GitHub App Installation-Token Broker
+
+- `github_app_installation_broker.py` is a downstream operator boundary for
+  the PR observer. It validates the App installation/account and one selected
+  repository, reduces the requested set to explicit read permissions, and
+  requests one short-lived installation token without using a personal token
+  or App-user token.
+- The broker keeps exactly one token in process memory, strips ambient GitHub
+  token variables from a fingerprint-bound child, bounds and redacts output,
+  and revokes the token on normal and exceptional exit. Private-key material is
+  supplied through a fixed systemd `LoadCredential` basename and an inherited
+  descriptor to OpenSSL; it is never persisted or printed.
+- `test_github_app_installation_broker.py` is secret-free and mock-only. The
+  `codex.agent-workflow-sanity` hosted lane compiles the broker and runs these
+  tests. Phase A is development-ready for read-only selected-repository use;
+  live installation proof, write permissions, broader repositories, and
+  production commissioning are explicitly deferred.
+- Preserve this carry until upstream supplies an equivalent independently
+  attributable installation transport with selected-repository binding,
+  read-only permission reduction, command fingerprinting, output redaction,
+  and revocation guarantees. Do not expand the broker into queue/rerun
+  business logic or provider mutation.
+
 ## Latest Upstream-Owned Integration
 
 ### Remote Plugins, Image Eligibility, App Metadata, And Sleeping Agent Mail
@@ -411,6 +434,15 @@ decisions.
   upstream equivalent lands.
 
 ### Shared Skill Model Ownership
+
+The public fork owns only agent workflow helpers that are coupled to Codex
+workflow or session formats. `subagent-session-tail` remains here because its
+parser follows rollout JSONL and usage-ledger contracts; its focused tests cover
+timestamp handling and string, list, object, and scalar tool outputs. The former
+repo-local `codex-orchestrator` and `sidecar-review-loop` bundles are retired:
+semantic orchestration and review policy belongs in an external user policy
+package with its own provenance and rollout controls. Do not restore those two
+bundles during upstream sync merely because they once shared this carry entry.
 
 - Upstream commit `56c11cf658` moves host and environment skill metadata,
   policy, dependencies, interface, and configuration-rule models into the

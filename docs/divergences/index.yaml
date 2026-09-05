@@ -1396,26 +1396,25 @@
     },
     {
       "id": "agent-orchestration-skills",
-      "title": "Agent orchestration skills and sidecar templates",
+      "title": "Agent workflow helpers and runtime-coupled session tail",
       "status": "live",
       "category": "mcp",
       "surface_type": "agent-facing",
       "surface": [
         "babysit-pr babysitter skill",
-        "codex-orchestrator skill template",
-        "sidecar-review-loop and subagent-session-tail helpers"
+        "workflow-run babysitter helpers",
+        "subagent-session-tail runtime helper"
       ],
       "files": [
         ".codex/skills/babysit-pr/agents/openai.yaml",
         ".codex/skills/babysit-pr/scripts/gh_pr_watch.py",
         ".codex/skills/babysit-gh-workflow-run/",
-        ".codex/skills/sedna/codex-orchestrator/agents/openai.yaml",
-        ".codex/skills/sedna/sidecar-review-loop/agents/openai.yaml",
+        ".codex/skills/sedna/subagent-session-tail/SKILL.md",
         ".codex/skills/sedna/subagent-session-tail/agents/openai.yaml",
         ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py",
-        ".codex/skills/"
+        ".codex/skills/sedna/subagent-session-tail/tests/test_inspect_subagent_tail.py"
       ],
-      "behavior": "Downstream publishes tailored skill templates and helpers that orchestrate babysitting, sidecar review loops, and subagent session tails.",
+      "behavior": "Downstream publishes bounded babysitter helpers and the runtime-coupled subagent session-tail inspector. Semantic orchestration and review policy are intentionally external user-policy concerns, not public fork carry.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1426,16 +1425,17 @@
         "py_compile of gh_pr_watch.py, gh_workflow_run_watch.py, gh_dispatch_and_watch.py, and inspect_subagent_tail.py",
         "test_gh_workflow_run_watch.py",
         "test_gh_dispatch_and_watch.py",
+        "test_inspect_subagent_tail.py",
         "inspect_subagent_tail.py --help"
       ],
       "owner": "downstream",
-      "notes": "Keeps the downstream agent orchestration surface explicit and discoverable.",
+      "notes": "The public fork retains only helpers coupled to Codex workflow or session formats. The former public codex-orchestrator and sidecar-review-loop bundles were retired so user policy has one semantic owner.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "agent-workflow-skill",
       "hotspot_files": [
 
       ],
-      "extraction_target": "operator-owned agent workflow skills"
+      "extraction_target": "runtime-coupled agent workflow helpers"
     },
     {
       "id": "skill-loader-fixture-hermeticity",
@@ -1729,7 +1729,7 @@
         "docs/downstream-tool-surface-matrix.md",
         "codex-rs/browser-computer-use/"
       ],
-      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, browser_step, desktop_observe, and desktop_step dynamic tools are promoted to canonical Codex native computer-use handlers through a shared provider registry that declares adapter ids, supported tools, backend hints, mutation class, long-timeout behavior, and front-end dispatch eligibility. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, desktop capability, and provider-side build installation. Android remains the reference MCP-backed provider shape, exposes UI-tree-oriented selector and receipt hints in the canonical schema, supports long press and atomic multi-touch without sequential fallback, applies configured default serial/app launch settings, prefers stable UI observations when available, classifies transient provider outages as retryable provider-unavailable failures, returns a post-failure observation when an Android step action fails and capture remains possible, and has a shared provider crate used by TUI and exec. CLI/TUI sessions auto-advertise Android tools when an Android provider is configured, and the Android bridge consumes MCP image content or android.read_artifact output rather than raw artifact paths. The browser adapter has a shared provider crate used by TUI and exec. It can call operator-configured provider commands or the built-in Playwright provider for backend=auto/browser/chrome/chromium, can auto-advertise browser tools in CLI/TUI sessions when configured, inherits those native browser tools into thread-spawned sidecars, exposes accessibility-oriented selectors plus human-like mouse and keyboard primitives, defaults Playwright profiles to per-thread isolation with explicit shared/environment/call modes, clears Chromium tab-session restore artifacts before opening a persistent context so explicit requested URLs are not preceded by stale restored tab navigation, falls back to CDP/locator capture when headed Chrome page screenshots fail, can target headed Google Chrome on a visible display for realistic editor UX evidence, can return visible-control and attention-state metadata, can capture small viewport bundles, can save redacted audit artifacts, can inject locally configured service-account navigation headers, and can return a fresh screenshot plus selector candidates after action failures. The desktop adapter has a TUI command-provider seam for cleanroom macOS Screen Recording/Accessibility-style runtimes and future native desktop providers, and TUI auto-advertises desktop tools when that command-provider seam is configured. Shared dynamic-tool and code-mode output adopts upstream audio preparation, duration-aware accounting, truncation, compaction, and history replay while preserving downstream optional image detail and the flat dynamic-tool compatibility record; native computer-use output remains text and image only.",
+      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, browser_step, desktop_observe, and desktop_step dynamic tools are promoted to canonical Codex native computer-use handlers through a shared provider registry that declares adapter ids, supported tools, backend hints, mutation class, long-timeout behavior, and front-end dispatch eligibility. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, desktop capability, and provider-side build installation. Android remains the reference MCP-backed provider shape, exposes UI-tree-oriented selector and receipt hints in the canonical schema, supports long press and atomic multi-touch without sequential fallback, applies configured default serial/app launch settings, prefers stable UI observations when available, classifies transient provider outages as retryable provider-unavailable failures, returns a post-failure observation when an Android step action fails and capture remains possible, and has a shared provider crate used by TUI and exec. CLI/TUI sessions auto-advertise Android tools when an Android provider is configured, and the Android bridge consumes MCP image content or android.read_artifact output rather than raw artifact paths. The browser adapter has a shared provider crate used by TUI and exec. It can call operator-configured provider commands or the built-in Playwright provider for backend=auto/browser/chromium; Playwright never claims backend=chrome, which requires an external signed-in Chrome/extension/CDP command provider. It can auto-advertise browser tools in CLI/TUI sessions when configured, inherits those native browser tools into thread-spawned sidecars, exposes accessibility-oriented selectors plus human-like mouse and keyboard primitives, defaults Playwright profiles to per-thread isolation with explicit shared/environment/call modes, clears Chromium tab-session restore artifacts before opening a persistent context so explicit requested URLs are not preceded by stale restored tab navigation, falls back to CDP/locator capture when headed Chrome page screenshots fail, can target headed Google Chrome on a visible display for realistic editor UX evidence, can return visible-control and attention-state metadata, can capture small viewport bundles, can save redacted audit artifacts, can inject locally configured service-account navigation headers, and can return a fresh screenshot plus selector candidates after action failures. The desktop adapter has a TUI command-provider seam for cleanroom macOS Screen Recording/Accessibility-style runtimes and future native desktop providers, and TUI auto-advertises desktop tools when that command-provider seam is configured. Shared dynamic-tool and code-mode output adopts upstream audio preparation, duration-aware accounting, truncation, compaction, and history replay while preserving downstream optional image detail and the flat dynamic-tool compatibility record; native computer-use output remains text and image only.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -3391,6 +3391,42 @@
         "codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs"
       ],
       "extraction_target": "upstream generic MCP transient startup recovery"
+    },
+    {
+      "id": "github-app-installation-token-broker",
+      "title": "Read-only GitHub App installation-token broker",
+      "status": "live",
+      "category": "operator-workflow",
+      "surface_type": "credential-transport",
+      "surface": [
+        "babysit-pr installation-token broker",
+        "fingerprint-bound observer execution"
+      ],
+      "files": [
+        ".codex/skills/babysit-pr/scripts/github_app_installation_broker.py",
+        ".codex/skills/babysit-pr/scripts/test_github_app_installation_broker.py",
+        ".codex/skills/babysit-pr/references/github-app-installation-broker.md",
+        ".github/scripts/validation-lanes/agent-workflow-sanity.sh"
+      ],
+      "behavior": "Downstream provides a stdlib-only, one-shot transport boundary that validates a GitHub App installation and selected repository, requests only explicit read permissions, caches one short-lived installation token in memory, strips ambient GitHub tokens from a fingerprint-bound child, bounds and redacts output, and revokes the token on exit without PAT or App-user fallback.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.agent-workflow-sanity",
+      "tests": [
+        "test_github_app_installation_broker.py",
+        "agent-workflow-sanity compiles and runs broker tests"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve this operator-only boundary until upstream supplies an equivalent independently attributable installation-token transport with the same selected-repository, read-only, fingerprint, redaction, and revocation guarantees. Live installation proof and production commissioning remain outside Phase A.",
+      "upstreamability_tier": "operator-only",
+      "boundary_type": "credential-transport",
+      "hotspot_files": [
+        ".codex/skills/babysit-pr/scripts/github_app_installation_broker.py"
+      ],
+      "extraction_target": "upstream read-only GitHub App installation transport"
     },
     {
       "id": "mcp-json-resource-model-boundary",

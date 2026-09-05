@@ -61,6 +61,29 @@ pub trait ThreadStore: Any + Send + Sync {
     /// replay history and before updating any implementation-owned projections.
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()>;
 
+    /// Appends raw items while reporting the durable leading prefix on failure.
+    ///
+    /// Implementations that can commit a prefix before returning an error must set `committed`
+    /// to that prefix length. [`LiveThread`] retries only the remaining suffix, and never retries
+    /// a fully committed error. The default preserves all-or-error behavior for stores that do
+    /// not expose partial progress. A metadata projection failure after a successful append is
+    /// surfaced to the caller; the pending projection may be retried by `persist`, `flush`, or
+    /// `shutdown`, but callers must not blindly retry the raw append unless the store is
+    /// independently idempotent.
+    #[doc(hidden)]
+    fn append_items_committed<'a>(
+        &'a self,
+        params: AppendThreadItemsParams,
+        committed: &'a mut usize,
+    ) -> ThreadStoreFuture<'a, ()> {
+        Box::pin(async move {
+            let item_count = params.items.len();
+            self.append_items(params).await?;
+            *committed = item_count;
+            Ok(())
+        })
+    }
+
     /// Materializes the thread if persistence is lazy, then persists all queued items.
     fn persist_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
 

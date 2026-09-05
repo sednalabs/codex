@@ -2,6 +2,7 @@
 """Watch GitHub PR CI and review activity for Codex PR babysitting workflows."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -20,6 +21,8 @@ FAILED_RUN_CONCLUSIONS = {
     "startup_failure",
     "stale",
 }
+RERUNNABLE_FAILURE_CONCLUSIONS = FAILED_RUN_CONCLUSIONS - {"startup_failure"}
+HELPER_VERSION = "1.1.0-head-guard"
 PENDING_CHECK_STATES = {
     "QUEUED",
     "IN_PROGRESS",
@@ -210,6 +213,24 @@ def parse_args():
         "--retry-failed-now",
         action="store_true",
         help="Rerun failed jobs for current failed workflow runs when policy allows",
+    )
+    parser.add_argument(
+        "--expected-head-sha",
+        "--expected-head",
+        dest="expected_head_sha",
+        help=(
+            "Expected exact PR head SHA required with --retry-failed-now; the PR and "
+            "selected runs are re-read against this value before mutation"
+        ),
+    )
+    parser.add_argument(
+        "--run-id",
+        dest="run_ids",
+        action="append",
+        help=(
+            "Exact workflow run ID to retry; repeat for multiple runs. When omitted, "
+            "the current snapshot's failed run IDs are bound into the retry receipt"
+        ),
     )
     parser.add_argument(
         "--reset-seen-feedback",
@@ -707,7 +728,17 @@ def get_jobs_for_run(repo, run_id):
     return jobs
 
 
-def failed_jobs_from_workflow_runs(repo, runs, head_sha):
+def failed_jobs_from_workflow_runs(repo, runs, head_sha, cache=None):
+    """Collect failed jobs, reusing immutable completed-run job listings.
+
+    Workflow-run discovery remains periodic, so a new or retried run is always
+    considered.  Only a completed run's jobs are reused, keyed by run attempt;
+    in-progress runs are deliberately fetched every snapshot so a newly failed
+    job cannot be hidden by the optimization.
+    """
+    if cache is None:
+        cache = {}
+    jobs_cache = cache.setdefault("failed_jobs_by_run", {})
     failed_jobs = []
     for run in runs:
         if not isinstance(run, dict):
@@ -724,7 +755,15 @@ def failed_jobs_from_workflow_runs(repo, runs, head_sha):
             and run_conclusion not in FAILED_RUN_CONCLUSIONS
         ):
             continue
-        jobs = get_jobs_for_run(repo, run_id)
+        run_attempt = run.get("run_attempt")
+        cache_key = (str(run_id), run_attempt)
+        reusable = run_status.lower() == "completed" and isinstance(run_attempt, int)
+        if reusable and cache_key in jobs_cache:
+            jobs = jobs_cache[cache_key]
+        else:
+            jobs = get_jobs_for_run(repo, run_id)
+            if reusable:
+                jobs_cache[cache_key] = jobs
         for job in jobs:
             if not isinstance(job, dict):
                 continue
@@ -759,13 +798,19 @@ def failed_jobs_from_workflow_runs(repo, runs, head_sha):
     return failed_jobs
 
 
-def get_authenticated_login():
+def get_authenticated_login(cache=None):
+    """Read the login once per watcher session; identity is stable for that session."""
+    if cache is not None and cache.get("authenticated_login"):
+        return cache["authenticated_login"]
     data = gh_json(["api", "user"])
     if not isinstance(data, dict) or not data.get("login"):
         raise GhCommandError(
             "Unable to determine authenticated GitHub login from `gh api user`"
         )
-    return str(data["login"])
+    login = str(data["login"])
+    if cache is not None:
+        cache["authenticated_login"] = login
+    return login
 
 
 def comment_endpoints(repo, pr_number):
@@ -1295,6 +1340,189 @@ def set_retry_count(state, head_sha, count):
     state["retries_by_sha"] = retries
 
 
+def reserve_retry_budget(state_path, head_sha, max_retries):
+    """Durably consume one retry cycle before the first provider mutation."""
+    state, _ = load_state(state_path)
+    retries_used = current_retry_count(state, head_sha)
+    if retries_used >= max_retries:
+        return None
+    new_count = retries_used + 1
+    set_retry_count(state, head_sha, new_count)
+    state["last_snapshot_at"] = int(time.time())
+    save_state(state_path, state)
+    return {"before": retries_used, "after": new_count}
+
+
+def normalize_run_id(value):
+    """Return a canonical numeric workflow-run id or None for invalid input."""
+    if isinstance(value, bool) or value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized or not normalized.isdigit():
+        return None
+    return normalized
+
+
+def canonical_run_ids(values):
+    """Deduplicate and numerically sort exact workflow-run ids."""
+    normalized = []
+    for value in values or []:
+        run_id = normalize_run_id(value)
+        if run_id is None:
+            return None
+        if run_id not in normalized:
+            normalized.append(run_id)
+    return sorted(normalized, key=lambda value: (int(value), value))
+
+
+def retry_action_fingerprint(
+    repo,
+    pr_number,
+    expected_head_sha,
+    selected_run_ids,
+    max_retries,
+):
+    """Bind all retry authorization inputs into a stable, content-addressed id."""
+    binding = {
+        "operation": "retry-failed-now",
+        "helper": "gh_pr_watch.py",
+        "helper_version": HELPER_VERSION,
+        "repo": str(repo),
+        "pr_number": int(pr_number),
+        "expected_head_sha": str(expected_head_sha or ""),
+        "selected_failed_run_ids": list(selected_run_ids or []),
+        "retry_budget": {"max_flaky_retries": int(max_retries)},
+    }
+    payload = json.dumps(binding, sort_keys=True, separators=(",", ":"))
+    return {
+        "algorithm": "sha256",
+        "value": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+        "binding": binding,
+    }
+
+
+def get_workflow_run(repo, run_id):
+    """Read one workflow run authoritatively from GitHub."""
+    data = gh_json(
+        ["api", f"repos/{repo}/actions/runs/{run_id}", "-X", "GET"],
+        repo=repo,
+    )
+    if not isinstance(data, dict):
+        raise GhCommandError("Unexpected payload from actions run API")
+    return data
+
+
+def validate_retry_pr(pr, current_pr, expected_head_sha):
+    """Return a typed mismatch reason for the authoritative PR re-read."""
+    if not isinstance(current_pr, dict):
+        return "pr_read_invalid"
+    if not repos_match(current_pr.get("repo"), pr.get("repo")):
+        return "pr_repository_mismatch"
+    try:
+        current_number = int(current_pr.get("number") or 0)
+        expected_number = int(pr.get("number") or 0)
+    except (TypeError, ValueError):
+        return "pr_read_invalid"
+    if current_number != expected_number:
+        return "pr_number_mismatch"
+    if current_pr.get("closed") or current_pr.get("merged"):
+        return "pr_closed_or_merged"
+    if str(current_pr.get("state") or "").upper() != "OPEN":
+        return "pr_not_open"
+    if str(current_pr.get("head_sha") or "") != str(expected_head_sha):
+        return "pr_head_mismatch"
+    return None
+
+
+def validate_retry_run(run, selected_run_id, expected_head_sha, expected_pr_number=None):
+    """Return a typed mismatch reason for an authoritative run re-read."""
+    if not isinstance(run, dict):
+        return "run_read_invalid"
+    if normalize_run_id(run.get("id")) != normalize_run_id(selected_run_id):
+        return "run_id_mismatch"
+    if str(run.get("head_sha") or "") != str(expected_head_sha):
+        return "run_head_mismatch"
+    if expected_pr_number is not None:
+        pull_requests = run.get("pull_requests")
+        if not isinstance(pull_requests, list) or not pull_requests:
+            return "run_pr_association_missing"
+        try:
+            expected_pr_number = int(expected_pr_number)
+        except (TypeError, ValueError):
+            return "pr_read_invalid"
+        associated_numbers = set()
+        for associated_pr in pull_requests:
+            if not isinstance(associated_pr, dict):
+                continue
+            try:
+                associated_numbers.add(int(associated_pr.get("number")))
+            except (TypeError, ValueError):
+                continue
+        if expected_pr_number not in associated_numbers:
+            return "run_pr_mismatch"
+    if str(run.get("status") or "").lower() != "completed":
+        return "run_not_terminal"
+    run_attempt = run.get("run_attempt")
+    if not isinstance(run_attempt, int) or run_attempt <= 0:
+        return "run_attempt_unobservable"
+    conclusion = str(run.get("conclusion") or "").lower()
+    if conclusion not in RERUNNABLE_FAILURE_CONCLUSIONS:
+        if conclusion == "startup_failure":
+            return "run_startup_blocked"
+        return "run_not_rerunnable_failure"
+    return None
+
+
+def readback_rerun_attempt(repo, run_id, previous_run):
+    """Read the rerun's resulting attempt identity without inferring missing fields."""
+    try:
+        current_run = get_workflow_run(repo, run_id)
+    except GhCommandError as err:
+        return {
+            "readback_state": "error",
+            "attempt_identity_observable": False,
+            "run_id": str(run_id),
+            "error": str(err),
+        }
+
+    observed_id = normalize_run_id(current_run.get("id"))
+    run_attempt = current_run.get("run_attempt")
+    attempt_identity = None
+    if observed_id and isinstance(run_attempt, int) and run_attempt > 0:
+        attempt_identity = f"{observed_id}:{run_attempt}"
+    previous_attempt = previous_run.get("run_attempt") if isinstance(previous_run, dict) else None
+    is_new_attempt = (
+        isinstance(run_attempt, int)
+        and isinstance(previous_attempt, int)
+        and run_attempt > previous_attempt
+    )
+    readback_state = "observed"
+    if observed_id != normalize_run_id(run_id):
+        readback_state = "mismatch"
+    if str(current_run.get("head_sha") or "") != str(previous_run.get("head_sha") or ""):
+        readback_state = "mismatch"
+    if readback_state == "observed" and (
+        not isinstance(previous_attempt, int)
+        or previous_attempt <= 0
+        or not isinstance(run_attempt, int)
+        or run_attempt <= previous_attempt
+    ):
+        readback_state = "inconclusive"
+    return {
+        "readback_state": readback_state,
+        "run_id": observed_id or str(run_id),
+        "run_attempt": run_attempt,
+        "previous_run_attempt": previous_attempt,
+        "attempt_identity": attempt_identity,
+        "new_attempt": is_new_attempt,
+        "attempt_identity_observable": attempt_identity is not None,
+        "head_sha": str(current_run.get("head_sha") or ""),
+        "status": str(current_run.get("status") or ""),
+        "conclusion": str(current_run.get("conclusion") or ""),
+        "read_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
 def unique_actions(actions):
     out = []
     seen = set()
@@ -1368,7 +1596,9 @@ def recommend_actions(
     return unique_actions(actions)
 
 
-def collect_snapshot(args):
+def collect_snapshot(args, cache=None):
+    if cache is None:
+        cache = {}
     local_git_context = detect_local_git_context()
     pr = resolve_pr(args.pr, repo_override=args.repo)
     validate_pr_resolution(args.pr, args.repo, pr, local_git_context)
@@ -1379,7 +1609,7 @@ def collect_snapshot(args):
     if not state.get("started_at"):
         state["started_at"] = int(time.time())
 
-    authenticated_login = get_authenticated_login()
+    authenticated_login = get_authenticated_login(cache)
     new_review_items = fetch_new_review_items(
         pr,
         state,
@@ -1420,10 +1650,14 @@ def collect_snapshot(args):
     # After resolving `--pr auto`, reuse the concrete PR number.
     checks = get_pr_checks(str(pr["number"]), repo=pr["repo"])
     checks_summary = summarize_checks(checks)
+    # Discover workflow runs on every snapshot.  A pending check rollup can
+    # coexist with an early, orphaned, startup, or rerun failure that is only
+    # visible through the workflow API; suppressing that discovery hides the
+    # failure and can incorrectly return idle.
     workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(
-        pr["repo"], workflow_runs, pr["head_sha"]
+        pr["repo"], workflow_runs, pr["head_sha"], cache=cache
     )
 
     retries_used = current_retry_count(state, pr["head_sha"])
@@ -1463,6 +1697,23 @@ def collect_snapshot(args):
 
 
 def retry_failed_now(args):
+    expected_head_sha = str(getattr(args, "expected_head_sha", "") or "").strip()
+    if not expected_head_sha:
+        return {
+            "schema_version": 1,
+            "helper_version": HELPER_VERSION,
+            "rerun_attempted": False,
+            "rerun_count": 0,
+            "rerun_run_ids": [],
+            "attempts": [],
+            "reason": "expected_head_sha_required",
+            "action_fingerprint": None,
+            "receipt": {
+                "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "mutation": "none",
+            },
+        }
+
     snapshot, state_path = collect_snapshot(args)
     pr = snapshot["pr"]
     checks_summary = snapshot["checks"]
@@ -1470,23 +1721,49 @@ def retry_failed_now(args):
     retries_used = snapshot["retry_state"]["current_sha_retries_used"]
     max_retries = snapshot["retry_state"]["max_flaky_retries"]
 
+    requested_run_ids = getattr(args, "run_ids", None)
+    if requested_run_ids is None:
+        requested_run_ids = [run.get("run_id") for run in failed_runs]
+    selected_run_ids = canonical_run_ids(requested_run_ids)
+    action_fingerprint = retry_action_fingerprint(
+        pr["repo"],
+        pr["number"],
+        expected_head_sha,
+        selected_run_ids or [],
+        max_retries,
+    )
+
     result = {
+        "schema_version": 1,
+        "helper_version": HELPER_VERSION,
         "snapshot": snapshot,
         "state_file": str(state_path),
         "rerun_attempted": False,
         "rerun_count": 0,
         "rerun_run_ids": [],
+        "attempts": [],
         "reason": None,
+        "action_fingerprint": action_fingerprint,
+        "receipt": {
+            "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "mutation": "none",
+        },
     }
 
-    if pr["closed"] or pr["merged"]:
-        result["reason"] = "pr_closed"
+    if selected_run_ids is None:
+        result["reason"] = "invalid_run_id"
+        return result
+    if not selected_run_ids:
+        result["reason"] = "no_failed_runs"
+        return result
+    if str(pr.get("head_sha") or "") != expected_head_sha:
+        result["reason"] = "pr_head_mismatch"
+        return result
+    if pr["closed"] or pr["merged"] or str(pr.get("state") or "").upper() != "OPEN":
+        result["reason"] = "pr_closed_or_merged"
         return result
     if checks_summary["failed_count"] <= 0:
         result["reason"] = "no_failed_pr_checks"
-        return result
-    if not failed_runs:
-        result["reason"] = "no_failed_runs"
         return result
     if not checks_summary["all_terminal"]:
         result["reason"] = "checks_still_pending"
@@ -1495,22 +1772,98 @@ def retry_failed_now(args):
         result["reason"] = "retry_budget_exhausted"
         return result
 
-    for run in failed_runs:
-        run_id = run.get("run_id")
-        if run_id in (None, ""):
-            continue
-        gh_text(["run", "rerun", str(run_id), "--failed"], repo=pr["repo"])
-        result["rerun_run_ids"].append(run_id)
+    # Re-read every authorization input before any mutation. This two-phase
+    # preflight means a stale/replaced run or changed PR head cannot trigger a
+    # partial batch rerun.
+    validated_runs = []
+    current_pr = resolve_pr(str(pr["number"]), repo_override=pr["repo"])
+    pr_reason = validate_retry_pr(pr, current_pr, expected_head_sha)
+    if pr_reason:
+        result["reason"] = pr_reason
+        result["receipt"]["validation"] = {"pr": pr_reason}
+        return result
+    for run_id in selected_run_ids:
+        try:
+            current_run = get_workflow_run(pr["repo"], run_id)
+        except GhCommandError as err:
+            result["reason"] = "run_read_failed"
+            result["receipt"]["validation"] = {
+                "run_id": run_id,
+                "error": str(err),
+            }
+            return result
+        run_reason = validate_retry_run(
+            current_run,
+            run_id,
+            expected_head_sha,
+            expected_pr_number=pr["number"],
+        )
+        if run_reason:
+            result["reason"] = run_reason
+            result["receipt"]["validation"] = {
+                "run_id": run_id,
+                "reason": run_reason,
+            }
+            return result
+        validated_runs.append((run_id, current_run))
+
+    result["receipt"]["validation"] = {
+        "pr": "open_head_bound",
+        "runs": [str(run_id) for run_id, _ in validated_runs],
+        "validated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        budget = reserve_retry_budget(state_path, pr["head_sha"], max_retries)
+    except (OSError, RuntimeError) as err:
+        result["reason"] = "retry_budget_reservation_failed"
+        result["receipt"]["budget_error"] = str(err)
+        return result
+    if budget is None:
+        result["reason"] = "retry_budget_exhausted"
+        result["receipt"]["validation"] = {
+            "budget": "changed_during_preflight",
+        }
+        return result
+    result["receipt"]["retry_budget"] = budget
+    for run_id, previous_run in validated_runs:
+        try:
+            gh_text(["run", "rerun", str(run_id), "--failed"], repo=pr["repo"])
+        except GhCommandError as err:
+            # A provider error is ambiguous: stop and never issue a second
+            # mutation or blindly retry the same run.
+            result["reason"] = "rerun_command_ambiguous"
+            result["receipt"].update(
+                {
+                    "mutation": "ambiguous",
+                    "failed_run_id": str(run_id),
+                    "error": str(err),
+                }
+            )
+            return result
+        # Keep the historical JSON shape (numeric GitHub run ids) while the
+        # fingerprint and validation paths use canonical decimal strings.
+        result["rerun_run_ids"].append(int(run_id))
+        result["rerun_attempted"] = True
+        result["rerun_count"] += 1
+        readback = readback_rerun_attempt(pr["repo"], run_id, previous_run)
+        result["attempts"].append(readback)
+        if readback.get("readback_state") != "observed":
+            result["reason"] = (
+                "post_rerun_readback_inconclusive"
+                if readback.get("readback_state") == "inconclusive"
+                else "post_rerun_readback_failed"
+            )
+            result["receipt"]["mutation"] = "completed_readback_failed"
+            return result
 
     if result["rerun_run_ids"]:
-        state, _ = load_state(state_path)
-        new_count = current_retry_count(state, pr["head_sha"]) + 1
-        set_retry_count(state, pr["head_sha"], new_count)
-        state["last_snapshot_at"] = int(time.time())
-        save_state(state_path, state)
-        result["rerun_attempted"] = True
-        result["rerun_count"] = len(result["rerun_run_ids"])
         result["reason"] = "rerun_triggered"
+        result["receipt"].update(
+            {
+                "mutation": "completed",
+                "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+        )
     else:
         result["reason"] = "failed_runs_missing_ids"
 
@@ -1687,8 +2040,9 @@ def next_watch_poll_seconds(
 def run_watch(args):
     poll_seconds = args.poll_seconds
     last_change_key = None
+    cache = {}
     while True:
-        snapshot, state_path = collect_snapshot(args)
+        snapshot, state_path = collect_snapshot(args, cache=cache)
         print_event(
             "snapshot",
             {
@@ -1719,8 +2073,9 @@ def run_watch_until_action(args):
     last_change_key = None
     started_at = time.time()
     polls_completed = 0
+    cache = {}
     while True:
-        snapshot, state_path = collect_snapshot(args)
+        snapshot, state_path = collect_snapshot(args, cache=cache)
         polls_completed += 1
         if should_wait_for_terminal_checks(args, snapshot):
             pass

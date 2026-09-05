@@ -136,9 +136,10 @@ impl LiveThread {
         let live_thread = Self::create(thread_store, params).await?;
         let append_result = {
             let _operation_permit = live_thread.acquire_persistence_operation().await?;
-            live_thread
+            let (_, append_error) = live_thread
                 .persist_appended_items(inherited_model_context)
-                .await
+                .await;
+            append_error.map_or(Ok(()), Err)
         };
         if let Err(err) = append_result {
             if let Err(discard_err) = live_thread.discard().await {
@@ -197,9 +198,9 @@ impl LiveThread {
     )]
     pub async fn append_items(&self, raw_items: &[RolloutItem]) -> ThreadStoreResult<()> {
         let _operation_permit = self.acquire_persistence_operation().await?;
-        let items = self.persist_appended_items(raw_items).await?;
+        let (items, append_error) = self.persist_appended_items(raw_items).await;
         if items.is_empty() {
-            return Ok(());
+            return append_error.map_or(Ok(()), Err);
         }
         let update = self
             .metadata_sync
@@ -219,35 +220,84 @@ impl LiveThread {
                 .await
                 .mark_pending_update_applied(&update);
         }
-        Ok(())
+        append_error.map_or(Ok(()), Err)
     }
 
     async fn persist_appended_items(
         &self,
         raw_items: &[RolloutItem],
-    ) -> ThreadStoreResult<Vec<RolloutItem>> {
+    ) -> (Vec<RolloutItem>, Option<ThreadStoreError>) {
         // Empty appends are intentionally ignored rather than represented as zero-sized batches.
         if raw_items.is_empty() {
-            return Ok(Vec::new());
+            return (Vec::new(), None);
         }
+        let mut committed = 0;
+        let mut append_error = None;
+        while committed < raw_items.len() {
+            let remaining = raw_items.len() - committed;
+            let mut attempt_committed = 0;
+            let result = self
+                .thread_store
+                .append_items_committed(
+                    AppendThreadItemsParams {
+                        thread_id: self.thread_id,
+                        items: raw_items[committed..].to_vec(),
+                    },
+                    &mut attempt_committed,
+                )
+                .await;
+            if attempt_committed > remaining {
+                append_error = Some(ThreadStoreError::Internal {
+                    message: format!(
+                        "thread store reported invalid append progress: {attempt_committed}/{remaining}"
+                    ),
+                });
+                break;
+            }
+            committed += attempt_committed;
+            match result {
+                Ok(()) if attempt_committed == remaining => break,
+                Ok(()) => {
+                    append_error = Some(ThreadStoreError::Internal {
+                        message: "thread store returned incomplete append success".to_string(),
+                    });
+                    break;
+                }
+                Err(err) if attempt_committed > 0 && committed < raw_items.len() => {
+                    warn!(
+                        thread_id = ?self.thread_id,
+                        ?err,
+                        attempt_committed,
+                        committed,
+                        total = raw_items.len(),
+                        "thread store append failed partially; retrying remaining suffix"
+                    );
+                    continue;
+                }
+                Err(err) => {
+                    append_error = Some(err);
+                    break;
+                }
+            }
+        }
+        let committed_raw_items = &raw_items[..committed];
         let (items, measurement) = if self.persistence_telemetry.is_enabled() {
             let (items, measurement) =
-                measure_and_filter_rollout_items(raw_items, self.history_mode);
+                measure_and_filter_rollout_items(committed_raw_items, self.history_mode);
             (items, Some(measurement))
         } else {
-            (persisted_rollout_items(raw_items, self.history_mode), None)
+            (
+                persisted_rollout_items(committed_raw_items, self.history_mode),
+                None,
+            )
         };
-        self.thread_store
-            .append_items(AppendThreadItemsParams {
-                thread_id: self.thread_id,
-                items: raw_items.to_vec(),
-            })
-            .await?;
-        if let Some(measurement) = measurement.as_ref() {
+        if let Some(measurement) = measurement.as_ref()
+            && !committed_raw_items.is_empty()
+        {
             self.persistence_telemetry
-                .record_batch(raw_items, measurement);
+                .record_batch(committed_raw_items, measurement);
         }
-        Ok(items)
+        (items, append_error)
     }
 
     pub async fn persist(&self) -> ThreadStoreResult<()> {
