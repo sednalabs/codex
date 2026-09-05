@@ -398,8 +398,9 @@ impl WaitAgentResult {
             CollabWaitingCompletionReason::Terminal => "Wait completed.",
             CollabWaitingCompletionReason::Mailbox => "Wait woke due to mailbox activity.",
             CollabWaitingCompletionReason::Timeout => "Wait timed out.",
-            CollabWaitingCompletionReason::SubscriptionLoss =>
-                "Wait ended because its event subscription was lost.",
+            CollabWaitingCompletionReason::SubscriptionLoss => {
+                "Wait ended because its event subscription was lost."
+            }
         };
         Self {
             message: message.to_string(),
