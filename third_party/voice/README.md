@@ -77,7 +77,15 @@ transitive imports must satisfy the same private-library and system-import check
 ## Native build recipe
 
 `build_native.py` runs the unmodified upstream build systems in a new output
-directory, using the same archives. Specify the target and existing compiler,
+directory, using the same archives. Unix builds accept repeated `--c-flag=...`,
+`--cxx-flag=...`, `--link-flag=...` and optional `--ar`/`--ranlib` inputs.
+These overrides are rejected on Windows; ambient flags remain ignored.
+Libffi uses compiler response files to preserve literal definitions through
+configure, recursive Make and libtool. Response-file paths must not require shell
+quoting. Its
+Autoconf recipe cannot preserve flags containing whitespace; those are rejected.
+Declared archiver and ranlib paths must not require shell quoting for libffi.
+Specify the target and existing compiler,
 CMake, make, pkg-config and shell paths explicitly. It requires a matching
 native host: GNU Linux, macOS, or Windows MSVC, on x64 or ARM64.
 

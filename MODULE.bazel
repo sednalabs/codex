@@ -147,6 +147,22 @@ bazel_dep(name = "rules_platform", version = "0.1.0")
 bazel_dep(name = "aws-lc", version = "5.1.0.bcr.1")
 bazel_dep(name = "rules_rs", version = "0.0.96")
 bazel_dep(name = "rules_foreign_cc", version = "0.15.1")
+single_version_override(
+    module_name = "rules_foreign_cc",
+    patch_strip = 1,
+    patches = [
+        "//patches:rules_foreign_cc_make_cppflags.patch",
+        "//patches:rules_foreign_cc_make_xcompile.patch",
+    ],
+    version = "0.15.1",
+)
+
+# Use the existing pinned Make build for foreign_cc consumers, including the
+# native voice pkg-config bootstrap, instead of a PATH-provided Make.
+register_toolchains("@rules_foreign_cc//toolchains:built_make_toolchain")
+
+foreign_cc_tools = use_extension("@rules_foreign_cc//foreign_cc:extensions.bzl", "tools")
+use_repo(foreign_cc_tools, "pkgconfig_src")
 
 single_version_override(
     module_name = "rules_rs",

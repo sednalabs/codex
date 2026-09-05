@@ -1,3 +1,6 @@
+load("@rules_foreign_cc//toolchains/native_tools:native_tools_toolchain.bzl", "native_tool_toolchain")
+load(":pkg_config.bzl", "pkg_config")
+
 # All native build consumers must receive the same pinned source manifest.
 exports_files(["opus-toolchain.cmake"])
 
@@ -44,4 +47,59 @@ filegroup(
         ":source_inputs",
     ],
     visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "pkg_config_linker",
+    actual = select({
+        "@platforms//os:macos": "@llvm//tools:ld64.lld",
+        "//conditions:default": "@llvm//tools:ld.lld",
+    }),
+)
+
+# Keep the pinned pkg-config sources, but explicitly use LLVM archive tools.
+# The upstream bootstrap otherwise selects host ar/ranlib on macOS.
+pkg_config(
+    name = "pkg_config",
+    build_data = [
+        ":pkg_config_linker",
+        "@llvm//tools:llvm-ar",
+        "@llvm//tools:llvm-ranlib",
+    ],
+    # foreign_cc normalizes copied source timestamps, preserving the release
+    # configure files when remote execution materializes inputs in a new order.
+    configure_in_place = True,
+    configure_options = [
+        "--with-internal-glib",
+        "--disable-shared",
+    ],
+    copts = ["-Wno-int-conversion"],
+    env = {
+        "AR": "$(execpath @llvm//tools:llvm-ar)",
+        "LD": "$(execpath :pkg_config_linker)",
+        "PKG_CONFIG": "/bin/false",
+        "RANLIB": "$(execpath @llvm//tools:llvm-ranlib)",
+    },
+    lib_source = "@pkgconfig_src//:all_srcs",
+    # foreign_cc rewrites *-config files as text. Keep the executable out of
+    # that transformation, which otherwise corrupts its native code signature.
+    out_binaries = ["pkg-config-tool"],
+    out_include_dir = "",
+    out_static_libs = [],
+    postfix_script = 'mv "$$INSTALLDIR/bin/pkg-config" "$$INSTALLDIR/bin/pkg-config-tool"',
+    tags = ["manual"],
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    # Internal GLib needs no pkg-config. Avoid bootstrapping another copy first;
+    # the explicit failing command above forbids falling back to a host copy.
+    toolchain = "@rules_foreign_cc//toolchains:preinstalled_pkgconfig_toolchain",
+)
+
+native_tool_toolchain(
+    name = "pkg_config_tool",
+    path = "$(execpath :pkg_config)",
+    tags = ["manual"],
+    target = ":pkg_config",
 )
