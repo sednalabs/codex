@@ -439,24 +439,21 @@ fn dynamic_tool_for_merge_test(
 }
 
 fn assert_browser_merge_preserves_persistent_tool() {
-    let active_browser =
-        dynamic_tool_for_merge_test(
-            "browser_step",
-            /*persist_on_resume*/ false,
-            /*browser*/ true,
-        );
-    let persisted_helper =
-        dynamic_tool_for_merge_test(
-            "persistent_helper",
-            /*persist_on_resume*/ true,
-            /*browser*/ false,
-        );
-    let stale_browser =
-        dynamic_tool_for_merge_test(
-            "browser_step",
-            /*persist_on_resume*/ true,
-            /*browser*/ true,
-        );
+    let active_browser = dynamic_tool_for_merge_test(
+        "browser_step",
+        /*persist_on_resume*/ false,
+        /*browser*/ true,
+    );
+    let persisted_helper = dynamic_tool_for_merge_test(
+        "persistent_helper",
+        /*persist_on_resume*/ true,
+        /*browser*/ false,
+    );
+    let stale_browser = dynamic_tool_for_merge_test(
+        "browser_step",
+        /*persist_on_resume*/ true,
+        /*browser*/ true,
+    );
 
     let merged = merge_dynamic_tools(
         vec![active_browser.clone()],
@@ -468,12 +465,11 @@ fn assert_browser_merge_preserves_persistent_tool() {
 
 #[test]
 fn namespaced_browser_named_tool_is_preserved_as_a_persistent_tool() {
-    let active_browser =
-        dynamic_tool_for_merge_test(
-            "browser_step",
-            /*persist_on_resume*/ false,
-            /*browser*/ true,
-        );
+    let active_browser = dynamic_tool_for_merge_test(
+        "browser_step",
+        /*persist_on_resume*/ false,
+        /*browser*/ true,
+    );
     let namespaced_persistent_tool = DynamicToolSpec {
         namespace: Some("vendor".to_string()),
         name: "browser_step".to_string(),
