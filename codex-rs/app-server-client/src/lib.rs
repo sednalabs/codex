@@ -682,14 +682,13 @@ impl InProcessAppServerClient {
             }
 
             drop(event_forward_tx);
-            if let Some(mut auth_rejection_handle) = auth_rejection_handle {
-                if timeout(SHUTDOWN_TIMEOUT, &mut auth_rejection_handle)
+            if let Some(mut auth_rejection_handle) = auth_rejection_handle
+                && timeout(SHUTDOWN_TIMEOUT, &mut auth_rejection_handle)
                     .await
                     .is_err()
-                {
-                    auth_rejection_handle.abort();
-                    let _ = auth_rejection_handle.await;
-                }
+            {
+                auth_rejection_handle.abort();
+                let _ = auth_rejection_handle.await;
             }
             if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut event_forward_handle).await {
                 event_forward_handle.abort();
@@ -872,15 +871,14 @@ impl InProcessAppServerClient {
             .send(ClientCommand::Shutdown { response_tx })
             .await
             .is_ok()
+            && let Ok(command_result) = timeout(IN_PROCESS_SHUTDOWN_TIMEOUT, response_rx).await
         {
-            if let Ok(command_result) = timeout(IN_PROCESS_SHUTDOWN_TIMEOUT, response_rx).await {
-                command_result.map_err(|_| {
-                    IoError::new(
-                        ErrorKind::BrokenPipe,
-                        "in-process app-server shutdown channel is closed",
-                    )
-                })??;
-            }
+            command_result.map_err(|_| {
+                IoError::new(
+                    ErrorKind::BrokenPipe,
+                    "in-process app-server shutdown channel is closed",
+                )
+            })??;
         }
         // Release the caller-facing receiver only after the shutdown response
         // has been delivered. This prevents the consumer-closed path from
