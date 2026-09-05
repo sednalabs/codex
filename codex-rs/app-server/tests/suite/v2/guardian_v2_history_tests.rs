@@ -273,6 +273,10 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
     });
     let (mcp_url, mcp_server) = start_mcp_server(/*sensitive_action*/ None).await?;
     let codex_home = TempDir::new()?;
+    let thread_context_enabled = match context_path {
+        ContextPath::Legacy => false,
+        ContextPath::ThreadOwned => true,
+    };
     let mut mock_config = MockResponsesConfig::new(&responses_url)
         .with_provider_name("OpenAI")
         .with_provider_config("requires_openai_auth = true\nsupports_websockets = false")
@@ -284,15 +288,11 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
         .disable_feature(Feature::RemoteCompactionV2)
         .disable_feature(Feature::TokenBudget)
         .with_extra_config(&format!(
-            "[mcp_servers.{TEST_SERVER_NAME}]\nurl = \"{mcp_url}/mcp\"\ndefault_tools_approval_mode = \"prompt\"\n\n[features.guardianv2]\nenabled = true\npersist_scores = true\nreuse_parent_compaction = {reuse_parent_compaction}\n\n[features.guardianv2.review_scope]\ncomputer_use_only = false"
+            "[mcp_servers.{TEST_SERVER_NAME}]\nurl = \"{mcp_url}/mcp\"\ndefault_tools_approval_mode = \"prompt\"\n\n[features.guardianv2]\nenabled = true\nthread_context = {thread_context_enabled}\npersist_scores = true\nreuse_parent_compaction = {reuse_parent_compaction}\n\n[features.guardianv2.review_scope]\ncomputer_use_only = false"
         ));
     if matches!(context_path, ContextPath::ThreadOwned) {
         mock_config = mock_config.disable_feature(Feature::GuardianReuseParentCompaction);
     }
-    mock_config = match context_path {
-        ContextPath::Legacy => mock_config.disable_feature(Feature::GuardianThreadContext),
-        ContextPath::ThreadOwned => mock_config.enable_feature(Feature::GuardianThreadContext),
-    };
     mock_config.write(codex_home.path())?;
     let config = load_default_config_for_test(&codex_home).await;
     let models = [

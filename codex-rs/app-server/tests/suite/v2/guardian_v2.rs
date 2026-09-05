@@ -774,9 +774,9 @@ async fn guardian_v2_routes_scoped_tool_approvals(
     };
     let guardian_scope_config = match scope {
         GuardianToolScope::AllTools => {
-            "\n\n[features.guardianv2]\nenabled = true\n\n[features.guardianv2.review_scope]\ncomputer_use_only = false"
+            "\n\n[features.guardianv2.review_scope]\ncomputer_use_only = false"
         }
-        GuardianToolScope::ComputerUseOnly { .. } => "\n\n[features.guardianv2]\nenabled = true",
+        GuardianToolScope::ComputerUseOnly { .. } => "",
     };
     let tool_approval_mode = if node_repl_review_required {
         "auto"
@@ -792,12 +792,9 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             analytics_server.uri(),
         ))
         .with_extra_config(&format!(
-            "[mcp_servers.{server_name}]\nurl = \"{mcp_server_url}/mcp\"\ndefault_tools_approval_mode = \"{tool_approval_mode}\"\n\n[analytics]\nenabled = true\n\n[otel]\nmetrics_exporter = {{ otlp-http = {{ endpoint = \"{responses_url}/metrics\", protocol = \"json\" }} }}{guardian_scope_config}"
+            "[mcp_servers.{server_name}]\nurl = \"{mcp_server_url}/mcp\"\ndefault_tools_approval_mode = \"{tool_approval_mode}\"\n\n[analytics]\nenabled = true\n\n[otel]\nmetrics_exporter = {{ otlp-http = {{ endpoint = \"{responses_url}/metrics\", protocol = \"json\" }} }}\n\n[features.guardianv2]\nenabled = true\nthread_context = {thread_context_enabled}{guardian_scope_config}"
         ))
         .enable_feature(Feature::GuardianApproval);
-    if thread_context_enabled {
-        mock_config = mock_config.enable_feature(Feature::GuardianThreadContext);
-    }
     if lifecycle.has_user_input() || lifecycle.has_root_user_input() {
         mock_config = mock_config.enable_feature(Feature::DefaultModeRequestUserInput);
     }
