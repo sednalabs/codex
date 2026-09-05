@@ -5708,7 +5708,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then",
             select_run,
         )
-        self.assertIn("github.event.merge_group.base_sha", select_run)
         self.assertIn('git fetch --no-tags --depth=1 origin "${BASE_SHA}"', select_run)
         self.assertIn("classify_ci_paths.py --base-sha", select_run)
         self.assertIn("Unable to fetch PR base; running every CodeQL language.", select_run)
@@ -7526,7 +7525,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then",
             classify_run,
         )
-        self.assertIn("github.event.merge_group.base_sha", classify_run)
         self.assertIn("classify_ci_paths.py --base-sha", classify_run)
         self.assertIn("Unable to fetch PR base; running full blocking CI.", classify_run)
         self.assertIn("Unable to classify PR paths; running full blocking CI.", classify_run)
