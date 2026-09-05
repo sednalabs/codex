@@ -70,14 +70,26 @@ mod tests {
 
     #[test]
     fn exact_openai_model_is_transformed_in_both_instruction_sources() {
-        let source = format!("before {BLOCKING_WAIT_SENTENCE} after");
+        let source = format!(
+            "before {BLOCKING_WAIT_SENTENCE} after; a deliberate short timeout of 5 seconds remains allowed"
+        );
         let mut model = model(CODEX_AUTO_REVIEW_SLUG, &source, Some(&source));
         assert_eq!(apply_openai_compatible(&mut model), OverlayOutcome::Applied);
-        assert_eq!(model.base_instructions, "before  after");
+        assert_eq!(
+            model.base_instructions,
+            "before  after; a deliberate short timeout of 5 seconds remains allowed"
+        );
         assert_eq!(
             model.model_messages.unwrap().instructions_template,
-            Some("before  after".to_string())
+            Some("before  after; a deliberate short timeout of 5 seconds remains allowed".to_string())
         );
+
+        let transformed = model.clone();
+        assert_eq!(
+            apply_openai_compatible(&mut model),
+            OverlayOutcome::TargetMatchedSentenceAbsent
+        );
+        assert_eq!(model, transformed);
     }
 
     #[test]
