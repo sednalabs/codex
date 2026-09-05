@@ -1174,7 +1174,7 @@ fn bundled_models_json_roundtrips() {
 async fn openai_overlay_preserves_unrelated_metadata_and_static_catalog_precedence() {
     const SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
     let sentence = SENTENCE;
-    let mut candidate = remote_model("codex-auto-review", "Auto Review", 7);
+    let mut candidate = remote_model("codex-auto-review", "Auto Review", /*priority*/ 7);
     candidate.base_instructions = format!("before {sentence} after");
     candidate.model_messages = Some(ModelMessages {
         instructions_template: Some(format!("before {sentence} after")),
@@ -1225,7 +1225,7 @@ async fn openai_overlay_preserves_unrelated_metadata_and_static_catalog_preceden
 async fn openai_overlay_applies_after_remote_and_cache_composition() {
     const SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
     let sentence = SENTENCE;
-    let mut candidate = remote_model("codex-auto-review", "Auto Review", 7);
+    let mut candidate = remote_model("codex-auto-review", "Auto Review", /*priority*/ 7);
     candidate.base_instructions = format!("before {sentence} after");
     candidate.model_messages = Some(ModelMessages {
         instructions_template: Some(format!("before {sentence} after")),
@@ -1249,7 +1249,7 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
     let info = manager
         .get_model_info("codex-auto-review", &template_config)
         .await;
-    assert!(!info.get_model_instructions(None).contains(sentence));
+    assert!(!info.get_model_instructions(/*personality*/ None).contains(sentence));
     assert!(
         !info
             .model_messages
@@ -1278,7 +1278,7 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
         .await;
     assert!(
         !disabled_info
-            .get_model_instructions(None)
+            .get_model_instructions(/*personality*/ None)
             .contains(sentence)
     );
     assert!(disabled_info.model_messages.is_none());
@@ -1301,7 +1301,7 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
     let cached_info = cached_manager
         .get_model_info("codex-auto-review", &template_config)
         .await;
-    assert!(!cached_info.get_model_instructions(None).contains(sentence));
+    assert!(!cached_info.get_model_instructions(/*personality*/ None).contains(sentence));
     assert!(
         !cached_info
             .model_messages
@@ -1315,5 +1315,5 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
     let suffix_info = manager
         .get_model_info("codex-auto-review-v2", &ModelsManagerConfig::default())
         .await;
-    assert!(suffix_info.get_model_instructions(None).contains(sentence));
+    assert!(suffix_info.get_model_instructions(/*personality*/ None).contains(sentence));
 }
