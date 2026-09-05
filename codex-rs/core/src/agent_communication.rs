@@ -41,6 +41,19 @@ pub(crate) fn logging_enabled() -> bool {
     tracing::enabled!(target: AGENT_COMMUNICATION_TARGET, tracing::Level::INFO)
 }
 
+fn telemetry_content(communication: &InterAgentCommunication) -> &str {
+    if communication.content.is_empty() {
+        // Encrypted payloads are opaque and must never be copied into telemetry.
+        if communication.encrypted_content.is_some() {
+            "[encrypted]"
+        } else {
+            ""
+        }
+    } else {
+        communication.content.as_str()
+    }
+}
+
 pub(crate) fn emit_agent_communication_send(
     communication_id: &str,
     context: &AgentCommunicationContext,
@@ -56,14 +69,31 @@ pub(crate) fn emit_agent_communication_send(
             state = "send",
             sender_thread_id = %context.sender_thread_id,
             receiver_thread_id = %receiver_thread_id,
-            content = if communication.content.is_empty() {
-                communication.encrypted_content.as_deref().unwrap_or_default()
-            } else {
-                communication.content.as_str()
-            },
+            content = telemetry_content(communication),
         },
         "agent communication"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::AgentPath;
+
+    #[test]
+    fn telemetry_redacts_encrypted_content() {
+        let ciphertext = "gAAAA-secret-ciphertext";
+        let communication = InterAgentCommunication::new_encrypted(
+            AgentPath::root(),
+            AgentPath::root(),
+            Vec::new(),
+            ciphertext.to_string(),
+            false,
+        );
+
+        assert_eq!(telemetry_content(&communication), "[encrypted]");
+        assert!(!telemetry_content(&communication).contains(ciphertext));
+    }
 }
 
 pub(crate) fn emit_agent_communication_receive(communication_id: &str) {

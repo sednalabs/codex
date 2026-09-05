@@ -3300,6 +3300,30 @@ async fn multi_agent_v2_send_message_rejects_empty_legacy_items_before_target_lo
 }
 
 #[tokio::test]
+async fn multi_agent_v2_send_message_rejects_null_payload_before_target_lookup() {
+    let (session, turn) = make_session_and_context().await;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "send_message",
+        function_payload(json!({
+            "target": "missing",
+            "message": null
+        })),
+    );
+
+    let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
+        panic!("an explicit null message should be rejected");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "send_message field `message` can't be null".to_string()
+        )
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_v2_send_message_rejects_non_text_items() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();

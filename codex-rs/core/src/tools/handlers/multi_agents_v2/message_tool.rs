@@ -13,6 +13,7 @@ use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
 use futures::future::BoxFuture;
 use serde::Serialize;
+use serde_json::Value;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MessageDeliveryMode {
@@ -41,14 +42,14 @@ impl MessageDeliveryMode {
 /// Input for the MultiAgentV2 `send_message` tool.
 pub(crate) struct SendMessageArgs {
     pub(crate) target: String,
-    /// The published V2 contract is an encrypted scalar. The untagged form
-    /// keeps direct callers compatible with the pre-fix structured payload
-    /// while allowing the Responses transport's opaque ciphertext string.
+    /// The published V2 contract is an encrypted scalar. The wrapper keeps a
+    /// raw JSON value so we can distinguish an omitted field from an explicit
+    /// null before resolving the target agent.
     #[serde(default)]
-    pub(crate) message: Option<SendMessagePayload>,
+    pub(crate) message: SendMessageField,
     /// Compatibility for payloads produced by the pre-fix `items` schema.
     #[serde(default)]
-    pub(crate) items: Option<SendMessagePayload>,
+    pub(crate) items: SendMessageField,
     #[serde(default)]
     pub(crate) interrupt: bool,
 }
@@ -70,17 +71,53 @@ impl SendMessageArgs {
             items,
             interrupt,
         } = self;
-        let message = match (message, items) {
+        let message = match (message.0, items.0) {
             (Some(_), Some(_)) => Err(FunctionCallError::RespondToModel(
                 "send_message accepts either message or legacy items, not both".to_string(),
             )),
-            (Some(payload), None) | (None, Some(payload)) => payload.into_message(),
+            (Some(payload), None) => parse_send_message_payload("message", payload),
+            (None, Some(payload)) => parse_send_message_payload("items", payload),
             (None, None) => Err(FunctionCallError::RespondToModel(
                 "missing field `message`".to_string(),
             )),
         }?;
         Ok((target, message, interrupt))
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct SendMessageField(Option<Value>);
+
+impl Default for SendMessageField {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<'de> Deserialize<'de> for SendMessageField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Value::deserialize(deserializer).map(|value| Self(Some(value)))
+    }
+}
+
+fn parse_send_message_payload(
+    field_name: &str,
+    payload: Value,
+) -> Result<String, FunctionCallError> {
+    if payload.is_null() {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "send_message field `{field_name}` can't be null"
+        )));
+    }
+    let payload: SendMessagePayload = serde_json::from_value(payload).map_err(|err| {
+        FunctionCallError::RespondToModel(format!(
+            "invalid send_message {field_name} payload: {err}"
+        ))
+    })?;
+    payload.into_message()
 }
 
 impl SendMessagePayload {
