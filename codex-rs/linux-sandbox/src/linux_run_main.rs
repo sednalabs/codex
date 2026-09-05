@@ -1193,7 +1193,7 @@ fn supervise_protected_create_monitor(
         close_fd_if_open(parent_ready_fd);
         unsafe { libc::_exit(1) };
     }
-    if write_monitor_status(parent_ready_fd, 1).is_err() {
+    if write_monitor_status(parent_ready_fd, /*status*/ 1).is_err() {
         kill_and_reap_monitor(monitor_pid);
         terminate_namespace_and_cleanup(&namespace_init, &registrations);
         unsafe { libc::_exit(1) };
@@ -1296,7 +1296,7 @@ fn monitor_protected_create_targets_until_namespace_exit(
             unsafe { libc::_exit(1) };
         }
     }
-    if write_monitor_status(ready_fd, 1).is_err() {
+    if write_monitor_status(ready_fd, /*status*/ 1).is_err() {
         terminate_namespace_and_cleanup(&namespace_init, registrations);
         unsafe { libc::_exit(1) };
     }
@@ -2017,7 +2017,7 @@ fn proc_fd_path(fd: RawFd) -> PathBuf {
 fn remove_entry_at(parent: RawFd, name: &CString) -> std::io::Result<ProtectedCreateRemoval> {
     let metadata = stat_at(parent, name)?;
     if !is_directory(&metadata) {
-        unlink_at(parent, name, 0)?;
+        unlink_at(parent, name, /*flags*/ 0)?;
         return Ok(ProtectedCreateRemoval::Other);
     }
 
