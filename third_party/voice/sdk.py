@@ -15,6 +15,7 @@ from runtime import digest
 MODULES = (
     "glib-2.0",
     "gobject-2.0",
+    "gio-2.0",
     "gmodule-no-export-2.0",
     "gstreamer-1.0",
     "gstreamer-base-1.0",

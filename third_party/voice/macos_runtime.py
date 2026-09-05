@@ -10,7 +10,7 @@ import sys
 # Import only this script's siblings, including under PYTHONSAFEPATH.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime import Binary as MachO
-from runtime import PLUGINS, RuntimeFormat, digest, prepare
+from runtime import PLUGINS, RuntimeFormat, digest, prepare, required_library_paths
 
 SYSTEM_IMPORTS = frozenset(
     {
@@ -150,6 +150,9 @@ def project(prefix, receipts, target, output):
         SYSTEM_IMPORTS,
         inspect,
         finalize_copy,
+        required_libraries=tuple(
+            Path(path).name for path in required_library_paths(target)
+        ),
     )
     prepare(prefix, receipts, target, output, format)
 

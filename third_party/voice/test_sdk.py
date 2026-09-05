@@ -93,6 +93,7 @@ class SdkTests(unittest.TestCase):
                 "--cflags",
                 "--libs",
                 "gstreamer-audio-1.0",
+                "gio-2.0",
             ],
             env={
                 **os.environ,

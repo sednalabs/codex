@@ -68,6 +68,12 @@ separate runtime projection and are never copied into users' Codex packages.
 Cargo/Bazel native providers, final helper linkage and moved-package execution
 remain separate integration work; exporting an SDK does not enable voice.
 
+The Rust GStreamer bindings also link GLib's GIO library. Its pkg-config metadata
+is included in the SDK, and runtime preparation treats its loader identity as an
+explicit dependency root alongside the seven plugins. GIO comes from the same
+pinned GLib build; it is not another source package or a GStreamer plugin. Its
+transitive imports must satisfy the same private-library and system-import checks.
+
 ## Native build recipe
 
 `build_native.py` runs the unmodified upstream build systems in a new output

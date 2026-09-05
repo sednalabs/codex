@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 import re
 
-from runtime import PLUGINS, digest
+from runtime import PLUGINS, digest, required_library_paths
 
 
 def runtime_files(root: Path, target: str) -> dict[str, str]:
@@ -71,5 +71,7 @@ def runtime_files(root: Path, target: str) -> dict[str, str]:
         files
     ):
         raise ValueError("runtime must include exactly the selected plugins")
+    if not set(required_library_paths(target)).issubset(files):
+        raise ValueError("runtime must include the required libraries")
     files["runtime.json"] = hashlib.sha256(data).hexdigest()
     return files
