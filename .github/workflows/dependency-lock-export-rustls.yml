@@ -79,8 +79,11 @@ jobs:
           test "$(grep -F -c -- '-checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"' <<<"${cargo_lock_diff}")" = 1
           test "$(grep -F -c -- '+checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"' <<<"${cargo_lock_diff}")" = 1
           printf 'guard=exact_rustls_fields_pass\n'
-          test "$(grep -F -c -- '- \"getrandom 0.4.3\",' <<<"${cargo_lock_diff}")" = 1
-          test "$(grep -F -c -- '+ \"getrandom 0.3.4\",' <<<"${cargo_lock_diff}")" = 1
+          getrandom_old_count="$(grep -E -c '^- \"getrandom 0\.4\.3\",$' <<<"${cargo_lock_diff}")"
+          getrandom_new_count="$(grep -E -c '^\+ \"getrandom 0\.3\.4\",$' <<<"${cargo_lock_diff}")"
+          printf 'getrandom_old_count=%s new_count=%s\n' "${getrandom_old_count}" "${getrandom_new_count}"
+          test "${getrandom_old_count}" = 1
+          test "${getrandom_new_count}" = 1
           printf 'guard=exact_coupled_edge_pass\n'
           unexpected_cargo_lines="$(grep -E '^[-+]' <<<"${cargo_lock_diff}" | grep -Ev '^(---|\+\+\+|[-+]version = "0\.23\.(42|43)"|[-+]checksum = "(3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138|0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06)"|[-+] \"getrandom 0\.(4\.3|3\.4)\",")' || true)"
           test -z "${unexpected_cargo_lines}"
