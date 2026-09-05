@@ -62,11 +62,18 @@ jobs:
           git diff --name-only > dependency-lock-export.paths
           expected_paths=$'MODULE.bazel.lock\ncodex-rs/Cargo.lock'
           test "$(cat dependency-lock-export.paths)" = "${expected_paths}"
-          ! git diff -- codex-rs/Cargo.lock | grep -E -q '^[-+].*\b(h2|landlock|rtrb|sqlx|strum|serial_test|heck)\b'
+          cargo_lock_diff="$(git diff -- codex-rs/Cargo.lock)"
+          ! grep -E -q '^[-+].*\b(h2|landlock|rtrb|sqlx|strum|serial_test|heck|getrandom)\b' <<<"${cargo_lock_diff}"
           changed_package_headers="$(git diff -- codex-rs/Cargo.lock | grep -E '^[-+]name = ' || true)"
           test -z "${changed_package_headers}"
-          test "$(git diff -- codex-rs/Cargo.lock | grep -E -c '^[-+][[:space:]]*version =')" = 2
-          test "$(git diff -- codex-rs/Cargo.lock | grep -E -c '^[-+][[:space:]]*checksum =')" = 2
+          test "$(grep -E -c '^[-+][[:space:]]*version =' <<<"${cargo_lock_diff}")" = 2
+          test "$(grep -E -c '^[-+][[:space:]]*checksum =' <<<"${cargo_lock_diff}")" = 2
+          test "$(grep -F -c -- '-version = "0.23.42"' <<<"${cargo_lock_diff}")" = 1
+          test "$(grep -F -c -- '+version = "0.23.43"' <<<"${cargo_lock_diff}")" = 1
+          test "$(grep -F -c -- '-checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"' <<<"${cargo_lock_diff}")" = 1
+          test "$(grep -F -c -- '+checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"' <<<"${cargo_lock_diff}")" = 1
+          unexpected_cargo_lines="$(grep -E '^[-+]' <<<"${cargo_lock_diff}" | grep -Ev '^(---|\+\+\+|[-+]version = "0\.23\.(42|43)"|[-+]checksum = "(3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138|0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06)")' || true)"
+          test -z "${unexpected_cargo_lines}"
           git diff --binary > dependency-lock-export.patch
           {
             cat dependency-lock-export.identity
