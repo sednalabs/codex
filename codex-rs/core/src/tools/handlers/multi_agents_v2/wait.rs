@@ -133,8 +133,9 @@ impl Handler {
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
         let wait_capability = registered_tool_runtime_capabilities().wait_agent;
-        let native_event_capable = wait_capability
-            .is_some_and(|capability| capability.native_event_wait && capability.mailbox_wake);
+        let native_event_capable = wait_capability.is_some_and(|capability| {
+            capability.native_event_wait && capability.mailbox_wake
+        });
         if args.native_event_wait && !native_event_capable {
             return Err(FunctionCallError::RespondToModel(
                 "native_event_wait requires native_event_wait and mailbox_wake capabilities"
@@ -663,11 +664,9 @@ async fn wait_for_wake_source(
                                 .into_iter()
                                 .filter(|(_, status)| is_final(status)),
                         );
-                        let status_loss = closure_rxs
-                            .iter()
-                            .any(|(id, rx)| {
-                                rx.has_changed().is_err() && !final_statuses.contains_key(id)
-                            });
+                        let status_loss = closure_rxs.iter().any(|(id, rx)| {
+                            rx.has_changed().is_err() && !final_statuses.contains_key(id)
+                        });
                         if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
                             return WakeSource::TargetCompletion;
                         } else if status_loss {
