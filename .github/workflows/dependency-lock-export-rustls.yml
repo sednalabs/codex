@@ -58,6 +58,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git diff --unified=0 -- codex-rs/Cargo.lock
           git diff --check
           git diff --name-only > dependency-lock-export.paths
           expected_paths=$'MODULE.bazel.lock\ncodex-rs/Cargo.lock'
