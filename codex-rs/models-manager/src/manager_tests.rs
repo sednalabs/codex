@@ -12,6 +12,7 @@ use codex_login::ExternalAuthRefreshContext;
 use codex_login::TokenData;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ModelMessages;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::VecDeque;
@@ -1167,4 +1168,42 @@ fn bundled_models_json_roundtrips() {
         !response.models.is_empty(),
         "bundled models.json should contain at least one model"
     );
+}
+
+#[tokio::test]
+async fn openai_overlay_preserves_unrelated_metadata_and_static_catalog_precedence() {
+    let sentence = instruction_overlay::BLOCKING_WAIT_SENTENCE;
+    let mut candidate = remote_model("codex-auto-review", "Auto Review", 7);
+    candidate.base_instructions = format!("before {sentence} after");
+    candidate.model_messages = Some(ModelMessages {
+        instructions_template: Some(format!("before {sentence} after")),
+        instructions_variables: None,
+        approvals: None,
+        auto_review: None,
+        permissions: None,
+    });
+    let static_candidate = candidate.clone();
+    let original_display = candidate.display_name.clone();
+    let original_priority = candidate.priority;
+    let transformed = overlay_models(vec![candidate]).pop().expect("model");
+    assert!(!transformed.base_instructions.contains(sentence));
+    assert!(!transformed
+        .model_messages
+        .as_ref()
+        .and_then(|messages| messages.instructions_template.as_ref())
+        .expect("template")
+        .contains(sentence));
+    assert_eq!(transformed.display_name, original_display);
+    assert_eq!(transformed.priority, original_priority);
+
+    let static_manager = static_manager_for_tests(ModelsResponse {
+        models: vec![static_candidate],
+    });
+    let static_info = static_manager
+        .get_model_info(
+            "codex-auto-review",
+            &ModelsManagerConfig::default(),
+        )
+        .await;
+    assert_eq!(static_info, static_candidate);
 }
