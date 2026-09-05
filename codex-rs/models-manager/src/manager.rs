@@ -301,11 +301,12 @@ impl ModelsManager for OpenAiModelsManager {
     ) -> ModelsManagerFuture<'a, ModelInfo> {
         Box::pin(async move {
             let remote_models = self.get_remote_models().await;
-            let mut model_info = construct_model_info_from_candidates(model, &remote_models, config);
-            if config.base_instructions.is_none() {
-                instruction_overlay::apply(&mut model_info, Some("openai-compatible"));
-            }
-            model_info
+            construct_model_info_from_candidates_with_overlay(
+                model,
+                &remote_models,
+                config,
+                config.base_instructions.is_none(),
+            )
         })
     }
 
@@ -636,11 +637,20 @@ pub(crate) fn construct_model_info_from_candidates(
     candidates: &[ModelInfo],
     config: &ModelsManagerConfig,
 ) -> ModelInfo {
+    construct_model_info_from_candidates_with_overlay(model, candidates, config, false)
+}
+
+fn construct_model_info_from_candidates_with_overlay(
+    model: &str,
+    candidates: &[ModelInfo],
+    config: &ModelsManagerConfig,
+    apply_overlay: bool,
+) -> ModelInfo {
     // First use the normal longest-prefix match. If that misses, allow a narrowly scoped
     // retry for namespaced slugs like `custom/gpt-5.3-codex`.
     let remote = find_model_by_longest_prefix(model, candidates)
         .or_else(|| find_model_by_namespaced_suffix(model, candidates));
-    let model_info = if let Some(remote) = remote {
+    let mut model_info = if let Some(remote) = remote {
         ModelInfo {
             slug: model.to_string(),
             used_fallback_model_metadata: false,
@@ -649,6 +659,9 @@ pub(crate) fn construct_model_info_from_candidates(
     } else {
         model_info::model_info_from_slug(model)
     };
+    if apply_overlay {
+        instruction_overlay::apply(&mut model_info, Some("openai-compatible"));
+    }
     model_info::with_config_overrides(model_info, config)
 }
 
