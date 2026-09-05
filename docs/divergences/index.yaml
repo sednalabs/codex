@@ -3393,6 +3393,42 @@
       "extraction_target": "upstream generic MCP transient startup recovery"
     },
     {
+      "id": "github-app-installation-token-broker",
+      "title": "Read-only GitHub App installation-token broker",
+      "status": "live",
+      "category": "operator-workflow",
+      "surface_type": "credential-transport",
+      "surface": [
+        "babysit-pr installation-token broker",
+        "fingerprint-bound observer execution"
+      ],
+      "files": [
+        ".codex/skills/babysit-pr/scripts/github_app_installation_broker.py",
+        ".codex/skills/babysit-pr/scripts/test_github_app_installation_broker.py",
+        ".codex/skills/babysit-pr/references/github-app-installation-broker.md",
+        ".github/scripts/validation-lanes/agent-workflow-sanity.sh"
+      ],
+      "behavior": "Downstream provides a stdlib-only, one-shot transport boundary that validates a GitHub App installation and selected repository, requests only explicit read permissions, caches one short-lived installation token in memory, strips ambient GitHub tokens from a fingerprint-bound child, bounds and redacts output, and revokes the token on exit without PAT or App-user fallback.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.agent-workflow-sanity",
+      "tests": [
+        "test_github_app_installation_broker.py",
+        "agent-workflow-sanity compiles and runs broker tests"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve this operator-only boundary until upstream supplies an equivalent independently attributable installation-token transport with the same selected-repository, read-only, fingerprint, redaction, and revocation guarantees. Live installation proof and production commissioning remain outside Phase A.",
+      "upstreamability_tier": "operator-only",
+      "boundary_type": "credential-transport",
+      "hotspot_files": [
+        ".codex/skills/babysit-pr/scripts/github_app_installation_broker.py"
+      ],
+      "extraction_target": "upstream read-only GitHub App installation transport"
+    },
+    {
       "id": "mcp-json-resource-model-boundary",
       "title": "MCP JSON-family resource model-output boundary",
       "status": "live",
