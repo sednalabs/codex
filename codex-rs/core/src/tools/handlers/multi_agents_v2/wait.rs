@@ -826,9 +826,15 @@ mod tests {
 
     #[test]
     fn native_zero_timeout_disables_internal_lease_timer() {
-        assert!(!lease_timer_enabled(/*native_event_wait*/ true, /*timeout_ms*/ 0));
-        assert!(lease_timer_enabled(/*native_event_wait*/ true, /*timeout_ms*/ 1));
-        assert!(lease_timer_enabled(/*native_event_wait*/ false, /*timeout_ms*/ 0));
+        assert!(!lease_timer_enabled(
+            /*native_event_wait*/ true, /*timeout_ms*/ 0
+        ));
+        assert!(lease_timer_enabled(
+            /*native_event_wait*/ true, /*timeout_ms*/ 1
+        ));
+        assert!(lease_timer_enabled(
+            /*native_event_wait*/ false, /*timeout_ms*/ 0
+        ));
     }
 
     #[test]
