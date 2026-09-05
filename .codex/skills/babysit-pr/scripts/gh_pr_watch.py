@@ -1316,6 +1316,19 @@ def set_retry_count(state, head_sha, count):
     state["retries_by_sha"] = retries
 
 
+def reserve_retry_budget(state_path, head_sha, max_retries):
+    """Durably consume one retry cycle before the first provider mutation."""
+    state, _ = load_state(state_path)
+    retries_used = current_retry_count(state, head_sha)
+    if retries_used >= max_retries:
+        return None
+    new_count = retries_used + 1
+    set_retry_count(state, head_sha, new_count)
+    state["last_snapshot_at"] = int(time.time())
+    save_state(state_path, state)
+    return {"before": retries_used, "after": new_count}
+
+
 def normalize_run_id(value):
     """Return a canonical numeric workflow-run id or None for invalid input."""
     if isinstance(value, bool) or value is None:
@@ -1769,6 +1782,19 @@ def retry_failed_now(args):
         "runs": [str(run_id) for run_id, _ in validated_runs],
         "validated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    try:
+        budget = reserve_retry_budget(state_path, pr["head_sha"], max_retries)
+    except (OSError, RuntimeError) as err:
+        result["reason"] = "retry_budget_reservation_failed"
+        result["receipt"]["budget_error"] = str(err)
+        return result
+    if budget is None:
+        result["reason"] = "retry_budget_exhausted"
+        result["receipt"]["validation"] = {
+            "budget": "changed_during_preflight",
+        }
+        return result
+    result["receipt"]["retry_budget"] = budget
     for run_id, previous_run in validated_runs:
         try:
             gh_text(["run", "rerun", str(run_id), "--failed"], repo=pr["repo"])
@@ -1801,11 +1827,6 @@ def retry_failed_now(args):
             return result
 
     if result["rerun_run_ids"]:
-        state, _ = load_state(state_path)
-        new_count = current_retry_count(state, pr["head_sha"]) + 1
-        set_retry_count(state, pr["head_sha"], new_count)
-        state["last_snapshot_at"] = int(time.time())
-        save_state(state_path, state)
         result["reason"] = "rerun_triggered"
         result["receipt"].update(
             {

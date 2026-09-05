@@ -738,6 +738,8 @@ def test_retry_does_not_accept_stale_post_rerun_readback(monkeypatch):
 
 def test_retry_stops_on_ambiguous_command_without_second_mutation(monkeypatch):
     install_retry_snapshot(monkeypatch, retry_snapshot(99, 100))
+    state = {"retries_by_sha": {}}
+    monkeypatch.setattr(gh_pr_watch, "load_state", lambda _path: (state, False))
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_args, **_kwargs: sample_pr())
     monkeypatch.setattr(
         gh_pr_watch,
@@ -752,9 +754,19 @@ def test_retry_stops_on_ambiguous_command_without_second_mutation(monkeypatch):
 
     monkeypatch.setattr(gh_pr_watch, "gh_text", ambiguous_command)
 
-    result = gh_pr_watch.retry_failed_now(retry_args(99, 100))
+    result = gh_pr_watch.retry_failed_now(
+        retry_args(99, 100, max_flaky_retries=1)
+    )
 
     assert result["reason"] == "rerun_command_ambiguous"
     assert result["rerun_attempted"] is False
     assert result["rerun_count"] == 0
+    assert len(mutation_calls) == 1
+    assert state["retries_by_sha"]["abc123"] == 1
+
+    second = gh_pr_watch.retry_failed_now(
+        retry_args(99, 100, max_flaky_retries=1)
+    )
+
+    assert second["reason"] == "retry_budget_exhausted"
     assert len(mutation_calls) == 1

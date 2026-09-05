@@ -101,7 +101,9 @@ followed by an authoritative run readback that reports `run_attempt` and the
 derived attempt identity when GitHub exposes it; the receipt is inconclusive
 unless the attempt is strictly newer than the pre-mutation attempt. The run's
 authoritative `pull_requests` association must include the selected PR. An
-ambiguous provider command failure stops without a second mutation.
+ambiguous provider command failure stops without a second mutation. One retry
+cycle is durably reserved immediately after preflight and before the first
+provider mutation, so a partial batch cannot silently reset its retry budget.
 
 ### Explicit PR target
 
