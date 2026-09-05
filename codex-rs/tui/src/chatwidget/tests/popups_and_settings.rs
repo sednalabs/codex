@@ -1702,6 +1702,50 @@ async fn plugins_popup_refresh_clears_query_when_active_tab_disappears() {
 }
 
 #[tokio::test]
+async fn plugins_popup_refresh_clears_query_for_remote_fallback_tab() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::Plugins, /*enabled*/ true);
+
+    render_loaded_plugins_popup(
+        &mut chat,
+        plugins_test_response(vec![
+            plugins_test_curated_marketplace(Vec::new()),
+            plugins_test_remote_marketplace(
+                "workspace-directory",
+                "Raw Workspace Directory",
+                vec![plugins_test_remote_summary(
+                    "plugins~Plugin_buildkite",
+                    "buildkite",
+                    Some("Buildkite"),
+                    Some("Buildkite pipelines."),
+                    /*installed*/ false,
+                )],
+            ),
+        ]),
+    );
+    select_plugins_tab_containing(&mut chat, /*width*/ 100, "Workspace.");
+    type_plugins_search_query(&mut chat, "build");
+
+    let cwd = chat.config.cwd.clone();
+    chat.on_plugins_loaded(
+        cwd.to_path_buf(),
+        Ok(plugins_test_response(vec![plugins_test_curated_marketplace(
+            Vec::new(),
+        )])),
+    );
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(
+        popup.contains("No workspace plugins available"),
+        "expected remote fallback tab to remain visible after its marketplace disappeared, got:\n{popup}"
+    );
+    assert!(
+        !popup.contains("no matches"),
+        "expected query to be cleared on remote fallback, got:\n{popup}"
+    );
+}
+
+#[tokio::test]
 async fn plugins_popup_refreshes_installed_counts_after_install() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::Plugins, /*enabled*/ true);
