@@ -164,13 +164,14 @@
         "usage_logger_* focused table-contract tests",
         "credit_views_select_standard_fast_and_half_open_rates",
         "credit_views_preserve_uncertainty_and_partial_totals",
+        "credit_views_cover_current_aliases_boundaries_and_rollups",
         "usage_logger_records_provider_final_model_identity",
         "status_surfaces_prefer_turn_completed_provider_model_identity",
         "rollout_resume_state_prefers_latest_turn_context",
         "configured_resume_cwd_skips_prompt"
       ],
       "owner": "downstream",
-      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Provider-facing priority is recorded separately from the ChatGPT Fast credit regime so API Priority is not mispriced as Codex credits. Versioned rate and policy tables fail closed for unknown or legacy coverage, retain provenance, and keep cache-write tokens diagnostic rather than double-counting them. The 2026-07-30 rate revision preserves historical half-open intervals, updates only GPT-5.6 Luna/Terra Standard/Fast rows, and leaves Sol Standard/Fast unchanged. Downstream model and reasoning-effort recovery in session_resume composes with upstream tui.resume_cwd; future syncs must preserve both behaviors.",
+      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Provider-facing priority is recorded separately from the ChatGPT Fast credit regime so API Priority is not mispriced as Codex credits. Versioned rate and policy tables fail closed for unknown or legacy coverage, retain provenance, and keep cache-write tokens diagnostic rather than double-counting them. The 2026-07-30 rate revision preserves historical half-open intervals and updates GPT-5.6 Luna/Terra Standard/Fast rows; migration 0013 records the 2026-09-05 STANDARD/default observation, closes the prior Sol interval, and adds GPT-5.6 Sol at 100 / 10 / 500, including the provider's gpt-5.6 alias. It also retains explicit GPT-Image-2 image/text cards as unselectable until modality evidence is available. Downstream model and reasoning-effort recovery in session_resume composes with upstream tui.resume_cwd; future syncs must preserve both behaviors.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
