@@ -62,6 +62,7 @@ enum WakeSource {
     TargetCompletion,
     Mailbox,
     Timeout,
+    SubscriptionLoss,
 }
 
 impl WakeSource {
@@ -70,6 +71,7 @@ impl WakeSource {
             WakeSource::TargetCompletion => CollabWaitingCompletionReason::Terminal,
             WakeSource::Mailbox => CollabWaitingCompletionReason::Mailbox,
             WakeSource::Timeout => CollabWaitingCompletionReason::Timeout,
+            WakeSource::SubscriptionLoss => CollabWaitingCompletionReason::SubscriptionLoss,
         }
     }
 }
@@ -130,6 +132,16 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
+        let wait_capability = registered_tool_runtime_capabilities().wait_agent;
+        if args.native_event_wait
+            && (!wait_capability.is_some_and(|capability| capability.native_event_wait)
+                || !wait_capability.is_some_and(|capability| capability.mailbox_wake))
+        {
+            return Err(FunctionCallError::RespondToModel(
+                "native_event_wait requires native_event_wait and mailbox_wake capabilities"
+                    .to_string(),
+            ));
+        }
         let receiver_thread_ids = if args.targets.is_empty() {
             Vec::new()
         } else {
@@ -163,6 +175,11 @@ impl Handler {
             turn.config.multi_agent_v2.max_wait_timeout_ms,
             turn.config.multi_agent_v2.default_wait_timeout_ms,
         )?;
+        if args.native_event_wait && timeout_ms == 0 {
+            return Err(FunctionCallError::RespondToModel(
+                "native_event_wait requires a positive lease timeout".to_string(),
+            ));
+        }
         let (mut input_activity_rx, pending_input_activity) = session
             .input_queue
             .subscribe_activity(/*turn_state*/ None)
@@ -213,6 +230,7 @@ impl Handler {
                         receiver_thread_ids.clone(),
                         receiver_agents.clone(),
                         agents_states,
+                        CollabWaitingCompletionReason::SubscriptionLoss,
                     )
                     .await;
                     return Err(collab_agent_error(*id, err));
@@ -220,19 +238,24 @@ impl Handler {
             }
         }
 
-        let wait_capability = registered_tool_runtime_capabilities().wait_agent;
         let return_when = wait_capability
             .filter(|capability| capability.return_when)
             .map_or(ReturnWhen::Any, |_| args.return_when);
+        // Preserve the existing broad mailbox eligibility rule. Typed mailbox
+        // filtering is a follow-on; native mode only changes lease expiry.
         let wake_on_mailbox = wait_capability.is_some_and(|capability| capability.mailbox_wake);
+        let native_event_wait =
+            args.native_event_wait
+                && wait_capability.is_some_and(|capability| capability.native_event_wait);
         let completion_rule = CompletionRule::new(return_when);
         let wake_source = if let Some(wake_source) = ready_wake_source(
             session.as_ref(),
             completion_rule,
-            &final_statuses,
+            &mut final_statuses,
             &receiver_thread_ids,
             wake_on_mailbox,
             pending_input_activity,
+            &mut status_rxs,
         )
         .await
         {
@@ -246,6 +269,7 @@ impl Handler {
                 completion_rule,
                 &mut final_statuses,
                 wake_on_mailbox,
+                native_event_wait,
                 Instant::now() + Duration::from_millis(timeout_ms as u64),
             )
             .await
@@ -283,6 +307,7 @@ impl Handler {
             receiver_thread_ids,
             receiver_agents,
             statuses_by_id,
+            completion_reason,
         )
         .await;
 
@@ -304,6 +329,8 @@ struct WaitArgs {
     timeout_ms: Option<i64>,
     #[serde(default)]
     return_when: ReturnWhen,
+    #[serde(default)]
+    native_event_wait: bool,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -327,10 +354,11 @@ pub(crate) struct WaitAgentResult {
 async fn ready_wake_source(
     session: &Session,
     completion_rule: CompletionRule,
-    final_statuses: &HashMap<ThreadId, AgentStatus>,
+    final_statuses: &mut HashMap<ThreadId, AgentStatus>,
     receiver_thread_ids: &[ThreadId],
     wake_on_mailbox: bool,
     pending_input_activity: Option<InputQueueActivity>,
+    status_rxs: &mut [(ThreadId, Receiver<AgentStatus>)],
 ) -> Option<WakeSource> {
     if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
         Some(WakeSource::TargetCompletion)
@@ -341,7 +369,22 @@ async fn ready_wake_source(
                 .has_pending_input(&session.active_turn)
                 .await)
     {
-        Some(WakeSource::Mailbox)
+        let latest = collect_current_wait_statuses(session, receiver_thread_ids).await;
+        final_statuses.extend(
+            latest
+                .into_iter()
+                .filter(|(_, status)| is_final(status)),
+        );
+        if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
+            Some(WakeSource::TargetCompletion)
+        } else if status_rxs.iter_mut().any(|(id, rx)| {
+            rx.has_changed().is_err()
+                && !final_statuses.contains_key(id)
+        }) {
+            Some(WakeSource::SubscriptionLoss)
+        } else {
+            Some(WakeSource::Mailbox)
+        }
     } else {
         None
     }
@@ -357,6 +400,8 @@ impl WaitAgentResult {
             CollabWaitingCompletionReason::Terminal => "Wait completed.",
             CollabWaitingCompletionReason::Mailbox => "Wait woke due to mailbox activity.",
             CollabWaitingCompletionReason::Timeout => "Wait timed out.",
+            CollabWaitingCompletionReason::SubscriptionLoss =>
+                "Wait ended because its event subscription was lost.",
         };
         Self {
             message: message.to_string(),
@@ -440,8 +485,12 @@ async fn emit_wait_completion(
     receiver_thread_ids: Vec<ThreadId>,
     receiver_agents: Vec<CollabAgentRef>,
     agents_states: HashMap<ThreadId, AgentStatus>,
+    completion_reason: CollabWaitingCompletionReason,
 ) {
-    let status = if agents_states.values().any(|agent_status| {
+    let status = if completion_reason == CollabWaitingCompletionReason::SubscriptionLoss
+        // Subscription loss is an unsuccessful lifecycle outcome even when
+        // the last authoritative statuses are still running.
+        || agents_states.values().any(|agent_status| {
         matches!(
             agent_status,
             AgentStatus::Errored(_) | AgentStatus::NotFound
@@ -499,20 +548,24 @@ async fn wait_for_final_status(
     session: std::sync::Arc<Session>,
     thread_id: ThreadId,
     mut status_rx: Receiver<AgentStatus>,
-) -> Option<(ThreadId, AgentStatus)> {
+) -> Option<(ThreadId, AgentStatus, bool)> {
     let mut status = status_rx.borrow().clone();
     if is_final(&status) {
-        return Some((thread_id, status));
+        return Some((thread_id, status, false));
     }
 
     loop {
         if status_rx.changed().await.is_err() {
             let latest = session.services.agent_control.get_status(thread_id).await;
-            return is_final(&latest).then_some((thread_id, latest));
+            // A closed subscription is an actionable identity/lifecycle loss
+            // when the authoritative status is not already terminal. Surface
+            // it as a terminal NotFound state so native mode cannot silently
+            // re-arm forever or hot-loop on a dead channel.
+            return Some((thread_id, latest, true));
         }
         status = status_rx.borrow().clone();
         if is_final(&status) {
-            return Some((thread_id, status));
+            return Some((thread_id, status, false));
         }
     }
 }
@@ -526,8 +579,16 @@ async fn wait_for_wake_source(
     completion_rule: CompletionRule,
     final_statuses: &mut HashMap<ThreadId, AgentStatus>,
     wake_on_mailbox: bool,
-    deadline: Instant,
+    native_event_wait: bool,
+    mut deadline: Instant,
 ) -> WakeSource {
+    let lease_duration = deadline
+        .saturating_duration_since(Instant::now())
+        .max(Duration::from_millis(1));
+    let mut closure_rxs = status_rxs
+        .iter()
+        .map(|(id, rx)| (*id, rx.clone()))
+        .collect::<Vec<_>>();
     let mut futures = FuturesUnordered::new();
     for (id, rx) in status_rxs {
         let session = session.clone();
@@ -545,24 +606,111 @@ async fn wait_for_wake_source(
         tokio::select! {
             maybe_status = futures.next(), if !futures.is_empty() => {
                 match maybe_status {
-                    Some(Some((id, status))) => {
-                        final_statuses.insert(id, status);
+                    Some(Some((id, status, subscription_lost))) => {
+                        let is_terminal = is_final(&status);
+                        if is_terminal {
+                            final_statuses.insert(id, status);
+                        }
+                        if subscription_lost {
+                            let latest = collect_current_wait_statuses(
+                                session.as_ref(),
+                                receiver_thread_ids,
+                            )
+                            .await;
+                            final_statuses.extend(
+                                latest
+                                    .into_iter()
+                                    .filter(|(_, status)| is_final(status)),
+                            );
+                            if !is_terminal {
+                                return if completion_rule.is_satisfied(
+                                    final_statuses,
+                                    receiver_thread_ids,
+                                ) {
+                                    WakeSource::TargetCompletion
+                                } else {
+                                    WakeSource::SubscriptionLoss
+                                };
+                            }
+                            // A terminally-closing subscription is only a
+                            // completion wake when the requested any/all
+                            // rule is satisfied. Otherwise keep the other
+                            // status subscriptions armed.
+                            if completion_rule.is_satisfied(
+                                final_statuses,
+                                receiver_thread_ids,
+                            ) {
+                                return WakeSource::TargetCompletion;
+                            }
+                        }
                     }
                     Some(None) => {}
                     None => {}
                 }
             }
-            input_activity_changed = input_activity_rx.changed(), if wake_on_mailbox => {
-                if input_activity_changed.is_ok()
-                    && session
-                        .input_queue
-                        .has_pending_input(&session.active_turn)
-                        .await
-                {
-                    return WakeSource::Mailbox;
+            input_activity_changed = input_activity_rx.changed(), if wake_on_mailbox || native_event_wait => {
+                match input_activity_changed {
+                    Ok(())
+                        if session
+                            .input_queue
+                            .has_pending_input(&session.active_turn)
+                            .await =>
+                    {
+                        let latest = collect_current_wait_statuses(
+                            session.as_ref(),
+                            receiver_thread_ids,
+                        )
+                        .await;
+                        final_statuses.extend(
+                            latest
+                                .into_iter()
+                                .filter(|(_, status)| is_final(status)),
+                        );
+                        let status_loss = closure_rxs.iter_mut().any(|(id, rx)| {
+                            rx.has_changed().is_err() && !final_statuses.contains_key(id)
+                        });
+                        if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
+                            return WakeSource::TargetCompletion;
+                        } else if status_loss {
+                            return WakeSource::SubscriptionLoss;
+                        }
+                        return WakeSource::Mailbox;
+                    }
+                    Err(_) => {
+                        // The mailbox subscription is gone. End the pending
+                        // invocation so the owner can re-establish identity;
+                        // never re-arm a closed receiver in a hot loop.
+                        let latest = collect_current_wait_statuses(
+                            session.as_ref(),
+                            receiver_thread_ids,
+                        )
+                        .await;
+                        final_statuses.extend(
+                            latest
+                                .into_iter()
+                                .filter(|(_, status)| is_final(status)),
+                        );
+                        return if completion_rule.is_satisfied(
+                            final_statuses,
+                            receiver_thread_ids,
+                        ) {
+                            WakeSource::TargetCompletion
+                        } else {
+                            WakeSource::SubscriptionLoss
+                        };
+                    }
+                    _ => {}
                 }
             }
             _ = &mut sleep => {
+                if native_event_wait {
+                    // The timeout is an internal lease/observation expiry. Keep
+                    // this invocation owned by the runtime and re-arm the
+                    // same subscriptions without producing a tool result or
+                    // starting another model/provider turn.
+                    deadline = Instant::now() + lease_duration;
+                    continue;
+                }
                 return WakeSource::Timeout;
             }
         }
@@ -587,6 +735,32 @@ mod tests {
             WakeSource::Timeout.completion_reason(),
             CollabWaitingCompletionReason::Timeout
         );
+        assert_eq!(
+            WakeSource::SubscriptionLoss.completion_reason(),
+            CollabWaitingCompletionReason::SubscriptionLoss
+        );
+    }
+
+    #[test]
+    fn subscription_loss_result_is_not_a_timeout() {
+        let result = WaitAgentResult::new(
+            Vec::new(),
+            Vec::new(),
+            CollabWaitingCompletionReason::SubscriptionLoss,
+        );
+        assert!(!result.timed_out);
+        assert!(result.message.contains("subscription"));
+    }
+
+    #[test]
+    fn all_completion_waits_for_remaining_targets_after_terminal_closure() {
+        let first = ThreadId::new();
+        let second = ThreadId::new();
+        let mut statuses = HashMap::from([(first, AgentStatus::Completed(None))]);
+        let rule = CompletionRule::new(ReturnWhen::All);
+        assert!(!rule.is_satisfied(&statuses, &[first, second]));
+        statuses.insert(second, AgentStatus::Completed(None));
+        assert!(rule.is_satisfied(&statuses, &[first, second]));
     }
 
     #[test]
