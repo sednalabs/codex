@@ -10,7 +10,7 @@ import urllib.error
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 
 MODULE_PATH = Path(
@@ -380,6 +380,123 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertEqual(snapshot1["actions"], ["stop_dispatch_host_branch_mismatch"])
         self.assertEqual(snapshot2["actions"], ["stop_dispatch_host_branch_mismatch"])
         self.assertEqual(snapshot2["appearance_wait"]["dispatch_host_mismatch"]["run_id"], 23950570058)
+
+    def test_run_id_caches_terminal_success_until_bounded_revalidation(self):
+        args = types.SimpleNamespace(
+            no_gemini_diagnosis=True, gemini_model=MODULE.GEMINI_DEFAULT_MODEL,
+            gemini_timeout_seconds=5, appearance_timeout_seconds=0,
+            ack_action=[], poll_seconds=10,
+        )
+        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42,
+                  "head_sha": "abc123", "spec": "run-id=42,head-sha=abc123"}
+        run_view = {"databaseId": 42, "attempt": 1, "headSha": "abc123def",
+                    "headBranch": "main", "status": "completed", "conclusion": "success",
+                    "jobs": []}
+        remembered = {}
+        with patch.object(MODULE, "view_run", return_value=run_view) as view_mock, \
+                patch.object(MODULE, "load_validation_summary", return_value=None), \
+                patch.object(MODULE.time, "time", side_effect=[100, 100, 110, 170, 170]):
+            MODULE.target_state_from_target(args, target, "owner/repo", remembered)
+            MODULE.target_state_from_target(args, target, "owner/repo", remembered)
+            MODULE.target_state_from_target(args, target, "owner/repo", remembered)
+        self.assertEqual(view_mock.call_count, 2)
+        self.assertEqual(view_mock.call_args_list, [call("owner/repo", 42), call("owner/repo", 42)])
+
+    def test_mixed_targets_reuse_success_without_skipping_pending_reads(self):
+        args = types.SimpleNamespace(
+            no_gemini_diagnosis=True, gemini_model=MODULE.GEMINI_DEFAULT_MODEL,
+            gemini_timeout_seconds=5, appearance_timeout_seconds=0,
+            ack_action=[], poll_seconds=10, verbose_details=False,
+            wait_for="all_done",
+        )
+        success_target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42,
+                          "head_sha": "abc123", "spec": "run-id=42,head-sha=abc123"}
+        pending_target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 43,
+                          "head_sha": "def456", "spec": "run-id=43,head-sha=def456"}
+        success = {"databaseId": 42, "attempt": 1, "headSha": "abc123def",
+                   "headBranch": "main", "status": "completed", "conclusion": "success",
+                   "jobs": []}
+        pending = {"databaseId": 43, "attempt": 1, "headSha": "def456abc",
+                   "headBranch": "main", "status": "in_progress", "conclusion": "",
+                   "jobs": []}
+        remembered = {}
+        with patch.object(MODULE, "view_run", side_effect=[success, pending, pending]) as view_mock, \
+                patch.object(MODULE, "load_validation_summary", return_value=None), \
+                patch.object(MODULE.time, "time", return_value=100):
+            MODULE.evaluate_targets(args, "owner/repo", [success_target, pending_target], remembered)
+            MODULE.evaluate_targets(args, "owner/repo", [success_target, pending_target], remembered)
+        self.assertEqual(view_mock.call_count, 3)
+        self.assertEqual(view_mock.call_args_list, [
+            call("owner/repo", 42), call("owner/repo", 43), call("owner/repo", 43)
+        ])
+
+    def test_run_id_success_cache_revalidates_changed_attempt(self):
+        args = types.SimpleNamespace(
+            no_gemini_diagnosis=True, gemini_model=MODULE.GEMINI_DEFAULT_MODEL,
+            gemini_timeout_seconds=5, appearance_timeout_seconds=0,
+            ack_action=[], poll_seconds=10,
+        )
+        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42,
+                  "head_sha": "abc123", "spec": "run-id=42,head-sha=abc123"}
+        first = {"databaseId": 42, "attempt": 1, "headSha": "abc123def",
+                 "headBranch": "main", "status": "completed", "conclusion": "success", "jobs": []}
+        rerun = {"databaseId": 42, "attempt": 2, "headSha": "abc123def",
+                 "headBranch": "main", "status": "in_progress", "conclusion": "", "jobs": []}
+        remembered = {}
+        with patch.object(MODULE, "view_run", side_effect=[first, rerun]) as view_mock, \
+                patch.object(MODULE, "load_validation_summary", return_value=None), \
+                patch.object(MODULE.time, "time", side_effect=[100, 100, 170, 170]):
+            first_snapshot = MODULE.target_state_from_target(args, target, "owner/repo", remembered)
+            second_snapshot = MODULE.target_state_from_target(args, target, "owner/repo", remembered)
+        self.assertEqual(view_mock.call_count, 2)
+        self.assertEqual(first_snapshot["actions"], ["stop_run_succeeded"])
+        self.assertEqual(second_snapshot["run"]["status"], "in_progress")
+        self.assertEqual(second_snapshot["run"]["attempt"], 2)
+        self.assertEqual(second_snapshot["actions"], ["idle"])
+
+    def test_run_id_success_cache_revalidates_changed_head(self):
+        args = types.SimpleNamespace(
+            no_gemini_diagnosis=True, gemini_model=MODULE.GEMINI_DEFAULT_MODEL,
+            gemini_timeout_seconds=5, appearance_timeout_seconds=0,
+            ack_action=[], poll_seconds=10,
+        )
+        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42,
+                  "head_sha": "abc123", "spec": "run-id=42,head-sha=abc123"}
+        first = {"databaseId": 42, "attempt": 1, "headSha": "abc123def",
+                 "headBranch": "main", "status": "completed", "conclusion": "success", "jobs": []}
+        changed_head = {"databaseId": 42, "attempt": 1, "headSha": "def456abc",
+                        "headBranch": "main", "status": "completed", "conclusion": "success", "jobs": []}
+        remembered = {}
+        with patch.object(MODULE, "view_run", side_effect=[first, changed_head]) as view_mock, \
+                patch.object(MODULE, "load_validation_summary", return_value=None), \
+                patch.object(MODULE.time, "time", side_effect=[100, 100, 170, 170]):
+            MODULE.target_state_from_target(args, target, "owner/repo", remembered)
+            snapshot = MODULE.target_state_from_target(args, target, "owner/repo", remembered)
+        self.assertEqual(view_mock.call_count, 2)
+        self.assertEqual(snapshot["run"]["head_sha"], "def456abc")
+        self.assertNotEqual(snapshot["run"]["head_sha"], target["head_sha"])
+        self.assertEqual(snapshot["actions"], ["stop_run_head_mismatch"])
+
+    def test_run_id_nonterminal_failure_is_refreshed_each_poll(self):
+        args = types.SimpleNamespace(
+            no_gemini_diagnosis=True, gemini_model=MODULE.GEMINI_DEFAULT_MODEL,
+            gemini_timeout_seconds=5, appearance_timeout_seconds=0,
+            ack_action=[], poll_seconds=10,
+        )
+        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42,
+                  "head_sha": "abc123", "spec": "run-id=42,head-sha=abc123"}
+        failed = {"databaseId": 42, "attempt": 1, "headSha": "abc123def",
+                  "headBranch": "main", "status": "in_progress", "conclusion": "",
+                  "jobs": [{"databaseId": 501, "name": "Tests — ubuntu",
+                            "status": "completed", "conclusion": "failure"}]}
+        remembered = {}
+        with patch.object(MODULE, "view_run", side_effect=[failed, failed]) as view_mock, \
+                patch.object(MODULE.time, "time", return_value=100):
+            first = MODULE.target_state_from_target(args, target, "owner/repo", remembered)
+            second = MODULE.target_state_from_target(args, target, "owner/repo", remembered)
+        self.assertEqual(view_mock.call_count, 2)
+        self.assertEqual(first["actions"], ["diagnose_run_failure"])
+        self.assertEqual(second["actions"], ["diagnose_run_failure"])
 
     def test_launcher_runs_without_path_when_python_override_is_set(self):
         launcher = Path(__file__).resolve().parents[1] / "scripts" / "gh_workflow_run_watch"
