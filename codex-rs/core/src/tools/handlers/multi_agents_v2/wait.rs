@@ -175,11 +175,6 @@ impl Handler {
             turn.config.multi_agent_v2.max_wait_timeout_ms,
             turn.config.multi_agent_v2.default_wait_timeout_ms,
         )?;
-        if args.native_event_wait && timeout_ms == 0 {
-            return Err(FunctionCallError::RespondToModel(
-                "native_event_wait requires a positive lease timeout".to_string(),
-            ));
-        }
         let (mut input_activity_rx, pending_input_activity) = session
             .input_queue
             .subscribe_activity(/*turn_state*/ None)
@@ -244,9 +239,12 @@ impl Handler {
         // Preserve the existing broad mailbox eligibility rule. Typed mailbox
         // filtering is a follow-on; native mode only changes lease expiry.
         let wake_on_mailbox = wait_capability.is_some_and(|capability| capability.mailbox_wake);
-        let native_event_wait =
-            args.native_event_wait
-                && wait_capability.is_some_and(|capability| capability.native_event_wait);
+        // A zero timeout is an immediate completion boundary even when the
+        // native event-wait surface is requested. Native lease rearming only
+        // applies to positive observation windows.
+        let native_event_wait = args.native_event_wait
+            && wait_capability.is_some_and(|capability| capability.native_event_wait)
+            && timeout_ms > 0;
         let completion_rule = CompletionRule::new(return_when);
         let wake_source = if let Some(wake_source) = ready_wake_source(
             session.as_ref(),
