@@ -70,18 +70,20 @@ to reap a dropped helper; explicit `close` waits for process exit.
 
 For private feasibility artifacts, `third_party/voice/assemble_package.py` copies
 an existing validated package into a fresh output and adds the helper. Supply
-`--package`, `--helper`, `--voice-target`, `--build-commit`, and `--output`.
+`--package`, `--helper`, `--voice-target`, `--build-commit`, `--output`, and
+`--runtime <prepared-runtime>`.
 Linux MUSL apps require same-architecture GNU helpers; other targets must match.
 The package version must end in `+<build-commit>`. The manifest records declared
 build provenance and file hashes, not authentication or binary architecture proof.
-Add `--runtime <prepared-runtime>` to include the platform preparer's selected
-libraries and `runtime.json` beside the helper. The assembler checks the target,
+The required runtime includes the platform preparer's selected libraries and
+`runtime.json` beside the helper. The assembler checks the target,
 pinned source manifest, plugin list, relative paths and file hashes, then checks
 the copied hashes again. It preserves `lib/` and `plugins/` on macOS, `lib/` and
 `lib/gstreamer-1.0/` on Linux, and the shared `bin/` on Windows. Unlisted files are
 not copied. The package manifest records every included runtime file and the
 unchanged runtime receipt.
-Omitting `--runtime` retains helper-only assembly.
+Helper-only assembly is no longer supported: native bindings require shared
+libraries before the helper enters `main`, including for lifecycle calls.
 
 This accepts a development runtime receipt, not an authenticated release. It
 does not repeat native loader inspection or establish trust in the build inputs.
@@ -93,7 +95,7 @@ because GStreamer registers process-global callbacks. The small private C ABI
 bootstrap does not expose native pointers to the parent or link native libraries
 into ordinary Codex. The existing `libloading` dependency supplies OS loading.
 Media/privacy controls, a full media binding layer and actual audio proof remain
-integration stages; helper-only packages continue to support lifecycle calls.
+integration stages; a prepared runtime is required for packaged lifecycle calls.
 
 The ignored `packaged_runtime` integration test uses real libraries prepared for
 the host platform. From `codex-rs`, run

@@ -297,12 +297,14 @@ class AssembleTests(unittest.TestCase):
             )
 
     def test_copies_app_unchanged_and_records_distinct_linux_targets(self):
+        runtime, receipt = self.make_runtime()
         assemble(
             self.package,
             self.helper,
             "aarch64-unknown-linux-gnu",
             self.commit,
             self.output,
+            runtime=runtime,
         )
         self.assertEqual((self.output / "bin/codex").read_bytes(), b"unchanged app")
         self.assertEqual((self.package / "bin/codex").read_bytes(), b"unchanged app")
@@ -326,11 +328,19 @@ class AssembleTests(unittest.TestCase):
                     "codex-resources/voice/bin/codex-voice-host": hashlib.sha256(
                         b"private helper"
                     ).hexdigest(),
+                    **{
+                        f"codex-resources/voice/{r['path']}": r["sha256"]
+                        for r in receipt["libraries"]
+                    },
+                    "codex-resources/voice/runtime.json": digest(
+                        runtime / "runtime.json"
+                    ),
                 },
             },
         )
 
     def test_rejects_incompatible_targets_and_unstamped_or_mixed_builds(self):
+        runtime, _ = self.make_runtime()
         for target, commit in [
             ("aarch64-unknown-linux-musl", self.commit),
             ("x86_64-unknown-linux-gnu", self.commit),
@@ -341,7 +351,14 @@ class AssembleTests(unittest.TestCase):
                 self.subTest(target=target, commit=commit),
                 self.assertRaises(ValueError),
             ):
-                assemble(self.package, self.helper, target, commit, self.output)
+                assemble(
+                    self.package,
+                    self.helper,
+                    target,
+                    commit,
+                    self.output,
+                    runtime=runtime,
+                )
             self.assertFalse(self.output.exists())
 
     def test_assembles_matching_gnu_linux_app_and_helper_targets(self):
@@ -352,8 +369,16 @@ class AssembleTests(unittest.TestCase):
                 (self.package / "codex-package.json").write_text(
                     json.dumps(self.metadata)
                 )
-                output = self.root / target
-                assemble(self.package, self.helper, target, self.commit, output)
+                runtime, receipt = self.make_runtime(target)
+                output = self.root / (target + " packaged")
+                assemble(
+                    self.package,
+                    self.helper,
+                    target,
+                    self.commit,
+                    output,
+                    runtime=runtime,
+                )
                 manifest = json.loads(
                     (output / "codex-resources/voice/manifest.json").read_text()
                 )
@@ -370,6 +395,13 @@ class AssembleTests(unittest.TestCase):
                             "codex-resources/voice/bin/codex-voice-host": hashlib.sha256(
                                 b"private helper"
                             ).hexdigest(),
+                            **{
+                                f"codex-resources/voice/{r['path']}": r["sha256"]
+                                for r in receipt["libraries"]
+                            },
+                            "codex-resources/voice/runtime.json": digest(
+                                runtime / "runtime.json"
+                            ),
                         },
                     },
                 )
@@ -382,6 +414,7 @@ class AssembleTests(unittest.TestCase):
                 )
 
     def test_never_replaces_existing_or_nested_outputs(self):
+        runtime, _ = self.make_runtime()
         for output in (self.package, self.package / "nested", self.helper):
             with self.subTest(output=output), self.assertRaises(ValueError):
                 assemble(
@@ -390,11 +423,13 @@ class AssembleTests(unittest.TestCase):
                     "aarch64-unknown-linux-gnu",
                     self.commit,
                     output,
+                    runtime=runtime,
                 )
         self.assertEqual(self.helper.read_bytes(), b"private helper")
         self.assertFalse((self.package / "nested").exists())
 
     def test_cleans_only_its_new_copy_on_failure(self):
+        runtime, _ = self.make_runtime()
         with patch("assemble_package.shutil.copy2", side_effect=OSError("copy failed")):
             with self.assertRaises(OSError):
                 assemble(
@@ -403,6 +438,7 @@ class AssembleTests(unittest.TestCase):
                     "aarch64-unknown-linux-gnu",
                     self.commit,
                     self.output,
+                    runtime=runtime,
                 )
         self.assertFalse(self.output.exists())
         self.assertEqual((self.package / "bin/codex").read_bytes(), b"unchanged app")

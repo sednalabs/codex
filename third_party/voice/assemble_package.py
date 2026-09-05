@@ -1,4 +1,4 @@
-"""Add a helper and optional prepared runtime to a fresh private Codex package."""
+"""Add a helper and its prepared runtime to a fresh private Codex package."""
 
 import argparse
 import hashlib
@@ -21,7 +21,7 @@ def assemble(
     commit: str,
     output: Path,
     *,
-    runtime: Path | None = None,
+    runtime: Path,
 ):
     package, helper = package.resolve(strict=True), helper.resolve(strict=True)
     output = output.absolute()
@@ -71,17 +71,15 @@ def assemble(
         raise ValueError("helper and app entrypoint must be regular files")
     if not suffix and not helper.stat().st_mode & 0o111:
         raise ValueError("helper is not executable")
-    inputs = {}
-    if runtime is not None:
-        runtime = runtime.resolve(strict=True)
-        if any(parent.samefile(package) for parent in (runtime, *runtime.parents)):
-            raise ValueError("runtime must be outside the input package")
-        if any(
-            parent.exists() and parent.samefile(runtime)
-            for parent in output.resolve().parents
-        ):
-            raise ValueError("output must be outside the runtime input")
-        inputs = runtime_files(runtime, voice_target)
+    runtime = runtime.resolve(strict=True)
+    if any(parent.samefile(package) for parent in (runtime, *runtime.parents)):
+        raise ValueError("runtime must be outside the input package")
+    if any(
+        parent.exists() and parent.samefile(runtime)
+        for parent in output.resolve().parents
+    ):
+        raise ValueError("output must be outside the runtime input")
+    inputs = runtime_files(runtime, voice_target)
     output.mkdir()  # Exclusive creation: never clean or overwrite a pre-existing output.
     try:
         shutil.copytree(package, output, dirs_exist_ok=True)
@@ -126,7 +124,10 @@ if __name__ == "__main__":
     parser.add_argument("--build-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--runtime", type=Path, help="prepared development runtime to include unchanged"
+        "--runtime",
+        type=Path,
+        required=True,
+        help="prepared development runtime required by the helper",
     )
     args = parser.parse_args()
     assemble(
