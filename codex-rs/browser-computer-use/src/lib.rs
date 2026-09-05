@@ -551,9 +551,10 @@ impl ConfiguredBrowserProvider {
 
     fn supports_backend(&self, backend: &str) -> bool {
         if matches!(&self.provider, BrowserProvider::Playwright(_)) {
-            return self.backends.iter().any(|configured| {
-                configured.eq_ignore_ascii_case(backend)
-            });
+            return self
+                .backends
+                .iter()
+                .any(|configured| configured.eq_ignore_ascii_case(backend));
         }
 
         self.backends.is_empty()
@@ -922,9 +923,7 @@ fn normalize_playwright_backends(backends: Vec<String>) -> Vec<String> {
                     normalized.push(default_backend);
                 }
             }
-        } else if !backend.eq_ignore_ascii_case(BACKEND_CHROME)
-            && !normalized.contains(&backend)
-        {
+        } else if !backend.eq_ignore_ascii_case(BACKEND_CHROME) && !normalized.contains(&backend) {
             normalized.push(backend);
         }
     }
