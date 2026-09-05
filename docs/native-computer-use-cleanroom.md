@@ -157,6 +157,13 @@ Backend hints:
 - `iab`: in-app-browser shell
 - `chrome`: signed-in Chrome/profile-backed browser state
 
+The built-in Playwright provider does not implement signed-in Chrome/profile
+integration and therefore never claims `backend=chrome`. Route that backend to
+an external command provider using the JSON stdin/stdout seam below; the
+provider may use a public Chrome extension, Native Messaging, or CDP host and
+must return only redacted provider metadata (never profile paths, cookies,
+credentials, or history).
+
 Minimum in-app-browser capabilities:
 
 - maintain per-thread or per-conversation browser/session identity
