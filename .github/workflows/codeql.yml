@@ -41,10 +41,10 @@ jobs:
       selected_languages: ${{ steps.plan.outputs.selected_languages }}
     steps:
       - name: Checkout PR head for path classification
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -52,7 +52,7 @@ jobs:
         id: plan
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
@@ -123,9 +123,9 @@ jobs:
 
           full_languages='["actions","c-cpp","javascript-typescript","python","rust"]'
 
-          # Scheduled scans, pushes, merge-queue attempts, and manual runs keep
-          # full repository coverage. Only PRs are path scoped.
-          if [[ '${{ github.event_name }}' != 'pull_request' ]]; then
+          # Scheduled scans, pushes, and manual runs keep full repository
+          # coverage. Pull requests and merge-queue attempts are path scoped.
+          if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then
             emit_matrix "${full_languages}"
             exit 0
           fi

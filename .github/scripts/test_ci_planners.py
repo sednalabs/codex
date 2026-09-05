@@ -5677,13 +5677,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertEqual(
             plan_checkout.get("if"),
-            "${{ github.event_name == 'pull_request' }}",
+            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
         )
         self.assertEqual(plan_checkout.get("uses"), "actions/checkout@v7")
         self.assertEqual(
             plan_checkout.get("with") or {},
             {
-                "ref": "${{ github.event.pull_request.head.sha }}",
+                "ref": "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
                 "fetch-depth": "1",
                 "persist-credentials": "false",
             },
@@ -5692,15 +5692,23 @@ class ValidationPlanScriptTests(unittest.TestCase):
             step for step in plan_steps if step.get("name") == "Select CodeQL languages"
         )
         self.assertEqual(select_step.get("id"), "plan")
+        self.assertEqual(
+            select_step.get("env") or {},
+            {
+                "BASE_SHA": "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}",
+                "HEAD_SHA": "${{ github.event.pull_request.head.sha || github.sha }}",
+            },
+        )
         select_run = select_step.get("run") or ""
         self.assertIn(
             'full_languages=\'["actions","c-cpp","javascript-typescript","python","rust"]\'',
             select_run,
         )
         self.assertIn(
-            "if [[ '${{ github.event_name }}' != 'pull_request' ]]; then",
+            "if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then",
             select_run,
         )
+        self.assertIn("github.event.merge_group.base_sha", select_run)
         self.assertIn('git fetch --no-tags --depth=1 origin "${BASE_SHA}"', select_run)
         self.assertIn("classify_ci_paths.py --base-sha", select_run)
         self.assertIn("Unable to fetch PR base; running every CodeQL language.", select_run)
@@ -7481,6 +7489,47 @@ class ValidationPlanScriptTests(unittest.TestCase):
             (payload.get("on") or {}).get("merge_group"),
             {"types": ["checks_requested"]},
         )
+
+    def test_blocking_ci_scope_routes_pull_requests_and_merge_groups(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blocking-ci.yml")
+        scope_job = (payload.get("jobs") or {}).get("scope") or {}
+        scope_steps = scope_job.get("steps") or []
+        checkout_step = next(
+            step
+            for step in scope_steps
+            if step.get("name") == "Checkout PR head for path classification"
+        )
+        self.assertEqual(
+            checkout_step.get("if"),
+            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
+        )
+        self.assertEqual(
+            checkout_step.get("with") or {},
+            {
+                "ref": "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
+                "fetch-depth": "1",
+                "persist-credentials": "false",
+            },
+        )
+        classify_step = next(
+            step for step in scope_steps if step.get("name") == "Classify blocking CI scope"
+        )
+        self.assertEqual(
+            classify_step.get("env") or {},
+            {
+                "BASE_SHA": "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}",
+                "HEAD_SHA": "${{ github.event.pull_request.head.sha || github.sha }}",
+            },
+        )
+        classify_run = classify_step.get("run") or ""
+        self.assertIn(
+            "if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then",
+            classify_run,
+        )
+        self.assertIn("github.event.merge_group.base_sha", classify_run)
+        self.assertIn("classify_ci_paths.py --base-sha", classify_run)
+        self.assertIn("Unable to fetch PR base; running full blocking CI.", classify_run)
+        self.assertIn("Unable to classify PR paths; running full blocking CI.", classify_run)
 
     def test_merge_group_concurrency_is_sha_scoped_and_not_cancelled(self) -> None:
         merge_group_workflows = []

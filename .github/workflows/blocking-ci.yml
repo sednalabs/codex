@@ -27,10 +27,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Classify PR paths once for reusable workflows that do not have their own
-  # planner. Pushes and merge-queue attempts intentionally run the full scope.
-  # Any classifier failure also fails open to full validation rather than
-  # silently dropping a lane.
+  # Classify pull-request and merge-queue paths once for reusable workflows
+  # that do not have their own planner. Pushes intentionally run the full
+  # scope. Any classifier failure also fails open to full validation rather
+  # than silently dropping a lane.
   scope:
     name: Blocking CI scope
     runs-on: ubuntu-24.04
@@ -44,10 +44,10 @@ jobs:
       sdk_typescript: ${{ steps.scope.outputs.sdk_typescript }}
     steps:
       - name: Checkout PR head for path classification
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -55,7 +55,7 @@ jobs:
         id: scope
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
@@ -72,7 +72,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           }
 
-          if [[ '${{ github.event_name }}' != 'pull_request' ]]; then
+          if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then
             set_full_scope
             exit 0
           fi
