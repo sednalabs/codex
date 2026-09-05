@@ -48,6 +48,11 @@ WORKFLOW_SURFACE_PATTERNS = [
     "justfile",
     "scripts/**",
 ]
+DOCS_ONLY_PATTERNS = ["README.md", "docs/**"]
+MERGE_GROUP_DOCS_LANES = [
+    "codex.downstream-docs-check",
+    "codex.downstream-divergence-audit",
+]
 
 
 def catalog_path() -> Path:
@@ -99,14 +104,18 @@ def diff_line_count(repo_root: Path, base: str, head: str) -> int:
     return total
 
 
-def parse_files_json(value: str) -> list[str] | None:
+def parse_files_json(value: str, *, strict: bool = True) -> list[str] | None:
     if not value:
         return None
     try:
         payload = json.loads(value)
     except json.JSONDecodeError as exc:
+        if not strict:
+            return None
         raise SystemExit(f"invalid JSON input for changed-files: {exc}") from exc
     if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+        if not strict:
+            return None
         raise SystemExit("changed-files JSON inputs must be arrays of strings")
     return payload
 
@@ -264,6 +273,20 @@ def as_output(value: bool) -> str:
     return "true" if value else "false"
 
 
+def merge_group_docs_only(
+    files: list[str] | None, *, complete: bool, statuses: list[str] | None = None
+) -> bool:
+    """Accept only a complete, non-empty queue-base to synthetic-head file list."""
+    return bool(
+        complete
+        and files
+        and statuses is not None
+        and len(statuses) == len(files)
+        and all(status in {"A", "M"} for status in statuses)
+        and all(any(path_matches(path, pattern) for pattern in DOCS_ONLY_PATTERNS) for path in files)
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", required=True)
@@ -277,9 +300,50 @@ def main() -> None:
     parser.add_argument("--primary-line-count", default="")
     parser.add_argument("--latest-delta-files-json", default="")
     parser.add_argument("--latest-delta-line-count", default="")
+    parser.add_argument("--merge-group-files-json", default="")
+    parser.add_argument("--merge-group-status-json", default="")
+    parser.add_argument("--merge-group-line-count", default="")
+    parser.add_argument("--merge-group-comparison-complete", default="false")
     args = parser.parse_args()
 
-    if args.event_name in {"workflow_dispatch", "merge_group", "schedule"}:
+    if args.event_name in {"workflow_dispatch", "schedule"}:
+        print(json.dumps(forced_full_outputs(), separators=(",", ":")))
+        return
+
+    if args.event_name == "merge_group":
+        merge_files = parse_files_json(args.merge_group_files_json, strict=False)
+        merge_statuses = parse_files_json(args.merge_group_status_json, strict=False)
+        try:
+            merge_lines = explicit_line_count(args.merge_group_line_count)
+        except SystemExit:
+            merge_lines = None
+        if merge_group_docs_only(
+            merge_files,
+            complete=args.merge_group_comparison_complete.strip().lower() == "true"
+            and merge_lines is not None
+            and merge_lines < 10_000,
+            statuses=merge_statuses,
+        ):
+            outputs = forced_full_outputs()
+            outputs.update(
+                {
+                    "validation_mode": "light_merge_group",
+                    "codex": "false",
+                    "argument_comment_lint": "false",
+                    "argument_comment_lint_package": "false",
+                    "workflows": "false",
+                    "run_general": "false",
+                    "run_cargo_shear": "false",
+                    "run_argument_comment_lint_package": "false",
+                    "run_argument_comment_lint_prebuilt": "false",
+                    "run_incremental_validation": "true",
+                    "incremental_profile": "targeted",
+                    "incremental_lane_set": "all",
+                    "incremental_lanes": ",".join(MERGE_GROUP_DOCS_LANES),
+                }
+            )
+            print(json.dumps(outputs, separators=(",", ":")))
+            return
         print(json.dumps(forced_full_outputs(), separators=(",", ":")))
         return
 
