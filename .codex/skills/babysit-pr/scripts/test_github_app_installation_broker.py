@@ -94,17 +94,17 @@ def make_broker(fake, clock=None):
     key = Path(directory.name) / "github-app-private-key.pem"
     key.write_bytes(b"test fixture key material")
     key.chmod(0o600)
-    broker = GitHubAppBroker(
-        app_id=7,
-        app_slug="sedna-codex-delivery-coordinator",
-        installation_id=42,
-        account="example-org",
-        repository="example-org/codex",
-        permissions={"metadata": "read", "contents": "read"},
-        credentials_directory=directory.name,
-        requester=fake,
-        clock=clock or FakeClock(),
-    )
+    with mock.patch("github_app_installation_broker._production_credentials_directory", return_value=Path(directory.name)):
+        broker = GitHubAppBroker(
+            app_id=7,
+            app_slug="sedna-codex-delivery-coordinator",
+            installation_id=42,
+            account="example-org",
+            repository="example-org/codex",
+            permissions={"metadata": "read", "contents": "read"},
+            requester=fake,
+            clock=clock or FakeClock(),
+        )
     broker._jwt = mock.Mock(return_value="header.claim.signature")
     return directory, broker
 
@@ -318,9 +318,11 @@ class BrokerTests(unittest.TestCase):
         directory, _ = make_broker(fake)
         self.addCleanup(directory.cleanup)
         with self.assertRaises(BrokerError):
-            GitHubAppBroker(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"}, credentials_directory=directory.name, api_base_url="https://evil.example", requester=None)
+            with mock.patch("github_app_installation_broker._production_credentials_directory", return_value=Path(directory.name)):
+                GitHubAppBroker(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"}, api_base_url="https://evil.example", requester=None)
         with self.assertRaises(BrokerError):
-            GitHubAppBroker(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"}, credentials_directory=directory.name, key_basename="other.pem", requester=fake)
+            with mock.patch("github_app_installation_broker._production_credentials_directory", return_value=Path(directory.name)):
+                GitHubAppBroker(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"}, key_basename="other.pem", requester=fake)
 
     def test_production_credentials_root_boundary_precedes_filesystem_validation(self):
         kwargs = dict(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"})

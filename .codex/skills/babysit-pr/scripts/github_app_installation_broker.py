@@ -392,7 +392,6 @@ class GitHubAppBroker:
         account: str,
         repository: str,
         permissions: Mapping[str, Any] | Sequence[str],
-        credentials_directory: str | os.PathLike[str] | None = None,
         key_basename: str = KEY_BASENAME,
         api_base_url: str = DEFAULT_API_BASE,
         requester: Callable[..., Any] | None = None,
@@ -413,14 +412,7 @@ class GitHubAppBroker:
         if owner.lower() != self.account.lower():
             raise BrokerError("selected repository is outside the installation account")
         self.permissions = _normalise_permissions(permissions)
-        if requester is None:
-            if credentials_directory is not None:
-                raise BrokerError("production credentials must come from CREDENTIALS_DIRECTORY")
-            self.credentials_directory = _production_credentials_directory(os.environ.get("CREDENTIALS_DIRECTORY"))
-        else:
-            self.credentials_directory = Path(credentials_directory or os.environ.get("CREDENTIALS_DIRECTORY", ""))
-        if not str(self.credentials_directory) or str(self.credentials_directory) == ".":
-            raise BrokerError("CREDENTIALS_DIRECTORY is required")
+        self.credentials_directory = _production_credentials_directory(os.environ.get("CREDENTIALS_DIRECTORY"))
         _validate_credentials_directory(self.credentials_directory)
         if key_basename != KEY_BASENAME:
             raise BrokerError("private-key basename must use the fixed credential name")
