@@ -232,7 +232,23 @@ def fingerprint_command(repository: str, permissions: Mapping[str, Any] | Sequen
         seen.add(key)
         _validate_source(path)
         try:
-            data = path.read_bytes()
+            source_fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                opened = os.fstat(source_fd)
+                current = path.stat()
+                if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                    raise BrokerError("command source changed while it was opened")
+                chunks = []
+                while True:
+                    chunk = os.read(source_fd, 64 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                data = b"".join(chunks)
+            finally:
+                os.close(source_fd)
+        except BrokerError:
+            raise
         except OSError as exc:
             raise BrokerError("command source could not be read") from exc
         source_entries.append(
