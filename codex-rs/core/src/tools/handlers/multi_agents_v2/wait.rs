@@ -14,6 +14,7 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_tools::ToolSpec;
+use futures::future;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use serde_json::json;
@@ -263,6 +264,7 @@ impl Handler {
                 &mut final_statuses,
                 wake_on_mailbox,
                 native_event_wait,
+                lease_timer_enabled(native_event_wait, timeout_ms),
                 Instant::now() + Duration::from_millis(timeout_ms as u64),
             )
             .await
@@ -306,6 +308,10 @@ impl Handler {
 
         Ok(boxed_tool_output(result))
     }
+}
+
+fn lease_timer_enabled(native_event_wait: bool, timeout_ms: i64) -> bool {
+    !native_event_wait || timeout_ms > 0
 }
 
 impl CoreToolRuntime for Handler {
@@ -574,11 +580,16 @@ async fn wait_for_wake_source(
     final_statuses: &mut HashMap<ThreadId, AgentStatus>,
     wake_on_mailbox: bool,
     native_event_wait: bool,
+    lease_timer_enabled: bool,
     mut deadline: Instant,
 ) -> WakeSource {
-    let lease_duration = deadline
-        .saturating_duration_since(Instant::now())
-        .max(Duration::from_millis(1));
+    let lease_duration = if lease_timer_enabled {
+        deadline
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1))
+    } else {
+        Duration::ZERO
+    };
     let closure_rxs = status_rxs
         .iter()
         .map(|(id, rx)| (*id, rx.clone()))
@@ -594,8 +605,12 @@ async fn wait_for_wake_source(
             return WakeSource::TargetCompletion;
         }
 
-        let sleep = tokio::time::sleep_until(deadline);
-        tokio::pin!(sleep);
+        let timer = if lease_timer_enabled {
+            future::Either::Left(tokio::time::sleep_until(deadline))
+        } else {
+            future::Either::Right(future::pending())
+        };
+        tokio::pin!(timer);
 
         tokio::select! {
             maybe_status = futures.next(), if !futures.is_empty() => {
@@ -696,7 +711,7 @@ async fn wait_for_wake_source(
                     _ => {}
                 }
             }
-            _ = &mut sleep => {
+            _ = &mut timer => {
                 if native_event_wait {
                     // The timeout is an internal lease/observation expiry. Keep
                     // this invocation owned by the runtime and re-arm the
@@ -812,6 +827,13 @@ mod tests {
             .expect("configured default should be accepted"),
             50
         );
+    }
+
+    #[test]
+    fn native_zero_timeout_disables_internal_lease_timer() {
+        assert!(!lease_timer_enabled(true, 0));
+        assert!(lease_timer_enabled(true, 1));
+        assert!(lease_timer_enabled(false, 0));
     }
 
     #[test]
