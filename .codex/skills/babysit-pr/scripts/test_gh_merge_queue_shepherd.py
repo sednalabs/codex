@@ -11,14 +11,20 @@ queue = importlib.util.module_from_spec(MODULE_SPEC)
 assert MODULE_SPEC.loader is not None
 MODULE_SPEC.loader.exec_module(queue)
 
+PR_HEAD = "1" * 40
+BASE_SHA = "2" * 40
+SYNTHETIC_G = "3" * 40
+OTHER_PR_HEAD = "4" * 40
+OTHER_SYNTHETIC_G = "5" * 40
+
 
 def sample_pr(**overrides):
     result = {
         "repository": "sednalabs/codex",
         "number": 750,
         "user": {"login": "branch-owner"},
-        "headRefOid": "head-750",
-        "baseRefOid": "base-main",
+        "headRefOid": PR_HEAD,
+        "baseRefOid": BASE_SHA,
         "baseRefName": "main",
     }
     result.update(overrides)
@@ -30,17 +36,20 @@ def sample_queue(**overrides):
         "id": "queue-entry-750",
         "state": "AWAITING_CHECKS",
         "position": 1,
-        "headSha": "merge-group-750",
-        "baseSha": "base-main",
+        "merge_group_sha": SYNTHETIC_G,
+        "baseSha": BASE_SHA,
+        "merge_group_source": "MergeQueueEntry.headCommit.oid",
         "baseRefName": "main",
         "pullRequests": [
             {
                 "number": 750,
                 "author": {"login": "branch-owner"},
-                "headSha": "head-750",
+                "headSha": PR_HEAD,
+                "baseRefOid": BASE_SHA,
+                "baseRefName": "main",
                 "state": "AWAITING_CHECKS",
                 "queueEntryId": "queue-entry-750",
-                "mergeGroupSha": "merge-group-750",
+                "mergeGroupSha": SYNTHETIC_G,
             }
         ],
     }
@@ -56,12 +65,13 @@ def sample_ruleset():
             "updated_at": "2026-09-05T00:00:00Z",
             "target": "branch",
             "enforcement": "active",
+            "conditions": {"ref_name": {"include": ["refs/heads/main"]}},
             "rules": [{"type": "required_status_checks"}],
         }
     ]
 
 
-def sample_runs(head_sha="merge-group-750"):
+def sample_runs(head_sha=SYNTHETIC_G):
     return [
         {
             "id": 1001,
@@ -98,12 +108,12 @@ def test_merge_group_head_sha_wins_over_queue_entry_head_sha():
     normalized = queue.normalize_queue_entry(
         {
             "id": "entry-750",
-            "headSha": "pr-head-750",
-            "mergeGroup": {"headSha": "synthetic-G-750", "baseSha": "base-main"},
+            "headSha": PR_HEAD,
+            "mergeGroup": {"headSha": SYNTHETIC_G, "baseSha": BASE_SHA},
         }
     )
-    assert normalized["synthetic_sha"] == "synthetic-G-750"
-    assert normalized["base_sha"] == "base-main"
+    assert normalized["synthetic_sha"] == SYNTHETIC_G
+    assert normalized["base_sha"] == BASE_SHA
 
 
 def test_owner_unmergeable_is_scoped_and_independent_entry_is_continuable():
@@ -112,7 +122,10 @@ def test_owner_unmergeable_is_scoped_and_independent_entry_is_continuable():
         "author": {"login": "other-owner"},
         "state": "UNMERGEABLE",
         "queueEntryId": "queue-entry-754",
-        "mergeGroupSha": "merge-group-754",
+        "headSha": OTHER_PR_HEAD,
+        "baseRefOid": BASE_SHA,
+        "baseRefName": "main",
+        "mergeGroupSha": OTHER_SYNTHETIC_G,
     }
     current = snapshot(
         candidates=sample_queue()["pullRequests"]
@@ -132,7 +145,10 @@ def test_independent_unmergeable_does_not_interrupt_owner():
         "author": {"login": "other-owner"},
         "state": "UNMERGEABLE",
         "queueEntryId": "queue-entry-754",
-        "mergeGroupSha": "merge-group-754",
+        "headSha": OTHER_PR_HEAD,
+        "baseRefOid": BASE_SHA,
+        "baseRefName": "main",
+        "mergeGroupSha": OTHER_SYNTHETIC_G,
     }
     current = snapshot(
         candidates=[{**sample_queue()["pullRequests"][0], "state": "AWAITING_CHECKS"}, independent]
@@ -141,9 +157,22 @@ def test_independent_unmergeable_does_not_interrupt_owner():
     assert current["disposition"] == "independent_unmergeable_only"
 
 
+def test_owner_candidate_author_mismatch_fails_closed():
+    current = snapshot(
+        candidates=[
+            {
+                **sample_queue()["pullRequests"][0],
+                "author": {"login": "wrong-owner"},
+            }
+        ]
+    )
+    assert current["actions"] == [queue.IDENTITY_MISMATCH_ACTION]
+    assert current["identity"]["valid"] is False
+
+
 def test_head_replacement_invalidates_prior_identity_and_runs():
     before = snapshot()
-    after = snapshot(pr=sample_pr(headRefOid="replacement-head"), previous_binding=before["binding"])
+    after = snapshot(pr=sample_pr(headRefOid="6" * 40), previous_binding=before["binding"])
     assert after["actions"] == [queue.HEAD_REPLACED_ACTION]
     assert after["identity"]["comparison"]["head_replaced"] is True
     assert after["identity"]["comparison"]["invalidated_workflow_run_ids"] == ["1001"]
@@ -160,14 +189,14 @@ def test_ruleset_generation_mismatch_fails_closed():
 
 def test_queue_entry_replacement_fails_closed_even_when_pr_head_is_same():
     before = snapshot()
-    replacement = sample_queue(id="queue-entry-new", headSha="merge-group-new")
+        replacement = sample_queue(id="queue-entry-new", merge_group_sha=OTHER_SYNTHETIC_G)
     after = snapshot(queue_entry=replacement, previous_binding=before["binding"])
     assert after["actions"] == [queue.IDENTITY_MISMATCH_ACTION]
     assert after["identity"]["comparison"]["queue_identity_changed"] is True
 
 
 def test_workflow_run_for_wrong_merge_group_sha_is_not_evidence():
-    current = snapshot(workflow_runs=sample_runs(head_sha="some-other-sha"))
+    current = snapshot(workflow_runs=sample_runs(head_sha=OTHER_SYNTHETIC_G))
     assert current["actions"] == [queue.IDENTITY_MISMATCH_ACTION]
     assert current["disposition"] == "workflow_identity_mismatch"
     assert current["identity"]["workflow_mismatches"]
@@ -191,6 +220,20 @@ def test_missing_ruleset_readback_fails_closed():
     assert current["actions"] == [queue.IDENTITY_MISMATCH_ACTION]
     assert current["identity"]["valid"] is False
     assert "active_ruleset" in current["identity"]["missing"]
+
+
+def test_unrelated_or_inactive_ruleset_does_not_bind_main_queue():
+    current = snapshot(
+        rulesets=[
+            {
+                **sample_ruleset()[0],
+                "enforcement": "disabled",
+                "conditions": {"ref_name": {"include": ["refs/heads/other"]}},
+            }
+        ]
+    )
+    assert current["actions"] == [queue.IDENTITY_MISMATCH_ACTION]
+    assert current["ruleset"]["active_ruleset_count"] == 0
 
 
 def test_empty_queue_can_be_explicitly_reported_without_claiming_valid_identity():
@@ -225,7 +268,7 @@ def test_snapshot_provider_reads_each_surface_once_in_order():
     provider = FakeProvider()
     current = queue.snapshot_from_provider(provider)
     assert current["identity"]["valid"] is True
-    assert provider.calls == ["pr", "queue", ("runs", "merge-group-750"), "rulesets"]
+    assert provider.calls == ["pr", "queue", ("runs", SYNTHETIC_G), "rulesets"]
 
 
 def test_rest_pr_shape_is_enriched_with_exact_provider_repository():
@@ -235,8 +278,8 @@ def test_rest_pr_shape_is_enriched_with_exact_provider_repository():
         runner=lambda _command: {
             "number": 750,
             "user": {"login": "branch-owner"},
-            "head": {"sha": "head-750"},
-            "base": {"ref": "main", "sha": "base-main"},
+            "head": {"sha": PR_HEAD},
+            "base": {"ref": "main", "sha": BASE_SHA},
         },
     )
     identity = queue.owner_identity_from_pr(provider.read_pr())
@@ -244,8 +287,8 @@ def test_rest_pr_shape_is_enriched_with_exact_provider_repository():
         "repository": "sednalabs/codex",
         "pr_number": 750,
         "owner": "branch-owner",
-        "head_sha": "head-750",
-        "base_sha": "base-main",
+        "head_sha": PR_HEAD,
+        "base_sha": BASE_SHA,
         "base_ref": "main",
     }
 
@@ -259,8 +302,8 @@ def test_graphql_queue_adapter_uses_supported_entry_schema_and_keeps_independent
             return {
                 "number": 750,
                 "user": {"login": "branch-owner"},
-                "head": {"sha": "head-750"},
-                "base": {"ref": "main", "sha": "base-main"},
+                "head": {"sha": PR_HEAD},
+                "base": {"ref": "main", "sha": BASE_SHA},
             }
         return {
             "data": {
@@ -272,13 +315,13 @@ def test_graphql_queue_adapter_uses_supported_entry_schema_and_keeps_independent
                                     "id": "queue-entry-750",
                                     "position": 1,
                                     "state": "AWAITING_CHECKS",
-                                    "baseCommit": {"oid": "base-main"},
-                                    "headCommit": {"oid": "merge-group-750"},
+                                    "baseCommit": {"oid": BASE_SHA},
+                                    "headCommit": {"oid": SYNTHETIC_G},
                                     "pullRequest": {
                                         "number": 750,
                                         "author": {"login": "branch-owner"},
-                                        "headRefOid": "head-750",
-                                        "baseRefOid": "base-main",
+                                        "headRefOid": PR_HEAD,
+                                        "baseRefOid": BASE_SHA,
                                         "baseRefName": "main",
                                     },
                                 },
@@ -286,13 +329,13 @@ def test_graphql_queue_adapter_uses_supported_entry_schema_and_keeps_independent
                                     "id": "queue-entry-754",
                                     "position": 2,
                                     "state": "UNMERGEABLE",
-                                    "baseCommit": {"oid": "base-main"},
-                                    "headCommit": {"oid": "merge-group-754"},
+                                    "baseCommit": {"oid": BASE_SHA},
+                                    "headCommit": {"oid": OTHER_SYNTHETIC_G},
                                     "pullRequest": {
                                         "number": 754,
                                         "author": {"login": "other-owner"},
-                                        "headRefOid": "head-754",
-                                        "baseRefOid": "base-main",
+                                        "headRefOid": OTHER_PR_HEAD,
+                                        "baseRefOid": BASE_SHA,
                                         "baseRefName": "main",
                                     },
                                 },
@@ -305,11 +348,11 @@ def test_graphql_queue_adapter_uses_supported_entry_schema_and_keeps_independent
 
     provider = queue.ReadOnlyGitHubProvider("sednalabs/codex", 750, runner=runner)
     entry = provider.read_queue_entry()
-    assert entry["headSha"] == "merge-group-750"
+    assert entry["merge_group_sha"] == SYNTHETIC_G
     assert [row["number"] for row in entry["pullRequests"]] == [750, 754]
-    query = next(command[command.index("query=") + 0][6:] for command in calls if any("graphql" == value for value in command))
-    assert "baseCommit{oid}" in query
-    assert "headCommit{oid}" in query
+    query = next(value[6:] for command in calls for value in command if value.startswith("query="))
+    assert "baseCommit { oid }" in query
+    assert "headCommit { oid }" in query
     assert "mergeGroup{" not in query
 
 
@@ -318,11 +361,46 @@ def test_gh_adapter_rejects_non_get_api_commands():
         queue.run_gh_json(["api", "repos/example/repo/issues", "--method", "POST"])
 
 
+def test_graphql_errors_fail_closed_before_partial_queue_projection():
+    provider = queue.ReadOnlyGitHubProvider(
+        "sednalabs/codex",
+        750,
+        runner=lambda _command: {"errors": [{"message": "partial data"}], "data": {}},
+    )
+    with pytest.raises(queue.QueueObserverError, match="GraphQL response contained errors"):
+        provider.read_queue_entry()
+
+
+def test_pr_provider_rejects_mismatched_endpoint_identity():
+    provider = queue.ReadOnlyGitHubProvider(
+        "sednalabs/codex",
+        750,
+        runner=lambda _command: {
+            "number": 751,
+            "repository": {"full_name": "other/repo"},
+        },
+    )
+    with pytest.raises(queue.QueueObserverError, match="different PR number"):
+        provider.read_pr()
+
+
 def test_delegate_uses_one_blocking_helper_invocation_and_decodes_receipt():
     calls = []
 
     class Completed:
-        stdout = json.dumps({"exit_reason": "action_required"})
+        stdout = json.dumps(
+            {
+                "exit_reason": "action_required",
+                "snapshot": {
+                    "pr": {
+                        "repo": "sednalabs/codex",
+                        "number": 750,
+                        "head_sha": PR_HEAD,
+                        "base_sha": BASE_SHA,
+                    }
+                },
+            }
+        )
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
@@ -332,7 +410,26 @@ def test_delegate_uses_one_blocking_helper_invocation_and_decodes_receipt():
         "https://github.com/sednalabs/codex/pull/750",
         runner=fake_run,
     )
-    assert receipt == {"exit_reason": "action_required"}
+    assert receipt["exit_reason"] == "action_required"
     assert len(calls) == 1
     assert calls[0][0][-1] == "--watch-until-action"
     assert calls[0][1]["check"] is True
+
+
+def test_delegated_receipt_mismatch_fails_closed():
+    before = snapshot()
+    with pytest.raises(queue.QueueObserverError, match="identity mismatch"):
+        queue.validate_delegated_receipt(
+            {
+                "exit_reason": "action_required",
+                "snapshot": {
+                    "pr": {
+                        "repo": "sednalabs/codex",
+                        "number": 750,
+                        "head_sha": "6" * 40,
+                        "base_sha": BASE_SHA,
+                    }
+                },
+            },
+            before,
+        )

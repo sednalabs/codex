@@ -11,8 +11,10 @@ be tested without credentials or a network connection.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +39,7 @@ ACTIVE_QUEUE_STATES = {
 }
 UNMERGEABLE_STATES = {"UNMERGEABLE", "UNMERGEABLE_PR", "CONFLICTING"}
 FAILED_QUEUE_STATES = {"FAILED", "REMOVED", "CANCELLED", "ERROR"}
+FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 MERGE_QUEUE_QUERY = """
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
@@ -122,6 +125,42 @@ def _positive_id(value: Any) -> str:
     return _text(value)
 
 
+def _is_full_sha(value: Any) -> bool:
+    return bool(FULL_SHA.fullmatch(_text(value)))
+
+
+def _ruleset_applies_to_base(item: Mapping[str, Any], base_ref: str) -> bool:
+    """Accept only an active branch ruleset whose ref condition covers base."""
+
+    if not _positive_id(_first(item, "id", "databaseId", "database_id")):
+        return False
+    if not _text(_first(item, "updated_at", "updatedAt", "version")):
+        return False
+    if _upper(_first(item, "enforcement", "enforcement_status")) != "ACTIVE":
+        return False
+    if _text(item.get("target")).casefold() != "branch":
+        return False
+    conditions = item.get("conditions")
+    if not isinstance(conditions, Mapping):
+        return False
+    ref_name = conditions.get("ref_name")
+    if not isinstance(ref_name, Mapping):
+        return False
+    includes = ref_name.get("include")
+    if not isinstance(includes, list) or not includes:
+        return False
+    target = f"refs/heads/{base_ref}"
+    return any(
+        isinstance(pattern, str)
+        and (
+            pattern in ("~ALL", "~DEFAULT_BRANCH")
+            or fnmatch.fnmatchcase(target, pattern)
+            or fnmatch.fnmatchcase(base_ref, pattern)
+        )
+        for pattern in includes
+    )
+
+
 def _nodes(value: Any) -> list[Any]:
     """Unwrap a GraphQL connection while accepting REST list fixtures."""
 
@@ -196,6 +235,8 @@ def ruleset_generation(rulesets: Iterable[Mapping[str, Any]] | None) -> str:
 def normalize_ruleset_readback(
     rulesets: Iterable[Mapping[str, Any]] | None,
     observed_generation: Any = None,
+    *,
+    base_ref: str = "",
 ) -> dict[str, Any]:
     """Return the complete, auditable ruleset generation readback."""
 
@@ -210,12 +251,23 @@ def normalize_ruleset_readback(
     for item in rulesets or []:
         if isinstance(item, Mapping):
             normalized.append(dict(item))
+    applicable = [
+        item for item in normalized
+        if base_ref and _ruleset_applies_to_base(item, base_ref)
+    ]
+    applicable_generation = ruleset_generation(applicable)
     supplied = _text(observed_generation) or direct_generation
     return {
-        "generation": generation,
+        "generation": applicable_generation,
+        "readback_generation": generation,
         "observed_generation": supplied,
-        "matches_observed": not supplied or supplied == generation,
-        "active_ruleset_count": len(normalized),
+        "matches_observed": not supplied or supplied in (generation, applicable_generation),
+        "active_ruleset_count": len(applicable),
+        "applicable_ruleset_ids": [
+            _positive_id(_first(item, "id", "databaseId", "database_id"))
+            for item in applicable
+        ],
+        "applicable_rulesets": applicable,
         "rulesets": normalized,
     }
 
@@ -229,12 +281,12 @@ def normalize_queue_entry(raw: Mapping[str, Any] | None) -> dict[str, Any] | Non
     if not isinstance(merge_group, Mapping):
         merge_group = {}
     queue_id = _positive_id(_first(raw, "id", "databaseId", "queue_entry_id", "queueEntryId"))
-    # MergeGroup.headSha is the synthetic G SHA.  MergeQueueEntry.headSha is
-    # commonly the PR head, so it is only a final compatibility fallback.
+    # Only an explicit merge-group field is trusted as G. A raw queue-entry
+    # head is deliberately not accepted because GitHub uses that name for both
+    # PR and synthetic candidates in different provider surfaces.
     synthetic_sha = _text(
         _first(raw, "merge_group_sha", "mergeGroupSha", "synthetic_sha")
         or _first(merge_group, "head_sha", "headSha", "oid", "sha")
-        or _first(raw, "head_sha", "headSha")
     )
     base_sha = _text(
         _first(raw, "merge_group_base_sha", "mergeGroupBaseSha")
@@ -248,12 +300,18 @@ def normalize_queue_entry(raw: Mapping[str, Any] | None) -> dict[str, Any] | Non
     )
     return {
         "queue_entry_id": queue_id,
+        "queue_entry_ref": _text(_first(raw, "queue_entry_ref", "queueEntryRef"))
+        or queue_id,
         "state": _upper(_first(raw, "state", "status")),
         "position": _first(raw, "position", "queue_position"),
         "synthetic_sha": synthetic_sha,
         "base_sha": base_sha,
         "base_ref": _text(_first(raw, "base_ref", "baseRefName"))
         or _text(_first(merge_group, "base_ref", "baseRefName")),
+        "synthetic_source": _text(
+            _first(raw, "merge_group_source", "synthetic_source")
+            or _first(merge_group, "source")
+        ),
         "merge_group": dict(merge_group),
         "pull_requests": _nodes(pull_requests),
     }
@@ -275,6 +333,7 @@ def normalize_candidate(raw: Mapping[str, Any]) -> dict[str, Any]:
         "owner": _login(_first(raw, "owner", "author", "user")),
         "head_sha": _text(_first(raw, "head_sha", "headSha", "headRefOid")),
         "base_sha": _text(_first(raw, "base_sha", "baseSha", "baseRefOid")),
+        "base_ref": _text(_first(raw, "base_ref", "baseRefName")),
         "queue_entry_id": _positive_id(
             _first(raw, "queue_entry_id", "queueEntryId", "id", "databaseId")
             or _first(queue, "id", "databaseId")
@@ -365,23 +424,64 @@ def build_binding(
     binding.update(
         {
             "queue_entry_id": _text((queue or {}).get("queue_entry_id")),
+            "queue_entry_ref": _text((queue or {}).get("queue_entry_ref")),
             "merge_group_sha": _text((queue or {}).get("synthetic_sha")),
+            "merge_group_source": _text((queue or {}).get("synthetic_source")),
             "queue_base_sha": _text((queue or {}).get("base_sha")),
+            "queue_base_ref": _text((queue or {}).get("base_ref")),
             "workflow_run_ids": [run["run_id"] for run in runs],
             "workflow_runs": runs,
             "ruleset_generation": _text(ruleset_readback.get("generation")),
+            "ruleset_ids": list(ruleset_readback.get("applicable_ruleset_ids") or []),
         }
     )
     return binding
 
 
 def binding_missing(binding: Mapping[str, Any], *, require_queue: bool = True) -> list[str]:
-    required = ["repository", "pr_number", "owner", "head_sha", "base_sha"]
+    required = [
+        "repository",
+        "pr_number",
+        "owner",
+        "head_sha",
+        "base_sha",
+        "base_ref",
+    ]
     if require_queue:
-        required.extend(["queue_entry_id", "merge_group_sha", "queue_base_sha"])
+        required.extend(
+            [
+                "queue_entry_id",
+                "queue_entry_ref",
+                "merge_group_sha",
+                "merge_group_source",
+                "queue_base_sha",
+                "queue_base_ref",
+            ]
+        )
     missing = [name for name in required if binding.get(name) in (None, "", [])]
     if not binding.get("ruleset_generation"):
         missing.append("ruleset_generation")
+    ruleset_ids = list(binding.get("ruleset_ids") or [])
+    if (
+        not ruleset_ids
+        or len(ruleset_ids) != len(set(ruleset_ids))
+        or any(not _positive_id(value) for value in ruleset_ids)
+    ):
+        missing.append("ruleset_ids")
+    for field in ("head_sha", "base_sha"):
+        if binding.get(field) and not _is_full_sha(binding[field]):
+            missing.append(f"{field}_full")
+    if require_queue:
+        for field in ("merge_group_sha", "queue_base_sha"):
+            if binding.get(field) and not _is_full_sha(binding[field]):
+                missing.append(f"{field}_full")
+        if binding.get("merge_group_sha") == binding.get("head_sha"):
+            missing.append("merge_group_distinct_from_pr_head")
+        if binding.get("merge_group_source") not in {
+            "MergeQueueEntry.headCommit.oid",
+            "MergeGroup.headSha",
+        }:
+            missing.append("merge_group_source_untrusted")
     return missing
 
 
@@ -401,9 +501,13 @@ def compare_bindings(
         "base_sha",
         "base_ref",
         "queue_entry_id",
+        "queue_entry_ref",
         "merge_group_sha",
+        "merge_group_source",
         "queue_base_sha",
+        "queue_base_ref",
         "ruleset_generation",
+        "ruleset_ids",
     )
     for field in fields:
         old = previous.get(field)
@@ -413,20 +517,32 @@ def compare_bindings(
     head_replaced = "head_sha" in changed
     ruleset_changed = "ruleset_generation" in changed
     queue_identity_changed = any(
-        name in changed for name in ("queue_entry_id", "merge_group_sha", "queue_base_sha")
+        name in changed
+        for name in (
+            "queue_entry_id",
+            "queue_entry_ref",
+            "merge_group_sha",
+            "queue_base_sha",
+        )
     )
     queue_base_mismatch = bool(
         current.get("base_sha")
         and current.get("queue_base_sha")
         and current.get("base_sha") != current.get("queue_base_sha")
     )
+    queue_base_ref_mismatch = bool(
+        current.get("base_ref")
+        and current.get("queue_base_ref")
+        and current.get("base_ref") != current.get("queue_base_ref")
+    )
     return {
-        "valid": not changed and not queue_base_mismatch,
+        "valid": not changed and not queue_base_mismatch and not queue_base_ref_mismatch,
         "changed": changed,
         "head_replaced": head_replaced,
         "ruleset_changed": ruleset_changed,
         "queue_identity_changed": queue_identity_changed,
         "queue_base_mismatch": queue_base_mismatch,
+        "queue_base_ref_mismatch": queue_base_ref_mismatch,
         "invalidated_workflow_run_ids": list(previous.get("workflow_run_ids") or [])
         if head_replaced or queue_identity_changed or ruleset_changed
         else [],
@@ -479,7 +595,12 @@ def reconcile_snapshot(
 ) -> dict[str, Any]:
     """Produce one deterministic queue snapshot; never mutates remote state."""
 
-    ruleset_readback = normalize_ruleset_readback(rulesets, observed_ruleset_generation)
+    pr_identity = owner_identity_from_pr(pr)
+    ruleset_readback = normalize_ruleset_readback(
+        rulesets,
+        observed_ruleset_generation,
+        base_ref=pr_identity.get("base_ref", ""),
+    )
     normalized_queue = normalize_queue_entry(queue_entry)
     normalized_candidates = list(candidates or [])
     binding = build_binding(pr, normalized_queue, workflow_runs, ruleset_readback)
@@ -511,7 +632,7 @@ def reconcile_snapshot(
             else IDENTITY_MISMATCH_ACTION
         ]
         disposition = "identity_changed"
-    elif comparison["queue_base_mismatch"]:
+    elif comparison["queue_base_mismatch"] or comparison["queue_base_ref_mismatch"]:
         actions = [IDENTITY_MISMATCH_ACTION]
         disposition = "queue_base_mismatch"
     else:
@@ -537,17 +658,28 @@ def reconcile_snapshot(
         if any(
             not candidate.get(field)
             for field in (
+                "owner",
                 "head_sha",
                 "base_sha",
                 "queue_entry_id",
                 "merge_group_sha",
+                "base_ref",
             )
+        )
+        or any(
+            not _is_full_sha(candidate.get(field))
+            for field in ("head_sha", "base_sha", "merge_group_sha")
         )
     ]
     owner_candidate_mismatches = [
         candidate
         for candidate in classified["owner"]
         if (
+            candidate.get("owner")
+            and binding.get("owner")
+            and candidate.get("owner") != binding.get("owner")
+        )
+        or (
             candidate.get("head_sha")
             and binding.get("head_sha")
             and candidate.get("head_sha") != binding.get("head_sha")
@@ -556,6 +688,11 @@ def reconcile_snapshot(
             candidate.get("base_sha")
             and binding.get("base_sha")
             and candidate.get("base_sha") != binding.get("base_sha")
+        )
+        or (
+            candidate.get("base_ref")
+            and binding.get("base_ref")
+            and candidate.get("base_ref") != binding.get("base_ref")
         )
         or (
             candidate.get("queue_entry_id")
@@ -588,8 +725,11 @@ def reconcile_snapshot(
         },
         "queue_entry": normalized_queue,
         "merge_group": {
+            "queue_entry_ref": binding.get("queue_entry_ref"),
             "synthetic_sha": binding.get("merge_group_sha"),
+            "synthetic_source": binding.get("merge_group_source"),
             "base_sha": binding.get("queue_base_sha"),
+            "base_ref": binding.get("queue_base_ref"),
         },
         "workflow_runs": binding.get("workflow_runs", []),
         "workflow_run_ids": binding.get("workflow_run_ids", []),
@@ -608,6 +748,7 @@ def reconcile_snapshot(
             and ruleset_readback["matches_observed"]
             and not workflow_mismatches
             and not owner_candidate_mismatches
+            and not owner_candidate_missing
             and comparison["valid"],
         },
         "candidates": classified,
@@ -649,6 +790,14 @@ class ReadOnlyGitHubProvider:
         )
         if not isinstance(payload, Mapping):
             raise QueueObserverError("pull request read returned a non-object payload")
+        payload_number = _first(payload, "number", "pr_number", "pull_request_number")
+        if payload_number is None or str(payload_number) != str(self.pr_number):
+            raise QueueObserverError("pull request read returned a different PR number")
+        payload_repo = _repo_slug(_first(payload, "repository", "repo"))
+        if not payload_repo:
+            payload_repo = _repo_slug(_first(payload, "url"))
+        if payload_repo and payload_repo.casefold() != self.repo.casefold():
+            raise QueueObserverError("pull request read returned a different repository")
         enriched = dict(payload)
         # REST does not include a top-level repository in every response.  Bind
         # the endpoint's explicit repository rather than guessing from a branch.
@@ -673,12 +822,23 @@ class ReadOnlyGitHubProvider:
                 f"name={name}",
             ]
         )
+        if not isinstance(payload, Mapping):
+            raise QueueObserverError("merge queue read returned a non-object payload")
+        errors = payload.get("errors")
+        if errors:
+            raise QueueObserverError("merge queue GraphQL response contained errors")
+        data = payload.get("data")
+        if not isinstance(data, Mapping) or not isinstance(data.get("repository"), Mapping):
+            raise QueueObserverError("merge queue GraphQL response omitted repository data")
+        repository = data.get("repository")
+        merge_queue = repository.get("mergeQueue") if isinstance(repository, Mapping) else None
+        if merge_queue is None:
+            return None
+        entries_connection = merge_queue.get("entries") if isinstance(merge_queue, Mapping) else None
         entries = (
-            ((payload or {}).get("data") or {})
-            .get("repository", {})
-            .get("mergeQueue", {})
-            .get("entries", {})
-            .get("nodes", [])
+            entries_connection.get("nodes", [])
+            if isinstance(entries_connection, Mapping)
+            else []
         )
         owner_entry = None
         candidates = []
@@ -714,7 +874,8 @@ class ReadOnlyGitHubProvider:
                 "id": entry.get("id"),
                 "position": entry.get("position"),
                 "state": entry.get("state"),
-                "headSha": synthetic_sha,
+                "merge_group_sha": synthetic_sha,
+                "merge_group_source": "MergeQueueEntry.headCommit.oid",
                 "baseSha": base_commit.get("oid")
                 if isinstance(base_commit, Mapping)
                 else None,
@@ -839,6 +1000,46 @@ def delegate_bounded_watcher(
     return receipt
 
 
+def validate_delegated_receipt(
+    receipt: Mapping[str, Any], current: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Bind a delegated PR-watcher receipt to the current exact PR identity."""
+
+    if not isinstance(receipt, Mapping):
+        raise QueueObserverError("delegated watcher returned a non-object receipt")
+    delegated_snapshot = receipt.get("snapshot")
+    delegated_pr = delegated_snapshot.get("pr") if isinstance(delegated_snapshot, Mapping) else None
+    current_pr = current.get("pr") if isinstance(current, Mapping) else None
+    if isinstance(current_pr, Mapping):
+        current_pr = dict(current_pr)
+        current_pr["repo"] = current.get("repository")
+    if not isinstance(delegated_pr, Mapping) or not isinstance(current_pr, Mapping):
+        raise QueueObserverError("delegated watcher receipt omitted PR identity")
+    fields = ("repo", "number", "head_sha", "base_sha")
+    mismatches = {
+        field: {
+            "delegated": delegated_pr.get(field),
+            "current": current_pr.get(field),
+        }
+        for field in fields
+        if not delegated_pr.get(field)
+        or not current_pr.get(field)
+        or str(delegated_pr.get(field)) != str(current_pr.get(field))
+    }
+    if mismatches:
+        raise QueueObserverError("delegated watcher receipt identity mismatch")
+    watch_context = receipt.get("watch_context")
+    if isinstance(watch_context, Mapping):
+        resolved_repo = _text(watch_context.get("resolved_repo"))
+        if resolved_repo and resolved_repo.casefold() != str(current_pr["repo"]).casefold():
+            raise QueueObserverError("delegated watcher repository context mismatch")
+    return {
+        "validated": True,
+        "exit_reason": _text(receipt.get("exit_reason")),
+        "identity": {field: current_pr.get(field) for field in fields},
+    }
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Observe GitHub merge-queue state without mutation"
@@ -876,7 +1077,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     provider = ReadOnlyGitHubProvider(repo, number)
     snapshot = snapshot_from_provider(provider, require_queue=not args.allow_no_queue)
     if delegated is not None:
-        snapshot["delegated_pr_watcher"] = delegated
+        snapshot["delegated_pr_watcher"] = validate_delegated_receipt(delegated, snapshot)
     print(json.dumps(snapshot, sort_keys=True, indent=2))
     return 0
 
