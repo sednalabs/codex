@@ -1177,6 +1177,16 @@ mod tests {
         credit_source: Option<String>,
     }
 
+    type CreditEstimateAliasRow = (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<f64>,
+        Option<f64>,
+        String,
+    );
+
     #[derive(Debug, PartialEq, sqlx::FromRow)]
     struct CreditThreadSummaryRow {
         provider_call_count: i64,
@@ -2125,15 +2135,7 @@ ORDER BY provider_call_id
         .execute(pool)
         .await?;
 
-        let rows: Vec<(
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<f64>,
-            Option<f64>,
-            String,
-        )> = sqlx::query_as(
+        let rows: Vec<CreditEstimateAliasRow> = sqlx::query_as(
             r#"
 SELECT provider_call_id, requested_model, actual_model_used, rate_id,
        rate_card_estimated_total_credits, estimated_total_credits, pricing_status
