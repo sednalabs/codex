@@ -1287,8 +1287,12 @@ fn monitor_protected_create_targets_until_namespace_exit(
 ) -> ! {
     let watcher = ProtectedCreateWatcher::new(targets);
     for target in targets {
-        if remove_protected_create_target_best_effort(target).is_some() {
+        if let Err(err) = remove_protected_create_target_with_retries(target) {
             terminate_namespace_and_cleanup(&namespace_init, registrations);
+            eprintln!(
+                "failed to remove protected create target {} before detached monitor readiness: {err}",
+                target.path().display()
+            );
             unsafe { libc::_exit(1) };
         }
     }
@@ -1309,8 +1313,12 @@ fn monitor_protected_create_targets_until_namespace_exit(
     let never_stop = AtomicBool::new(false);
     while !namespace_init.has_exited() {
         for target in targets {
-            if remove_protected_create_target_best_effort(target).is_some() {
+            if let Err(err) = remove_protected_create_target_with_retries(target) {
                 terminate_namespace_and_cleanup(&namespace_init, registrations);
+                eprintln!(
+                    "failed to remove protected create target {} from detached sandbox: {err}",
+                    target.path().display()
+                );
                 unsafe { libc::_exit(1) };
             }
         }
@@ -1906,6 +1914,21 @@ fn remove_protected_create_target_best_effort(
         }
     }
     Some(ProtectedCreateRemoval::Other)
+}
+
+fn remove_protected_create_target_with_retries(
+    target: &crate::bwrap::ProtectedCreateTarget,
+) -> std::io::Result<Option<ProtectedCreateRemoval>> {
+    for attempt in 0..100 {
+        match try_remove_protected_create_target(target) {
+            Ok(removal) => return Ok(removal),
+            Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty && attempt < 99 => {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    unreachable!("protected create removal retry loop should return")
 }
 
 fn try_remove_protected_create_target(
