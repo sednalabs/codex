@@ -1731,6 +1731,7 @@ class RouteSelectionTests(unittest.TestCase):
             {
                 "mode": "${{ steps.resolve.outputs.mode }}",
                 "run_bazel": "${{ steps.resolve.outputs.run_bazel }}",
+                "run_observer": "${{ steps.resolve.outputs.run_observer }}",
             },
         )
         plan_steps = plan_job.get("steps") or []
@@ -1752,6 +1753,7 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn("files.length >= 300", compare_script)
         self.assertIn("file.previous_filename", compare_script)
         self.assertIn("comparison_complete", compare_script)
+        self.assertIn("statuses", compare_script)
 
         resolve_step = next(
             step for step in plan_steps if step.get("name") == "Resolve Bazel CI mode"
@@ -1771,6 +1773,14 @@ class RouteSelectionTests(unittest.TestCase):
             if step.get("name") == "Check markdown links"
         )
         self.assertEqual(docs_step.get("run"), "python3 .github/scripts/check_markdown_links.py")
+        observer_job = jobs.get("observer-only") or {}
+        self.assertEqual(observer_job.get("needs"), "plan")
+        self.assertEqual(observer_job.get("if"), "${{ needs.plan.outputs.run_observer == 'true' }}")
+        observer_run = next(
+            step for step in observer_job.get("steps") or [] if step.get("name") == "Run observer validation lanes"
+        ).get("run") or ""
+        self.assertIn("agent-workflow-sanity.sh", observer_run)
+        self.assertIn("workflow-security-targeted.sh", observer_run)
 
         for job_name in ["test", "test-windows-shard", "clippy", "verify-release-build"]:
             with self.subTest(job=job_name):
@@ -1791,6 +1801,7 @@ class RouteSelectionTests(unittest.TestCase):
             [
                 "plan",
                 "docs-only",
+                "observer-only",
                 "test",
                 "test-windows-shard",
                 "test-windows",
@@ -1808,6 +1819,7 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertIn('if mode == "docs_only"', results_run)
         self.assertIn('elif mode == "full"', results_run)
+        self.assertIn('elif mode == "observer_only"', results_run)
         self.assertIn('require("docs-only", "success")', results_run)
         self.assertIn('require(job, "skipped")', results_run)
         self.assertIn('require(job, "success")', results_run)
@@ -1817,12 +1829,14 @@ class RouteSelectionTests(unittest.TestCase):
         gate_script = results_run.split(heredoc_start, 1)[1].rsplit("\nPY", 1)[0]
         for mode, docs_result, normal_result in [
             ("docs_only", "success", "skipped"),
+            ("observer_only", "skipped", "skipped"),
             ("full", "skipped", "success"),
         ]:
             with self.subTest(mode=mode):
                 needs = {
                     "plan": {"result": "success", "outputs": {"mode": mode}},
                     "docs-only": {"result": docs_result},
+                    "observer-only": {"result": "success" if mode == "observer_only" else "skipped"},
                     "test": {"result": normal_result},
                     "test-windows-shard": {"result": normal_result},
                     "test-windows": {"result": normal_result},
@@ -7656,8 +7670,21 @@ class BazelCiModeScriptTests(unittest.TestCase):
             RESOLVE_BAZEL_CI_MODE.resolve_bazel_ci_mode(
                 comparison_complete=True,
                 files=["README.md", "docs/guide.md", "docs/reference/config.md"],
+                statuses=["A", "M", "M"],
             ),
-            {"mode": "docs_only", "run_bazel": "false"},
+            {"mode": "docs_only", "run_bazel": "false", "run_observer": "false"},
+        )
+
+        self.assertEqual(
+            RESOLVE_BAZEL_CI_MODE.resolve_bazel_ci_mode(
+                comparison_complete=True,
+                files=[
+                    ".github/scripts/validation-lanes/agent-workflow-sanity.sh",
+                    ".github/scripts/validation-lanes/workflow-security-targeted.sh",
+                ],
+                statuses=["M", "A"],
+            ),
+            {"mode": "observer_only", "run_bazel": "false", "run_observer": "true"},
         )
 
         for comparison_complete, files in [
@@ -7674,10 +7701,11 @@ class BazelCiModeScriptTests(unittest.TestCase):
             ):
                 self.assertEqual(
                     RESOLVE_BAZEL_CI_MODE.resolve_bazel_ci_mode(
-                        comparison_complete=comparison_complete,
-                        files=files,
-                    ),
-                    {"mode": "full", "run_bazel": "true"},
+                    comparison_complete=comparison_complete,
+                    files=files,
+                    statuses=["M"] * len(files) if isinstance(files, list) else None,
+                ),
+                    {"mode": "full", "run_bazel": "true", "run_observer": "false"},
                 )
 
     def test_command_line_mode_resolver_fails_closed_on_bad_json(self) -> None:
@@ -7687,8 +7715,10 @@ class BazelCiModeScriptTests(unittest.TestCase):
             "true",
             "--files-json",
             "not-json",
+            "--statuses-json",
+            "not-json",
         )
-        self.assertEqual(outputs, {"mode": "full", "run_bazel": "true"})
+        self.assertEqual(outputs, {"mode": "full", "run_bazel": "true", "run_observer": "false"})
 
     def test_command_line_mode_resolver_writes_github_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -7701,6 +7731,8 @@ class BazelCiModeScriptTests(unittest.TestCase):
                     "true",
                     "--files-json",
                     '["README.md", "docs/guide.md"]',
+                    "--statuses-json",
+                    '["A", "M"]',
                     "--github-output",
                     str(output_path),
                 ],
@@ -7710,11 +7742,11 @@ class BazelCiModeScriptTests(unittest.TestCase):
             )
             self.assertEqual(
                 json.loads(proc.stdout),
-                {"mode": "docs_only", "run_bazel": "false"},
+                {"mode": "docs_only", "run_bazel": "false", "run_observer": "false"},
             )
             self.assertEqual(
                 parse_github_output_file(output_path),
-                {"mode": "docs_only", "run_bazel": "false"},
+                {"mode": "docs_only", "run_bazel": "false", "run_observer": "false"},
             )
 
 
