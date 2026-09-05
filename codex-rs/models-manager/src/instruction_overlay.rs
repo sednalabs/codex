@@ -10,8 +10,6 @@ const CODEX_AUTO_REVIEW_SLUG: &str = "codex-auto-review";
 const OPENAI_COMPATIBLE_PROVIDER: &str = "openai-compatible";
 const BLOCKING_WAIT_SENTENCE: &str =
     "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
-#[cfg(test)]
-pub(crate) const TEST_BLOCKING_WAIT_SENTENCE: &str = BLOCKING_WAIT_SENTENCE;
 
 /// Apply the Sedna fork overlay to one fully composed provider model.
 ///
