@@ -26,6 +26,7 @@ def sample_pr(**overrides):
         "headRefOid": PR_HEAD,
         "baseRefOid": BASE_SHA,
         "baseRefName": "main",
+        "default_branch": "main",
     }
     result.update(overrides)
     return result
@@ -34,12 +35,24 @@ def sample_pr(**overrides):
 def sample_queue(**overrides):
     result = {
         "id": "queue-entry-750",
+        "queue_entry_ref": "refs/heads/gh-readonly-queue/750",
         "state": "AWAITING_CHECKS",
         "position": 1,
+        "attempt": 1,
         "merge_group_sha": SYNTHETIC_G,
         "baseSha": BASE_SHA,
         "merge_group_source": "MergeQueueEntry.headCommit.oid",
         "baseRefName": "main",
+        "ancestry": {
+            "source": "hosted-static-ancestry-v1",
+            "pr_head_sha": PR_HEAD,
+            "base_sha": BASE_SHA,
+            "synthetic_sha": SYNTHETIC_G,
+            "contains_pr_head": True,
+            "contains_base": True,
+            "complete": True,
+            "verified": True,
+        },
         "pullRequests": [
             {
                 "number": 750,
@@ -75,9 +88,21 @@ def sample_runs(head_sha=SYNTHETIC_G):
     return [
         {
             "id": 1001,
+            "workflow": "CI required",
+            "event": "merge_group",
             "head_sha": head_sha,
             "status": "completed",
             "conclusion": "success",
+            "run_attempt": 1,
+        },
+        {
+            "id": 1002,
+            "workflow": "CodeQL required",
+            "event": "merge_group",
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": "success",
+            "run_attempt": 1,
         }
     ]
 
@@ -102,6 +127,52 @@ def test_ruleset_generation_is_stable_and_changes_on_readback_change():
     )
     assert first == second
     assert first != changed
+
+
+def test_allgreen_requires_exact_merge_group_required_workflows_and_attempt():
+    current = snapshot()
+    assert current["allgreen"] is True
+    assert current["labels"] == ["ALLGREEN"]
+    assert current["workflow_evidence"]["run_set"] == ["1001", "1002"]
+    assert current["workflow_evidence"]["attempt"] == 1
+
+
+def test_unrelated_or_empty_workflow_run_fails_closed():
+    current = snapshot(
+        workflow_runs=sample_runs()
+        + [{"id": 1003, "workflow": "other", "event": "push"}]
+    )
+    assert current["allgreen"] is False
+    assert current["actions"] == [queue.IDENTITY_MISMATCH_ACTION]
+    assert "unrelated_workflow" in current["workflow_evidence"]["reasons"]
+
+
+def test_queue_id_is_not_a_pr_identity_or_queue_ref():
+    normalized = queue.normalize_queue_entry({"id": "queue-entry-750"})
+    assert normalized["queue_entry_ref"] == ""
+    assert queue.candidate_is_owner(
+        {"queue_entry_id": "queue-entry-750"},
+        {"pr_number": 750, "queue_entry_id": "queue-entry-750"},
+    ) is False
+
+
+def test_default_branch_ruleset_token_only_applies_to_declared_default():
+    ruleset = {**sample_ruleset()[0], "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"]}}}
+    assert queue.normalize_ruleset_readback(
+        [ruleset], base_ref="main", default_branch="main"
+    )["active_ruleset_count"] == 1
+    assert queue.normalize_ruleset_readback(
+        [ruleset], base_ref="release", default_branch="main"
+    )["active_ruleset_count"] == 0
+    assert queue.normalize_ruleset_readback(
+        [ruleset], base_ref="main"
+    )["active_ruleset_count"] == 0
+
+
+def test_missing_structural_ancestry_never_claims_allgreen():
+    current = snapshot(queue_entry={**sample_queue(), "ancestry": {}})
+    assert current["allgreen"] is False
+    assert "ancestry" in current["identity"]["missing"]
 
 
 def test_merge_group_head_sha_wins_over_queue_entry_head_sha():
@@ -175,7 +246,7 @@ def test_head_replacement_invalidates_prior_identity_and_runs():
     after = snapshot(pr=sample_pr(headRefOid="6" * 40), previous_binding=before["binding"])
     assert after["actions"] == [queue.HEAD_REPLACED_ACTION]
     assert after["identity"]["comparison"]["head_replaced"] is True
-    assert after["identity"]["comparison"]["invalidated_workflow_run_ids"] == ["1001"]
+    assert after["identity"]["comparison"]["invalidated_workflow_run_ids"] == ["1001", "1002"]
 
 
 def test_ruleset_generation_mismatch_fails_closed():
@@ -189,7 +260,7 @@ def test_ruleset_generation_mismatch_fails_closed():
 
 def test_queue_entry_replacement_fails_closed_even_when_pr_head_is_same():
     before = snapshot()
-        replacement = sample_queue(id="queue-entry-new", merge_group_sha=OTHER_SYNTHETIC_G)
+    replacement = sample_queue(id="queue-entry-new", merge_group_sha=OTHER_SYNTHETIC_G)
     after = snapshot(queue_entry=replacement, previous_binding=before["binding"])
     assert after["actions"] == [queue.IDENTITY_MISMATCH_ACTION]
     assert after["identity"]["comparison"]["queue_identity_changed"] is True
@@ -418,7 +489,7 @@ def test_delegate_uses_one_blocking_helper_invocation_and_decodes_receipt():
 
 def test_delegated_receipt_mismatch_fails_closed():
     before = snapshot()
-    with pytest.raises(queue.QueueObserverError, match="identity mismatch"):
+    with pytest.raises(queue.QueueObserverError, match="provenance"):
         queue.validate_delegated_receipt(
             {
                 "exit_reason": "action_required",
