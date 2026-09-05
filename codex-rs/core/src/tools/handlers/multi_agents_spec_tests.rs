@@ -540,6 +540,13 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
     assert!(properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
     assert!(properties.contains_key("return_when"));
+    assert!(properties.contains_key("native_event_wait"));
+    let completion_reason = output_schema
+        .as_ref()
+        .expect("wait output schema")["properties"]["completion_reason"]["enum"]
+        .as_array()
+        .expect("completion reason enum");
+    assert!(completion_reason.contains(&json!("subscription_loss")));
     assert!(description.contains("When `return_when` is `all`"));
     assert_eq!(
         properties
@@ -575,6 +582,7 @@ fn wait_agent_tool_v2_omits_runtime_fields_without_capability_provider() {
         .as_ref()
         .expect("wait_agent should use object params");
     assert!(!properties.contains_key("return_when"));
+    assert!(!properties.contains_key("native_event_wait"));
     assert!(!description.contains("return_when"));
 
     let output_schema = output_schema.expect("wait output schema");
