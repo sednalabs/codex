@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -1698,6 +1699,17 @@ def collect_snapshot(args, cache=None):
     return snapshot, state_path
 
 
+def collect_snapshot_for_watch(args, cache):
+    """Pass session cache while keeping lightweight test doubles compatible."""
+    try:
+        parameters = inspect.signature(collect_snapshot).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "cache" in parameters:
+        return collect_snapshot(args, cache=cache)
+    return collect_snapshot(args)
+
+
 def retry_failed_now(args):
     expected_head_sha = str(getattr(args, "expected_head_sha", "") or "").strip()
     if not expected_head_sha:
@@ -2044,7 +2056,7 @@ def run_watch(args):
     last_change_key = None
     cache = {}
     while True:
-        snapshot, state_path = collect_snapshot(args, cache=cache)
+        snapshot, state_path = collect_snapshot_for_watch(args, cache)
         print_event(
             "snapshot",
             {
@@ -2077,7 +2089,7 @@ def run_watch_until_action(args):
     polls_completed = 0
     cache = {}
     while True:
-        snapshot, state_path = collect_snapshot(args, cache=cache)
+        snapshot, state_path = collect_snapshot_for_watch(args, cache)
         polls_completed += 1
         if should_wait_for_terminal_checks(args, snapshot):
             pass
