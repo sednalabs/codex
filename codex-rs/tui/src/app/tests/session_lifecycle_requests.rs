@@ -2763,6 +2763,287 @@ async fn cold_paginated_subagent_transcript_excludes_inherited_parent_history() 
 }
 
 #[tokio::test]
+async fn managed_worktree_transitions_bind_owner_and_preserve_only_fork_history() -> Result<()> {
+    use crate::app_event::ManagedWorktreeMode;
+    use std::fs;
+    use std::process::Command;
+
+    let (mut app, mut events, _op_rx) = make_test_app_with_channels().await;
+    let root = tempdir()?;
+    let home = dunce::canonicalize(root.path())?.join("home");
+    let source = dunce::canonicalize(root.path())?.join("source");
+    let project_pool = dunce::canonicalize(root.path())?.join("project-pool");
+    fs::create_dir_all(&home)?;
+    fs::create_dir_all(source.join(".codex"))?;
+    fs::write(home.join("config.toml"), "[features]\nworktrees = true\n")?;
+    crate::legacy_core::config::set_project_trust_level(
+        &home,
+        &source,
+        codex_protocol::config_types::TrustLevel::Trusted,
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
+    let destination = format!(
+        r#"developer_instructions = "committed policy"
+model = "gpt-5.2"
+model_reasoning_effort = "high"
+[desktop]
+git-worktree-root = {}
+"#,
+        toml::Value::String(project_pool.display().to_string()),
+    );
+    fs::write(source.join(".codex/config.toml"), destination)?;
+    fs::write(source.join("AGENTS.md"), "committed worktree instructions")?;
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["add", "."],
+        vec!["commit", "--quiet", "--no-gpg-sign", "-m", "initial"],
+    ] {
+        let result = Command::new("git")
+            .current_dir(&source)
+            .args([
+                "-c",
+                "user.name=Worktree Test",
+                "-c",
+                "user.email=test@example.invalid",
+            ])
+            .args(args)
+            .output()?;
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    fs::write(
+        source.join(".codex/config.toml"),
+        r#"developer_instructions = "dirty policy"
+model = "gpt-5.4"
+model_reasoning_effort = "low"
+"#,
+    )?;
+    fs::write(source.join("AGENTS.md"), "dirty source instructions")?;
+    app.config.codex_home = home.clone().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(home.clone().abs());
+    app.config.cwd = source.clone().abs();
+    app.harness_overrides.permission_profile = Some(PermissionProfile::workspace_write());
+    app.config = app.rebuild_config_for_cwd(source.clone()).await?;
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(ThreadId::new(), source.clone()));
+    let (mut server, requests, proxy) = start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.start_fresh_session_with_summary_hint(
+        &mut tui,
+        &mut server,
+        /*session_start_source*/ None,
+        /*initial_user_message*/ None,
+        /*new_thread_name*/ None,
+    )
+    .await;
+    assert_eq!(
+        (
+            app.chat_widget.current_model(),
+            app.config.model_provider_id.as_str(),
+            app.chat_widget.current_reasoning_effort()
+        ),
+        ("gpt-5.4", "openai", Some(ReasoningEffortConfig::Low))
+    );
+    // Provider selection belongs to host config, not project config.
+    let host_config = home.join("config.toml");
+    let contents = fs::read_to_string(&host_config)?;
+    fs::write(
+        host_config,
+        format!("model_provider = \"ollama\"\n{contents}"),
+    )?;
+    let original = app.chat_widget.thread_id().expect("original thread");
+    server.thread_inject_items(original, vec![serde_json::from_value(serde_json::json!({
+        "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "managed fork history"}]
+    }))?]).await?;
+    let manager = codex_worktree::WorktreeManager::new(
+        codex_worktree::WorktreeSettings::for_cli(&home, /*desktop*/ None)
+            .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?,
+    );
+    requests.lock().expect("request recorder lock").clear();
+    app.handle_event(
+        &mut tui,
+        &mut server,
+        AppEvent::StartManagedWorktree {
+            mode: ManagedWorktreeMode::Fork,
+            name: None,
+        },
+    )
+    .await?;
+    assert_eq!(app.chat_widget.thread_id(), Some(original));
+    assert!(recorded_params(&requests, "thread/fork").is_empty());
+    let unused = manager
+        .list(&source)
+        .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?
+        .pop()
+        .expect("unused checkout");
+    assert_eq!(
+        manager
+            .owner(&unused.root)
+            .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?,
+        None
+    );
+    let error = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 500)))
+            }
+            _ => None,
+        })
+        .find(|message| message.contains("Cannot fork into this worktree"))
+        .expect("fork refusal");
+    let (_, with_path) = error
+        .split_once("An unused checkout was created at ")
+        .expect("checkout marker");
+    let (path, _) = with_path
+        .split_once("; remove it with")
+        .expect("cleanup marker");
+    insta::assert_snapshot!(error.replace(path, "<CHECKOUT>"), @"■ Cannot fork into this worktree because developer instructions differ. Start a new conversation instead. An unused checkout was created at <CHECKOUT>; remove it with `git worktree remove <checkout-path>` from the source repository.");
+    fs::write(
+        source.join(".codex/config.toml"),
+        r#"developer_instructions = "committed policy"
+[features]
+terminal_visualization_instructions = true
+"#,
+    )?;
+    app.config = app.rebuild_config_for_cwd(source.clone()).await?;
+    requests.lock().expect("request recorder lock").clear();
+    app.handle_event(
+        &mut tui,
+        &mut server,
+        AppEvent::StartManagedWorktree {
+            mode: ManagedWorktreeMode::Fork,
+            name: None,
+        },
+    )
+    .await?;
+    assert_eq!(app.chat_widget.thread_id(), Some(original));
+    assert!(recorded_params(&requests, "thread/fork").is_empty());
+    for mode in [ManagedWorktreeMode::New, ManagedWorktreeMode::Fork] {
+        requests.lock().expect("request recorder lock").clear();
+        let previous = app.chat_widget.thread_id();
+        let previous_rollout = app.chat_widget.rollout_path().expect("previous rollout");
+        app.handle_event(
+            &mut tui,
+            &mut server,
+            AppEvent::StartManagedWorktree {
+                mode,
+                name: Some(format!("{mode:?} worktree")),
+            },
+        )
+        .await?;
+        let replacement = app.chat_widget.thread_id().expect("replacement thread");
+        assert_ne!(Some(replacement), previous);
+        assert_eq!(
+            app.chat_widget.thread_name(),
+            Some(format!("{mode:?} worktree"))
+        );
+        let cwd = app.config.cwd.as_path().canonicalize()?;
+        let checkouts = manager
+            .list(&source)
+            .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
+        let checkout = checkouts
+            .iter()
+            .find(|checkout| checkout.cwd.canonicalize().ok().as_ref() == Some(&cwd))
+            .expect("managed checkout");
+        assert!(checkout.root.starts_with(home.join("worktrees")));
+        assert!(!project_pool.exists());
+        assert_eq!(
+            manager
+                .owner(&checkout.root)
+                .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?,
+            Some(replacement.to_string())
+        );
+        assert_eq!(
+            app.config.developer_instructions.as_deref(),
+            Some("committed policy")
+        );
+        assert_eq!(
+            fs::read_to_string(checkout.cwd.join("AGENTS.md"))?,
+            "committed worktree instructions"
+        );
+        let fork = matches!(mode, ManagedWorktreeMode::Fork);
+        let method = if fork { "thread/fork" } else { "thread/start" };
+        let params = recorded_params(&requests, method);
+        assert_eq!(params.len(), 1);
+        assert_eq!(
+            [
+                params[0]["model"].as_str(),
+                params[0]["modelProvider"].as_str(),
+                params[0]["config"]["model_reasoning_effort"].as_str(),
+            ],
+            [Some("gpt-5.2"), Some("ollama"), Some("high")]
+        );
+        // Injection flushes and materializes a new thread's otherwise lazy rollout.
+        server.thread_inject_items(replacement, vec![serde_json::from_value(serde_json::json!({
+            "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": format!("replacement persistence probe {mode:?}")}]
+        }))?]).await?;
+        let rollout = app.chat_widget.rollout_path().expect("replacement rollout");
+        let mut history = fs::read(&rollout)?;
+        let metadata = codex_rollout::read_session_meta_line(&rollout).await?;
+        assert_eq!(metadata.meta.history_base.is_some(), fork);
+        if let Some(base) = metadata.meta.history_base {
+            assert!(fork, "New must not inherit history");
+            assert_eq!(Some(base.thread_id), previous);
+            let parent = fs::read(&previous_rollout)?;
+            history.extend_from_slice(
+                parent
+                    .get(..usize::try_from(base.end_byte_offset)?)
+                    .expect("valid inherited prefix"),
+            );
+        }
+        let history = String::from_utf8(history)?;
+        assert!(!history.contains("managed fork history"));
+        if fork {
+            assert!(history.contains("replacement persistence probe New"));
+        }
+        let attached = server
+            .thread_read(replacement, /*include_turns*/ false)
+            .await?;
+        assert_eq!(attached.cwd.as_path().canonicalize()?, cwd);
+    }
+    app.start_fresh_session_with_summary_hint(
+        &mut tui,
+        &mut server,
+        /*session_start_source*/ None,
+        /*initial_user_message*/ None,
+        /*new_thread_name*/ None,
+    )
+    .await;
+    let unsaved = app.chat_widget.thread_id().expect("unsaved thread");
+    let path = app.chat_widget.rollout_path();
+    assert!(path.is_none_or(|path| !rollout_path_is_resumable(&path)));
+    let completed = test_turn("completed-unsaved-turn", TurnStatus::Completed, Vec::new());
+    app.thread_event_channels[&unsaved]
+        .store
+        .lock()
+        .await
+        .set_turns(vec![completed]);
+    for mode in [ManagedWorktreeMode::Fork, ManagedWorktreeMode::New] {
+        requests.lock().expect("request recorder lock").clear();
+        app.handle_event(
+            &mut tui,
+            &mut server,
+            AppEvent::StartManagedWorktree { mode, name: None },
+        )
+        .await?;
+        let is_new = mode == ManagedWorktreeMode::New;
+        assert_eq!(app.chat_widget.thread_id() != Some(unsaved), is_new);
+        assert_eq!(recorded_params(&requests, "thread/fork").len(), 0);
+    }
+    server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn changing_directory_preserves_project_trust_permissions_history_and_hooks() -> Result<()> {
     use codex_protocol::config_types::TrustLevel as T;
     use serde_json::json;

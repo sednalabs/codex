@@ -66,6 +66,13 @@ use codex_protocol::models::ActivePermissionProfile;
 
 use crate::history_cell::HistoryCell;
 
+/// Whether a managed checkout starts fresh or preserves the current conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedWorktreeMode {
+    New,
+    Fork,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThreadGoalSetMode {
     ConfirmIfExists,
@@ -385,6 +392,12 @@ pub(crate) enum AppEvent {
 
     /// Start a new session, optionally assigning it a name.
     NewSession {
+        name: Option<String>,
+    },
+
+    /// Create a managed checkout and start or fork a session into it.
+    StartManagedWorktree {
+        mode: ManagedWorktreeMode,
         name: Option<String>,
     },
 

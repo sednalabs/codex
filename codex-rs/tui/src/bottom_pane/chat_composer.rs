@@ -279,7 +279,6 @@ use super::paste_burst::PasteBurst;
 use super::prompt_args::parse_slash_name;
 use super::skill_popup::MentionItem;
 use super::skill_popup::SkillPopup;
-use super::slash_commands::BuiltinCommandFlags;
 use super::slash_commands::ServiceTierCommand;
 use super::slash_commands::SlashCommandItem;
 use crate::bottom_pane::paste_burst::FlushResult;
@@ -555,6 +554,7 @@ pub(crate) struct ChatComposer {
     mentions_v2_enabled: bool,
     goal_command_enabled: bool,
     personality_command_enabled: bool,
+    worktrees_enabled: bool,
     windows_degraded_sandbox_active: bool,
     side_conversation_active: bool,
     history_search: Option<HistorySearchSession>,
@@ -609,20 +609,6 @@ impl ChatComposer {
             self.builtin_command_flags(),
             &self.service_tier_commands,
         )
-    }
-
-    fn builtin_command_flags(&self) -> BuiltinCommandFlags {
-        BuiltinCommandFlags {
-            collaboration_modes_enabled: self.collaboration_modes_enabled,
-            connectors_enabled: self.connectors_enabled,
-            plugins_command_enabled: self.plugins_command_enabled,
-            token_activity_command_enabled: self.token_activity_command_enabled,
-            service_tier_commands_enabled: self.service_tier_commands_enabled,
-            goal_command_enabled: self.goal_command_enabled,
-            personality_command_enabled: self.personality_command_enabled,
-            allow_elevate_sandbox: self.windows_degraded_sandbox_active,
-            side_conversation_active: self.side_conversation_active,
-        }
     }
 
     pub fn new(
@@ -732,6 +718,7 @@ impl ChatComposer {
             mentions_v2_enabled: false,
             goal_command_enabled: false,
             personality_command_enabled: false,
+            worktrees_enabled: false,
             windows_degraded_sandbox_active: false,
             side_conversation_active: false,
             history_search: None,

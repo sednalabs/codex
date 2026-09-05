@@ -505,6 +505,10 @@ impl App {
         };
         chat_widget.note_rendered_width(tui.terminal.last_known_screen_size.width);
         chat_widget.remote_connection = remote_connection;
+        chat_widget.set_local_worktree_operations(!crate::uses_remote_workspace_or_environment(
+            &app_server_target,
+            environment_manager.as_ref(),
+        ));
         chat_widget.set_agents_navigation_enabled(matches!(
             app_server_target,
             AppServerTarget::LocalDaemon { .. }

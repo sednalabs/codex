@@ -50,6 +50,10 @@ impl App {
                     | AppEvent::SelectAgentThread(_)
                     | AppEvent::StartSide { .. }
                     | AppEvent::ForkCurrentSession { .. }
+                    | AppEvent::StartManagedWorktree {
+                        mode: crate::app_event::ManagedWorktreeMode::Fork,
+                        ..
+                    }
                     | AppEvent::ForkSessionForPromptEdit { .. }
                     | AppEvent::SetThreadGoalDraft { .. }
                     | AppEvent::SetThreadGoalStatus {
@@ -85,6 +89,9 @@ impl App {
                 if self.chat_widget.has_misalignment_policy_violation() {
                     self.chat_widget.show_misalignment_policy_precaution();
                 }
+            }
+            AppEvent::StartManagedWorktree { mode, name } => {
+                self.start_managed_worktree(tui, app_server, mode, name).await;
             }
             AppEvent::ChangeWorkingDirectory {
                 thread_id,

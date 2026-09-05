@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/slash_commands.rs
+expression: popup
+---
+  Create a new worktree
+
+› 1. Continue current conversation  Preserve this conversation in the new
+                                    checkout
+  2. Start new conversation         Open a fresh conversation in the new
+                                    checkout
+
+  Press enter to confirm or esc to go back

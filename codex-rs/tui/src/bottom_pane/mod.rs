@@ -516,6 +516,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub fn set_worktrees_enabled(&mut self, enabled: bool) {
+        self.composer.set_worktrees_enabled(enabled);
+        self.request_redraw();
+    }
+
     pub fn set_personality_command_enabled(&mut self, enabled: bool) {
         self.composer.set_personality_command_enabled(enabled);
         self.request_redraw();

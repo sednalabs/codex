@@ -621,7 +621,7 @@ async fn queued_inline_rename_does_not_drain_again_before_turn_started() {
 
 #[tokio::test]
 async fn queued_unknown_slash_reports_error_when_dequeued() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     handle_turn_started(&mut chat, "turn-1");
 
@@ -642,6 +642,24 @@ async fn queued_unknown_slash_reports_error_when_dequeued() {
         "expected delayed slash error, got {rendered:?}"
     );
     assert!(chat.input_queue.queued_user_messages.is_empty());
+
+    chat.set_feature_enabled(Feature::Worktrees, /*enabled*/ true);
+    chat.set_local_worktree_operations(/*enabled*/ false);
+    let drain = chat.submit_queued_slash_prompt(UserMessage::from("/worktree extra").into());
+    assert_matches!(drain, QueueDrain::Continue);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(drain_insert_history(&mut rx).iter().any(|lines| {
+        lines_to_single_string(lines).contains("Unrecognized command '/worktree'")
+    }));
+
+    chat.set_local_worktree_operations(/*enabled*/ true);
+    let non_git = tempfile::tempdir().unwrap();
+    chat.config.cwd = non_git.path().to_path_buf().abs();
+    let drain = chat.submit_queued_slash_prompt(UserMessage::from("/worktree").into());
+    assert_matches!(drain, QueueDrain::Continue);
+    assert!(drain_insert_history(&mut rx).iter().any(|lines| {
+        lines_to_single_string(lines).contains("Managed worktrees require a local Git repository.")
+    }));
 }
 
 #[tokio::test]

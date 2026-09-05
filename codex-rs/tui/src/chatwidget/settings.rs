@@ -80,6 +80,9 @@ impl ChatWidget {
             self.refresh_effective_service_tier();
             self.sync_service_tier_commands();
         }
+        if feature == Feature::Worktrees {
+            self.sync_worktrees_enabled();
+        }
         if feature == Feature::Personality {
             self.sync_personality_command_enabled();
         }
@@ -294,6 +297,17 @@ impl ChatWidget {
             .as_ref()
             .and_then(|mask| mask.model.as_deref())
             .unwrap_or_else(|| self.current_collaboration_mode.model())
+    }
+
+    pub(crate) fn set_local_worktree_operations(&mut self, enabled: bool) {
+        self.local_worktree_operations = enabled;
+        self.sync_worktrees_enabled();
+    }
+
+    pub(super) fn sync_worktrees_enabled(&mut self) {
+        self.bottom_pane.set_worktrees_enabled(
+            self.config.features.enabled(Feature::Worktrees) && self.local_worktree_operations,
+        );
     }
 
     pub(super) fn sync_personality_command_enabled(&mut self) {

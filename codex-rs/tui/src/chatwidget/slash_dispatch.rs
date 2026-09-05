@@ -6,6 +6,7 @@
 //! slash-command recall follows the same submitted-input rule as ordinary text.
 
 use super::*;
+use crate::app_event::ManagedWorktreeMode;
 use crate::app_event::ThreadGoalSetMode;
 use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
@@ -181,7 +182,7 @@ impl ChatWidget {
                 self.request_redraw();
             }
             SlashCommand::New => {
-                self.app_event_tx.send(AppEvent::NewSession { name: None });
+                self.show_session_checkout_picker(ManagedWorktreeMode::New, /*name*/ None);
             }
             SlashCommand::Archive => {
                 self.bottom_pane.show_selection_view(SelectionViewParams {
@@ -247,8 +248,10 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::OpenResumePicker);
             }
             SlashCommand::Fork => {
-                self.app_event_tx
-                    .send(AppEvent::ForkCurrentSession { name: None });
+                self.show_session_checkout_picker(ManagedWorktreeMode::Fork, /*name*/ None);
+            }
+            SlashCommand::Worktree => {
+                self.show_managed_worktree_picker();
             }
             SlashCommand::App => {
                 let Some(thread_id) = self.thread_id else {
@@ -800,9 +803,10 @@ impl ChatWidget {
                 self.app_event_tx.set_thread_name(name);
             }
             SlashCommand::New if !trimmed.is_empty() => {
-                self.app_event_tx.send(AppEvent::NewSession {
-                    name: Some(trimmed.to_string()),
-                });
+                self.show_session_checkout_picker(
+                    ManagedWorktreeMode::New,
+                    Some(trimmed.to_string()),
+                );
             }
             SlashCommand::Clear if !trimmed.is_empty() => {
                 self.app_event_tx.send(AppEvent::ClearUi {
@@ -810,9 +814,10 @@ impl ChatWidget {
                 });
             }
             SlashCommand::Fork if !trimmed.is_empty() => {
-                self.app_event_tx.send(AppEvent::ForkCurrentSession {
-                    name: Some(trimmed.to_string()),
-                });
+                self.show_session_checkout_picker(
+                    ManagedWorktreeMode::Fork,
+                    Some(trimmed.to_string()),
+                );
             }
             SlashCommand::Plan if !trimmed.is_empty() => {
                 let plan_available = self.apply_plan_slash_command();
@@ -1139,6 +1144,8 @@ impl ChatWidget {
             goal_command_enabled: self.config.features.enabled(Feature::Goals),
             service_tier_commands_enabled: self.fast_mode_enabled(),
             personality_command_enabled: self.config.features.enabled(Feature::Personality),
+            worktrees_enabled: self.config.features.enabled(Feature::Worktrees)
+                && self.local_worktree_operations,
             allow_elevate_sandbox,
             side_conversation_active: self.active_side_conversation,
         }
@@ -1182,6 +1189,13 @@ impl ChatWidget {
                 Some(thread_id) if self.can_change_working_directory(thread_id) => QueueDrain::Stop,
                 _ => QueueDrain::Continue,
             },
+            SlashCommand::Worktree => {
+                if self.managed_worktree_available() {
+                    QueueDrain::Stop
+                } else {
+                    QueueDrain::Continue
+                }
+            }
             SlashCommand::Feedback
             | SlashCommand::Export
             | SlashCommand::New
