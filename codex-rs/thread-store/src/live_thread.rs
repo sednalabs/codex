@@ -291,11 +291,11 @@ impl LiveThread {
                 None,
             )
         };
-        if let Some(measurement) = measurement.as_ref() {
-            if !committed_raw_items.is_empty() {
-                self.persistence_telemetry
-                    .record_batch(committed_raw_items, measurement);
-            }
+        if let Some(measurement) = measurement.as_ref()
+            && !committed_raw_items.is_empty()
+        {
+            self.persistence_telemetry
+                .record_batch(committed_raw_items, measurement);
         }
         (items, append_error)
     }
