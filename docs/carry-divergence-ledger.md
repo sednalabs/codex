@@ -435,6 +435,15 @@ decisions.
 
 ### Shared Skill Model Ownership
 
+The public fork owns only agent workflow helpers that are coupled to Codex
+workflow or session formats. `subagent-session-tail` remains here because its
+parser follows rollout JSONL and usage-ledger contracts; its focused tests cover
+timestamp handling and string, list, object, and scalar tool outputs. The former
+repo-local `codex-orchestrator` and `sidecar-review-loop` bundles are retired:
+semantic orchestration and review policy belongs in an external user policy
+package with its own provenance and rollout controls. Do not restore those two
+bundles during upstream sync merely because they once shared this carry entry.
+
 - Upstream commit `56c11cf658` moves host and environment skill metadata,
   policy, dependencies, interface, and configuration-rule models into the
   lower-level `codex-skills` crate. `codex-core-skills` keeps compatibility
