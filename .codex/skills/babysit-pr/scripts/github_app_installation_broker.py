@@ -307,11 +307,7 @@ def _production_credentials_directory(value: str | None) -> Path:
         raise BrokerError("CREDENTIALS_DIRECTORY is required")
     root = os.path.realpath("/run/credentials")
     canonical = os.path.realpath(value)
-    try:
-        contained = os.path.commonpath((root, canonical)) == root
-    except ValueError:
-        contained = False
-    if not contained or canonical == root:
+    if not canonical.startswith(root + os.sep):
         raise BrokerError("production CREDENTIALS_DIRECTORY escaped /run/credentials")
     return Path(canonical)
 
