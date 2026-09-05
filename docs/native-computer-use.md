@@ -8,7 +8,9 @@ Native runtime backends are supplied by external providers. Android is the
 first implemented provider and now uses a shared provider bridge for TUI and
 `codex exec`. Browser is a registered adapter with a shared provider bridge
 that can either invoke an operator-configured command or use the built-in
-Playwright backend for `backend=auto`, `browser`, `chrome`, or `chromium`.
+Playwright backend for `backend=auto`, `browser`, or `chromium`. A configured
+command provider may claim `backend=chrome` for signed-in Chrome/extension/CDP
+integration; Playwright never claims that backend.
 Desktop is a registered adapter for cleanroom macOS Screen
 Recording/Accessibility-style runtimes and future native desktop providers.
 
