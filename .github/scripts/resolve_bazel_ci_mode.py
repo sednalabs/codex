@@ -20,8 +20,16 @@ def is_docs_only_path(path: str) -> bool:
 
 OBSERVER_ONLY_PATHS = frozenset(
     {
-        ".github/scripts/validation-lanes/agent-workflow-sanity.sh",
-        ".github/scripts/validation-lanes/workflow-security-targeted.sh",
+        ".codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        ".codex/skills/babysit-pr/scripts/test_gh_pr_watch.py",
+        ".codex/skills/babysit-pr/scripts/github_app_installation_broker.py",
+        ".codex/skills/babysit-pr/scripts/test_github_app_installation_broker.py",
+        ".codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py",
+        ".codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py",
+        ".codex/skills/babysit-gh-workflow-run/scripts/gh_dispatch_and_watch.py",
+        ".codex/skills/babysit-gh-workflow-run/tests/test_gh_dispatch_and_watch.py",
+        ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py",
+        ".codex/skills/sedna/subagent-session-tail/tests/test_inspect_subagent_tail.py",
     }
 )
 
@@ -41,7 +49,7 @@ def resolve_bazel_ci_mode(
     if not aligned_statuses:
         return {"mode": "full", "run_bazel": "true", "run_observer": "false"}
 
-    allowed_statuses = all(status in {"A", "M"} for status in statuses)
+    allowed_statuses = all(status in {"A", "M", "added", "modified"} for status in statuses)
     files_are_docs_only = (
         allowed_statuses and all(is_docs_only_path(path) for path in files)
     )

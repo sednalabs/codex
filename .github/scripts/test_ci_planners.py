@@ -7679,12 +7679,29 @@ class BazelCiModeScriptTests(unittest.TestCase):
             RESOLVE_BAZEL_CI_MODE.resolve_bazel_ci_mode(
                 comparison_complete=True,
                 files=[
-                    ".github/scripts/validation-lanes/agent-workflow-sanity.sh",
-                    ".github/scripts/validation-lanes/workflow-security-targeted.sh",
+                    ".codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+                    ".codex/skills/babysit-pr/scripts/test_gh_pr_watch.py",
+                    ".codex/skills/babysit-pr/scripts/github_app_installation_broker.py",
+                    ".codex/skills/babysit-pr/scripts/test_github_app_installation_broker.py",
+                    ".codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py",
+                    ".codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py",
+                    ".codex/skills/babysit-gh-workflow-run/scripts/gh_dispatch_and_watch.py",
+                    ".codex/skills/babysit-gh-workflow-run/tests/test_gh_dispatch_and_watch.py",
+                    ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py",
+                    ".codex/skills/sedna/subagent-session-tail/tests/test_inspect_subagent_tail.py",
                 ],
-                statuses=["M", "A"],
+                statuses=["modified", "added"] * 5,
             ),
             {"mode": "observer_only", "run_bazel": "false", "run_observer": "true"},
+        )
+
+        self.assertEqual(
+            RESOLVE_BAZEL_CI_MODE.resolve_bazel_ci_mode(
+                comparison_complete=True,
+                files=[".codex/skills/babysit-pr/scripts/gh_pr_watch.py"],
+                statuses=["M"],
+            )["mode"],
+            "observer_only",
         )
 
         for comparison_complete, files in [
@@ -7694,6 +7711,7 @@ class BazelCiModeScriptTests(unittest.TestCase):
             (True, [".github/workflows/bazel.yml"]),
             (True, ["docs/guide.md", 42]),
             (True, {"filename": "docs/guide.md"}),
+            (True, [".github/scripts/validation-lanes/agent-workflow-sanity.sh"]),
         ]:
             with self.subTest(
                 comparison_complete=comparison_complete,
@@ -7706,6 +7724,17 @@ class BazelCiModeScriptTests(unittest.TestCase):
                     statuses=["M"] * len(files) if isinstance(files, list) else None,
                 ),
                     {"mode": "full", "run_bazel": "true", "run_observer": "false"},
+                )
+
+        for status in ["removed", "renamed", "copied", "unknown", None]:
+            with self.subTest(status=status):
+                self.assertEqual(
+                    RESOLVE_BAZEL_CI_MODE.resolve_bazel_ci_mode(
+                        comparison_complete=True,
+                        files=[".codex/skills/babysit-pr/scripts/gh_pr_watch.py"],
+                        statuses=[status],
+                    )["mode"],
+                    "full",
                 )
 
     def test_command_line_mode_resolver_fails_closed_on_bad_json(self) -> None:
