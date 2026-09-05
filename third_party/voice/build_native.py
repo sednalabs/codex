@@ -16,6 +16,7 @@ import sys
 # without adding the caller's working directory to the module search path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prepare_sources import MANIFEST, load_sources, prepare_sources
+from windows_build_inputs import build_environment
 
 TARGET_SYSTEMS = {
     "apple-darwin": "Darwin",
@@ -89,6 +90,21 @@ class NativeBuild:
         for tool in (*self.toolchain.values(), self.bootstrap_make):
             if not tool.is_file():
                 raise ValueError(f"Missing build tool: {tool}")
+        windows_inputs = getattr(args, "windows_build_inputs", None)
+        input_record = None
+        if windows_inputs is not None:
+            if not self.windows:
+                raise ValueError("Windows build inputs require a Windows MSVC target")
+            explicit, input_record = build_environment(
+                windows_inputs,
+                args.target,
+                {
+                    **self.toolchain,
+                    "bootstrap_make": self.bootstrap_make,
+                    "python": Path(sys.executable),
+                },
+            )
+            inherited_environment = {**inherited_environment, **explicit}
         if self.windows and not all(
             inherited_environment.get(key) for key in ("INCLUDE", "LIB")
         ):
@@ -117,9 +133,15 @@ class NativeBuild:
             )
             or (self.windows and key == "USERPROFILE")
         }
+        if windows_inputs is not None:
+            self.environment.pop("LIBPATH", None)
         paths = [
             str(self.tools / "bin"),
-            *(str(p.parent) for p in self.toolchain.values()),
+            *(
+                []
+                if windows_inputs is not None
+                else [str(p.parent) for p in self.toolchain.values()]
+            ),
         ]
         paths += (
             inherited_environment.get("PATH", "").split(os.pathsep)
@@ -172,6 +194,8 @@ class NativeBuild:
             "flags": self.flags,
             "steps": [],
         }
+        if input_record is not None:
+            self.record["windows_build_inputs"] = input_record
 
     def run(self, name, command, cwd=None, environment=None):
         command = [str(part) for part in command]
@@ -523,6 +547,11 @@ def main():
         "--bootstrap-make",
         type=Path,
         help="NMake on Windows; defaults to --make elsewhere",
+    )
+    parser.add_argument(
+        "--windows-build-inputs",
+        type=Path,
+        help="Explicit Windows tool and SDK selection; no unrelated PATH fallback",
     )
     for name in ("ar", "ranlib"):
         parser.add_argument(f"--{name}", type=Path)

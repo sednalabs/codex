@@ -46,6 +46,7 @@ filegroup(
         "package_runtime.py",
         "runtime.py",
         "sdk.py",
+        "windows_build_inputs.py",
         "windows_runtime.py",
         ":source_inputs",
     ],
@@ -56,6 +57,7 @@ filegroup(
     name = "native_recipe",
     srcs = [
         "build_native.py",
+        "windows_build_inputs.py",
         ":source_inputs",
     ],
 )

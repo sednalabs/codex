@@ -114,6 +114,23 @@ Windows requires the normal Visual Studio SDK environment, Cygwin GNU make,
 bash/cygpath and Automake 1.18's standard `ar-lib` for upstream libffi,
 native Windows pkgconf, and `--bootstrap-make` pointing to NMake.
 The recipe does not install these build prerequisites or patch upstream sources.
+The optional `--windows-build-inputs <json>` argument records an explicit selection
+of these tools, the target-specific MSVC assembler, linker, library manager,
+inspector, Windows SDK resource/manifest tools, Python, and include/library roots.
+The existing private CI driver supplies this input from its provisioned VS/Cygwin
+setup. In this mode the recipe checks that named tools resolve to the selected
+files, puts MSVC ahead of Cygwin's different `link.exe`, and excludes unrelated
+inherited PATH and SDK entries. The exact selection is retained in build receipts.
+The JSON uses `schemaVersion: 1`, `target`, `tools` (role to absolute file path),
+`systemRoot`, and `INCLUDE`/`LIB` arrays of absolute directories. The CLI tool
+arguments must agree with the recorded selection. Without this argument, the
+standalone recipe keeps using the normal Visual Studio environment.
+
+This selects already installed inputs; it does not hash their support files,
+sandbox the build, supply a Bazel Windows provider, or publish build tools.
+Those still require a complete declared compiler/bootstrap closure and approved
+public-readable inputs. Existing private Cygwin release assets do not satisfy
+public self-build access. No Windows support is disabled to hide that gap.
 The private CI bootstrap verifies the official Cygwin installer and native pkgconf
 MSI hashes before use. It also verifies a retained Cygwin package snapshot against
 pinned archive and member hashes before installing it offline using signed

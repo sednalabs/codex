@@ -535,3 +535,34 @@ class NativeBuildTests(unittest.TestCase):
                     result.stdout.strip(),
                     linker_flags,
                 )
+
+    def test_explicit_windows_inputs_replace_ambient_sdk_and_search_paths(self):
+        self.args.target = "x86_64-pc-windows-msvc"
+        self.args.windows_build_inputs = self.root / "inputs.json"
+        selected = {
+            "PATH": str(self.root / "selected tools"),
+            "INCLUDE": str(self.root / "selected include"),
+            "LIB": str(self.root / "selected lib"),
+        }
+        with (
+            patch("build_native.validate_target"),
+            patch(
+                "build_native.build_environment",
+                return_value=(selected, {"target": self.args.target}),
+            ),
+        ):
+            build = NativeBuild(
+                self.args,
+                {"PATH": "/unrelated", "LIBPATH": "/unrelated"},
+            )
+        self.assertFalse(
+            any("/unrelated" in value for value in build.environment.values())
+        )
+        self.assertEqual(
+            {name: build.environment[name] for name in ("INCLUDE", "LIB")},
+            {name: selected[name] for name in ("INCLUDE", "LIB")},
+        )
+        self.assertEqual(
+            build.record["windows_build_inputs"], {"target": self.args.target}
+        )
+        self.assertFalse(build.output.exists())
