@@ -42,6 +42,16 @@ jobs:
         shell: bash
         run: cargo update -p rustls@0.23.42 --precise 0.23.43
 
+      - name: Restore known unrelated Cargo edge
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_lock_diff="$(git diff -- Cargo.lock)"
+          test "$(grep -F -c -- '- "getrandom 0.4.3",' <<<"${cargo_lock_diff}")" = 1
+          test "$(grep -F -c -- '+ "getrandom 0.3.4",' <<<"${cargo_lock_diff}")" = 1
+          sed -i 's/^ \"getrandom 0.3.4\",$/ \"getrandom 0.4.3\",/' Cargo.lock
+
       - name: Verify generated Cargo lock
         working-directory: codex-rs
         shell: bash
