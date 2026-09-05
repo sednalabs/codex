@@ -106,7 +106,7 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     monkeypatch.setattr(
         gh_pr_watch,
         "get_authenticated_login",
-        lambda: call_order.append("auth") or "octocat",
+        lambda *args, **kwargs: call_order.append("auth") or "octocat",
     )
     monkeypatch.setattr(
         gh_pr_watch,
@@ -359,6 +359,33 @@ def test_failed_jobs_include_direct_logs_endpoint(monkeypatch):
             "logs_endpoint": "repos/openai/codex/actions/jobs/555/logs",
         }
     ]
+
+
+def test_failed_jobs_reuses_completed_run_attempt(monkeypatch):
+    calls = []
+    jobs = [{"id": 555, "name": "unit", "status": "completed", "conclusion": "failure"}]
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "get_jobs_for_run",
+        lambda repo, run_id: calls.append((repo, run_id)) or jobs,
+    )
+    run = {
+        "id": 99,
+        "name": "CI",
+        "status": "completed",
+        "conclusion": "failure",
+        "run_attempt": 2,
+        "head_sha": "abc123",
+    }
+    cache = {}
+    first = gh_pr_watch.failed_jobs_from_workflow_runs(
+        "openai/codex", [run], "abc123", cache=cache
+    )
+    second = gh_pr_watch.failed_jobs_from_workflow_runs(
+        "openai/codex", [run], "abc123", cache=cache
+    )
+    assert first == second
+    assert calls == [("openai/codex", 99)]
 
 
 def test_parse_args_watch_until_terminal_implies_terminal_checks(monkeypatch):
