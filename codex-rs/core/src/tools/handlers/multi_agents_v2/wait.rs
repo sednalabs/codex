@@ -14,8 +14,8 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_tools::ToolSpec;
-use futures::future;
 use futures::StreamExt;
+use futures::future;
 use futures::stream::FuturesUnordered;
 use serde_json::json;
 use std::collections::HashMap;
@@ -134,9 +134,8 @@ impl Handler {
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
         let wait_capability = registered_tool_runtime_capabilities().wait_agent;
-        let native_event_capable = wait_capability.is_some_and(|capability| {
-            capability.native_event_wait && capability.mailbox_wake
-        });
+        let native_event_capable = wait_capability
+            .is_some_and(|capability| capability.native_event_wait && capability.mailbox_wake);
         if args.native_event_wait && !native_event_capable {
             return Err(FunctionCallError::RespondToModel(
                 "native_event_wait requires native_event_wait and mailbox_wake capabilities"
@@ -369,11 +368,7 @@ async fn ready_wake_source(
                 .await)
     {
         let latest = collect_current_wait_statuses(session, receiver_thread_ids).await;
-        final_statuses.extend(
-            latest
-                .into_iter()
-                .filter(|(_, status)| is_final(status)),
-        );
+        final_statuses.extend(latest.into_iter().filter(|(_, status)| is_final(status)));
         if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
             Some(WakeSource::TargetCompletion)
         } else if status_rxs
@@ -831,9 +826,18 @@ mod tests {
 
     #[test]
     fn native_zero_timeout_disables_internal_lease_timer() {
-        assert!(!lease_timer_enabled(true, 0));
-        assert!(lease_timer_enabled(true, 1));
-        assert!(lease_timer_enabled(false, 0));
+        assert!(!lease_timer_enabled(
+            /*native_event_wait*/ true,
+            /*timeout_ms*/ 0
+        ));
+        assert!(lease_timer_enabled(
+            /*native_event_wait*/ true,
+            /*timeout_ms*/ 1
+        ));
+        assert!(lease_timer_enabled(
+            /*native_event_wait*/ false,
+            /*timeout_ms*/ 0
+        ));
     }
 
     #[test]

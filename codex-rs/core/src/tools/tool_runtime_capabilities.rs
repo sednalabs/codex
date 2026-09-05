@@ -280,8 +280,10 @@ mod tests {
             ..ToolRuntimeCapabilities::upstream_default()
         });
         let merged = merge_tool_runtime_capabilities(&[&provider]);
-        assert!(merged
-            .wait_agent
-            .is_some_and(|capability| capability.native_event_wait));
+        assert!(
+            merged
+                .wait_agent
+                .is_some_and(|capability| capability.native_event_wait)
+        );
     }
 }
