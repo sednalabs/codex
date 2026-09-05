@@ -682,7 +682,7 @@ impl AgentControl {
                 } else {
                     None
                 };
-                Box::pin(state.spawn_new_thread_with_dynamic_tools(
+                Box::pin(state.spawn_new_thread_with_source_and_dynamic_tools(
                     config.clone(),
                     self.clone(),
                     session_source,

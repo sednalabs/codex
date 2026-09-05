@@ -3309,18 +3309,22 @@ impl ThreadRequestProcessor {
             // the child is never selected in the UI. Explicit thread/start and
             // thread/fork paths already have a listener and notification, so the
             // per-connection subscription check below prevents duplicates.
-            if config_snapshot.parent_thread_id.is_some()
-                && let Ok(stored_thread) = live_thread.read_thread(true, false).await
-            {
-                let (mut thread, _) = thread_from_stored_thread(
-                    stored_thread,
-                    self.config.model_provider_id.as_str(),
-                    &self.config.cwd,
+            if config_snapshot.parent_thread_id.is_some() {
+                // Build the summary from the live snapshot rather than reading the
+                // store: a newly-created child may not have appended its first
+                // rollout item yet, and ephemeral children have no persistence at
+                // all. The live rollout path, when present, still gives clients the
+                // owning codex home needed for per-thread provider routing.
+                let mut thread = build_thread_from_snapshot(
+                    thread_id,
+                    live_thread.session_configured().session_id.to_string(),
+                    /*multi_agent_version*/ None,
+                    &config_snapshot,
+                    live_thread.rollout_path(),
                 );
-                thread.session_id = live_thread
-                    .session_configured()
-                    .session_id
-                    .to_string();
+                thread.forked_from_id = config_snapshot
+                    .forked_from_thread_id
+                    .map(|id| id.to_string());
                 thread.status = resolve_thread_status(
                     self.thread_watch_manager
                         .loaded_status_for_thread(&thread.id)

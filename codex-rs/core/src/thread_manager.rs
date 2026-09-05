@@ -1779,6 +1779,39 @@ impl ThreadManagerState {
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
     ) -> CodexResult<NewThread> {
+        Box::pin(self.spawn_new_thread_with_source_and_dynamic_tools(
+            config,
+            agent_control,
+            session_source,
+            history_mode,
+            parent_thread_id,
+            forked_from_thread_id,
+            thread_source,
+            metrics_service_name,
+            Vec::new(),
+            inherited_environments,
+            inherited_exec_policy,
+            environments,
+        ))
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn spawn_new_thread_with_source_and_dynamic_tools(
+        &self,
+        config: Config,
+        agent_control: AgentControl,
+        session_source: SessionSource,
+        history_mode: Option<ThreadHistoryMode>,
+        parent_thread_id: Option<ThreadId>,
+        forked_from_thread_id: Option<ThreadId>,
+        thread_source: Option<ThreadSource>,
+        metrics_service_name: Option<String>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        inherited_environments: Option<TurnEnvironmentSnapshot>,
+        inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
+        environments: Option<Vec<TurnEnvironmentSelection>>,
+    ) -> CodexResult<NewThread> {
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(
                 self.environment_manager.as_ref(),
@@ -1798,7 +1831,7 @@ impl ThreadManagerState {
             forked_from_thread_id,
             ForkPersistence::Copied,
             thread_source,
-            Vec::new(),
+            dynamic_tools,
             metrics_service_name,
             inherited_environments,
             inherited_exec_policy,
