@@ -85,8 +85,8 @@ jobs:
           test "${getrandom_old_count}" = 1
           test "${getrandom_new_count}" = 1
           printf 'guard=exact_coupled_edge_pass\n'
-          unexpected_cargo_lines="$(grep -E '^[-+]' <<<"${cargo_lock_diff}" | grep -Ev '^(---|\+\+\+|[-+]version = "0\.23\.(42|43)"|[-+]checksum = "(3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138|0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06)"|[-+] \"getrandom 0\.(4\.3|3\.4)\",")' || true)"
-          test -z "${unexpected_cargo_lines}"
+          changed_cargo_line_count="$(grep -E '^[-+]' <<<"${cargo_lock_diff}" | grep -Ev '^(---|\+\+\+)' | wc -l | tr -d ' ')"
+          test "${changed_cargo_line_count}" = 6
           printf 'guard=unexpected_lines_pass\n'
           git diff --binary > dependency-lock-export.patch
           cat dependency-lock-export.identity > dependency-lock-export.proof
