@@ -301,7 +301,12 @@ impl ModelsManager for OpenAiModelsManager {
     ) -> ModelsManagerFuture<'a, ModelInfo> {
         Box::pin(async move {
             let remote_models = self.get_remote_models().await;
-            construct_model_info_from_candidates_with_overlay(model, &remote_models, config, /*apply_overlay*/ true)
+            construct_model_info_from_candidates_with_overlay(
+                model,
+                &remote_models,
+                config,
+                /*apply_overlay*/ true,
+            )
         })
     }
 
@@ -632,7 +637,12 @@ pub(crate) fn construct_model_info_from_candidates(
     candidates: &[ModelInfo],
     config: &ModelsManagerConfig,
 ) -> ModelInfo {
-    construct_model_info_from_candidates_with_overlay(model, candidates, config, /*apply_overlay*/ false)
+    construct_model_info_from_candidates_with_overlay(
+        model,
+        candidates,
+        config,
+        /*apply_overlay*/ false,
+    )
 }
 
 fn construct_model_info_from_candidates_with_overlay(
