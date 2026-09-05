@@ -256,7 +256,7 @@ impl OpenAiModelsManager {
         endpoint_client: Arc<dyn ModelsEndpointClient>,
         auth_manager: Option<Arc<AuthManager>>,
     ) -> Self {
-        let remote_models = overlay_models(load_remote_models_from_file().unwrap_or_default());
+        let remote_models = load_remote_models_from_file().unwrap_or_default();
         Self {
             remote_models: RwLock::new(remote_models),
             etag: RwLock::new(None),
@@ -292,6 +292,21 @@ impl ModelsManager for OpenAiModelsManager {
 
     fn get_remote_models(&self) -> ModelsManagerFuture<'_, Vec<ModelInfo>> {
         Box::pin(async move { self.remote_models.read().await.clone() })
+    }
+
+    fn get_model_info<'a>(
+        &'a self,
+        model: &'a str,
+        config: &'a ModelsManagerConfig,
+    ) -> ModelsManagerFuture<'a, ModelInfo> {
+        Box::pin(async move {
+            let remote_models = self.get_remote_models().await;
+            let mut model_info = construct_model_info_from_candidates(model, &remote_models, config);
+            if config.base_instructions.is_none() {
+                instruction_overlay::apply(&mut model_info, Some("openai-compatible"));
+            }
+            model_info
+        })
     }
 
     fn try_get_remote_models(&self) -> Result<Vec<ModelInfo>, TryLockError> {
@@ -421,7 +436,6 @@ impl OpenAiModelsManager {
 
     /// Replace the cached remote models and rebuild the derived presets list.
     async fn apply_remote_models(&self, models: Vec<ModelInfo>) {
-        let models = overlay_models(models);
         // Use the remote models list as the source of truth if it contains at least one
         // non-hidden model and the user is using ChatGPT auth.
         let should_use_remote_models_only = !models.is_empty()
@@ -438,7 +452,7 @@ impl OpenAiModelsManager {
             return;
         }
 
-        let mut existing_models = overlay_models(load_remote_models_from_file().unwrap_or_default());
+        let mut existing_models = load_remote_models_from_file().unwrap_or_default();
         for model in models {
             if let Some(existing_index) = existing_models
                 .iter()
@@ -480,16 +494,6 @@ impl OpenAiModelsManager {
         );
         true
     }
-}
-
-fn overlay_models(models: Vec<ModelInfo>) -> Vec<ModelInfo> {
-    models
-        .into_iter()
-        .map(|mut model| {
-            instruction_overlay::apply(&mut model, Some("openai-compatible"));
-            model
-        })
-        .collect()
 }
 
 impl ModelsManager for StaticModelsManager {

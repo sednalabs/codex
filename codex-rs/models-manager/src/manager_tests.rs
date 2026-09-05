@@ -1187,7 +1187,8 @@ async fn openai_overlay_preserves_unrelated_metadata_and_static_catalog_preceden
     let static_candidate = candidate.clone();
     let original_display = candidate.display_name.clone();
     let original_priority = candidate.priority;
-    let transformed = overlay_models(vec![candidate]).pop().expect("model");
+    let mut transformed = candidate.clone();
+    instruction_overlay::apply(&mut transformed, Some("openai-compatible"));
     assert!(!transformed.base_instructions.contains(sentence));
     assert!(!transformed
         .model_messages
@@ -1270,4 +1271,9 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
         .await;
     assert!(!cached_info.get_model_instructions(None).contains(sentence));
     assert_eq!(cache_endpoint.fetch_count(), 0);
+
+    let suffix_info = manager
+        .get_model_info("codex-auto-review-v2", &ModelsManagerConfig::default())
+        .await;
+    assert!(suffix_info.get_model_instructions(None).contains(sentence));
 }
