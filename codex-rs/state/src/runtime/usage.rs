@@ -2172,7 +2172,7 @@ ORDER BY provider_call_id
                     None,
                     None,
                     None,
-                    "rate_card_unknown".into(),
+                    "model_rate_missing".into(),
                 ),
                 (
                     "red".into(),
