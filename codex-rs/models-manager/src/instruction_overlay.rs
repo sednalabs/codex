@@ -79,7 +79,7 @@ mod tests {
             "before  after; a deliberate short timeout of 5 seconds remains allowed"
         );
         assert_eq!(
-            model.model_messages.unwrap().instructions_template,
+            model.model_messages.as_ref().unwrap().instructions_template,
             Some(
                 "before  after; a deliberate short timeout of 5 seconds remains allowed"
                     .to_string()

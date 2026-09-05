@@ -1204,7 +1204,7 @@ async fn openai_overlay_preserves_unrelated_metadata_and_static_catalog_preceden
     assert_eq!(transformed.priority, original_priority);
 
     let static_manager = static_manager_for_tests(ModelsResponse {
-        models: vec![static_candidate],
+        models: vec![static_candidate.clone()],
     });
     let static_info = static_manager
         .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
