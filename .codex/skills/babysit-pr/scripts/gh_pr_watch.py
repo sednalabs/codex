@@ -728,7 +728,17 @@ def get_jobs_for_run(repo, run_id):
     return jobs
 
 
-def failed_jobs_from_workflow_runs(repo, runs, head_sha):
+def failed_jobs_from_workflow_runs(repo, runs, head_sha, cache=None):
+    """Collect failed jobs, reusing immutable completed-run job listings.
+
+    Workflow-run discovery remains periodic, so a new or retried run is always
+    considered.  Only a completed run's jobs are reused, keyed by run attempt;
+    in-progress runs are deliberately fetched every snapshot so a newly failed
+    job cannot be hidden by the optimization.
+    """
+    if cache is None:
+        cache = {}
+    jobs_cache = cache.setdefault("failed_jobs_by_run", {})
     failed_jobs = []
     for run in runs:
         if not isinstance(run, dict):
@@ -745,7 +755,15 @@ def failed_jobs_from_workflow_runs(repo, runs, head_sha):
             and run_conclusion not in FAILED_RUN_CONCLUSIONS
         ):
             continue
-        jobs = get_jobs_for_run(repo, run_id)
+        run_attempt = run.get("run_attempt")
+        cache_key = (str(run_id), run_attempt)
+        reusable = run_status.lower() == "completed" and isinstance(run_attempt, int)
+        if reusable and cache_key in jobs_cache:
+            jobs = jobs_cache[cache_key]
+        else:
+            jobs = get_jobs_for_run(repo, run_id)
+            if reusable:
+                jobs_cache[cache_key] = jobs
         for job in jobs:
             if not isinstance(job, dict):
                 continue
@@ -780,13 +798,19 @@ def failed_jobs_from_workflow_runs(repo, runs, head_sha):
     return failed_jobs
 
 
-def get_authenticated_login():
+def get_authenticated_login(cache=None):
+    """Read the login once per watcher session; identity is stable for that session."""
+    if cache is not None and cache.get("authenticated_login"):
+        return cache["authenticated_login"]
     data = gh_json(["api", "user"])
     if not isinstance(data, dict) or not data.get("login"):
         raise GhCommandError(
             "Unable to determine authenticated GitHub login from `gh api user`"
         )
-    return str(data["login"])
+    login = str(data["login"])
+    if cache is not None:
+        cache["authenticated_login"] = login
+    return login
 
 
 def comment_endpoints(repo, pr_number):
@@ -1572,7 +1596,9 @@ def recommend_actions(
     return unique_actions(actions)
 
 
-def collect_snapshot(args):
+def collect_snapshot(args, cache=None):
+    if cache is None:
+        cache = {}
     local_git_context = detect_local_git_context()
     pr = resolve_pr(args.pr, repo_override=args.repo)
     validate_pr_resolution(args.pr, args.repo, pr, local_git_context)
@@ -1583,7 +1609,7 @@ def collect_snapshot(args):
     if not state.get("started_at"):
         state["started_at"] = int(time.time())
 
-    authenticated_login = get_authenticated_login()
+    authenticated_login = get_authenticated_login(cache)
     new_review_items = fetch_new_review_items(
         pr,
         state,
@@ -1624,10 +1650,14 @@ def collect_snapshot(args):
     # After resolving `--pr auto`, reuse the concrete PR number.
     checks = get_pr_checks(str(pr["number"]), repo=pr["repo"])
     checks_summary = summarize_checks(checks)
+    # Discover workflow runs on every snapshot.  A pending check rollup can
+    # coexist with an early, orphaned, startup, or rerun failure that is only
+    # visible through the workflow API; suppressing that discovery hides the
+    # failure and can incorrectly return idle.
     workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(
-        pr["repo"], workflow_runs, pr["head_sha"]
+        pr["repo"], workflow_runs, pr["head_sha"], cache=cache
     )
 
     retries_used = current_retry_count(state, pr["head_sha"])
@@ -2010,8 +2040,9 @@ def next_watch_poll_seconds(
 def run_watch(args):
     poll_seconds = args.poll_seconds
     last_change_key = None
+    cache = {}
     while True:
-        snapshot, state_path = collect_snapshot(args)
+        snapshot, state_path = collect_snapshot(args, cache=cache)
         print_event(
             "snapshot",
             {
@@ -2042,8 +2073,9 @@ def run_watch_until_action(args):
     last_change_key = None
     started_at = time.time()
     polls_completed = 0
+    cache = {}
     while True:
-        snapshot, state_path = collect_snapshot(args)
+        snapshot, state_path = collect_snapshot(args, cache=cache)
         polls_completed += 1
         if should_wait_for_terminal_checks(args, snapshot):
             pass
