@@ -11,6 +11,9 @@ startup --experimental_remote_repo_contents_cache
 
 common --experimental_platform_in_output_dir
 
+build --workspace_status_command=./scripts/workspace-status.sh
+build:windows --workspace_status_command=./scripts/workspace-status.cmd
+
 # Runfiles strategy rationale: codex-rs/utils/cargo-bin/README.md
 common --noenable_runfiles
 
@@ -85,6 +88,7 @@ common --jobs=30
 common:remote --strategy=remote
 # Native Mac voice actions need the local Apple tools; Linux remains remote.
 common:macos --strategy=VoiceNativePrefix=remote,sandboxed,local
+common:macos --strategy=VoiceNativeRuntime=remote,sandboxed,local
 common:remote --extra_execution_platforms=//:rbe
 common:remote --jobs=800
 # TODO(team): Evaluate if this actually helps, zbarsky is not sure, everything seems bottlenecked on `core` either way.

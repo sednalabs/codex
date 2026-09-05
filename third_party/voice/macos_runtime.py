@@ -15,6 +15,7 @@ from runtime import PLUGINS, RuntimeFormat, digest, prepare, required_library_pa
 SYSTEM_IMPORTS = frozenset(
     {
         "/usr/lib/libSystem.B.dylib",
+        "/usr/lib/libc++.1.dylib",
         "/usr/lib/libobjc.A.dylib",
         "/usr/lib/libiconv.2.dylib",
         "/usr/lib/libresolv.9.dylib",

@@ -183,6 +183,18 @@ preparation or shipped in the runtime. The output is development-only, uses the
 host glibc, and does not establish musl or minimum-glibc support, dynamic-only
 dependency closure, helper loading policy or working voice.
 
+## Prepare Bazel's native build output
+
+`bazel build //third_party/voice:native_runtime` prepares the selected Mac or GNU
+Linux prefix archive using the existing platform inspection and preparation code.
+It checks the completed build receipt, records the current workspace build commit,
+inspects physical libraries, and prepares verified copies. These receipts describe
+build inputs and inspection; they are not signatures or release approval.
+
+This manual target requires the same host inspection/signing tools as the standalone
+platform preparer. It does not link Rust, change Windows builds, assemble a CLI
+package, or enable voice. The prepared runtime is the input to those later steps.
+
 ## Private Windows runtime preparation
 
 `windows_runtime.py` takes the same arguments for x64/ARM64 MSVC build prefixes.

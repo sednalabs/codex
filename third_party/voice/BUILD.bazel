@@ -1,6 +1,7 @@
 load("@rules_foreign_cc//toolchains/native_tools:native_tools_toolchain.bzl", "native_tool_toolchain")
 load(":native.bzl", "native_prefix")
 load(":pkg_config.bzl", "pkg_config")
+load(":runtime.bzl", "native_runtime")
 
 # All native build consumers must receive the same pinned source manifest.
 exports_files(["opus-toolchain.cmake"])
@@ -172,6 +173,34 @@ alias(
     name = "native_prefix",
     actual = select({
         ":" + os + "_" + cpu: ":native_prefix_" + os + "_" + cpu
+        for os, cpu, _ in _NATIVE_PLATFORMS
+    }),
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+[
+    native_runtime(
+        name = "native_runtime_" + os + "_" + cpu,
+        exec_compatible_with = [
+            "@platforms//os:" + os,
+            "@platforms//cpu:" + cpu,
+        ],
+        prefix = ":native_prefix_" + os + "_" + cpu,
+        tags = ["manual"],
+        target = cpu + "-" + suffix,
+        target_compatible_with = select({
+            ":" + os + "_" + cpu: [],
+            "//conditions:default": ["@platforms//:incompatible"],
+        }),
+    )
+    for os, cpu, suffix in _NATIVE_PLATFORMS
+]
+
+alias(
+    name = "native_runtime",
+    actual = select({
+        ":" + os + "_" + cpu: ":native_runtime_" + os + "_" + cpu
         for os, cpu, _ in _NATIVE_PLATFORMS
     }),
     tags = ["manual"],
