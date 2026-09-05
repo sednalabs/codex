@@ -232,6 +232,7 @@ mod thread_settings;
 use self::agent_navigation::AgentNavigationDirection;
 use self::agent_navigation::AgentNavigationState;
 use self::agent_navigation::AgentNavigationUpdate;
+use self::agent_navigation::AgentPickerThreadRetention;
 use self::app_server_requests::PendingAppServerRequests;
 use self::loaded_threads::AGENT_PICKER_ROWS_PER_OPEN;
 use self::loaded_threads::LineagePageAdvance;
