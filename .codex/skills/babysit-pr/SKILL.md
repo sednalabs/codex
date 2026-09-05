@@ -42,6 +42,11 @@ Stage identity is kept separate across the delivery path:
 | `merge_group` | Queue entry/ref, synthetic candidate SHA, selected workflow/run/`G`, and ancestry proving the exact PR head and current base are included. |
 | `post-main` | Resulting merge SHA on `main`, selected post-main workflow/run/`G`, and the `push` event; this is fresh evidence after landing, not a reused PR or queue result. |
 
+Workflow/run aliases are normalized as one identity record: conflicting aliases
+or duplicate run IDs invalidate the complete set, and workflow reads must consume
+all provider pages before conclusions are drawn. A queue entry reference must be
+present as an authoritative field and must be distinct from the provider queue ID.
+
 `ALLGREEN` is a scoped queue-readiness label only. It is emitted only when the
 exact synthetic `merge_group` candidate has exactly one terminal-successful
 `merge_group` run for each of `CI required` and `CodeQL required`, with matching

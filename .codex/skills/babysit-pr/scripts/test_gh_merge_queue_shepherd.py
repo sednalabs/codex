@@ -561,3 +561,34 @@ def test_unallowlisted_ancestry_source_fails_closed():
     )
     assert current["allgreen"] is False
     assert "ancestry_source_untrusted" in current["identity"]["missing"]
+
+
+def test_queue_entry_ref_must_be_distinct_from_provider_queue_id():
+    current = snapshot(queue_entry={**sample_queue(), "queue_entry_ref": "queue-entry-750"})
+    assert current["allgreen"] is False
+    assert "queue_entry_ref_not_distinct" in current["identity"]["missing"]
+
+
+def test_conflicting_workflow_aliases_are_not_selected():
+    runs = [{**sample_runs()[0], "headSha": OTHER_SYNTHETIC_G} , sample_runs()[1]]
+    evidence = queue.workflow_evidence(runs, SYNTHETIC_G)
+    assert evidence["valid"] is False
+    assert "workflow_field_alias_conflict" in evidence["reasons"]
+
+
+def test_workflow_provider_requests_complete_pagination():
+    provider = queue.ReadOnlyGitHubProvider(
+        "sednalabs/codex", 750,
+        runner=lambda command: [{"workflow_runs": sample_runs()}, {"workflow_runs": []}],
+    )
+    runs = provider.read_workflow_runs(SYNTHETIC_G)
+    assert len(runs) == 2
+
+
+def test_incomplete_workflow_page_fails_closed():
+    provider = queue.ReadOnlyGitHubProvider(
+        "sednalabs/codex", 750,
+        runner=lambda command: {"workflow_runs": [], "pagination_complete": False},
+    )
+    with pytest.raises(queue.QueueObserverError, match="pagination was incomplete"):
+        provider.read_workflow_runs(SYNTHETIC_G)

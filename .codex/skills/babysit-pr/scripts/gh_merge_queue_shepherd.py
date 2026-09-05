@@ -196,20 +196,26 @@ def normalize_workflow_runs(runs: Iterable[Mapping[str, Any]] | None) -> list[di
         run_id, run_id_alias_conflict = _resolve_aliases(
             [(run, ("id", "databaseId", "run_id"))], normalize=_positive_id
         )
-        attempt = _first(run, "run_attempt", "runAttempt", "attempt")
-        if isinstance(attempt, str) and attempt.strip().isdigit():
-            attempt = int(attempt.strip())
+        field_conflicts: list[str] = []
+        def resolve_field(names: tuple[str, ...], normalize: Callable[[Any], Any] = lambda value: value) -> Any:
+            value, conflict = _resolve_aliases([(run, names)], normalize=normalize)
+            if conflict:
+                field_conflicts.append(names[0])
+            return value
+        attempt = resolve_field(("run_attempt", "runAttempt", "attempt"), _normalize_attempt)
         row = {
             "run_id": _positive_id(run_id),
-            "workflow": _text(_first(run, "workflow", "workflow_name", "workflowName", "name")),
-            "event": _text(_first(run, "event", "event_name")),
-            "head_sha": _text(_first(run, "head_sha", "headSha", "headShaOid", "sha")),
-            "status": _upper(_first(run, "status", "state")),
-            "conclusion": _lower(_first(run, "conclusion", "result")),
+            "workflow": _text(resolve_field(("workflow", "workflow_name", "workflowName", "name"))),
+            "event": _text(resolve_field(("event", "event_name"))),
+            "head_sha": _text(resolve_field(("head_sha", "headSha", "headShaOid", "sha"))),
+            "status": _upper(resolve_field(("status", "state"))),
+            "conclusion": _lower(resolve_field(("conclusion", "result"))),
             "run_attempt": attempt,
         }
         if run_id_alias_conflict:
             row["run_id_alias_conflict"] = True
+        if field_conflicts:
+            row["field_alias_conflicts"] = sorted(set(field_conflicts))
         normalized.append(row)
     return sorted(normalized, key=lambda row: (row["run_id"], row["workflow"]))
 
@@ -231,6 +237,7 @@ def workflow_evidence(runs: Iterable[Mapping[str, Any]] | None, synthetic_sha: s
         run_id_valid = bool(RUN_ID.fullmatch(run_id))
         duplicate_run_id = bool(run_id and run_id_counts.get(run_id, 0) > 1)
         run_id_alias_conflict = bool(row.get("run_id_alias_conflict"))
+        field_alias_conflicts = list(row.get("field_alias_conflicts") or [])
         name = row["workflow"]
         if not run_id:
             reasons.add("run_id_missing")
@@ -238,6 +245,8 @@ def workflow_evidence(runs: Iterable[Mapping[str, Any]] | None, synthetic_sha: s
             reasons.add("run_id_malformed")
         if run_id_alias_conflict:
             reasons.add("run_id_alias_conflict")
+        if field_alias_conflicts:
+            reasons.add("workflow_field_alias_conflict")
         if duplicate_run_id:
             reasons.add("duplicate_run_id")
         if name not in REQUIRED_WORKFLOWS:
@@ -256,7 +265,7 @@ def workflow_evidence(runs: Iterable[Mapping[str, Any]] | None, synthetic_sha: s
         # Required-workflow selection happens only after the provider identity
         # has supplied one well-formed, unique run identifier.  A malformed or
         # repeated ID can never satisfy a required conclusion by position.
-        if not run_id_valid or duplicate_run_id or run_id_alias_conflict:
+        if not run_id_valid or duplicate_run_id or run_id_alias_conflict or field_alias_conflicts:
             continue
         if name in selected:
             reasons.add("duplicate_required_workflow")
@@ -586,6 +595,8 @@ def binding_missing(binding: Mapping[str, Any], *, require_queue: bool = True) -
         missing.append("merge_group_distinct_from_pr_head")
     if binding.get("merge_group_source") not in {"MergeQueueEntry.headCommit.oid", "MergeGroup.headSha"}:
         missing.append("merge_group_source_untrusted")
+    if binding.get("queue_entry_ref") == binding.get("queue_entry_id"):
+        missing.append("queue_entry_ref_not_distinct")
     if binding.get("queue_state") not in KNOWN_QUEUE_STATES:
         missing.append("queue_state_unknown")
     ancestry = binding.get("ancestry")
@@ -750,8 +761,19 @@ class ReadOnlyGitHubProvider:
 
     def read_workflow_runs(self, head_sha: str) -> Sequence[Mapping[str, Any]]:
         owner, name = self.repo.split("/", 1)
-        payload = self._runner(["api", f"repos/{owner}/{name}/actions/runs", "--method", "GET", "-f", f"head_sha={head_sha}", "-f", "per_page=100"])
-        return payload.get("workflow_runs", []) if isinstance(payload, Mapping) else []
+        payload = self._runner(["api", f"repos/{owner}/{name}/actions/runs", "--method", "GET", "--paginate", "-f", f"head_sha={head_sha}", "-f", "per_page=100"])
+        pages = payload if isinstance(payload, list) else [payload]
+        runs: list[Mapping[str, Any]] = []
+        for page in pages:
+            if not isinstance(page, Mapping):
+                raise QueueObserverError("workflow pagination returned a non-object page")
+            if page.get("incomplete") is True or page.get("pagination_complete") is False:
+                raise QueueObserverError("workflow pagination was incomplete")
+            rows = page.get("workflow_runs")
+            if not isinstance(rows, list):
+                raise QueueObserverError("workflow page omitted workflow_runs")
+            runs.extend(row for row in rows if isinstance(row, Mapping))
+        return runs
 
 
 def run_gh_json(command: Sequence[str]) -> Any:
@@ -769,7 +791,19 @@ def run_gh_json(command: Sequence[str]) -> Any:
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
         raise QueueObserverError(f"read-only gh api failed: {exc}") from exc
     try:
-        return json.loads(result.stdout or "null")
+        raw = result.stdout or "null"
+        decoder = json.JSONDecoder()
+        values = []
+        offset = 0
+        while offset < len(raw):
+            while offset < len(raw) and raw[offset].isspace():
+                offset += 1
+            if offset >= len(raw):
+                break
+            value, end = decoder.raw_decode(raw, offset)
+            values.append(value)
+            offset = end
+        return values[0] if len(values) == 1 else values
     except json.JSONDecodeError as exc:
         raise QueueObserverError("read-only gh api returned invalid JSON") from exc
 
