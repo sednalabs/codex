@@ -2003,7 +2003,10 @@ fn normalized_protected_create_path(path: &Path, root: &Path) -> std::io::Result
             "protected-create path has no final component",
         )
     })?;
-    if file_name == "." || file_name == ".." {
+    if file_name
+        .to_str()
+        .is_some_and(|name| matches!(name, "." | ".."))
+    {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "protected-create path has an invalid final component",
