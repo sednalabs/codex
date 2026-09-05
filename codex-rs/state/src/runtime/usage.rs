@@ -2008,6 +2008,230 @@ ORDER BY provider_call_id
     }
 
     #[tokio::test]
+    async fn credit_views_cover_current_aliases_boundaries_and_rollups() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+
+        for call in [
+            TestProviderCall {
+                id: "blue-latest",
+                thread_id: "aliases",
+                started_at: "2026-09-05T05:26:07.605187Z",
+                requested_model: Some("gpt-5.6-sol"),
+                actual_model: Some("gpt-daybreak-blue-latest"),
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 1_000_000,
+                cache_write: 0,
+                output: 1_000_000,
+                total: 3_000_000,
+                provider_reported_credits: None,
+            },
+            TestProviderCall {
+                id: "blue-reported",
+                thread_id: "aliases",
+                started_at: "2026-09-05T05:26:07.605187Z",
+                requested_model: Some("gpt-daybreak-blue"),
+                actual_model: Some("gpt-daybreak-blue"),
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 1_000_000,
+                cache_write: 0,
+                output: 1_000_000,
+                total: 3_000_000,
+                provider_reported_credits: Some(17.0),
+            },
+            TestProviderCall {
+                id: "image-ambiguous",
+                thread_id: "aliases",
+                started_at: "2026-09-05T05:26:07.605187Z",
+                requested_model: Some("gpt-image-2"),
+                actual_model: Some("gpt-image-2"),
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 1_000_000,
+                cache_write: 0,
+                output: 1_000_000,
+                total: 3_000_000,
+                provider_reported_credits: None,
+            },
+            TestProviderCall {
+                id: "red",
+                thread_id: "aliases",
+                started_at: "2026-09-05T05:26:07.605187Z",
+                requested_model: Some("gpt-daybreak-red-latest"),
+                actual_model: Some("gpt-5.6-cyber"),
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 1_000_000,
+                cache_write: 0,
+                output: 1_000_000,
+                total: 3_000_000,
+                provider_reported_credits: None,
+            },
+            TestProviderCall {
+                id: "sol-before",
+                thread_id: "aliases",
+                started_at: "2026-09-05T05:26:07.605186Z",
+                requested_model: Some("gpt-daybreak-blue-latest"),
+                actual_model: Some("gpt-5.6-sol"),
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 1_000_000,
+                cache_write: 0,
+                output: 1_000_000,
+                total: 3_000_000,
+                provider_reported_credits: None,
+            },
+            TestProviderCall {
+                id: "sol-boundary",
+                thread_id: "aliases",
+                started_at: "2026-09-05T05:26:07.605187Z",
+                requested_model: Some("gpt-daybreak-blue-latest"),
+                actual_model: Some("gpt-5.6-sol"),
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 1_000_000,
+                cache_write: 0,
+                output: 1_000_000,
+                total: 3_000_000,
+                provider_reported_credits: None,
+            },
+        ] {
+            insert_test_provider_call(pool, call).await?;
+        }
+        sqlx::query(
+            "UPDATE usage_provider_calls SET turn_id = 'alias-turn' WHERE thread_id = 'aliases'",
+        )
+        .execute(pool)
+        .await?;
+
+        let rows: Vec<(
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<f64>,
+            Option<f64>,
+            String,
+        )> = sqlx::query_as(
+            r#"
+SELECT provider_call_id, requested_model, actual_model_used, rate_id,
+       rate_card_estimated_total_credits, estimated_total_credits, pricing_status
+FROM usage_provider_call_credit_estimates
+WHERE thread_id = 'aliases'
+ORDER BY provider_call_id
+"#,
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "blue-latest".into(),
+                    Some("gpt-5.6-sol".into()),
+                    Some("gpt-daybreak-blue-latest".into()),
+                    Some("openai-gpt-daybreak-blue-latest-standard-20260905".into()),
+                    Some(610.0),
+                    Some(610.0),
+                    "priced_estimate".into(),
+                ),
+                (
+                    "blue-reported".into(),
+                    Some("gpt-daybreak-blue".into()),
+                    Some("gpt-daybreak-blue".into()),
+                    Some("openai-gpt-daybreak-blue-standard-20260905".into()),
+                    Some(610.0),
+                    Some(17.0),
+                    "provider_reported".into(),
+                ),
+                (
+                    "image-ambiguous".into(),
+                    Some("gpt-image-2".into()),
+                    Some("gpt-image-2".into()),
+                    None,
+                    None,
+                    None,
+                    "rate_card_unknown".into(),
+                ),
+                (
+                    "red".into(),
+                    Some("gpt-daybreak-red-latest".into()),
+                    Some("gpt-5.6-cyber".into()),
+                    Some("openai-gpt-5.6-cyber-standard-20260905".into()),
+                    Some(2218.75),
+                    Some(2218.75),
+                    "priced_estimate".into(),
+                ),
+                (
+                    "sol-before".into(),
+                    Some("gpt-daybreak-blue-latest".into()),
+                    Some("gpt-5.6-sol".into()),
+                    Some("openai-gpt-5.6-sol-standard-20260402".into()),
+                    Some(887.5),
+                    Some(887.5),
+                    "priced_estimate".into(),
+                ),
+                (
+                    "sol-boundary".into(),
+                    Some("gpt-daybreak-blue-latest".into()),
+                    Some("gpt-5.6-sol".into()),
+                    Some("openai-gpt-5.6-sol-standard-20260905".into()),
+                    Some(610.0),
+                    Some(610.0),
+                    "priced_estimate".into(),
+                ),
+            ]
+        );
+
+        let thread_summary: (i64, i64, i64, bool, Option<f64>, Option<f64>) = sqlx::query_as(
+            r#"
+SELECT provider_call_count, priced_call_count, unpriced_call_count, partial,
+       estimated_total_credits, priced_credits_total
+FROM usage_thread_credit_summary
+WHERE thread_id = 'aliases'
+"#,
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(thread_summary, (6, 5, 1, true, None, Some(4343.25)));
+
+        let turn_summary: (i64, i64, i64, bool, Option<f64>, Option<f64>) = sqlx::query_as(
+            r#"
+SELECT provider_call_count, priced_call_count, unpriced_call_count, partial,
+       estimated_total_credits, priced_credits_total
+FROM usage_turn_credit_summary
+WHERE thread_id = 'aliases' AND turn_id = 'alias-turn'
+"#,
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(turn_summary, (6, 5, 1, true, None, Some(4343.25)));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn credit_views_preserve_uncertainty_and_partial_totals() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let pool_arc = runtime.usage_pool();

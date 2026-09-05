@@ -148,6 +148,7 @@
         "codex-rs/state/usage_migrations/0004_usage_cache_write_tokens.sql",
         "codex-rs/state/usage_migrations/0005_usage_codex_credits.sql",
         "codex-rs/state/usage_migrations/0007_usage_codex_credit_rate_update.sql",
+        "codex-rs/state/usage_migrations/0013_usage_codex_credit_rate_update_20260905.sql",
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/session_resume.rs"
       ],

@@ -709,6 +709,23 @@ User-visible behavior:
   in `usage_codex_credit_policies`. Both use
   `effective_from <= started_at < effective_to`, reject overlapping intervals,
   and retain source URL plus observation time.
+- The current STANDARD/default rate observation is effective from
+  `2026-09-05T05:26:07.605187Z`: GPT-6 Astra `250/25/1250`, GPT-5.6 Sol
+  `100/10/500` (including the provider's `gpt-5.6` alias), GPT-5.6 Terra
+  `50/5/300`, GPT-5.6 Luna `5/0.5/30`, GPT-5.5
+  `125/12.5/750`, Daybreak Blue `100/10/500`, Daybreak Red
+  `312.5/31.25/1875`, GPT-5.4 `62.5/6.25/375`, GPT-5.4 mini
+  `18.75/1.875/113`, GPT-5.3-Codex `43.75/4.375/350`, and GPT-5.2
+  `43.75/4.375/350` credits per 1M uncached input/cached input/output tokens.
+  Daybreak Blue aliases `gpt-daybreak-blue` and
+  `gpt-daybreak-blue-latest` are priced alongside `gpt-5.6-sol`; Daybreak Red
+  aliases `gpt-daybreak-red` and `gpt-daybreak-red-latest` are priced
+  alongside `gpt-5.6-cyber`.
+- GPT-Image-2 has one provider model ID but separate image and text modality
+  cards (`200/50/750` and `125/31.25/250`). Because usage calls do not yet
+  carry an authoritative modality discriminator, those cards are retained as
+  unselectable rate-card records and ambiguous `gpt-image-2` calls stay
+  partial/unpriced rather than being assigned a modality.
 - ChatGPT Fast and API Priority share the provider-facing `priority` tier but
   do not share a billing unit. `billing_surface = 'chatgpt_credits'` plus
   `fast_mode_used = 1` selects an explicit Fast credit row. API-token calls do
