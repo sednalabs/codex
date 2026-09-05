@@ -78,10 +78,12 @@ impl BwrapOutputRelay {
         let mut stderr_closed = false;
         while !(stdout_closed && stderr_closed) {
             if !stdout_closed {
-                stdout_closed = forward_available(stdout_read.as_raw_fd(), libc::STDOUT_FILENO, "stdout");
+                stdout_closed =
+                    forward_available(stdout_read.as_raw_fd(), libc::STDOUT_FILENO, "stdout");
             }
             if !stderr_closed {
-                stderr_closed = forward_available(stderr_read.as_raw_fd(), libc::STDERR_FILENO, "stderr");
+                stderr_closed =
+                    forward_available(stderr_read.as_raw_fd(), libc::STDERR_FILENO, "stderr");
             }
             if !(stdout_closed && stderr_closed) {
                 poll_for_output(&stdout_read, &stderr_read);

@@ -2,6 +2,7 @@ use super::SandboxCommand;
 #[cfg(target_os = "windows")]
 use super::SandboxDirectSpawnTransformRequest;
 use super::SandboxManager;
+use super::SandboxProcessLifetime;
 use super::SandboxTransformRequest;
 use super::SandboxType;
 use super::SandboxablePreference;
