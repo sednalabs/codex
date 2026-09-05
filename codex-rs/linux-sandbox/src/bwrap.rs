@@ -629,6 +629,7 @@ fn create_filesystem_args(
             &mut bwrap_args,
             &protected_metadata_names,
             root,
+            mount_root,
             symlink_target.as_deref(),
             &read_only_subpaths,
         );
@@ -690,6 +691,7 @@ fn append_protected_create_targets_for_writable_root(
     bwrap_args: &mut BwrapArgs,
     protected_metadata_names: &[String],
     root: &Path,
+    mount_root: &Path,
     symlink_target: Option<&Path>,
     read_only_subpaths: &[PathBuf],
 ) {
