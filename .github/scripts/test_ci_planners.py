@@ -7529,6 +7529,49 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("Unable to fetch PR base; running full blocking CI.", classify_run)
         self.assertIn("Unable to classify PR paths; running full blocking CI.", classify_run)
 
+    def test_blocking_ci_clippy_required_lane_is_path_aware_and_fail_closed(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blocking-ci.yml")
+        triggers = payload.get("on") or {}
+        self.assertIn("pull_request", triggers)
+        self.assertEqual(
+            triggers.get("merge_group"),
+            {"types": ["checks_requested"]},
+        )
+        jobs = payload.get("jobs") or {}
+        scope = jobs.get("scope") or {}
+        outputs = scope.get("outputs") or {}
+        self.assertEqual(outputs.get("clippy"), "${{ steps.scope.outputs.clippy }}")
+        scope_run = next(
+            step for step in scope.get("steps") or [] if step.get("name") == "Classify blocking CI scope"
+        ).get("run") or ""
+        self.assertIn('echo "clippy=true"', scope_run)
+        self.assertIn('"clippy",', scope_run)
+        self.assertIn("if ! plan=", scope_run)
+
+        clippy = jobs.get("clippy-required") or {}
+        self.assertEqual(clippy.get("name"), "Linux full Clippy")
+        self.assertEqual(clippy.get("needs"), "scope")
+        self.assertEqual(clippy.get("if"), "${{ always() }}")
+        steps = clippy.get("steps") or []
+        verify = next(step for step in steps if step.get("name") == "Verify Clippy scope classification")
+        verify_run = verify.get("run") or ""
+        self.assertIn('[[ "${SCOPE_RESULT}" == "success" ]]', verify_run)
+        self.assertIn("Unknown Clippy scope classification", verify_run)
+        command = next(
+            step for step in steps
+            if step.get("name") == "cargo clippy --target x86_64-unknown-linux-gnu --all-features --tests --profile dev -- -D warnings"
+        )
+        self.assertEqual(
+            command.get("run"),
+            "cargo clippy --target x86_64-unknown-linux-gnu --all-features --tests --profile dev -- -D warnings",
+        )
+        self.assertEqual(
+            command.get("if"),
+            "${{ needs.scope.outputs.clippy == 'true' }}",
+        )
+        required = jobs.get("required") or {}
+        self.assertIn("clippy-required", required.get("needs") or [])
+
     def test_merge_group_concurrency_is_sha_scoped_and_not_cancelled(self) -> None:
         merge_group_workflows = []
         for workflow_path in sorted((REPO_ROOT / ".github/workflows").glob("*.y*ml")):

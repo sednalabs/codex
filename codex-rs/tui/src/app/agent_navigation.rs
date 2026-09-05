@@ -68,6 +68,16 @@ pub(crate) enum AgentNavigationUpdate {
     Rejected,
 }
 
+/// Metadata received together when retaining a picker thread across a lifecycle refresh.
+#[derive(Debug, Default)]
+pub(crate) struct AgentPickerThreadRetention {
+    pub(crate) agent_nickname: Option<String>,
+    pub(crate) agent_role: Option<String>,
+    pub(crate) is_closed: bool,
+    pub(crate) created_at: Option<i64>,
+    pub(crate) updated_at: Option<i64>,
+}
+
 impl AgentNavigationUpdate {
     pub(crate) fn accepted(self) -> bool {
         matches!(self, Self::Accepted { .. })
@@ -200,11 +210,7 @@ impl AgentNavigationState {
     pub(crate) fn upsert_retaining(
         &mut self,
         thread_id: ThreadId,
-        agent_nickname: Option<String>,
-        agent_role: Option<String>,
-        is_closed: bool,
-        created_at: Option<i64>,
-        updated_at: Option<i64>,
+        retention: AgentPickerThreadRetention,
         protected_thread_ids: &[ThreadId],
     ) -> AgentNavigationUpdate {
         let previous_is_running = self
@@ -214,17 +220,17 @@ impl AgentNavigationState {
         self.upsert_retaining_with_path(
             thread_id,
             AgentPickerThreadEntry {
-                agent_nickname,
-                agent_role,
+                agent_nickname: retention.agent_nickname,
+                agent_role: retention.agent_role,
                 agent_path: None,
                 model: None,
                 reasoning_effort: None,
                 model_provider: None,
                 task_name: None,
-                is_running: previous_is_running && !is_closed,
-                is_closed,
-                created_at,
-                updated_at,
+                is_running: previous_is_running && !retention.is_closed,
+                is_closed: retention.is_closed,
+                created_at: retention.created_at,
+                updated_at: retention.updated_at,
             },
             protected_thread_ids,
         )
@@ -927,11 +933,13 @@ mod tests {
         assert_eq!(
             state.upsert_retaining(
                 rejected_thread_id,
-                /*agent_nickname*/ None,
-                /*agent_role*/ None,
-                /*is_closed*/ false,
-                /*created_at*/ None,
-                /*updated_at*/ None,
+                AgentPickerThreadRetention {
+                    agent_nickname: None,
+                    agent_role: None,
+                    is_closed: false,
+                    created_at: None,
+                    updated_at: None,
+                },
                 &[],
             ),
             AgentNavigationUpdate::Rejected
@@ -946,11 +954,13 @@ mod tests {
         assert_eq!(
             state.upsert_retaining(
                 admitted_thread_id,
-                /*agent_nickname*/ None,
-                /*agent_role*/ None,
-                /*is_closed*/ false,
-                /*created_at*/ None,
-                /*updated_at*/ None,
+                AgentPickerThreadRetention {
+                    agent_nickname: None,
+                    agent_role: None,
+                    is_closed: false,
+                    created_at: None,
+                    updated_at: None,
+                },
                 &[],
             ),
             AgentNavigationUpdate::Accepted {

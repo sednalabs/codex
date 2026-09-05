@@ -291,7 +291,7 @@ impl TracingHarness {
 async fn build_test_config(codex_home: &Path, server_uri: &str) -> Result<Config> {
     // The mock-server URI is test-controlled, but keep it free of line breaks before it enters
     // config-derived diagnostics so CodeQL does not treat the queued test envelopes as log data.
-    let server_uri = server_uri.replace('\n', "").replace('\r', "");
+    let server_uri = server_uri.replace(['\n', '\r'], "");
     write_mock_responses_config_toml(
         codex_home,
         &server_uri,
@@ -932,10 +932,10 @@ async fn wait_for_automatic_turn_row(
         .bind(client_user_message_id)
         .fetch_optional(pool)
         .await?;
-        if let Some(row) = row {
-            if row.6 != "started" {
-                return Ok(row);
-            }
+        if let Some(row) = row
+            && row.6 != "started"
+        {
+            return Ok(row);
         }
         let now = tokio::time::Instant::now();
         if now >= deadline {

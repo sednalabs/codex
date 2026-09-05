@@ -575,11 +575,13 @@ impl App {
     ) -> AgentNavigationUpdate {
         let update = self.agent_navigation.upsert_retaining(
             thread_id,
-            agent_nickname.clone(),
-            agent_role.clone(),
-            is_closed,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            AgentPickerThreadRetention {
+                agent_nickname: agent_nickname.clone(),
+                agent_role: agent_role.clone(),
+                is_closed,
+                created_at: None,
+                updated_at: None,
+            },
             &self.protected_agent_picker_threads(),
         );
         if let Some(evicted) = update.evicted() {

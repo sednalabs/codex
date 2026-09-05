@@ -47,6 +47,25 @@ FULL_CODEQL_PATHS = {
     ".github/scripts/test_classify_ci_paths.py",
 }
 
+CLIPPY_REQUIRED_PATHS = {
+    ".github/scripts/classify_ci_paths.py",
+    ".github/scripts/test_classify_ci_paths.py",
+    ".github/workflows/blocking-ci.yml",
+    "Cargo.lock",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "MODULE.bazel",
+    "MODULE.bazel.lock",
+}
+
+CLIPPY_REQUIRED_PREFIXES = (
+    ".github/actions/",
+    ".github/workflows/",
+    ".cargo/",
+    "codex-rs/",
+    "vendor/",
+)
+
 PACKAGE_ROOT_PATHS = {
     "package.json",
     "pnpm-lock.yaml",
@@ -63,6 +82,7 @@ BAZEL_ROOT_PATHS = {
 
 @dataclass(frozen=True)
 class Scope:
+    clippy: bool
     cargo_deny: bool
     repo_policy: bool
     repo_package: bool
@@ -96,6 +116,7 @@ def classify(paths: Iterable[str]) -> Scope:
 
     if not changed:
         return Scope(
+            clippy=True,
             cargo_deny=True,
             repo_policy=True,
             repo_package=True,
@@ -110,6 +131,11 @@ def classify(paths: Iterable[str]) -> Scope:
     force_full_blocking = any(path in FULL_BLOCKING_PATHS for path in changed)
     force_full_codeql = any(
         path in FULL_CODEQL_PATHS or _starts(path, *FULL_CODEQL_PREFIXES)
+        for path in changed
+    )
+    clippy = any(
+        path in CLIPPY_REQUIRED_PATHS
+        or _starts(path, *CLIPPY_REQUIRED_PREFIXES)
         for path in changed
     )
 
@@ -229,6 +255,7 @@ def classify(paths: Iterable[str]) -> Scope:
             codeql.add("rust")
 
     return Scope(
+        clippy=clippy,
         cargo_deny=cargo_deny,
         repo_policy=repo_policy,
         repo_package=repo_package,
