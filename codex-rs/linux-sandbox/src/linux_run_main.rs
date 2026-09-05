@@ -853,9 +853,9 @@ impl ProtectedCreateMonitor {
 impl BwrapNamespaceInit {
     fn from_bwrap_info(info: &str, launcher_pid: libc::pid_t) -> Option<Self> {
         let pid = parse_bwrap_child_pid(info).unwrap_or_else(|| {
-                send_signal_to_bwrap_child(launcher_pid, libc::SIGKILL);
-                panic!("bubblewrap child information omitted a valid child-pid")
-            });
+            send_signal_to_bwrap_child(launcher_pid, libc::SIGKILL);
+            panic!("bubblewrap child information omitted a valid child-pid")
+        });
         // Bind the numeric PID to an fd before inspecting any proc metadata.
         // A detached namespace reaper legitimately becomes reparented after
         // the outer launcher exits; PPid is therefore neither a liveness nor
@@ -956,7 +956,10 @@ fn create_bwrap_info_pipe(enabled: bool) -> [libc::c_int; 2] {
         let err = std::io::Error::last_os_error();
         panic!("failed to create bubblewrap info pipe: {err}");
     }
-    [reserve_fd_above_stdio(pipe[0]), reserve_fd_above_stdio(pipe[1])]
+    [
+        reserve_fd_above_stdio(pipe[0]),
+        reserve_fd_above_stdio(pipe[1]),
+    ]
 }
 
 fn create_detached_command_status_pipe() -> [libc::c_int; 2] {
@@ -965,7 +968,10 @@ fn create_detached_command_status_pipe() -> [libc::c_int; 2] {
         let err = std::io::Error::last_os_error();
         panic!("failed to create detached command-status pipe: {err}");
     }
-    [reserve_fd_above_stdio(pipe[0]), reserve_fd_above_stdio(pipe[1])]
+    [
+        reserve_fd_above_stdio(pipe[0]),
+        reserve_fd_above_stdio(pipe[1]),
+    ]
 }
 
 /// Keep protocol descriptors out of stdin/stdout/stderr. A caller may have
@@ -1903,8 +1909,10 @@ fn remove_protected_create_target_best_effort(
 fn try_remove_protected_create_target(
     target: &crate::bwrap::ProtectedCreateTarget,
 ) -> std::io::Result<Option<ProtectedCreateRemoval>> {
-    let path = target.path();
-    let metadata = match fs::symlink_metadata(path) {
+    let Some(path) = normalized_protected_create_path(target.path(), target.root())? else {
+        return Ok(None);
+    };
+    let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
@@ -1916,10 +1924,10 @@ fn try_remove_protected_create_target(
         ProtectedCreateRemoval::Other
     };
     let result = if removal == ProtectedCreateRemoval::Directory {
-        make_directory_tree_writable(path)?;
-        fs::remove_dir_all(path)
+        make_directory_tree_writable(&path, target.root())?;
+        fs::remove_dir_all(&path)
     } else {
-        fs::remove_file(path)
+        fs::remove_file(&path)
     };
     match result {
         Ok(()) => {}
@@ -1933,8 +1941,15 @@ fn try_remove_protected_create_target(
     Ok(Some(removal))
 }
 
-fn make_directory_tree_writable(path: &Path) -> std::io::Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
+fn make_directory_tree_writable(path: &Path, root: &Path) -> std::io::Result<()> {
+    let Some(path) = normalized_protected_create_path(path, root)? else {
+        return Ok(());
+    };
+    make_directory_tree_writable_inner(&path)
+}
+
+fn make_directory_tree_writable_inner(path: &Path) -> std::io::Result<()> {
+    let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err),
@@ -1945,13 +1960,64 @@ fn make_directory_tree_writable(path: &Path) -> std::io::Result<()> {
     let directory = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW)
-        .open(path)?;
+        .open(&path)?;
     let directory_path = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
     fs::set_permissions(&directory_path, fs::Permissions::from_mode(0o700))?;
     for entry in fs::read_dir(directory_path)? {
-        make_directory_tree_writable(&entry?.path())?;
+        make_directory_tree_writable_inner(&entry?.path())?;
     }
     Ok(())
+}
+
+/// Normalize a protected-create target's parent and keep its final component
+/// beneath the writable root. The final component is deliberately not
+/// canonicalized: `symlink_metadata` and `O_NOFOLLOW` must still observe and
+/// reject a symlink at the target itself rather than following it.
+fn normalized_protected_create_path(path: &Path, root: &Path) -> std::io::Result<Option<PathBuf>> {
+    if !path.is_absolute() || !root.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "protected-create paths must be absolute",
+        ));
+    }
+
+    let canonical_root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "protected-create path has no parent",
+        )
+    })?;
+    let canonical_parent = match parent.canonicalize() {
+        Ok(parent) => parent,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "protected-create path has no final component",
+        )
+    })?;
+    if file_name == "." || file_name == ".." {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "protected-create path has an invalid final component",
+        ));
+    }
+
+    let normalized = canonical_parent.join(file_name);
+    if !normalized.starts_with(&canonical_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "protected-create path escaped its writable root",
+        ));
+    }
+    Ok(Some(normalized))
 }
 
 fn remove_synthetic_mount_target(target: &crate::bwrap::SyntheticMountTarget) {
@@ -2095,6 +2161,10 @@ pub(crate) fn synthetic_mount_registry_root() -> PathBuf {
             let registry_root = temp_dir.join(format!(
                 "codex-bwrap-synthetic-mount-targets-{effective_uid}"
             ));
+            assert!(
+                registry_root.starts_with(&temp_dir),
+                "synthetic mount registry escaped its canonical temp directory"
+            );
             // A registry symlink can redirect bookkeeping into a writable root
             // that does not overlap TMPDIR, bypassing its read-only mount.
             assert!(

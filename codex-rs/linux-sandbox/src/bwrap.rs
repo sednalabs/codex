@@ -159,17 +159,33 @@ pub(crate) struct SyntheticMountTarget {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProtectedCreateTarget {
     path: PathBuf,
+    // Keep the writable root alongside the protected path so cleanup can
+    // validate the path after a command has had a chance to create it.
+    root: PathBuf,
 }
 
 impl ProtectedCreateTarget {
     pub(crate) fn missing(path: &Path) -> Self {
+        let root = path
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .to_path_buf();
+        Self::missing_under_root(path, &root)
+    }
+
+    pub(crate) fn missing_under_root(path: &Path, root: &Path) -> Self {
         Self {
             path: path.to_path_buf(),
+            root: root.to_path_buf(),
         }
     }
 
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
     }
 }
 
@@ -689,7 +705,7 @@ fn append_protected_create_targets_for_writable_root(
         }
         bwrap_args
             .protected_create_targets
-            .push(ProtectedCreateTarget::missing(&path));
+            .push(ProtectedCreateTarget::missing_under_root(&path, mount_root));
     }
 }
 

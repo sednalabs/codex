@@ -964,9 +964,16 @@ async fn default_workspace_write_cannot_delete_or_lock_synthetic_mount_registry(
 
     let workspace = tempfile::tempdir().expect("workspace");
     let effective_uid = unsafe { libc::geteuid() };
-    let registry = std::env::temp_dir().join(format!(
+    let temp_dir = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonical temporary directory");
+    let registry = temp_dir.join(format!(
         "codex-bwrap-synthetic-mount-targets-{effective_uid}"
     ));
+    assert!(
+        registry.starts_with(&temp_dir),
+        "registry must remain beneath the canonical temporary directory"
+    );
     std::fs::create_dir_all(&registry).expect("create authoritative registry");
     let marker = registry.join(format!("hostile-delete-{}", std::process::id()));
     let hostile_lock = registry.join(format!("hostile-lock-{}", std::process::id()));
