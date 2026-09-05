@@ -110,6 +110,38 @@ jobs:
             --current-run-id "${{ github.run_id }}" \
             --github-output "${GITHUB_OUTPUT}"
 
+      - name: Resolve merge-group queue-base delta
+        id: merge_group_diff
+        if: ${{ github.event_name == 'merge_group' && steps.schedule_duplicate.outputs.should_skip != 'true' }}
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if ! git fetch --no-tags --depth=1 origin "${BASE_SHA}"; then
+            echo 'comparison_complete=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! diff_json="$(git diff --name-status --find-renames "${BASE_SHA}" "${HEAD_SHA}" | python3 -c 'import json,sys; print(json.dumps([line.split("\\t", 1)[0] for line in sys.stdin.read().splitlines() if line]))')"; then
+            echo 'comparison_complete=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! files_json="$(git diff --name-only --no-renames "${BASE_SHA}" "${HEAD_SHA}" | python3 -c 'import json,sys; print(json.dumps([line for line in sys.stdin.read().splitlines() if line]))')"; then
+            echo 'comparison_complete=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! line_count="$(git diff --numstat --no-renames "${BASE_SHA}" "${HEAD_SHA}" | awk '{ if ($1 == "-" || $2 == "-") { unknown = 1; next } total += $1 + $2 } END { print unknown ? 10000 : total + 0 }')"; then
+            echo 'comparison_complete=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "files_json=${files_json}"
+            echo "status_json=${diff_json}"
+            echo "line_count=${line_count}"
+            echo "comparison_complete=true"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Check previous required result on follow-up head
         id: previous_required
         if: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' && steps.schedule_duplicate.outputs.should_skip != 'true' }}
@@ -294,6 +326,10 @@ jobs:
           PRIMARY_LINE_COUNT: ${{ steps.pr_diff.outputs.primary_line_count || '' }}
           LATEST_DELTA_FILES_JSON: ${{ steps.pr_diff.outputs.latest_delta_files_json || '' }}
           LATEST_DELTA_LINE_COUNT: ${{ steps.pr_diff.outputs.latest_delta_line_count || '' }}
+          MERGE_GROUP_FILES_JSON: ${{ steps.merge_group_diff.outputs.files_json || '' }}
+          MERGE_GROUP_STATUS_JSON: ${{ steps.merge_group_diff.outputs.status_json || '' }}
+          MERGE_GROUP_LINE_COUNT: ${{ steps.merge_group_diff.outputs.line_count || '' }}
+          MERGE_GROUP_COMPARISON_COMPLETE: ${{ steps.merge_group_diff.outputs.comparison_complete || 'false' }}
         run: |
           set -euo pipefail
 
@@ -308,7 +344,11 @@ jobs:
             --primary-files-json "${PRIMARY_FILES_JSON}" \
             --primary-line-count "${PRIMARY_LINE_COUNT}" \
             --latest-delta-files-json "${LATEST_DELTA_FILES_JSON}" \
-            --latest-delta-line-count "${LATEST_DELTA_LINE_COUNT}")"
+            --latest-delta-line-count "${LATEST_DELTA_LINE_COUNT}" \
+            --merge-group-files-json "${MERGE_GROUP_FILES_JSON}" \
+            --merge-group-status-json "${MERGE_GROUP_STATUS_JSON}" \
+            --merge-group-line-count "${MERGE_GROUP_LINE_COUNT}" \
+            --merge-group-comparison-complete "${MERGE_GROUP_COMPARISON_COMPLETE}")"
 
           PLAN_JSON="${plan}" python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
