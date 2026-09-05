@@ -7,8 +7,7 @@
 use codex_protocol::openai_models::ModelInfo;
 
 const CODEX_AUTO_REVIEW_SLUG: &str = "codex-auto-review";
-const BLOCKING_WAIT_SENTENCE: &str =
-    "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+const BLOCKING_WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OverlayOutcome {
@@ -81,7 +80,10 @@ mod tests {
         );
         assert_eq!(
             model.model_messages.unwrap().instructions_template,
-            Some("before  after; a deliberate short timeout of 5 seconds remains allowed".to_string())
+            Some(
+                "before  after; a deliberate short timeout of 5 seconds remains allowed"
+                    .to_string()
+            )
         );
 
         let transformed = model.clone();
@@ -95,13 +97,13 @@ mod tests {
     #[test]
     fn missing_marker_or_non_exact_slug_is_unchanged() {
         let source = format!("before {BLOCKING_WAIT_SENTENCE} after");
-        for (slug,) in [
-            ("custom",),
-            ("codex-auto-review-v2",),
-        ] {
+        for (slug,) in [("custom",), ("codex-auto-review-v2",)] {
             let mut model = model(slug, &source, Some(&source));
             let original = model.clone();
-            assert_eq!(apply_openai_compatible(&mut model), OverlayOutcome::NotApplicable);
+            assert_eq!(
+                apply_openai_compatible(&mut model),
+                OverlayOutcome::NotApplicable
+            );
             assert_eq!(model, original);
         }
     }
