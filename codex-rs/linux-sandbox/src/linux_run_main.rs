@@ -1991,10 +1991,7 @@ fn proc_fd_path(fd: RawFd) -> PathBuf {
     PathBuf::from(format!("/proc/self/fd/{fd}"))
 }
 
-fn remove_entry_at(
-    parent: RawFd,
-    name: &CString,
-) -> std::io::Result<ProtectedCreateRemoval> {
+fn remove_entry_at(parent: RawFd, name: &CString) -> std::io::Result<ProtectedCreateRemoval> {
     let metadata = stat_at(parent, name)?;
     if !is_directory(&metadata) {
         unlink_at(parent, name, 0)?;
