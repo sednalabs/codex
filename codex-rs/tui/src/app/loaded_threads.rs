@@ -538,7 +538,7 @@ mod tests {
         let hidden_connector_id = ThreadId::new();
         let grandchild_thread_id = ThreadId::new();
         let mut accumulator = LoadedSubagentAccumulator::new(primary_thread_id);
-        let mut grandchild = test_thread(
+        let grandchild = test_thread(
             grandchild_thread_id,
             thread_spawn_source(
                 hidden_connector_id,
