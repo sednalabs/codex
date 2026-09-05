@@ -119,7 +119,10 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+          if ! git fetch --no-tags --depth=1 origin "${BASE_SHA}"; then
+            echo 'comparison_complete=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           diff_json="$(git diff --name-status --find-renames "${BASE_SHA}" "${HEAD_SHA}" | python3 -c 'import json,sys; print(json.dumps([line.split("\\t", 1)[0] for line in sys.stdin.read().splitlines() if line]))')"
           files_json="$(git diff --name-only --no-renames "${BASE_SHA}" "${HEAD_SHA}" | python3 -c 'import json,sys; print(json.dumps([line for line in sys.stdin.read().splitlines() if line]))')"
           line_count="$(git diff --numstat --no-renames "${BASE_SHA}" "${HEAD_SHA}" | awk '{ if ($1 == "-" || $2 == "-") { unknown = 1; next } total += $1 + $2 } END { print unknown ? 10000 : total + 0 }')"

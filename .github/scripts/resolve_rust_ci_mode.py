@@ -313,11 +313,15 @@ def main() -> None:
     if args.event_name == "merge_group":
         merge_files = parse_files_json(args.merge_group_files_json, strict=False)
         merge_statuses = parse_files_json(args.merge_group_status_json, strict=False)
-        merge_lines = explicit_line_count(args.merge_group_line_count)
+        try:
+            merge_lines = explicit_line_count(args.merge_group_line_count)
+        except SystemExit:
+            merge_lines = None
         if merge_group_docs_only(
             merge_files,
             complete=args.merge_group_comparison_complete.strip().lower() == "true"
-            and merge_lines is not None,
+            and merge_lines is not None
+            and merge_lines < 10_000,
             statuses=merge_statuses,
         ):
             outputs = forced_full_outputs()

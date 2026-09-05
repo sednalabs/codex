@@ -8148,6 +8148,18 @@ class RustCiModeScriptTests(unittest.TestCase):
             )
             self.assertEqual(outputs["validation_mode"], "full")
 
+    def test_merge_group_unknown_or_malformed_line_count_stays_full(self) -> None:
+        for count in ("10000", "not-a-count"):
+            outputs = run_script(
+                SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+                "--repo-root", str(self.repo.root), "--event-name", "merge_group",
+                "--merge-group-comparison-complete", "true",
+                "--merge-group-files-json", json.dumps(["docs/ci.md"]),
+                "--merge-group-status-json", json.dumps(["M"]),
+                "--merge-group-line-count", count,
+            )
+            self.assertEqual(outputs["validation_mode"], "full")
+
     def test_light_initial_routes_small_openai_models_pr_to_exact_lane(self) -> None:
         outputs = self.run_rust_ci_mode(
             event_action="opened",
