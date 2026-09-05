@@ -9,9 +9,11 @@ use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
+use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1070,7 +1072,7 @@ fn read_bwrap_namespace_init(
     }
     let mut info = String::new();
     let mut file = unsafe { File::from_raw_fd(read_fd) };
-    file.by_ref()
+    std::io::Read::by_ref(&mut file)
         .take(64 * 1024)
         .read_to_string(&mut info)
         .unwrap_or_else(|err| {
@@ -1909,71 +1911,173 @@ fn remove_protected_create_target_best_effort(
 fn try_remove_protected_create_target(
     target: &crate::bwrap::ProtectedCreateTarget,
 ) -> std::io::Result<Option<ProtectedCreateRemoval>> {
-    let Some(path) = normalized_protected_create_path(target.path(), target.root())? else {
+    let Some(normalized) = normalized_protected_create_path(target.path(), target.root())? else {
         return Ok(None);
     };
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
+    let root = open_directory_fd(&normalized.root)?;
+    let (parent, name) = open_protected_create_parent(&root, &normalized.relative)?;
+    let removal = match remove_entry_at(parent.as_raw_fd(), &name) {
+        Ok(removal) => removal,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
     };
-
-    let removal = if metadata.is_dir() {
-        ProtectedCreateRemoval::Directory
-    } else {
-        ProtectedCreateRemoval::Other
-    };
-    let result = if removal == ProtectedCreateRemoval::Directory {
-        make_directory_tree_writable(&path, target.root())?;
-        fs::remove_dir_all(&path)
-    } else {
-        fs::remove_file(&path)
-    };
-    match result {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err),
-    }
     eprintln!(
         "sandbox blocked creation of protected workspace metadata path {}",
-        path.display()
+        normalized.display.display()
     );
     Ok(Some(removal))
 }
 
-fn make_directory_tree_writable(path: &Path, root: &Path) -> std::io::Result<()> {
-    let Some(path) = normalized_protected_create_path(path, root)? else {
-        return Ok(());
-    };
-    make_directory_tree_writable_inner(&path)
-}
-
-fn make_directory_tree_writable_inner(path: &Path) -> std::io::Result<()> {
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err),
-    };
-    if !metadata.is_dir() {
-        return Ok(());
-    }
+fn open_directory_fd(path: &Path) -> std::io::Result<OwnedFd> {
     let directory = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW)
-        .open(&path)?;
-    let directory_path = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
-    fs::set_permissions(&directory_path, fs::Permissions::from_mode(0o700))?;
-    for entry in fs::read_dir(directory_path)? {
-        make_directory_tree_writable_inner(&entry?.path())?;
+        .open(path)?;
+    Ok(directory.into())
+}
+
+fn open_directory_at(parent: RawFd, name: &CString) -> std::io::Result<OwnedFd> {
+    // SAFETY: `name` is a NUL-terminated component owned by the caller and
+    // `parent` is an open directory descriptor retained for this operation.
+    let fd = unsafe {
+        libc::openat(
+            parent,
+            name.as_ptr(),
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the successful openat call transfers ownership of this fd.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+fn stat_at(parent: RawFd, name: &CString) -> std::io::Result<libc::stat> {
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `metadata` points to writable storage and `name` is a valid
+    // NUL-terminated component for the duration of the call.
+    let result = unsafe {
+        libc::fstatat(
+            parent,
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fstatat initialized metadata after returning success.
+    Ok(unsafe { metadata.assume_init() })
+}
+
+fn is_directory(metadata: &libc::stat) -> bool {
+    (metadata.st_mode & libc::S_IFMT) == libc::S_IFDIR
+}
+
+fn unlink_at(parent: RawFd, name: &CString, flags: libc::c_int) -> std::io::Result<()> {
+    // SAFETY: `name` is a NUL-terminated component and `parent` is an open
+    // directory descriptor retained for this operation.
+    let result = unsafe { libc::unlinkat(parent, name.as_ptr(), flags) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error());
     }
     Ok(())
 }
 
+fn proc_fd_path(fd: RawFd) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{fd}"))
+}
+
+fn remove_entry_at(
+    parent: RawFd,
+    name: &CString,
+) -> std::io::Result<ProtectedCreateRemoval> {
+    let metadata = stat_at(parent, name)?;
+    if !is_directory(&metadata) {
+        unlink_at(parent, name, 0)?;
+        return Ok(ProtectedCreateRemoval::Other);
+    }
+
+    let directory = open_directory_at(parent, name)?;
+    let directory_path = proc_fd_path(directory.as_raw_fd());
+    fs::set_permissions(&directory_path, fs::Permissions::from_mode(0o700))?;
+    for entry in fs::read_dir(directory_path)? {
+        let entry = entry?;
+        let child_name = CString::new(entry.file_name().as_bytes()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "protected-create directory entry contains NUL",
+            )
+        })?;
+        match remove_entry_at(directory.as_raw_fd(), &child_name) {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+    }
+    unlink_at(parent, name, libc::AT_REMOVEDIR)?;
+    Ok(ProtectedCreateRemoval::Directory)
+}
+
+fn open_protected_create_parent(
+    root: &OwnedFd,
+    relative: &Path,
+) -> std::io::Result<(OwnedFd, CString)> {
+    let mut components = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(name) => CString::new(name.as_bytes()).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "protected-create path component contains NUL",
+                )
+            }),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "protected-create path contains a non-normal component",
+            )),
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let name = components.pop().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "protected-create path has no final component",
+        )
+    })?;
+    let mut parent = duplicate_fd(root.as_raw_fd())?;
+    for component in components {
+        parent = open_directory_at(parent.as_raw_fd(), &component)?;
+    }
+    Ok((parent, name))
+}
+
+fn duplicate_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
+    // SAFETY: `fd` is retained by the caller for the duration of this call.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, libc::STDERR_FILENO + 1) };
+    if duplicate < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the successful fcntl call transfers ownership of this fd.
+    Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
+}
+
 /// Normalize a protected-create target's parent and keep its final component
 /// beneath the writable root. The final component is deliberately not
-/// canonicalized: `symlink_metadata` and `O_NOFOLLOW` must still observe and
-/// reject a symlink at the target itself rather than following it.
-fn normalized_protected_create_path(path: &Path, root: &Path) -> std::io::Result<Option<PathBuf>> {
+/// canonicalized: descriptor-relative no-follow operations must still observe
+/// a symlink at the target itself rather than following it.
+struct NormalizedProtectedCreatePath {
+    root: PathBuf,
+    relative: PathBuf,
+    display: PathBuf,
+}
+
+fn normalized_protected_create_path(
+    path: &Path,
+    root: &Path,
+) -> std::io::Result<Option<NormalizedProtectedCreatePath>> {
     if !path.is_absolute() || !root.is_absolute() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -2020,7 +2124,20 @@ fn normalized_protected_create_path(path: &Path, root: &Path) -> std::io::Result
             "protected-create path escaped its writable root",
         ));
     }
-    Ok(Some(normalized))
+    let relative = normalized
+        .strip_prefix(&canonical_root)
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "protected-create path escaped its writable root",
+            )
+        })?
+        .to_path_buf();
+    Ok(Some(NormalizedProtectedCreatePath {
+        root: canonical_root,
+        relative,
+        display: normalized,
+    }))
 }
 
 fn remove_synthetic_mount_target(target: &crate::bwrap::SyntheticMountTarget) {

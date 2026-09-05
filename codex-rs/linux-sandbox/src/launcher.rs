@@ -37,7 +37,7 @@ pub(crate) fn exec_bwrap(mut argv: Vec<String>, preserved_files: Vec<File>) -> !
     // Keep the conventional argv[0] value and add the option without using
     // Vec::insert. The latter is modelled as a log sink by CodeQL, even though
     // this vector is an exec argument list rather than a log record.
-    let mut argv_with_pid1 = Vec::with_capacity(argv.len() + 1);
+    let mut argv_with_pid1 = Vec::new();
     if let Some(argv0) = argv.first() {
         argv_with_pid1.push(argv0.clone());
         argv_with_pid1.push("--as-pid-1".to_string());
