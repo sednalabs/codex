@@ -147,7 +147,7 @@ jobs:
           test "$INNER_SIZE" = "$(jq -r .inner_size package-info.json)"
           jq -cn --arg age "$(age --version)" --arg git "$(git --version)" \
             --arg tar "$(tar --version | head -n1)" --arg gh "$(gh --version | head -n1)" \
-            --arg jq "$(jq --version)" '{age,git,tar,gh,jq}' > tool-versions.json
+            --arg jq "$(jq --version)" '{age:$age,git:$git,tar:$tar,gh:$gh,jq:$jq}' > tool-versions.json
           age -r "$AGE_RECIPIENT" -o recovery-snapshot.age snapshot.tar.gz
           test "$(find . -maxdepth 1 -type f -name 'recovery-snapshot.age' | wc -l)" -eq 1
           {
@@ -194,7 +194,7 @@ jobs:
           API_ARTIFACT_DIGEST=$(jq -r '.digest' <<<"$ARTIFACT_READBACK")
           test "$ARTIFACT_SIZE" != "null" -a "$UPLOAD_ARTIFACT_DIGEST" != "null" -a -n "$UPLOAD_ARTIFACT_DIGEST" \
             -a "$API_ARTIFACT_DIGEST" != "null" -a -n "$API_ARTIFACT_DIGEST" \
-            -a "$UPLOAD_ARTIFACT_DIGEST" = "$API_ARTIFACT_DIGEST"
+            -a "$API_ARTIFACT_DIGEST" = "sha256:$UPLOAD_ARTIFACT_DIGEST"
           jq -n --arg inner_sha256 "$INNER_SHA" --argjson inner_size "$INNER_SIZE" \
             --arg ref_manifest_sha256 "$REF_MANIFEST_SHA" --arg metadata_manifest_sha256 "$METADATA_MANIFEST_SHA" \
             --arg restore_test_identity "$RESTORE_ID" --arg recipient_sha256 "$RECIPIENT_SHA256" \
