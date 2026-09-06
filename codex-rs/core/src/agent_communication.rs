@@ -88,7 +88,7 @@ mod tests {
             AgentPath::root(),
             Vec::new(),
             ciphertext.to_string(),
-            false,
+            /*trigger_turn*/ false,
         );
 
         assert_eq!(telemetry_content(&communication), "[encrypted]");
