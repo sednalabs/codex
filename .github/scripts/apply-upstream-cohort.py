@@ -4,7 +4,7 @@
 Trusted code comes from the reviewed workflow checkout.  The accepted SDK
 artifact and reviewed build-source commit are immutable data inputs.  The
 consumer verifies every input tuple, retains the three already-materialized
-patch dependencies, and applies only eight reviewed source entries.  Its
+patch dependencies, and applies only eleven reviewed source entries.  Its
 metadata-only mode emits complete content-free tree manifests without running
 generators or creating Git objects.  Its build mode regenerates up to five
 coupled outputs with repository-pinned tools and emits a fresh-bare-verified
@@ -31,7 +31,7 @@ REPOSITORY_ID = "1152496647"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-build-consumer"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "8c75a6d18e634cd488c0c07f9cf67c49a294d91f"
+PUSH_PREDECESSOR_SHA = "76eea248cd55c453e16b153f5cfa0fa582e77011"
 
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
@@ -78,11 +78,11 @@ COMMON_PROVENANCE_SHA256 = "afbf269c8593c978ed706c9f2fddc0031383350fe216d88512ec
 COMMON_STAGED_PATCH_SHA256 = "dd4b59d9be8c2727d08de673085b36a1c61f6cee617855f210706412a5bfc66c"
 COMMON_STAGED_PATHS_SHA256 = "90b44134bb538a07fa03dfd674e96f08de4ba04a40252f6dc9f5c740dd5bb1ae"
 
-BUILD_SOURCE_SHA = "54bcd76de2c0c30d655c99faf2e2c9cab271e18b"
-BUILD_SOURCE_TREE = "6adcbddd3dde655a77a385fc75d5af9d39f90802"
-BUILD_SOURCE_PARENT = BASE_SHA
+BUILD_SOURCE_SHA = "4addbc431785bdedf77e8ef8b1c1a982267fdbc4"
+BUILD_SOURCE_TREE = "88a670918280adfc5ab8add02642a69bae39824f"
+BUILD_SOURCE_PARENT = "277aa00228367f1ba47214961bc26a05c1da2483"
 BUILD_SOURCE_BRANCH = "worker/w13825-build-source-authoring-20260907"
-BUILD_PATHS_SHA256 = "fdf7ee7203da4bd7b0d1ddb5ff9d7e0278e0dc0374d6776006cc67dba5460c23"
+BUILD_PATHS_SHA256 = "69f15ab670d1f971c6f48f3efa8e38b954fb4161df6aa0608c14b2c155b261f2"
 BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str]] = {
     ".github/workflows/bazel.yml": (
         "100644",
@@ -112,7 +112,17 @@ BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str]] = {
     "MODULE.bazel": (
         "100644",
         "blob",
-        "647b8edfd1a5bd947106fb64a13261a461bfeca2",
+        "ea89c1d5152f8dbe007f23ca63e07dd59c054ae1",
+    ),
+    "codex-rs/Cargo.lock": (
+        "100644",
+        "blob",
+        "67c9cc2ba7d8e03117b388df989eab676501b238",
+    ),
+    "codex-rs/Cargo.toml": (
+        "100644",
+        "blob",
+        "141880c1b07806929ebcb6a4c622898cf65b5435",
     ),
     "codex-rs/realtime-webrtc/BUILD.bazel": (
         "100644",
@@ -123,6 +133,68 @@ BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str]] = {
         "100644",
         "blob",
         "075b8e30d98baabca4ff60f0b2649d1813ce83d1",
+    ),
+    "third_party/v8/rusty_v8_150_4_0.sha256": (
+        "100644",
+        "blob",
+        "fc884c8ebc1e2f36154a12ecbcd4cbe509d3bbc5",
+    ),
+}
+BUILD_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str]] = {
+    ".github/workflows/bazel.yml": (
+        "100644",
+        "blob",
+        "cd687ef62d9d2562eb2780d65023e0b5df44451b",
+    ),
+    ".github/workflows/blob-size-policy.yml": (
+        "100644",
+        "blob",
+        "24548e1e021366e94e67c9eb7fce9be6d0b0afe5",
+    ),
+    ".github/workflows/rust-ci-full.yml": (
+        "100644",
+        "blob",
+        "efe29828cca7089cf92738e519384023cb8f71bb",
+    ),
+    ".github/workflows/rust-ci.yml": (
+        "100644",
+        "blob",
+        "dba33d8033e95198117a83832ad8617673095b79",
+    ),
+    ".github/workflows/v8-canary.yml": (
+        "100644",
+        "blob",
+        "fb3948522a3b46c04bfefe7f392442a9a151dd91",
+    ),
+    "MODULE.bazel": (
+        "100644",
+        "blob",
+        "da0bd8c284695716325ef518cd4f57714d1c3444",
+    ),
+    "codex-rs/Cargo.lock": (
+        "100644",
+        "blob",
+        "5117062519706acb938639c20c1e56c2dfe03274",
+    ),
+    "codex-rs/Cargo.toml": (
+        "100644",
+        "blob",
+        "b7d06b98391ef2f3307096d963eea4e19853d8f0",
+    ),
+    "codex-rs/realtime-webrtc/BUILD.bazel": (
+        "100644",
+        "blob",
+        "1be89f035d902d96e03b3a1aeb9d1f9b66e1dc82",
+    ),
+    "patches/BUILD.bazel": (
+        "100644",
+        "blob",
+        "1909fed6cf65fceddba1ba476f448551cd9a6018",
+    ),
+    "third_party/v8/rusty_v8_150_4_0.sha256": (
+        "100644",
+        "blob",
+        "628ae7a9ac94eee0e0dd66c927964a0ad06544d7",
     ),
 }
 BUILD_PATHS = list(BUILD_SOURCE_ENTRIES)
@@ -142,6 +214,29 @@ PATCH_DEPENDENCIES: dict[str, tuple[str, str, str]] = {
         "100644",
         "blob",
         "aa5fb274e1d5e7b473771cf71183c132a80e1b36",
+    ),
+}
+
+V8_COMPOSED_ENTRIES: dict[str, tuple[str, str, str]] = {
+    "patches/v8_bazel_rules.patch": (
+        "100644",
+        "blob",
+        "c907d32d214127de359a869a69b4af6bb1b6efb6",
+    ),
+    "patches/v8_module_deps.patch": (
+        "100644",
+        "blob",
+        "d179617e6302ebe573662bb08e962dc41218dfdd",
+    ),
+    "patches/v8_source_portability.patch": (
+        "100644",
+        "blob",
+        "6b6537cb9cd7696a0e3402f644c9ef6404a1c08b",
+    ),
+    "third_party/v8/BUILD.bazel": (
+        "100644",
+        "blob",
+        "d874bce0e01211011d79238887a94029e74aaef2",
     ),
 }
 
@@ -475,9 +570,10 @@ def in_memory_composed_manifest(
 ) -> dict[str, Any]:
     entries = manifest_entry_map(sdk_manifest)
     before = {path: list(entry) for path, entry in entries.items()}
+    require(list(BUILD_SOURCE_PREIMAGE_ENTRIES) == BUILD_PATHS, "build source preimage set mismatch")
     for path, expected in BUILD_SOURCE_ENTRIES.items():
         require(
-            tree_entry(repo, SDK_CANDIDATE_SHA, path) == tree_entry(repo, BASE_SHA, path),
+            tree_entry(repo, SDK_CANDIDATE_SHA, path) == BUILD_SOURCE_PREIMAGE_ENTRIES[path],
             f"accepted SDK candidate did not retain build source preimage: {path}",
         )
         require(
@@ -610,7 +706,7 @@ def verify_runtime(expected_workflow_sha: str, expected_workflow_tree: str) -> d
 def verify_build_source_checkout(repo: pathlib.Path) -> None:
     require(run("git", "rev-parse", "HEAD", cwd=repo).strip() == BUILD_SOURCE_SHA, "build source head mismatch")
     require(run("git", "rev-parse", "HEAD^{tree}", cwd=repo).strip() == BUILD_SOURCE_TREE, "build source tree mismatch")
-    require(run("git", "show", "-s", "--format=%P", BUILD_SOURCE_SHA, cwd=repo).split() == [BASE_SHA], "build source parent mismatch")
+    require(run("git", "show", "-s", "--format=%P", BUILD_SOURCE_SHA, cwd=repo).split() == [BUILD_SOURCE_PARENT], "build source parent mismatch")
     require(not run("git", "status", "--porcelain", cwd=repo), "build source checkout is dirty")
     changed = run(
         "git",
@@ -622,7 +718,7 @@ def verify_build_source_checkout(repo: pathlib.Path) -> None:
         BUILD_SOURCE_SHA,
         cwd=repo,
     ).splitlines()
-    require(changed == BUILD_PATHS, "build source diff is not the exact eight-path cohort")
+    require(changed == BUILD_PATHS, "build source diff is not the exact eleven-path cohort")
     require(path_digest(changed) == BUILD_PATHS_SHA256, "build source path-set digest mismatch")
     for path, expected in BUILD_SOURCE_ENTRIES.items():
         require(tree_entry(repo, BUILD_SOURCE_SHA, path) == expected, f"build source tuple mismatch: {path}")
@@ -803,6 +899,9 @@ def verify_sdk_input_entries(repo: pathlib.Path, receipt: dict[str, Any]) -> lis
     for path, expected in PATCH_DEPENDENCIES.items():
         require(tree_entry(repo, MATERIALIZED_SHA, path) == expected, f"materialized patch dependency mismatch: {path}")
         require(tree_entry(repo, SDK_CANDIDATE_SHA, path) == expected, f"SDK candidate patch dependency mismatch: {path}")
+    for path, expected in V8_COMPOSED_ENTRIES.items():
+        require(tree_entry(repo, MATERIALIZED_SHA, path) == expected, f"materialized V8 preservation mismatch: {path}")
+        require(tree_entry(repo, SDK_CANDIDATE_SHA, path) == expected, f"SDK candidate V8 preservation mismatch: {path}")
     verified_runtime_inputs: list[dict[str, Any]] = []
     for path, expected in COMPOSITE_RUNTIME_INPUTS.items():
         materialized_entry = tree_entry(repo, MATERIALIZED_SHA, path)
@@ -1544,9 +1643,10 @@ def require_candidate_paths(worktree: pathlib.Path, allowed: list[str], label: s
 
 
 def prepare_candidate_worktree(repo: pathlib.Path, temp: pathlib.Path) -> pathlib.Path:
+    require(list(BUILD_SOURCE_PREIMAGE_ENTRIES) == BUILD_PATHS, "build source preimage set mismatch")
     for path in BUILD_PATHS:
         require(
-            tree_entry(repo, SDK_CANDIDATE_SHA, path) == tree_entry(repo, BASE_SHA, path),
+            tree_entry(repo, SDK_CANDIDATE_SHA, path) == BUILD_SOURCE_PREIMAGE_ENTRIES[path],
             f"accepted SDK candidate did not retain build source preimage: {path}",
         )
     worktree = temp / "candidate-worktree"
@@ -1557,7 +1657,7 @@ def prepare_candidate_worktree(repo: pathlib.Path, temp: pathlib.Path) -> pathli
     for path, expected in BUILD_SOURCE_ENTRIES.items():
         require(index_entry(worktree, path) == expected, f"selected build source index tuple mismatch: {path}")
     staged_source = run("git", "diff", "--cached", "--name-only", SDK_CANDIDATE_SHA, cwd=worktree).splitlines()
-    require(staged_source == BUILD_PATHS, "selected build source escaped the eight-path cohort")
+    require(staged_source == BUILD_PATHS, "selected build source escaped the eleven-path cohort")
     require_candidate_paths(worktree, BUILD_PATHS, "build source selection")
     return worktree
 
@@ -1695,6 +1795,17 @@ def generate_and_test(
     run("git", "add", "--", *SDK_GENERATED_PATHS, cwd=worktree)
 
     run_tool(
+        "V8 checksum manifest verification",
+        "python3",
+        ".github/scripts/rusty_v8_bazel.py",
+        "check-module-bazel",
+        "--version",
+        "150.4.0",
+        cwd=worktree,
+    )
+    require_candidate_paths(worktree, sorted([*BUILD_PATHS, *SDK_GENERATED_PATHS]), "V8 checksum verification")
+
+    run_tool(
         "MODULE.bazel.lock generation",
         "bazel",
         "mod",
@@ -1767,6 +1878,7 @@ def generate_and_test(
     generator_identity["commands"] = [
         "uv sync --project sdk/python --group dev --frozen",
         "uv run --project sdk/python --frozen --no-sync python scripts/update_sdk_artifacts.py generate-types",
+        "python3 .github/scripts/rusty_v8_bazel.py check-module-bazel --version 150.4.0",
         "bazel mod deps --lockfile_mode=update",
         "pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts",
         "uv run --project sdk/python --frozen --no-sync pytest tests/test_contract_generation.py tests/test_client_rpc_methods.py",
