@@ -99,7 +99,7 @@ async fn same_thread_retry_keeps_subscription_and_restores_draft() -> Result<()>
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HistoryCapabilities {
+pub(super) enum HistoryCapabilities {
     Current,
     LegacyOnly,
     LegacyOnlyUnsupportedVariant,
@@ -158,7 +158,7 @@ pub(super) async fn start_recording_remote_app_server(
 }
 
 /// Proxies a real app server while optionally rejecting modern pagination like an older server.
-async fn start_recording_app_server_with_history(
+pub(super) async fn start_recording_app_server_with_history(
     config: &Config,
     history_capabilities: HistoryCapabilities,
     mut blocked_thread_list: Option<(ThreadId, oneshot::Sender<()>, oneshot::Receiver<()>)>,

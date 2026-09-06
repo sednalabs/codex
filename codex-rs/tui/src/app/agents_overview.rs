@@ -644,12 +644,73 @@ impl App {
                 .add_error_message("Permission profile has different settings.".to_string());
         }
         self.apply_runtime_policy_overrides(&mut config, RuntimePolicyOverrideScope::All);
+        let defaults_cwd = match app_server.thread_params_mode() {
+            crate::app_server_session::ThreadParamsMode::Embedded => config.cwd.as_path(),
+            crate::app_server_session::ThreadParamsMode::Remote => remote_cwd
+                .as_deref()
+                .or_else(|| app_server.remote_cwd_override())
+                .unwrap_or(Path::new(".")),
+        };
+        let mut server_model_cleared = false;
+        match super::new_session::read_new_session_defaults(app_server, defaults_cwd).await {
+            Ok(Some(defaults)) => {
+                server_model_cleared = defaults.model.is_none();
+                let use_server_provider = matches!(
+                    app_server.thread_params_mode(),
+                    crate::app_server_session::ThreadParamsMode::Embedded
+                ) && self.harness_overrides.model.is_none()
+                    && !super::new_session::has_launch_setting(
+                        &config,
+                        &self.cli_kv_overrides,
+                        "model",
+                    )
+                    && self.harness_overrides.model_provider.is_none()
+                    && !super::new_session::has_launch_setting(
+                        &config,
+                        &self.cli_kv_overrides,
+                        "model_provider",
+                    );
+                super::new_session::overlay_new_session_defaults(
+                    &mut config,
+                    &defaults,
+                    &self.cli_kv_overrides,
+                    &self.harness_overrides,
+                );
+                // Embedded thread/start sends a provider ID alongside the selected model.
+                if use_server_provider {
+                    config.model_provider_id = defaults
+                        .model_provider
+                        .unwrap_or_else(|| "openai".to_string());
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.restore_agents_overview_prompt(prompt);
+                return self.chat_widget.add_error_message(format!(
+                    "Failed to load background task settings: {error}"
+                ));
+            }
+        }
         apply_managed_new_thread_defaults(
             &mut config,
             app_server.managed_new_thread_defaults(),
             &self.cli_kv_overrides,
             &self.harness_overrides,
         );
+        if server_model_cleared
+            && config.model.is_none()
+            && config.features.enabled(Feature::FastMode)
+        {
+            // Bootstrap's fallback model may be seeded from the client. Resolve tiers
+            // against the server catalog when config/read cleared the model.
+            config.model = self
+                .model_catalog
+                .models
+                .iter()
+                .find(|model| model.is_default)
+                .or_else(|| self.model_catalog.models.first())
+                .map(|model| model.model.clone());
+        }
         match app_server
             .start_thread_with_session_start_source(
                 &self.local_settings,

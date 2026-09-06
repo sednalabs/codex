@@ -36,31 +36,36 @@ pub(super) async fn read_new_session_defaults(
     }
 }
 
+pub(super) fn has_launch_setting(
+    config: &Config,
+    cli_kv_overrides: &[(String, TomlValue)],
+    key: &str,
+) -> bool {
+    // A remote server cannot resolve this invocation's explicitly selected local profile.
+    cli_kv_overrides.iter().any(|(path, _)| path == key)
+        || config.config_layer_stack.layers_high_to_low().any(|layer| {
+            layer.disabled_reason.is_none()
+                && matches!(
+                    layer.name,
+                    ConfigLayerSource::User {
+                        profile: Some(_),
+                        ..
+                    }
+                )
+                && layer.config.get(key).is_some()
+        })
+}
+
 pub(super) fn overlay_new_session_defaults(
     config: &mut Config,
     defaults: &codex_app_server_protocol::Config,
     cli_kv_overrides: &[(String, TomlValue)],
     harness_overrides: &ConfigOverrides,
 ) {
-    // A remote server cannot resolve this invocation's explicitly selected local profile.
-    let has_launch_setting = |key: &str| {
-        cli_kv_overrides.iter().any(|(path, _)| path == key)
-            || config.config_layer_stack.layers_high_to_low().any(|layer| {
-                layer.disabled_reason.is_none()
-                    && matches!(
-                        layer.name,
-                        ConfigLayerSource::User {
-                            profile: Some(_),
-                            ..
-                        }
-                    )
-                    && layer.config.get(key).is_some()
-            })
-    };
-    if harness_overrides.model.is_none() && !has_launch_setting("model") {
+    if harness_overrides.model.is_none() && !has_launch_setting(config, cli_kv_overrides, "model") {
         config.model = defaults.model.clone();
     }
-    if !has_launch_setting("model_reasoning_effort") {
+    if !has_launch_setting(config, cli_kv_overrides, "model_reasoning_effort") {
         config.model_reasoning_effort = defaults.model_reasoning_effort.clone();
     }
 }
