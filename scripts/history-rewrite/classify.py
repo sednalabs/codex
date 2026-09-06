@@ -237,6 +237,14 @@ def match_metadata(kind, value):
     proof = hashlib.sha256(value.encode("utf-8", "replace")).hexdigest() if metadata else ""
     return proof, metadata
 
+def serialize_token(value):
+    text = str(value)
+    return "".join(f"\\x{ord(char):02x}" if ord(char) < 0x20 or ord(char) == 0x7f else char for char in text)
+
+def serialize_path(path):
+    normalized = path.encode("utf-8", "replace")
+    return "path_sha256:" + hashlib.sha256(normalized).hexdigest()
+
 def emit(kind, identity, path, proof, metadata):
     global total_matches, admitted_fields, row_count
     global candidate_fields, candidate_rows, candidate_matches, context_fields, context_rows, context_matches
@@ -257,7 +265,16 @@ def emit(kind, identity, path, proof, metadata):
     context_matches += sum(item[3] for item in context_metadata)
     for pid, classification, rationale_sha256, count in metadata:
         total_matches += count
-        row = (kind, identity, path, pid, classification, rationale_sha256, proof, str(count))
+        row = (
+            serialize_token(kind),
+            serialize_token(identity),
+            serialize_path(path) if path else "",
+            serialize_token(pid),
+            serialize_token(classification),
+            serialize_token(rationale_sha256),
+            serialize_token(proof),
+            serialize_token(str(count)),
+        )
         row_count += 1
         writer.write("\t".join(row) + "\n")
         per_pattern.setdefault(pid, {"rows": 0, "matches": 0})
@@ -359,6 +376,7 @@ compressed_output = Path(str(OUTPUT) + ".gz")
 metadata = {
     "schema": 3,
     "complete": True,
+    "path_representation": "path_sha256:sha256(normalized UTF-8 path); raw path is never serialized",
     "accepted_pattern_count": ACCEPTED_PATTERN_COUNT,
     "capacities": {
         "rows_formula": "scanned_fields * accepted_pattern_count",
