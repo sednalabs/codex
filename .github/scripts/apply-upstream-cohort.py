@@ -6,9 +6,10 @@ artifact and reviewed build-source commit are immutable data inputs.  The
 consumer verifies every input tuple, retains the three already-materialized
 patch dependencies, and applies only eleven reviewed source entries.  Its
 metadata-only mode emits complete content-free tree manifests without running
-generators or creating Git objects.  Its build mode regenerates up to five
-coupled outputs with repository-pinned tools and emits a fresh-bare-verified
-Git bundle without publishing a ref.
+generators or creating Git objects.  Its build mode validates the accepted
+manifest inventory, regenerates the composed Cargo lock plus five coupled
+outputs with repository-pinned tools, and emits a fresh-bare-verified Git bundle
+without publishing a ref.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ REPOSITORY_ID = "1152496647"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-build-consumer"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "76eea248cd55c453e16b153f5cfa0fa582e77011"
+PUSH_PREDECESSOR_SHA = "a21eec53ebcbc8523141254bb10afd6a83b35ccd"
 
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
@@ -78,9 +79,9 @@ COMMON_PROVENANCE_SHA256 = "afbf269c8593c978ed706c9f2fddc0031383350fe216d88512ec
 COMMON_STAGED_PATCH_SHA256 = "dd4b59d9be8c2727d08de673085b36a1c61f6cee617855f210706412a5bfc66c"
 COMMON_STAGED_PATHS_SHA256 = "90b44134bb538a07fa03dfd674e96f08de4ba04a40252f6dc9f5c740dd5bb1ae"
 
-BUILD_SOURCE_SHA = "4addbc431785bdedf77e8ef8b1c1a982267fdbc4"
-BUILD_SOURCE_TREE = "88a670918280adfc5ab8add02642a69bae39824f"
-BUILD_SOURCE_PARENT = "277aa00228367f1ba47214961bc26a05c1da2483"
+BUILD_SOURCE_SHA = "22a0c45ee711dc5ce47847dc04cbc5e7e76507c0"
+BUILD_SOURCE_TREE = "f0086ec70af34c151da911fb83546f033f8ace9d"
+BUILD_SOURCE_PARENT = "4addbc431785bdedf77e8ef8b1c1a982267fdbc4"
 BUILD_SOURCE_BRANCH = "worker/w13825-build-source-authoring-20260907"
 BUILD_PATHS_SHA256 = "69f15ab670d1f971c6f48f3efa8e38b954fb4161df6aa0608c14b2c155b261f2"
 BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str]] = {
@@ -122,7 +123,7 @@ BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str]] = {
     "codex-rs/Cargo.toml": (
         "100644",
         "blob",
-        "141880c1b07806929ebcb6a4c622898cf65b5435",
+        "7bd8c144e52b169b907928bcf743363949d12cb2",
     ),
     "codex-rs/realtime-webrtc/BUILD.bazel": (
         "100644",
@@ -254,14 +255,108 @@ COMPOSITE_RUNTIME_INPUTS: dict[str, tuple[str, str, str]] = {
 }
 
 GENERATED_PATHS = [
+    "codex-rs/Cargo.lock",
     "MODULE.bazel.lock",
     "pnpm-lock.yaml",
     "sdk/python/src/openai_codex/api.py",
     "sdk/python/src/openai_codex/generated/notification_registry.py",
     "sdk/python/src/openai_codex/generated/v2_all.py",
 ]
-SDK_GENERATED_PATHS = GENERATED_PATHS[2:]
-ALLOWED_MUTABLE_PATHS = sorted([*BUILD_PATHS, *GENERATED_PATHS])
+SDK_GENERATED_PATHS = GENERATED_PATHS[3:]
+ALLOWED_MUTABLE_PATHS = sorted(set(BUILD_PATHS) | set(GENERATED_PATHS))
+
+ROOT_MANIFEST_PATH = "codex-rs/Cargo.toml"
+ROOT_LOCK_PATH = "codex-rs/Cargo.lock"
+ROOT_CLOSURE_SHA256 = "83cf30fefe2ebd8f9f6fa6105114018544258549128634b50fddbe7eb5d63345"
+REQUIRED_ROOT_MEMBERS = {
+    "agent-roles",
+    "app-server-protocol-noop-macros",
+    "attachment-store",
+    "build-info",
+    "code-mode-protocol",
+    "code-mode-runtime",
+    "codex-home",
+    "config-schema",
+    "diagnostics",
+    "ext/guardian-v2",
+    "ext/history-notes",
+    "ext/queue",
+    "guardian-context",
+    "history",
+    "mxc-sandbox",
+    "otel-trace-websocket",
+    "utils/audio",
+    "utils/git-discovery",
+    "utils/redacted-string",
+    "voice-host",
+    "windows-sandbox-service",
+    "workload-identity",
+    "worktree",
+}
+REQUIRED_WORKSPACE_DEPENDENCIES: dict[str, Any] = {
+    "appcontainer_common": {
+        "git": "https://github.com/microsoft/mxc",
+        "rev": "6cd3d58f05d3447e67109cfb75e042803b843ca4",
+    },
+    "bitflags": "2.13.1",
+    "codex-agent-roles": {"path": "agent-roles"},
+    "codex-app-server-protocol-noop-macros": {"path": "app-server-protocol-noop-macros"},
+    "codex-attachment-store": {"path": "attachment-store"},
+    "codex-build-info": {"path": "build-info"},
+    "codex-code-mode-runtime": {"path": "code-mode-runtime"},
+    "codex-diagnostics": {"path": "diagnostics"},
+    "codex-guardian-context": {"path": "guardian-context"},
+    "codex-history": {"path": "history"},
+    "codex-mxc-sandbox": {"path": "mxc-sandbox"},
+    "codex-otel-trace-websocket": {"path": "otel-trace-websocket"},
+    "codex-utils-audio": {"path": "utils/audio"},
+    "codex-utils-git-discovery": {"path": "utils/git-discovery"},
+    "codex-utils-redacted-string": {"path": "utils/redacted-string"},
+    "gix-url": "0.35.2",
+    "learning_mode_windows": {
+        "git": "https://github.com/microsoft/mxc",
+        "rev": "6cd3d58f05d3447e67109cfb75e042803b843ca4",
+    },
+    "rustix": {"version": "1.1.4", "features": ["net"]},
+    "tikv-jemallocator": "=0.7.0",
+    "tree-sitter-powershell": "=0.26.4",
+    "wxc_common": {
+        "git": "https://github.com/microsoft/mxc",
+        "rev": "6cd3d58f05d3447e67109cfb75e042803b843ca4",
+    },
+}
+DEFERRED_WORKSPACE_DEPENDENCIES = {
+    "codex-guardian-v2",
+    "codex-history-notes-extension",
+    "codex-queue-extension",
+    "codex-workload-identity",
+    "codex-worktree",
+}
+EXPECTED_V8_LOCK_ENTRY = {
+    "name": "v8",
+    "version": "150.4.0",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "42a978ff11f15b24e5c05a7123cf2b68f41e763546699781a924ef4e2cf43a49",
+    "dependencies": [
+        "bindgen",
+        "bitflags 2.13.1",
+        "fslock",
+        "gzip-header",
+        "home",
+        "miniz_oxide",
+        "paste",
+        "temporal_capi",
+        "which 6.0.3",
+    ],
+}
+EXPECTED_NORMALIZED_LOCK_EDGES = {
+    ("prost-build", "0.12.6"): "heck 0.4.1",
+    ("prost-build", "0.14.4"): "heck 0.5.0",
+}
+MAX_MANIFEST_COUNT = 512
+MAX_MANIFEST_BYTES = 2 * 1024 * 1024
+MAX_LOCK_BYTES = 16 * 1024 * 1024
+MAX_LOCK_PACKAGE_COUNT = 20_000
 
 V8_DIAGNOSTIC_PATHS = sorted(
     [
@@ -615,6 +710,436 @@ def index_entry(repo: pathlib.Path, path: str) -> tuple[str, str, str] | None:
     require(stage == "0", f"unmerged index entry: {path}")
     require(listed.decode("utf-8", "surrogateescape") == path, f"unexpected index path: {path}")
     return mode, "blob", oid
+
+
+def write_json(path: pathlib.Path, value: dict[str, Any]) -> None:
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    require(load(path) == value, f"{path.name} readback mismatch")
+
+
+def manifest_inventory_from_tree(repo: pathlib.Path, revision: str) -> list[dict[str, str]]:
+    output = run_bytes("git", "ls-tree", "--full-tree", "-r", "-z", revision, "--", "codex-rs", cwd=repo)
+    inventory: list[dict[str, str]] = []
+    for record in output.removesuffix(b"\0").split(b"\0") if output else []:
+        metadata, raw_path = record.split(b"\t", 1)
+        mode, object_type, oid = metadata.decode("ascii").split()
+        path = normalized_tree_path(raw_path)
+        if path == ROOT_MANIFEST_PATH or path.endswith("/Cargo.toml"):
+            require(object_type == "blob", f"accepted manifest is not a blob: {path}")
+            inventory.append({"mode": mode, "oid": oid, "path": path})
+    inventory.sort(key=lambda item: item["path"].encode("utf-8"))
+    require(0 < len(inventory) <= MAX_MANIFEST_COUNT, "accepted manifest inventory bound exceeded")
+    return inventory
+
+
+def manifest_inventory_from_index(repo: pathlib.Path) -> list[dict[str, str]]:
+    output = run_bytes("git", "ls-files", "--stage", "-z", "--", "codex-rs", cwd=repo)
+    inventory: list[dict[str, str]] = []
+    for record in output.removesuffix(b"\0").split(b"\0") if output else []:
+        metadata, raw_path = record.split(b"\t", 1)
+        mode, oid, stage = metadata.decode("ascii").split()
+        path = normalized_tree_path(raw_path)
+        if path == ROOT_MANIFEST_PATH or path.endswith("/Cargo.toml"):
+            require(stage == "0", f"composed manifest is unmerged: {path}")
+            inventory.append({"mode": mode, "oid": oid, "path": path})
+    inventory.sort(key=lambda item: item["path"].encode("utf-8"))
+    require(0 < len(inventory) <= MAX_MANIFEST_COUNT, "composed manifest inventory bound exceeded")
+    return inventory
+
+
+def manifest_inventory_digest(inventory: list[dict[str, str]]) -> str:
+    canonical = b"".join(
+        f"{item['mode']} {item['oid']}\t{item['path']}".encode("utf-8") + b"\0"
+        for item in inventory
+    )
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def toml_blob(repo: pathlib.Path, object_name: str, label: str) -> dict[str, Any]:
+    raw = run_bytes("git", "show", object_name, cwd=repo)
+    require(0 < len(raw) <= MAX_MANIFEST_BYTES, f"{label} size bound exceeded")
+    try:
+        value = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise SystemExit(f"{label} is not valid UTF-8 TOML: {error}") from error
+    require(isinstance(value, dict), f"{label} root is not a table")
+    return value
+
+
+def dependency_tables(manifest: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    result: list[tuple[str, dict[str, Any]]] = []
+    names = ("dependencies", "dev-dependencies", "build-dependencies")
+    for name in names:
+        table = manifest.get(name)
+        if isinstance(table, dict):
+            result.append((name, table))
+    targets = manifest.get("target")
+    if isinstance(targets, dict):
+        for target, target_table in targets.items():
+            if not isinstance(target_table, dict):
+                continue
+            for name in names:
+                table = target_table.get(name)
+                if isinstance(table, dict):
+                    result.append((f"target.{target}.{name}", table))
+    return result
+
+
+def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Path) -> dict[str, Any]:
+    accepted_inventory = manifest_inventory_from_tree(worktree, SDK_CANDIDATE_SHA)
+    composed_inventory = manifest_inventory_from_index(worktree)
+    accepted = {item["path"]: item for item in accepted_inventory}
+    composed = {item["path"]: item for item in composed_inventory}
+    mismatches: list[dict[str, Any]] = []
+
+    for path in sorted(set(accepted) | set(composed)):
+        before = accepted.get(path)
+        after = composed.get(path)
+        if before is None:
+            mismatches.append({"kind": "unexpected-manifest", "path": path, "actual": after})
+        elif after is None:
+            mismatches.append({"kind": "missing-manifest", "path": path, "accepted": before})
+        elif path == ROOT_MANIFEST_PATH:
+            expected = tuple_json(BUILD_SOURCE_ENTRIES[ROOT_MANIFEST_PATH])
+            actual = {"mode": after["mode"], "type": "blob", "oid": after["oid"]}
+            if actual != expected:
+                mismatches.append(
+                    {"kind": "root-manifest-tuple", "path": path, "expected": expected, "actual": actual}
+                )
+        elif before != after:
+            mismatches.append(
+                {"kind": "accepted-manifest-blob-changed", "path": path, "accepted": before, "actual": after}
+            )
+
+    parsed: dict[str, dict[str, Any]] = {}
+    for item in composed_inventory:
+        path = item["path"]
+        try:
+            parsed[path] = toml_blob(worktree, f":{path}", f"composed manifest {path}")
+        except SystemExit as error:
+            mismatches.append({"kind": "manifest-parse", "path": path, "diagnostic": str(error)[:240]})
+
+    root = parsed.get(ROOT_MANIFEST_PATH, {})
+    workspace = root.get("workspace") if isinstance(root.get("workspace"), dict) else {}
+    members = workspace.get("members") if isinstance(workspace.get("members"), list) else []
+    workspace_dependencies = (
+        workspace.get("dependencies") if isinstance(workspace.get("dependencies"), dict) else {}
+    )
+    prior_root = toml_blob(
+        worktree,
+        f"{BUILD_SOURCE_PARENT}:{ROOT_MANIFEST_PATH}",
+        "accepted root manifest preimage",
+    )
+    prior_workspace = prior_root.get("workspace", {})
+    prior_members = prior_workspace.get("members", [])
+    prior_dependencies = prior_workspace.get("dependencies", {})
+
+    for member in sorted(set(prior_members) - set(members)):
+        mismatches.append({"kind": "prior-member-removed", "member": member})
+    for name in sorted(prior_dependencies):
+        if workspace_dependencies.get(name) != prior_dependencies[name]:
+            mismatches.append(
+                {
+                    "kind": "prior-workspace-dependency-changed",
+                    "dependency": name,
+                    "accepted": prior_dependencies[name],
+                    "actual": workspace_dependencies.get(name),
+                }
+            )
+    for member in sorted(REQUIRED_ROOT_MEMBERS - set(members)):
+        mismatches.append({"kind": "required-member-missing", "member": member})
+    for member in sorted(REQUIRED_ROOT_MEMBERS):
+        manifest_path = f"codex-rs/{member}/Cargo.toml"
+        if manifest_path not in composed:
+            mismatches.append(
+                {"kind": "required-member-manifest-missing", "member": member, "path": manifest_path}
+            )
+    for name, expected in sorted(REQUIRED_WORKSPACE_DEPENDENCIES.items()):
+        actual = workspace_dependencies.get(name)
+        if actual != expected:
+            mismatches.append(
+                {
+                    "kind": "required-workspace-dependency-mismatch",
+                    "dependency": name,
+                    "expected": expected,
+                    "actual": actual,
+                }
+            )
+    for name in sorted(DEFERRED_WORKSPACE_DEPENDENCIES & set(workspace_dependencies)):
+        mismatches.append({"kind": "deferred-workspace-dependency-present", "dependency": name})
+
+    workspace_package = workspace.get("package") if isinstance(workspace.get("package"), dict) else {}
+    workspace_lints = workspace.get("lints") if isinstance(workspace.get("lints"), dict) else None
+    inherited_dependencies: dict[str, list[dict[str, str]]] = {}
+    for path, manifest in sorted(parsed.items()):
+        for table_name, table in dependency_tables(manifest):
+            for name, declaration in table.items():
+                if isinstance(declaration, dict) and declaration.get("workspace") is True:
+                    inherited_dependencies.setdefault(name, []).append({"path": path, "table": table_name})
+        package = manifest.get("package")
+        if isinstance(package, dict):
+            for field, value in package.items():
+                if isinstance(value, dict) and value.get("workspace") is True and field not in workspace_package:
+                    mismatches.append(
+                        {"kind": "workspace-package-field-missing", "field": field, "path": path}
+                    )
+        lints = manifest.get("lints")
+        if isinstance(lints, dict) and lints.get("workspace") is True and workspace_lints is None:
+            mismatches.append({"kind": "workspace-lints-missing", "path": path})
+    for name in sorted(set(inherited_dependencies) - set(workspace_dependencies)):
+        mismatches.append(
+            {
+                "kind": "inherited-workspace-dependency-missing",
+                "dependency": name,
+                "consumers": inherited_dependencies[name],
+            }
+        )
+
+    closure_lines = [f"member\t{name}" for name in sorted(REQUIRED_ROOT_MEMBERS)]
+    closure_lines.extend(
+        f"dependency\t{name}\t{json.dumps(value, sort_keys=True, separators=(',', ':'))}"
+        for name, value in sorted(REQUIRED_WORKSPACE_DEPENDENCIES.items())
+    )
+    closure_sha256 = hashlib.sha256(("\n".join(closure_lines) + "\n").encode()).hexdigest()
+    if closure_sha256 != ROOT_CLOSURE_SHA256:
+        mismatches.append(
+            {
+                "kind": "helper-closure-constant-mismatch",
+                "expected": ROOT_CLOSURE_SHA256,
+                "actual": closure_sha256,
+            }
+        )
+
+    mismatches.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+    receipt = {
+        "schema": "sdk-build-composed-manifest-structure",
+        "version": 1,
+        "status": "ready" if not mismatches else "invalid",
+        "input_sdk_candidate": SDK_CANDIDATE_SHA,
+        "input_sdk_tree": SDK_CANDIDATE_TREE,
+        "build_source_sha": BUILD_SOURCE_SHA,
+        "build_source_tree": BUILD_SOURCE_TREE,
+        "accepted_manifest_count": len(accepted_inventory),
+        "accepted_manifest_inventory_sha256": manifest_inventory_digest(accepted_inventory),
+        "accepted_manifest_inventory": accepted_inventory,
+        "composed_manifest_count": len(composed_inventory),
+        "composed_manifest_inventory_sha256": manifest_inventory_digest(composed_inventory),
+        "composed_manifest_inventory": composed_inventory,
+        "root_closure_sha256": closure_sha256,
+        "required_root_member_count": len(REQUIRED_ROOT_MEMBERS),
+        "required_workspace_dependency_count": len(REQUIRED_WORKSPACE_DEPENDENCIES),
+        "deferred_workspace_dependencies": sorted(DEFERRED_WORKSPACE_DEPENDENCIES),
+        "inherited_workspace_dependency_count": len(inherited_dependencies),
+        "mismatch_count": len(mismatches),
+        "mismatches": mismatches,
+    }
+    write_json(diagnostics / "structural-receipt.json", receipt)
+    require(not mismatches, f"composed manifest structure invalid: {len(mismatches)} mismatches")
+    return receipt
+
+
+def safe_command_diagnostic(result: subprocess.CompletedProcess[str], worktree: pathlib.Path) -> list[str]:
+    combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    safe = combined.replace(str(worktree), "<candidate-worktree>")
+    safe = re.sub(r"https?://\S+", "<redacted-url>", safe)
+    safe = re.sub(
+        r"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b",
+        "<redacted-token>",
+        safe,
+    )
+    lines = ["".join(character for character in line if character.isprintable())[:240] for line in safe.splitlines()]
+    return lines[-20:]
+
+
+def parse_lock_bytes(raw: bytes, label: str) -> tuple[dict[tuple[str, str, str], dict[str, Any]], str | None]:
+    if not 0 < len(raw) <= MAX_LOCK_BYTES:
+        return {}, f"{label}:size-bound"
+    try:
+        document = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return {}, f"{label}:invalid-toml"
+    packages = document.get("package")
+    if not isinstance(packages, list) or len(packages) > MAX_LOCK_PACKAGE_COUNT:
+        return {}, f"{label}:package-bound"
+    result: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for package in packages:
+        if not isinstance(package, dict):
+            return {}, f"{label}:package-shape"
+        name = package.get("name")
+        version = package.get("version")
+        source = package.get("source", "")
+        if not all(isinstance(value, str) for value in (name, version, source)):
+            return {}, f"{label}:package-identity"
+        key = (name, version, source)
+        if key in result:
+            return {}, f"{label}:duplicate-package-identity"
+        result[key] = package
+    return result, None
+
+
+def lock_package_sort_key(package: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(package.get("name", "")),
+        str(package.get("version", "")),
+        str(package.get("source", "")),
+    )
+
+
+def generate_composed_cargo_lock(worktree: pathlib.Path, diagnostics: pathlib.Path) -> dict[str, Any]:
+    lock_path = worktree / ROOT_LOCK_PATH
+    before_raw = lock_path.read_bytes()
+    before, before_error = parse_lock_bytes(before_raw, "accepted-build-source-lock")
+    mismatches: list[dict[str, Any]] = []
+    if before_error is not None:
+        mismatches.append({"kind": "lock-preimage", "diagnostic": before_error})
+
+    commands: list[dict[str, Any]] = []
+    for label, args in (
+        (
+            "cargo-generate-lockfile",
+            ("cargo", "generate-lockfile", "--manifest-path", ROOT_MANIFEST_PATH),
+        ),
+        (
+            "cargo-metadata-locked",
+            (
+                "cargo",
+                "metadata",
+                "--manifest-path",
+                ROOT_MANIFEST_PATH,
+                "--locked",
+                "--no-deps",
+                "--format-version",
+                "1",
+            ),
+        ),
+    ):
+        if commands and commands[-1]["exit_code"] != 0:
+            break
+        try:
+            result = subprocess.run(args, cwd=worktree, check=False, text=True, capture_output=True)
+        except OSError:
+            command = {
+                "label": label,
+                "argv": list(args),
+                "exit_code": None,
+                "diagnostic": ["command executable unavailable"],
+            }
+            mismatches.append({"kind": "lock-command-unavailable", "command": label})
+            commands.append(command)
+            break
+        command = {"label": label, "argv": list(args), "exit_code": result.returncode}
+        if result.returncode != 0:
+            command["diagnostic"] = safe_command_diagnostic(result, worktree)
+            mismatches.append({"kind": "lock-command-failed", "command": label, "exit_code": result.returncode})
+        commands.append(command)
+
+    after_raw = lock_path.read_bytes()
+    after, after_error = parse_lock_bytes(after_raw, "generated-composed-lock")
+    if after_error is not None:
+        mismatches.append({"kind": "lock-output", "diagnostic": after_error})
+
+    before_keys = set(before)
+    after_keys = set(after)
+    added = sorted((after[key] for key in after_keys - before_keys), key=lock_package_sort_key)
+    removed = sorted((before[key] for key in before_keys - after_keys), key=lock_package_sort_key)
+    changed = [
+        {"identity": list(key), "before": before[key], "after": after[key]}
+        for key in sorted(before_keys & after_keys)
+        if before[key] != after[key]
+    ]
+
+    v8_entries = sorted(
+        (package for package in after.values() if package.get("name") == "v8"),
+        key=lock_package_sort_key,
+    )
+    normalized_v8_entries = [
+        {
+            **package,
+            "dependencies": sorted(package.get("dependencies", [])),
+        }
+        for package in v8_entries
+    ]
+    normalized_expected_v8 = {
+        **EXPECTED_V8_LOCK_ENTRY,
+        "dependencies": sorted(EXPECTED_V8_LOCK_ENTRY["dependencies"]),
+    }
+    if normalized_v8_entries != [normalized_expected_v8]:
+        mismatches.append(
+            {
+                "kind": "v8-lock-entry-mismatch",
+                "expected": EXPECTED_V8_LOCK_ENTRY,
+                "actual": v8_entries,
+            }
+        )
+    normalized_edges: list[dict[str, Any]] = []
+    for (name, version), expected_edge in sorted(EXPECTED_NORMALIZED_LOCK_EDGES.items()):
+        matches = [
+            package
+            for package in after.values()
+            if package.get("name") == name and package.get("version") == version
+        ]
+        heck_edges = sorted(
+            dependency
+            for package in matches
+            for dependency in package.get("dependencies", [])
+            if isinstance(dependency, str) and (dependency == "heck" or dependency.startswith("heck "))
+        )
+        normalized_edges.append(
+            {
+                "package": name,
+                "version": version,
+                "expected": expected_edge,
+                "actual": heck_edges,
+            }
+        )
+        if len(matches) != 1 or heck_edges != [expected_edge]:
+            mismatches.append(
+                {
+                    "kind": "normalized-lock-edge-mismatch",
+                    "package": name,
+                    "version": version,
+                    "expected": expected_edge,
+                    "actual": heck_edges,
+                }
+            )
+
+    if all(command["exit_code"] == 0 for command in commands) and len(commands) == 2:
+        run("git", "add", "--", ROOT_LOCK_PATH, cwd=worktree)
+        try:
+            require_candidate_paths(
+                worktree,
+                sorted([*BUILD_PATHS, *SDK_GENERATED_PATHS]),
+                "composed Cargo lock generation",
+            )
+        except SystemExit as error:
+            mismatches.append({"kind": "lock-path-boundary", "diagnostic": str(error)[:240]})
+
+    mismatches.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+    receipt = {
+        "schema": "sdk-build-composed-cargo-lock-attribution",
+        "version": 1,
+        "status": "ready" if not mismatches else "invalid",
+        "input_sdk_candidate": SDK_CANDIDATE_SHA,
+        "build_source_sha": BUILD_SOURCE_SHA,
+        "manifest_structure_receipt_sha256": digest(diagnostics / "structural-receipt.json"),
+        "generation_context": "actual-composed-index-and-worktree",
+        "commands": commands,
+        "preimage_sha256": hashlib.sha256(before_raw).hexdigest(),
+        "preimage_bytes": len(before_raw),
+        "preimage_package_count": len(before),
+        "generated_sha256": hashlib.sha256(after_raw).hexdigest(),
+        "generated_bytes": len(after_raw),
+        "generated_package_count": len(after),
+        "actual_delta_count": len(added) + len(removed) + len(changed),
+        "actual_delta": {"added": added, "removed": removed, "changed": changed},
+        "v8_entry": v8_entries,
+        "normalized_edges": normalized_edges,
+        "mismatch_count": len(mismatches),
+        "mismatches": mismatches,
+    }
+    write_json(diagnostics / "lock-attribution.json", receipt)
+    require(not mismatches, f"composed Cargo lock invalid: {len(mismatches)} mismatches")
+    return receipt
 
 
 def classify(
@@ -1542,6 +2067,7 @@ def collect_tool_observations(
         "pnpm": probe_tool("pnpm", "pnpm", "--version", cwd=worktree),
         "node": probe_tool("node", "node", "--version", cwd=worktree),
         "bazel": probe_tool("bazel", "bazel", "--version", cwd=worktree),
+        "cargo": probe_tool("cargo", "cargo", "--version", cwd=worktree),
         "python": {
             "label": "python",
             "status": "observed",
@@ -1605,6 +2131,7 @@ def collect_tool_observations(
         "bazel_pin": execution_inputs["bazel_version"] or "unavailable",
         "bazel": observations["bazel"].get("observed") or "unavailable",
         "bazelisk": execution_inputs["bazelisk_version"] or "unavailable",
+        "cargo": observations["cargo"].get("observed") or "unavailable",
     }
     return receipt, generator_identity
 
@@ -1724,7 +2251,9 @@ def generate_and_test(
     worktree: pathlib.Path,
     temp: pathlib.Path,
     execution_inputs: dict[str, Any],
+    diagnostics: pathlib.Path,
 ) -> tuple[dict[str, str], dict[str, Any]]:
+    validate_composed_manifests(worktree, diagnostics)
     tool_observations, generator_identity = collect_tool_observations(worktree, execution_inputs)
     pre_generation_readback = {
         "schema": "sdk-build-pre-generation-readback",
@@ -1734,7 +2263,14 @@ def generate_and_test(
     }
     print(json.dumps(pre_generation_readback, sort_keys=True))
     require(execution_inputs["status"] == "ready", "execution inputs are not ready")
+    generate_composed_cargo_lock(worktree, diagnostics)
     require(tool_observations["status"] == "ready", f"tool smoke invalid: {tool_observations['errors']}")
+    generator_identity["manifest_structure_receipt_sha256"] = digest(
+        diagnostics / "structural-receipt.json"
+    )
+    generator_identity["cargo_lock_attribution_sha256"] = digest(
+        diagnostics / "lock-attribution.json"
+    )
     python_project = worktree / "sdk/python"
     generation_env = {
         **os.environ,
@@ -1876,6 +2412,8 @@ def generate_and_test(
     require(not run("git", "diff", "--name-only", cwd=worktree), "candidate has unstaged tracked changes")
     run("git", "diff", "--cached", "--check", SDK_CANDIDATE_SHA, cwd=worktree)
     generator_identity["commands"] = [
+        "cargo generate-lockfile --manifest-path codex-rs/Cargo.toml",
+        "cargo metadata --manifest-path codex-rs/Cargo.toml --locked --no-deps --format-version 1",
         "uv sync --project sdk/python --group dev --frozen",
         "uv run --project sdk/python --frozen --no-sync python scripts/update_sdk_artifacts.py generate-types",
         "python3 .github/scripts/rusty_v8_bazel.py check-module-bazel --version 150.4.0",
@@ -2015,6 +2553,8 @@ def main() -> None:
     require(digest(receipt_path) == SDK_INPUT_RECEIPT_SHA256, "SDK input receipt digest mismatch after preflight")
     sdk_receipt = load(receipt_path)
     output.mkdir()
+    diagnostics = output / "diagnostics"
+    diagnostics.mkdir()
 
     with tempfile.TemporaryDirectory(prefix="w13825-sdk-build-", dir=str(output.parent)) as temp_name:
         temp = pathlib.Path(temp_name).resolve(strict=True)
@@ -2022,7 +2562,12 @@ def main() -> None:
         worktree = prepare_candidate_worktree(repo, temp)
         observed_inputs = collect_execution_inputs(worktree, runtime, verified_runtime_inputs)
         require(observed_inputs == execution_inputs, "execution inputs changed after preflight")
-        generator_identity, tool_observations = generate_and_test(worktree, temp, execution_inputs)
+        generator_identity, tool_observations = generate_and_test(
+            worktree,
+            temp,
+            execution_inputs,
+            diagnostics,
+        )
         candidate_tree = run("git", "write-tree", cwd=worktree).strip()
         commit_env = {
             **os.environ,
@@ -2051,7 +2596,7 @@ def main() -> None:
         for path in ALLOWED_MUTABLE_PATHS:
             parent_entry = tree_entry(worktree, SDK_CANDIDATE_SHA, path)
             selected_entry = tree_entry(worktree, candidate_sha, path)
-            role = "build-source" if path in BUILD_SOURCE_ENTRIES else "generated"
+            role = "generated" if path in GENERATED_PATHS else "build-source"
             changed = path in candidate_path_set
             if role == "build-source":
                 source_entry = tree_entry(worktree, BUILD_SOURCE_SHA, path)
@@ -2059,11 +2604,19 @@ def main() -> None:
                 require(changed, f"final candidate omitted selected build source: {path}")
                 disposition = "selected-build-source"
             else:
-                source_entry = None
+                source_entry = (
+                    tree_entry(worktree, BUILD_SOURCE_SHA, path)
+                    if path in BUILD_SOURCE_ENTRIES
+                    else None
+                )
                 require(parent_entry is not None and selected_entry is not None, f"generated path missing: {path}")
                 require(selected_entry[:2] == parent_entry[:2], f"generated path type changed: {path}")
                 require(changed == (selected_entry != parent_entry), f"generated path change manifest mismatch: {path}")
-                disposition = "regenerated-change" if changed else "regenerated-noop"
+                disposition = (
+                    "regenerated-from-build-source-seed"
+                    if source_entry is not None
+                    else "regenerated-change" if changed else "regenerated-noop"
+                )
             path_disposition = {
                 "path": path,
                 "role": role,
@@ -2141,6 +2694,10 @@ def main() -> None:
             "execution_inputs": execution_inputs,
             "tool_observations": tool_observations,
             "generator_identity": generator_identity,
+            "diagnostic_receipts": {
+                "structural-receipt.json": digest(diagnostics / "structural-receipt.json"),
+                "lock-attribution.json": digest(diagnostics / "lock-attribution.json"),
+            },
         }
         receipt_path = output / "receipt.json"
         receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -2181,6 +2738,10 @@ def main() -> None:
             "execution_inputs": execution_inputs,
             "tool_observations": tool_observations,
             "generator_identity": generator_identity,
+            "diagnostic_receipts": {
+                "structural-receipt.json": digest(diagnostics / "structural-receipt.json"),
+                "lock-attribution.json": digest(diagnostics / "lock-attribution.json"),
+            },
         }
         provenance_path = output / "provenance.json"
         provenance_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
