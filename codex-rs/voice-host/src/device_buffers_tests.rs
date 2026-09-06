@@ -48,8 +48,7 @@ fn suppression_discards_partial_and_queued_previous_generations() {
     for _ in 0..2 {
         assert!(
             buffers
-                .playback
-                .push(Frame {
+                .push_playback(Frame {
                     samples: [0.5; BLOCK],
                     len: BLOCK,
                     at: Instant::now(),
@@ -58,11 +57,11 @@ fn suppression_discards_partial_and_queued_previous_generations() {
                 .is_ok()
         );
     }
-    assert_eq!(playback.next(&buffers), 0.5);
+    assert_eq!(playback.next(&buffers).unwrap_or(0.0), 0.5);
     Buffers::set_disabled(&buffers.speaker, /*disabled*/ true).unwrap();
-    assert_eq!(playback.next(&buffers), 0.0);
+    assert_eq!(playback.next(&buffers).unwrap_or(0.0), 0.0);
     Buffers::set_disabled(&buffers.speaker, /*disabled*/ false).unwrap();
-    assert_eq!(playback.next(&buffers), 0.0);
+    assert_eq!(playback.next(&buffers).unwrap_or(0.0), 0.0);
     assert!(buffers.playback.is_empty());
 }
 
@@ -75,8 +74,7 @@ fn output_is_finite_and_bounded_and_underflow_is_silence() {
     samples[..4].copy_from_slice(&[f32::NAN, f32::INFINITY, -2.0, 2.0]);
     assert!(
         buffers
-            .playback
-            .push(Frame {
+            .push_playback(Frame {
                 samples,
                 len: 4,
                 at: Instant::now(),
@@ -85,7 +83,9 @@ fn output_is_finite_and_bounded_and_underflow_is_silence() {
             .is_ok()
     );
     let mut playback = Playback::default();
-    let output: Vec<_> = (0..5).map(|_| playback.next(&buffers)).collect();
+    let output: Vec<_> = (0..5)
+        .map(|_| playback.next(&buffers).unwrap_or(0.0))
+        .collect();
     assert_eq!(output, [0.0, 0.0, -1.0, 1.0, 0.0]);
 }
 

@@ -5,6 +5,7 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU16;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -96,6 +97,9 @@ pub(super) struct Buffers {
     pub(super) failed: AtomicBool,
     pub(super) microphone_peak: AtomicU16,
     pub(super) speaker_peak: AtomicU16,
+    pub(super) queued: AtomicU32,
+    pub(super) last_dac_ns: AtomicU64,
+    pub(super) clock: Instant,
 }
 
 impl Buffers {
@@ -129,7 +133,18 @@ impl Buffers {
             failed: AtomicBool::new(false),
             microphone_peak: AtomicU16::new(/*v*/ 0),
             speaker_peak: AtomicU16::new(/*v*/ 0),
+            queued: AtomicU32::new(/*v*/ 0),
+            last_dac_ns: AtomicU64::new(/*v*/ 0),
+            clock: Instant::now(),
         }
+    }
+
+    pub(super) fn push_playback(&self, frame: Frame) -> Result<(), ()> {
+        let len = frame.len as u32;
+        self.queued.fetch_add(len, Ordering::AcqRel);
+        self.playback.push(frame).map_err(|_| {
+            self.queued.fetch_sub(len, Ordering::AcqRel);
+        })
     }
 
     // One control worker writes each epoch. Odd epochs are disabled; every
@@ -190,13 +205,19 @@ pub(super) struct Playback {
 }
 
 impl Playback {
-    pub(super) fn next(&mut self, buffers: &Buffers) -> f32 {
+    pub(super) fn next(&mut self, buffers: &Buffers) -> Option<f32> {
         let epoch = buffers.speaker.load(Ordering::Acquire);
         if self
             .frame
             .as_ref()
             .is_some_and(|frame| frame.generation != epoch || self.offset == frame.len)
         {
+            if let Some(frame) = &self.frame {
+                buffers.queued.fetch_sub(
+                    frame.len.saturating_sub(self.offset) as u32,
+                    Ordering::AcqRel,
+                );
+            }
             self.frame = None;
         }
         // Bound stale-frame work even if a producer keeps writing during a mute.
@@ -214,17 +235,20 @@ impl Playback {
             {
                 self.frame = Some(frame);
                 self.offset = 0;
+            } else {
+                buffers.queued.fetch_sub(frame.len as u32, Ordering::AcqRel);
             }
         }
         let Some(frame) = &self.frame else {
-            return 0.0;
+            return None;
         };
         let sample = frame.samples[self.offset];
         self.offset += 1;
+        buffers.queued.fetch_sub(/*val*/ 1, Ordering::AcqRel);
         if epoch % 2 == 1 || !sample.is_finite() {
-            0.0
+            Some(0.0)
         } else {
-            sample.clamp(-1.0, 1.0)
+            Some(sample.clamp(-1.0, 1.0))
         }
     }
 }

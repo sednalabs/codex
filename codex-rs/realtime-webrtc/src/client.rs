@@ -151,7 +151,8 @@ impl VoiceHost {
                 build_commit: build_commit.to_owned(),
             },
             Message::Ready {},
-            DEADLINE,
+            // Startup-linked native libraries load before the helper can acknowledge Hello.
+            RUNTIME_INITIALIZATION_DEADLINE,
         )
         .await?;
         Ok(host)

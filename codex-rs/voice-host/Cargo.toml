@@ -8,6 +8,13 @@ license.workspace = true
 name = "codex-voice-host"
 path = "src/main.rs"
 
+# These tests need a correctly linked helper and a matching prepared runtime.
+# Bazel supplies declared runtime inputs and runs this target automatically.
+# Cargo runs it explicitly with --test installed_client.
+[[test]]
+name = "installed_client"
+test = false
+
 [lints]
 workspace = true
 
@@ -24,6 +31,8 @@ webrtc = "=0.20.3"
 [target.'cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"), all(windows, target_env = "msvc")))'.dependencies]
 cpal = "=0.18.2"
 crossbeam-queue = "0.3.12"
+gstreamer = { version = "=0.25.3", features = ["v1_28"] }
+gstreamer-audio = { version = "=0.25.3", features = ["v1_28"] }
 opus = "=0.4.0"
 rubato = { version = "=5.0.0", default-features = false }
 sonora = { version = "=0.2.0", default-features = false }

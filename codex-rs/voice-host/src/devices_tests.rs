@@ -235,8 +235,7 @@ fn tiny_output_callbacks_pack_references_without_delaying_rendering() {
     for _ in 0..8 {
         assert!(
             buffers
-                .playback
-                .push(Frame {
+                .push_playback(Frame {
                     samples: [0.5; BLOCK],
                     len: BLOCK,
                     at: start,

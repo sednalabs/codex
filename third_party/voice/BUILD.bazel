@@ -75,7 +75,7 @@ alias(
 # Keep the pinned pkg-config sources, but explicitly use LLVM archive tools.
 # The upstream bootstrap otherwise selects host ar/ranlib on macOS.
 pkg_config(
-    name = "pkg_config",
+    name = "pkg_config_unix",
     build_data = [
         ":pkg_config_linker",
         "@llvm//tools:llvm-ar",
@@ -116,9 +116,21 @@ pkg_config(
 
 native_tool_toolchain(
     name = "pkg_config_tool",
-    path = "$(execpath :pkg_config)",
+    path = "$(execpath :pkg_config_unix)",
     tags = ["manual"],
-    target = ":pkg_config",
+    target = ":pkg_config_unix",
+)
+
+# Build-script tools select their execution platform, independently of target ABI.
+alias(
+    name = "pkg_config",
+    actual = select({
+        ":windows_x86_64": ":windows_tools_x86_64",
+        ":windows_aarch64": ":windows_tools_aarch64",
+        "//conditions:default": ":pkg_config_unix",
+    }),
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
 )
 
 filegroup(
@@ -181,6 +193,9 @@ alias(
     actual = select({
         ":" + os + "_" + cpu: ":native_prefix_" + os + "_" + cpu
         for os, cpu, _ in _NATIVE_PLATFORMS
+    } | {
+        ":windows_" + cpu + "_msvc": ":native_prefix_windows_" + cpu
+        for cpu in ("x86_64", "aarch64")
     }),
     tags = ["manual"],
     visibility = ["//visibility:public"],
@@ -209,6 +224,9 @@ alias(
     actual = select({
         ":" + os + "_" + cpu: ":native_runtime_" + os + "_" + cpu
         for os, cpu, _ in _NATIVE_PLATFORMS
+    } | {
+        ":windows_" + cpu + "_msvc": ":native_runtime_windows_" + cpu
+        for cpu in ("x86_64", "aarch64")
     }),
     tags = ["manual"],
     visibility = ["//visibility:public"],
@@ -241,6 +259,9 @@ alias(
     actual = select({
         ":" + os + "_" + cpu: ":native_link_" + os + "_" + cpu
         for os, cpu, _ in _NATIVE_PLATFORMS
+    } | {
+        ":windows_" + cpu + "_msvc": ":native_link_windows_" + cpu
+        for cpu in ("x86_64", "aarch64")
     }),
     tags = ["manual"],
     visibility = ["//visibility:public"],
@@ -258,6 +279,17 @@ label_flag(
     build_setting_default = ":windows_tools_unavailable",
     visibility = ["//visibility:public"],
 )
+
+[
+    config_setting(
+        name = "windows_" + cpu,
+        constraint_values = [
+            "@platforms//os:windows",
+            "@platforms//cpu:" + cpu,
+        ],
+    )
+    for cpu in ("x86_64", "aarch64")
+]
 
 [
     config_setting(
