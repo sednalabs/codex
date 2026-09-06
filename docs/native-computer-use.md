@@ -397,18 +397,14 @@ prompts, Screen Recording/Accessibility state, lock-screen behavior, app
 focus, screenshot capture, UI-tree generation, and input synthesis all remain
 provider responsibilities.
 
-## Provider Implementation Work
+## Provider Contracts
 
-Native desktop/browser providers should be implemented as independent provider
-adapters behind the command-provider or future provider-registry seams. Public
-Codex interfaces, documented OS/browser APIs, and neutral behavioral
-requirements are suitable inputs. Private endpoints, signing material, account
-data, browser profile data, and copied implementation text are not tracked
-inputs.
-
-See [`native-computer-use-contracts.md`](native-computer-use-contracts.md) for
-the neutral macOS desktop, Windows/browser-shell, Chrome-extension, and
-bundled-plugin provider contracts.
+Native desktop and browser providers implement the interfaces described in
+[`native-computer-use-contracts.md`](native-computer-use-contracts.md) behind
+the command-provider or provider-registry seams. Codex owns the canonical
+schemas, transcript events, lifecycle propagation, and native image-output
+contract; runtime providers own environment-specific capability and
+permissions.
 
 These tools are installed from dynamic thread tools supplied through app-server
 thread start, resume, or fork requests. When the tool has no namespace and the

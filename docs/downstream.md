@@ -681,7 +681,7 @@ Android emulator`; these transient app-server projections are not persisted
 - For MCP-backed Android providers, `structuredContent` is parsed for state and UI metadata without dropping `content[]` image entries. The native bridge must preserve both channels so JSON summaries never preempt the screenshot pixels.
 - Computer-use events remain transient in every history mode; live rollout tracing maps them to tool-runtime start/end events without persisting them into thread snapshots.
 - See [`native-computer-use.md`](native-computer-use.md) for the full contract and validation guidance.
-- See [`native-computer-use-contracts.md`](native-computer-use-contracts.md) for the neutral desktop, browser-shell, Chrome-extension, and bundled-plugin provider contracts.
+- See [`native-computer-use-contracts.md`](native-computer-use-contracts.md) for the desktop, browser-shell, Chrome-extension, and bundled-plugin provider contracts.
 
 ### Usage ledger: first-party local `usage.sqlite`
 
