@@ -97,8 +97,10 @@ def emit(kind, identity, path, proof, metadata):
     for pid, classification, rationale_sha256, count in metadata:
         total_matches += count
         rows.append((kind, identity, path, pid, classification, rationale_sha256, proof, str(count)))
-        if len(rows) > MAX_ROWS or total_matches > MAX_MATCHES:
-            raise SystemExit("classification row or occurrence bound exceeded; narrow the pattern family")
+        if len(rows) > MAX_ROWS:
+            raise SystemExit(f"classification row bound exceeded: rows={len(rows)} max_rows={MAX_ROWS}; narrow the pattern family")
+        if total_matches > MAX_MATCHES:
+            raise SystemExit(f"classification match bound exceeded: total_matches={total_matches} max_matches={MAX_MATCHES}; narrow the pattern family")
 
 def scan(kind, identity, value, path=""):
     proof, metadata = match_metadata(kind, value)
