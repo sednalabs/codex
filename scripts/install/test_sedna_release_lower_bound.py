@@ -1,64 +1,134 @@
 #!/usr/bin/env python3
-"""Focused contract checks for the installer lower-bound argument."""
+"""Execute the installer lower-bound gate with network and activation mocked."""
 
 from __future__ import annotations
 
-import re
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 
 SCRIPT = Path(__file__).parents[1] / "install_sedna_release_asset"
-VERSION = re.compile(
-    r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?-sedna\.(\d+)"
-    r"(?:\+upstream\.\d+)?$"
-)
 
 
-def parsed(value: str) -> tuple[tuple[int, int, int], tuple[str, ...], int] | None:
-    match = VERSION.fullmatch(value.removeprefix("v"))
-    if match is None:
-        return None
-    return (
-        tuple(int(part) for part in match.group(1, 2, 3)),
-        tuple(match.group(4).split(".")) if match.group(4) else (),
-        int(match.group(5)),
-    )
+def run_case(
+    fake_curl: Path,
+    home: Path,
+    candidate: str,
+    bound: str | None,
+    *extra: str,
+) -> tuple[subprocess.CompletedProcess[str], bool]:
+    marker = home / "curl-called"
+    marker.unlink(missing_ok=True)
+    command = [
+        "bash",
+        str(SCRIPT),
+        "--repository",
+        "sednalabs/codex",
+        "--release-tag",
+        candidate,
+        *extra,
+    ]
+    if bound is not None:
+        command.extend(["--require-newer-than", bound])
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{fake_curl.parent}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(command, env=env, capture_output=True, text=True)
+    return result, marker.exists()
 
 
-def newer(candidate: str, bound: str) -> bool:
-    left, right = parsed(candidate), parsed(bound)
-    assert left is not None and right is not None
-    if left[0] != right[0]:
-        return left[0] > right[0]
-    if left[1] != right[1]:
-        return not left[1] if right[1] else False
-    return left[2] > right[2]
+def assert_rejected(
+    fake_curl: Path,
+    home: Path,
+    candidate: str,
+    bound: str | None,
+    message: str,
+    *extra: str,
+) -> None:
+    result, curl_called = run_case(fake_curl, home, candidate, bound, *extra)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert message in result.stderr, result.stderr
+    assert not curl_called, "lower-bound rejection occurred after network access"
 
 
 def main() -> None:
-    source = SCRIPT.read_text()
-    assert "--require-newer-than" in source
-    assert "automatic update candidate" in source
-    assert "not newer than" in source
-    help_result = subprocess.run(
-        ["bash", str(SCRIPT), "--help"], capture_output=True, text=True, check=True
-    )
-    assert "--require-newer-than VERSION" in help_result.stderr
+    with tempfile.TemporaryDirectory(prefix="sedna-lower-bound-test-") as directory:
+        root = Path(directory)
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        fake_curl = fake_bin / "curl"
+        fake_curl.write_text(
+            "#!/bin/sh\ntouch \"$HOME/curl-called\"\nexit 97\n",
+            encoding="utf-8",
+        )
+        fake_curl.chmod(0o755)
 
-    cases = [
-        ("1.2.3-sedna.3", "1.2.3-sedna.3", False),
-        ("1.2.3-sedna.2", "1.2.3-sedna.3", False),
-        ("1.2.3-sedna.4", "1.2.3-sedna.3", True),
-        ("1.2.3-alpha.1-sedna.4", "1.2.3-sedna.3", False),
-    ]
-    for candidate, bound, expected in cases:
-        assert newer(candidate, bound) is expected, (candidate, bound)
-    assert parsed("not-a-sedna-release") is None
-    assert parsed("1.2.3-sedna.x") is None
-    assert "x86_64-unknown-linux-gnu" in source
-    assert "aarch64-unknown-linux-gnu" in source
-    assert "x86_64-apple-darwin" in source
+        assert_rejected(
+            fake_curl,
+            root,
+            "v1.2.3-sedna.3",
+            "1.2.3-sedna.3",
+            "is not newer than",
+        )
+        assert_rejected(
+            fake_curl,
+            root,
+            "v1.2.3-sedna.2",
+            "1.2.3-sedna.3",
+            "is not newer than",
+        )
+        result, curl_called = run_case(
+            fake_curl, root, "v1.2.3-sedna.4", "1.2.3-sedna.3"
+        )
+        assert result.returncode == 97, result.stdout + result.stderr
+        assert curl_called, "newer candidate did not reach mocked release fetch"
+
+        assert_rejected(
+            fake_curl,
+            root,
+            "v1.2.3-sedna.x",
+            "1.2.3-sedna.3",
+            "release tag must look like",
+        )
+        assert_rejected(
+            fake_curl,
+            root,
+            "v1.2.3-sedna.4",
+            "not-a-sedna-release",
+            "strict Sedna release version",
+        )
+        assert_rejected(
+            fake_curl,
+            root,
+            "v1.2.3-sedna.4",
+            "1.2.3-alpha.1-sedna.3",
+            "bound",
+        )
+        assert_rejected(
+            fake_curl,
+            root,
+            "v1.2.3-alpha.1-sedna.4",
+            "1.2.3-sedna.3",
+            "must be stable",
+        )
+        assert_rejected(
+            fake_curl,
+            root,
+            "v1.2.3-alpha.1-sedna.4",
+            "1.2.3-sedna.3",
+            "cannot be combined",
+            "--allow-prerelease",
+        )
+        assert_rejected(
+            fake_curl,
+            root,
+            "v1.2.3-sedna.4",
+            "1.2.3-sedna.3",
+            "cannot be combined",
+            "--allow-prerelease",
+        )
 
 
 if __name__ == "__main__":

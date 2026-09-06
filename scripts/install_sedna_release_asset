@@ -115,6 +115,10 @@ if [[ "$require_newer_than_set" == "true" && "$target" != "x86_64-unknown-linux-
   echo "error: --require-newer-than is only valid for automatic Linux release targets" >&2
   exit 1
 fi
+if [[ "$require_newer_than_set" == "true" && "$allow_prerelease" == "true" ]]; then
+  echo "error: --require-newer-than cannot be combined with --allow-prerelease" >&2
+  exit 1
+fi
 
 api_root="https://api.github.com/repos/sednalabs/codex"
 install_root="${HOME}/.codex/packages/standalone"
@@ -402,11 +406,11 @@ if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)
 fi
 
 if [[ "$require_newer_than_set" == "true" ]]; then
-  python3 - "$release_tag" "$require_newer_than" "$allow_prerelease" <<'PY'
+  python3 - "$release_tag" "$require_newer_than" <<'PY'
 import re
 import sys
 
-tag, current, allow_prerelease = sys.argv[1:]
+tag, current = sys.argv[1:]
 pattern = re.compile(r"(?P<core>[0-9]+\.[0-9]+\.[0-9]+)(?:-(?P<track>[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?-sedna\.(?P<ordinal>[0-9]+)(?:\+upstream\.[0-9]+)?$")
 
 def parse(value):
@@ -432,8 +436,10 @@ candidate = parse(tag)
 bound = parse(current)
 if candidate is None or bound is None:
     raise SystemExit("error: --require-newer-than requires a strict Sedna release version")
-if candidate[1] and allow_prerelease != "true":
+if candidate[1]:
     raise SystemExit(f"error: automatic update candidate {tag} must be stable")
+if bound[1]:
+    raise SystemExit(f"error: --require-newer-than bound {current} must be stable")
 if compare(candidate, bound) <= 0:
     raise SystemExit(f"error: automatic update candidate {tag} is not newer than {current}")
 PY
