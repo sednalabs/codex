@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Produce the first (SDK-only) hosted upstream cohort candidate.
+"""Produce the first SDK-only hosted upstream cohort candidate.
 
-The accepted composition artifact is the only source of imported Git objects.
-The SDK disposition is derived from Git mode/type/OID tuples; no inline
-receipt, patch payload, source-code execution, or base64 input is accepted.
+Trusted code comes from the reviewed workflow checkout.  The accepted
+composition artifact and the pinned SDK source commit are data inputs only.
+Candidate construction selects exact Git objects path-by-path; it never
+executes or applies source-supplied patches.
 """
 
 from __future__ import annotations
@@ -13,16 +14,22 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import tempfile
+from typing import Any
 
 
+REPOSITORY = "sednalabs/codex"
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
-UPSTREAM_SHA = "bc8884624330b6e681cfa3ce5fc575ce8298ed1b"
-UPSTREAM_TREE = "1e143e2bc5964a4308d9a6f36ca3e2af028e79e9"
+GLOBAL_UPSTREAM_SHA = "008bbd5884122dc95aaece19ecfe0fc6a59dcf36"
+GLOBAL_UPSTREAM_TREE = "721cd395f53962482b3f6d140d0b9942fef3baac"
 MATERIALIZED_SHA = "f5bb378d2e575b8f6f3cf266a0939ef404c37203"
 MATERIALIZED_TREE = "49af672a3965958bfb1668f27c0caa27ba48554a"
+SDK_SOURCE_SHA = "bc8884624330b6e681cfa3ce5fc575ce8298ed1b"
+SDK_SOURCE_TREE = "1e143e2bc5964a4308d9a6f36ca3e2af028e79e9"
+SDK_SOURCE_BRANCH = "worker/w13825-sdk-source-authoring-20260906"
 SOURCE_RUN_ID = "34035744523"
 SOURCE_RUN_ATTEMPT = "1"
 SOURCE_ARTIFACT = "upstream-composition-34035744523-1"
@@ -30,12 +37,63 @@ BUNDLE_SHA256 = "b383183cf21ade4b50244986cf1589988b248259ee51f099932bb0c06b026dd
 SOURCE_RECEIPT_SHA256 = "2bcebca05cb45d6d2caad475ec5348a3883566f99e6a98d24196382d52d39e93"
 SOURCE_MANIFEST_SHA256 = "0451d500a2a9868825337ddd0e6c16cd73c5088116131d75b4f27f801885328b"
 SOURCE_PROVENANCE_SHA256 = "afbf269c8593c978ed706c9f2fddc0031383350fe216d88512ec3707c8a55cb9"
+STAGED_PATCH_SHA256 = "dd4b59d9be8c2727d08de673085b36a1c61f6cee617855f210706412a5bfc66c"
+STAGED_PATHS_SHA256 = "90b44134bb538a07fa03dfd674e96f08de4ba04a40252f6dc9f5c740dd5bb1ae"
+STAGED_PATH_COUNT = 3516
 UNRESOLVED_COUNT = 427
 UNRESOLVED_PATHS_SHA256 = "7568a0be65dc7c05f591197a49b0b4e18f2c4435b951097d206cb37626233b62"
+SDK_PATHS_SHA256 = "90eeb76b9ab63af38822f137a3afaff05fc06bb5b9032ab66948c389fc6d68a9"
+SDK_PATHS = [
+    "sdk/python/scripts/update_sdk_artifacts.py",
+    "sdk/python/tests/test_client_rpc_methods.py",
+    "sdk/typescript/package.json",
+]
+EXPECTED_COHORTS = {
+    "build-ci-generated": (18, "528e950cda3fb131260c92a73c241128d02ccd24c736e2e7d4d1c5cc3bfe8529"),
+    "sdk-public-contract": (3, SDK_PATHS_SHA256),
+    "app-server-protocol-transport": (90, "4607ed2688c24a7bd4a50ba30e9e63c8f0b8cfbafdb1f490130d84ea388447ce"),
+    "tui-history": (100, "a143f2df1c8dd2e4276157eb76975f9faee89fdc217c2cef5d41cb67876af4aa"),
+    "core-agent-lifecycle": (215, "e381c18fe231617017a5f63ecf3f12e93d0f0578304d9e3d4e5ed81e5ffb0f99"),
+    "docs-policy": (1, "e1339363ffc514d971d191ea37947a46a31cc4972cfd23c269378104408c7b62"),
+    "unclassified-user-judgment": (0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+}
+EXPECTED_SOURCE_HEADS = {
+    f"refs/w13825-materialized-{SOURCE_RUN_ID}-{SOURCE_RUN_ATTEMPT}/base": BASE_SHA,
+    f"refs/w13825-materialized-{SOURCE_RUN_ID}-{SOURCE_RUN_ATTEMPT}/materialized": MATERIALIZED_SHA,
+    f"refs/w13825-materialized-{SOURCE_RUN_ID}-{SOURCE_RUN_ATTEMPT}/upstream": GLOBAL_UPSTREAM_SHA,
+}
+EXPECTED_SUMMARY = (
+    f"MANIFEST_TOTAL={UNRESOLVED_COUNT}\n"
+    f"MANIFEST_DIGEST={UNRESOLVED_PATHS_SHA256}\n"
+    f"STAGED_AUTO_MERGE_TOTAL={STAGED_PATH_COUNT}\n"
+    f"STAGED_AUTO_MERGE_DIGEST={STAGED_PATHS_SHA256}\n"
+    f"STAGED_AUTO_MERGE_PATCH_DIGEST={STAGED_PATCH_SHA256}\n"
+)
+SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 
 
-def run(*args: str, cwd: pathlib.Path | None = None, env: dict[str, str] | None = None) -> str:
-    return subprocess.run(args, cwd=cwd, env=env, check=True, text=True, capture_output=True).stdout
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise SystemExit(message)
+
+
+def run(
+    *args: str,
+    cwd: pathlib.Path | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
+    return subprocess.run(
+        args,
+        cwd=cwd,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout
+
+
+def run_bytes(*args: str, cwd: pathlib.Path | None = None) -> bytes:
+    return subprocess.run(args, cwd=cwd, check=True, capture_output=True).stdout
 
 
 def digest(path: pathlib.Path) -> str:
@@ -46,36 +104,258 @@ def digest(path: pathlib.Path) -> str:
     return value.hexdigest()
 
 
-def load(path: pathlib.Path) -> dict:
+def load(path: pathlib.Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as stream:
         result = json.load(stream)
-    if not isinstance(result, dict):
-        raise SystemExit(f"{path} must contain an object")
+    require(isinstance(result, dict), f"{path.name} must contain an object")
     return result
 
 
-def require(condition: bool, message: str) -> None:
-    if not condition:
-        raise SystemExit(message)
+def path_digest(paths: list[str]) -> str:
+    data = ("\n".join(paths) + ("\n" if paths else "")).encode()
+    return hashlib.sha256(data).hexdigest()
 
 
-def classify(base: tuple[str, str, str] | None, materialized: tuple[str, str, str] | None, upstream: tuple[str, str, str] | None) -> str:
-    if materialized != base:
-        return "manual"
-    if upstream == base:
-        return "base"
-    if upstream is None:
-        return "delete"
-    return "upstream"
+def absolute_argument(path: pathlib.Path, name: str, *, must_exist: bool) -> pathlib.Path:
+    require(path.is_absolute(), f"{name} must be absolute")
+    return path.resolve(strict=must_exist)
 
 
-def tree_entry(repo: pathlib.Path, revision: str, path: str) -> tuple[str, str, str] | None:
-    output = subprocess.run(["git", "ls-tree", revision, "--", path], cwd=repo, check=True, text=True, capture_output=True).stdout.strip()
+def tuple_json(entry: tuple[str, str, str] | None) -> dict[str, str] | None:
+    if entry is None:
+        return None
+    mode, object_type, oid = entry
+    return {"mode": mode, "type": object_type, "oid": oid}
+
+
+def tree_entry(
+    repo: pathlib.Path,
+    revision: str,
+    path: str,
+) -> tuple[str, str, str] | None:
+    output = run_bytes("git", "ls-tree", "--full-tree", "-z", revision, "--", path, cwd=repo)
     if not output:
         return None
-    mode, kind, oid, listed = output.split("\t", 1)[0].split() + [output.split("\t", 1)[1]]
-    require(listed == path, f"unexpected tree path for {path}")
-    return mode, kind, oid
+    require(output.endswith(b"\0") and output.count(b"\0") == 1, f"ambiguous tree entry: {path}")
+    metadata, listed = output[:-1].split(b"\t", 1)
+    mode, object_type, oid = metadata.decode("ascii").split()
+    require(listed.decode("utf-8", "surrogateescape") == path, f"unexpected tree path: {path}")
+    require(mode in {"100644", "100755", "120000", "160000"}, f"unsupported Git mode for {path}: {mode}")
+    require(object_type == ("commit" if mode == "160000" else "blob"), f"mode/type mismatch for {path}")
+    require(SHA_PATTERN.fullmatch(oid) is not None, f"invalid object ID for {path}")
+    return mode, object_type, oid
+
+
+def classify(
+    base: tuple[str, str, str] | None,
+    upstream: tuple[str, str, str] | None,
+    source: tuple[str, str, str] | None,
+) -> str:
+    if source == base:
+        return "base"
+    if source == upstream:
+        return "upstream"
+    if source is None:
+        return "delete"
+    return "manual"
+
+
+def require_fields(actual: dict[str, Any], expected: dict[str, Any], label: str) -> None:
+    for key, value in expected.items():
+        require(str(actual.get(key)) == str(value), f"{label} mismatch: {key}")
+
+
+def verify_runtime(expected_workflow_sha: str, expected_workflow_tree: str) -> dict[str, str]:
+    require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY, "current repository mismatch")
+    require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch", "current event mismatch")
+    require(SHA_PATTERN.fullmatch(expected_workflow_sha) is not None, "invalid expected workflow SHA")
+    require(SHA_PATTERN.fullmatch(expected_workflow_tree) is not None, "invalid expected workflow tree")
+    require(os.environ.get("GITHUB_SHA") == expected_workflow_sha, "workflow dispatch SHA mismatch")
+    for name in (
+        "GITHUB_REPOSITORY_ID",
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+        "GITHUB_WORKFLOW_REF",
+    ):
+        require(bool(os.environ.get(name)), f"missing producer identity: {name}")
+    return {
+        "producer_repository": REPOSITORY,
+        "producer_repository_id": os.environ["GITHUB_REPOSITORY_ID"],
+        "producer_workflow_head": expected_workflow_sha,
+        "producer_workflow_tree": expected_workflow_tree,
+        "producer_workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
+        "producer_run_id": os.environ["GITHUB_RUN_ID"],
+        "producer_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+        "producer_event": os.environ["GITHUB_EVENT_NAME"],
+    }
+
+
+def verify_source_checkout(repo: pathlib.Path) -> None:
+    require(run("git", "rev-parse", "HEAD", cwd=repo).strip() == SDK_SOURCE_SHA, "SDK source head mismatch")
+    require(run("git", "rev-parse", "HEAD^{tree}", cwd=repo).strip() == SDK_SOURCE_TREE, "SDK source tree mismatch")
+    parents = run("git", "show", "-s", "--format=%P", SDK_SOURCE_SHA, cwd=repo).split()
+    require(parents == [BASE_SHA], "SDK source must have the exact frozen base as its sole parent")
+    require(not run("git", "status", "--porcelain", cwd=repo), "SDK source checkout is dirty")
+
+
+def verify_source_evidence(artifact: pathlib.Path) -> dict[str, pathlib.Path]:
+    names = {
+        "bundle": "materialized.bundle",
+        "receipt": "receipt.json",
+        "provenance": "provenance.json",
+        "manifest": "conflict-manifest.json",
+        "staged_patch": "staged-auto-merge.patch",
+        "staged_paths": "staged-auto-merge.txt",
+        "unmerged_paths": "unmerged.txt",
+        "summary": "manifest-summary.env",
+    }
+    files: dict[str, pathlib.Path] = {}
+    for key, name in names.items():
+        path = (artifact / name).resolve(strict=True)
+        require(path.is_file() and path.stat().st_size > 0, f"missing source evidence: {name}")
+        files[key] = path
+
+    # Check small evidence first so negative controls fail before hashing the bundle.
+    require(digest(files["receipt"]) == SOURCE_RECEIPT_SHA256, "source receipt digest mismatch")
+    require(digest(files["provenance"]) == SOURCE_PROVENANCE_SHA256, "source provenance digest mismatch")
+    require(digest(files["manifest"]) == SOURCE_MANIFEST_SHA256, "source manifest digest mismatch")
+    require(digest(files["staged_patch"]) == STAGED_PATCH_SHA256, "staged patch digest mismatch")
+    require(digest(files["staged_paths"]) == STAGED_PATHS_SHA256, "staged path-list digest mismatch")
+    require(digest(files["unmerged_paths"]) == UNRESOLVED_PATHS_SHA256, "unmerged path-list digest mismatch")
+    require(files["summary"].read_text(encoding="utf-8") == EXPECTED_SUMMARY, "manifest summary mismatch")
+    require(digest(files["bundle"]) == BUNDLE_SHA256, "source bundle digest mismatch")
+
+    receipt = load(files["receipt"])
+    provenance = load(files["provenance"])
+    manifest = load(files["manifest"])
+    require(provenance.get("signed") is False, "source provenance must remain explicitly unsigned")
+    require_fields(
+        provenance,
+        {
+            "repository": REPOSITORY,
+            "workflow_head": BASE_SHA,
+            "base_sha": BASE_SHA,
+            "base_tree": BASE_TREE,
+            "upstream_sha": GLOBAL_UPSTREAM_SHA,
+            "upstream_tree": GLOBAL_UPSTREAM_TREE,
+            "materialized_sha": MATERIALIZED_SHA,
+            "materialized_tree": MATERIALIZED_TREE,
+            "run_id": SOURCE_RUN_ID,
+            "run_attempt": SOURCE_RUN_ATTEMPT,
+            "bundle_sha256": BUNDLE_SHA256,
+            "receipt_sha256": SOURCE_RECEIPT_SHA256,
+            "conflict_manifest_sha256": SOURCE_MANIFEST_SHA256,
+            "staged_auto_merge_patch_sha256": STAGED_PATCH_SHA256,
+            "staged_auto_merge_path_list_sha256": STAGED_PATHS_SHA256,
+        },
+        "source provenance",
+    )
+    require_fields(
+        receipt,
+        {
+            "repository": REPOSITORY,
+            "expected_head": BASE_SHA,
+            "base_sha": BASE_SHA,
+            "base_tree": BASE_TREE,
+            "upstream_sha": GLOBAL_UPSTREAM_SHA,
+            "upstream_tree": GLOBAL_UPSTREAM_TREE,
+            "run_id": SOURCE_RUN_ID,
+            "run_attempt": SOURCE_RUN_ATTEMPT,
+            "pre_conflict_materialized_sha": MATERIALIZED_SHA,
+            "pre_conflict_materialized_tree": MATERIALIZED_TREE,
+            "total_unmerged_path_count": UNRESOLVED_COUNT,
+            "unmerged_path_set_sha256": UNRESOLVED_PATHS_SHA256,
+            "staged_auto_merge_patch_sha256": STAGED_PATCH_SHA256,
+            "staged_auto_merge_path_count": STAGED_PATH_COUNT,
+            "staged_auto_merge_path_set_sha256": STAGED_PATHS_SHA256,
+        },
+        "source receipt",
+    )
+    require(receipt.get("conflict") is True, "source receipt must record a conflict")
+    require_fields(
+        manifest,
+        {
+            "schema": "hosted-conflict-manifest",
+            "version": 1,
+            "repository": REPOSITORY,
+            "expected_head": BASE_SHA,
+            "run_id": SOURCE_RUN_ID,
+            "run_attempt": SOURCE_RUN_ATTEMPT,
+            "base_sha": BASE_SHA,
+            "base_tree": BASE_TREE,
+            "upstream_sha": GLOBAL_UPSTREAM_SHA,
+            "upstream_tree": GLOBAL_UPSTREAM_TREE,
+            "total_unmerged_path_count": UNRESOLVED_COUNT,
+            "path_set_sha256": UNRESOLVED_PATHS_SHA256,
+            "staged_auto_merge_patch_sha256": STAGED_PATCH_SHA256,
+            "staged_auto_merge_path_count": STAGED_PATH_COUNT,
+            "staged_auto_merge_path_set_sha256": STAGED_PATHS_SHA256,
+        },
+        "source manifest",
+    )
+    cohorts = manifest.get("cohorts")
+    require(isinstance(cohorts, list), "source manifest cohorts must be a list")
+    cohort_map: dict[str, tuple[int, str]] = {}
+    for item in cohorts:
+        require(isinstance(item, dict) and isinstance(item.get("name"), str), "invalid source cohort")
+        name = item["name"]
+        require(name not in cohort_map, f"duplicate source cohort: {name}")
+        cohort_map[name] = (int(item.get("path_count", -1)), str(item.get("path_set_sha256", "")))
+    require(cohort_map == EXPECTED_COHORTS, "source cohort count/hash map mismatch")
+    require(sum(count for count, _ in cohort_map.values()) == UNRESOLVED_COUNT, "source cohort counts do not sum to 427")
+    sdk = next(item for item in cohorts if item["name"] == "sdk-public-contract")
+    require(sorted(sdk.get("representative_paths", [])) == SDK_PATHS, "SDK cohort paths mismatch")
+    unresolved = sorted(line for line in files["unmerged_paths"].read_text(encoding="utf-8").splitlines() if line)
+    require(len(unresolved) == UNRESOLVED_COUNT and path_digest(unresolved) == UNRESOLVED_PATHS_SHA256, "unmerged path list is not canonical")
+    require(all(path in unresolved for path in SDK_PATHS), "SDK cohort path missing from unmerged list")
+    return files
+
+
+def import_source_bundle(repo: pathlib.Path, bundle: pathlib.Path, temp: pathlib.Path) -> None:
+    bare = temp / "verify-source.git"
+    run("git", "init", "--bare", str(bare))
+    run("git", "-C", str(bare), "bundle", "verify", str(bundle))
+    heads: dict[str, str] = {}
+    for line in run("git", "-C", str(bare), "bundle", "list-heads", str(bundle)).splitlines():
+        oid, ref = line.split(maxsplit=1)
+        require(ref not in heads, f"duplicate source bundle ref: {ref}")
+        heads[ref] = oid
+    require(heads == EXPECTED_SOURCE_HEADS, "source bundle head map mismatch")
+    for ref, target in (
+        (next(ref for ref, oid in heads.items() if oid == BASE_SHA), "base"),
+        (next(ref for ref, oid in heads.items() if oid == GLOBAL_UPSTREAM_SHA), "upstream"),
+        (next(ref for ref, oid in heads.items() if oid == MATERIALIZED_SHA), "materialized"),
+    ):
+        run("git", "fetch", str(bundle), f"+{ref}:refs/w13825-source/{target}", cwd=repo)
+    require(run("git", "rev-parse", "refs/w13825-source/base", cwd=repo).strip() == BASE_SHA, "imported base mismatch")
+    require(run("git", "rev-parse", "refs/w13825-source/base^{tree}", cwd=repo).strip() == BASE_TREE, "imported base tree mismatch")
+    require(run("git", "rev-parse", "refs/w13825-source/upstream", cwd=repo).strip() == GLOBAL_UPSTREAM_SHA, "imported upstream mismatch")
+    require(run("git", "rev-parse", "refs/w13825-source/upstream^{tree}", cwd=repo).strip() == GLOBAL_UPSTREAM_TREE, "imported upstream tree mismatch")
+    require(run("git", "rev-parse", "refs/w13825-source/materialized", cwd=repo).strip() == MATERIALIZED_SHA, "imported materialized mismatch")
+    require(run("git", "rev-parse", "refs/w13825-source/materialized^{tree}", cwd=repo).strip() == MATERIALIZED_TREE, "imported materialized tree mismatch")
+    require(run("git", "show", "-s", "--format=%P", MATERIALIZED_SHA, cwd=repo).split() == [BASE_SHA], "materialized parent mismatch")
+
+
+def verify_emitted_bundle(
+    repo: pathlib.Path,
+    bundle: pathlib.Path,
+    expected_heads: dict[str, str],
+    candidate_sha: str,
+    candidate_tree: str,
+    temp: pathlib.Path,
+) -> None:
+    bare = temp / "verify-candidate.git"
+    run("git", "init", "--bare", str(bare))
+    run("git", "-C", str(bare), "bundle", "verify", str(bundle))
+    actual: dict[str, str] = {}
+    for line in run("git", "-C", str(bare), "bundle", "list-heads", str(bundle)).splitlines():
+        oid, ref = line.split(maxsplit=1)
+        actual[ref] = oid
+    require(actual == expected_heads, "candidate bundle head map mismatch")
+    candidate_ref = next(ref for ref, oid in actual.items() if oid == candidate_sha)
+    run("git", "-C", str(bare), "fetch", str(bundle), f"+{candidate_ref}:refs/import/candidate")
+    require(run("git", "-C", str(bare), "rev-parse", "refs/import/candidate^{tree}").strip() == candidate_tree, "candidate bundle tree mismatch")
+    require(run("git", "-C", str(bare), "show", "-s", "--format=%P", "refs/import/candidate").split() == [MATERIALIZED_SHA], "candidate bundle parent mismatch")
 
 
 def main() -> None:
@@ -83,123 +363,173 @@ def main() -> None:
     parser.add_argument("--repo-root", type=pathlib.Path, required=True)
     parser.add_argument("--artifact-dir", type=pathlib.Path, required=True)
     parser.add_argument("--output-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--expected-workflow-sha", required=True)
+    parser.add_argument("--expected-workflow-tree", required=True)
     args = parser.parse_args()
-    for name, value in vars(args).items():
-        require(value.is_absolute(), f"{name} must be absolute")
-    repo = args.repo_root
-    artifact = args.artifact_dir
-    output = args.output_dir
-    bundle = artifact / "materialized.bundle"
-    source_receipt = artifact / "receipt.json"
-    source_provenance = artifact / "provenance.json"
-    manifest_path = artifact / "conflict-manifest.json"
-    staged_patch = artifact / "staged-auto-merge.patch"
-    staged_paths = artifact / "staged-auto-merge.txt"
-    for path in (bundle, source_receipt, source_provenance, manifest_path, staged_patch, staged_paths):
-        require(path.is_file() and path.stat().st_size > 0, f"missing source evidence: {path}")
-    require(digest(bundle) == BUNDLE_SHA256, "source bundle digest mismatch")
-    require(digest(source_receipt) == SOURCE_RECEIPT_SHA256, "source receipt digest mismatch")
-    require(digest(source_provenance) == SOURCE_PROVENANCE_SHA256, "source provenance digest mismatch")
-    require(digest(manifest_path) == SOURCE_MANIFEST_SHA256, "source manifest digest mismatch")
 
-    receipt = load(source_receipt)
-    provenance = load(source_provenance)
-    manifest = load(manifest_path)
-    require(provenance.get("signed") is False, "source provenance must remain unsigned")
-    require(provenance.get("repository") == "sednalabs/codex", "source repository mismatch")
-    for key, expected in {
-        "run_id": SOURCE_RUN_ID, "run_attempt": SOURCE_RUN_ATTEMPT,
-        "base_sha": BASE_SHA, "base_tree": BASE_TREE,
-        "upstream_sha": UPSTREAM_SHA, "upstream_tree": UPSTREAM_TREE,
-        "materialized_sha": MATERIALIZED_SHA, "materialized_tree": MATERIALIZED_TREE,
-    }.items():
-        require(str(provenance.get(key)) == expected, f"source provenance mismatch: {key}")
-    for key, expected in {"base_sha": BASE_SHA, "base_tree": BASE_TREE, "upstream_sha": UPSTREAM_SHA, "upstream_tree": UPSTREAM_TREE}.items():
-        require(str(receipt.get(key)) == expected, f"source receipt mismatch: {key}")
-    require(manifest.get("total_unmerged_path_count") == UNRESOLVED_COUNT, "unresolved count mismatch")
-    require(manifest.get("path_set_sha256") == UNRESOLVED_PATHS_SHA256, "unresolved path digest mismatch")
-    for field, path in {
-        "bundle_sha256": bundle,
-        "receipt_sha256": source_receipt,
-        "conflict_manifest_sha256": manifest_path,
-        "staged_auto_merge_patch_sha256": staged_patch,
-        "staged_auto_merge_path_list_sha256": staged_paths,
-    }.items():
-        require(provenance.get(field) == digest(path), f"source provenance evidence mismatch: {field}")
-    cohort = next((item for item in manifest.get("cohorts", []) if item.get("name") == "sdk-public-contract"), None)
-    require(isinstance(cohort, dict), "SDK cohort missing")
+    runtime = verify_runtime(args.expected_workflow_sha, args.expected_workflow_tree)
+    repo = absolute_argument(args.repo_root, "repo-root", must_exist=True)
+    artifact = absolute_argument(args.artifact_dir, "artifact-dir", must_exist=True)
+    output = absolute_argument(args.output_dir, "output-dir", must_exist=False)
+    require(repo.is_dir() and artifact.is_dir(), "repository and artifact inputs must be directories")
+    require(output.parent.is_dir(), "output parent must already exist")
+    require(not output.exists(), "output directory already exists")
+    verify_source_checkout(repo)
+    files = verify_source_evidence(artifact)
+    output.mkdir()
 
-    output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="w13825-sdk-", dir=str(args.output_dir.parent)) as temp_name:
-        temp = pathlib.Path(temp_name)
-        bare = temp / "source.git"
-        run("git", "init", "--bare", str(bare))
-        run("git", "-C", str(bare), "bundle", "verify", str(bundle))
-        heads: dict[str, str] = {}
-        for line in run("git", "-C", str(bare), "bundle", "list-heads", str(bundle)).splitlines():
-            oid, ref = line.split(maxsplit=1)
-            heads[ref] = oid
-        require(len(heads) == 3, "source bundle must contain exactly three heads")
-        require(set(heads.values()) == {BASE_SHA, UPSTREAM_SHA, MATERIALIZED_SHA}, "source bundle heads mismatch")
-        for name, oid in (("base", BASE_SHA), ("upstream", UPSTREAM_SHA), ("materialized", MATERIALIZED_SHA)):
-            ref = next(ref for ref, value in heads.items() if value == oid)
-            run("git", "-C", str(repo), "fetch", str(bundle), f"{ref}:refs/w13825-source/{name}")
-        require(run("git", "rev-parse", "refs/w13825-source/base^{tree}").strip() == BASE_TREE, "base tree mismatch")
-        require(run("git", "rev-parse", "refs/w13825-source/upstream^{tree}").strip() == UPSTREAM_TREE, "upstream tree mismatch")
-        require(run("git", "rev-parse", "refs/w13825-source/materialized^{tree}").strip() == MATERIALIZED_TREE, "materialized tree mismatch")
-        require(run("git", "rev-parse", "refs/w13825-source/materialized^").strip() == BASE_SHA, "materialized parent mismatch")
-        staged = sorted(line for line in staged_paths.read_text(encoding="utf-8").splitlines() if line)
-        materialized_diff = run("git", "diff", "--name-only", BASE_SHA, MATERIALIZED_SHA).splitlines()
-        require(materialized_diff == staged, "materialized source diff is not the accepted staged path set")
+    with tempfile.TemporaryDirectory(prefix="w13825-sdk-", dir=str(output.parent)) as temp_name:
+        temp = pathlib.Path(temp_name).resolve(strict=True)
+        import_source_bundle(repo, files["bundle"], temp)
 
-        source_paths = run("git", "diff", "--name-only", MATERIALIZED_SHA, UPSTREAM_SHA, "--", "sdk/").splitlines()
-        require(len(source_paths) == 3 and all(path.startswith("sdk/") for path in source_paths), "source SDK diff must contain exactly three paths")
-        representative = cohort.get("representative_paths", [])
-        require(sorted(representative) == sorted(source_paths), "SDK cohort membership mismatch")
-        classifications: dict[str, str] = {}
-        for path in source_paths:
-            base_entry = tree_entry(repo, BASE_SHA, path)
-            materialized_entry = tree_entry(repo, MATERIALIZED_SHA, path)
-            upstream_entry = tree_entry(repo, UPSTREAM_SHA, path)
-            classifications[path] = classify(base_entry, materialized_entry, upstream_entry)
-            require(materialized_entry == base_entry, f"materialized SDK entry is not base: {path}")
-            require(classifications[path] in {"upstream", "delete"}, f"SDK path is not a selected change: {path}")
+        source_paths = run("git", "diff-tree", "--no-commit-id", "--name-only", "-r", BASE_SHA, SDK_SOURCE_SHA, cwd=repo).splitlines()
+        require(source_paths == SDK_PATHS, "SDK source diff does not equal the exact admitted cohort")
+        require(path_digest(source_paths) == SDK_PATHS_SHA256, "SDK source path-set digest mismatch")
 
-        index = temp / "index"
+        dispositions: list[dict[str, Any]] = []
+        index = temp / "candidate.index"
         index_env = {**os.environ, "GIT_INDEX_FILE": str(index)}
         run("git", "read-tree", MATERIALIZED_SHA, cwd=repo, env=index_env)
-        for path, disposition in classifications.items():
-            entry = tree_entry(repo, UPSTREAM_SHA, path)
-            if disposition == "delete":
-                run("git", "update-index", "--remove", "--", path, cwd=repo, env=index_env)
+        expected_changed: list[str] = []
+        for path in SDK_PATHS:
+            base_entry = tree_entry(repo, BASE_SHA, path)
+            upstream_entry = tree_entry(repo, GLOBAL_UPSTREAM_SHA, path)
+            source_entry = tree_entry(repo, SDK_SOURCE_SHA, path)
+            materialized_entry = tree_entry(repo, MATERIALIZED_SHA, path)
+            require(materialized_entry == base_entry, f"materialized SDK entry is not the frozen base: {path}")
+            disposition = classify(base_entry, upstream_entry, source_entry)
+            selected_entry = source_entry
+            if selected_entry is None:
+                run("git", "update-index", "--force-remove", "--", path, cwd=repo, env=index_env)
             else:
-                require(entry is not None, f"missing upstream entry: {path}")
-                mode, kind, oid = entry
+                mode, _object_type, oid = selected_entry
                 run("git", "update-index", "--add", "--cacheinfo", f"{mode},{oid},{path}", cwd=repo, env=index_env)
-        changed = run("git", "diff", "--cached", "--name-only", cwd=repo, env=index_env).splitlines()
-        require(changed == sorted(source_paths), "candidate index diff is not exactly the SDK selection")
-        candidate_tree = run("git", "write-tree", cwd=repo, env=index_env).strip()
-        env = {**os.environ, "GIT_AUTHOR_NAME": "github-actions[bot]", "GIT_AUTHOR_EMAIL": "41898282+github-actions[bot]@users.noreply.github.com", "GIT_COMMITTER_NAME": "github-actions[bot]", "GIT_COMMITTER_EMAIL": "41898282+github-actions[bot]@users.noreply.github.com"}
-        candidate_sha = subprocess.run(["git", "commit-tree", candidate_tree, "-p", MATERIALIZED_SHA, "-m", "Apply admitted SDK upstream cohort"], cwd=repo, check=True, text=True, capture_output=True, env={**env, "GIT_INDEX_FILE": str(index)}).stdout.strip()
-        candidate_paths = run("git", "diff", "--name-only", MATERIALIZED_SHA, candidate_sha).splitlines()
-        require(candidate_paths == sorted(source_paths), "candidate diff escaped SDK selection")
-        run("git", "update-ref", "refs/w13825-source/candidate", candidate_sha, cwd=repo)
-        run("git", "bundle", "create", str(output / "candidate.bundle"), "refs/w13825-source/candidate", "refs/w13825-source/materialized", "refs/w13825-source/base", "refs/w13825-source/upstream", cwd=repo)
+            if selected_entry != materialized_entry:
+                expected_changed.append(path)
+            dispositions.append(
+                {
+                    "path": path,
+                    "disposition": disposition,
+                    "base": tuple_json(base_entry),
+                    "upstream": tuple_json(upstream_entry),
+                    "source": tuple_json(source_entry),
+                    "materialized": tuple_json(materialized_entry),
+                    "selected": tuple_json(selected_entry),
+                    "source_equals_base": source_entry == base_entry,
+                    "source_equals_upstream": source_entry == upstream_entry,
+                    "materialized_equals_base": materialized_entry == base_entry,
+                }
+            )
 
-    current = {"repository": os.environ.get("GITHUB_REPOSITORY", "sednalabs/codex"), "workflow_head": os.environ.get("GITHUB_SHA", ""), "workflow_run_id": os.environ.get("GITHUB_RUN_ID", ""), "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "")}
-    candidate_bundle_sha = digest(output / "candidate.bundle")
-    emitted = {
-        "schema": "upstream-cohort-candidate-provenance", "version": 1, "signed": False, **current,
-        "base_sha": BASE_SHA, "base_tree": BASE_TREE, "upstream_sha": UPSTREAM_SHA, "upstream_tree": UPSTREAM_TREE,
-        "materialized_sha": MATERIALIZED_SHA, "materialized_tree": MATERIALIZED_TREE, "candidate_sha": candidate_sha,
-        "candidate_parent": MATERIALIZED_SHA, "candidate_tree": candidate_tree, "source_run_id": SOURCE_RUN_ID,
-        "source_run_attempt": SOURCE_RUN_ATTEMPT, "source_artifact": SOURCE_ARTIFACT, "source_bundle_sha256": BUNDLE_SHA256,
-        "source_receipt_sha256": SOURCE_RECEIPT_SHA256, "source_provenance_sha256": SOURCE_PROVENANCE_SHA256,
-        "source_manifest_sha256": SOURCE_MANIFEST_SHA256, "sdk_paths": sorted(source_paths), "candidate_bundle_sha256": candidate_bundle_sha,
-    }
-    (output / "provenance.json").write_text(json.dumps(emitted, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (output / "receipt.json").write_text(json.dumps(emitted, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps(emitted, sort_keys=True))
+        changed = run("git", "diff", "--cached", "--name-only", MATERIALIZED_SHA, cwd=repo, env=index_env).splitlines()
+        require(changed == expected_changed == SDK_PATHS, "candidate index diff is not exactly the SDK cohort")
+        candidate_tree = run("git", "write-tree", cwd=repo, env=index_env).strip()
+        commit_env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "github-actions[bot]",
+            "GIT_AUTHOR_EMAIL": "41898282+github-actions[bot]@users.noreply.github.com",
+            "GIT_COMMITTER_NAME": "github-actions[bot]",
+            "GIT_COMMITTER_EMAIL": "41898282+github-actions[bot]@users.noreply.github.com",
+        }
+        candidate_sha = run(
+            "git",
+            "commit-tree",
+            candidate_tree,
+            "-p",
+            MATERIALIZED_SHA,
+            "-m",
+            "Apply admitted SDK upstream cohort",
+            cwd=repo,
+            env=commit_env,
+        ).strip()
+        require(run("git", "show", "-s", "--format=%P", candidate_sha, cwd=repo).split() == [MATERIALIZED_SHA], "candidate parent mismatch")
+        candidate_paths = run("git", "diff", "--name-only", MATERIALIZED_SHA, candidate_sha, cwd=repo).splitlines()
+        require(candidate_paths == SDK_PATHS, "candidate diff escaped the SDK cohort")
+        for disposition in dispositions:
+            require(
+                tree_entry(repo, candidate_sha, disposition["path"]) == tree_entry(repo, SDK_SOURCE_SHA, disposition["path"]),
+                f"candidate/source entry mismatch: {disposition['path']}",
+            )
+
+        prefix = f"refs/w13825-sdk-{runtime['producer_run_id']}-{runtime['producer_run_attempt']}"
+        emitted_heads = {
+            f"{prefix}/base": BASE_SHA,
+            f"{prefix}/candidate": candidate_sha,
+            f"{prefix}/materialized": MATERIALIZED_SHA,
+            f"{prefix}/source": SDK_SOURCE_SHA,
+            f"{prefix}/upstream": GLOBAL_UPSTREAM_SHA,
+        }
+        for ref, oid in emitted_heads.items():
+            run("git", "update-ref", ref, oid, cwd=repo)
+        candidate_bundle = (output / "candidate.bundle").resolve()
+        run("git", "bundle", "create", str(candidate_bundle), *sorted(emitted_heads), cwd=repo)
+        verify_emitted_bundle(repo, candidate_bundle, emitted_heads, candidate_sha, candidate_tree, temp)
+
+        receipt = {
+            "schema": "upstream-cohort-disposition",
+            "version": 2,
+            "repository": REPOSITORY,
+            "cohort": "sdk-public-contract",
+            "path_count": len(SDK_PATHS),
+            "path_set_sha256": SDK_PATHS_SHA256,
+            "base_sha": BASE_SHA,
+            "base_tree": BASE_TREE,
+            "upstream_sha": GLOBAL_UPSTREAM_SHA,
+            "upstream_tree": GLOBAL_UPSTREAM_TREE,
+            "materialized_sha": MATERIALIZED_SHA,
+            "materialized_tree": MATERIALIZED_TREE,
+            "source_branch": SDK_SOURCE_BRANCH,
+            "source_sha": SDK_SOURCE_SHA,
+            "source_tree": SDK_SOURCE_TREE,
+            "source_parent": BASE_SHA,
+            "candidate_sha": candidate_sha,
+            "candidate_tree": candidate_tree,
+            "candidate_parent": MATERIALIZED_SHA,
+            "paths": dispositions,
+        }
+        receipt_path = output / "receipt.json"
+        receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        provenance = {
+            "schema": "upstream-cohort-candidate-provenance",
+            "version": 2,
+            "signed": False,
+            **runtime,
+            "source_repository": REPOSITORY,
+            "source_run_id": SOURCE_RUN_ID,
+            "source_run_attempt": SOURCE_RUN_ATTEMPT,
+            "source_artifact": SOURCE_ARTIFACT,
+            "source_bundle_sha256": BUNDLE_SHA256,
+            "source_receipt_sha256": SOURCE_RECEIPT_SHA256,
+            "source_provenance_sha256": SOURCE_PROVENANCE_SHA256,
+            "source_manifest_sha256": SOURCE_MANIFEST_SHA256,
+            "source_staged_patch_sha256": STAGED_PATCH_SHA256,
+            "source_staged_paths_sha256": STAGED_PATHS_SHA256,
+            "base_sha": BASE_SHA,
+            "base_tree": BASE_TREE,
+            "upstream_sha": GLOBAL_UPSTREAM_SHA,
+            "upstream_tree": GLOBAL_UPSTREAM_TREE,
+            "materialized_sha": MATERIALIZED_SHA,
+            "materialized_tree": MATERIALIZED_TREE,
+            "sdk_source_branch": SDK_SOURCE_BRANCH,
+            "sdk_source_sha": SDK_SOURCE_SHA,
+            "sdk_source_tree": SDK_SOURCE_TREE,
+            "sdk_source_parent": BASE_SHA,
+            "cohort": "sdk-public-contract",
+            "path_count": len(SDK_PATHS),
+            "path_set_sha256": SDK_PATHS_SHA256,
+            "candidate_sha": candidate_sha,
+            "candidate_tree": candidate_tree,
+            "candidate_parent": MATERIALIZED_SHA,
+            "candidate_bundle_heads": emitted_heads,
+            "candidate_bundle_sha256": digest(candidate_bundle),
+            "disposition_receipt_sha256": digest(receipt_path),
+        }
+        provenance_path = output / "provenance.json"
+        provenance_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        require(load(receipt_path) == receipt, "emitted disposition receipt readback mismatch")
+        require(load(provenance_path) == provenance, "emitted provenance readback mismatch")
+
+    print(json.dumps(provenance, sort_keys=True))
 
 
 if __name__ == "__main__":
