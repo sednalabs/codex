@@ -60,7 +60,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git -c "http.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
+          github_basic_auth="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 | tr -d '\n')"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" \
             fetch --no-tags "${UPSTREAM_URL}" "${UPSTREAM_SHA}"
           test "$(git rev-parse "${UPSTREAM_SHA}^{commit}")" = "${UPSTREAM_SHA}"
           test "$(git rev-parse "${UPSTREAM_SHA}^{tree}")" = "${UPSTREAM_TREE}"
@@ -73,10 +74,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          github_basic_auth="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 | tr -d '\n')"
           mkdir -p composition-receipt
           base_tree="$(git rev-parse HEAD^{tree})"
           upstream_tree="$(git rev-parse "${UPSTREAM_SHA}^{tree}")"
-          remote_readback="$(git -c "http.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
+          remote_readback="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
           if git merge-base --is-ancestor "${UPSTREAM_SHA}" HEAD; then
             echo "upstream cut is already composed into HEAD" >&2
             exit 1
@@ -214,7 +216,7 @@ jobs:
           test -n "${staged_path_digest}"
           materialize_ref="validation/upstream-preconflict-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           materialize_dir="${RUNNER_TEMP}/upstream-preconflict-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          remote_head="$(git -c "http.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
+          remote_head="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
           test "${remote_head}" = "${EXPECTED_HEAD}"
           git worktree add --detach --force "${materialize_dir}" "${base_sha}"
           cleanup_materialize() {
@@ -230,12 +232,12 @@ jobs:
           git -C "${materialize_dir}" commit -m "chore: materialize upstream pre-conflict base"
           materialized_sha="$(git -C "${materialize_dir}" rev-parse HEAD)"
           materialized_tree="$(git -C "${materialize_dir}" rev-parse HEAD^{tree})"
-          remote_head="$(git -c "http.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
+          remote_head="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
           test "${remote_head}" = "${EXPECTED_HEAD}"
-          test -z "$(git -c "http.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" ls-remote origin "refs/heads/${materialize_ref}" | awk '{print $1}')"
-          git -C "${materialize_dir}" -c "http.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
+          test -z "$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" ls-remote origin "refs/heads/${materialize_ref}" | awk '{print $1}')"
+          git -C "${materialize_dir}" -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" \
             push origin "HEAD:refs/heads/${materialize_ref}"
-          materialized_remote_readback="$(git -C "${materialize_dir}" -c "http.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" ls-remote origin "refs/heads/${materialize_ref}" | awk '{print $1}')"
+          materialized_remote_readback="$(git -C "${materialize_dir}" -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" ls-remote origin "refs/heads/${materialize_ref}" | awk '{print $1}')"
           test "${materialized_remote_readback}" = "${materialized_sha}"
           export materialize_ref materialized_sha materialized_tree materialized_remote_readback
           python3 - <<'PY'
@@ -356,10 +358,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          github_basic_auth="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 | tr -d '\n')"
           remote_head="$(git ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
           test "${remote_head}" = "${EXPECTED_HEAD}"
           git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git -c "http.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" \
             push origin "HEAD:refs/heads/${INTEGRATION_BRANCH}"
           post_push_remote_readback="$(git ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
           merge_candidate_sha="$(git rev-parse HEAD)"
