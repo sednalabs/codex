@@ -259,13 +259,14 @@ jobs:
           git -C "$repo" rev-list --all | while IFS= read -r commit; do git -C "$repo" ls-tree -r -t --full-tree --format='%(objectname) %(objecttype) %(path)' "$commit"; done | sha256sum > output/tree-and-blob-identities.digest
           git -C "$repo" cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype) %(objectsize)' | sha256sum > output/object-metadata.digest
           python3 - <<'PY'
-          import json, subprocess
+          import json, re, subprocess
           refs = json.load(open("selected_refs.json", encoding="utf-8"))
           with open("output/tag-metadata.tsv", "w", encoding="utf-8") as out:
               out.write("ref\tobject_type\tsignature_status\n")
               for ref in refs:
                   if not ref.startswith("refs/tags/"): continue
-                  isolated = "refs/rewrites/selected/" + ref.replace("/", "_")
+                  # Must remain identical to the fetch-binding sanitizer above.
+                  isolated = "refs/rewrites/selected/" + re.sub(r"[^A-Za-z0-9._-]", "_", ref)
                   oid = subprocess.check_output(["git", "-C", "work/repo.git", "rev-parse", isolated], text=True).strip()
                   typ = subprocess.check_output(["git", "-C", "work/repo.git", "cat-file", "-t", oid], text=True).strip()
                   status = subprocess.run(["git", "-C", "work/repo.git", "verify-tag", isolated], capture_output=True).returncode
