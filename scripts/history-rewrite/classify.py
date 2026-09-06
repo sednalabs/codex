@@ -121,13 +121,6 @@ class OutputWriter:
             for chunk in iter(lambda: compressed.read(1024 * 1024), b""):
                 self.compressed_hash.update(chunk)
 
-    def commit(self):
-        os.replace(self.plain_temp.name, self.output)
-        compressed_output = Path(str(self.output) + ".gz")
-        os.replace(self.gzip_temp.name, compressed_output)
-        self.committed = True
-        return compressed_output
-
     def cleanup(self):
         for path in (self.plain_temp, self.gzip_temp):
             if path is not None:
@@ -135,6 +128,41 @@ class OutputWriter:
                     os.unlink(path.name)
                 except FileNotFoundError:
                     pass
+
+def publish_outputs(writer, metadata_temp, metadata_path):
+    finals = [writer.output, Path(str(writer.output) + ".gz"), metadata_path]
+    staged = [Path(writer.plain_temp.name), Path(writer.gzip_temp.name), metadata_temp]
+    backups = []
+    published = []
+    try:
+        for final in finals:
+            if final.exists():
+                fd, backup_name = tempfile.mkstemp(dir=final.parent, prefix=f".{final.name}.", suffix=".backup")
+                os.close(fd)
+                backup = Path(backup_name)
+                os.unlink(backup)
+                os.replace(final, backup)
+                backups.append((final, backup))
+        for final, temporary in zip(finals, staged):
+            os.replace(temporary, final)
+            published.append(final)
+    except BaseException:
+        for final in published:
+            try:
+                final.unlink()
+            except FileNotFoundError:
+                pass
+        for final, backup in reversed(backups):
+            if backup.exists():
+                os.replace(backup, final)
+        raise
+    else:
+        for _final, backup in backups:
+            try:
+                backup.unlink()
+            except FileNotFoundError:
+                pass
+        writer.committed = True
 
 row_count = 0
 total_matches = 0
@@ -220,8 +248,12 @@ def account_scan(kind, byte_count):
 
 OUTPUT.parent.mkdir(parents=True, exist_ok=True)
 writer = OutputWriter(OUTPUT)
-writer.__enter__()
 atexit.register(writer.cleanup)
+try:
+    writer.__enter__()
+except BaseException:
+    writer.cleanup()
+    raise
 
 for identity in git("rev-list", "--all").splitlines():
     record = git("show", "-s", "--format=%H%x00%s%x00%b", identity)
@@ -247,13 +279,11 @@ try:
                 blob = batch.read(identity)
                 if blob is None:
                     raise RuntimeError(f"git cat-file --batch missing blob {identity}")
-                proof, metadata = match_metadata("blob", blob.decode("utf-8", "replace"))
-                cached = (proof, metadata, len(blob))
+                normalized = blob.decode("utf-8", "replace")
+                proof, metadata = match_metadata("blob", normalized)
+                cached = (proof, metadata, len(normalized.encode("utf-8", "replace")))
                 blob_match_cache[identity] = cached
-                byte_count = len(blob)
-            else:
-                byte_count = cached[2]
-            account_scan("blob", byte_count)
+            account_scan("blob", cached[2])
             emit("blob", identity, path, cached[0], cached[1])
 finally:
     batch.close()
@@ -262,7 +292,7 @@ try:
     for pid in sorted(per_pattern):
         writer.write(f"#count\t{pid}\t{per_pattern[pid]['matches']}\n")
     writer.close()
-except Exception:
+except BaseException:
     writer.cleanup()
     raise
 
@@ -292,9 +322,9 @@ if file_digest(plain_temp_path) != writer.plain_hash.hexdigest() or file_digest(
 plain_bytes = plain_temp_path.stat().st_size
 compressed_bytes = compressed_temp_path.stat().st_size
 compressed_output = Path(str(OUTPUT) + ".gz")
-writer.commit()
 metadata = {
-    "schema": 2,
+    "schema": 3,
+    "complete": True,
     "accepted_pattern_count": ACCEPTED_PATTERN_COUNT,
     "capacities": {
         "rows_formula": "scanned_fields * accepted_pattern_count",
@@ -315,14 +345,15 @@ metadata = {
 }
 metadata_path = Path(str(OUTPUT) + ".metadata.json")
 metadata_temp = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=metadata_path.parent, prefix=f".{metadata_path.name}.", suffix=".tmp", delete=False)
+metadata_temp_path = Path(metadata_temp.name)
 try:
     with metadata_temp as fh:
         json.dump(metadata, fh, sort_keys=True, separators=(",", ":"))
         fh.write("\n")
-    os.replace(metadata_temp.name, metadata_path)
-except Exception:
+    publish_outputs(writer, metadata_temp_path, metadata_path)
+except BaseException:
     try:
-        os.unlink(metadata_temp.name)
+        os.unlink(metadata_temp_path)
     except FileNotFoundError:
         pass
     raise
