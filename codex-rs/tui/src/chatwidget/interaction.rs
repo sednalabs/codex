@@ -237,6 +237,10 @@ impl ChatWidget {
         self.bottom_pane.no_modal_or_popup_active()
     }
 
+    pub(crate) fn selection_view_search_query(&self, view_id: &'static str) -> Option<String> {
+        self.bottom_pane.search_query_for_active_view(view_id)
+    }
+
     pub(crate) fn can_launch_external_editor(&self) -> bool {
         self.bottom_pane.can_launch_external_editor()
     }

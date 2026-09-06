@@ -50,6 +50,11 @@ pub(crate) trait BottomPaneView: Renderable {
         None
     }
 
+    /// Current plain-text filter for a searchable list view.
+    fn search_query(&self) -> Option<&str> {
+        None
+    }
+
     /// Active tab id for tabbed list-based views.
     #[allow(dead_code)]
     fn active_tab_id(&self) -> Option<&str> {
