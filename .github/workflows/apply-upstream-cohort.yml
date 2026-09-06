@@ -98,7 +98,7 @@ jobs:
           workflow_tree = sys.argv[3]
           push = {
               "ref": "refs/heads/worker/w13825-sdk-build-consumer",
-              "before": "8217beff9976314d4bab96dd1ebe0d97e6e7f1d3",
+              "before": "6e63f3e1822c81ac59832d3b41a2decae64994dd",
               "after": workflow_sha,
               "created": False,
               "deleted": False,
@@ -239,16 +239,36 @@ jobs:
           path: ${{ runner.temp }}/w13825-sdk-input
           merge-multiple: true
 
+      - name: Preflight accepted execution inputs
+        id: execution-inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          preflight_dir="${RUNNER_TEMP}/w13825-sdk-build-inputs"
+          python3 "${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py" \
+            --prepare-inputs-only \
+            --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
+            --artifact-dir "${RUNNER_TEMP}/w13825-sdk-input" \
+            --preflight-dir "${preflight_dir}" \
+            --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+            --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+          root_pnpm_version="$(
+            jq -er \
+              '.root_package.package_manager.version | select(type == "string" and test("^[0-9]+[.][0-9]+[.][0-9]+$"))' \
+              "${preflight_dir}/execution-inputs.json"
+          )"
+          printf 'root_pnpm_version=%s\n' "${root_pnpm_version}" >>"${GITHUB_OUTPUT}"
+
       - name: Set up exact uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: 0.11.3
           enable-cache: false
 
-      - name: Set up exact pnpm
+      - name: Set up accepted-root pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v5
         with:
-          version: 10.33.0
+          version: ${{ steps.execution-inputs.outputs.root_pnpm_version }}
           run_install: false
 
       - name: Set up Node.js 22
@@ -271,6 +291,7 @@ jobs:
           python3 "${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py" \
             --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
             --artifact-dir "${RUNNER_TEMP}/w13825-sdk-input" \
+            --preflight-dir "${RUNNER_TEMP}/w13825-sdk-build-inputs" \
             --output-dir "${RUNNER_TEMP}/w13825-sdk-build-candidate" \
             --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
             --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"

@@ -18,6 +18,7 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
 import tomllib
 from typing import Any
@@ -28,7 +29,7 @@ REPOSITORY_ID = "1152496647"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-build-consumer"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "8217beff9976314d4bab96dd1ebe0d97e6e7f1d3"
+PUSH_PREDECESSOR_SHA = "6e63f3e1822c81ac59832d3b41a2decae64994dd"
 
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
@@ -168,11 +169,34 @@ ALLOWED_MUTABLE_PATHS = sorted([*BUILD_PATHS, *GENERATED_PATHS])
 SDK_RUNTIME_DEPENDENCY = "openai-codex-cli-bin==0.147.0"
 SDK_RUNTIME_VERSION = "0.147.0"
 UV_VERSION = "0.11.3"
-PNPM_VERSION = "10.33.0"
-PACKAGE_MANAGER = (
-    "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319"
-)
+NODE_MAJOR = 22
+BAZELISK_VERSION = "1.28.1"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+PACKAGE_MANAGER_PATTERN = re.compile(r"pnpm@(\d+\.\d+\.\d+)\+sha512\.[A-Za-z0-9+/=]+")
+MINIMUM_VERSION_PATTERN = re.compile(r">=(\d+)(?:\.(\d+))?(?:\.(\d+))?")
+MAX_INPUT_TEXT_BYTES = 2 * 1024 * 1024
+
+EXECUTION_INPUT_MODES = {
+    ".bazelversion": "100644",
+    ".github/actions/setup-bazel-ci/action.yml": "100644",
+    ".github/workflows/repo-checks.yml": "100644",
+    "MODULE.bazel": "100644",
+    "MODULE.bazel.lock": "100644",
+    "package.json": "100644",
+    "pnpm-lock.yaml": "100644",
+    "pnpm-workspace.yaml": "100644",
+    "sdk/python/pyproject.toml": "100644",
+    "sdk/python/uv.lock": "100644",
+    "sdk/python/scripts/update_sdk_artifacts.py": "100755",
+    "sdk/python/tests/test_contract_generation.py": "100644",
+    "sdk/python/tests/test_client_rpc_methods.py": "100644",
+    "sdk/python/src/openai_codex/api.py": "100644",
+    "sdk/python/src/openai_codex/generated/notification_registry.py": "100644",
+    "sdk/python/src/openai_codex/generated/v2_all.py": "100644",
+    "sdk/typescript/package.json": "100644",
+    **{path: "100644" for path in BUILD_PATHS},
+    **{path: "100644" for path in PATCH_DEPENDENCIES},
+}
 
 EXPECTED_SDK_BUNDLE_HEADS = {
     f"refs/w13825-sdk-{SDK_INPUT_RUN_ID}-{SDK_INPUT_RUN_ATTEMPT}/base": BASE_SHA,
@@ -572,6 +596,15 @@ def import_sdk_bundle(repo: pathlib.Path, bundle: pathlib.Path, temp: pathlib.Pa
         run("git", "fetch", str(bundle), f"+{source_ref}:{target_ref}", cwd=repo)
         require(run("git", "rev-parse", target_ref, cwd=repo).strip() == oid, f"SDK bundle import mismatch: {suffix}")
 
+    verify_imported_sdk_objects(repo)
+
+
+def verify_imported_sdk_objects(repo: pathlib.Path) -> None:
+    for source_ref, oid in EXPECTED_SDK_BUNDLE_HEADS.items():
+        suffix = source_ref.rsplit("/", 1)[-1]
+        target_ref = f"refs/w13825-sdk-input/{suffix}"
+        require(run("git", "rev-parse", target_ref, cwd=repo).strip() == oid, f"imported SDK ref mismatch: {suffix}")
+
     require(run("git", "rev-parse", f"{SDK_CANDIDATE_SHA}^{{tree}}", cwd=repo).strip() == SDK_CANDIDATE_TREE, "SDK candidate tree mismatch")
     require(run("git", "show", "-s", "--format=%P", SDK_CANDIDATE_SHA, cwd=repo).split() == [MATERIALIZED_SHA], "SDK candidate parent mismatch")
     require(run("git", "rev-parse", f"{MATERIALIZED_SHA}^{{tree}}", cwd=repo).strip() == MATERIALIZED_TREE, "materialized tree mismatch")
@@ -632,42 +665,360 @@ def verify_sdk_input_entries(repo: pathlib.Path, receipt: dict[str, Any]) -> lis
     return verified_runtime_inputs
 
 
-def require_source_pins(worktree: pathlib.Path) -> dict[str, str]:
-    pyproject = tomllib.loads((worktree / "sdk/python/pyproject.toml").read_text(encoding="utf-8"))
-    dependencies = pyproject.get("project", {}).get("dependencies", [])
-    require(isinstance(dependencies, list), "SDK Python dependencies must be a list")
+def bounded_text(value: Any, *, maximum: int = 256) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > maximum:
+        return None
+    return value
+
+
+def read_input_text(
+    worktree: pathlib.Path,
+    entries: dict[str, tuple[str, str, str] | None],
+    path: str,
+    errors: list[str],
+) -> str | None:
+    entry = entries.get(path)
+    if entry is None or entry[1] != "blob":
+        errors.append(f"{path}:content-unavailable")
+        return None
+    try:
+        size = int(run("git", "cat-file", "-s", entry[2], cwd=worktree).strip())
+        if size > MAX_INPUT_TEXT_BYTES:
+            errors.append(f"{path}:content-too-large")
+            return None
+        return run_bytes("git", "cat-file", "blob", entry[2], cwd=worktree).decode("utf-8")
+    except (subprocess.CalledProcessError, UnicodeDecodeError, ValueError):
+        errors.append(f"{path}:content-read-error")
+        return None
+
+
+def parse_package_manager(value: Any, label: str, errors: list[str]) -> dict[str, Any]:
+    observed = bounded_text(value)
+    match = PACKAGE_MANAGER_PATTERN.fullmatch(observed or "")
+    if match is None:
+        errors.append(f"{label}:invalid-package-manager")
+        return {"status": "invalid", "value": observed, "version": None}
+    return {"status": "observed", "value": observed, "version": match.group(1)}
+
+
+def minimum_version(requirement: Any, label: str, errors: list[str]) -> tuple[int, int, int] | None:
+    observed = bounded_text(requirement, maximum=64)
+    match = MINIMUM_VERSION_PATTERN.fullmatch(observed or "")
+    if match is None:
+        errors.append(f"{label}:unsupported-version-requirement")
+        return None
+    return tuple(int(value or 0) for value in match.groups())
+
+
+def version_tuple(value: str, *, prefix: str = "") -> tuple[int, int, int] | None:
+    pattern = rf"{re.escape(prefix)}(\d+)\.(\d+)\.(\d+)"
+    match = re.fullmatch(pattern, value)
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def workspace_packages(text: str | None) -> list[str]:
+    if text is None:
+        return []
+    packages: list[str] = []
+    in_packages = False
+    for line in text.splitlines():
+        if line == "packages:":
+            in_packages = True
+            continue
+        if in_packages and line and not line.startswith((" ", "\t")):
+            break
+        if in_packages:
+            match = re.fullmatch(r"\s+-\s+['\"]?([^'\"]+)['\"]?\s*", line)
+            if match is not None and len(packages) < 32:
+                packages.append(match.group(1)[:128])
+    return packages
+
+
+def collect_execution_inputs(
+    worktree: pathlib.Path,
+    runtime: dict[str, str],
+    verified_runtime_inputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    errors: list[str] = []
+    entries: dict[str, tuple[str, str, str] | None] = {}
+    path_observations: list[dict[str, Any]] = []
+    for path, expected_mode in sorted(EXECUTION_INPUT_MODES.items()):
+        try:
+            entry = index_entry(worktree, path)
+        except (subprocess.CalledProcessError, SystemExit, UnicodeDecodeError, ValueError):
+            entry = None
+            status = "read-error"
+        else:
+            if entry is None:
+                status = "missing"
+            elif entry[0] != expected_mode or entry[1] != "blob":
+                status = "mode-type-mismatch"
+            else:
+                status = "observed"
+        entries[path] = entry
+        if status != "observed":
+            errors.append(f"{path}:{status}")
+        path_observations.append(
+            {
+                "path": path,
+                "expected_mode": expected_mode,
+                "status": status,
+                "entry": tuple_json(entry),
+            }
+        )
+
+    def parse_json_input(path: str) -> dict[str, Any]:
+        text = read_input_text(worktree, entries, path, errors)
+        if text is None:
+            return {}
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            errors.append(f"{path}:json-parse-error")
+            return {}
+        if not isinstance(value, dict):
+            errors.append(f"{path}:json-not-object")
+            return {}
+        return value
+
+    root_package = parse_json_input("package.json")
+    sdk_package = parse_json_input("sdk/typescript/package.json")
+    root_manager = parse_package_manager(root_package.get("packageManager"), "root-package", errors)
+    sdk_manager = parse_package_manager(sdk_package.get("packageManager"), "sdk-package", errors)
+    root_engines = root_package.get("engines") if isinstance(root_package.get("engines"), dict) else {}
+    sdk_engines = sdk_package.get("engines") if isinstance(sdk_package.get("engines"), dict) else {}
+    root_node_requirement = bounded_text(root_engines.get("node"), maximum=64)
+    root_pnpm_requirement = bounded_text(root_engines.get("pnpm"), maximum=64)
+    sdk_node_requirement = bounded_text(sdk_engines.get("node"), maximum=64)
+    minimum_version(root_node_requirement, "root-node-engine", errors)
+    minimum_version(root_pnpm_requirement, "root-pnpm-engine", errors)
+    minimum_version(sdk_node_requirement, "sdk-node-engine", errors)
+    sdk_scripts_source = sdk_package.get("scripts") if isinstance(sdk_package.get("scripts"), dict) else {}
+    sdk_scripts = {name: bounded_text(sdk_scripts_source.get(name)) for name in ("build", "lint", "test")}
+    for name, value in sdk_scripts.items():
+        if value is None:
+            errors.append(f"sdk-package:missing-{name}-script")
+
+    workspace_text = read_input_text(worktree, entries, "pnpm-workspace.yaml", errors)
+    packages = workspace_packages(workspace_text)
+    if "sdk/typescript" not in packages:
+        errors.append("pnpm-workspace:sdk-typescript-missing")
+
+    pyproject_text = read_input_text(worktree, entries, "sdk/python/pyproject.toml", errors)
+    pyproject: dict[str, Any] = {}
+    if pyproject_text is not None:
+        try:
+            pyproject = tomllib.loads(pyproject_text)
+        except tomllib.TOMLDecodeError:
+            errors.append("sdk-python-pyproject:toml-parse-error")
+    build_system = pyproject.get("build-system") if isinstance(pyproject.get("build-system"), dict) else {}
+    project = pyproject.get("project") if isinstance(pyproject.get("project"), dict) else {}
+    build_requires = build_system.get("requires") if isinstance(build_system.get("requires"), list) else []
+    python_requirement = bounded_text(project.get("requires-python"), maximum=64)
+    minimum_version(python_requirement, "sdk-python-engine", errors)
+    dependencies = project.get("dependencies") if isinstance(project.get("dependencies"), list) else []
     runtime_dependencies = [
-        value for value in dependencies if isinstance(value, str) and value.startswith("openai-codex-cli-bin")
-    ]
-    observed_runtime_dependencies = [value[:96] for value in runtime_dependencies[:3]]
-    require(
-        runtime_dependencies == [SDK_RUNTIME_DEPENDENCY],
-        f"SDK runtime dependency pin mismatch: expected={SDK_RUNTIME_DEPENDENCY} "
-        f"observed={observed_runtime_dependencies}",
-    )
-    root_package = load(worktree / "package.json")
-    sdk_package = load(worktree / "sdk/typescript/package.json")
-    require(root_package.get("packageManager") == PACKAGE_MANAGER, "root pnpm package-manager pin mismatch")
-    require(sdk_package.get("packageManager") == PACKAGE_MANAGER, "SDK pnpm package-manager pin mismatch")
-    uv_identity = run("uv", "--version", cwd=worktree).strip()
-    require(uv_identity == f"uv {UV_VERSION}", "uv version mismatch")
-    pnpm_identity = run("pnpm", "--version", cwd=worktree).strip()
-    require(pnpm_identity == PNPM_VERSION, "pnpm version mismatch")
-    node_identity = run("node", "--version", cwd=worktree).strip()
-    require(re.fullmatch(r"v22(?:\.\d+){2}", node_identity) is not None, "Node major version mismatch")
-    bazel_pin = (worktree / ".bazelversion").read_text(encoding="utf-8").strip()
-    bazel_identity = run("bazel", "--version", cwd=worktree).strip()
-    require(bazel_identity.endswith(f" {bazel_pin}"), "Bazel version does not match .bazelversion")
+        value[:128]
+        for value in dependencies
+        if isinstance(value, str) and value.startswith("openai-codex-cli-bin")
+    ][:4]
+    python_build = {
+        "backend": bounded_text(build_system.get("build-backend"), maximum=128),
+        "requires": [value[:128] for value in build_requires if isinstance(value, str)][:16],
+        "requires_python": python_requirement,
+        "runtime_dependencies": runtime_dependencies,
+    }
+    if python_build["backend"] != "uv_build":
+        errors.append("sdk-python-pyproject:build-backend-mismatch")
+    if not any(value.startswith("uv_build") for value in python_build["requires"]):
+        errors.append("sdk-python-pyproject:uv-build-requirement-missing")
+    if runtime_dependencies != [SDK_RUNTIME_DEPENDENCY]:
+        errors.append("sdk-python-pyproject:runtime-dependency-mismatch")
+
+    lock_text = read_input_text(worktree, entries, "sdk/python/uv.lock", errors)
+    lock: dict[str, Any] = {}
+    if lock_text is not None:
+        try:
+            lock = tomllib.loads(lock_text)
+        except tomllib.TOMLDecodeError:
+            errors.append("sdk-python-lock:toml-parse-error")
+    lock_packages = lock.get("package") if isinstance(lock.get("package"), list) else []
+    runtime_versions: list[str] = []
+    runtime_specifiers: list[str] = []
+    for package in lock_packages:
+        if not isinstance(package, dict):
+            continue
+        if package.get("name") == "openai-codex-cli-bin" and isinstance(package.get("version"), str):
+            runtime_versions.append(package["version"][:64])
+        if package.get("name") != "openai-codex":
+            continue
+        metadata = package.get("metadata") if isinstance(package.get("metadata"), dict) else {}
+        requires_dist = metadata.get("requires-dist") if isinstance(metadata.get("requires-dist"), list) else []
+        for requirement in requires_dist:
+            if (
+                isinstance(requirement, dict)
+                and requirement.get("name") == "openai-codex-cli-bin"
+                and isinstance(requirement.get("specifier"), str)
+            ):
+                runtime_specifiers.append(requirement["specifier"][:64])
+    lock_python_requirement = bounded_text(lock.get("requires-python"), maximum=64)
+    minimum_version(lock_python_requirement, "sdk-python-lock-engine", errors)
+    python_lock = {
+        "version": lock.get("version"),
+        "requires_python": lock_python_requirement,
+        "runtime_versions": sorted(set(runtime_versions)),
+        "runtime_specifiers": sorted(set(runtime_specifiers)),
+    }
+    if python_lock["version"] != 1:
+        errors.append("sdk-python-lock:format-mismatch")
+    if python_lock["runtime_versions"] != [SDK_RUNTIME_VERSION]:
+        errors.append("sdk-python-lock:runtime-version-mismatch")
+    if python_lock["runtime_specifiers"] != [f"=={SDK_RUNTIME_VERSION}"]:
+        errors.append("sdk-python-lock:runtime-specifier-mismatch")
+
+    bazel_text = read_input_text(worktree, entries, ".bazelversion", errors)
+    bazel_version = bounded_text(bazel_text.strip() if bazel_text is not None else None, maximum=64)
+    if bazel_version is None or version_tuple(bazel_version) is None:
+        errors.append("bazel-version:invalid")
+
+    repo_checks = read_input_text(worktree, entries, ".github/workflows/repo-checks.yml", errors)
+    uv_versions = sorted(set(re.findall(r'version:\s*["\']?(\d+\.\d+\.\d+)', repo_checks or "")))
+    uv_version = UV_VERSION if UV_VERSION in uv_versions else None
+    if uv_version is None:
+        errors.append("repo-checks:uv-version-missing")
+
+    bazel_setup = read_input_text(worktree, entries, ".github/actions/setup-bazel-ci/action.yml", errors)
+    bazelisk_versions = sorted(set(re.findall(r"bazelisk-version:\s*(\d+\.\d+\.\d+)", bazel_setup or "")))
+    bazelisk_version = BAZELISK_VERSION if BAZELISK_VERSION in bazelisk_versions else None
+    if bazelisk_version is None:
+        errors.append("setup-bazel-ci:bazelisk-version-missing")
+
+    pnpm_lock_text = read_input_text(worktree, entries, "pnpm-lock.yaml", errors)
+    lockfile_match = re.search(r"^lockfileVersion:\s*['\"]?([^'\"\s]+)", pnpm_lock_text or "", re.MULTILINE)
+    pnpm_lock_version = bounded_text(lockfile_match.group(1), maximum=32) if lockfile_match is not None else None
+    if pnpm_lock_version is None:
+        errors.append("pnpm-lock:lockfile-version-missing")
+
+    errors = sorted(set(errors))
     return {
+        "schema": "sdk-build-execution-inputs",
+        "version": 1,
+        **runtime,
+        "input_sdk_artifact_id": SDK_INPUT_ARTIFACT_ID,
+        "input_sdk_candidate": SDK_CANDIDATE_SHA,
+        "input_sdk_tree": SDK_CANDIDATE_TREE,
+        "build_source_sha": BUILD_SOURCE_SHA,
+        "build_source_tree": BUILD_SOURCE_TREE,
+        "path_observations": path_observations,
+        "root_package": {
+            "package_manager": root_manager,
+            "node_engine": root_node_requirement,
+            "pnpm_engine": root_pnpm_requirement,
+        },
+        "sdk_package": {
+            "package_manager": sdk_manager,
+            "node_engine": sdk_node_requirement,
+            "scripts": sdk_scripts,
+        },
+        "package_manager_equality": root_manager.get("value") == sdk_manager.get("value"),
+        "package_manager_equality_required": False,
+        "workspace_packages": packages,
+        "python_build": python_build,
+        "python_lock": python_lock,
+        "pnpm_lock_version": pnpm_lock_version,
+        "uv_version": uv_version,
+        "node_major": NODE_MAJOR,
+        "bazel_version": bazel_version,
+        "bazelisk_version": bazelisk_version,
+        "verified_composite_runtime_inputs": verified_runtime_inputs,
+        "errors": errors,
+        "status": "ready" if not errors else "invalid",
+    }
+
+
+def probe_tool(label: str, *args: str, cwd: pathlib.Path) -> dict[str, Any]:
+    try:
+        result = subprocess.run(args, cwd=cwd, check=False, text=True, capture_output=True)
+    except OSError:
+        return {"label": label, "status": "error", "exit_code": None, "observed": None}
+    output = result.stdout.strip()
+    if result.returncode != 0 or not output or "\n" in output or len(output) > 128:
+        return {"label": label, "status": "error", "exit_code": result.returncode, "observed": None}
+    return {"label": label, "status": "observed", "exit_code": 0, "observed": output}
+
+
+def collect_tool_observations(
+    worktree: pathlib.Path,
+    execution_inputs: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    observations = {
+        "uv": probe_tool("uv", "uv", "--version", cwd=worktree),
+        "pnpm": probe_tool("pnpm", "pnpm", "--version", cwd=worktree),
+        "node": probe_tool("node", "node", "--version", cwd=worktree),
+        "bazel": probe_tool("bazel", "bazel", "--version", cwd=worktree),
+        "python": {
+            "label": "python",
+            "status": "observed",
+            "exit_code": 0,
+            "observed": ".".join(str(part) for part in sys.version_info[:3]),
+        },
+    }
+    errors: list[str] = []
+    root_package = execution_inputs["root_package"]
+    sdk_package = execution_inputs["sdk_package"]
+    root_pnpm_version = root_package["package_manager"].get("version")
+    if observations["pnpm"].get("observed") != root_pnpm_version:
+        errors.append("pnpm:root-package-version-mismatch")
+    if observations["uv"].get("observed") != f"uv {execution_inputs['uv_version']}":
+        errors.append("uv:version-mismatch")
+    node_observed = observations["node"].get("observed")
+    node_version = version_tuple(node_observed or "", prefix="v")
+    python_version = version_tuple(observations["python"]["observed"])
+    pnpm_version = version_tuple(observations["pnpm"].get("observed") or "")
+    root_node_minimum = minimum_version(root_package.get("node_engine"), "root-node-engine", errors)
+    sdk_node_minimum = minimum_version(sdk_package.get("node_engine"), "sdk-node-engine", errors)
+    root_pnpm_minimum = minimum_version(root_package.get("pnpm_engine"), "root-pnpm-engine", errors)
+    python_minimum = minimum_version(execution_inputs["python_build"].get("requires_python"), "python-engine", errors)
+    if node_version is None or node_version[0] != NODE_MAJOR:
+        errors.append("node:major-version-mismatch")
+    if node_version is not None and root_node_minimum is not None and node_version < root_node_minimum:
+        errors.append("node:root-engine-mismatch")
+    if node_version is not None and sdk_node_minimum is not None and node_version < sdk_node_minimum:
+        errors.append("node:sdk-engine-mismatch")
+    if pnpm_version is None or root_pnpm_minimum is None or pnpm_version < root_pnpm_minimum:
+        errors.append("pnpm:root-engine-mismatch")
+    if python_version is None or python_minimum is None or python_version < python_minimum:
+        errors.append("python:sdk-engine-mismatch")
+    bazel_observed = observations["bazel"].get("observed")
+    if not isinstance(bazel_observed, str) or not bazel_observed.endswith(f" {execution_inputs['bazel_version']}"):
+        errors.append("bazel:version-mismatch")
+    for name, observation in observations.items():
+        if observation["status"] != "observed":
+            errors.append(f"{name}:probe-error")
+    errors = sorted(set(errors))
+    receipt = {
+        "schema": "sdk-build-tool-observations",
+        "version": 1,
+        "observations": observations,
+        "errors": errors,
+        "status": "ready" if not errors else "invalid",
+    }
+    generator_identity = {
         "sdk_generator": "sdk/python/scripts/update_sdk_artifacts.py generate-types",
         "sdk_runtime_dependency": SDK_RUNTIME_DEPENDENCY,
-        "uv": uv_identity,
-        "pnpm_package_manager": PACKAGE_MANAGER,
-        "pnpm": pnpm_identity,
-        "node": node_identity,
-        "bazel_pin": bazel_pin,
-        "bazel": bazel_identity,
+        "uv": observations["uv"].get("observed") or "unavailable",
+        "root_pnpm_package_manager": root_package["package_manager"]["value"] or "unavailable",
+        "sdk_pnpm_package_manager": sdk_package["package_manager"]["value"] or "unavailable",
+        "pnpm": observations["pnpm"].get("observed") or "unavailable",
+        "node": observations["node"].get("observed") or "unavailable",
+        "python": observations["python"]["observed"],
+        "bazel_pin": execution_inputs["bazel_version"] or "unavailable",
+        "bazel": observations["bazel"].get("observed") or "unavailable",
+        "bazelisk": execution_inputs["bazelisk_version"] or "unavailable",
     }
+    return receipt, generator_identity
 
 
 def require_no_untracked(worktree: pathlib.Path) -> None:
@@ -703,6 +1054,59 @@ def require_candidate_paths(worktree: pathlib.Path, allowed: list[str], label: s
     return changed
 
 
+def prepare_candidate_worktree(repo: pathlib.Path, temp: pathlib.Path) -> pathlib.Path:
+    for path in BUILD_PATHS:
+        require(
+            tree_entry(repo, SDK_CANDIDATE_SHA, path) == tree_entry(repo, BASE_SHA, path),
+            f"accepted SDK candidate did not retain build source preimage: {path}",
+        )
+    worktree = temp / "candidate-worktree"
+    run("git", "clone", "--shared", "--no-checkout", str(repo), str(worktree))
+    run("git", "checkout", "--detach", SDK_CANDIDATE_SHA, cwd=worktree)
+    require(not run("git", "status", "--porcelain", cwd=worktree), "candidate worktree is not initially clean")
+    run("git", "checkout", BUILD_SOURCE_SHA, "--", *BUILD_PATHS, cwd=worktree)
+    for path, expected in BUILD_SOURCE_ENTRIES.items():
+        require(index_entry(worktree, path) == expected, f"selected build source index tuple mismatch: {path}")
+    staged_source = run("git", "diff", "--cached", "--name-only", SDK_CANDIDATE_SHA, cwd=worktree).splitlines()
+    require(staged_source == BUILD_PATHS, "selected build source escaped the eight-path cohort")
+    require_candidate_paths(worktree, BUILD_PATHS, "build source selection")
+    return worktree
+
+
+def write_execution_inputs(preflight_dir: pathlib.Path, execution_inputs: dict[str, Any]) -> pathlib.Path:
+    require(preflight_dir.parent.is_dir(), "preflight parent must already exist")
+    require(not preflight_dir.exists(), "preflight directory already exists")
+    preflight_dir.mkdir()
+    receipt_path = preflight_dir / "execution-inputs.json"
+    receipt_path.write_text(json.dumps(execution_inputs, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    require(load(receipt_path) == execution_inputs, "execution-input receipt readback mismatch")
+    print(json.dumps(execution_inputs, sort_keys=True))
+    require(execution_inputs["status"] == "ready", f"execution-input preflight invalid: {execution_inputs['errors']}")
+    return receipt_path
+
+
+def load_execution_inputs(preflight_dir: pathlib.Path, runtime: dict[str, str]) -> tuple[pathlib.Path, dict[str, Any]]:
+    require(preflight_dir.is_dir(), "preflight input must be a directory")
+    require({path.name for path in preflight_dir.iterdir()} == {"execution-inputs.json"}, "preflight file set mismatch")
+    receipt_path = (preflight_dir / "execution-inputs.json").resolve(strict=True)
+    require(receipt_path.parent == preflight_dir, "preflight receipt escaped input directory")
+    execution_inputs = load(receipt_path)
+    require(execution_inputs.get("schema") == "sdk-build-execution-inputs", "preflight schema mismatch")
+    require(execution_inputs.get("version") == 1, "preflight version mismatch")
+    require(
+        execution_inputs.get("status") == "ready" and execution_inputs.get("errors") == [],
+        "preflight is not ready",
+    )
+    for key, value in runtime.items():
+        require(execution_inputs.get(key) == value, f"preflight runtime identity mismatch: {key}")
+    require(execution_inputs.get("input_sdk_artifact_id") == SDK_INPUT_ARTIFACT_ID, "preflight artifact mismatch")
+    require(execution_inputs.get("input_sdk_candidate") == SDK_CANDIDATE_SHA, "preflight candidate mismatch")
+    require(execution_inputs.get("input_sdk_tree") == SDK_CANDIDATE_TREE, "preflight candidate tree mismatch")
+    require(execution_inputs.get("build_source_sha") == BUILD_SOURCE_SHA, "preflight build source mismatch")
+    require(execution_inputs.get("build_source_tree") == BUILD_SOURCE_TREE, "preflight build source tree mismatch")
+    return receipt_path, execution_inputs
+
+
 def require_committed_candidate_paths(repo: pathlib.Path, revision: str, label: str) -> list[str]:
     changed = run(
         "git",
@@ -727,10 +1131,29 @@ def require_committed_candidate_paths(repo: pathlib.Path, revision: str, label: 
     return changed
 
 
-def generate_and_test(worktree: pathlib.Path, temp: pathlib.Path) -> dict[str, Any]:
-    generator_identity = require_source_pins(worktree)
+def generate_and_test(
+    worktree: pathlib.Path,
+    temp: pathlib.Path,
+    execution_inputs: dict[str, Any],
+) -> tuple[dict[str, str], dict[str, Any]]:
+    tool_observations, generator_identity = collect_tool_observations(worktree, execution_inputs)
+    pre_generation_readback = {
+        "schema": "sdk-build-pre-generation-readback",
+        "version": 1,
+        "execution_inputs": execution_inputs,
+        "tool_observations": tool_observations,
+    }
+    print(json.dumps(pre_generation_readback, sort_keys=True))
+    require(execution_inputs["status"] == "ready", "execution inputs are not ready")
+    require(tool_observations["status"] == "ready", f"tool smoke invalid: {tool_observations['errors']}")
     python_project = worktree / "sdk/python"
-    generation_env = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(temp / "sdk-python-venv"), "UV_LINK_MODE": "copy"}
+    generation_env = {
+        **os.environ,
+        "UV_LINK_MODE": "copy",
+        "UV_PROJECT_ENVIRONMENT": str(temp / "sdk-python-venv"),
+        "UV_PYTHON": sys.executable,
+        "UV_PYTHON_DOWNLOADS": "never",
+    }
     generation_env.pop("CODEX_EXEC_PATH", None)
 
     run_tool(
@@ -864,7 +1287,7 @@ def generate_and_test(worktree: pathlib.Path, temp: pathlib.Path) -> dict[str, A
         "pnpm --filter @openai/codex-sdk run test",
         "bazel mod deps --lockfile_mode=error",
     ]
-    return generator_identity
+    return generator_identity, tool_observations
 
 
 def verify_emitted_bundle(
@@ -899,58 +1322,70 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=pathlib.Path)
     parser.add_argument("--artifact-dir", type=pathlib.Path)
+    parser.add_argument("--preflight-dir", type=pathlib.Path)
     parser.add_argument("--output-dir", type=pathlib.Path)
     parser.add_argument("--expected-workflow-sha", required=True)
     parser.add_argument("--expected-workflow-tree", required=True)
     parser.add_argument("--validate-runtime-only", action="store_true")
+    parser.add_argument("--prepare-inputs-only", action="store_true")
     args = parser.parse_args()
 
     runtime = verify_runtime(args.expected_workflow_sha, args.expected_workflow_tree)
     if args.validate_runtime_only:
         require(
-            args.repo_root is None and args.artifact_dir is None and args.output_dir is None,
+            args.repo_root is None
+            and args.artifact_dir is None
+            and args.preflight_dir is None
+            and args.output_dir is None
+            and not args.prepare_inputs_only,
             "runtime-only validation does not accept consumer paths",
         )
         print(json.dumps(runtime, sort_keys=True))
         return
     require(
-        args.repo_root is not None and args.artifact_dir is not None and args.output_dir is not None,
-        "consumer paths are required",
+        args.repo_root is not None and args.artifact_dir is not None,
+        "repository and artifact paths are required",
     )
     repo = absolute_argument(args.repo_root, "repo-root", must_exist=True)
     artifact = absolute_argument(args.artifact_dir, "artifact-dir", must_exist=True)
-    output = absolute_argument(args.output_dir, "output-dir", must_exist=False)
     require(repo.is_dir() and artifact.is_dir(), "repository and artifact inputs must be directories")
+    verify_build_source_checkout(repo)
+
+    if args.prepare_inputs_only:
+        require(args.preflight_dir is not None and args.output_dir is None, "preflight path is required")
+        preflight_dir = absolute_argument(args.preflight_dir, "preflight-dir", must_exist=False)
+        require(preflight_dir.parent.is_dir(), "preflight parent must already exist")
+        files = verify_sdk_artifact_files(artifact)
+        with tempfile.TemporaryDirectory(prefix="w13825-sdk-preflight-", dir=str(preflight_dir.parent)) as temp_name:
+            temp = pathlib.Path(temp_name).resolve(strict=True)
+            import_sdk_bundle(repo, files["bundle"], temp)
+            sdk_receipt = load(files["receipt"])
+            verified_runtime_inputs = verify_sdk_input_entries(repo, sdk_receipt)
+            worktree = prepare_candidate_worktree(repo, temp)
+            execution_inputs = collect_execution_inputs(worktree, runtime, verified_runtime_inputs)
+        write_execution_inputs(preflight_dir, execution_inputs)
+        return
+
+    require(args.preflight_dir is not None and args.output_dir is not None, "preflight and output paths are required")
+    preflight_dir = absolute_argument(args.preflight_dir, "preflight-dir", must_exist=True)
+    output = absolute_argument(args.output_dir, "output-dir", must_exist=False)
     require(output.parent.is_dir(), "output parent must already exist")
     require(not output.exists(), "output directory already exists")
-    verify_build_source_checkout(repo)
-    files = verify_sdk_artifact_files(artifact)
+    preflight_path, execution_inputs = load_execution_inputs(preflight_dir, runtime)
+    verify_imported_sdk_objects(repo)
+    receipt_path = artifact / "receipt.json"
+    require(receipt_path.is_file() and not receipt_path.is_symlink(), "SDK input receipt is unavailable")
+    require(digest(receipt_path) == SDK_INPUT_RECEIPT_SHA256, "SDK input receipt digest mismatch after preflight")
+    sdk_receipt = load(receipt_path)
     output.mkdir()
 
     with tempfile.TemporaryDirectory(prefix="w13825-sdk-build-", dir=str(output.parent)) as temp_name:
         temp = pathlib.Path(temp_name).resolve(strict=True)
-        import_sdk_bundle(repo, files["bundle"], temp)
-        sdk_receipt = load(files["receipt"])
         verified_runtime_inputs = verify_sdk_input_entries(repo, sdk_receipt)
-
-        for path in BUILD_PATHS:
-            require(
-                tree_entry(repo, SDK_CANDIDATE_SHA, path) == tree_entry(repo, BASE_SHA, path),
-                f"accepted SDK candidate did not retain build source preimage: {path}",
-            )
-
-        worktree = temp / "candidate-worktree"
-        run("git", "clone", "--shared", "--no-checkout", str(repo), str(worktree))
-        run("git", "checkout", "--detach", SDK_CANDIDATE_SHA, cwd=worktree)
-        require(not run("git", "status", "--porcelain", cwd=worktree), "candidate worktree is not initially clean")
-        run("git", "checkout", BUILD_SOURCE_SHA, "--", *BUILD_PATHS, cwd=worktree)
-        for path, expected in BUILD_SOURCE_ENTRIES.items():
-            require(index_entry(worktree, path) == expected, f"selected build source index tuple mismatch: {path}")
-        staged_source = run("git", "diff", "--cached", "--name-only", SDK_CANDIDATE_SHA, cwd=worktree).splitlines()
-        require(staged_source == BUILD_PATHS, "selected build source escaped the eight-path cohort")
-        require_candidate_paths(worktree, BUILD_PATHS, "build source selection")
-
-        generator_identity = generate_and_test(worktree, temp)
+        worktree = prepare_candidate_worktree(repo, temp)
+        observed_inputs = collect_execution_inputs(worktree, runtime, verified_runtime_inputs)
+        require(observed_inputs == execution_inputs, "execution inputs changed after preflight")
+        generator_identity, tool_observations = generate_and_test(worktree, temp, execution_inputs)
         candidate_tree = run("git", "write-tree", cwd=worktree).strip()
         commit_env = {
             **os.environ,
@@ -1065,6 +1500,9 @@ def main() -> None:
             "verified_retained_patch_dependencies": retained_patches,
             "verified_composite_runtime_inputs": verified_runtime_inputs,
             "preserved_sdk_source_paths": retained_sdk_source,
+            "execution_input_receipt_sha256": digest(preflight_path),
+            "execution_inputs": execution_inputs,
+            "tool_observations": tool_observations,
             "generator_identity": generator_identity,
         }
         receipt_path = output / "receipt.json"
@@ -1102,6 +1540,9 @@ def main() -> None:
             "candidate_bundle_sha256": digest(candidate_bundle),
             "disposition_receipt_sha256": digest(receipt_path),
             "verified_composite_runtime_inputs": verified_runtime_inputs,
+            "execution_input_receipt_sha256": digest(preflight_path),
+            "execution_inputs": execution_inputs,
+            "tool_observations": tool_observations,
             "generator_identity": generator_identity,
         }
         provenance_path = output / "provenance.json"
