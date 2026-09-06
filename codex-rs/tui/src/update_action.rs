@@ -115,7 +115,7 @@ mod tests {
                     method: InstallMethod::Other,
                     package_layout: None,
                 },
-                true,
+                /*has_sedna_identity*/ true,
                 "1.2.3-sedna.1"
             ),
             None
@@ -126,7 +126,7 @@ mod tests {
                     method: InstallMethod::Npm,
                     package_layout: None,
                 },
-                true,
+                /*has_sedna_identity*/ true,
                 "1.2.3-sedna.1"
             ),
             None
@@ -137,7 +137,7 @@ mod tests {
                     method: InstallMethod::Bun,
                     package_layout: None,
                 },
-                true,
+                /*has_sedna_identity*/ true,
                 "1.2.3-sedna.1"
             ),
             None
@@ -148,7 +148,7 @@ mod tests {
                     method: InstallMethod::Pnpm,
                     package_layout: None,
                 },
-                true,
+                /*has_sedna_identity*/ true,
                 "1.2.3-sedna.1"
             ),
             None
@@ -159,7 +159,7 @@ mod tests {
                     method: InstallMethod::Brew,
                     package_layout: None,
                 },
-                true,
+                /*has_sedna_identity*/ true,
                 "1.2.3-sedna.1"
             ),
             None
@@ -174,7 +174,7 @@ mod tests {
                     },
                     package_layout: None,
                 },
-                true,
+                /*has_sedna_identity*/ true,
                 "1.2.3-sedna.1",
                 "linux",
                 "x86_64",
@@ -191,7 +191,7 @@ mod tests {
                     },
                     package_layout: None,
                 },
-                true,
+                /*has_sedna_identity*/ true,
                 "1.2.3-sedna.1"
             ),
             None
@@ -213,7 +213,7 @@ mod tests {
                     },
                     package_layout: None,
                 },
-                false,
+                /*has_sedna_identity*/ false,
                 "1.2.3-sedna.1",
             ),
             None
@@ -228,7 +228,7 @@ mod tests {
                     },
                     package_layout: None,
                 },
-                true,
+                /*has_sedna_identity*/ true,
                 "1.2.3",
             ),
             None
@@ -267,7 +267,7 @@ mod tests {
             assert_eq!(
                 UpdateAction::from_install_context_for_sedna_release_on_target(
                     &context,
-                    true,
+                    /*has_sedna_identity*/ true,
                     "1.2.3-sedna.1",
                     target.0,
                     target.1,
@@ -287,7 +287,7 @@ mod tests {
         assert_eq!(
             UpdateAction::from_install_context_for_sedna_release_on_target(
                 &context,
-                true,
+                /*has_sedna_identity*/ true,
                 "1.2.3-alpha.1-sedna.1",
                 "linux",
                 "x86_64",
