@@ -29,6 +29,7 @@ from openai_codex.generated.v2_all import (
 from openai_codex.models import Notification, UnknownNotification
 from openai_codex.types import ThreadSource
 
+
 def _legacy_collab_agent_tool_call() -> dict[str, object]:
     return {
         "agentsStates": {},
