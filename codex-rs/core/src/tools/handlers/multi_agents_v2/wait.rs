@@ -265,6 +265,7 @@ impl Handler {
                 native_event_wait,
                 lease_timer_enabled(native_event_wait, timeout_ms),
                 Instant::now() + Duration::from_millis(timeout_ms as u64),
+                #[cfg(test)] None,
             )
             .await
         };
@@ -577,6 +578,7 @@ async fn wait_for_wake_source(
     native_event_wait: bool,
     lease_timer_enabled: bool,
     mut deadline: Instant,
+    #[cfg(test)] mut lease_observer: Option<&mut dyn FnMut()>,
 ) -> WakeSource {
     let lease_duration = if lease_timer_enabled {
         deadline
@@ -708,6 +710,10 @@ async fn wait_for_wake_source(
             }
             _ = &mut timer => {
                 if native_event_wait {
+                    #[cfg(test)]
+                    if let Some(observer) = lease_observer.as_deref_mut() {
+                        observer();
+                    }
                     // The timeout is an internal lease/observation expiry. Keep
                     // this invocation owned by the runtime and re-arm the
                     // same subscriptions without producing a tool result or
@@ -724,6 +730,47 @@ async fn wait_for_wake_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn positive_native_lease_reports_each_rearm_before_terminal_wake() {
+        let (session, _turn) = crate::session::tests::make_session_and_context().await;
+        let target_id = ThreadId::new();
+        let (status_tx, status_rx) = tokio::sync::watch::channel(AgentStatus::Running);
+        let expiries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observer_expiries = expiries.clone();
+        let wait = tokio::spawn(async move {
+            let (mut input_activity_rx, _) = session.input_queue.subscribe_activity(None).await;
+            let mut final_statuses = HashMap::new();
+            let mut status_rxs = vec![(target_id, status_rx)];
+            let mut observer = || {
+                observer_expiries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            };
+            wait_for_wake_source(
+                session,
+                &mut input_activity_rx,
+                status_rxs,
+                &[target_id],
+                CompletionRule::new(ReturnWhen::Any),
+                &mut final_statuses,
+                false,
+                true,
+                true,
+                Instant::now() + Duration::from_millis(5),
+                Some(&mut observer),
+            )
+            .await
+        });
+
+        while expiries.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+        status_tx
+            .send(AgentStatus::Shutdown)
+            .expect("status receiver should remain active");
+
+        assert_eq!(wait.await.expect("wait task should join"), WakeSource::TargetCompletion);
+        assert!(expiries.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+    }
 
     #[test]
     fn wake_source_maps_to_public_completion_reason() {
