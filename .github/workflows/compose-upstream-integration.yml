@@ -56,9 +56,12 @@ jobs:
 
       - name: Fetch and verify pinned upstream cut
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git fetch --no-tags "${UPSTREAM_URL}" "${UPSTREAM_SHA}"
+          git -c "http.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
+            fetch --no-tags "${UPSTREAM_URL}" "${UPSTREAM_SHA}"
           test "$(git rev-parse "${UPSTREAM_SHA}^{commit}")" = "${UPSTREAM_SHA}"
           test "$(git rev-parse "${UPSTREAM_SHA}^{tree}")" = "${UPSTREAM_TREE}"
 
