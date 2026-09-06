@@ -70,7 +70,7 @@ impl App {
             ServerNotification::ServerRequestResolved(notification) => {
                 if let Some(request) = self
                     .pending_app_server_requests
-                    .resolve_notification(&notification.request_id)
+                    .resolve_notification(&notification.thread_id, &notification.request_id)
                 {
                     self.chat_widget.dismiss_app_server_request(&request);
                 }
