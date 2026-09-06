@@ -480,9 +480,17 @@ jobs:
 
   verify-hosted-artifact:
     needs: compose
-    if: always()
+    if: always() && (github.event_name == 'workflow_dispatch' || github.event.before == 'b188e8016b2920351737f04bb7b2b30da56733cb')
     runs-on: ubuntu-latest
     steps:
+      - name: Check out exact workflow candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: verifier-checkout
+
       - name: Download exact composition evidence
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -495,6 +503,9 @@ jobs:
           EXPECTED_HEAD: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_head || github.sha }}
         run: |
           set -euo pipefail
+          EXPECTED_BASE_SHA="$(git -C verifier-checkout rev-parse HEAD)"
+          EXPECTED_BASE_TREE="$(git -C verifier-checkout rev-parse HEAD^{tree})"
+          export EXPECTED_BASE_SHA EXPECTED_BASE_TREE
           python3 - <<'PY'
           import hashlib
           import json
@@ -507,6 +518,8 @@ jobs:
           expected_head = os.environ["EXPECTED_HEAD"]
           run_id = os.environ["GITHUB_RUN_ID"]
           run_attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          expected_base_sha = os.environ["EXPECTED_BASE_SHA"]
+          expected_base_tree = os.environ["EXPECTED_BASE_TREE"]
           expected = {
               "bundle": root / "materialized.bundle",
               "receipt": root / "receipt.json",
@@ -540,8 +553,8 @@ jobs:
               raise SystemExit("repository mismatch")
           required_provenance = {
               "workflow_head": expected_head,
-              "base_sha": expected_head,
-              "base_tree": "ef0a9cf380cd366cc3d8a777fac190fa64348796",
+              "base_sha": expected_base_sha,
+              "base_tree": expected_base_tree,
               "upstream_sha": "008bbd5884122dc95aaece19ecfe0fc6a59dcf36",
               "upstream_tree": "721cd395f53962482b3f6d140d0b9942fef3baac",
               "run_id": run_id,
@@ -556,7 +569,7 @@ jobs:
           required_receipt = {
               "repository": "sednalabs/codex",
               "expected_head": expected_head,
-              "base_sha": expected_head,
+              "base_sha": expected_base_sha,
               "base_tree": required_provenance["base_tree"],
               "upstream_sha": required_provenance["upstream_sha"],
               "upstream_tree": required_provenance["upstream_tree"],
