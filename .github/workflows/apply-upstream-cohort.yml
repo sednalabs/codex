@@ -109,7 +109,7 @@ jobs:
           workflow_tree = sys.argv[3]
           push = {
               "ref": "refs/heads/worker/w13825-sdk-producer-validation-20260907",
-              "before": "ec9a28a8010cd080670288326fd3b4335e7f880f",
+              "before": "343011e3fa69d9eba1dfd3e6efbeed6228c3cd3c",
               "after": workflow_sha,
               "created": False,
               "deleted": False,
@@ -210,10 +210,12 @@ jobs:
           printf '\nnegative-control-only\n' >>"${extra_source}/.github/pull_request_template.md"
           git -C "${extra_source}" add .github/pull_request_template.md
           git -C "${extra_source}" commit -m "negative control: reject extra source path"
+          empty_artifact="${RUNNER_TEMP}/empty-source-artifact"
+          mkdir "${empty_artifact}"
           expect_failure "SDK source head mismatch" \
             python3 "${helper}" \
               --repo-root "${extra_source}" \
-              --artifact-dir "${RUNNER_TEMP}/not-present" \
+              --artifact-dir "${empty_artifact}" \
               --output-dir "${RUNNER_TEMP}/not-created" \
               --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
               --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
