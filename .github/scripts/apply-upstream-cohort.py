@@ -24,7 +24,7 @@ REPOSITORY = "sednalabs/codex"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-producer-validation-20260907"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "343011e3fa69d9eba1dfd3e6efbeed6228c3cd3c"
+PUSH_PREDECESSOR_SHA = "204fc215e54cba1fa409176d251423b1e31fa652"
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
 GLOBAL_UPSTREAM_SHA = "008bbd5884122dc95aaece19ecfe0fc6a59dcf36"
@@ -98,6 +98,47 @@ def run(
 
 def run_bytes(*args: str, cwd: pathlib.Path | None = None) -> bytes:
     return subprocess.run(args, cwd=cwd, check=True, capture_output=True).stdout
+
+
+def sanitize_git_stderr(stderr: str, *private_paths: pathlib.Path) -> str:
+    replacements = sorted((str(path) for path in private_paths), key=len, reverse=True)
+    diagnostics: list[str] = []
+    omitted = False
+    for raw_line in stderr.splitlines():
+        line = raw_line
+        for value in replacements:
+            line = line.replace(value, "<path>")
+        line = re.sub(r"https?://\S+", "<redacted-url>", line)
+        line = re.sub(r"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b", "<redacted-token>", line)
+        line = re.sub(
+            r"(?i)(authorization|credential|password|token)(\s*[:=]\s*)\S+",
+            r"\1\2<redacted>",
+            line,
+        )
+        line = "".join(character for character in line if character.isprintable())
+        if re.match(r"^(fatal|error|warning|hint):", line) is None:
+            omitted = True
+            continue
+        if len(diagnostics) == 8:
+            omitted = True
+            break
+        diagnostics.append(line[:240])
+        omitted = omitted or len(line) > 240
+    if omitted:
+        diagnostics.append("<additional Git stderr omitted>")
+    return "\n".join(diagnostics) or "<no sanitized Git diagnostic>"
+
+
+def fetch_bundle_ref(bare: pathlib.Path, bundle: pathlib.Path, source_ref: str, target_ref: str) -> None:
+    result = subprocess.run(
+        ("git", "-C", str(bare), "fetch", str(bundle), f"+{source_ref}:{target_ref}"),
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        diagnostic = sanitize_git_stderr(result.stderr, bare, bundle, bundle.parent)
+        raise SystemExit(f"candidate bundle import failed (git exit {result.returncode})\n{diagnostic}")
 
 
 def digest(path: pathlib.Path) -> str:
@@ -398,7 +439,7 @@ def verify_emitted_bundle(
         actual[ref] = oid
     require(actual == expected_heads, "candidate bundle head map mismatch")
     candidate_ref = next(ref for ref, oid in actual.items() if oid == candidate_sha)
-    run("git", "-C", str(bare), "fetch", str(bundle), f"+{candidate_ref}:refs/import/candidate")
+    fetch_bundle_ref(bare, bundle, candidate_ref, "refs/import/candidate")
     require(run("git", "-C", str(bare), "rev-parse", "refs/import/candidate^{tree}").strip() == candidate_tree, "candidate bundle tree mismatch")
     require(run("git", "-C", str(bare), "show", "-s", "--format=%P", "refs/import/candidate").split() == [MATERIALIZED_SHA], "candidate bundle parent mismatch")
 
