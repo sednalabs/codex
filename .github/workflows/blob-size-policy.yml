@@ -7,10 +7,14 @@ jobs:
   check:
     name: Blob size policy
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: openai/fence@e6b39c80c51cb2b2a39448ddeff74b3b886c0a63 # pin@v0.10.0
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          mode: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
           fetch-depth: 0
           persist-credentials: false
 
@@ -20,15 +24,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Pull requests inspect the proposed diff; merge groups inspect the
-          # queue's base-to-synthetic-commit diff; main pushes inspect only the
-          # commit range that just landed. All paths feed the same checker.
+          # PRs inspect the proposed diff; main pushes inspect only the commit
+          # range that just landed. Both paths feed the same blob-size checker.
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             base='${{ github.event.pull_request.base.sha }}'
             head='${{ github.event.pull_request.head.sha }}'
-          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
-            base='${{ github.event.merge_group.base_sha }}'
-            head='${{ github.sha }}'
           else
             base='${{ github.event.before }}'
             head='${{ github.sha }}'
