@@ -1172,7 +1172,7 @@ fn bundled_models_json_roundtrips() {
 
 #[tokio::test]
 async fn openai_overlay_preserves_unrelated_metadata_and_static_catalog_precedence() {
-    const SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    const SENTENCE: &str = "- Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
     let sentence = SENTENCE;
     let mut candidate = remote_model("codex-auto-review", "Auto Review", /*priority*/ 7);
     candidate.base_instructions = format!("before {sentence} after");
@@ -1229,7 +1229,7 @@ async fn openai_overlay_preserves_unrelated_metadata_and_static_catalog_preceden
 
 #[tokio::test]
 async fn openai_overlay_applies_after_remote_and_cache_composition() {
-    const SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    const SENTENCE: &str = "- Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
     let sentence = SENTENCE;
     let mut candidate = remote_model("codex-auto-review", "Auto Review", /*priority*/ 7);
     candidate.base_instructions = format!("before {sentence} after");

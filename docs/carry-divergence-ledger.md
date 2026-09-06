@@ -1546,12 +1546,21 @@ bundles during upstream sync merely because they once shared this carry entry.
   `codex.state-migration-repair-targeted`, and the adjacent thread-store,
   app-server, CLI, shell, and sub-agent compatibility lanes at signed merge
   `de2ba7d16b`.
+- Migration `0013_usage_codex_credit_rate_update_20260905.sql` adds the
+  operator-authoritative STANDARD/default rate observation while preserving
+  prior half-open intervals. It prices the provider's Daybreak Blue aliases
+  (`gpt-daybreak-blue`, `gpt-daybreak-blue-latest`) with the Sol card and the
+  Daybreak Red aliases (`gpt-daybreak-red`, `gpt-daybreak-red-latest`) with
+  the Cyber card; the `gpt-5.6` Sol alias is covered as well. GPT-Image-2 image/text cards are retained as explicit,
+  non-selectable records until usage calls expose a modality discriminator;
+  ambiguous calls remain partial/unpriced.
 - Primary files:
   - `codex-rs/core/src/session/session.rs`
   - `codex-rs/state/src/runtime.rs`
   - `codex-rs/state/src/sqlite.rs`
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
+  - `codex-rs/state/usage_migrations/0013_usage_codex_credit_rate_update_20260905.sql`
   - `docs/downstream.md`
 
 ### Usage Event Logging And Metadata Capture

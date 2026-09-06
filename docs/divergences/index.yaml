@@ -148,6 +148,7 @@
         "codex-rs/state/usage_migrations/0004_usage_cache_write_tokens.sql",
         "codex-rs/state/usage_migrations/0005_usage_codex_credits.sql",
         "codex-rs/state/usage_migrations/0007_usage_codex_credit_rate_update.sql",
+        "codex-rs/state/usage_migrations/0013_usage_codex_credit_rate_update_20260905.sql",
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/session_resume.rs"
       ],
@@ -163,13 +164,14 @@
         "usage_logger_* focused table-contract tests",
         "credit_views_select_standard_fast_and_half_open_rates",
         "credit_views_preserve_uncertainty_and_partial_totals",
+        "credit_views_cover_current_aliases_boundaries_and_rollups",
         "usage_logger_records_provider_final_model_identity",
         "status_surfaces_prefer_turn_completed_provider_model_identity",
         "rollout_resume_state_prefers_latest_turn_context",
         "configured_resume_cwd_skips_prompt"
       ],
       "owner": "downstream",
-      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Provider-facing priority is recorded separately from the ChatGPT Fast credit regime so API Priority is not mispriced as Codex credits. Versioned rate and policy tables fail closed for unknown or legacy coverage, retain provenance, and keep cache-write tokens diagnostic rather than double-counting them. The 2026-07-30 rate revision preserves historical half-open intervals, updates only GPT-5.6 Luna/Terra Standard/Fast rows, and leaves Sol Standard/Fast unchanged. Downstream model and reasoning-effort recovery in session_resume composes with upstream tui.resume_cwd; future syncs must preserve both behaviors.",
+      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Provider-facing priority is recorded separately from the ChatGPT Fast credit regime so API Priority is not mispriced as Codex credits. Versioned rate and policy tables fail closed for unknown or legacy coverage, retain provenance, and keep cache-write tokens diagnostic rather than double-counting them. The 2026-07-30 rate revision preserves historical half-open intervals and updates GPT-5.6 Luna/Terra Standard/Fast rows; migration 0013 records the 2026-09-05 STANDARD/default observation, closes the prior Sol interval, and adds GPT-5.6 Sol at 100 / 10 / 500, including the provider's gpt-5.6 alias. It also retains explicit GPT-Image-2 image/text cards as unselectable until modality evidence is available. Downstream model and reasoning-effort recovery in session_resume composes with upstream tui.resume_cwd; future syncs must preserve both behaviors.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
@@ -1407,7 +1409,10 @@
       ],
       "files": [
         ".codex/skills/babysit-pr/agents/openai.yaml",
+        ".codex/skills/babysit-pr/scripts/gh_merge_queue_shepherd.py",
         ".codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        ".codex/skills/babysit-pr/scripts/test_gh_merge_queue_shepherd.py",
+        ".codex/skills/babysit-pr/scripts/test_gh_pr_watch.py",
         ".codex/skills/babysit-gh-workflow-run/",
         ".codex/skills/sedna/subagent-session-tail/SKILL.md",
         ".codex/skills/sedna/subagent-session-tail/agents/openai.yaml",
@@ -1423,6 +1428,8 @@
       "guardrail_lane": "codex.agent-workflow-sanity",
       "tests": [
         "py_compile of gh_pr_watch.py, gh_workflow_run_watch.py, gh_dispatch_and_watch.py, and inspect_subagent_tail.py",
+        "test_gh_merge_queue_shepherd.py",
+        "test_gh_pr_watch.py",
         "test_gh_workflow_run_watch.py",
         "test_gh_dispatch_and_watch.py",
         "test_inspect_subagent_tail.py",
@@ -1436,6 +1443,37 @@
 
       ],
       "extraction_target": "runtime-coupled agent workflow helpers"
+    },
+    {
+      "id": "code-review-skill-consolidation",
+      "title": "Code-review skill consolidation",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "agent-facing",
+      "surface": [
+        "code-review skill structure test"
+      ],
+      "files": [
+        ".codex/skills/code-review/tests/test_structure.py"
+      ],
+      "behavior": "Downstream validates the consolidated code-review skill layout and required structure markers after merging the review guidance into one skill surface.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.code-review-skill-structure-targeted",
+      "tests": [
+        "test_structure.py"
+      ],
+      "owner": "downstream",
+      "notes": "Tracks the downstream-only structure guard for the consolidated code-review skill; keep the registry path limited to the executable test unless companion Markdown files become necessary for truthful registry semantics.",
+      "upstreamability_tier": "operator-only",
+      "boundary_type": "agent-workflow-skill",
+      "hotspot_files": [
+        ".codex/skills/code-review/tests/test_structure.py"
+      ],
+      "extraction_target": "operator-owned consolidated code-review skill structure"
     },
     {
       "id": "skill-loader-fixture-hermeticity",
@@ -2547,6 +2585,7 @@
         "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py",
         "package.json",
         "scripts/codex-resume-recent.sh",
+        "scripts/uv.lock",
         "codex-rs/http-client/src/outbound_proxy.rs",
         "codex-rs/http-client/src/outbound_proxy_redirect_coverage_tests.rs",
         "codex-rs/http-client/src/route_aware_client_pool_tests.rs",
@@ -2562,7 +2601,7 @@
           "windows_aarch64_gnullvm_rust_toolchain_for_health"
         ]
       },
-      "behavior": "Downstream keeps patched build, packaging, install, and test-stability artifacts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, deterministic pending-input and tracing-span observation barriers, thread-idle synchronization plus submission-correlated errors for host-only compact/resume rollback fixtures, a sha2 0.11-compatible explicit lowercase hexadecimal encoder for all-platform proxy cache keys, deterministic blocking reads in three HTTP redirect fixtures, a TypeScript SDK manifest that remains paired with the downstream dependency lockfile, and broad SemVer installer validation that accepts upstream alpha-hotfix tags while retaining Sedna prerelease suffixes and build metadata. The upstream optional releases.openai.com installer source remains available only for the default openai/codex plus rust-v origin; custom repository or tag-prefix routing stays on GitHub and cannot be redirected to OpenAI's release channel by the opt-in flag.",
+      "behavior": "Downstream keeps patched build, packaging, install, and test-stability artifacts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, deterministic pending-input and tracing-span observation barriers, thread-idle synchronization plus submission-correlated errors for host-only compact/resume rollback fixtures, a sha2 0.11-compatible explicit lowercase hexadecimal encoder for all-platform proxy cache keys, deterministic blocking reads in three HTTP redirect fixtures, a TypeScript SDK manifest that remains paired with the downstream dependency lockfile, broad SemVer installer validation that accepts upstream alpha-hotfix tags while retaining Sedna prerelease suffixes and build metadata, and Ruff lock alignment in the downstream uv lockfile. The upstream optional releases.openai.com installer source remains available only for the default openai/codex plus rust-v origin; custom repository or tag-prefix routing stays on GitHub and cannot be redirected to OpenAI's release channel by the opt-in flag.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,

@@ -6,8 +6,18 @@
 
 use codex_protocol::openai_models::ModelInfo;
 
-const CODEX_AUTO_REVIEW_SLUG: &str = "codex-auto-review";
-const BLOCKING_WAIT_SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+const TARGET_SLUGS: &[&str] = &[
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "codex-auto-review",
+    "gpt-6-astra",
+    "gpt-daybreak-blue-latest",
+    "gpt-daybreak-red-latest",
+];
+const COMMENTARY_CADENCE_LITERAL: &str = "If the user's request requires calling tools, start with a message in the `commentary` channel. The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
+const COMMENTARY_CADENCE_REPLACEMENT: &str = "If the user's request requires calling tools, start with a message in the `commentary` channel. Keep the user informed with concise updates when active work is progressing or a meaningful state changes; passive waits that remain interruptible by mailbox, user steer, or cancellation do not require periodic narration.";
+const BLOCKING_WAIT_LITERAL: &str = "- Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OverlayOutcome {
@@ -18,17 +28,15 @@ pub(crate) enum OverlayOutcome {
 
 /// Apply the fork overlay to one fully composed OpenAI-compatible model.
 pub(crate) fn apply_openai_compatible(model: &mut ModelInfo) -> OverlayOutcome {
-    if model.slug != CODEX_AUTO_REVIEW_SLUG {
+    if !TARGET_SLUGS.contains(&model.slug.as_str()) {
         return OverlayOutcome::NotApplicable;
     }
 
-    let mut applied = model.base_instructions.contains(BLOCKING_WAIT_SENTENCE);
-    model.base_instructions = remove_sentence(&model.base_instructions);
+    let mut applied = transform(&mut model.base_instructions);
     if let Some(messages) = model.model_messages.as_mut()
         && let Some(template) = messages.instructions_template.as_mut()
     {
-        applied |= template.contains(BLOCKING_WAIT_SENTENCE);
-        *template = remove_sentence(template);
+        applied |= transform(template);
     }
     let outcome = if applied {
         OverlayOutcome::Applied
@@ -39,8 +47,17 @@ pub(crate) fn apply_openai_compatible(model: &mut ModelInfo) -> OverlayOutcome {
     outcome
 }
 
-fn remove_sentence(instructions: &str) -> String {
-    instructions.replace(BLOCKING_WAIT_SENTENCE, "")
+fn transform(instructions: &mut String) -> bool {
+    let cadence = instructions.contains(COMMENTARY_CADENCE_LITERAL);
+    let blocking = instructions.contains(BLOCKING_WAIT_LITERAL);
+    if cadence {
+        *instructions =
+            instructions.replace(COMMENTARY_CADENCE_LITERAL, COMMENTARY_CADENCE_REPLACEMENT);
+    }
+    if blocking {
+        *instructions = instructions.replace(BLOCKING_WAIT_LITERAL, "");
+    }
+    cadence || blocking
 }
 
 #[cfg(test)]
@@ -70,21 +87,43 @@ mod tests {
     #[test]
     fn exact_openai_model_is_transformed_in_both_instruction_sources() {
         let source = format!(
-            "before {BLOCKING_WAIT_SENTENCE} after; a deliberate short timeout of 5 seconds remains allowed"
+            "before {COMMENTARY_CADENCE_LITERAL} middle {BLOCKING_WAIT_LITERAL} after; a deliberate short timeout of 5 seconds remains allowed"
         );
-        let mut model = model(CODEX_AUTO_REVIEW_SLUG, &source, Some(&source));
+        let mut model = model("codex-auto-review", &source, Some(&source));
         assert_eq!(apply_openai_compatible(&mut model), OverlayOutcome::Applied);
         assert_eq!(
             model.base_instructions,
-            "before  after; a deliberate short timeout of 5 seconds remains allowed"
+            format!(
+                "before {COMMENTARY_CADENCE_REPLACEMENT} middle  after; a deliberate short timeout of 5 seconds remains allowed"
+            )
         );
         assert_eq!(
             model.model_messages.as_ref().unwrap().instructions_template,
-            Some(
-                "before  after; a deliberate short timeout of 5 seconds remains allowed"
-                    .to_string()
-            )
+            Some(format!(
+                "before {COMMENTARY_CADENCE_REPLACEMENT} middle  after; a deliberate short timeout of 5 seconds remains allowed"
+            ))
         );
+
+        assert!(
+            model
+                .base_instructions
+                .contains(COMMENTARY_CADENCE_REPLACEMENT)
+        );
+        assert!(
+            model
+                .base_instructions
+                .contains("active work is progressing")
+        );
+        assert!(model.base_instructions.contains(
+            "passive waits that remain interruptible by mailbox, user steer, or cancellation"
+        ));
+        assert!(
+            model
+                .base_instructions
+                .contains("deliberate short timeout of 5 seconds remains allowed")
+        );
+        assert!(!model.base_instructions.contains(COMMENTARY_CADENCE_LITERAL));
+        assert!(!model.base_instructions.contains(BLOCKING_WAIT_LITERAL));
 
         let transformed = model.clone();
         assert_eq!(
@@ -95,8 +134,31 @@ mod tests {
     }
 
     #[test]
+    fn all_target_slugs_transform_both_fields_and_astra_shape() {
+        let source = format!("{COMMENTARY_CADENCE_LITERAL}\n{BLOCKING_WAIT_LITERAL}");
+        for slug in TARGET_SLUGS {
+            let mut model = model(slug, &source, Some(&source));
+            assert_eq!(
+                apply_openai_compatible(&mut model),
+                OverlayOutcome::Applied,
+                "{slug}"
+            );
+            assert!(!model.base_instructions.contains(COMMENTARY_CADENCE_LITERAL));
+            assert!(!model.base_instructions.contains(BLOCKING_WAIT_LITERAL));
+            let template = model.model_messages.unwrap().instructions_template.unwrap();
+            assert!(!template.contains(COMMENTARY_CADENCE_LITERAL));
+            assert!(!template.contains(BLOCKING_WAIT_LITERAL));
+        }
+
+        let mut astra = model("gpt-6-astra", "", Some(&source));
+        assert_eq!(apply_openai_compatible(&mut astra), OverlayOutcome::Applied);
+        assert_eq!(astra.base_instructions, "");
+    }
+
+    #[test]
     fn missing_marker_or_non_exact_slug_is_unchanged() {
-        let source = format!("before {BLOCKING_WAIT_SENTENCE} after");
+        let source =
+            format!("before {COMMENTARY_CADENCE_LITERAL} middle {BLOCKING_WAIT_LITERAL} after");
         for (slug,) in [("custom",), ("codex-auto-review-v2",)] {
             let mut model = model(slug, &source, Some(&source));
             let original = model.clone();
@@ -109,8 +171,21 @@ mod tests {
     }
 
     #[test]
+    fn non_target_preserves_provider_literals_byte_for_byte() {
+        let source =
+            format!("prefix {COMMENTARY_CADENCE_LITERAL} middle {BLOCKING_WAIT_LITERAL} suffix");
+        let mut model = model("gpt-5.5", &source, Some(&source));
+        let original = model.clone();
+        assert_eq!(
+            apply_openai_compatible(&mut model),
+            OverlayOutcome::NotApplicable
+        );
+        assert_eq!(model, original);
+    }
+
+    #[test]
     fn exact_target_without_sentence_reports_drift() {
-        let mut model = model(CODEX_AUTO_REVIEW_SLUG, "already clean", Some("also clean"));
+        let mut model = model("codex-auto-review", "already clean", Some("also clean"));
         assert_eq!(
             apply_openai_compatible(&mut model),
             OverlayOutcome::TargetMatchedSentenceAbsent
