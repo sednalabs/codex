@@ -3,6 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use codex_core::CodexThread;
 use codex_core::StartThreadOptions;
@@ -582,7 +583,7 @@ async fn native_wait_rearms_without_intermediate_provider_request() {
 
     let requests = server.received_requests().await.expect("mock requests");
     assert_eq!(requests.len(), 2);
-    let second: Value = from_slice(&requests[1]).expect("parse terminal request");
+    let second: Value = from_slice(&requests[1].body).expect("parse terminal request");
     let output = function_call_output_text(&second, WAIT_CALL_ID).expect("wait output");
     let output = serde_json::from_str::<Value>(output).expect("parse wait output");
     assert_eq!(output.get("timed_out"), Some(&json!(false)));
