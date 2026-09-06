@@ -17,6 +17,7 @@ jobs:
     outputs:
       mode: ${{ steps.resolve.outputs.mode }}
       run_bazel: ${{ steps.resolve.outputs.run_bazel }}
+      run_observer: ${{ steps.resolve.outputs.run_observer }}
     steps:
       # Use GitHub's exact comparison API rather than a checkout-based diff.
       # The response supplies at most 300 files, so any result that might be
@@ -31,6 +32,7 @@ jobs:
               core.warning(`Bazel CI will run in full mode: ${reason}`);
               core.setOutput("comparison_complete", "false");
               core.setOutput("files_json", "[]");
+              core.setOutput("statuses_json", "[]");
             };
 
             const isPullRequest = context.eventName === "pull_request";
@@ -73,23 +75,27 @@ jobs:
               }
 
               const names = [];
+              const statuses = [];
               for (const file of files) {
                 if (!file || typeof file.filename !== "string") {
                   full("the changed-file response contained a malformed filename");
                   return;
                 }
                 names.push(file.filename);
+                statuses.push(file.status);
                 if (file.previous_filename !== undefined) {
                   if (typeof file.previous_filename !== "string") {
                     full("the changed-file response contained a malformed previous filename");
                     return;
                   }
                   names.push(file.previous_filename);
+                  statuses.push(file.status);
                 }
               }
 
               core.setOutput("comparison_complete", "true");
               core.setOutput("files_json", JSON.stringify(names));
+              core.setOutput("statuses_json", JSON.stringify(statuses));
             } catch (error) {
               full(`the compare API failed: ${error.message}`);
             }
@@ -101,6 +107,7 @@ jobs:
         run: |
           echo "comparison_complete=false" >> "${GITHUB_OUTPUT}"
           echo "files_json=[]" >> "${GITHUB_OUTPUT}"
+          echo "statuses_json=[]" >> "${GITHUB_OUTPUT}"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -113,10 +120,12 @@ jobs:
         env:
           COMPARISON_COMPLETE: ${{ steps.compare.outputs.comparison_complete || steps.default_to_full.outputs.comparison_complete }}
           FILES_JSON: ${{ steps.compare.outputs.files_json || steps.default_to_full.outputs.files_json }}
+          STATUSES_JSON: ${{ steps.compare.outputs.statuses_json || steps.default_to_full.outputs.statuses_json }}
         run: |
           python3 .github/scripts/resolve_bazel_ci_mode.py \
             --comparison-complete "${COMPARISON_COMPLETE}" \
             --files-json "${FILES_JSON}" \
+            --statuses-json "${STATUSES_JSON}" \
             --github-output "${GITHUB_OUTPUT}"
 
   docs-only:
@@ -133,6 +142,23 @@ jobs:
       - name: Check markdown links
         shell: bash
         run: python3 .github/scripts/check_markdown_links.py
+
+  observer-only:
+    name: Observer-only CI
+    needs: plan
+    if: ${{ needs.plan.outputs.run_observer == 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Run observer validation lanes
+        shell: bash
+        run: |
+          .github/scripts/validation-lanes/agent-workflow-sanity.sh
+          .github/scripts/validation-lanes/workflow-security-targeted.sh
 
   test:
     # PRs use the sharded Windows cross-compiled test jobs below. Post-merge
@@ -619,6 +645,7 @@ jobs:
     needs:
       - plan
       - docs-only
+      - observer-only
       - test
       - test-windows-shard
       - test-windows
@@ -656,10 +683,17 @@ jobs:
           ]
           if mode == "docs_only":
               require("docs-only", "success")
+              require("observer-only", "skipped")
+              for job in normal_jobs:
+                  require(job, "skipped")
+          elif mode == "observer_only":
+              require("docs-only", "skipped")
+              require("observer-only", "success")
               for job in normal_jobs:
                   require(job, "skipped")
           elif mode == "full":
               require("docs-only", "skipped")
+              require("observer-only", "skipped")
               for job in [
                   "test",
                   "test-windows-shard",
