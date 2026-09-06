@@ -1,0 +1,230 @@
+name: Extract accepted upstream manifest
+
+on:
+  push:
+    branches:
+      - worker/w13825-manifest-extract
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  BASE_SHA: 0384d8ae9205e142fa4b352256d8c85a9e05f8c4
+  PRODUCER_REPOSITORY: sednalabs/codex
+  PRODUCER_RUN_ID: '34035744523'
+  PRODUCER_ARTIFACT_ID: '9990109940'
+  PRODUCER_ARTIFACT_NAME: upstream-composition-34035744523-1
+  PRODUCER_RUN_ATTEMPT: '1'
+  PRODUCER_HEAD_SHA: 5eb6ca6519b1a79e8997bf21321885de1fd9ed01
+  PRODUCER_BASE_TREE: 7a4e9d32c7a13a22215335a850cf879e284fdc63
+  PROVIDER_ARTIFACT_DIGEST: sha256:dd8bb18d0bbd8112f806aff39db7757ea1670df4f1e792df9dc104942759a8a6
+  EXPECTED_BUNDLE_SHA256: b383183cf21ade4b50244986cf1589988b248259ee51f099932bb0c06b026dd6
+  EXPECTED_RECEIPT_SHA256: 2bcebca05cb45d6d2caad475ec5348a3883566f99e6a98d24196382d52d39e93
+  EXPECTED_MANIFEST_SHA256: 0451d500a2a9868825337ddd0e6c16cd73c5088116131d75b4f27f801885328b
+  EXPECTED_PROVENANCE_SHA256: afbf269c8593c978ed706c9f2fddc0031383350fe216d88512ec3707c8a55cb9
+  EXPECTED_MATERIALIZED_SHA: f5bb378d2e575b8f6f3cf266a0939ef404c37203
+  EXPECTED_MATERIALIZED_TREE: 49af672a3965958bfb1668f27c0caa27ba48554a
+  UPSTREAM_SHA: 008bbd5884122dc95aaece19ecfe0fc6a59dcf36
+  UPSTREAM_TREE: 721cd395f53962482b3f6d140d0b9942fef3baac
+
+jobs:
+  extract:
+    if: github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact extraction candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Verify exact predecessor
+        shell: bash
+        env:
+          EXPECTED_BEFORE: ${{ github.event.before }}
+          EXPECTED_AFTER: ${{ github.event.after }}
+          EVENT_CREATED: ${{ github.event.created }}
+          EVENT_DELETED: ${{ github.event.deleted }}
+          EVENT_FORCED: ${{ github.event.forced }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "${PRODUCER_REPOSITORY}"
+          test "${GITHUB_REF_NAME}" = "worker/w13825-manifest-extract"
+          test "${GITHUB_SHA}" = "$(git rev-parse HEAD)"
+          test "${EXPECTED_BEFORE}" = "0000000000000000000000000000000000000000"
+          test "${EXPECTED_AFTER}" = "${GITHUB_SHA}"
+          test "${EVENT_CREATED}" = "true"
+          test "${EVENT_DELETED}" = "false"
+          test "${EVENT_FORCED}" = "false"
+          test "$(git rev-parse HEAD^)" = "${BASE_SHA}"
+          test -z "$(git status --porcelain)"
+
+      - name: Verify fixed producer artifact metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from urllib.request import Request, urlopen
+
+          def get(path):
+              request = Request(
+                  "https://api.github.com/repos/" + os.environ["PRODUCER_REPOSITORY"] + path,
+                  headers={"Accept": "application/vnd.github+json", "Authorization": "Bearer " + os.environ["GH_TOKEN"]},
+              )
+              with urlopen(request) as response:
+                  return json.load(response)
+
+          artifact = get("/actions/artifacts/" + os.environ["PRODUCER_ARTIFACT_ID"])
+          expected = {
+              "id": int(os.environ["PRODUCER_ARTIFACT_ID"]),
+              "name": os.environ["PRODUCER_ARTIFACT_NAME"],
+              "digest": os.environ["PROVIDER_ARTIFACT_DIGEST"],
+          }
+          for key, value in expected.items():
+              if artifact.get(key) != value:
+                  raise SystemExit(f"provider artifact metadata mismatch: {key}")
+          if artifact.get("workflow_run", {}).get("id") != int(os.environ["PRODUCER_RUN_ID"]):
+              raise SystemExit("provider artifact workflow run mismatch")
+          run = get("/actions/runs/" + os.environ["PRODUCER_RUN_ID"])
+          for key, value in {
+              "id": int(os.environ["PRODUCER_RUN_ID"]),
+              "run_attempt": int(os.environ["PRODUCER_RUN_ATTEMPT"]),
+              "head_sha": os.environ["PRODUCER_HEAD_SHA"],
+          }.items():
+              if run.get(key) != value:
+                  raise SystemExit(f"producer run metadata mismatch: {key}")
+          PY
+
+      - name: Download exact accepted producer artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ env.PRODUCER_ARTIFACT_ID }}
+          github-token: ${{ github.token }}
+          repository: ${{ env.PRODUCER_REPOSITORY }}
+          run-id: ${{ env.PRODUCER_RUN_ID }}
+          path: ${{ runner.temp }}/w13825-accepted-composition
+
+      - name: Validate and extract existing evidence only
+        shell: bash
+        env:
+          SOURCE: ${{ runner.temp }}/w13825-accepted-composition
+          OUTPUT: ${{ runner.temp }}/w13825-manifest-extract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+
+          source = Path(os.environ["SOURCE"])
+          output = Path(os.environ["OUTPUT"])
+          output.mkdir(parents=True, exist_ok=False)
+
+          def digest(path):
+              value = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      value.update(chunk)
+              return value.hexdigest()
+
+          # The accepted producer uploads composition-receipt as the artifact root.
+          # Read only JSON/text evidence; never execute or import downloaded content.
+          root = source / "composition-receipt"
+          if not root.is_dir():
+              root = source
+          required = {
+              name: root / name
+              for name in (
+                  "provenance.json",
+                  "receipt.json",
+                  "conflict-manifest.json",
+                  "manifest-summary.env",
+                  "materialized.bundle",
+              )
+          }
+          for name, path in required.items():
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f"missing accepted evidence: {name}")
+
+          with required["provenance.json"].open() as stream:
+              provenance = json.load(stream)
+          with required["receipt.json"].open() as stream:
+              receipt = json.load(stream)
+          with required["conflict-manifest.json"].open() as stream:
+              manifest = json.load(stream)
+
+          identity = {
+              "repository": os.environ["PRODUCER_REPOSITORY"],
+              "run_id": os.environ["PRODUCER_RUN_ID"],
+              "upstream_sha": os.environ["UPSTREAM_SHA"],
+              "upstream_tree": os.environ["UPSTREAM_TREE"],
+          }
+          for key, value in identity.items():
+              if str(provenance.get(key)) != value:
+                  raise SystemExit(f"producer provenance mismatch: {key}")
+          if provenance.get("signed") is not False:
+              raise SystemExit("producer provenance must remain explicitly unsigned")
+          if digest(required["provenance.json"]) != os.environ["EXPECTED_PROVENANCE_SHA256"]:
+              raise SystemExit("accepted provenance digest mismatch")
+          expected = {
+              "workflow_head": os.environ["PRODUCER_HEAD_SHA"],
+              "base_sha": os.environ["PRODUCER_HEAD_SHA"],
+              "base_tree": os.environ["PRODUCER_BASE_TREE"],
+              "materialized_sha": os.environ["EXPECTED_MATERIALIZED_SHA"],
+              "materialized_tree": os.environ["EXPECTED_MATERIALIZED_TREE"],
+              "bundle_sha256": os.environ["EXPECTED_BUNDLE_SHA256"],
+              "receipt_sha256": os.environ["EXPECTED_RECEIPT_SHA256"],
+              "conflict_manifest_sha256": os.environ["EXPECTED_MANIFEST_SHA256"],
+          }
+          for key, value in expected.items():
+              if provenance.get(key) != value:
+                  raise SystemExit(f"fixed producer provenance mismatch: {key}")
+          if provenance.get("bundle_sha256") != digest(required["materialized.bundle"]):
+              raise SystemExit("accepted archive digest mismatch")
+          if provenance.get("receipt_sha256") != digest(required["receipt.json"]):
+              raise SystemExit("accepted receipt digest mismatch")
+          if provenance.get("conflict_manifest_sha256") != digest(required["conflict-manifest.json"]):
+              raise SystemExit("accepted manifest digest mismatch")
+
+          for key in ("repository", "upstream_sha", "upstream_tree"):
+              if receipt.get(key) != identity[key]:
+                  raise SystemExit(f"producer receipt mismatch: {key}")
+          if str(receipt.get("run_id")) != os.environ["PRODUCER_RUN_ID"]:
+              raise SystemExit("producer receipt run mismatch")
+          if str(receipt.get("run_attempt")) != os.environ["PRODUCER_RUN_ATTEMPT"]:
+              raise SystemExit("producer receipt attempt mismatch")
+          if receipt.get("pre_conflict_materialized_sha") != provenance.get("materialized_sha"):
+              raise SystemExit("receipt/materialized SHA mismatch")
+          if receipt.get("pre_conflict_materialized_tree") != provenance.get("materialized_tree"):
+              raise SystemExit("receipt/materialized tree mismatch")
+          if manifest.get("schema") != "hosted-conflict-manifest":
+              raise SystemExit("conflict manifest schema mismatch")
+
+          summary = {}
+          for line in required["manifest-summary.env"].read_text().splitlines():
+              if line and "=" in line:
+                  key, value = line.split("=", 1)
+                  summary[key] = value
+          if summary.get("MANIFEST_DIGEST") != manifest.get("path_set_sha256"):
+              raise SystemExit("manifest summary/path-set mismatch")
+          if summary.get("MANIFEST_TOTAL") != str(manifest.get("total_unmerged_path_count")):
+              raise SystemExit("manifest summary/count mismatch")
+
+          for name in ("conflict-manifest.json", "manifest-summary.env", "receipt.json"):
+              shutil.copyfile(required[name], output / name)
+          PY
+
+      - name: Upload extracted manifest evidence
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: upstream-manifest-extract-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/w13825-manifest-extract
+          if-no-files-found: error
