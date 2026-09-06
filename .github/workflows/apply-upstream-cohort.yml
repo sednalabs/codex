@@ -33,9 +33,9 @@ jobs:
       SDK_ARTIFACT_RUN_ID: "34042133059"
       SDK_ARTIFACT_HEAD_SHA: 0384d8ae9205e142fa4b352256d8c85a9e05f8c4
       SDK_ARTIFACT_HEAD_BRANCH: worker/w13825-sdk-producer-validation-20260907
-      BUILD_SOURCE_SHA: 22a0c45ee711dc5ce47847dc04cbc5e7e76507c0
-      BUILD_SOURCE_TREE: f0086ec70af34c151da911fb83546f033f8ace9d
-      BUILD_SOURCE_BRANCH: worker/w13825-build-source-authoring-20260907
+      BUILD_SOURCE_SHA: a4ece2e14d9ca6551c753d06443e82ddb374ca6e
+      BUILD_SOURCE_TREE: ff6b77cdc37ab7570c7e4fcf153933f809ecfe1a
+      BUILD_SOURCE_BRANCH: worker/w13825-build-source-join-20260907
     steps:
       - name: Check out exact reviewed consumer helper
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -252,7 +252,7 @@ jobs:
       - name: Check out exact reviewed build source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 22a0c45ee711dc5ce47847dc04cbc5e7e76507c0
+          ref: a4ece2e14d9ca6551c753d06443e82ddb374ca6e
           fetch-depth: 0
           persist-credentials: false
           path: source-candidate
@@ -264,7 +264,7 @@ jobs:
           source_root="${GITHUB_WORKSPACE}/source-candidate"
           test "${BUILD_SOURCE_SHA}" = "$(git -C "${source_root}" rev-parse HEAD)"
           test "${BUILD_SOURCE_TREE}" = "$(git -C "${source_root}" rev-parse HEAD^{tree})"
-          test "4addbc431785bdedf77e8ef8b1c1a982267fdbc4" = "$(git -C "${source_root}" show -s --format=%P HEAD)"
+          test "22a0c45ee711dc5ce47847dc04cbc5e7e76507c0" = "$(git -C "${source_root}" show -s --format=%P HEAD)"
           test -z "$(git -C "${source_root}" status --porcelain)"
           remote_source="$({ git -C "${source_root}" ls-remote --heads origin "refs/heads/${BUILD_SOURCE_BRANCH}"; } | awk '{print $1}')"
           test "${remote_source}" = "${BUILD_SOURCE_SHA}"

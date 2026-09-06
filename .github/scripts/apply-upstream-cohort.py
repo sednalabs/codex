@@ -79,12 +79,12 @@ COMMON_PROVENANCE_SHA256 = "afbf269c8593c978ed706c9f2fddc0031383350fe216d88512ec
 COMMON_STAGED_PATCH_SHA256 = "dd4b59d9be8c2727d08de673085b36a1c61f6cee617855f210706412a5bfc66c"
 COMMON_STAGED_PATHS_SHA256 = "90b44134bb538a07fa03dfd674e96f08de4ba04a40252f6dc9f5c740dd5bb1ae"
 
-BUILD_SOURCE_SHA = "22a0c45ee711dc5ce47847dc04cbc5e7e76507c0"
-BUILD_SOURCE_TREE = "f0086ec70af34c151da911fb83546f033f8ace9d"
-BUILD_SOURCE_PARENT = "4addbc431785bdedf77e8ef8b1c1a982267fdbc4"
-BUILD_SOURCE_BRANCH = "worker/w13825-build-source-authoring-20260907"
-BUILD_PATHS_SHA256 = "69f15ab670d1f971c6f48f3efa8e38b954fb4161df6aa0608c14b2c155b261f2"
-BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str]] = {
+BUILD_SOURCE_SHA = "a4ece2e14d9ca6551c753d06443e82ddb374ca6e"
+BUILD_SOURCE_TREE = "ff6b77cdc37ab7570c7e4fcf153933f809ecfe1a"
+BUILD_SOURCE_PARENT = "22a0c45ee711dc5ce47847dc04cbc5e7e76507c0"
+BUILD_SOURCE_BRANCH = "worker/w13825-build-source-join-20260907"
+BUILD_PATHS_SHA256 = "a9b50623545666e332bcbd8661030dc75f422875986c65cd96f6c3c6382aa091"
+BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
     ".github/workflows/bazel.yml": (
         "100644",
         "blob",
@@ -123,7 +123,19 @@ BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str]] = {
     "codex-rs/Cargo.toml": (
         "100644",
         "blob",
-        "7bd8c144e52b169b907928bcf743363949d12cb2",
+        "d8dfea9d6bdc33ce482ca4edae5c8be13891a20d",
+    ),
+    "codex-rs/core-skills/src/loader_tests.rs": None,
+    "codex-rs/core-skills/src/service.rs": None,
+    "codex-rs/ext/skills/src/host_service.rs": (
+        "100644",
+        "blob",
+        "0648debb6435da437715ac60f1b0058bbac42cbb",
+    ),
+    "codex-rs/ext/skills/src/host_service_tests.rs": (
+        "100644",
+        "blob",
+        "e6e0108758bded2fba770a032eeabfed79092ccb",
     ),
     "codex-rs/realtime-webrtc/BUILD.bazel": (
         "100644",
@@ -141,7 +153,7 @@ BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str]] = {
         "fc884c8ebc1e2f36154a12ecbcd4cbe509d3bbc5",
     ),
 }
-BUILD_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str]] = {
+BUILD_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
     ".github/workflows/bazel.yml": (
         "100644",
         "blob",
@@ -182,6 +194,22 @@ BUILD_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str]] = {
         "blob",
         "b7d06b98391ef2f3307096d963eea4e19853d8f0",
     ),
+    "codex-rs/core-skills/src/loader_tests.rs": (
+        "100644",
+        "blob",
+        "f052485a57d5fbbc70545d6a1314758fd71ff8ba",
+    ),
+    "codex-rs/core-skills/src/service.rs": (
+        "100644",
+        "blob",
+        "82f3c18ac8a22ee411f5ad3142fef4d6eef15290",
+    ),
+    "codex-rs/ext/skills/src/host_service.rs": (
+        "100644",
+        "blob",
+        "3feda36e77f29aea9af387d6374798c277c31b66",
+    ),
+    "codex-rs/ext/skills/src/host_service_tests.rs": None,
     "codex-rs/realtime-webrtc/BUILD.bazel": (
         "100644",
         "blob",
@@ -336,13 +364,13 @@ OVERLAY_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str] | None] = dict(
     sorted({**BUILD_SOURCE_PREIMAGE_ENTRIES, **RESTORE_SOURCE_PREIMAGE_ENTRIES}.items())
 )
 OVERLAY_PATHS = list(OVERLAY_SOURCE_ENTRIES)
-OVERLAY_PATHS_SHA256 = "39f8d33a5169f8d3ccaa72ddb33ed2cee9eac7d92c72d8ebd3c50d9b46892a04"
+OVERLAY_PATHS_SHA256 = "2047f24417be04e754fd4ca15e08e7d7b407d5dd31b9d871040f8aefa825a0a7"
 OVERLAY_CHANGED_PATHS = [
     path
     for path in OVERLAY_PATHS
     if OVERLAY_SOURCE_PREIMAGE_ENTRIES[path] != OVERLAY_SOURCE_ENTRIES[path]
 ]
-OVERLAY_CHANGED_PATHS_SHA256 = "eac6ca498117c3c132c523097283e953518d81fa20e51595d97bff8926c9f91f"
+OVERLAY_CHANGED_PATHS_SHA256 = "4464397fd5e6c6ef10e979274fde89490b9b5fd2cceb0cb105c71fe495002db4"
 
 PATCH_DEPENDENCIES: dict[str, tuple[str, str, str]] = {
     "patches/rules_rs_windows_msvc_linker.patch": (
@@ -412,6 +440,8 @@ ALLOWED_MUTABLE_PATHS = sorted(set(OVERLAY_CHANGED_PATHS) | set(GENERATED_PATHS)
 ROOT_MANIFEST_PATH = "codex-rs/Cargo.toml"
 ROOT_LOCK_PATH = "codex-rs/Cargo.lock"
 ROOT_CLOSURE_SHA256 = "83cf30fefe2ebd8f9f6fa6105114018544258549128634b50fddbe7eb5d63345"
+EXPECTED_REMOVED_ROOT_MEMBERS = {"core-skills"}
+EXPECTED_REMOVED_WORKSPACE_DEPENDENCIES = {"codex-core-skills"}
 REQUIRED_ROOT_MEMBERS = {
     "agent-roles",
     "app-server-protocol-noop-macros",
@@ -1391,18 +1421,31 @@ def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Pat
     prior_members = prior_workspace.get("members", [])
     prior_dependencies = prior_workspace.get("dependencies", {})
 
-    for member in sorted(set(prior_members) - set(members)):
-        mismatches.append({"kind": "prior-member-removed", "member": member})
-    for name in sorted(prior_dependencies):
-        if workspace_dependencies.get(name) != prior_dependencies[name]:
-            mismatches.append(
-                {
-                    "kind": "prior-workspace-dependency-changed",
-                    "dependency": name,
-                    "accepted": prior_dependencies[name],
-                    "actual": workspace_dependencies.get(name),
-                }
-            )
+    removed_members = set(prior_members) - set(members)
+    if removed_members != EXPECTED_REMOVED_ROOT_MEMBERS:
+        mismatches.append(
+            {
+                "kind": "prior-member-removal-mismatch",
+                "expected": sorted(EXPECTED_REMOVED_ROOT_MEMBERS),
+                "actual": sorted(removed_members),
+            }
+        )
+    changed_prior_dependencies = {
+        name
+        for name in prior_dependencies
+        if workspace_dependencies.get(name) != prior_dependencies[name]
+    }
+    if changed_prior_dependencies != EXPECTED_REMOVED_WORKSPACE_DEPENDENCIES:
+        mismatches.append(
+            {
+                "kind": "prior-workspace-dependency-change-mismatch",
+                "expected": sorted(EXPECTED_REMOVED_WORKSPACE_DEPENDENCIES),
+                "actual": sorted(changed_prior_dependencies),
+            }
+        )
+    for name in sorted(EXPECTED_REMOVED_WORKSPACE_DEPENDENCIES):
+        if name in workspace_dependencies:
+            mismatches.append({"kind": "retired-workspace-dependency-present", "dependency": name})
     for member in sorted(REQUIRED_ROOT_MEMBERS - set(members)):
         mismatches.append({"kind": "required-member-missing", "member": member})
     for member in sorted(REQUIRED_ROOT_MEMBERS):
@@ -1486,6 +1529,10 @@ def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Pat
         "required_root_member_count": len(REQUIRED_ROOT_MEMBERS),
         "required_workspace_dependency_count": len(REQUIRED_WORKSPACE_DEPENDENCIES),
         "deferred_workspace_dependencies": sorted(DEFERRED_WORKSPACE_DEPENDENCIES),
+        "expected_removed_root_members": sorted(EXPECTED_REMOVED_ROOT_MEMBERS),
+        "expected_removed_workspace_dependencies": sorted(
+            EXPECTED_REMOVED_WORKSPACE_DEPENDENCIES
+        ),
         "inherited_workspace_dependency_count": len(inherited_dependencies),
         "workspace_member_spec_count": graph["workspace_member_spec_count"],
         "workspace_member_literal_count": graph["workspace_member_literal_count"],
@@ -1957,7 +2004,7 @@ def verify_build_source_checkout(repo: pathlib.Path) -> None:
         BUILD_SOURCE_SHA,
         cwd=repo,
     ).splitlines()
-    require(changed == BUILD_PATHS, "build source diff is not the exact eleven-path authored cohort")
+    require(changed == BUILD_PATHS, "build source diff is not the exact fifteen-path authored cohort")
     require(path_digest(changed) == BUILD_PATHS_SHA256, "build source path-set digest mismatch")
     for path, expected in OVERLAY_SOURCE_ENTRIES.items():
         require(tree_entry(repo, BUILD_SOURCE_SHA, path) == expected, f"build source tuple mismatch: {path}")
@@ -2997,6 +3044,23 @@ def generate_and_test(
     print(json.dumps(pre_generation_readback, sort_keys=True))
     require(execution_inputs["status"] == "ready", "execution inputs are not ready")
     resolve_composed_cargo_lock(worktree, diagnostics)
+    run_tool(
+        "skills host-service library tests",
+        "cargo",
+        "test",
+        "--manifest-path",
+        "codex-rs/Cargo.toml",
+        "-p",
+        "codex-skills-extension",
+        "--lib",
+        "host_service::tests::",
+        cwd=worktree,
+    )
+    require_candidate_paths(
+        worktree,
+        sorted([*OVERLAY_CHANGED_PATHS, *SDK_GENERATED_PATHS]),
+        "skills host-service library tests",
+    )
     require(tool_observations["status"] == "ready", f"tool smoke invalid: {tool_observations['errors']}")
     generator_identity["manifest_structure_receipt_sha256"] = digest(
         diagnostics / "structural-receipt.json"
@@ -3155,6 +3219,7 @@ def generate_and_test(
     generator_identity["commands"] = [
         "cargo metadata --manifest-path codex-rs/Cargo.toml --format-version 1",
         "cargo metadata --manifest-path codex-rs/Cargo.toml --locked --format-version 1",
+        "cargo test --manifest-path codex-rs/Cargo.toml -p codex-skills-extension --lib host_service::tests::",
         "uv sync --project sdk/python --group dev --frozen",
         "uv run --project sdk/python --frozen --no-sync python scripts/update_sdk_artifacts.py generate-types",
         "python3 .github/scripts/rusty_v8_bazel.py check-module-bazel --version 150.4.0",
