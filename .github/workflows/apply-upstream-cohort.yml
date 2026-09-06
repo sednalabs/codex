@@ -221,6 +221,9 @@ jobs:
           )"
           test "$(jq -r '.status' <<<"${structure_fixture}")" = ready
           test "$(jq -r '.accepted_missing_target_count' <<<"${structure_fixture}")" = 0
+          test "$(jq -r '.rejected_mismatch_kinds | join(",")' <<<"${structure_fixture}")" = dependency-path-target-missing,workspace-member-target-missing
+          test "$(jq -r '.direct_dependency_case_count' <<<"${structure_fixture}")" = 4
+          test "$(jq -r '.direct_dependency_table_coverage | join(",")' <<<"${structure_fixture}")" = dependencies,dev-dependencies,build-dependencies,target.cfg\(unix\).dependencies
           test "$(jq -r '.rejected_missing_targets | length' <<<"${structure_fixture}")" -ge 4
           test -z "$(grep -nE 'patch_base64|disposition_json|git[[:space:]]+apply' "${helper}" || true)"
 

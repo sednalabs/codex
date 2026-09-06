@@ -1203,6 +1203,33 @@ def manifest_graph_diagnostics(parsed: dict[str, dict[str, Any]]) -> dict[str, A
 
 
 def manifest_structure_fixture_receipt() -> dict[str, Any]:
+    direct_consumer = "codex-rs/mcp-server/Cargo.toml"
+    direct_path_cases = [
+        {
+            "table": "dependencies",
+            "dependency": "missing_direct_normal",
+            "declared_path": "tests/direct-normal",
+            "target": "codex-rs/mcp-server/tests/direct-normal/Cargo.toml",
+        },
+        {
+            "table": "dev-dependencies",
+            "dependency": "missing_direct_dev",
+            "declared_path": "tests/direct-dev",
+            "target": "codex-rs/mcp-server/tests/direct-dev/Cargo.toml",
+        },
+        {
+            "table": "build-dependencies",
+            "dependency": "missing_direct_build",
+            "declared_path": "tests/direct-build",
+            "target": "codex-rs/mcp-server/tests/direct-build/Cargo.toml",
+        },
+        {
+            "table": "target.cfg(unix).dependencies",
+            "dependency": "missing_direct_target",
+            "declared_path": "tests/direct-target",
+            "target": "codex-rs/mcp-server/tests/direct-target/Cargo.toml",
+        },
+    ]
     root = {
         "workspace": {
             "members": ["core-skills", "ext/guardian", "mcp-server"],
@@ -1218,16 +1245,46 @@ def manifest_structure_fixture_receipt() -> dict[str, Any]:
             "dependencies": {"codex-guardian": {"workspace": True}},
         },
         "codex-rs/mcp-server/Cargo.toml": {
+            "dependencies": {
+                "missing_direct_normal": {"path": "tests/direct-normal"},
+            },
             "dev-dependencies": {
                 "mcp_test_support": {"workspace": True},
                 "missing_direct_dev": {"path": "tests/direct-dev"},
+            },
+            "build-dependencies": {
+                "missing_direct_build": {"path": "tests/direct-build"},
+            },
+            "target": {
+                "cfg(unix)": {
+                    "dependencies": {
+                        "missing_direct_target": {"path": "tests/direct-target"},
+                    },
+                },
             },
         },
     }
     rejected = manifest_graph_diagnostics(invalid)
     rejected_kinds = {item["kind"] for item in rejected["mismatches"]}
-    require("workspace-member-target-missing" in rejected_kinds, "fixture accepted a missing member")
-    require("dependency-path-target-missing" in rejected_kinds, "fixture accepted a missing path target")
+    require(
+        rejected_kinds
+        == {"workspace-member-target-missing", "dependency-path-target-missing"},
+        "fixture mismatch kinds drifted",
+    )
+    for case in direct_path_cases:
+        expected = {
+            "kind": "dependency-path-target-missing",
+            "consumer": direct_consumer,
+            "table": case["table"],
+            "dependency": case["dependency"],
+            "edge_kind": "direct",
+            "declared_path": case["declared_path"],
+            "target": case["target"],
+        }
+        require(
+            expected in rejected["mismatches"],
+            f"fixture did not traverse {case['table']}",
+        )
     require(rejected["missing_target_count"] >= 4, "fixture did not aggregate missing targets")
 
     accepted_root = {
@@ -1243,8 +1300,9 @@ def manifest_structure_fixture_receipt() -> dict[str, Any]:
         "codex-rs/mcp-server/tests/common/Cargo.toml": {
             "package": {"name": "mcp-test-support"},
         },
-        "codex-rs/mcp-server/tests/direct-dev/Cargo.toml": {
-            "package": {"name": "direct-dev"},
+        **{
+            case["target"]: {"package": {"name": case["dependency"].replace("_", "-")}}
+            for case in direct_path_cases
         },
     }
     accepted_result = manifest_graph_diagnostics(accepted)
@@ -1259,7 +1317,10 @@ def manifest_structure_fixture_receipt() -> dict[str, Any]:
         "version": 1,
         "status": "ready",
         "rejected_mismatch_count": len(rejected["mismatches"]),
+        "rejected_mismatch_kinds": sorted(rejected_kinds),
         "rejected_missing_targets": rejected["missing_targets"],
+        "direct_dependency_case_count": len(direct_path_cases),
+        "direct_dependency_table_coverage": [case["table"] for case in direct_path_cases],
         "accepted_manifest_count": len(accepted),
         "accepted_exact_additions": known_additions,
         "accepted_exact_additions_sha256": path_digest(known_additions),
