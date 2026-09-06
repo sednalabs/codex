@@ -143,8 +143,8 @@ Recommended Windows implementation shape:
   providers
 - keep OS-window lifecycle, display visibility, downloads, file upload, and
   shell-specific policies provider-side
-- avoid depending on a private native pipe implementation; if a pipe is used,
-  treat it as provider-private transport behind the command-provider seam
+- the provider owns any native pipe or other internal transport behind the
+  command-provider seam
 
 ## Chrome Extension Provider Contract
 
@@ -167,17 +167,16 @@ Compatibility requirements:
 - the provider should ask before interacting with new websites unless policy
   already allows that host
 
-Provider implementation notes:
+Provider integration interfaces:
 
-- do not copy native-host names, manifests, extension code, or bundled assets
-  into this repository
-- install/repair remains an operator or provider responsibility
+- the provider owns native-host and extension packaging, installation, and
+  repair integration
 - Codex core should see only `browser_observe` and `browser_step` native
   computer-use calls plus provider diagnostics
 - history access is a separate sensitive capability and should not have an
   unconditional always-allow path
 
-## Provider Surface Reduced to Public Seams
+## Provider Integration Interfaces
 
 Browser, Chrome, and computer-use integrations can be represented through these
 public Codex seams:
