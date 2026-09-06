@@ -14,20 +14,14 @@ use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadResumeResponse;
-use codex_features::Feature;
 use codex_protocol::ThreadId;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::Result;
 
 impl AppServerSession {
-    /// Captures the server's startup migration policy before workspace config can change.
-    ///
-    /// Sessions without a recorded startup config conservatively assume migration is enabled.
-    pub(crate) fn with_startup_config(mut self, config: &Config) -> Self {
-        self.background_rollout_migration_enabled = config
-            .features
-            .enabled(Feature::BackgroundPaginatedRolloutMigration);
+    pub(crate) fn with_local_codex_home(mut self, codex_home: &AbsolutePathBuf) -> Self {
         self.task_tool_capabilities_dir = (!self.uses_embedded_app_server())
-            .then(|| config.codex_home.join("tui-thread-reference-capabilities"));
+            .then(|| codex_home.join("tui-thread-reference-capabilities"));
         self
     }
 
@@ -79,23 +73,20 @@ impl AppServerSession {
                 .get(&thread_id)
                 .is_some_and(|state| state.history_mode == ThreadHistoryMode::Legacy)
                 && (!self.uses_embedded_app_server()
-                    || (!self.background_rollout_migration_enabled
-                        && !config
-                            .features
-                            .enabled(Feature::BackgroundPaginatedRolloutMigration)
-                        && {
-                            rollout_maintenance_guard =
-                                codex_rollout::try_acquire_rollout_maintenance_lock(
-                                    config.codex_home.as_path(),
-                                )
-                                .ok()
-                                .flatten();
-                            rollout_maintenance_guard.is_some()
-                        }
-                        && self
-                            .thread_read(thread_id, /*include_turns*/ false)
-                            .await
-                            .is_ok_and(|thread| thread.history_mode == ThreadHistoryMode::Legacy)));
+                    || ({
+                        // The guard prevents migration through the full resume,
+                        // regardless of the server's migration feature settings.
+                        rollout_maintenance_guard =
+                            codex_rollout::try_acquire_rollout_maintenance_lock(
+                                config.codex_home.as_path(),
+                            )
+                            .ok()
+                            .flatten();
+                        rollout_maintenance_guard.is_some()
+                    } && self
+                        .thread_read(thread_id, /*include_turns*/ false)
+                        .await
+                        .is_ok_and(|thread| thread.history_mode == ThreadHistoryMode::Legacy)));
             !known_legacy_history
         } else {
             false
