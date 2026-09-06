@@ -1407,7 +1407,10 @@
       ],
       "files": [
         ".codex/skills/babysit-pr/agents/openai.yaml",
+        ".codex/skills/babysit-pr/scripts/gh_merge_queue_shepherd.py",
         ".codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        ".codex/skills/babysit-pr/scripts/test_gh_merge_queue_shepherd.py",
+        ".codex/skills/babysit-pr/scripts/test_gh_pr_watch.py",
         ".codex/skills/babysit-gh-workflow-run/",
         ".codex/skills/sedna/subagent-session-tail/SKILL.md",
         ".codex/skills/sedna/subagent-session-tail/agents/openai.yaml",
@@ -1423,6 +1426,8 @@
       "guardrail_lane": "codex.agent-workflow-sanity",
       "tests": [
         "py_compile of gh_pr_watch.py, gh_workflow_run_watch.py, gh_dispatch_and_watch.py, and inspect_subagent_tail.py",
+        "test_gh_merge_queue_shepherd.py",
+        "test_gh_pr_watch.py",
         "test_gh_workflow_run_watch.py",
         "test_gh_dispatch_and_watch.py",
         "test_inspect_subagent_tail.py",
@@ -1436,6 +1441,37 @@
 
       ],
       "extraction_target": "runtime-coupled agent workflow helpers"
+    },
+    {
+      "id": "code-review-skill-consolidation",
+      "title": "Code-review skill consolidation",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "agent-facing",
+      "surface": [
+        "code-review skill structure test"
+      ],
+      "files": [
+        ".codex/skills/code-review/tests/test_structure.py"
+      ],
+      "behavior": "Downstream validates the consolidated code-review skill layout and required structure markers after merging the review guidance into one skill surface.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.code-review-skill-structure-targeted",
+      "tests": [
+        "test_structure.py"
+      ],
+      "owner": "downstream",
+      "notes": "Tracks the downstream-only structure guard for the consolidated code-review skill; keep the registry path limited to the executable test unless companion Markdown files become necessary for truthful registry semantics.",
+      "upstreamability_tier": "operator-only",
+      "boundary_type": "agent-workflow-skill",
+      "hotspot_files": [
+        ".codex/skills/code-review/tests/test_structure.py"
+      ],
+      "extraction_target": "operator-owned consolidated code-review skill structure"
     },
     {
       "id": "skill-loader-fixture-hermeticity",
@@ -2547,6 +2583,7 @@
         "codex-rs/skills/src/assets/samples/skill-creator/scripts/init_skill.py",
         "package.json",
         "scripts/codex-resume-recent.sh",
+        "scripts/uv.lock",
         "codex-rs/http-client/src/outbound_proxy.rs",
         "codex-rs/http-client/src/outbound_proxy_redirect_coverage_tests.rs",
         "codex-rs/http-client/src/route_aware_client_pool_tests.rs",
@@ -2562,7 +2599,7 @@
           "windows_aarch64_gnullvm_rust_toolchain_for_health"
         ]
       },
-      "behavior": "Downstream keeps patched build, packaging, install, and test-stability artifacts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, deterministic pending-input and tracing-span observation barriers, thread-idle synchronization plus submission-correlated errors for host-only compact/resume rollback fixtures, a sha2 0.11-compatible explicit lowercase hexadecimal encoder for all-platform proxy cache keys, deterministic blocking reads in three HTTP redirect fixtures, a TypeScript SDK manifest that remains paired with the downstream dependency lockfile, and broad SemVer installer validation that accepts upstream alpha-hotfix tags while retaining Sedna prerelease suffixes and build metadata. The upstream optional releases.openai.com installer source remains available only for the default openai/codex plus rust-v origin; custom repository or tag-prefix routing stays on GitHub and cannot be redirected to OpenAI's release channel by the opt-in flag.",
+      "behavior": "Downstream keeps patched build, packaging, install, and test-stability artifacts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, deterministic pending-input and tracing-span observation barriers, thread-idle synchronization plus submission-correlated errors for host-only compact/resume rollback fixtures, a sha2 0.11-compatible explicit lowercase hexadecimal encoder for all-platform proxy cache keys, deterministic blocking reads in three HTTP redirect fixtures, a TypeScript SDK manifest that remains paired with the downstream dependency lockfile, broad SemVer installer validation that accepts upstream alpha-hotfix tags while retaining Sedna prerelease suffixes and build metadata, and Ruff lock alignment in the downstream uv lockfile. The upstream optional releases.openai.com installer source remains available only for the default openai/codex plus rust-v origin; custom repository or tag-prefix routing stays on GitHub and cannot be redirected to OpenAI's release channel by the opt-in flag.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
