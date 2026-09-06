@@ -24,6 +24,10 @@ fn goals_db(dir: &Path) -> PathBuf {
     fs::canonicalize(path).expect("canonical goals database")
 }
 
+fn protocol_marker(prefix: &str, thread_id: ThreadId) -> String {
+    format!("CODEX_GOAL_LEASE_{prefix}_{}", thread_id)
+}
+
 #[test]
 fn distinct_threads_have_independent_leases() {
     let directory = tempdir().expect("temporary directory");
@@ -68,14 +72,14 @@ fn cross_process_contention_uses_native_lock() {
     if std::env::var_os("CODEX_GOAL_LEASE_CHILD").is_some() {
         let database = PathBuf::from(std::env::var_os("CODEX_GOAL_LEASE_DB").expect("database"));
         let lease = GoalExecutionLease::acquire(&database, thread_id(5)).expect("child lease");
-        println!("READY");
+        println!("{}", protocol_marker("READY", thread_id(5)));
         std::io::stdout().flush().expect("flush ready signal");
         let mut release = [0_u8; 1];
         std::io::stdin()
             .read_exact(&mut release)
             .expect("read release signal");
         drop(lease);
-        println!("RELEASED");
+        println!("{}", protocol_marker("RELEASED", thread_id(5)));
         std::io::stdout().flush().expect("flush release signal");
         return;
     }
@@ -94,6 +98,8 @@ fn cross_process_contention_uses_native_lock() {
         .expect("spawn child");
     let mut child_stdin = child.stdin.take().expect("child stdin");
     let child_stdout = child.stdout.take().expect("child stdout");
+    let ready_marker = protocol_marker("READY", thread_id(5));
+    let released_marker = protocol_marker("RELEASED", thread_id(5));
     let (signal_sender, signal_receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut child_stdout = BufReader::new(child_stdout);
@@ -120,7 +126,7 @@ fn cross_process_contention_uses_native_lock() {
     });
     let ready = loop {
         match signal_receiver.recv_timeout(Duration::from_secs(10)) {
-            Ok(Some(signal)) if signal == "READY" => break true,
+            Ok(Some(signal)) if signal.contains(&ready_marker) => break true,
             Ok(Some(_)) => continue,
             Ok(None) | Err(_) => break false,
         }
@@ -145,7 +151,7 @@ fn cross_process_contention_uses_native_lock() {
     }
     let released = loop {
         match signal_receiver.recv_timeout(Duration::from_secs(10)) {
-            Ok(Some(signal)) if signal == "RELEASED" => break true,
+            Ok(Some(signal)) if signal.contains(&released_marker) => break true,
             Ok(Some(_)) => continue,
             Ok(None) | Err(_) => break false,
         }
