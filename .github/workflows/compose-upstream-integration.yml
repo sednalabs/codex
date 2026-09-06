@@ -67,6 +67,7 @@ jobs:
         shell: bash
         env:
           EXPECTED_HEAD: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_head || github.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p composition-receipt
@@ -206,6 +207,8 @@ jobs:
           test -s composition-receipt/staged-auto-merge.patch
           materialize_ref="validation/upstream-preconflict-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           materialize_dir="${RUNNER_TEMP}/upstream-preconflict-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          remote_head="$(git ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
+          test "${remote_head}" = "${EXPECTED_HEAD}"
           git worktree add --detach --force "${materialize_dir}" "${base_sha}"
           cleanup_materialize() {
             git worktree remove --force "${materialize_dir}" || true
@@ -220,6 +223,9 @@ jobs:
           git -C "${materialize_dir}" commit -m "chore: materialize upstream pre-conflict base"
           materialized_sha="$(git -C "${materialize_dir}" rev-parse HEAD)"
           materialized_tree="$(git -C "${materialize_dir}" rev-parse HEAD^{tree})"
+          remote_head="$(git ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
+          test "${remote_head}" = "${EXPECTED_HEAD}"
+          test -z "$(git ls-remote origin "refs/heads/${materialize_ref}" | awk '{print $1}')"
           git -C "${materialize_dir}" -c "http.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
             push origin "HEAD:refs/heads/${materialize_ref}"
           materialized_remote_readback="$(git -C "${materialize_dir}" ls-remote origin "refs/heads/${materialize_ref}" | awk '{print $1}')"
