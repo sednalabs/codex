@@ -64,6 +64,9 @@ on:
         default: "false"
         type: choice
         options: ["false", "true"]
+  push:
+    branches:
+      - chore/history-rewrite-candidate-w13828
 
 permissions:
   contents: read
@@ -77,9 +80,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      HARNESS_SHA: ${{ inputs.workflow_harness_sha }}
-      HARNESS_TREE: ${{ inputs.workflow_harness_tree }}
+      SOURCE_SHA: ${{ github.event_name == 'push' && '809473034cf7d89d013fa106ed43ec2748f05013' || inputs.source_sha }}
+      HARNESS_SHA: ${{ github.event_name == 'push' && github.sha || inputs.workflow_harness_sha }}
+      HARNESS_TREE: ${{ github.event_name == 'push' && '' || inputs.workflow_harness_tree }}
       SELECTED_REFS_GZIP_B64: ${{ inputs.selected_refs_gzip_b64 }}
       SELECTED_REFS_SHA256: ${{ inputs.selected_refs_sha256 }}
       SELECTED_REFS_COUNT: ${{ inputs.selected_refs_count }}
@@ -89,7 +92,7 @@ jobs:
       BACKUP_REFS_BYTES: ${{ inputs.backup_refs_bytes }}
       BACKUP_SNAPSHOT_REFRESHED: ${{ inputs.backup_snapshot_refreshed }}
       TAG_SIGNATURE_ACK: ${{ inputs.tag_signature_ack }}
-      MODE: ${{ inputs.mode }}
+      MODE: ${{ github.event_name == 'push' && 'inventory' || inputs.mode }}
       POLICY: scripts/history-rewrite/policy.json
       REPO_URL: https://github.com/${{ github.repository }}.git
     steps:
@@ -99,13 +102,34 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
+      - name: Generate push inventory snapshot and checked-in boundaries
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, os, subprocess
+          lines = subprocess.check_output(["git", "ls-remote", "--heads", "--tags", "origin"], text=True).splitlines()
+          refs = {}
+          for line in lines:
+              sha, ref = line.split("\t", 1)
+              if not ref.endswith("^{}"): refs[ref] = sha
+          raw = json.dumps(refs, sort_keys=True, separators=(",", ":")).encode()
+          encoded = base64.b64encode(gzip.compress(raw, mtime=0)).decode()
+          policy = json.load(open("scripts/history-rewrite/policy.json", encoding="utf-8"))["backup_boundary"]
+          tree = subprocess.check_output(["git", "rev-parse", f"{os.environ['GITHUB_SHA']}^{{tree}}"], text=True).strip()
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"HARNESS_TREE={tree}\nSELECTED_REFS_GZIP_B64={encoded}\nSELECTED_REFS_SHA256={hashlib.sha256(raw).hexdigest()}\nSELECTED_REFS_COUNT={len(refs)}\nSELECTED_REFS_BYTES={len(raw)}\n")
+              env.write(f"BACKUP_REFS_SHA256={policy['sha256']}\nBACKUP_REFS_COUNT={policy['count']}\nBACKUP_REFS_BYTES={policy['bytes']}\nBACKUP_SNAPSHOT_REFRESHED=false\nTAG_SIGNATURE_ACK=false\n")
+          PY
+
       - name: Verify inputs and policy before fetching history
         shell: bash
         run: |
           set -euo pipefail
           [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_sha must be a full SHA' >&2; exit 1; }
           [[ "${SOURCE_SHA}" == '809473034cf7d89d013fa106ed43ec2748f05013' ]] || { echo 'source SHA is not the frozen candidate' >&2; exit 1; }
-          [[ "${GITHUB_REPOSITORY}" == 'sednalabs/codex' ]] || { echo 'unexpected repository' >&2; exit 1; }
+          [[ "${GITHUB_REPOSITORY}" == 'sednalabs/codex' ]] || { echo "unexpected repository for ${GITHUB_EVENT_NAME}" >&2; exit 1; }
           [[ "${HARNESS_SHA}" =~ ^[0-9a-f]{40}$ && "${HARNESS_TREE}" =~ ^[0-9a-f]{40}$ ]] || { echo 'harness identity must be full SHA values' >&2; exit 1; }
           [[ "${GITHUB_SHA}" == "${HARNESS_SHA}" ]] || { echo 'workflow dispatch head differs from bound harness SHA' >&2; exit 1; }
           test "$(git rev-parse "${GITHUB_SHA}^{tree}")" = "${HARNESS_TREE}" || { echo 'workflow harness tree mismatch' >&2; exit 1; }
@@ -130,7 +154,7 @@ jobs:
               raise SystemExit("selected ref-set byte-length mismatch")
           if not re.fullmatch(r"[0-9a-f]{64}", os.environ["BACKUP_REFS_SHA256"]):
               raise SystemExit("backup ref-set SHA must be a complete 64-hex digest")
-          forbidden = ("refs/heads/main", "refs/remotes/origin/main")
+          forbidden = (("refs/heads/main", "refs/remotes/origin/main") if os.environ["MODE"] == "rewrite" else ("refs/remotes/origin/main",))
           for name, sha in refs.items():
               if not isinstance(name, str) or not re.fullmatch(r"refs/(heads|tags)/[A-Za-z0-9._/-]+", name):
                   raise SystemExit(f"invalid selected ref: {name!r}")
