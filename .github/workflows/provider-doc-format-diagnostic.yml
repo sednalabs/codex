@@ -1,0 +1,62 @@
+name: provider-doc-format-diagnostic
+
+on:
+  push:
+    branches:
+      - validation/provider-doc-format-95c786d1
+    paths:
+      - .github/workflows/provider-doc-format-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  prettier-diff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 95c786d19689ba5b2586c969db3609c04cc67137
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install pinned formatter dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Write README with pinned Prettier and capture diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='95c786d19689ba5b2586c969db3609c04cc67137'
+          test "$(git rev-parse HEAD)" = "$expected"
+          tool_version="$(pnpm exec prettier --version)"
+          pnpm exec prettier --write README.md
+          test "$(git diff --name-only)" = README.md
+          git diff -- README.md > "$RUNNER_TEMP/README.prettier.diff"
+          test -s "$RUNNER_TEMP/README.prettier.diff"
+          {
+            printf 'candidate=%s\n' "$expected"
+            printf 'prettier=%s\n' "$tool_version"
+            printf 'changed_paths='; git diff --name-only
+          } > "$RUNNER_TEMP/README.prettier.receipt"
+
+      - name: Upload formatter diagnostic
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: provider-doc-prettier-diagnostic-95c786d1
+          path: |
+            ${{ runner.temp }}/README.prettier.diff
+            ${{ runner.temp }}/README.prettier.receipt
+          if-no-files-found: error
+          retention-days: 3
