@@ -85,10 +85,8 @@ jobs:
           fi
           candidate_tree="${base_tree}"
           base_sha="$(git rev-parse HEAD)"
-          materialize_ref=""
           materialized_sha=""
           materialized_tree=""
-          materialized_remote_readback=""
           export BASE_SHA="${base_sha}" BASE_TREE="${base_tree}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -214,10 +212,7 @@ jobs:
           . composition-receipt/manifest-summary.env
           staged_path_digest="${STAGED_AUTO_MERGE_DIGEST}"
           test -n "${staged_path_digest}"
-          materialize_ref="validation/upstream-preconflict-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           materialize_dir="${RUNNER_TEMP}/upstream-preconflict-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          remote_head="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
-          test "${remote_head}" = "${EXPECTED_HEAD}"
           git worktree add --detach --force "${materialize_dir}" "${base_sha}"
           cleanup_materialize() {
             git worktree remove --force "${materialize_dir}" || true
@@ -232,14 +227,7 @@ jobs:
           git -C "${materialize_dir}" commit -m "chore: materialize upstream pre-conflict base"
           materialized_sha="$(git -C "${materialize_dir}" rev-parse HEAD)"
           materialized_tree="$(git -C "${materialize_dir}" rev-parse HEAD^{tree})"
-          remote_head="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
-          test "${remote_head}" = "${EXPECTED_HEAD}"
-          test -z "$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" ls-remote origin "refs/heads/${materialize_ref}" | awk '{print $1}')"
-          git -C "${materialize_dir}" -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" \
-            push origin "HEAD:refs/heads/${materialize_ref}"
-          materialized_remote_readback="$(git -C "${materialize_dir}" -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" ls-remote origin "refs/heads/${materialize_ref}" | awk '{print $1}')"
-          test "${materialized_remote_readback}" = "${materialized_sha}"
-          export materialize_ref materialized_sha materialized_tree materialized_remote_readback
+          export materialized_sha materialized_tree
           python3 - <<'PY'
           import json, os
           path = "composition-receipt/receipt.json"
@@ -247,19 +235,17 @@ jobs:
               receipt = json.load(f)
           receipt.update({
               "base_sha": os.environ["BASE_SHA"],
-              "pre_conflict_materialized_ref": os.environ["materialize_ref"],
               "pre_conflict_materialized_sha": os.environ["materialized_sha"],
               "pre_conflict_materialized_tree": os.environ["materialized_tree"],
-              "pre_conflict_materialized_remote_readback": os.environ["materialized_remote_readback"],
+              "pre_conflict_materialized_transport": "github-actions-artifact",
           })
           with open(path, "w") as f:
               json.dump(receipt, f, indent=2, sort_keys=True)
               f.write("\n")
           PY
           {
-            echo "- pre-conflict materialized ref: ${materialize_ref}"
             echo "- pre-conflict materialized SHA/tree: ${materialized_sha} (${materialized_tree})"
-            echo "- pre-conflict materialized remote readback: ${materialized_remote_readback}"
+            echo "- pre-conflict materialized transport: github-actions-artifact"
           } >> "$GITHUB_STEP_SUMMARY"
           merge_sha=""
           merge_tree=""
@@ -282,7 +268,7 @@ jobs:
             test "${staged_path_digest}" = "${staged_auto_merge_digest}"
           fi
           export base_tree upstream_tree remote_readback merge_sha merge_tree candidate_tree status conflict
-          export materialize_ref materialized_sha materialized_tree materialized_remote_readback
+          export materialized_sha materialized_tree
           export manifest_total manifest_digest staged_auto_merge_total staged_auto_merge_digest staged_auto_merge_patch_digest
           python3 - <<'PY'
           import json, os
@@ -312,15 +298,114 @@ jobs:
               "staged_auto_merge_path_list": "composition-receipt/staged-auto-merge.txt" if os.environ["conflict"] == "true" else "",
               "staged_auto_merge_path_count": int(os.environ.get("staged_auto_merge_total", "0")),
               "staged_auto_merge_path_set_sha256": os.environ.get("staged_auto_merge_digest", ""),
-              "pre_conflict_materialized_ref": os.environ.get("materialize_ref", ""),
               "pre_conflict_materialized_sha": os.environ.get("materialized_sha", ""),
               "pre_conflict_materialized_tree": os.environ.get("materialized_tree", ""),
-              "pre_conflict_materialized_remote_readback": os.environ.get("materialized_remote_readback", ""),
+              "pre_conflict_materialized_transport": "github-actions-artifact" if os.environ.get("materialized_sha", "") else "",
           }
           with open("composition-receipt/receipt.json", "w") as f:
               json.dump(receipt, f, indent=2, sort_keys=True)
               f.write("\n")
           PY
+          if test -n "${materialized_sha}"; then
+            test -n "${materialized_tree}"
+            git bundle create composition-receipt/materialized.bundle \
+              "${materialized_sha}" "${base_sha}" "${UPSTREAM_SHA}"
+            git bundle verify composition-receipt/materialized.bundle
+            bundle_sha256="$(sha256sum composition-receipt/materialized.bundle | awk '{print $1}')"
+            receipt_sha256="$(sha256sum composition-receipt/receipt.json | awk '{print $1}')"
+            manifest_sha256=""
+            if test -f composition-receipt/conflict-manifest.json; then
+              manifest_sha256="$(sha256sum composition-receipt/conflict-manifest.json | awk '{print $1}')"
+            fi
+            staged_patch_sha256=""
+            if test -f composition-receipt/staged-auto-merge.patch; then
+              staged_patch_sha256="$(sha256sum composition-receipt/staged-auto-merge.patch | awk '{print $1}')"
+            fi
+            staged_paths_sha256=""
+            if test -f composition-receipt/staged-auto-merge.txt; then
+              staged_paths_sha256="$(sha256sum composition-receipt/staged-auto-merge.txt | awk '{print $1}')"
+            fi
+            export bundle_sha256 receipt_sha256 manifest_sha256 staged_patch_sha256 staged_paths_sha256
+            python3 - <<'PY'
+          import json, os
+          metadata = {
+              "schema": "hosted-materialized-provenance",
+              "version": 1,
+              "signed": False,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "workflow_head": os.environ["EXPECTED_HEAD"],
+              "base_sha": os.environ["BASE_SHA"],
+              "base_tree": os.environ["base_tree"],
+              "upstream_sha": os.environ["UPSTREAM_SHA"],
+              "upstream_tree": os.environ["upstream_tree"],
+              "materialized_sha": os.environ["materialized_sha"],
+              "materialized_tree": os.environ["materialized_tree"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "bundle": "composition-receipt/materialized.bundle",
+              "bundle_sha256": os.environ["bundle_sha256"],
+              "receipt": "composition-receipt/receipt.json",
+              "receipt_sha256": os.environ["receipt_sha256"],
+              "conflict_manifest": "composition-receipt/conflict-manifest.json" if os.environ.get("manifest_sha256") else "",
+              "conflict_manifest_sha256": os.environ.get("manifest_sha256", ""),
+              "staged_auto_merge_patch": "composition-receipt/staged-auto-merge.patch" if os.environ.get("staged_patch_sha256") else "",
+              "staged_auto_merge_patch_sha256": os.environ.get("staged_patch_sha256", ""),
+              "staged_auto_merge_path_list": "composition-receipt/staged-auto-merge.txt" if os.environ.get("staged_paths_sha256") else "",
+              "staged_auto_merge_path_list_sha256": os.environ.get("staged_paths_sha256", ""),
+              "consumer_contract": [
+                  "download the exact upstream-composition-${run_id}-${run_attempt} artifact",
+                  "verify run/attempt, repository, all SHA-256 digests, and materialized SHA/tree",
+                  "verify the Git bundle before importing its materialized commit into a hosted ref",
+                  "do not merge, resolve, or archive-extract locally",
+              ],
+          }
+          with open("composition-receipt/provenance.json", "w") as f:
+              json.dump(metadata, f, indent=2, sort_keys=True)
+              f.write("\n")
+          PY
+            test -s composition-receipt/materialized.bundle
+            test -s composition-receipt/provenance.json
+            python3 - <<'PY'
+          import hashlib, json, os
+          def digest(path):
+              h = hashlib.sha256()
+              with open(path, "rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+          with open("composition-receipt/provenance.json") as f:
+              metadata = json.load(f)
+          with open("composition-receipt/receipt.json") as f:
+              receipt = json.load(f)
+          required = {
+              "workflow_head": os.environ["EXPECTED_HEAD"],
+              "base_sha": os.environ["BASE_SHA"],
+              "base_tree": os.environ["base_tree"],
+              "upstream_sha": os.environ["UPSTREAM_SHA"],
+              "upstream_tree": os.environ["upstream_tree"],
+              "materialized_sha": os.environ["materialized_sha"],
+              "materialized_tree": os.environ["materialized_tree"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+          }
+          for key, value in required.items():
+              if metadata.get(key) != value:
+                  raise SystemExit(f"provenance mismatch: {key}")
+          if metadata.get("signed") is not False:
+              raise SystemExit("provenance must remain explicitly unsigned")
+          if metadata["bundle_sha256"] != digest(metadata["bundle"]):
+              raise SystemExit("materialized bundle digest mismatch")
+          if metadata["receipt_sha256"] != digest(metadata["receipt"]):
+              raise SystemExit("receipt digest mismatch")
+          if receipt.get("pre_conflict_materialized_sha") != metadata["materialized_sha"] or receipt.get("pre_conflict_materialized_tree") != metadata["materialized_tree"]:
+              raise SystemExit("receipt/materialized identity mismatch")
+          for key, path_key in (("conflict_manifest_sha256", "conflict_manifest"), ("staged_auto_merge_patch_sha256", "staged_auto_merge_patch"), ("staged_auto_merge_path_list_sha256", "staged_auto_merge_path_list")):
+              if metadata.get(path_key):
+                  if metadata.get(key) != digest(metadata[path_key]):
+                      raise SystemExit(f"evidence digest mismatch: {path_key}")
+          PY
+          fi
           {
             echo "### Hosted upstream composition"
             echo "- repository: ${GITHUB_REPOSITORY}"
