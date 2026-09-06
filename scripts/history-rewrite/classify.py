@@ -24,18 +24,62 @@ for rule in policy.get("rules", []):
 def git(*args):
     return subprocess.check_output(["git", "-C", str(REPO), *args], text=True, errors="replace")
 
+class GitCatFileBatch:
+    def __init__(self):
+        self.process = subprocess.Popen(
+            ["git", "-C", str(REPO), "cat-file", "--batch"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def read(self, identity):
+        self.process.stdin.write((identity + "\n").encode("ascii"))
+        self.process.stdin.flush()
+        header = self.process.stdout.readline()
+        if not header:
+            raise RuntimeError("git cat-file --batch terminated unexpectedly")
+        fields = header.rstrip(b"\n").split()
+        if len(fields) == 2 and fields[1] == b"missing":
+            return None
+        if len(fields) != 3:
+            raise RuntimeError("malformed git cat-file --batch response")
+        try:
+            size = int(fields[2])
+        except ValueError as exc:
+            raise RuntimeError("malformed git cat-file --batch object size") from exc
+        value = self.process.stdout.read(size)
+        if len(value) != size or self.process.stdout.read(1) != b"\n":
+            raise RuntimeError("truncated git cat-file --batch response")
+        return value
+
+    def close(self):
+        if self.process.stdin is not None:
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass
+        if self.process.poll() is None:
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait()
+        if self.process.stdout is not None:
+            self.process.stdout.close()
+
 rows = []
 total_matches = 0
-def scan(kind, identity, value, path=""):
-    global total_matches
+def match_metadata(kind, value):
+    metadata = []
     for pid, rx, classification, rationale, _priority, scopes in rewrite_patterns:
         if kind in scopes and rx.search(value):
-            proof = hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()
             count = len(rx.findall(value))
-            total_matches += count
-            rows.append((kind, identity, path, pid, classification, hashlib.sha256(rationale.encode()).hexdigest(), proof, str(count)))
-            if len(rows) > MAX_ROWS or total_matches > MAX_MATCHES:
-                raise SystemExit("classification row or occurrence bound exceeded; narrow the pattern family")
+            metadata.append((pid, classification, hashlib.sha256(rationale.encode()).hexdigest(), count))
     matches = [(pid, rx, classification, rationale, priority) for pid, rx, classification, rationale, priority, scopes in base_patterns if kind in scopes and rx.search(value)]
     if matches:
         top = max(x[4] for x in matches)
@@ -43,12 +87,22 @@ def scan(kind, identity, value, path=""):
         if len({x[2] for x in winners}) > 1:
             raise SystemExit("overlapping classification patterns require explicit priority")
         for pid, rx, classification, rationale, _ in winners:
-            proof = hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()
             count = len(rx.findall(value))
-            total_matches += count
-            rows.append((kind, identity, path, pid, classification, hashlib.sha256(rationale.encode()).hexdigest(), proof, str(count)))
-            if len(rows) > MAX_ROWS or total_matches > MAX_MATCHES:
-                raise SystemExit("classification row or occurrence bound exceeded; narrow the pattern family")
+            metadata.append((pid, classification, hashlib.sha256(rationale.encode()).hexdigest(), count))
+    proof = hashlib.sha256(value.encode("utf-8", "replace")).hexdigest() if metadata else ""
+    return proof, metadata
+
+def emit(kind, identity, path, proof, metadata):
+    global total_matches
+    for pid, classification, rationale_sha256, count in metadata:
+        total_matches += count
+        rows.append((kind, identity, path, pid, classification, rationale_sha256, proof, str(count)))
+        if len(rows) > MAX_ROWS or total_matches > MAX_MATCHES:
+            raise SystemExit("classification row or occurrence bound exceeded; narrow the pattern family")
+
+def scan(kind, identity, value, path=""):
+    proof, metadata = match_metadata(kind, value)
+    emit(kind, identity, path, proof, metadata)
 
 for identity in git("rev-list", "--all").splitlines():
     record = git("show", "-s", "--format=%H%x00%s%x00%b", identity)
@@ -57,22 +111,28 @@ for identity in git("rev-list", "--all").splitlines():
         scan("commit_subject", fields[0], fields[1])
         scan("commit_body", fields[0], fields[2])
 
-for commit in git("rev-list", "--all").splitlines():
-    for record in subprocess.check_output(["git", "-C", str(REPO), "ls-tree", "-r", "-z", commit], text=False).split(b"\0"):
-        if not record: continue
-        head, path_bytes = record.split(b"\t", 1)
-        mode, typ, identity = head.split()
-        path = path_bytes.decode("utf-8", "replace")
-        identity = identity.decode()
-        scan("path", identity, path, path)
-        if typ.decode() != "blob": continue
-        if subprocess.check_output(["git", "-C", str(REPO), "cat-file", "-t", identity], text=True).strip() != "blob":
-            continue
-        try:
-            blob = subprocess.check_output(["git", "-C", str(REPO), "cat-file", "-p", identity], text=False, stderr=subprocess.DEVNULL)
-        except subprocess.CalledProcessError:
-            continue
-        scan("blob", identity, blob.decode("utf-8", "replace"), path)
+blob_match_cache = {}
+batch = GitCatFileBatch()
+try:
+    for commit in git("rev-list", "--all").splitlines():
+        for record in subprocess.check_output(["git", "-C", str(REPO), "ls-tree", "-r", "-z", commit], text=False).split(b"\0"):
+            if not record: continue
+            head, path_bytes = record.split(b"\t", 1)
+            mode, typ, identity = head.split()
+            path = path_bytes.decode("utf-8", "replace")
+            identity = identity.decode()
+            scan("path", identity, path, path)
+            if typ.decode() != "blob": continue
+            cached = blob_match_cache.get(identity)
+            if cached is None:
+                blob = batch.read(identity)
+                if blob is None:
+                    continue
+                cached = match_metadata("blob", blob.decode("utf-8", "replace"))
+                blob_match_cache[identity] = cached
+            emit("blob", identity, path, cached[0], cached[1])
+finally:
+    batch.close()
 
 OUTPUT.parent.mkdir(parents=True, exist_ok=True)
 with OUTPUT.open("w", encoding="utf-8") as fh:
