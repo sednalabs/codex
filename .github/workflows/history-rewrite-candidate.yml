@@ -78,7 +78,7 @@ concurrency:
 jobs:
   candidate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 90
     env:
       SOURCE_SHA: ${{ github.event_name == 'push' && '809473034cf7d89d013fa106ed43ec2748f05013' || inputs.source_sha }}
       HARNESS_SHA: ${{ github.event_name == 'push' && github.sha || inputs.workflow_harness_sha }}
