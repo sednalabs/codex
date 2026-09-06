@@ -136,7 +136,7 @@ def publish_outputs(writer, metadata_temp, metadata_path):
     published = []
     try:
         for final in finals:
-            if final.exists():
+            if os.path.lexists(final):
                 fd, backup_name = tempfile.mkstemp(dir=final.parent, prefix=f".{final.name}.", suffix=".backup")
                 os.close(fd)
                 backup = Path(backup_name)
@@ -146,22 +146,39 @@ def publish_outputs(writer, metadata_temp, metadata_path):
         for final, temporary in zip(finals, staged):
             os.replace(temporary, final)
             published.append(final)
-    except BaseException:
+    except BaseException as original:
+        rollback_errors = []
         for final in published:
             try:
                 final.unlink()
             except FileNotFoundError:
-                pass
+                continue
+            except OSError as exc:
+                rollback_errors.append(("remove", final, exc))
         for final, backup in reversed(backups):
-            if backup.exists():
-                os.replace(backup, final)
+            if os.path.lexists(backup):
+                try:
+                    if os.path.lexists(final):
+                        os.unlink(final)
+                    os.replace(backup, final)
+                except OSError as exc:
+                    rollback_errors.append(("restore", backup, exc))
+        if rollback_errors:
+            evidence = "; ".join(f"{action} {path}: {error}" for action, path, error in rollback_errors)
+            raise RuntimeError(f"publication failed and rollback was incomplete: {evidence}") from original
         raise
     else:
+        cleanup_errors = []
         for _final, backup in backups:
             try:
                 backup.unlink()
             except FileNotFoundError:
-                pass
+                continue
+            except OSError as exc:
+                cleanup_errors.append((backup, exc))
+        if cleanup_errors:
+            evidence = "; ".join(f"remove backup {path}: {error}" for path, error in cleanup_errors)
+            raise RuntimeError(f"publication completed but backup cleanup failed: {evidence}")
         writer.committed = True
 
 row_count = 0
