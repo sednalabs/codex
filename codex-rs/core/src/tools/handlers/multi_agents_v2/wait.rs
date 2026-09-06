@@ -265,7 +265,8 @@ impl Handler {
                 native_event_wait,
                 lease_timer_enabled(native_event_wait, timeout_ms),
                 Instant::now() + Duration::from_millis(timeout_ms as u64),
-                #[cfg(test)] None,
+                #[cfg(test)]
+                /*lease_observer*/ None,
             )
             .await
         };
@@ -739,9 +740,12 @@ mod tests {
         let expiries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observer_expiries = expiries.clone();
         let wait = tokio::spawn(async move {
-            let (mut input_activity_rx, _) = session.input_queue.subscribe_activity(None).await;
+            let (mut input_activity_rx, _) = session
+                .input_queue
+                .subscribe_activity(/*turn_state*/ None)
+                .await;
             let mut final_statuses = HashMap::new();
-            let mut status_rxs = vec![(target_id, status_rx)];
+            let status_rxs = vec![(target_id, status_rx)];
             let mut observer = || {
                 observer_expiries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             };
@@ -752,11 +756,11 @@ mod tests {
                 &[target_id],
                 CompletionRule::new(ReturnWhen::Any),
                 &mut final_statuses,
-                false,
-                true,
-                true,
+                /*wake_on_mailbox*/ false,
+                /*native_event_wait*/ true,
+                /*lease_timer_enabled*/ true,
                 Instant::now() + Duration::from_millis(5),
-                Some(&mut observer),
+                /*lease_observer*/ Some(&mut observer),
             )
             .await
         });
@@ -772,7 +776,10 @@ mod tests {
             .send(AgentStatus::Shutdown)
             .expect("status receiver should remain active");
 
-        assert_eq!(wait.await.expect("wait task should join"), WakeSource::TargetCompletion);
+        assert_eq!(
+            wait.await.expect("wait task should join"),
+            WakeSource::TargetCompletion
+        );
         assert!(expiries.load(std::sync::atomic::Ordering::SeqCst) >= 2);
     }
 
