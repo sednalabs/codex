@@ -164,10 +164,17 @@ jobs:
                   raise SystemExit(f"selected ref {name} has non-full-SHA value")
           policy = json.load(open(os.environ["POLICY"], encoding="utf-8"))
           boundary = policy.get("backup_boundary", {})
-          if (os.environ["BACKUP_REFS_SHA256"], int(os.environ["BACKUP_REFS_COUNT"]), int(os.environ["BACKUP_REFS_BYTES"])) != (boundary.get("sha256"), boundary.get("count"), boundary.get("bytes")):
+          boundary_tuple = (boundary.get("sha256"), boundary.get("count"), boundary.get("bytes"))
+          selected_tuple = (os.environ["SELECTED_REFS_SHA256"], int(os.environ["SELECTED_REFS_COUNT"]), int(os.environ["SELECTED_REFS_BYTES"]))
+          if (os.environ["BACKUP_REFS_SHA256"], int(os.environ["BACKUP_REFS_COUNT"]), int(os.environ["BACKUP_REFS_BYTES"])) != boundary_tuple:
               raise SystemExit("caller backup boundary does not match checked-in boundary")
-          if os.environ["BACKUP_SNAPSHOT_REFRESHED"] != "false":
-              raise SystemExit("caller refresh override is not accepted; update the checked-in boundary")
+          if os.environ["MODE"] == "rewrite":
+              if os.environ["BACKUP_SNAPSHOT_REFRESHED"] != "true":
+                  raise SystemExit("rewrite requires a refreshed checked-in backup snapshot")
+              if selected_tuple != boundary_tuple:
+                  raise SystemExit("rewrite requires selected refs to equal the checked-in backup boundary")
+          elif os.environ["BACKUP_SNAPSHOT_REFRESHED"] != "false":
+              raise SystemExit("inventory does not accept a refreshed backup snapshot override")
           if policy.get("schema") != 1 or not isinstance(policy.get("rules"), list) or not isinstance(policy.get("ambiguous"), list):
               raise SystemExit("unsupported or malformed policy schema")
           if policy["ambiguous"]:
@@ -230,20 +237,36 @@ jobs:
               sha, ref = line.split("\t", 1)
               if ref.endswith("^{}"): continue
               live[ref] = sha
-          for ref, sha in snapshot.items():
-              if live.get(ref) != sha:
-                  raise SystemExit(f"selected ref missing or moved in live source: {ref}")
           canonical = json.dumps(live, sort_keys=True, separators=(",", ":")).encode()
-          residual = sorted(set(snapshot.items()) ^ set(live.items()))
+          reconciliation = {
+              "added": {ref: live[ref] for ref in sorted(set(live) - set(snapshot))},
+              "moved": {
+                  ref: {"snapshot": snapshot[ref], "live": live[ref]}
+                  for ref in sorted(set(snapshot) & set(live))
+                  if snapshot[ref] != live[ref]
+              },
+              "removed": {ref: snapshot[ref] for ref in sorted(set(snapshot) - set(live))},
+          }
+          reconciliation_raw = json.dumps(reconciliation, sort_keys=True, separators=(",", ":")).encode()
+          drift_count = sum(len(values) for values in reconciliation.values())
           with open("output/snapshot-live-reconciliation.txt", "w", encoding="utf-8") as fh:
               fh.write(f"snapshot_count={len(snapshot)}\\nsnapshot_bytes={os.environ['SELECTED_REFS_BYTES']}\\nsnapshot_sha256={os.environ['SELECTED_REFS_SHA256']}\\n")
-              fh.write(f"live_count={len(live)}\\nlive_sha256={hashlib.sha256(canonical).hexdigest()}\\nresidual_count={len(residual)}\\n")
+              fh.write(f"live_count={len(live)}\\nlive_sha256={hashlib.sha256(canonical).hexdigest()}\\n")
+              fh.write(f"reconciliation_count={drift_count}\\nreconciliation_sha256={hashlib.sha256(reconciliation_raw).hexdigest()}\\n")
+              for kind in ("added", "moved", "removed"):
+                  fh.write(f"{kind}_count={len(reconciliation[kind])}\\n")
               equal_backup = (os.environ["SELECTED_REFS_SHA256"] == os.environ["BACKUP_REFS_SHA256"] and len(snapshot) == int(os.environ["BACKUP_REFS_COUNT"]) and int(os.environ["SELECTED_REFS_BYTES"]) == int(os.environ["BACKUP_REFS_BYTES"]))
               fh.write(f"backup_count={os.environ['BACKUP_REFS_COUNT']}\\nbackup_bytes={os.environ['BACKUP_REFS_BYTES']}\\nbackup_sha256={os.environ['BACKUP_REFS_SHA256']}\\nselected_equals_backup={str(equal_backup).lower()}\\n")
               fh.write(f"selected_minus_backup_count={max(0, len(snapshot) - int(os.environ['BACKUP_REFS_COUNT']))}\\n")
-              if os.environ["MODE"] == "rewrite" and not equal_backup and os.environ["BACKUP_SNAPSHOT_REFRESHED"] != "true":
-                  raise SystemExit("rewrite requires a refreshed backup snapshot when selected refs differ")
-              for ref, sha in residual[:3]: fh.write(f"residual={ref} {sha}\\n")
+              for kind in ("added", "moved", "removed"):
+                  for ref in list(reconciliation[kind])[:3]:
+                      value = reconciliation[kind][ref]
+                      if isinstance(value, dict):
+                          fh.write(f"example_{kind}={ref} {value['snapshot']} {value['live']}\\n")
+                      else:
+                          fh.write(f"example_{kind}={ref} {value}\\n")
+          if os.environ["MODE"] == "rewrite" and drift_count:
+              raise SystemExit("rewrite requires the selected ref snapshot to remain unchanged")
           PY
 
       - name: Inventory subjects bodies paths and tree/blob identities
