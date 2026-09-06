@@ -203,7 +203,7 @@ jobs:
       version_display: ${{ steps.meta.outputs.version_display }}
       version_policy: ${{ steps.meta.outputs.version_policy }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -385,7 +385,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -781,7 +781,7 @@ jobs:
       TARGET: x86_64-apple-darwin
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -934,7 +934,7 @@ jobs:
     env:
       TARGET: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -1036,7 +1036,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -1124,7 +1124,7 @@ jobs:
     env:
       TARGET: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -1205,7 +1205,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -1284,7 +1284,7 @@ jobs:
     env:
       TARGET: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 

@@ -21,7 +21,7 @@ jobs:
       MODELS_JSON_PATH: codex-rs/models-manager/models.json
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Fetch upstream models.json
         id: upstream
@@ -97,7 +97,7 @@ jobs:
       MODELS_JSON_PATH: codex-rs/models-manager/models.json
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Download sync payload
         uses: actions/download-artifact@v8
