@@ -1555,7 +1555,7 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
     };
     for (tool_name, encrypted_parameter) in [
         ("spawn_agent", "message"),
-        ("send_message", "items"),
+        ("send_message", "message"),
         ("followup_task", "message"),
     ] {
         let Some(ResponsesApiNamespaceTool::Function(tool)) = namespace.tools.iter().find(|tool| {

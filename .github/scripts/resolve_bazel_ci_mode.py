@@ -18,17 +18,47 @@ def is_docs_only_path(path: str) -> bool:
     return path == "README.md" or path.startswith("docs/")
 
 
-def resolve_bazel_ci_mode(*, comparison_complete: bool, files: Any) -> dict[str, str]:
+OBSERVER_ONLY_PATHS = frozenset(
+    {
+        ".codex/skills/babysit-pr/scripts/gh_pr_watch.py",
+        ".codex/skills/babysit-pr/scripts/test_gh_pr_watch.py",
+        ".codex/skills/babysit-pr/scripts/github_app_installation_broker.py",
+        ".codex/skills/babysit-pr/scripts/test_github_app_installation_broker.py",
+        ".codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py",
+        ".codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py",
+        ".codex/skills/babysit-gh-workflow-run/scripts/gh_dispatch_and_watch.py",
+        ".codex/skills/babysit-gh-workflow-run/tests/test_gh_dispatch_and_watch.py",
+        ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py",
+        ".codex/skills/sedna/subagent-session-tail/tests/test_inspect_subagent_tail.py",
+    }
+)
+
+
+def resolve_bazel_ci_mode(
+    *, comparison_complete: bool, files: Any, statuses: Any = None
+) -> dict[str, str]:
     """Return GitHub-output-compatible mode values for the supplied comparison."""
-    files_are_docs_only = (
+    aligned_statuses = (
         comparison_complete
         and isinstance(files, list)
+        and isinstance(statuses, list)
         and bool(files)
-        and all(isinstance(path, str) and is_docs_only_path(path) for path in files)
+        and len(files) == len(statuses)
+        and all(isinstance(path, str) and isinstance(status, str) for path, status in zip(files, statuses))
+    )
+    if not aligned_statuses:
+        return {"mode": "full", "run_bazel": "true", "run_observer": "false"}
+
+    allowed_statuses = all(status in {"A", "M", "added", "modified"} for status in statuses)
+    files_are_docs_only = (
+        allowed_statuses and all(is_docs_only_path(path) for path in files)
     )
     if files_are_docs_only:
-        return {"mode": "docs_only", "run_bazel": "false"}
-    return {"mode": "full", "run_bazel": "true"}
+        return {"mode": "docs_only", "run_bazel": "false", "run_observer": "false"}
+    files_are_observer_only = allowed_statuses and all(path in OBSERVER_ONLY_PATHS for path in files)
+    if files_are_observer_only:
+        return {"mode": "observer_only", "run_bazel": "false", "run_observer": "true"}
+    return {"mode": "full", "run_bazel": "true", "run_observer": "false"}
 
 
 def parse_boolean(value: str) -> bool:
@@ -45,6 +75,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--comparison-complete", required=True)
     parser.add_argument("--files-json", required=True)
+    parser.add_argument("--statuses-json", required=True)
     parser.add_argument("--github-output", type=Path)
     args = parser.parse_args()
 
@@ -52,10 +83,15 @@ def main() -> int:
         files = json.loads(args.files_json)
     except json.JSONDecodeError:
         files = None
+    try:
+        statuses = json.loads(args.statuses_json)
+    except json.JSONDecodeError:
+        statuses = None
 
     outputs = resolve_bazel_ci_mode(
         comparison_complete=parse_boolean(args.comparison_complete),
         files=files,
+        statuses=statuses,
     )
     if args.github_output is not None:
         write_github_output(args.github_output, outputs)
