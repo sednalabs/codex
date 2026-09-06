@@ -98,7 +98,7 @@ jobs:
           workflow_tree = sys.argv[3]
           push = {
               "ref": "refs/heads/worker/w13825-sdk-build-consumer",
-              "before": "6e63f3e1822c81ac59832d3b41a2decae64994dd",
+              "before": "d66a32521e38a51d9a2917d8378795667606f48c",
               "after": workflow_sha,
               "created": False,
               "deleted": False,
@@ -185,6 +185,34 @@ jobs:
               --output-dir "${RUNNER_TEMP}/not-created" \
               --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
               --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+          run_uv_fixture() {
+            env \
+              GITHUB_EVENT_NAME=push \
+              GITHUB_REF="${validation_ref}" \
+              GITHUB_REPOSITORY=sednalabs/codex \
+              GITHUB_SHA="${EXPECTED_WORKFLOW_SHA}" \
+              GITHUB_EVENT_PATH="${fixture_dir}/push-valid.json" \
+              REQUESTED_WORKFLOW_SHA= \
+              REQUESTED_WORKFLOW_TREE= \
+              python3 "${helper}" \
+                --validate-uv-identity "$1" \
+                --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+                --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+          }
+          plain_uv="$(run_uv_fixture 'uv 0.11.3')"
+          test "$(jq -r '.status' <<<"${plain_uv}")" = ready
+          test "$(jq -r '.identity.name' <<<"${plain_uv}")" = uv
+          test "$(jq -r '.identity.version' <<<"${plain_uv}")" = 0.11.3
+          test "$(jq -r '.identity.target' <<<"${plain_uv}")" = null
+          suffixed_uv="$(run_uv_fixture 'uv 0.11.3 (x86_64-unknown-linux-gnu)')"
+          test "$(jq -r '.status' <<<"${suffixed_uv}")" = ready
+          test "$(jq -r '.identity.target' <<<"${suffixed_uv}")" = x86_64-unknown-linux-gnu
+          expect_failure "uv:version-mismatch" \
+            run_uv_fixture 'uv 0.11.4'
+          expect_failure "uv:name-mismatch" \
+            run_uv_fixture 'uvx 0.11.3'
+          expect_failure "uv:malformed-identity" \
+            run_uv_fixture 'uv 0.11.3 x86_64-unknown-linux-gnu'
           test -z "$(grep -nE 'patch_base64|disposition_json|git[[:space:]]+apply' "${helper}" || true)"
 
       - name: Verify exact accepted SDK artifact provider identity

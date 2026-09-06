@@ -29,7 +29,7 @@ REPOSITORY_ID = "1152496647"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-build-consumer"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "6e63f3e1822c81ac59832d3b41a2decae64994dd"
+PUSH_PREDECESSOR_SHA = "d66a32521e38a51d9a2917d8378795667606f48c"
 
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
@@ -174,6 +174,10 @@ BAZELISK_VERSION = "1.28.1"
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 PACKAGE_MANAGER_PATTERN = re.compile(r"pnpm@(\d+\.\d+\.\d+)\+sha512\.[A-Za-z0-9+/=]+")
 MINIMUM_VERSION_PATTERN = re.compile(r">=(\d+)(?:\.(\d+))?(?:\.(\d+))?")
+UV_IDENTITY_PATTERN = re.compile(
+    r"(?P<name>[a-z][a-z0-9-]{0,31}) (?P<version>\d+\.\d+\.\d+)"
+    r"(?: \((?P<target>[A-Za-z0-9][A-Za-z0-9_.+-]{0,63})\))?"
+)
 MAX_INPUT_TEXT_BYTES = 2 * 1024 * 1024
 
 EXECUTION_INPUT_MODES = {
@@ -718,6 +722,52 @@ def version_tuple(value: str, *, prefix: str = "") -> tuple[int, int, int] | Non
     return tuple(int(part) for part in match.groups())
 
 
+def parse_uv_identity(value: Any, expected_version: str) -> tuple[dict[str, Any], list[str]]:
+    observed = bounded_text(value, maximum=128)
+    match = UV_IDENTITY_PATTERN.fullmatch(observed or "")
+    if match is None:
+        return (
+            {
+                "status": "invalid",
+                "raw": observed,
+                "name": None,
+                "version": None,
+                "target": None,
+            },
+            ["uv:malformed-identity"],
+        )
+    name = match.group("name")
+    version = match.group("version")
+    errors: list[str] = []
+    if name != "uv":
+        errors.append("uv:name-mismatch")
+    if version != expected_version:
+        errors.append("uv:version-mismatch")
+    return (
+        {
+            "status": "observed" if not errors else "invalid",
+            "raw": observed,
+            "name": name,
+            "version": version,
+            "target": match.group("target"),
+        },
+        errors,
+    )
+
+
+def uv_identity_receipt(value: Any) -> dict[str, Any]:
+    identity, errors = parse_uv_identity(value, UV_VERSION)
+    return {
+        "schema": "uv-tool-identity",
+        "version": 1,
+        "expected_name": "uv",
+        "expected_version": UV_VERSION,
+        "identity": identity,
+        "errors": errors,
+        "status": "ready" if not errors else "invalid",
+    }
+
+
 def workspace_packages(text: str | None) -> list[str]:
     if text is None:
         return []
@@ -971,8 +1021,12 @@ def collect_tool_observations(
     root_pnpm_version = root_package["package_manager"].get("version")
     if observations["pnpm"].get("observed") != root_pnpm_version:
         errors.append("pnpm:root-package-version-mismatch")
-    if observations["uv"].get("observed") != f"uv {execution_inputs['uv_version']}":
-        errors.append("uv:version-mismatch")
+    uv_identity, uv_errors = parse_uv_identity(
+        observations["uv"].get("observed"),
+        execution_inputs["uv_version"],
+    )
+    observations["uv"]["identity"] = uv_identity
+    errors.extend(uv_errors)
     node_observed = observations["node"].get("observed")
     node_version = version_tuple(node_observed or "", prefix="v")
     python_version = version_tuple(observations["python"]["observed"])
@@ -1327,6 +1381,7 @@ def main() -> None:
     parser.add_argument("--expected-workflow-sha", required=True)
     parser.add_argument("--expected-workflow-tree", required=True)
     parser.add_argument("--validate-runtime-only", action="store_true")
+    parser.add_argument("--validate-uv-identity")
     parser.add_argument("--prepare-inputs-only", action="store_true")
     args = parser.parse_args()
 
@@ -1337,10 +1392,24 @@ def main() -> None:
             and args.artifact_dir is None
             and args.preflight_dir is None
             and args.output_dir is None
+            and args.validate_uv_identity is None
             and not args.prepare_inputs_only,
             "runtime-only validation does not accept consumer paths",
         )
         print(json.dumps(runtime, sort_keys=True))
+        return
+    if args.validate_uv_identity is not None:
+        require(
+            args.repo_root is None
+            and args.artifact_dir is None
+            and args.preflight_dir is None
+            and args.output_dir is None
+            and not args.prepare_inputs_only,
+            "uv identity validation does not accept consumer paths",
+        )
+        receipt = uv_identity_receipt(args.validate_uv_identity)
+        print(json.dumps(receipt, sort_keys=True))
+        require(receipt["status"] == "ready", f"uv identity invalid: {receipt['errors']}")
         return
     require(
         args.repo_root is not None and args.artifact_dir is not None,
