@@ -63,12 +63,40 @@ jobs:
           sort -u refs.txt -o refs.txt
           git init --bare source.git >/dev/null
           git -C source.git remote add source "https://github.com/$SOURCE_REPOSITORY.git"
-          git ls-remote --refs source 'refs/heads/*' 'refs/tags/*' | awk '{print $1" "$2}' | sort -k2 > remote-map.txt
+          if ! git ls-remote --refs source 'refs/heads/*' 'refs/tags/*' | awk '{print $1" "$2}' | sort -k2 > remote-map.txt; then
+            echo 'recovery snapshot: ls-remote failed' >&2
+            exit 1
+          fi
           awk '{print $2}' remote-map.txt | sort -u > remote-refs.txt
-          cmp -s refs.txt remote-refs.txt
-          while read -r oid ref; do git -C source.git fetch --no-tags source "+$ref:$ref"; test "$(git -C source.git rev-parse "$ref")" = "$oid"; done < remote-map.txt
+          if ! cmp -s refs.txt remote-refs.txt; then
+            echo 'recovery snapshot: selected and remote ref names differ' >&2
+            printf 'selected_count=%s remote_count=%s\n' "$(wc -l < refs.txt)" "$(wc -l < remote-refs.txt)" >&2
+            sha256sum refs.txt remote-refs.txt >&2
+            comm -3 refs.txt remote-refs.txt | head -n 5 >&2
+            exit 1
+          fi
+          while read -r oid ref; do
+            if ! git -C source.git fetch --no-tags source "+$ref:$ref"; then
+              printf 'recovery snapshot: fetch failed ref=%s stage=fetch\n' "$ref" >&2
+              exit 1
+            fi
+            if ! actual_oid=$(git -C source.git rev-parse "$ref"); then
+              printf 'recovery snapshot: oid readback failed ref=%s stage=rev-parse\n' "$ref" >&2
+              exit 1
+            fi
+            if [[ "$actual_oid" != "$oid" ]]; then
+              printf 'recovery snapshot: oid mismatch ref=%s stage=readback\n' "$ref" >&2
+              exit 1
+            fi
+          done < remote-map.txt
           git -C source.git for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags | sort -k2 > fetched-map.txt
-          cmp -s remote-map.txt fetched-map.txt
+          if ! cmp -s remote-map.txt fetched-map.txt; then
+            echo 'recovery snapshot: fetched and remote ref maps differ' >&2
+            printf 'remote_count=%s fetched_count=%s\n' "$(wc -l < remote-map.txt)" "$(wc -l < fetched-map.txt)" >&2
+            sha256sum remote-map.txt fetched-map.txt >&2
+            comm -3 <(awk '{print $2}' remote-map.txt) <(awk '{print $2}' fetched-map.txt) | head -n 5 >&2
+            exit 1
+          fi
           MAIN_OID=$(awk '$2 == "refs/heads/main" {print $1; found++} END {if (found != 1) exit 1}' remote-map.txt)
           [[ "$MAIN_OID" =~ ^[0-9a-fA-F]{40}$ ]]
           test "$CANDIDATE_SHA" = "$MAIN_OID"
