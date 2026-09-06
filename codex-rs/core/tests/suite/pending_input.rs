@@ -528,9 +528,7 @@ async fn native_wait_rearms_without_intermediate_provider_request() {
     .await;
     responses::mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| {
-            String::from_utf8_lossy(&request.body).contains(WAIT_CALL_ID)
-        },
+        |request: &wiremock::Request| String::from_utf8_lossy(&request.body).contains(WAIT_CALL_ID),
         responses::sse(vec![
             ev_response_created("native-resp-2"),
             ev_completed("native-resp-2"),
@@ -545,7 +543,9 @@ async fn native_wait_rearms_without_intermediate_provider_request() {
     .await;
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            let marker_count = String::from_utf8_lossy(&output.lock().expect("trace buffer")).matches(RENEWAL_MARKER).count();
+            let marker_count = String::from_utf8_lossy(&output.lock().expect("trace buffer"))
+                .matches(RENEWAL_MARKER)
+                .count();
             if marker_count >= 2 {
                 break;
             }
@@ -554,7 +554,14 @@ async fn native_wait_rearms_without_intermediate_provider_request() {
     })
     .await
     .expect("native wait should emit two causal renewal markers");
-    assert_eq!(server.received_requests().await.expect("mock requests").len(), 1);
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("mock requests")
+            .len(),
+        1
+    );
 
     target
         .thread
