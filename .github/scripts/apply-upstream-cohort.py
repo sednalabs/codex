@@ -21,6 +21,10 @@ from typing import Any
 
 
 REPOSITORY = "sednalabs/codex"
+WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
+VALIDATION_BRANCH = "worker/w13825-sdk-producer-validation-20260907"
+VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
+PUSH_PREDECESSOR_SHA = "ec9a28a8010cd080670288326fd3b4335e7f880f"
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
 GLOBAL_UPSTREAM_SHA = "008bbd5884122dc95aaece19ecfe0fc6a59dcf36"
@@ -165,12 +169,22 @@ def require_fields(actual: dict[str, Any], expected: dict[str, Any], label: str)
         require(str(actual.get(key)) == str(value), f"{label} mismatch: {key}")
 
 
+def load_event() -> dict[str, Any]:
+    event_path = pathlib.Path(os.environ.get("GITHUB_EVENT_PATH", ""))
+    require(event_path.is_absolute() and event_path.is_file(), "invalid producer event path")
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    require(isinstance(event, dict), "producer event must be an object")
+    return event
+
+
 def verify_runtime(expected_workflow_sha: str, expected_workflow_tree: str) -> dict[str, str]:
     require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY, "current repository mismatch")
-    require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch", "current event mismatch")
+    event_name = os.environ.get("GITHUB_EVENT_NAME")
+    require(event_name in {"push", "workflow_dispatch"}, "current event mismatch")
+    require(os.environ.get("GITHUB_REF") == VALIDATION_REF, "current ref mismatch")
     require(SHA_PATTERN.fullmatch(expected_workflow_sha) is not None, "invalid expected workflow SHA")
     require(SHA_PATTERN.fullmatch(expected_workflow_tree) is not None, "invalid expected workflow tree")
-    require(os.environ.get("GITHUB_SHA") == expected_workflow_sha, "workflow dispatch SHA mismatch")
+    require(os.environ.get("GITHUB_SHA") == expected_workflow_sha, "workflow run SHA mismatch")
     for name in (
         "GITHUB_REPOSITORY_ID",
         "GITHUB_RUN_ID",
@@ -178,6 +192,37 @@ def verify_runtime(expected_workflow_sha: str, expected_workflow_tree: str) -> d
         "GITHUB_WORKFLOW_REF",
     ):
         require(bool(os.environ.get(name)), f"missing producer identity: {name}")
+    expected_workflow_ref = f"{REPOSITORY}/{WORKFLOW_PATH}@{VALIDATION_REF}"
+    require(os.environ["GITHUB_WORKFLOW_REF"] == expected_workflow_ref, "producer workflow ref mismatch")
+
+    event = load_event()
+    repository = event.get("repository")
+    require(isinstance(repository, dict) and repository.get("full_name") == REPOSITORY, "event repository mismatch")
+    requested_sha = os.environ.get("REQUESTED_WORKFLOW_SHA", "")
+    requested_tree = os.environ.get("REQUESTED_WORKFLOW_TREE", "")
+    if event_name == "workflow_dispatch":
+        inputs = event.get("inputs")
+        require(
+            isinstance(inputs, dict) and set(inputs) == {"expected_workflow_sha", "expected_workflow_tree"},
+            "workflow dispatch input set mismatch",
+        )
+        require(inputs["expected_workflow_sha"] == requested_sha, "workflow dispatch SHA receipt mismatch")
+        require(inputs["expected_workflow_tree"] == requested_tree, "workflow dispatch tree receipt mismatch")
+        require(requested_sha == expected_workflow_sha, "workflow dispatch SHA does not match run checkout")
+        require(requested_tree == expected_workflow_tree, "workflow dispatch tree does not match run checkout")
+    else:
+        require(not requested_sha and not requested_tree, "push event must not supply workflow dispatch inputs")
+        require(event.get("ref") == VALIDATION_REF, "push event ref mismatch")
+        require(event.get("before") == PUSH_PREDECESSOR_SHA, "push predecessor mismatch")
+        require(event.get("after") == expected_workflow_sha, "push target mismatch")
+        require(event.get("forced") is False, "push event must not be forced")
+        require(event.get("deleted") is False, "push event must not delete ref")
+        require(event.get("created") is False, "push event must update the existing ref")
+        head_commit = event.get("head_commit")
+        require(
+            isinstance(head_commit, dict) and head_commit.get("id") == expected_workflow_sha,
+            "push head commit mismatch",
+        )
     return {
         "producer_repository": REPOSITORY,
         "producer_repository_id": os.environ["GITHUB_REPOSITORY_ID"],
@@ -360,14 +405,26 @@ def verify_emitted_bundle(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo-root", type=pathlib.Path, required=True)
-    parser.add_argument("--artifact-dir", type=pathlib.Path, required=True)
-    parser.add_argument("--output-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--repo-root", type=pathlib.Path)
+    parser.add_argument("--artifact-dir", type=pathlib.Path)
+    parser.add_argument("--output-dir", type=pathlib.Path)
     parser.add_argument("--expected-workflow-sha", required=True)
     parser.add_argument("--expected-workflow-tree", required=True)
+    parser.add_argument("--validate-runtime-only", action="store_true")
     args = parser.parse_args()
 
     runtime = verify_runtime(args.expected_workflow_sha, args.expected_workflow_tree)
+    if args.validate_runtime_only:
+        require(
+            args.repo_root is None and args.artifact_dir is None and args.output_dir is None,
+            "runtime-only validation does not accept producer paths",
+        )
+        print(json.dumps(runtime, sort_keys=True))
+        return
+    require(
+        args.repo_root is not None and args.artifact_dir is not None and args.output_dir is not None,
+        "producer paths are required",
+    )
     repo = absolute_argument(args.repo_root, "repo-root", must_exist=True)
     artifact = absolute_argument(args.artifact_dir, "artifact-dir", must_exist=True)
     output = absolute_argument(args.output_dir, "output-dir", must_exist=False)

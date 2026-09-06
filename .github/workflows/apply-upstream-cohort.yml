@@ -1,6 +1,9 @@
 name: Apply admitted upstream SDK cohort
 
 on:
+  push:
+    branches:
+      - worker/w13825-sdk-producer-validation-20260907
   workflow_dispatch:
     inputs:
       expected_workflow_sha:
@@ -20,8 +23,8 @@ jobs:
   apply-sdk-cohort:
     runs-on: ubuntu-latest
     env:
-      EXPECTED_WORKFLOW_SHA: ${{ inputs.expected_workflow_sha }}
-      EXPECTED_WORKFLOW_TREE: ${{ inputs.expected_workflow_tree }}
+      REQUESTED_WORKFLOW_SHA: ${{ inputs.expected_workflow_sha || '' }}
+      REQUESTED_WORKFLOW_TREE: ${{ inputs.expected_workflow_tree || '' }}
       SDK_SOURCE_SHA: bc8884624330b6e681cfa3ce5fc575ce8298ed1b
       SDK_SOURCE_TREE: 1e143e2bc5964a4308d9a6f36ca3e2af028e79e9
       SDK_SOURCE_BRANCH: worker/w13825-sdk-source-authoring-20260906
@@ -29,10 +32,28 @@ jobs:
       - name: Check out exact reviewed helper
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.expected_workflow_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
           path: helper-checkout
+
+      - name: Verify run event and exact helper checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          helper="${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py"
+          workflow_sha="$(git -C "${GITHUB_WORKSPACE}/helper-checkout" rev-parse HEAD)"
+          workflow_tree="$(git -C "${GITHUB_WORKSPACE}/helper-checkout" rev-parse HEAD^{tree})"
+          test "${GITHUB_SHA}" = "${workflow_sha}"
+          test -z "$(git -C "${GITHUB_WORKSPACE}/helper-checkout" status --porcelain)"
+          python3 "${helper}" \
+            --validate-runtime-only \
+            --expected-workflow-sha "${workflow_sha}" \
+            --expected-workflow-tree "${workflow_tree}"
+          {
+            printf 'EXPECTED_WORKFLOW_SHA=%s\n' "${workflow_sha}"
+            printf 'EXPECTED_WORKFLOW_TREE=%s\n' "${workflow_tree}"
+          } >>"${GITHUB_ENV}"
 
       - name: Check out exact SDK source candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,37 +63,18 @@ jobs:
           persist-credentials: false
           path: source-candidate
 
-      - name: Verify dispatch and checkout identities
+      - name: Verify exact SDK source checkout
         shell: bash
         run: |
           set -euo pipefail
-          test "${GITHUB_REPOSITORY}" = sednalabs/codex
-          test "${GITHUB_EVENT_NAME}" = workflow_dispatch
-          test "${GITHUB_SHA}" = "${EXPECTED_WORKFLOW_SHA}"
-          test "${EXPECTED_WORKFLOW_SHA}" = "$(git -C "${GITHUB_WORKSPACE}/helper-checkout" rev-parse HEAD)"
-          test "${EXPECTED_WORKFLOW_TREE}" = "$(git -C "${GITHUB_WORKSPACE}/helper-checkout" rev-parse HEAD^{tree})"
           test "${SDK_SOURCE_SHA}" = "$(git -C "${GITHUB_WORKSPACE}/source-candidate" rev-parse HEAD)"
           test "${SDK_SOURCE_TREE}" = "$(git -C "${GITHUB_WORKSPACE}/source-candidate" rev-parse HEAD^{tree})"
           test "5eb6ca6519b1a79e8997bf21321885de1fd9ed01" = "$(git -C "${GITHUB_WORKSPACE}/source-candidate" show -s --format=%P HEAD)"
           test -z "$(git -C "${GITHUB_WORKSPACE}/source-candidate" status --porcelain)"
           remote_source="$({ git -C "${GITHUB_WORKSPACE}/source-candidate" ls-remote --heads origin "refs/heads/${SDK_SOURCE_BRANCH}"; } | awk '{print $1}')"
           test "${remote_source}" = "${SDK_SOURCE_SHA}"
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
 
-          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
-          inputs = event.get("inputs")
-          if not isinstance(inputs, dict) or set(inputs) != {"expected_workflow_sha", "expected_workflow_tree"}:
-              raise SystemExit("workflow dispatch input set mismatch")
-          if inputs["expected_workflow_sha"] != os.environ["EXPECTED_WORKFLOW_SHA"]:
-              raise SystemExit("workflow dispatch SHA receipt mismatch")
-          if inputs["expected_workflow_tree"] != os.environ["EXPECTED_WORKFLOW_TREE"]:
-              raise SystemExit("workflow dispatch tree receipt mismatch")
-          PY
-
-      - name: Prove fail-closed input boundary
+      - name: Prove fail-closed event and input boundary
         shell: bash
         run: |
           set -euo pipefail
@@ -87,13 +89,111 @@ jobs:
             test "${status}" -ne 0
             grep -F -- "${expected}" <<<"${output}" >/dev/null
           }
+          runtime_args=(
+            python3 "${helper}"
+            --validate-runtime-only
+            --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}"
+            --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+          )
+          validation_ref=refs/heads/worker/w13825-sdk-producer-validation-20260907
+          fixture_dir="${RUNNER_TEMP}/producer-event-fixtures"
+          mkdir "${fixture_dir}"
+          python3 - "${fixture_dir}" "${EXPECTED_WORKFLOW_SHA}" "${EXPECTED_WORKFLOW_TREE}" <<'PY'
+          import copy
+          import json
+          import sys
+          from pathlib import Path
+
+          target = Path(sys.argv[1])
+          workflow_sha = sys.argv[2]
+          workflow_tree = sys.argv[3]
+          push = {
+              "ref": "refs/heads/worker/w13825-sdk-producer-validation-20260907",
+              "before": "ec9a28a8010cd080670288326fd3b4335e7f880f",
+              "after": workflow_sha,
+              "created": False,
+              "deleted": False,
+              "forced": False,
+              "head_commit": {"id": workflow_sha},
+              "repository": {"full_name": "sednalabs/codex"},
+          }
+          fixtures = {"push-valid": push}
+          mutations = {
+              "push-wrong-repository": ("repository", {"full_name": "wrong/repository"}),
+              "push-wrong-ref": ("ref", "refs/heads/main"),
+              "push-wrong-before": ("before", "0" * 40),
+              "push-wrong-after": ("after", "0" * 40),
+              "push-forced": ("forced", True),
+              "push-deleted": ("deleted", True),
+              "push-created": ("created", True),
+          }
+          for name, (key, value) in mutations.items():
+              fixture = copy.deepcopy(push)
+              fixture[key] = value
+              fixtures[name] = fixture
+          dispatch = {
+              "inputs": {
+                  "expected_workflow_sha": workflow_sha,
+                  "expected_workflow_tree": workflow_tree,
+              },
+              "repository": {"full_name": "sednalabs/codex"},
+          }
+          fixtures["dispatch-valid"] = dispatch
+          dispatch_wrong_sha = copy.deepcopy(dispatch)
+          dispatch_wrong_sha["inputs"]["expected_workflow_sha"] = "0" * 40
+          fixtures["dispatch-wrong-sha"] = dispatch_wrong_sha
+          for name, value in fixtures.items():
+              (target / f"{name}.json").write_text(json.dumps(value) + "\n", encoding="utf-8")
+          PY
+          run_push_fixture() {
+            env \
+              GITHUB_EVENT_NAME=push \
+              GITHUB_REF="${validation_ref}" \
+              GITHUB_REPOSITORY=sednalabs/codex \
+              GITHUB_SHA="${EXPECTED_WORKFLOW_SHA}" \
+              GITHUB_EVENT_PATH="$1" \
+              REQUESTED_WORKFLOW_SHA= \
+              REQUESTED_WORKFLOW_TREE= \
+              "${runtime_args[@]}"
+          }
+          run_dispatch_fixture() {
+            env \
+              GITHUB_EVENT_NAME=workflow_dispatch \
+              GITHUB_REF="${validation_ref}" \
+              GITHUB_REPOSITORY=sednalabs/codex \
+              GITHUB_SHA="${EXPECTED_WORKFLOW_SHA}" \
+              GITHUB_EVENT_PATH="$1" \
+              REQUESTED_WORKFLOW_SHA="$2" \
+              REQUESTED_WORKFLOW_TREE="${EXPECTED_WORKFLOW_TREE}" \
+              "${runtime_args[@]}"
+          }
           expect_failure "current repository mismatch" \
-            env GITHUB_REPOSITORY=wrong/repository python3 "${helper}" \
-              --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
-              --artifact-dir "${RUNNER_TEMP}/not-present" \
-              --output-dir "${RUNNER_TEMP}/not-created" \
-              --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
-              --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+            env GITHUB_REPOSITORY=wrong/repository "${runtime_args[@]}"
+          expect_failure "current event mismatch" \
+            env GITHUB_EVENT_NAME=pull_request "${runtime_args[@]}"
+          expect_failure "current ref mismatch" \
+            env GITHUB_REF=refs/heads/main "${runtime_args[@]}"
+          expect_failure "event repository mismatch" \
+            run_push_fixture "${fixture_dir}/push-wrong-repository.json"
+          expect_failure "push event ref mismatch" \
+            run_push_fixture "${fixture_dir}/push-wrong-ref.json"
+          expect_failure "push predecessor mismatch" \
+            run_push_fixture "${fixture_dir}/push-wrong-before.json"
+          expect_failure "push target mismatch" \
+            run_push_fixture "${fixture_dir}/push-wrong-after.json"
+          expect_failure "push event must not be forced" \
+            run_push_fixture "${fixture_dir}/push-forced.json"
+          expect_failure "push event must not delete ref" \
+            run_push_fixture "${fixture_dir}/push-deleted.json"
+          expect_failure "push event must update the existing ref" \
+            run_push_fixture "${fixture_dir}/push-created.json"
+          run_dispatch_fixture \
+            "${fixture_dir}/dispatch-valid.json" \
+            "${EXPECTED_WORKFLOW_SHA}" >/dev/null
+          expect_failure "workflow dispatch SHA does not match run checkout" \
+            run_dispatch_fixture \
+              "${fixture_dir}/dispatch-wrong-sha.json" \
+              0000000000000000000000000000000000000000
           expect_failure "repo-root must be absolute" \
             python3 "${helper}" \
               --repo-root source-candidate \
