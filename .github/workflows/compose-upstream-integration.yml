@@ -93,6 +93,9 @@ jobs:
             git status --short > composition-receipt/status.txt || true
             git diff --no-ext-diff > composition-receipt/diff.patch || true
             git diff --no-ext-diff --name-only --diff-filter=U > composition-receipt/unmerged.txt || true
+            git diff --cached --no-ext-diff --binary > composition-receipt/staged-auto-merge.patch || true
+            git diff --cached --no-ext-diff --name-only --diff-filter=ACDMRTUXB |
+              LC_ALL=C sort -u > composition-receipt/staged-auto-merge.txt || true
             python3 - <<'PY'
           if True:
             import hashlib, json, os
@@ -101,6 +104,12 @@ jobs:
                 paths = sorted({line.strip() for line in f if line.strip()})
             path_bytes = ("\n".join(paths) + ("\n" if paths else "")).encode()
             path_digest = hashlib.sha256(path_bytes).hexdigest()
+            with open("composition-receipt/staged-auto-merge.txt", "rb") as f:
+                staged_paths_bytes = f.read()
+            staged_paths = [line for line in staged_paths_bytes.splitlines() if line]
+            staged_path_digest = hashlib.sha256(staged_paths_bytes).hexdigest()
+            with open("composition-receipt/staged-auto-merge.patch", "rb") as f:
+                staged_patch_digest = hashlib.sha256(f.read()).hexdigest()
 
             def build_ci_path(p):
                 root_name = p.rsplit("/", 1)[-1]
@@ -169,6 +178,11 @@ jobs:
                 "upstream_tree": os.environ["UPSTREAM_TREE"],
                 "total_unmerged_path_count": len(paths),
                 "path_set_sha256": path_digest,
+                "staged_auto_merge_patch": "composition-receipt/staged-auto-merge.patch",
+                "staged_auto_merge_patch_sha256": staged_patch_digest,
+                "staged_auto_merge_path_list": "composition-receipt/staged-auto-merge.txt",
+                "staged_auto_merge_path_count": len(staged_paths),
+                "staged_auto_merge_path_set_sha256": staged_path_digest,
                 "cohorts": cohorts,
                 "resolution_notice": "No path-name-only merge decision; automatic ours/theirs resolution is not implied.",
             }
@@ -176,20 +190,32 @@ jobs:
                 json.dump(manifest, f, indent=2, sort_keys=True)
                 f.write("\n")
             with open("composition-receipt/manifest-summary.env", "w") as f:
-                f.write(f"MANIFEST_TOTAL={len(paths)}\nMANIFEST_DIGEST={path_digest}\n")
+                f.write(
+                    f"MANIFEST_TOTAL={len(paths)}\n"
+                    f"MANIFEST_DIGEST={path_digest}\n"
+                    f"STAGED_AUTO_MERGE_TOTAL={len(staged_paths)}\n"
+                    f"STAGED_AUTO_MERGE_DIGEST={staged_path_digest}\n"
+                    f"STAGED_AUTO_MERGE_PATCH_DIGEST={staged_patch_digest}\n"
+                )
           PY
           merge_sha=""
           merge_tree=""
           fi
           manifest_total=0
           manifest_digest=""
+          staged_auto_merge_total=0
+          staged_auto_merge_digest=""
+          staged_auto_merge_patch_digest=""
           if test -f composition-receipt/manifest-summary.env; then
             . composition-receipt/manifest-summary.env
             manifest_total="${MANIFEST_TOTAL}"
             manifest_digest="${MANIFEST_DIGEST}"
+            staged_auto_merge_total="${STAGED_AUTO_MERGE_TOTAL}"
+            staged_auto_merge_digest="${STAGED_AUTO_MERGE_DIGEST}"
+            staged_auto_merge_patch_digest="${STAGED_AUTO_MERGE_PATCH_DIGEST}"
           fi
           export base_tree upstream_tree remote_readback merge_sha merge_tree candidate_tree status conflict
-          export manifest_total manifest_digest
+          export manifest_total manifest_digest staged_auto_merge_total staged_auto_merge_digest staged_auto_merge_patch_digest
           python3 - <<'PY'
           import json, os
           receipt = {
@@ -212,6 +238,11 @@ jobs:
               "conflict_manifest": "composition-receipt/conflict-manifest.json" if os.environ["conflict"] == "true" else "",
               "total_unmerged_path_count": int(os.environ.get("manifest_total", "0")),
               "unmerged_path_set_sha256": os.environ.get("manifest_digest", ""),
+              "staged_auto_merge_patch": "composition-receipt/staged-auto-merge.patch" if os.environ["conflict"] == "true" else "",
+              "staged_auto_merge_patch_sha256": os.environ.get("staged_auto_merge_patch_digest", ""),
+              "staged_auto_merge_path_list": "composition-receipt/staged-auto-merge.txt" if os.environ["conflict"] == "true" else "",
+              "staged_auto_merge_path_count": int(os.environ.get("staged_auto_merge_total", "0")),
+              "staged_auto_merge_path_set_sha256": os.environ.get("staged_auto_merge_digest", ""),
           }
           with open("composition-receipt/receipt.json", "w") as f:
               json.dump(receipt, f, indent=2, sort_keys=True)
@@ -235,6 +266,11 @@ jobs:
               echo "- conflict manifest: composition-receipt/conflict-manifest.json"
               echo "- total unmerged paths: ${manifest_total}"
               echo "- overall path-set SHA-256: ${manifest_digest}"
+              echo "- staged auto-merge patch: composition-receipt/staged-auto-merge.patch"
+              echo "- staged auto-merge patch SHA-256: ${staged_auto_merge_patch_digest}"
+              echo "- staged auto-merge paths: composition-receipt/staged-auto-merge.txt"
+              echo "- staged auto-merge path count: ${staged_auto_merge_total}"
+              echo "- staged auto-merge path-set SHA-256: ${staged_auto_merge_digest}"
             else
               echo "- conflict manifest: not generated (clean merge)"
             fi
