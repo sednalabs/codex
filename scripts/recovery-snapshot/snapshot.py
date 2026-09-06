@@ -54,8 +54,9 @@ def package(ns: argparse.Namespace) -> None:
         for ref in refs:
             oid = run("git", "rev-parse", ref, cwd=bare).strip()
             typ = run("git", "cat-file", "-t", oid, cwd=bare).strip()
-            peeled = run("git", "rev-parse", f"{ref}^{{commit}}", cwd=bare).strip() if ref.startswith("refs/tags/") else None
-            item = {"ref": ref, "object": oid, "type": typ, "peeled_commit": peeled}
+            peeled = run("git", "rev-parse", f"{ref}^{{}}", cwd=bare).strip() if ref.startswith("refs/tags/") else None
+            peeled_type = run("git", "cat-file", "-t", peeled, cwd=bare).strip() if peeled else None
+            item = {"ref": ref, "object": oid, "type": typ, "peeled_object": peeled, "peeled_type": peeled_type}
             if ref.startswith("refs/tags/") and typ == "tag":
                 raw = run("git", "cat-file", "-p", oid, cwd=bare)
                 headers, _, message = raw.partition("\n\n")
@@ -65,7 +66,7 @@ def package(ns: argparse.Namespace) -> None:
                                  ("git", "verify-tag", "--raw", oid), cwd=bare,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0 else "unverified"})
             manifest.append(item)
-        (root / "ref-manifest.json").write_text(json.dumps({"refs": manifest}, sort_keys=True, indent=2) + "\n")
+        (root / "ref-manifest.json").write_text(json.dumps({"candidate_sha": ns.candidate_sha, "refs": manifest}, sort_keys=True, indent=2) + "\n")
         ref_manifest_hash = sha256(root / "ref-manifest.json")
         metadata = root / "github-metadata"
         metadata.mkdir()
@@ -98,17 +99,22 @@ def restore(ns: argparse.Namespace) -> None:
         manifest = json.loads((root / "ref-manifest.json").read_text())
         if not isinstance(manifest.get("refs"), list) or not manifest["refs"]:
             fail("ref manifest is invalid")
+        if manifest.get("candidate_sha") != ns.candidate_sha:
+            fail("candidate SHA does not match manifest")
         bundle = root / "refs.bundle"
         run("git", "bundle", "verify", str(bundle))
         restored = root / "restored.git"
         run("git", "clone", "--bare", str(bundle), str(restored))
+        run("git", "cat-file", "-e", f"{ns.candidate_sha}^{{commit}}", cwd=restored)
+        run("git", "fsck", "--full", "--no-reflogs", cwd=restored)
         for item in manifest["refs"]:
             actual = run("git", "rev-parse", item["ref"], cwd=restored).strip()
             if actual != item["object"]:
                 fail(f"restore ref mismatch for {item['ref']}")
             if item["type"] == "tag":
-                peeled = run("git", "rev-parse", f"{item['ref']}^{{commit}}", cwd=restored).strip()
-                if peeled != item["peeled_commit"]:
+                peeled = run("git", "rev-parse", f"{item['ref']}^{{}}", cwd=restored).strip()
+                peeled_type = run("git", "cat-file", "-t", peeled, cwd=restored).strip()
+                if peeled != item["peeled_object"] or peeled_type != item["peeled_type"]:
                     fail(f"restore peeled tag mismatch for {item['ref']}")
         for name in ("github-metadata/repository.json", "github-metadata/pull-requests.json", "github-metadata/releases.json", "github-metadata/rulesets.json", "github-metadata/default-branch.json", "exclusions.json"):
             json.loads((root / name).read_text())
@@ -118,7 +124,7 @@ def restore(ns: argparse.Namespace) -> None:
 parser = argparse.ArgumentParser()
 sub = parser.add_subparsers(dest="command", required=True)
 p = sub.add_parser("package"); p.add_argument("--repo-dir", required=True); p.add_argument("--refs-file", required=True); p.add_argument("--metadata-dir", required=True); p.add_argument("--candidate-sha", required=True); p.add_argument("--output", required=True); p.set_defaults(func=package)
-r = sub.add_parser("restore-test"); r.add_argument("--archive", required=True); r.set_defaults(func=restore)
+r = sub.add_parser("restore-test"); r.add_argument("--archive", required=True); r.add_argument("--candidate-sha", required=True); r.set_defaults(func=restore)
 ns = parser.parse_args()
 try: ns.func(ns)
 except subprocess.CalledProcessError as exc: fail(exc.stderr.strip() or "command failed")
