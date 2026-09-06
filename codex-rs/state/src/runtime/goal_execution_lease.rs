@@ -68,7 +68,7 @@ impl GoalExecutionLease {
 
         #[cfg(any(unix, windows))]
         {
-            let lock_path = lock_path(goals_db_path, thread_id);
+            let lock_path = lock_path(goals_db_path, thread_id)?;
             let file = OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -81,20 +81,24 @@ impl GoalExecutionLease {
                     _file: Arc::new(file),
                 }),
                 Err(std::fs::TryLockError::WouldBlock) => Err(GoalExecutionLeaseError::Busy),
-                Err(std::fs::TryLockError::Error(error)) => {
-                    Err(GoalExecutionLeaseError::Io(error))
-                }
+                Err(std::fs::TryLockError::Error(error)) => Err(GoalExecutionLeaseError::Io(error)),
             }
         }
     }
 }
 
-fn lock_path(goals_db_path: &Path, thread_id: ThreadId) -> PathBuf {
-    let file_name = goals_db_path
-        .file_name()
-        .expect("goals database path must have a file name")
-        .to_string_lossy();
-    goals_db_path.with_file_name(format!(".{file_name}.{thread_id}{LOCK_SUFFIX}"))
+fn lock_path(
+    goals_db_path: &Path,
+    thread_id: ThreadId,
+) -> Result<PathBuf, GoalExecutionLeaseError> {
+    let Some(file_name) = goals_db_path.file_name() else {
+        return Err(GoalExecutionLeaseError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "goals database path must have a file name",
+        )));
+    };
+    let file_name = file_name.to_string_lossy();
+    Ok(goals_db_path.with_file_name(format!(".{file_name}.{thread_id}{LOCK_SUFFIX}")))
 }
 
 #[cfg(test)]

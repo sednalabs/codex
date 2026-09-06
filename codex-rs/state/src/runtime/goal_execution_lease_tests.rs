@@ -32,10 +32,12 @@ fn protocol_marker(prefix: &str, thread_id: ThreadId) -> String {
 fn distinct_threads_have_independent_leases() {
     let directory = tempdir().expect("temporary directory");
     let database = goals_db(directory.path());
-    let first = GoalExecutionLease::acquire(&database, thread_id(1)).expect("first lease");
-    let second = GoalExecutionLease::acquire(&database, thread_id(2)).expect("second lease");
+    let first = GoalExecutionLease::acquire(&database, thread_id(/*value*/ 1))
+        .expect("first lease");
+    let second = GoalExecutionLease::acquire(&database, thread_id(/*value*/ 2))
+        .expect("second lease");
     assert!(matches!(
-        GoalExecutionLease::acquire(&database, thread_id(1)),
+        GoalExecutionLease::acquire(&database, thread_id(/*value*/ 1)),
         Err(GoalExecutionLeaseError::Busy)
     ));
     drop((first, second));
@@ -45,23 +47,26 @@ fn distinct_threads_have_independent_leases() {
 fn cloned_lease_retains_lock_until_final_drop() {
     let directory = tempdir().expect("temporary directory");
     let database = goals_db(directory.path());
-    let lease = GoalExecutionLease::acquire(&database, thread_id(3)).expect("lease");
+    let lease =
+        GoalExecutionLease::acquire(&database, thread_id(/*value*/ 3)).expect("lease");
     let clone = lease.clone();
     drop(lease);
     assert!(matches!(
-        GoalExecutionLease::acquire(&database, thread_id(3)),
+        GoalExecutionLease::acquire(&database, thread_id(/*value*/ 3)),
         Err(GoalExecutionLeaseError::Busy)
     ));
     drop(clone);
-    GoalExecutionLease::acquire(&database, thread_id(3)).expect("lease after final drop");
+    GoalExecutionLease::acquire(&database, thread_id(/*value*/ 3))
+        .expect("lease after final drop");
 }
 
 #[test]
 fn lock_file_is_stable_and_not_unlinked() {
     let directory = tempdir().expect("temporary directory");
     let database = goals_db(directory.path());
-    let lease = GoalExecutionLease::acquire(&database, thread_id(4)).expect("lease");
-    let lock = lock_path(&database, thread_id(4));
+    let lease =
+        GoalExecutionLease::acquire(&database, thread_id(/*value*/ 4)).expect("lease");
+    let lock = lock_path(&database, thread_id(/*value*/ 4)).expect("lock path");
     assert!(lock.exists());
     drop(lease);
     assert!(lock.exists());
@@ -71,15 +76,16 @@ fn lock_file_is_stable_and_not_unlinked() {
 fn cross_process_contention_uses_native_lock() {
     if std::env::var_os("CODEX_GOAL_LEASE_CHILD").is_some() {
         let database = PathBuf::from(std::env::var_os("CODEX_GOAL_LEASE_DB").expect("database"));
-        let lease = GoalExecutionLease::acquire(&database, thread_id(5)).expect("child lease");
-        println!("{}", protocol_marker("READY", thread_id(5)));
+        let lease = GoalExecutionLease::acquire(&database, thread_id(/*value*/ 5))
+            .expect("child lease");
+        println!("{}", protocol_marker("READY", thread_id(/*value*/ 5)));
         std::io::stdout().flush().expect("flush ready signal");
         let mut release = [0_u8; 1];
         std::io::stdin()
             .read_exact(&mut release)
             .expect("read release signal");
         drop(lease);
-        println!("{}", protocol_marker("RELEASED", thread_id(5)));
+        println!("{}", protocol_marker("RELEASED", thread_id(/*value*/ 5)));
         std::io::stdout().flush().expect("flush release signal");
         return;
     }
@@ -98,8 +104,8 @@ fn cross_process_contention_uses_native_lock() {
         .expect("spawn child");
     let mut child_stdin = child.stdin.take().expect("child stdin");
     let child_stdout = child.stdout.take().expect("child stdout");
-    let ready_marker = protocol_marker("READY", thread_id(5));
-    let released_marker = protocol_marker("RELEASED", thread_id(5));
+    let ready_marker = protocol_marker("READY", thread_id(/*value*/ 5));
+    let released_marker = protocol_marker("RELEASED", thread_id(/*value*/ 5));
     let (signal_sender, signal_receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut child_stdout = BufReader::new(child_stdout);
@@ -137,7 +143,7 @@ fn cross_process_contention_uses_native_lock() {
         panic!("child exited or timed out before READY");
     }
     let busy = matches!(
-        GoalExecutionLease::acquire(&database, thread_id(5)),
+        GoalExecutionLease::acquire(&database, thread_id(/*value*/ 5)),
         Err(GoalExecutionLeaseError::Busy)
     );
     let release_sent = child_stdin
@@ -163,7 +169,8 @@ fn cross_process_contention_uses_native_lock() {
     }
     assert!(child.wait().expect("wait child").success());
     assert!(busy, "parent should observe the child-held lease as busy");
-    GoalExecutionLease::acquire(&database, thread_id(5)).expect("lease after child release");
+    GoalExecutionLease::acquire(&database, thread_id(/*value*/ 5))
+        .expect("lease after child release");
 }
 
 #[test]
