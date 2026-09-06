@@ -75,6 +75,18 @@ pub(crate) fn emit_agent_communication_send(
     );
 }
 
+pub(crate) fn emit_agent_communication_receive(communication_id: &str) {
+    tracing::info!(
+        target: AGENT_COMMUNICATION_TARGET,
+        {
+            event.name = "codex.agent_communication",
+            communication_id,
+            state = "receive",
+        },
+        "agent communication"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,16 +106,4 @@ mod tests {
         assert_eq!(telemetry_content(&communication), "[encrypted]");
         assert!(!telemetry_content(&communication).contains(ciphertext));
     }
-}
-
-pub(crate) fn emit_agent_communication_receive(communication_id: &str) {
-    tracing::info!(
-        target: AGENT_COMMUNICATION_TARGET,
-        {
-            event.name = "codex.agent_communication",
-            communication_id,
-            state = "receive",
-        },
-        "agent communication"
-    );
 }
