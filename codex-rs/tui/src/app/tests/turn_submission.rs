@@ -26,6 +26,7 @@ async fn worktree_creation_event_requires_feature() -> Result<()> {
         },
     )
     .await?;
+    drain_managed_worktree_start(&mut app, &mut app_server).await;
     let message = std::iter::from_fn(|| events.try_recv().ok())
         .find_map(|event| match event {
             AppEvent::InsertHistoryCell(cell) => {
@@ -72,6 +73,7 @@ async fn worktree_creation_rejects_untrusted_source_before_allocation() -> Resul
             AppEvent::StartManagedWorktree { mode, name: None },
         )
         .await?;
+        drain_managed_worktree_start(&mut app, &mut app_server).await;
         let message = std::iter::from_fn(|| events.try_recv().ok())
             .find_map(|event| match event {
                 AppEvent::InsertHistoryCell(cell) => {
@@ -118,6 +120,7 @@ async fn worktree_creation_rejects_running_agent_before_allocation() -> Result<(
         },
     )
     .await?;
+    drain_managed_worktree_start(&mut app, &mut server).await;
 
     assert!(!app.pending_managed_worktree_creation);
     assert!(!home.path().join("worktrees").exists());
@@ -152,6 +155,7 @@ async fn turn_start_failure_is_shown_without_exiting() -> Result<()> {
     let op = next_user_turn_op(&mut op_rx);
     while let Ok(event) = app_event_rx.try_recv() {
         app.handle_event(&mut tui, &mut app_server, event).await?;
+        drain_managed_worktree_start(&mut app, &mut app_server).await;
     }
 
     let control = app

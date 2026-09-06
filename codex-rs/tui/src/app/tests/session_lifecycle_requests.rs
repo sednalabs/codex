@@ -47,12 +47,32 @@ async fn complete_managed_worktree_creation(
     server: &mut AppServerSession,
     events: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
 ) -> Result<()> {
+    drain_managed_worktree_start(app, server).await;
+    assert!(
+        app.pending_managed_worktree_creation,
+        "checkout task started"
+    );
     loop {
         let event = tokio::time::timeout(Duration::from_secs(15), events.recv())
             .await?
             .ok_or_else(|| color_eyre::eyre::eyre!("worktree creation event channel closed"))?;
         if matches!(event, AppEvent::ManagedWorktreeCreated(_)) {
             app.handle_event(tui, server, event).await?;
+            if let Some(created) = app.pending_managed_worktree_created.take() {
+                app.finish_managed_worktree(*created).await;
+            }
+            if let Some(transition) = app.pending_managed_worktree_transition.take() {
+                assert!(app.pending_managed_worktree_attach.is_none());
+                if let Err(error) = app
+                    .switch_to_managed_worktree(tui, server, *transition)
+                    .await
+                {
+                    app.chat_widget.add_error_message(error.to_string());
+                }
+                if let Some(attach) = app.pending_managed_worktree_attach.take() {
+                    app.attach_working_directory(tui, server, *attach).await;
+                }
+            }
             return Ok(());
         }
     }
@@ -3061,6 +3081,7 @@ terminal_visualization_instructions = true
     )
     .await?;
     assert_eq!(app.chat_widget.thread_id(), Some(original));
+    drain_managed_worktree_start(&mut app, &mut server).await;
     assert!(app.pending_managed_worktree_creation);
     let created = loop {
         let event = tokio::time::timeout(Duration::from_secs(15), events.recv())
@@ -3091,6 +3112,11 @@ terminal_visualization_instructions = true
         AppEvent::ManagedWorktreeCreated(created),
     )
     .await?;
+    let created = app
+        .pending_managed_worktree_created
+        .take()
+        .expect("deferred checkout completion");
+    app.finish_managed_worktree(*created).await;
     app.primary_thread_id = Some(original);
     assert_eq!(app.chat_widget.thread_id(), Some(original));
     assert!(!app.pending_managed_worktree_creation);
@@ -3261,6 +3287,7 @@ terminal_visualization_instructions = true
             AppEvent::StartManagedWorktree { mode, name: None },
         )
         .await?;
+        drain_managed_worktree_start(&mut app, &mut server).await;
         let is_new = mode == ManagedWorktreeMode::New;
         if is_new {
             complete_managed_worktree_creation(&mut app, &mut tui, &mut server, &mut events)

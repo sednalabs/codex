@@ -63,6 +63,12 @@ use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
 use crate::app_event::HistoryBatchEntryResponse;
+
+async fn drain_managed_worktree_start(app: &mut App, server: &mut AppServerSession) {
+    if let Some((mode, name)) = app.pending_start_managed_worktree.take() {
+        app.start_managed_worktree(server, mode, name).await;
+    }
+}
 use codex_utils_absolute_path::test_support::PathExt;
 
 use crate::chatwidget::ChatWidgetInit;
@@ -5540,6 +5546,10 @@ async fn make_test_app() -> App {
         dynamic_tool_tasks: HashMap::new(),
         pending_startup_thread_start: false,
         pending_managed_worktree_creation: false,
+        pending_start_managed_worktree: None,
+        pending_managed_worktree_created: None,
+        pending_managed_worktree_transition: None,
+        pending_managed_worktree_attach: None,
         startup_protected_input_boundary: false,
         startup_pending_protected_request: false,
         rate_limit_hard_stop_generation: 0,
@@ -5627,6 +5637,10 @@ pub(super) async fn make_test_app_with_channels() -> (
             dynamic_tool_tasks: HashMap::new(),
             pending_startup_thread_start: false,
             pending_managed_worktree_creation: false,
+            pending_start_managed_worktree: None,
+            pending_managed_worktree_created: None,
+            pending_managed_worktree_transition: None,
+            pending_managed_worktree_attach: None,
             startup_protected_input_boundary: false,
             startup_pending_protected_request: false,
             rate_limit_hard_stop_generation: 0,

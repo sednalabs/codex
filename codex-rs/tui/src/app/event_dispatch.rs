@@ -92,10 +92,15 @@ impl App {
                 }
             }
             AppEvent::StartManagedWorktree { mode, name } => {
-                self.start_managed_worktree(app_server, mode, name).await;
+                if self.pending_start_managed_worktree.is_some() {
+                    self.chat_widget
+                        .add_error_message("A worktree is already being created.".to_string());
+                } else {
+                    self.pending_start_managed_worktree = Some((mode, name));
+                }
             }
             AppEvent::ManagedWorktreeCreated(created) => {
-                self.finish_managed_worktree(tui, app_server, *created).await;
+                self.pending_managed_worktree_created = Some(created);
             }
             AppEvent::BrowseManagedWorktrees => {
                 if let Some(request) = self.chat_widget.request_managed_worktrees() {

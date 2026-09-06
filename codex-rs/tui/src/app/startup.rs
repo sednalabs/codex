@@ -690,7 +690,11 @@ See the Codex keymap documentation for supported actions and examples."
             dynamic_tool_status_updates,
             dynamic_tool_tasks: HashMap::new(),
             pending_startup_thread_start,
+            pending_start_managed_worktree: None,
             pending_managed_worktree_creation: false,
+            pending_managed_worktree_created: None,
+            pending_managed_worktree_transition: None,
+            pending_managed_worktree_attach: None,
             startup_protected_input_boundary: true,
             startup_pending_protected_request: false,
             rate_limit_hard_stop_generation: 0,
@@ -884,6 +888,28 @@ See the Codex keymap documentation for supported actions and examples."
             Ok(exit_reason)
         } else {
             loop {
+                if let Some((mode, name)) = app.pending_start_managed_worktree.take() {
+                    Box::pin(app.start_managed_worktree(&mut app_server, mode, name)).await;
+                    continue;
+                }
+                // Complete the fork and widget attachment on separate fresh loop iterations.
+                if let Some(attach) = app.pending_managed_worktree_attach.take() {
+                    Box::pin(app.attach_working_directory(tui, &mut app_server, *attach)).await;
+                    continue;
+                }
+                if let Some(transition) = app.pending_managed_worktree_transition.take() {
+                    if let Err(error) =
+                        Box::pin(app.switch_to_managed_worktree(tui, &mut app_server, *transition))
+                            .await
+                    {
+                        app.chat_widget.add_error_message(error.to_string());
+                    }
+                    continue;
+                }
+                if let Some(created) = app.pending_managed_worktree_created.take() {
+                    Box::pin(app.finish_managed_worktree(*created)).await;
+                    continue;
+                }
                 if app.reconnect.offline && !app.reconnect.failed && reconnect.is_none() {
                     reconnect = Some(Box::pin(reconnect::reconnect(
                         app.app_server_target.clone(),

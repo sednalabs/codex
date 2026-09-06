@@ -1,12 +1,29 @@
-//! Local directory transitions with fresh or preserved conversation history.
+//! Local directory transitions and managed worktrees with fresh or preserved conversation history.
+//! Managed transitions and widget attachment run separately at the top of the event loop.
 
 use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
+use crate::app_event::ManagedWorktreeTransition;
 use crate::app_server_session::ForkGoalContinuation::DeferUntilNextTurn;
 use crate::history_cell::McpInventoryLoadingCell as LoadingCell;
 use crate::terminal_visualization_instructions::with_terminal_visualization_instructions;
 use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsListResponse as ListResponse;
+
+enum DestinationConfig {
+    Load,
+    Prepared(Box<Config>),
+}
+
+/// Session and configuration prepared before the event loop attaches a managed checkout.
+pub(super) struct ManagedWorktreeAttach {
+    started: AppServerStartedThread,
+    config: Box<Config>,
+    local_settings: crate::local_settings::LocalSettings,
+    keymap: RuntimeKeymap,
+    cwd: AbsolutePathBuf,
+    name_error: Option<String>,
+}
 
 impl App {
     pub(super) fn working_directory_error(&mut self, message: impl Into<String>) {
@@ -17,12 +34,43 @@ impl App {
         &mut self,
         tui: &mut tui::Tui,
         app_server: &mut AppServerSession,
-        manager: codex_worktree::WorktreeManager,
-        checkout: codex_worktree::ManagedWorktree,
-        mode: crate::app_event::ManagedWorktreeMode,
-        name: Option<String>,
+        transition: ManagedWorktreeTransition,
     ) -> Result<()> {
-        let previous_thread_id = self.chat_widget.thread_id();
+        let source_thread_id = transition.source_thread_id;
+        let source_cwd = &transition.source_cwd;
+        let checkout = &transition.checkout;
+        let mode = transition.mode;
+        if self.reconnect.offline
+            || (mode == crate::app_event::ManagedWorktreeMode::Fork
+                && self.chat_widget.has_misalignment_policy_violation())
+        {
+            self.chat_widget.add_error_message(format!(
+                "Cannot continue into the new worktree while the session is offline or blocked by a policy warning. An unused checkout was created at {}; remove it with `git worktree remove <checkout-path>` from the source repository.",
+                checkout.root.display()
+            ));
+            return Ok(());
+        }
+        if self.primary_thread_id != Some(source_thread_id)
+            || self.config.cwd.as_path() != source_cwd.as_path()
+            || !self
+                .chat_widget
+                .can_change_working_directory(source_thread_id)
+        {
+            self.chat_widget.add_error_message(format!(
+                "The source conversation changed while creating the worktree. An unused checkout was created at {}; remove it with `git worktree remove <checkout-path>` from the source repository.",
+                checkout.root.display()
+            ));
+            return Ok(());
+        }
+        let ManagedWorktreeTransition {
+            manager,
+            checkout,
+            config,
+            mode,
+            name,
+            ..
+        } = transition;
+        let checkout_root = checkout.root.clone();
         let cwd = AbsolutePathBuf::from_absolute_path(checkout.cwd.clone())
             .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
         self.change_working_directory_with_managed(
@@ -30,11 +78,13 @@ impl App {
             app_server,
             cwd,
             Some((manager, checkout, mode, name)),
+            DestinationConfig::Prepared(config),
         )
         .await;
-        if self.chat_widget.thread_id() == previous_thread_id {
+        if self.pending_managed_worktree_attach.is_none() {
             return Err(color_eyre::eyre::eyre!(
-                "Could not start a session in the managed worktree"
+                "Could not start a session in the managed worktree. A checkout was retained at {}; remove it with `git worktree remove <checkout-path>` from the source repository if it is no longer needed.",
+                checkout_root.display()
             ));
         }
         Ok(())
@@ -47,7 +97,11 @@ impl App {
         cwd: AbsolutePathBuf,
     ) {
         self.change_working_directory_with_managed(
-            tui, app_server, cwd, /*managed_worktree*/ None,
+            tui,
+            app_server,
+            cwd,
+            /*managed_worktree*/ None,
+            DestinationConfig::Load,
         )
         .await;
     }
@@ -63,6 +117,7 @@ impl App {
             crate::app_event::ManagedWorktreeMode,
             Option<String>,
         )>,
+        destination_config: DestinationConfig,
     ) {
         if self.config.ephemeral || !cwd.as_path().is_dir() {
             return self.working_directory_error("This task cannot be safely replaced.");
@@ -94,9 +149,14 @@ impl App {
             .iter()
             .filter_map(|(id, agent)| (!agent.is_closed).then_some(*id))
             .collect();
-        let mut config = match self.rebuild_config_for_cwd(cwd.to_path_buf()).await {
-            Ok(config) => config,
-            Err(err) => return self.working_directory_error(format!("Cannot load {cwd:?}: {err}")),
+        let mut config = match destination_config {
+            DestinationConfig::Prepared(config) => *config,
+            DestinationConfig::Load => match self.rebuild_config_for_cwd(cwd.to_path_buf()).await {
+                Ok(config) => config,
+                Err(err) => {
+                    return self.working_directory_error(format!("Cannot load {cwd:?}: {err}"));
+                }
+            },
         };
         if config.active_project.trust_level.is_none() {
             return self.working_directory_error("This directory is not trusted; run Codex there.");
@@ -301,8 +361,40 @@ impl App {
                 tracing::warn!("failed to unsubscribe tracked thread {tracked_id}: {error}");
             }
         }
+        let attach = ManagedWorktreeAttach {
+            started: transitioned,
+            config: Box::new(config),
+            local_settings,
+            keymap,
+            cwd,
+            name_error,
+        };
+        if managed_worktree.is_some() {
+            // Let the large synchronous ChatWidget constructor run on a fresh event-loop stack.
+            // Keep the old config paired with the old widget until the continuation runs.
+            self.startup_protected_input_boundary = true;
+            self.pending_managed_worktree_attach = Some(Box::new(attach));
+        } else {
+            self.attach_working_directory(tui, app_server, attach).await;
+        }
+    }
+
+    pub(super) async fn attach_working_directory(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        attach: ManagedWorktreeAttach,
+    ) {
+        let ManagedWorktreeAttach {
+            started,
+            config,
+            local_settings,
+            keymap,
+            cwd,
+            name_error,
+        } = attach;
         self.local_settings = local_settings;
-        self.config = config;
+        self.config = *config;
         self.file_search
             .update_search_dir(self.config.cwd.to_path_buf());
         let notify = &self.local_settings.tui.notification_settings;
@@ -310,9 +402,9 @@ impl App {
         if let Err(error) = tui.clear_ambient_pet_image() {
             tracing::warn!(%error, "failed to clear ambient pet image");
         }
-        let attach = App::replace_chat_widget_with_app_server_thread;
+        let attach_widget = App::replace_chat_widget_with_app_server_thread;
         let (lineage, message) = (ThreadAttachPresentation::SessionLineage, None);
-        if let Err(error) = attach(self, tui, transitioned, lineage, message).await {
+        if let Err(error) = attach_widget(self, tui, started, lineage, message).await {
             return self.working_directory_error(format!("Could not restore session: {error}"));
         }
         if let Some(error) = name_error {

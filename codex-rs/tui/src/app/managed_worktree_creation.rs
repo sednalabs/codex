@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::app_event::ManagedWorktreeCreated;
+use crate::app_event::ManagedWorktreeTransition;
 use crate::history_cell::McpInventoryLoadingCell as LoadingCell;
 use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsListResponse as ListResponse;
@@ -186,12 +187,7 @@ impl App {
         }
     }
 
-    pub(super) async fn finish_managed_worktree(
-        &mut self,
-        tui: &mut tui::Tui,
-        app_server: &mut AppServerSession,
-        created: ManagedWorktreeCreated,
-    ) {
+    pub(super) async fn finish_managed_worktree(&mut self, created: ManagedWorktreeCreated) {
         self.pending_managed_worktree_creation = false;
         let (manager, checkout) = match created.result {
             Ok(created) => created,
@@ -230,19 +226,30 @@ impl App {
                 );
             }
         }
-        if let Err(error) = self
-            .switch_to_managed_worktree(
-                tui,
-                app_server,
-                manager,
-                checkout.clone(),
-                created.mode,
-                created.name,
-            )
-            .await
-        {
-            self.retained_worktree_error(&checkout, error.to_string());
-        }
+        let config = match self.rebuild_config_for_cwd(checkout.cwd.clone()).await {
+            Ok(config) if config.active_project.trust_level.is_some() => config,
+            Ok(_) => {
+                return self.retained_worktree_error(
+                    &checkout,
+                    "The new worktree is not trusted; run Codex there.",
+                );
+            }
+            Err(error) => {
+                return self.retained_worktree_error(
+                    &checkout,
+                    format!("Cannot load the new worktree configuration: {error}"),
+                );
+            }
+        };
+        self.pending_managed_worktree_transition = Some(Box::new(ManagedWorktreeTransition {
+            source_thread_id: created.source_thread_id,
+            source_cwd: created.source_cwd,
+            manager,
+            checkout,
+            config: Box::new(config),
+            mode: created.mode,
+            name: created.name,
+        }));
     }
 
     fn retained_worktree_error(
