@@ -9,6 +9,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 use tempfile::tempdir;
 
 fn thread_id(value: u128) -> ThreadId {
@@ -91,23 +94,67 @@ fn cross_process_contention_uses_native_lock() {
         .expect("spawn child");
     let mut child_stdin = child.stdin.take().expect("child stdin");
     let child_stdout = child.stdout.take().expect("child stdout");
-    let mut child_stdout = BufReader::new(child_stdout);
-    let mut signal = String::new();
-    child_stdout
-        .read_line(&mut signal)
-        .expect("read child ready signal");
-    assert_eq!(signal.trim(), "READY");
+    let (signal_sender, signal_receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut child_stdout = BufReader::new(child_stdout);
+        let mut signal = String::new();
+        loop {
+            signal.clear();
+            match child_stdout.read_line(&mut signal) {
+                Ok(0) => {
+                    let _ = signal_sender.send(None);
+                    return;
+                }
+                Ok(_) => {
+                    let marker = signal.trim().to_string();
+                    if signal_sender.send(Some(marker)).is_err() {
+                        return;
+                    }
+                }
+                Err(_) => {
+                    let _ = signal_sender.send(None);
+                    return;
+                }
+            }
+        }
+    });
+    let ready = loop {
+        match signal_receiver.recv_timeout(Duration::from_secs(10)) {
+            Ok(Some(signal)) if signal == "READY" => break true,
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => break false,
+        }
+    };
+    if !ready {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("child exited or timed out before READY");
+    }
     let busy = matches!(
         GoalExecutionLease::acquire(&database, thread_id(5)),
         Err(GoalExecutionLeaseError::Busy)
     );
-    child_stdin.write_all(b"x").expect("send release signal");
-    child_stdin.flush().expect("flush release signal");
-    signal.clear();
-    child_stdout
-        .read_line(&mut signal)
-        .expect("read child release signal");
-    assert_eq!(signal.trim(), "RELEASED");
+    let release_sent = child_stdin
+        .write_all(b"x")
+        .and_then(|()| child_stdin.flush())
+        .is_ok();
+    if !release_sent {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("failed to send release signal");
+    }
+    let released = loop {
+        match signal_receiver.recv_timeout(Duration::from_secs(10)) {
+            Ok(Some(signal)) if signal == "RELEASED" => break true,
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => break false,
+        }
+    };
+    if !released {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("child exited or timed out before RELEASED");
+    }
     assert!(child.wait().expect("wait child").success());
     assert!(busy, "parent should observe the child-held lease as busy");
     GoalExecutionLease::acquire(&database, thread_id(5)).expect("lease after child release");
