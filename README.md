@@ -343,7 +343,7 @@ Support in the source tree also does not imply a supported Sedna binary or runti
 | Downstream and upstream tool surfaces      | [Tool surface matrix](./docs/downstream-tool-surface-matrix.md)             |
 | Regression ownership                       | [Regression matrix](./docs/downstream-regression-matrix.md)                 |
 | Browser, Android, and desktop computer use | [Native computer use](./docs/native-computer-use.md)                        |
-| Provider implementation boundaries         | [Computer-use provider contracts](./docs/native-computer-use-contracts.md) |
+| Provider implementation boundaries         | [Computer-use provider contracts](./docs/native-computer-use-contracts.md)  |
 | Releases and provenance                    | [Sedna release policy](./docs/sedna-release.md)                             |
 | Validation                                 | [Validation workflow](./docs/validation_workflow.md)                        |
 | Installing and building                    | [Install](./docs/install.md)                                                |
