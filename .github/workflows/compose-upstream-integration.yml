@@ -205,6 +205,10 @@ jobs:
                 )
           PY
           test -s composition-receipt/staged-auto-merge.patch
+          test -s composition-receipt/manifest-summary.env
+          . composition-receipt/manifest-summary.env
+          staged_path_digest="${STAGED_AUTO_MERGE_DIGEST}"
+          test -n "${staged_path_digest}"
           materialize_ref="validation/upstream-preconflict-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           materialize_dir="${RUNNER_TEMP}/upstream-preconflict-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           remote_head="$(git ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
@@ -267,6 +271,10 @@ jobs:
             staged_auto_merge_total="${STAGED_AUTO_MERGE_TOTAL}"
             staged_auto_merge_digest="${STAGED_AUTO_MERGE_DIGEST}"
             staged_auto_merge_patch_digest="${STAGED_AUTO_MERGE_PATCH_DIGEST}"
+          fi
+          if test "${conflict}" = true; then
+            test -n "${staged_path_digest}"
+            test "${staged_path_digest}" = "${staged_auto_merge_digest}"
           fi
           export base_tree upstream_tree remote_readback merge_sha merge_tree candidate_tree status conflict
           export materialize_ref materialized_sha materialized_tree materialized_remote_readback
