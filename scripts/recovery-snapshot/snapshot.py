@@ -13,7 +13,8 @@ from pathlib import Path
 
 
 def run(*args: str, cwd: Path | None = None, stdout=None) -> str:
-    p = subprocess.run(args, cwd=cwd, check=True, text=True, stdout=stdout,
+    p = subprocess.run(args, cwd=cwd, check=True, text=True,
+                       stdout=subprocess.PIPE if stdout is None else stdout,
                        stderr=subprocess.PIPE)
     return p.stdout if stdout is None else ""
 
