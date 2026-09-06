@@ -36,6 +36,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Initialize composition receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p composition-receipt
+
       - name: Verify repository, branch, and expected head
         shell: bash
         env:
@@ -75,7 +81,6 @@ jobs:
         run: |
           set -euo pipefail
           github_basic_auth="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 | tr -d '\n')"
-          mkdir -p composition-receipt
           base_tree="$(git rev-parse HEAD^{tree})"
           upstream_tree="$(git rev-parse "${UPSTREAM_SHA}^{tree}")"
           remote_readback="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${github_basic_auth}" ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
@@ -308,8 +313,24 @@ jobs:
           PY
           if test -n "${materialized_sha}"; then
             test -n "${materialized_tree}"
+            bundle_ref_prefix="refs/w13825-materialized-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            bundle_materialized_ref="${bundle_ref_prefix}/materialized"
+            bundle_base_ref="${bundle_ref_prefix}/base"
+            bundle_upstream_ref="${bundle_ref_prefix}/upstream"
+            cleanup_bundle_refs() {
+              git update-ref -d "${bundle_materialized_ref}" || true
+              git update-ref -d "${bundle_base_ref}" || true
+              git update-ref -d "${bundle_upstream_ref}" || true
+            }
+            trap cleanup_bundle_refs EXIT
+            git update-ref "${bundle_materialized_ref}" "${materialized_sha}"
+            git update-ref "${bundle_base_ref}" "${base_sha}"
+            git update-ref "${bundle_upstream_ref}" "${UPSTREAM_SHA}"
+            test "$(git rev-parse "${bundle_materialized_ref}")" = "${materialized_sha}"
+            test "$(git rev-parse "${bundle_base_ref}")" = "${base_sha}"
+            test "$(git rev-parse "${bundle_upstream_ref}")" = "${UPSTREAM_SHA}"
             git bundle create composition-receipt/materialized.bundle \
-              "${materialized_sha}" "${base_sha}" "${UPSTREAM_SHA}"
+              "${bundle_materialized_ref}" "${bundle_base_ref}" "${bundle_upstream_ref}"
             git bundle verify composition-receipt/materialized.bundle
             bundle_sha256="$(sha256sum composition-receipt/materialized.bundle | awk '{print $1}')"
             receipt_sha256="$(sha256sum composition-receipt/receipt.json | awk '{print $1}')"
@@ -469,4 +490,4 @@ jobs:
         with:
           name: upstream-composition-${{ github.run_id }}-${{ github.run_attempt }}
           path: composition-receipt
-          if-no-files-found: warn
+          if-no-files-found: error
