@@ -1,0 +1,440 @@
+name: History rewrite candidate (w13828)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "inventory (default) or rewrite (requires reviewed policy)"
+        required: true
+        default: inventory
+        type: choice
+        options: [inventory, rewrite]
+      source_sha:
+        description: "Exact source candidate commit"
+        required: true
+        default: 809473034cf7d89d013fa106ed43ec2748f05013
+        type: string
+      workflow_harness_sha:
+        description: "Exact commit containing this workflow and policy"
+        required: true
+        type: string
+      workflow_harness_tree:
+        description: "Exact tree ID for workflow_harness_sha"
+        required: true
+        type: string
+      selected_refs_gzip_b64:
+        description: "gzip+base64 canonical JSON snapshot map (heads/tags to expected SHAs)"
+        required: true
+        type: string
+      selected_refs_sha256:
+        description: "SHA-256 of canonical sorted decompressed snapshot JSON"
+        required: true
+        type: string
+      selected_refs_count:
+        description: "Exact number of entries in decompressed snapshot JSON"
+        required: true
+        type: string
+      selected_refs_bytes:
+        description: "UTF-8 byte length of decompressed snapshot JSON"
+        required: true
+        type: string
+      backup_refs_sha256:
+        description: "Recorded backup ref-set SHA-256"
+        required: true
+        type: string
+      backup_refs_count:
+        description: "Recorded backup ref-set entry count"
+        required: true
+        default: "1052"
+        type: string
+      backup_refs_bytes:
+        description: "Recorded backup ref-set UTF-8 byte length"
+        required: true
+        default: "42899"
+        type: string
+      backup_snapshot_refreshed:
+        description: "Set true only when a refreshed backup covers selected refs"
+        required: true
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      tag_signature_ack:
+        description: "Acknowledge annotated-tag signatures cannot survive rewritten commits"
+        required: true
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: history-rewrite-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      HARNESS_SHA: ${{ inputs.workflow_harness_sha }}
+      HARNESS_TREE: ${{ inputs.workflow_harness_tree }}
+      SELECTED_REFS_GZIP_B64: ${{ inputs.selected_refs_gzip_b64 }}
+      SELECTED_REFS_SHA256: ${{ inputs.selected_refs_sha256 }}
+      SELECTED_REFS_COUNT: ${{ inputs.selected_refs_count }}
+      SELECTED_REFS_BYTES: ${{ inputs.selected_refs_bytes }}
+      BACKUP_REFS_SHA256: ${{ inputs.backup_refs_sha256 }}
+      BACKUP_REFS_COUNT: ${{ inputs.backup_refs_count }}
+      BACKUP_REFS_BYTES: ${{ inputs.backup_refs_bytes }}
+      BACKUP_SNAPSHOT_REFRESHED: ${{ inputs.backup_snapshot_refreshed }}
+      TAG_SIGNATURE_ACK: ${{ inputs.tag_signature_ack }}
+      MODE: ${{ inputs.mode }}
+      POLICY: scripts/history-rewrite/policy.json
+      REPO_URL: https://github.com/${{ github.repository }}.git
+    steps:
+      - name: Checkout harness by exact workflow ref
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d275973f2e1d7e95 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify inputs and policy before fetching history
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_sha must be a full SHA' >&2; exit 1; }
+          [[ "${SOURCE_SHA}" == '809473034cf7d89d013fa106ed43ec2748f05013' ]] || { echo 'source SHA is not the frozen candidate' >&2; exit 1; }
+          [[ "${GITHUB_REPOSITORY}" == 'sednalabs/codex' ]] || { echo 'unexpected repository' >&2; exit 1; }
+          [[ "${HARNESS_SHA}" =~ ^[0-9a-f]{40}$ && "${HARNESS_TREE}" =~ ^[0-9a-f]{40}$ ]] || { echo 'harness identity must be full SHA values' >&2; exit 1; }
+          [[ "${GITHUB_SHA}" == "${HARNESS_SHA}" ]] || { echo 'workflow dispatch head differs from bound harness SHA' >&2; exit 1; }
+          test "$(git rev-parse "${GITHUB_SHA}^{tree}")" = "${HARNESS_TREE}" || { echo 'workflow harness tree mismatch' >&2; exit 1; }
+          python3 - <<'PY'
+          import json, os, re, sys
+          import base64, gzip
+          try:
+              selected_json = gzip.decompress(base64.b64decode(os.environ["SELECTED_REFS_GZIP_B64"], validate=True))
+          except Exception as exc:
+              raise SystemExit(f"invalid gzip+base64 ref snapshot: {exc}")
+          open("selected_refs.json", "wb").write(selected_json)
+          refs = json.loads(selected_json)
+          if not isinstance(refs, dict) or not refs:
+              raise SystemExit("selected_refs_json must be a non-empty object")
+          import hashlib
+          canonical = json.dumps(refs, sort_keys=True, separators=(",", ":")).encode()
+          if hashlib.sha256(canonical).hexdigest() != os.environ["SELECTED_REFS_SHA256"]:
+              raise SystemExit("selected ref-set digest mismatch")
+          if len(refs) != int(os.environ["SELECTED_REFS_COUNT"]):
+              raise SystemExit("selected ref-set count mismatch")
+          if len(selected_json) != int(os.environ["SELECTED_REFS_BYTES"]):
+              raise SystemExit("selected ref-set byte-length mismatch")
+          if not re.fullmatch(r"[0-9a-f]{64}", os.environ["BACKUP_REFS_SHA256"]):
+              raise SystemExit("backup ref-set SHA must be a complete 64-hex digest")
+          forbidden = ("refs/heads/main", "refs/remotes/origin/main")
+          for name, sha in refs.items():
+              if not isinstance(name, str) or not re.fullmatch(r"refs/(heads|tags)/[A-Za-z0-9._/-]+", name):
+                  raise SystemExit(f"invalid selected ref: {name!r}")
+              if any(name == f or name.startswith(f + "/") for f in forbidden):
+                  raise SystemExit(f"canonical ref targeted: {name}")
+              if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                  raise SystemExit(f"selected ref {name} has non-full-SHA value")
+          policy = json.load(open(os.environ["POLICY"], encoding="utf-8"))
+          boundary = policy.get("backup_boundary", {})
+          if (os.environ["BACKUP_REFS_SHA256"], int(os.environ["BACKUP_REFS_COUNT"]), int(os.environ["BACKUP_REFS_BYTES"])) != (boundary.get("sha256"), boundary.get("count"), boundary.get("bytes")):
+              raise SystemExit("caller backup boundary does not match checked-in boundary")
+          if os.environ["BACKUP_SNAPSHOT_REFRESHED"] != "false":
+              raise SystemExit("caller refresh override is not accepted; update the checked-in boundary")
+          if policy.get("schema") != 1 or not isinstance(policy.get("rules"), list) or not isinstance(policy.get("ambiguous"), list):
+              raise SystemExit("unsupported or malformed policy schema")
+          if policy["ambiguous"]:
+              raise SystemExit("policy contains unreviewed ambiguous entries")
+          patterns = policy.get("patterns", [])
+          if not patterns:
+              raise SystemExit("pattern family is required")
+          for pattern in patterns:
+              if pattern.get("classification") not in {"preserve_accurate_unrelated_security_or_research", "ambiguous"}:
+                  raise SystemExit("pattern classification must be explicit preserve or ambiguous")
+              if not pattern.get("id") or not pattern.get("pattern") or not pattern.get("rationale"):
+                  raise SystemExit("pattern requires id, expression, and rationale")
+          preserve_ids = {p["id"] for p in patterns if p["classification"] == "preserve_accurate_unrelated_security_or_research"}
+          if not {"security-circumvention-context", "cleanroom-legal-context"}.issubset(preserve_ids):
+              raise SystemExit("required contextual preserve exceptions are missing")
+          for rule in policy["rules"]:
+              if rule.get("decision") != "rewrite" or rule.get("scope") not in {"commit_subject", "commit_body", "path", "blob"}:
+                  raise SystemExit("every rule must be an explicit rewrite with a supported scope")
+              if rule.get("classification") not in {"inaccurate_provenance", "mechanical_reference"}:
+                  raise SystemExit("rewrite classification must prove inaccurate provenance or mechanical reference")
+              if not isinstance(rule.get("proof"), str) or not rule["proof"].strip():
+                  raise SystemExit("every rewrite requires a non-empty proof")
+              if not isinstance(rule.get("old"), str) or not isinstance(rule.get("new"), str) or not rule["old"] or not rule["new"] or rule["old"] == rule["new"] or rule["old"] in rule["new"] or rule["new"] in rule["old"]:
+                  raise SystemExit("every rewrite requires distinct non-overlapping old and new literals")
+          if os.environ["MODE"] == "rewrite" and not policy.get("policy_id"):
+              raise SystemExit("rewrite requires a reviewed policy_id")
+          if os.environ["MODE"] == "rewrite" and not policy["rules"]:
+              raise SystemExit("rewrite mode requires at least one reviewed rule")
+          PY
+
+      - name: Fetch and bind exact source and selected refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf work output
+          mkdir -m 700 work output
+          git init --bare work/repo.git >/dev/null
+          git -C work/repo.git remote add source "${REPO_URL}"
+          git -C work/repo.git fetch --no-tags source "${SOURCE_SHA}:refs/rewrites/source"
+          test "$(git -C work/repo.git rev-parse refs/rewrites/source)" = "${SOURCE_SHA}"
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          refs = json.load(open("selected_refs.json", encoding="utf-8"))
+          isolated_names = set()
+          for ref, sha in refs.items():
+              isolated = "refs/rewrites/selected/" + re.sub(r"[^A-Za-z0-9._-]", "_", ref)
+              if isolated in isolated_names: raise SystemExit(f"isolated ref collision: {ref}")
+              isolated_names.add(isolated)
+              subprocess.run(["git", "-C", "work/repo.git", "fetch", "--no-tags", "source", f"{sha}:{isolated}"], check=True)
+              got = subprocess.check_output(["git", "-C", "work/repo.git", "rev-parse", isolated], text=True).strip()
+              if got != sha: raise SystemExit(f"ref binding changed: {ref}")
+          PY
+          printf '%s\n' "repository=${GITHUB_REPOSITORY}" "workflow_harness_sha=${HARNESS_SHA}" "workflow_harness_tree=${HARNESS_TREE}" "source_sha=${SOURCE_SHA}" "selected_refs_sha256=${SELECTED_REFS_SHA256}" "selected_refs_count=${SELECTED_REFS_COUNT}" "selected_refs_bytes=${SELECTED_REFS_BYTES}" "backup_refs_sha256=${BACKUP_REFS_SHA256}" "backup_refs_count=${BACKUP_REFS_COUNT}" "backup_refs_bytes=${BACKUP_REFS_BYTES}" "backup_snapshot_refreshed=${BACKUP_SNAPSHOT_REFRESHED}" > output/binding.txt
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          snapshot = json.load(open("selected_refs.json", encoding="utf-8"))
+          lines = subprocess.check_output(["git", "-C", "work/repo.git", "ls-remote", "--heads", "--tags", "source"], text=True).splitlines()
+          live = {}
+          for line in lines:
+              sha, ref = line.split("\t", 1)
+              if ref.endswith("^{}"): continue
+              live[ref] = sha
+          for ref, sha in snapshot.items():
+              if live.get(ref) != sha:
+                  raise SystemExit(f"selected ref missing or moved in live source: {ref}")
+          canonical = json.dumps(live, sort_keys=True, separators=(",", ":")).encode()
+          residual = sorted(set(snapshot.items()) ^ set(live.items()))
+          with open("output/snapshot-live-reconciliation.txt", "w", encoding="utf-8") as fh:
+              fh.write(f"snapshot_count={len(snapshot)}\\nsnapshot_bytes={os.environ['SELECTED_REFS_BYTES']}\\nsnapshot_sha256={os.environ['SELECTED_REFS_SHA256']}\\n")
+              fh.write(f"live_count={len(live)}\\nlive_sha256={hashlib.sha256(canonical).hexdigest()}\\nresidual_count={len(residual)}\\n")
+              equal_backup = (os.environ["SELECTED_REFS_SHA256"] == os.environ["BACKUP_REFS_SHA256"] and len(snapshot) == int(os.environ["BACKUP_REFS_COUNT"]) and int(os.environ["SELECTED_REFS_BYTES"]) == int(os.environ["BACKUP_REFS_BYTES"]))
+              fh.write(f"backup_count={os.environ['BACKUP_REFS_COUNT']}\\nbackup_bytes={os.environ['BACKUP_REFS_BYTES']}\\nbackup_sha256={os.environ['BACKUP_REFS_SHA256']}\\nselected_equals_backup={str(equal_backup).lower()}\\n")
+              fh.write(f"selected_minus_backup_count={max(0, len(snapshot) - int(os.environ['BACKUP_REFS_COUNT']))}\\n")
+              if os.environ["MODE"] == "rewrite" and not equal_backup and os.environ["BACKUP_SNAPSHOT_REFRESHED"] != "true":
+                  raise SystemExit("rewrite requires a refreshed backup snapshot when selected refs differ")
+              for ref, sha in residual[:3]: fh.write(f"residual={ref} {sha}\\n")
+          PY
+
+      - name: Inventory subjects bodies paths and tree/blob identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=work/repo.git
+          git -C "$repo" for-each-ref --format='%(refname) %(objectname)' | sha256sum > output/refs.digest
+          git -C "$repo" for-each-ref --format='%(refname)' | wc -l > output/ref-count
+          git -C "$repo" rev-list --all --count > output/commit-count
+          git -C "$repo" rev-list --all --format='%H%x09%P%x09%s%x09%b' --no-commit-header | sha256sum > output/commit-metadata.digest
+          git -C "$repo" rev-list --all --objects | sha256sum > output/object-paths.digest
+          git -C "$repo" rev-list --all | while IFS= read -r commit; do git -C "$repo" ls-tree -r -t --full-tree --format='%(objectname) %(objecttype) %(path)' "$commit"; done | sha256sum > output/tree-and-blob-identities.digest
+          git -C "$repo" cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype) %(objectsize)' | sha256sum > output/object-metadata.digest
+          python3 - <<'PY'
+          import json, subprocess
+          refs = json.load(open("selected_refs.json", encoding="utf-8"))
+          with open("output/tag-metadata.tsv", "w", encoding="utf-8") as out:
+              out.write("ref\tobject_type\tsignature_status\n")
+              for ref in refs:
+                  if not ref.startswith("refs/tags/"): continue
+                  isolated = "refs/rewrites/selected/" + ref.replace("/", "_")
+                  oid = subprocess.check_output(["git", "-C", "work/repo.git", "rev-parse", isolated], text=True).strip()
+                  typ = subprocess.check_output(["git", "-C", "work/repo.git", "cat-file", "-t", oid], text=True).strip()
+                  status = subprocess.run(["git", "-C", "work/repo.git", "verify-tag", isolated], capture_output=True).returncode
+                  out.write(f"{ref}\\t{typ}\\t{'verified' if status == 0 else 'unsigned-or-unverified'}\\n")
+          PY
+          printf '%s\n' 'plaintext object, commit, path, tree, and blob listings are intentionally not retained' > output/content-boundary.txt
+          sha256sum "$POLICY" > output/policy.digest
+          python3 scripts/history-rewrite/classify.py "$repo" "$POLICY" output/classification.tsv
+          sha256sum output/classification.tsv > output/classification.digest
+          printf '%s\n' 'classification.tsv contains identities and hashes only; matched plaintext is never retained' > output/classification-boundary.txt
+          sha256sum output/* > output/manifest.sha256
+
+      - name: Apply reviewed deterministic rewrite and prove boundaries
+        if: inputs.mode == 'rewrite'
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=work/repo.git
+          selected_has_tags=$(python3 -c 'import json; print(str(any(k.startswith("refs/tags/") for k in json.load(open("selected_refs.json")))).lower())')
+          if test "$selected_has_tags" = true && test "$TAG_SIGNATURE_ACK" != true; then
+            echo 'tag rewrite requires explicit signature acknowledgement' >&2
+            exit 1
+          fi
+          before=$(git -C "$repo" show-ref | sort)
+          old_commit_count=$(git -C "$repo" rev-list --count --all)
+          git -C "$repo" rev-list --all | sort > work/old-commits.txt
+          git -C "$repo" for-each-ref --format='%(refname) %(objectname)' | sort > work/refs-before.map
+          git clone --mirror --no-local "$repo" work/preimage.git >/dev/null
+          test -d work/preimage.git/objects || { echo 'independent preimage repository missing' >&2; exit 1; }
+          git -C work/preimage.git for-each-ref --format='%(refname) %(objectname)' | sort > work/preimage.refs
+          cmp -s work/refs-before.map work/preimage.refs || { echo 'preimage ref/object domain differs from bound source' >&2; exit 1; }
+          while IFS= read -r old; do
+            git -C work/preimage.git cat-file -e "$old^{commit}" || { echo "preimage commit missing: $old" >&2; exit 1; }
+          done < work/old-commits.txt
+          git -C "$repo" show-ref | awk '{print $2}' | sort > work/refs-before.names
+          source_tree_before=$(git -C "$repo" rev-parse "${SOURCE_SHA}^{tree}")
+          python3 - <<'PY'
+          import hashlib, pathlib, urllib.request
+          url = "https://files.pythonhosted.org/packages/60/60/d3943f0880ebcb7e0bdf79254d10dddd39c7b656eeecae32b8806ff66dec/git_filter_repo-2.47.0-py3-none-any.whl"
+          expected = "2cd04929b9024e83e65db571cbe36aec65ead0cb5f9ec5abe42158654af5ad83"
+          data = urllib.request.urlopen(url).read()
+          digest = hashlib.sha256(data).hexdigest()
+          if digest != expected: raise SystemExit("pinned git-filter-repo digest mismatch")
+          pathlib.Path("work/git_filter_repo.whl").write_bytes(data)
+          pathlib.Path("output/filter-repo-provenance.txt").write_text(f"version=2.47.0\\nfilename=git_filter_repo-2.47.0-py3-none-any.whl\\nsha256={expected}\\nurl={url}\\n", encoding="utf-8")
+          PY
+          python3 -m pip install --disable-pip-version-check --no-warn-script-location --user --no-deps work/git_filter_repo.whl
+          cat > work/commit.py <<'PY'
+          import json
+          policy = json.load(open("scripts/history-rewrite/policy.json", encoding="utf-8"))
+          for rule in policy["rules"]:
+              if rule["scope"] not in {"commit_subject", "commit_body"}: continue
+              message = commit.message.decode("utf-8", "replace")
+              subject, sep, body = message.partition("\n")
+              if rule["scope"] == "commit_subject":
+                  commit.message = (subject.replace(rule["old"], rule["new"]) + ("\n" + body if sep else "")).encode("utf-8")
+              else:
+                  commit.message = (subject + ("\n" if sep else "") + body.replace(rule["old"], rule["new"])).encode("utf-8")
+          PY
+          cat > work/filename.py <<'PY'
+          import json
+          policy = json.load(open("scripts/history-rewrite/policy.json", encoding="utf-8"))
+          for rule in policy["rules"]:
+              if rule["scope"] == "path":
+                  filename = filename.replace(rule["old"].encode(), rule["new"].encode())
+          PY
+          cat > work/blob.py <<'PY'
+          import json
+          policy = json.load(open("scripts/history-rewrite/policy.json", encoding="utf-8"))
+          for rule in policy["rules"]:
+              if rule["scope"] == "blob":
+                  blob.data = blob.data.replace(rule["old"].encode(), rule["new"].encode())
+          PY
+          git -C "$repo" filter-repo --force --commit-callback-file work/commit.py --filename-callback-file work/filename.py --blob-callback-file work/blob.py
+          after=$(git -C "$repo" show-ref | sort)
+          printf '%s\n' "$before" > output/refs-before.txt
+          printf '%s\n' "$after" > output/refs-after.txt
+          git -C "$repo" rev-list --all --objects | sha256sum > output/object-paths-after.digest
+          git -C "$repo" fsck --full --no-reflogs | sha256sum > output/fsck.digest
+          test -s "$repo/filter-repo/commit-map" || { echo 'missing exact old/new commit map' >&2; exit 1; }
+          cp "$repo/filter-repo/commit-map" output/commit-map.txt
+          test -s "$repo/filter-repo/ref-map" || { echo 'missing exact old/new ref map' >&2; exit 1; }
+          cp "$repo/filter-repo/ref-map" output/ref-map.txt
+          git -C "$repo" for-each-ref --format='%(refname) %(objectname)' > output/refs-final.txt
+          python3 - "$repo" work/preimage.git output/commit-map.txt output/ref-map.txt output/map-proof.tsv work/old-commits.txt work/refs-before.map output/refs-final.txt <<'PY'
+          import re, subprocess, sys
+          repo, preimage, cmap, rmap, proof, old_domain, refs_before, refs_after = sys.argv[1:]
+          def cat(path, oid): return subprocess.check_output(["git", "-C", path, "cat-file", "-p", oid], text=True)
+          rows = []
+          mapping = {}
+          for line in open(cmap, encoding="utf-8"):
+              fields = line.split()
+              if fields and fields[0].lower() in {"old", "old_commit"}: continue
+              if len(fields) != 2 or not all(re.fullmatch(r"[0-9a-f]{40}", x) for x in fields): raise SystemExit("malformed commit map")
+              if fields[1] == "0" * 40: raise SystemExit("deleted commit mapping is unsupported")
+              mapping[fields[0]] = fields[1]
+          if not mapping: raise SystemExit("empty commit map")
+          if set(mapping) != set(x.strip() for x in open(old_domain) if x.strip()): raise SystemExit("commit-map key domain mismatch")
+          for old, new in mapping.items():
+              old_parents = [x.split()[1] for x in cat(preimage, old).splitlines() if x.startswith("parent ")]
+              new_parents = [x.split()[1] for x in cat(new).splitlines() if x.startswith("parent ")]
+              expected = [mapping.get(x, x) for x in old_parents]
+              if expected != new_parents: raise SystemExit(f"topology mismatch for {old}")
+              rows.append((old, new, ",".join(old_parents), ",".join(new_parents), "verified"))
+          ref_rows = []
+          for line in open(rmap, encoding="utf-8"):
+              fields = line.split()
+              if fields and fields[0].lower() in {"old", "old_object"}: continue
+              if len(fields) != 3 or not re.fullmatch(r"[0-9a-f]{40}", fields[0]) or not re.fullmatch(r"[0-9a-f]{40}", fields[1]): raise SystemExit("malformed ref map")
+              if fields[0] == "0" * 40 or fields[1] == "0" * 40: raise SystemExit("deleted ref mapping is unsupported")
+              ref_rows.append(fields)
+          if not ref_rows: raise SystemExit("empty ref map")
+          before = dict(line.split() for line in open(refs_before) if line.split())
+          after = dict(line.split() for line in open(refs_after) if line.split())
+          if set(x[2] for x in ref_rows) != set(before) or set(x[2] for x in ref_rows) != set(after): raise SystemExit("ref-map ref-name domain mismatch")
+          for old_object, new_object, ref_name in ref_rows:
+              if ref_name not in before or ref_name not in after: raise SystemExit("ref-map ref-name domain mismatch")
+              if before[ref_name] != old_object or after[ref_name] != new_object: raise SystemExit("ref-map object readback mismatch")
+              old_ref, new_ref = ref_name, ref_name
+              if subprocess.check_output(["git", "-C", repo, "rev-parse", new_ref], text=True).strip() != new_object: raise SystemExit("ref-map new object mismatch")
+              old_type = subprocess.check_output(["git", "-C", preimage, "cat-file", "-t", old_object], text=True).strip()
+              new_type = subprocess.check_output(["git", "-C", repo, "cat-file", "-t", new_object], text=True).strip()
+              if old_type == "commit" and new_type == "commit":
+                  if mapping.get(old_object) != new_object: raise SystemExit("ref-map commit object is not bound by commit-map")
+              elif old_type == "tag" and new_type == "tag":
+                  old_peeled = subprocess.check_output(["git", "-C", preimage, "rev-parse", f"{old_object}^{{commit}}"], text=True).strip()
+                  new_peeled = subprocess.check_output(["git", "-C", repo, "rev-parse", f"{new_object}^{{commit}}"], text=True).strip()
+                  if mapping.get(old_peeled) != new_peeled: raise SystemExit("annotated tag peeled commit is not bound by commit-map")
+              else:
+                  raise SystemExit("unsupported or changed ref object type")
+          with open(proof, "w", encoding="utf-8") as out:
+              out.write("old_commit\tnew_commit\told_parents\tnew_parents\tstatus\n")
+              for row in rows: out.write("\t".join(row) + "\n")
+          PY
+          if jq -e '[.rules[] | select(.scope == "path" or .scope == "blob")] | length == 0' "$POLICY" >/dev/null; then
+            grep -E '^[0-9a-f]{40} [0-9a-f]{40}$' output/commit-map.txt | while read -r old new; do
+              test "$(git -C work/preimage.git rev-parse "$old^{tree}")" = "$(git -C "$repo" rev-parse "$new^{tree}")" || { echo "mapped tree changed: $old" >&2; exit 1; }
+            done
+          fi
+          git -C "$repo" show-ref | awk '{print $2}' | sort > work/refs-after.names
+          cmp -s work/refs-before.names work/refs-after.names || { echo 'before/after ref sets differ' >&2; exit 1; }
+          if grep -Eq 'refs/heads/main|refs/remotes/origin/main' output/refs-final.txt; then
+            echo 'canonical ref survived into candidate namespace' >&2; exit 1
+          fi
+          new_source=$(awk -v old="$SOURCE_SHA" '$1 == old { print $2; found=1 } END { if (!found) exit 1 }' output/commit-map.txt)
+          before_tree="$source_tree_before"
+          after_tree=$(git -C "$repo" rev-parse "${new_source}^{tree}")
+          printf 'source_tree_before=%s\nsource_tree_after=%s\n' "$before_tree" "$after_tree" > output/equivalence.txt
+          if jq -e '[.rules[] | select(.scope == "path" or .scope == "blob")] | length == 0' "$POLICY" >/dev/null && test "$before_tree" != "$after_tree"; then
+            echo 'tree changed without an explicit path/blob rule' >&2; exit 1
+          fi
+          if jq -e '[.rules[] | select(.scope == "path" or .scope == "blob")] | length > 0' "$POLICY" >/dev/null; then
+            echo 'non-target path/blob equivalence is not proven for content/path rewrites' >&2; exit 1
+          fi
+          python3 scripts/history-rewrite/classify.py "$repo" "$POLICY" output/classification-after.tsv
+          python3 - "$POLICY" output/classification.tsv output/classification-after.tsv <<'PY'
+          import json, sys
+          policy, before, after = sys.argv[1:]
+          def counts(path):
+              out = {}
+              for line in open(path, encoding="utf-8"):
+                  if line.startswith("#count\t"):
+                      _, key, value = line.rstrip().split("\t")
+                      out[key] = int(value)
+              return out
+          b, a = counts(before), counts(after)
+          for rule in json.load(open(policy, encoding="utf-8"))["rules"]:
+              old, new = rule["id"] + ":old", rule["id"] + ":new"
+              if a.get(old, 0) != 0 or a.get(new, 0) - b.get(new, 0) != b.get(old, 0):
+                  raise SystemExit(f"rewrite match-count delta failed for {rule['id']}")
+          PY
+          python3 - "$repo" output/commit-map.txt output/classification.tsv output/classification-after.tsv <<'PY'
+          import collections, sys
+          repo, cmap, before, after = sys.argv[1:]
+          mapping = {x.split()[0]: x.split()[1] for x in open(cmap, encoding="utf-8") if x.split()}
+          def rows(path, remap):
+              out = []
+              for line in open(path, encoding="utf-8"):
+                  if not line.strip() or line.startswith("#") or line.startswith("kind\t"): continue
+                  fields = line.rstrip("\n").split("\t")
+                  if len(fields) != 8 or fields[4].startswith("rewrite_rule"): continue
+                  if remap and fields[0].startswith("commit_"): fields[1] = mapping.get(fields[1], fields[1])
+                  out.append(tuple(fields))
+              return collections.Counter(out)
+          if rows(before, True) != rows(after, False): raise SystemExit("preserve/ambiguous classification drift")
+          PY
+          printf 'tag_signature_consequence=rewritten commits invalidate existing annotated tag signatures; no tags are created or uploaded\n' > output/tag-signatures.txt
+          sha256sum output/* > output/manifest-after.sha256
+
+      - name: Upload bounded metadata (never backups or keys)
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: history-rewrite-${{ inputs.mode }}-${{ github.run_id }}
+          path: output
+          if-no-files-found: error
+          retention-days: 7
