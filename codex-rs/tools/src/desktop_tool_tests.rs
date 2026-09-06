@@ -32,7 +32,7 @@ fn canonical_desktop_observe_schema_exposes_screen_and_ui_scope() {
 }
 
 #[test]
-fn canonical_desktop_step_schema_exposes_cleanroom_action_set() {
+fn canonical_desktop_step_schema_exposes_supported_action_set() {
     let step = canonical_desktop_dynamic_tool(&dynamic_tool(DESKTOP_STEP_TOOL_NAME))
         .expect("desktop step should be native computer-use");
 
