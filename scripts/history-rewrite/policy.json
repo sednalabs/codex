@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "policy_id": "w13828-history-rewrite-v1",
+  "backup_boundary": {
+    "sha256": "a8fd17f5e166dc6d57b919f9a750273ef78fece25d0d91391b85f7493102cde2",
+    "count": 1052,
+    "bytes": 42899
+  },
+  "rules": [],
+  "ambiguous": [],
+  "patterns": [
+    {
+      "id": "security-circumvention-context",
+      "pattern": "(?i)policy\\s+circumvention|security\\s+research|responsible\\s+disclosure",
+      "classification": "preserve_accurate_unrelated_security_or_research",
+      "priority": 100,
+      "rationale": "Security and research references are unrelated provenance and must remain unchanged."
+    },
+    {
+      "id": "security-term-without-context",
+      "pattern": "(?i)\\b(vulnerabilit(y|ies)|exploit|circumvention)\\b",
+      "classification": "ambiguous",
+      "rationale": "Security-looking terms without an explicit research or disclosure context are not presumed accurate."
+    },
+    {
+      "id": "cleanroom-legal-context",
+      "pattern": "(?i)clean[- ]room|legal\\s+(review|context)|copyright\\s+(notice|holder)|licen[cs]e\\s+(review|text)",
+      "classification": "preserve_accurate_unrelated_security_or_research",
+      "priority": 100,
+      "rationale": "Clean-room and legal references are contextual and must remain unchanged."
+    },
+    {
+      "id": "provenance-reference",
+      "pattern": "(?i)upstream|downstream|fork|mirror|provenance|rename|brand",
+      "classification": "ambiguous",
+      "priority": 10,
+      "rationale": "Provenance language is retained until an exact inaccurate reference is proven."
+    }
+  ],
+  "notes": "Empty by design: inventory-only is safe before any provenance rule is reviewed. Add only exact, mechanically provable substitutions; leave uncertain references unchanged."
+}
