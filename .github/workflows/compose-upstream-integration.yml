@@ -233,21 +233,6 @@ jobs:
           materialized_sha="$(git -C "${materialize_dir}" rev-parse HEAD)"
           materialized_tree="$(git -C "${materialize_dir}" rev-parse HEAD^{tree})"
           export materialized_sha materialized_tree
-          python3 - <<'PY'
-          import json, os
-          path = "composition-receipt/receipt.json"
-          with open(path) as f:
-              receipt = json.load(f)
-          receipt.update({
-              "base_sha": os.environ["BASE_SHA"],
-              "pre_conflict_materialized_sha": os.environ["materialized_sha"],
-              "pre_conflict_materialized_tree": os.environ["materialized_tree"],
-              "pre_conflict_materialized_transport": "github-actions-artifact",
-          })
-          with open(path, "w") as f:
-              json.dump(receipt, f, indent=2, sort_keys=True)
-              f.write("\n")
-          PY
           {
             echo "- pre-conflict materialized SHA/tree: ${materialized_sha} (${materialized_tree})"
             echo "- pre-conflict materialized transport: github-actions-artifact"
