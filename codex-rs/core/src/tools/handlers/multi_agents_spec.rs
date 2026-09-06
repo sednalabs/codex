@@ -971,33 +971,6 @@ fn create_collab_input_items_schema() -> JsonSchema {
         ))
 }
 
-fn create_collab_text_input_items_schema() -> JsonSchema {
-    let properties = BTreeMap::from([
-        (
-            "type".to_string(),
-            JsonSchema::string_enum(
-                vec![json!("text")],
-                Some("Input item type. Only text items are supported by send_message.".to_string()),
-            ),
-        ),
-        (
-            "text".to_string(),
-            JsonSchema::string(Some(
-                "Text content to queue on the target agent.".to_string(),
-            )),
-        ),
-    ]);
-
-    JsonSchema::array(
-        JsonSchema::object(
-            properties,
-            Some(vec!["type".to_string(), "text".to_string()]),
-            Some(false.into()),
-        ),
-        Some("Text items to queue on the target agent.".to_string()),
-    )
-}
-
 fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<String, JsonSchema> {
     BTreeMap::from([
         (

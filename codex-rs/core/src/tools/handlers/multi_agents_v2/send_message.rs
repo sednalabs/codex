@@ -35,7 +35,7 @@ impl Handler {
             target,
             message,
             interrupt,
-            None,
+            /*expected_model*/ None,
         )
         .await
         .map(boxed_tool_output)

@@ -85,14 +85,8 @@ impl SendMessageArgs {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct SendMessageField(Option<Value>);
-
-impl Default for SendMessageField {
-    fn default() -> Self {
-        Self(None)
-    }
-}
 
 impl<'de> Deserialize<'de> for SendMessageField {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
