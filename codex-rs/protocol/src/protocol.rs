@@ -4593,6 +4593,7 @@ pub enum CollabWaitingCompletionReason {
     Terminal,
     Mailbox,
     Timeout,
+    SubscriptionLoss,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]

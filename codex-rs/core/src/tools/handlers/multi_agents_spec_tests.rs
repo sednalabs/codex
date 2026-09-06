@@ -500,7 +500,7 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
     }) = create_wait_agent_tool_v2(WaitAgentTimeoutOptions {
         default_timeout_ms: 30_000,
         min_timeout_ms: 10_000,
-        max_timeout_ms: 3_600_000,
+        max_timeout_ms: 7_200_000,
     })
     else {
         panic!("wait_agent should be a function tool");
@@ -516,13 +516,20 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
     assert!(properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
     assert!(properties.contains_key("return_when"));
+    assert!(properties.contains_key("native_event_wait"));
+    let completion_reason = output_schema
+        .as_ref()
+        .expect("wait output schema")["properties"]["completion_reason"]["enum"]
+        .as_array()
+        .expect("completion reason enum");
+    assert!(completion_reason.contains(&json!("subscription_loss")));
     assert!(description.contains("When `return_when` is `all`"));
     assert_eq!(
         properties
             .get("timeout_ms")
             .and_then(|schema| schema.description.as_deref()),
         Some(
-            "Optional timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits to avoid busy polling."
+            "Optional timeout in milliseconds. Defaults to 30000, min 10000, max 7200000. Prefer longer waits to avoid busy polling."
         )
     );
     assert_eq!(parameters.required.as_ref(), None);
@@ -551,6 +558,7 @@ fn wait_agent_tool_v2_omits_runtime_fields_without_capability_provider() {
         .as_ref()
         .expect("wait_agent should use object params");
     assert!(!properties.contains_key("return_when"));
+    assert!(!properties.contains_key("native_event_wait"));
     assert!(!description.contains("return_when"));
 
     let output_schema = output_schema.expect("wait output schema");

@@ -902,7 +902,7 @@ fn wait_output_schema_v2(capabilities: ToolRuntimeCapabilities) -> Value {
             "completion_reason".to_string(),
             json!({
                 "type": "string",
-                "enum": ["terminal", "mailbox", "timeout"],
+                "enum": ["terminal", "mailbox", "timeout", "subscription_loss"],
                 "description": "Why the wait call returned."
             }),
         );
@@ -1176,7 +1176,7 @@ Requests for depth, thoroughness, research, investigation, or detailed codebase 
 
 ### After you delegate
 - Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
-- Prefer list_agents for cheap live status snapshots before calling a blocking wait_agent, and use inspect_agent_tree when you need deeper live vs stale descendant state.
+- Call wait_agent directly when blocked on a child or mailbox event. Its V2 wait is event-driven, so do not poll list_agents or inspect_agent_tree while the awaited state is unchanged. If a mailbox wake is unrelated to the requested terminal condition, rearm the same target set and return_when contract rather than starting a new status-discovery loop.
 - Do not redo delegated subagent tasks yourself; focus on integrating results or tackling non-overlapping work.
 - While the subagent is running in the background, do meaningful non-overlapping work immediately.
 - Do not repeatedly wait by reflex.
@@ -1322,6 +1322,18 @@ fn wait_agent_tool_parameters_v2(
                 ],
                 Some("Whether the wait completes when any requested agent reaches terminal status or only after all requested agents are terminal.".to_string()),
             ),
+        );
+    }
+
+    if capabilities
+        .wait_agent
+        .is_some_and(|capability| capability.native_event_wait)
+    {
+        properties.insert(
+            "native_event_wait".to_string(),
+            JsonSchema::boolean(Some(
+                "Keep this invocation pending across internal lease expiries until a target event, mailbox input, cancellation, or subscription loss. When true, timeout_ms is an internal lease window rather than a user-visible timeout.".to_string(),
+            )),
         );
     }
 
