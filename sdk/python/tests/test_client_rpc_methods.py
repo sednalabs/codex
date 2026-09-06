@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from pydantic import ValidationError
 
 from openai_codex.client import CodexClient, _params_dict
 from openai_codex.generated.notification_registry import notification_turn_id
 from openai_codex.generated.v2_all import (
+    AccountRateLimitsUpdatedNotification,
+    AccountUpdatedNotification,
     AgentMessageDeltaNotification,
     ApprovalsReviewer,
     CollabAgentToolCallThreadItem,
+    GetAccountResponse,
     ItemCompletedNotification,
+    PlanType,
     ReasoningEffort,
     ReasoningEffortOption,
     ThreadForkParams,
@@ -26,9 +28,6 @@ from openai_codex.generated.v2_all import (
 )
 from openai_codex.models import Notification, UnknownNotification
 from openai_codex.types import ThreadSource
-
-ROOT = Path(__file__).resolve().parents[1]
-
 
 def _legacy_collab_agent_tool_call() -> dict[str, object]:
     return {
@@ -78,23 +77,56 @@ def test_generated_params_models_are_snake_case_and_dump_by_alias() -> None:
     assert dumped == {"searchTerm": "needle", "limit": 5}
 
 
-def test_generated_v2_bundle_has_single_shared_plan_type_definition() -> None:
-    source = (ROOT / "src" / "openai_codex" / "generated" / "v2_all.py").read_text()
-    assert source.count("class PlanType(") == 1
+def test_plan_type_accepts_business_prolite_from_newer_runtime() -> None:
+    """New runtime plan values should remain typed when using a codex_bin override."""
+    plan_type = "self_serve_business_prolite"
+    response = GetAccountResponse.model_validate(
+        {
+            "account": {
+                "type": "chatgpt",
+                "email": "user@example.com",
+                "planType": plan_type,
+            },
+            "requiresOpenaiAuth": True,
+        }
+    )
+    assert response.account is not None
+    assert response.account.root.plan_type.value == plan_type
+
+    client = CodexClient()
+    account_updated = client._coerce_notification(
+        "account/updated",
+        {"authMode": "chatgpt", "planType": plan_type},
+    )
+    assert isinstance(account_updated.payload, AccountUpdatedNotification)
+    assert account_updated.payload.plan_type == PlanType(plan_type)
+
+    rate_limits_updated = client._coerce_notification(
+        "account/rateLimits/updated",
+        {"rateLimits": {"planType": plan_type}},
+    )
+    assert isinstance(rate_limits_updated.payload, AccountRateLimitsUpdatedNotification)
+    assert rate_limits_updated.payload.rate_limits.plan_type == PlanType(plan_type)
 
 
-def test_reasoning_effort_preserves_enum_constants_and_accepts_future_values() -> None:
+@pytest.mark.parametrize(
+    ("effort", "wire_value"),
+    [(ReasoningEffort.max, "max"), (ReasoningEffort.ultra, "ultra")],
+)
+def test_reasoning_effort_preserves_enum_constants_and_accepts_future_values(
+    effort: ReasoningEffort, wire_value: str
+) -> None:
     """Known effort members and new runtime values should share the enum-style API."""
     known_option = ReasoningEffortOption.model_validate(
         {"description": "Balanced", "reasoningEffort": "medium"}
     )
     future_option = ReasoningEffortOption.model_validate(
-        {"description": "Future", "reasoningEffort": "ultra"}
+        {"description": "Future", "reasoningEffort": "future"}
     )
     turn_params = TurnStartParams(
         thread_id="thread-1",
         input=[],
-        effort=ReasoningEffort.medium,
+        effort=effort,
     )
 
     assert {
@@ -105,8 +137,8 @@ def test_reasoning_effort_preserves_enum_constants_and_accepts_future_values() -
     } == {
         "known_member": "medium",
         "known_option": "medium",
-        "future_option": "ultra",
-        "turn_effort": "medium",
+        "future_option": "future",
+        "turn_effort": wire_value,
     }
 
 
