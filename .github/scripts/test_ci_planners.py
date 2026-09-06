@@ -8247,6 +8247,123 @@ class RustCiModeScriptTests(unittest.TestCase):
             )
             self.assertEqual(outputs["validation_mode"], "full")
 
+    def test_rust_ci_producer_output_delimiter_is_closed_and_collision_free(self) -> None:
+        producer_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/rust-ci.yml",
+            "changed",
+            "Resolve merge-group queue-base delta",
+        )
+        producer_script = producer_step.get("run") or ""
+        self.assertIn('line.split("\\t", 1)', producer_script)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "repo"
+            origin = root / "origin.git"
+            subprocess.run(
+                ["git", "init", "--initial-branch=main", str(repo)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            for key, value in (
+                ("user.name", "CI Planner Tests"),
+                ("user.email", "ci-planner-tests@example.invalid"),
+                ("commit.gpgSign", "false"),
+            ):
+                subprocess.run(
+                    ["git", "-C", str(repo), "config", key, value],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            (repo / "README.md").write_text("base\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(repo), "add", "README.md"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-m", "base"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            base_sha = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(
+                ["git", "clone", "--bare", str(repo), str(origin)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "remote", "add", "origin", str(origin)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            (repo / "README.md").write_text("head\n", encoding="utf-8")
+            docs = repo / "docs"
+            docs.mkdir()
+            (docs / "ci.md").write_text("docs\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(repo), "add", "README.md", "docs/ci.md"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-m", "docs delta"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            head_sha = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            output_path = root / "github-output.txt"
+            output_path.write_text("", encoding="utf-8")
+            env = {
+                **os.environ,
+                "BASE_SHA": base_sha,
+                "HEAD_SHA": head_sha,
+                "GITHUB_OUTPUT": str(output_path),
+            }
+            producer = subprocess.run(
+                ["bash", "-c", f"set -euo pipefail\n{producer_script}"],
+                cwd=repo,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(producer.returncode, 0, producer.stderr)
+            produced = parse_github_output_file(output_path)
+            self.assertEqual(json.loads(produced["status_json"]), ["M", "A"])
+            self.assertEqual(
+                json.loads(produced["files_json"]), ["README.md", "docs/ci.md"]
+            )
+            outputs = run_script(
+                SCRIPTS_DIR / "resolve_rust_ci_mode.py",
+                "--repo-root", str(repo),
+                "--event-name", "merge_group",
+                "--merge-group-comparison-complete", produced["comparison_complete"],
+                "--merge-group-files-json", produced["files_json"],
+                "--merge-group-status-json", produced["status_json"],
+                "--merge-group-line-count", produced["line_count"],
+            )
+            self.assertEqual(outputs["validation_mode"], "light_merge_group")
+            self.assertEqual(outputs["run_incremental_validation"], "true")
+
     def test_light_initial_routes_small_openai_models_pr_to_exact_lane(self) -> None:
         outputs = self.run_rust_ci_mode(
             event_action="opened",
