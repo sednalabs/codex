@@ -477,3 +477,176 @@ jobs:
           name: upstream-composition-${{ github.run_id }}-${{ github.run_attempt }}
           path: composition-receipt
           if-no-files-found: error
+
+  verify-hosted-artifact:
+    needs: compose
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download exact composition evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: upstream-composition-${{ github.run_id }}-${{ github.run_attempt }}
+          path: composition-receipt
+
+      - name: Verify hosted composition evidence
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_head || github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import tempfile
+
+          root = pathlib.Path("composition-receipt")
+          expected_head = os.environ["EXPECTED_HEAD"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          run_attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          expected = {
+              "bundle": root / "materialized.bundle",
+              "receipt": root / "receipt.json",
+              "provenance": root / "provenance.json",
+              "manifest": root / "conflict-manifest.json",
+              "staged_patch": root / "staged-auto-merge.patch",
+              "staged_paths": root / "staged-auto-merge.txt",
+              "summary": root / "manifest-summary.env",
+          }
+          for name, path in expected.items():
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f"missing or empty evidence: {name}")
+
+          def load(name):
+              with expected[name].open() as stream:
+                  return json.load(stream)
+
+          def digest(path):
+              value = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      value.update(chunk)
+              return value.hexdigest()
+
+          receipt = load("receipt")
+          provenance = load("provenance")
+          manifest = load("manifest")
+          if provenance.get("signed") is not False:
+              raise SystemExit("provenance must remain explicitly unsigned")
+          if provenance.get("repository") != "sednalabs/codex":
+              raise SystemExit("repository mismatch")
+          required_provenance = {
+              "workflow_head": expected_head,
+              "base_sha": expected_head,
+              "base_tree": "ef0a9cf380cd366cc3d8a777fac190fa64348796",
+              "upstream_sha": "008bbd5884122dc95aaece19ecfe0fc6a59dcf36",
+              "upstream_tree": "721cd395f53962482b3f6d140d0b9942fef3baac",
+              "run_id": run_id,
+              "run_attempt": run_attempt,
+          }
+          for key, value in required_provenance.items():
+              if str(provenance.get(key)) != value:
+                  raise SystemExit(f"provenance mismatch: {key}")
+          if not provenance.get("materialized_sha") or not provenance.get("materialized_tree"):
+              raise SystemExit("materialized identity is empty")
+
+          required_receipt = {
+              "repository": "sednalabs/codex",
+              "expected_head": expected_head,
+              "base_sha": expected_head,
+              "base_tree": required_provenance["base_tree"],
+              "upstream_sha": required_provenance["upstream_sha"],
+              "upstream_tree": required_provenance["upstream_tree"],
+              "run_id": run_id,
+              "run_attempt": run_attempt,
+              "pre_conflict_materialized_sha": provenance["materialized_sha"],
+              "pre_conflict_materialized_tree": provenance["materialized_tree"],
+          }
+          for key, value in required_receipt.items():
+              if str(receipt.get(key)) != value:
+                  raise SystemExit(f"receipt mismatch: {key}")
+
+          digest_fields = {
+              "bundle": "bundle_sha256",
+              "receipt": "receipt_sha256",
+              "manifest": "conflict_manifest_sha256",
+              "staged_patch": "staged_auto_merge_patch_sha256",
+              "staged_paths": "staged_auto_merge_path_list_sha256",
+          }
+          digests = {name: digest(path) for name, path in expected.items() if name in digest_fields}
+          for name, field in digest_fields.items():
+              if provenance.get(field) != digests[name]:
+                  raise SystemExit(f"digest mismatch: {field}")
+          if receipt.get("staged_auto_merge_patch_sha256") != digests["staged_patch"] or receipt.get("staged_auto_merge_path_set_sha256") != digests["staged_paths"]:
+              raise SystemExit("receipt evidence digest mismatch")
+          if manifest.get("total_unmerged_path_count") != 427 or manifest.get("path_set_sha256") != "7568a0be65dc7c05f591197a49b0b4e18f2c4435b951097d206cb37626233b62":
+              raise SystemExit("conflict manifest identity mismatch")
+          required_cohorts = {
+              "build-ci-generated",
+              "sdk-public-contract",
+              "app-server-protocol-transport",
+              "tui-history",
+              "core-agent-lifecycle",
+              "docs-policy",
+          }
+          cohorts = manifest.get("cohorts")
+          if not isinstance(cohorts, list) or not required_cohorts.issubset({c.get("name") for c in cohorts}):
+              raise SystemExit("required conflict cohorts missing")
+          if sum(int(c.get("path_count", -1)) for c in cohorts) != 427:
+              raise SystemExit("conflict cohort counts do not sum to 427")
+
+          bundle = str(expected["bundle"])
+          with tempfile.TemporaryDirectory(prefix="hosted-artifact-verify-") as directory:
+              bare = pathlib.Path(directory) / "repo.git"
+              subprocess.run(["git", "init", "--bare", str(bare)], check=True, stdout=subprocess.DEVNULL)
+              verify = subprocess.run(["git", "-C", str(bare), "bundle", "verify", bundle], check=True, text=True, capture_output=True)
+              list_heads = subprocess.check_output(["git", "-C", str(bare), "bundle", "list-heads", bundle], text=True).strip().splitlines()
+              prefix = f"refs/w13825-materialized-{run_id}-{run_attempt}"
+              expected_refs = {
+                  f"{prefix}/materialized": provenance["materialized_sha"],
+                  f"{prefix}/base": provenance["base_sha"],
+                  f"{prefix}/upstream": provenance["upstream_sha"],
+              }
+              listed = {}
+              for line in list_heads:
+                  oid, ref = line.split()
+                  listed[ref] = oid
+              if listed != expected_refs:
+                  raise SystemExit("bundle heads do not match exact run-scoped refs")
+              for ref, target in ((f"{prefix}/materialized", "materialized"), (f"{prefix}/base", "base"), (f"{prefix}/upstream", "upstream")):
+                  subprocess.run(["git", "-C", str(bare), "fetch", bundle, f"+{ref}:refs/import/{target}"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+              imported = {name: subprocess.check_output(["git", "-C", str(bare), "rev-parse", f"refs/import/{name}"], text=True).strip() for name in ("materialized", "base", "upstream")}
+              if imported != {"materialized": provenance["materialized_sha"], "base": provenance["base_sha"], "upstream": provenance["upstream_sha"]}:
+                  raise SystemExit("imported ref identity mismatch")
+              materialized_tree = subprocess.check_output(["git", "-C", str(bare), "rev-parse", "refs/import/materialized^{tree}"], text=True).strip()
+              if materialized_tree != provenance["materialized_tree"]:
+                  raise SystemExit("materialized tree mismatch")
+              parent = subprocess.check_output(["git", "-C", str(bare), "rev-parse", "refs/import/materialized^"], text=True).strip()
+              if parent != provenance["base_sha"]:
+                  raise SystemExit("materialized parent does not equal current base")
+
+          result = {
+              "repository": "sednalabs/codex",
+              "expected_head": expected_head,
+              "base_tree": provenance["base_tree"],
+              "upstream_sha": provenance["upstream_sha"],
+              "upstream_tree": provenance["upstream_tree"],
+              "materialized_sha": provenance["materialized_sha"],
+              "materialized_tree": provenance["materialized_tree"],
+              "run_id": run_id,
+              "run_attempt": run_attempt,
+              "bundle_sha256": digests["bundle"],
+              "receipt_sha256": digests["receipt"],
+              "manifest_sha256": digests["manifest"],
+              "staged_patch_sha256": digests["staged_patch"],
+              "staged_paths_sha256": digests["staged_paths"],
+              "bundle_heads": listed,
+          }
+          line = "HOSTED_ARTIFACT_VERIFICATION=" + json.dumps(result, sort_keys=True, separators=(",", ":"))
+          print(line)
+          with pathlib.Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as stream:
+              stream.write(line + "\n")
+          PY
