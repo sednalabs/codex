@@ -214,7 +214,7 @@ jobs:
             git worktree remove --force "${materialize_dir}" || true
           }
           trap cleanup_materialize EXIT
-          git -C "${materialize_dir}" apply --index --binary "${GITHUB_WORKSPACE}/composition-receipt/staged-auto-merge.patch"
+          git -C "${materialize_dir}" apply --index --binary --whitespace=nowarn "${GITHUB_WORKSPACE}/composition-receipt/staged-auto-merge.patch"
           test -z "$(git -C "${materialize_dir}" ls-files --unmerged)"
           materialized_paths_digest="$(git -C "${materialize_dir}" diff --cached --name-only --diff-filter=ACDMRTXB | LC_ALL=C sort -u | sha256sum | awk '{print $1}')"
           test "${materialized_paths_digest}" = "${staged_path_digest}"
