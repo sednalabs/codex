@@ -5,13 +5,15 @@ repository="${GITHUB_REPOSITORY:-}"
 release_tag=""
 dry_run=false
 allow_prerelease=false
+require_newer_than=""
+require_newer_than_set=false
 macos_preview=false
 verify_attestation=false
 verify_signatures=false
 allow_historical_x86=false
 
 usage() {
-  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG|latest [--dry-run] [--allow-prerelease] [--verify-signatures] [--verify-attestation] [--allow-historical-x86] [--macos-preview]" >&2
+  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG|latest [--dry-run] [--allow-prerelease] [--require-newer-than VERSION] [--verify-signatures] [--verify-attestation] [--allow-historical-x86] [--macos-preview]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -31,6 +33,15 @@ while [[ $# -gt 0 ]]; do
     --allow-prerelease)
       allow_prerelease=true
       shift
+      ;;
+    --require-newer-than)
+      if [[ $# -lt 2 || -z "${2:-}" ]]; then
+        echo "error: --require-newer-than requires a version" >&2
+        exit 1
+      fi
+      require_newer_than="$2"
+      require_newer_than_set=true
+      shift 2
       ;;
     --macos-preview)
       macos_preview=true
@@ -97,6 +108,15 @@ esac
 
 if [[ "$allow_historical_x86" == "true" && "$target" != "x86_64-unknown-linux-gnu" ]]; then
   echo "error: --allow-historical-x86 is only valid on Linux x86_64" >&2
+  exit 1
+fi
+
+if [[ "$require_newer_than_set" == "true" && "$target" != "x86_64-unknown-linux-gnu" && "$target" != "aarch64-unknown-linux-gnu" ]]; then
+  echo "error: --require-newer-than is only valid for automatic Linux release targets" >&2
+  exit 1
+fi
+if [[ "$require_newer_than_set" == "true" && "$allow_prerelease" == "true" ]]; then
+  echo "error: --require-newer-than cannot be combined with --allow-prerelease" >&2
   exit 1
 fi
 
@@ -383,6 +403,46 @@ fi
 if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?-sedna\.[0-9]+(\+upstream\.[0-9]+)?$ ]]; then
   printf 'error: release tag must look like v0.124.0-sedna.2 or v0.126.0-alpha.5-sedna.1+upstream.1, got %s\n' "$release_tag" >&2
   exit 1
+fi
+
+if [[ "$require_newer_than_set" == "true" ]]; then
+  python3 - "$release_tag" "$require_newer_than" <<'PY'
+import re
+import sys
+
+tag, current = sys.argv[1:]
+pattern = re.compile(r"(?P<core>[0-9]+\.[0-9]+\.[0-9]+)(?:-(?P<track>[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?-sedna\.(?P<ordinal>[0-9]+)(?:\+upstream\.[0-9]+)?$")
+
+def parse(value):
+    match = pattern.fullmatch(value.removeprefix("v"))
+    if match is None:
+        return None
+    core = tuple(int(part) for part in match.group("core").split("."))
+    track = tuple(match.group("track").split(".")) if match.group("track") else ()
+    return core, track, int(match.group("ordinal"))
+
+def compare(left, right):
+    if left[0] != right[0]:
+        return (left[0] > right[0]) - (left[0] < right[0])
+    if left[1] != right[1]:
+        if not left[1]:
+            return 1
+        if not right[1]:
+            return -1
+        return (left[1] > right[1]) - (left[1] < right[1])
+    return (left[2] > right[2]) - (left[2] < right[2])
+
+candidate = parse(tag)
+bound = parse(current)
+if candidate is None or bound is None:
+    raise SystemExit("error: --require-newer-than requires a strict Sedna release version")
+if candidate[1]:
+    raise SystemExit(f"error: automatic update candidate {tag} must be stable")
+if bound[1]:
+    raise SystemExit(f"error: --require-newer-than bound {current} must be stable")
+if compare(candidate, bound) <= 0:
+    raise SystemExit(f"error: automatic update candidate {tag} is not newer than {current}")
+PY
 fi
 
 release_version="${release_tag#v}"
