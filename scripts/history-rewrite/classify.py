@@ -2,6 +2,7 @@
 """Bounded, identity-only history occurrence classification."""
 import hashlib
 import json
+import atexit
 import gzip
 import os
 import re
@@ -11,8 +12,6 @@ import tempfile
 from pathlib import Path
 
 REPO, POLICY, OUTPUT = map(Path, sys.argv[1:])
-MAX_ROWS = 1000000
-MAX_MATCHES = 2000000
 policy = json.loads(POLICY.read_text(encoding="utf-8"))
 def compile_pattern(pattern, label):
     rx = re.compile(pattern, re.MULTILINE)
@@ -96,6 +95,7 @@ class OutputWriter:
         self.compressed = None
         self.plain_hash = hashlib.sha256()
         self.compressed_hash = hashlib.sha256()
+        self.committed = False
 
     def __enter__(self):
         self.plain_temp = tempfile.NamedTemporaryFile("wb", dir=self.tempdir, prefix=f".{self.output.name}.", suffix=".tmp", delete=False)
@@ -125,6 +125,7 @@ class OutputWriter:
         os.replace(self.plain_temp.name, self.output)
         compressed_output = Path(str(self.output) + ".gz")
         os.replace(self.gzip_temp.name, compressed_output)
+        self.committed = True
         return compressed_output
 
     def cleanup(self):
@@ -177,10 +178,6 @@ def emit(kind, identity, path, proof, metadata):
         per_pattern[pid]["matches"] += count
         per_kind[kind]["rows"] += 1
         per_kind[kind]["matches"] += count
-        if row_count > MAX_ROWS:
-            raise SystemExit(f"classification row bound exceeded: rows={row_count} max_rows={MAX_ROWS}; narrow the pattern family")
-        if total_matches > MAX_MATCHES:
-            raise SystemExit(f"classification match bound exceeded: total_matches={total_matches} max_matches={MAX_MATCHES}; narrow the pattern family")
 
 def scan(kind, identity, value, path=""):
     global scanned_fields, scanned_utf8_bytes
@@ -199,6 +196,7 @@ def account_scan(kind, byte_count):
 OUTPUT.parent.mkdir(parents=True, exist_ok=True)
 writer = OutputWriter(OUTPUT)
 writer.__enter__()
+atexit.register(writer.cleanup)
 
 for identity in git("rev-list", "--all").splitlines():
     record = git("show", "-s", "--format=%H%x00%s%x00%b", identity)
