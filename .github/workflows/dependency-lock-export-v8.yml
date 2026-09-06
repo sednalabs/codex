@@ -41,6 +41,264 @@ jobs:
         shell: bash
         run: cargo update -p v8@149.2.0 --precise 150.4.0
 
+      - name: Normalize known prost-build resolver edges
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import collections
+          import hashlib
+          import json
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          lock_path = Path("Cargo.lock")
+          preimage_text = subprocess.check_output(
+              ["git", "show", "HEAD:codex-rs/Cargo.lock"],
+              text=True,
+          )
+          raw_text = lock_path.read_text(encoding="utf-8")
+          preimage_doc = tomllib.loads(preimage_text)
+          raw_doc = tomllib.loads(raw_text)
+
+          def top_level(document):
+              return {key: value for key, value in document.items() if key != "package"}
+
+          def encoded_packages(document):
+              return collections.Counter(
+                  json.dumps(package, sort_keys=True, separators=(",", ":"))
+                  for package in document.get("package", [])
+              )
+
+          def package_delta(old_document, new_document):
+              old_packages = encoded_packages(old_document)
+              new_packages = encoded_packages(new_document)
+              removed = [
+                  json.loads(package)
+                  for package in (old_packages - new_packages).elements()
+              ]
+              added = [
+                  json.loads(package)
+                  for package in (new_packages - old_packages).elements()
+              ]
+              return removed, added
+
+          def package(
+              name,
+              version,
+              checksum,
+              dependencies,
+          ):
+              return {
+                  "name": name,
+                  "version": version,
+                  "source": "registry+https://github.com/rust-lang/crates.io-index",
+                  "checksum": checksum,
+                  "dependencies": dependencies,
+              }
+
+          preimage_targets = [
+              package(
+                  "prost-build",
+                  "0.12.6",
+                  "22505a5c94da8e3b7c2996394d1c933236c4d743e81a410bcca4e6989fc066a4",
+                  [
+                      "bytes",
+                      "heck 0.4.1",
+                      "itertools 0.12.1",
+                      "log",
+                      "multimap",
+                      "once_cell",
+                      "petgraph 0.6.5",
+                      "prettyplease",
+                      "prost 0.12.6",
+                      "prost-types 0.12.6",
+                      "regex",
+                      "syn 2.0.119",
+                      "tempfile",
+                  ],
+              ),
+              package(
+                  "prost-build",
+                  "0.14.4",
+                  "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042",
+                  [
+                      "heck 0.4.1",
+                      "itertools 0.14.0",
+                      "log",
+                      "multimap",
+                      "petgraph 0.8.3",
+                      "prettyplease",
+                      "prost 0.14.4",
+                      "prost-types 0.14.4",
+                      "regex",
+                      "syn 2.0.119",
+                      "tempfile",
+                  ],
+              ),
+          ]
+          raw_targets = [
+              {
+                  **target,
+                  "dependencies": [
+                      "heck 0.5.0" if dependency == "heck 0.4.1" else dependency
+                      for dependency in target["dependencies"]
+                  ],
+              }
+              for target in preimage_targets
+          ]
+          old_v8 = package(
+              "v8",
+              "149.2.0",
+              "46dccf61a364b61bbaac70a8ba64a1a1006e87123b7d62eaeec999a3ba31ecdb",
+              [
+                  "bindgen",
+                  "bitflags 2.13.1",
+                  "fslock",
+                  "gzip-header",
+                  "home",
+                  "miniz_oxide",
+                  "paste",
+                  "temporal_capi",
+                  "which 6.0.3",
+              ],
+          )
+          new_v8 = {
+              **old_v8,
+              "version": "150.4.0",
+              "checksum": "42a978ff11f15b24e5c05a7123cf2b68f41e763546699781a924ef4e2cf43a49",
+          }
+
+          if top_level(preimage_doc) != top_level(raw_doc):
+              raise SystemExit("unexpected raw top-level Cargo.lock change")
+          raw_removed, raw_added = package_delta(preimage_doc, raw_doc)
+          if encoded_packages({"package": raw_removed}) != encoded_packages(
+              {"package": [*preimage_targets, old_v8]}
+          ):
+              raise SystemExit("unexpected raw removed-package set")
+          if encoded_packages({"package": raw_added}) != encoded_packages(
+              {"package": [*raw_targets, new_v8]}
+          ):
+              raise SystemExit("unexpected raw added-package set")
+
+          preimage_packages = preimage_doc.get("package", [])
+          raw_packages = raw_doc.get("package", [])
+          for expected_preimage, expected_raw in zip(
+              preimage_targets,
+              raw_targets,
+              strict=True,
+          ):
+              preimage_matches = [
+                  item
+                  for item in preimage_packages
+                  if item.get("name") == expected_preimage["name"]
+                  and item.get("version") == expected_preimage["version"]
+              ]
+              raw_matches = [
+                  item
+                  for item in raw_packages
+                  if item.get("name") == expected_raw["name"]
+                  and item.get("version") == expected_raw["version"]
+              ]
+              if preimage_matches != [expected_preimage]:
+                  raise SystemExit(
+                      f"unexpected preimage package record: "
+                      f"{expected_preimage['name']}@{expected_preimage['version']}"
+                  )
+              if raw_matches != [expected_raw]:
+                  raise SystemExit(
+                      f"unexpected raw package record: "
+                      f"{expected_raw['name']}@{expected_raw['version']}"
+                  )
+
+          lines = raw_text.splitlines(keepends=True)
+          package_starts = [
+              index for index, line in enumerate(lines) if line == "[[package]]\n"
+          ]
+          spans = [
+              (start, package_starts[index + 1] if index + 1 < len(package_starts) else len(lines))
+              for index, start in enumerate(package_starts)
+          ]
+          changed_indexes = []
+          for expected_raw in raw_targets:
+              matching_spans = []
+              for start, end in spans:
+                  parsed = tomllib.loads("".join(lines[start:end]))
+                  packages = parsed.get("package", [])
+                  if packages == [expected_raw]:
+                      matching_spans.append((start, end))
+              if len(matching_spans) != 1:
+                  raise SystemExit(
+                      f"expected one exact raw text block for "
+                      f"{expected_raw['name']}@{expected_raw['version']}"
+                  )
+              start, end = matching_spans[0]
+              edge_indexes = [
+                  index
+                  for index in range(start, end)
+                  if lines[index] == ' "heck 0.5.0",\n'
+              ]
+              if len(edge_indexes) != 1:
+                  raise SystemExit(
+                      f"expected one exact raw heck edge for "
+                      f"{expected_raw['name']}@{expected_raw['version']}"
+                  )
+              edge_index = edge_indexes[0]
+              lines[edge_index] = ' "heck 0.4.1",\n'
+              changed_indexes.append(edge_index)
+
+          normalized_text = "".join(lines)
+          changed_lines = [
+              index
+              for index, (raw_line, normalized_line) in enumerate(
+                  zip(
+                      raw_text.splitlines(keepends=True),
+                      normalized_text.splitlines(keepends=True),
+                      strict=True,
+                  )
+              )
+              if raw_line != normalized_line
+          ]
+          if changed_lines != changed_indexes or len(changed_lines) != 2:
+              raise SystemExit("normalization changed other text")
+
+          normalized_doc = tomllib.loads(normalized_text)
+          if top_level(normalized_doc) != top_level(preimage_doc):
+              raise SystemExit("normalized top-level Cargo.lock metadata changed")
+          normalized_removed, normalized_added = package_delta(
+              preimage_doc,
+              normalized_doc,
+          )
+          if normalized_removed != [old_v8] or normalized_added != [new_v8]:
+              raise SystemExit("normalized package delta is not exact V8-only")
+
+          lock_path.write_text(normalized_text, encoding="utf-8")
+          evidence = {
+              "preimage_sha256": hashlib.sha256(preimage_text.encode()).hexdigest(),
+              "raw_sha256": hashlib.sha256(raw_text.encode()).hexdigest(),
+              "normalized_sha256": hashlib.sha256(normalized_text.encode()).hexdigest(),
+              "raw_removed_packages": raw_removed,
+              "raw_added_packages": raw_added,
+              "restored_packages": [
+                  {
+                      "name": preimage["name"],
+                      "version": preimage["version"],
+                      "preimage_dependencies": preimage["dependencies"],
+                      "raw_dependencies": raw["dependencies"],
+                  }
+                  for preimage, raw in zip(preimage_targets, raw_targets, strict=True)
+              ],
+              "normalized_removed_packages": normalized_removed,
+              "normalized_added_packages": normalized_added,
+          }
+          Path("../v8-cargo-lock-export.normalization.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
       - name: Verify generated Cargo lock
         working-directory: codex-rs
         shell: bash
@@ -108,6 +366,8 @@ jobs:
             wc -c v8-cargo-lock-export.patch
             sha256sum v8-cargo-lock-export.attribution.json
             wc -c v8-cargo-lock-export.attribution.json
+            sha256sum v8-cargo-lock-export.normalization.json
+            wc -c v8-cargo-lock-export.normalization.json
           } > v8-cargo-lock-export.proof
 
       - name: Upload generated product and attribution
@@ -120,6 +380,7 @@ jobs:
             v8-cargo-lock-export.numstat
             v8-cargo-lock-export.identity
             v8-cargo-lock-export.attribution.json
+            v8-cargo-lock-export.normalization.json
             v8-cargo-lock-export.proof
           if-no-files-found: error
           retention-days: 7
