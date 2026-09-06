@@ -2572,7 +2572,7 @@
         "docs/carry-divergence-ledger.md",
         "docs/downstream-tool-surface-matrix.md",
         "docs/native-computer-use.md",
-        "docs/native-computer-use-cleanroom.md",
+        "docs/native-computer-use-contracts.md",
         "docs/downstream-regression-matrix.md",
         "docs/validation_workflow.md",
         "docs/divergences/index.yaml",

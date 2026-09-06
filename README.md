@@ -208,7 +208,7 @@ The repository includes a built-in Playwright browser provider for local Chrome 
 
 Provider availability depends on the operator's configuration. A model-facing contract in the source tree does not imply that Sedna publishes a runtime provider for every platform.
 
-See [Native computer-use adapter tooling](./docs/native-computer-use.md), the [computer-use cleanroom contracts](./docs/native-computer-use-cleanroom.md), and the [tool surface matrix](./docs/downstream-tool-surface-matrix.md).
+See [Native computer-use adapter tooling](./docs/native-computer-use.md), the [computer-use provider contracts](./docs/native-computer-use-contracts.md), and the [tool surface matrix](./docs/downstream-tool-surface-matrix.md).
 
 ### Headless and remote MCP operation
 
@@ -336,19 +336,19 @@ Support in the source tree also does not imply a supported Sedna binary or runti
 
 ## Documentation
 
-| Topic                                      | Start here                                                                  |
-| ------------------------------------------ | --------------------------------------------------------------------------- |
-| Fork policy and upstream relationship      | [Downstream / fork notes](./docs/downstream.md)                             |
-| Live downstream differences                | [Divergence registry](./docs/divergences/index.yaml)                        |
-| Downstream and upstream tool surfaces      | [Tool surface matrix](./docs/downstream-tool-surface-matrix.md)             |
-| Regression ownership                       | [Regression matrix](./docs/downstream-regression-matrix.md)                 |
-| Browser, Android, and desktop computer use | [Native computer use](./docs/native-computer-use.md)                        |
-| Provider implementation boundaries         | [Computer-use cleanroom contracts](./docs/native-computer-use-cleanroom.md) |
-| Releases and provenance                    | [Sedna release policy](./docs/sedna-release.md)                             |
-| Validation                                 | [Validation workflow](./docs/validation_workflow.md)                        |
-| Installing and building                    | [Install](./docs/install.md)                                                |
-| Local memories                             | [Memories](./docs/memories.md)                                              |
-| Contributing                               | [Contributing](./docs/contributing.md)                                      |
+| Topic                                      | Start here                                                                 |
+| ------------------------------------------ | -------------------------------------------------------------------------- |
+| Fork policy and upstream relationship      | [Downstream / fork notes](./docs/downstream.md)                            |
+| Live downstream differences                | [Divergence registry](./docs/divergences/index.yaml)                       |
+| Downstream and upstream tool surfaces      | [Tool surface matrix](./docs/downstream-tool-surface-matrix.md)            |
+| Regression ownership                       | [Regression matrix](./docs/downstream-regression-matrix.md)                |
+| Browser, Android, and desktop computer use | [Native computer use](./docs/native-computer-use.md)                       |
+| Provider implementation boundaries         | [Computer-use provider contracts](./docs/native-computer-use-contracts.md) |
+| Releases and provenance                    | [Sedna release policy](./docs/sedna-release.md)                            |
+| Validation                                 | [Validation workflow](./docs/validation_workflow.md)                       |
+| Installing and building                    | [Install](./docs/install.md)                                               |
+| Local memories                             | [Memories](./docs/memories.md)                                             |
+| Contributing                               | [Contributing](./docs/contributing.md)                                     |
 
 ## Contributing
 

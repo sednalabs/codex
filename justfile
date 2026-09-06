@@ -688,7 +688,7 @@ downstream-ledger-seam:
 
 [no-cd]
 downstream-docs-check:
-    git diff --check -- docs/downstream.md docs/native-computer-use.md docs/native-computer-use-cleanroom.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md docs/divergences/index.yaml
+    git diff --check -- docs/downstream.md docs/native-computer-use.md docs/native-computer-use-contracts.md docs/carry-divergence-ledger.md docs/downstream-regression-matrix.md docs/downstream-tool-surface-matrix.md docs/divergences/index.yaml
     cd "{{ justfile_directory() }}" && python3 -m json.tool docs/divergences/index.yaml >/dev/null
     cd "{{ justfile_directory() }}" && python3 .github/scripts/check_markdown_links.py
 

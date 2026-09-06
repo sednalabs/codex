@@ -636,7 +636,7 @@ User-visible behavior:
 
 - Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
 - Bare `browser_observe` and `browser_step` dynamic tools are also promoted to canonical Codex function tools with adapter `browser`; the shared browser provider crate routes them to a configured browser bridge for TUI and exec, and CLI/TUI sessions auto-advertise those browser tools when a local browser provider is configured.
-- Bare `desktop_observe` and `desktop_step` dynamic tools are promoted to canonical Codex function tools with adapter `desktop`; the TUI routes them to an operator-configured command provider for cleanroom macOS Screen Recording/Accessibility-style runtimes or future native desktop providers.
+- Bare `desktop_observe` and `desktop_step` dynamic tools are promoted to canonical Codex function tools with adapter `desktop`; the TUI routes them to an operator-configured command provider for independent macOS Screen Recording/Accessibility-style runtimes or future native desktop providers.
 - Namespaced Android-like, browser-like, and desktop-like tools remain normal dynamic tools.
 - App-server `dynamicTools` accepts deferred bare native tools for
   `tool_search`, while still rejecting deferred bare ordinary dynamic tools.
@@ -681,7 +681,7 @@ Android emulator`; these transient app-server projections are not persisted
 - For MCP-backed Android providers, `structuredContent` is parsed for state and UI metadata without dropping `content[]` image entries. The native bridge must preserve both channels so JSON summaries never preempt the screenshot pixels.
 - Computer-use events remain transient in every history mode; live rollout tracing maps them to tool-runtime start/end events without persisting them into thread snapshots.
 - See [`native-computer-use.md`](native-computer-use.md) for the full contract and validation guidance.
-- See [`native-computer-use-cleanroom.md`](native-computer-use-cleanroom.md) for the sanitized desktop, browser-shell, Chrome-extension, and bundled-plugin cleanroom contracts.
+- See [`native-computer-use-contracts.md`](native-computer-use-contracts.md) for the desktop, browser-shell, Chrome-extension, and bundled-plugin provider contracts.
 
 ### Usage ledger: first-party local `usage.sqlite`
 

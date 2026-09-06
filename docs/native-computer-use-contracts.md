@@ -1,56 +1,16 @@
-# Native Computer-Use Cleanroom Contracts
+# Native Computer-Use Provider Contracts
 
-This document records sanitized interoperability requirements for native
-computer-use providers. It intentionally does not contain copied proprietary
-source, decompiled code, private endpoints, account data, browser profile data,
-or signing material.
+This document defines provider-facing interoperability contracts for native
+computer-use runtimes. It covers desktop, browser-shell, Chrome-extension,
+and Android MCP providers, including their capabilities, request/response
+schemas, permissions, lifecycle transitions, and model-visible image output.
 
-The purpose is to let independent implementation work target stable Codex
-provider seams:
+Providers implement these contracts behind the configured command, MCP, or
+provider-registry seams while Codex owns the canonical transcript and
+model-facing tool contract.
 
-- desktop providers for macOS Screen Recording and Accessibility runtimes
-- browser providers for in-app-browser shells, including Windows-hosted shells
-- Chrome-extension-backed browser providers
-- Android MCP-backed providers
-
-## Discovery Evidence
-
-The current cleanroom discovery lane inspected legally obtained distributable
-artifacts and reduced them to behavioral requirements:
-
-| Artifact                      | Version or role                              | SHA-256                                                            |
-| ----------------------------- | -------------------------------------------- | ------------------------------------------------------------------ |
-| Codex macOS DMG               | `26.519.41501` app bundle                    | `3101c05dfd40314115418c4ad87edee02419d097f7164c677ddbdd4559ad8a42` |
-| Codex Chrome extension CRX    | `1.1.5` Manifest V3 extension                | `54e8d5c26f0e47ee9e33b56276b7e1305991dd5de7b046a4c74e57e076f0545f` |
-| Codex Windows Store installer | Store installer/delegator, not app internals | `d85a5efcff0719ff4508f1fcbabd1d7c09249a44a68520ea52fd6d3b71ee0feb` |
-
-The Windows installer evidence did not expose the Windows in-app-browser
-implementation. The Windows cleanroom target below is therefore derived from
-the cross-platform browser-client behavior visible in the macOS app bundle and
-from public Electron, Playwright, Chrome DevTools Protocol, and OS browser-shell
-APIs.
-
-## Legal and Process Boundary
-
-Implementation lanes must receive only neutral requirements:
-
-- provider names, high-level capabilities, and transport shape
-- request and response fields
-- permission states and failure modes
-- state transitions, leases, and cleanup obligations
-- model-visible screenshot and accessibility/browser digest requirements
-
-Implementation lanes must not receive:
-
-- copied implementation text from proprietary artifacts
-- decompiled control flow or private class/function bodies
-- private endpoints, tokens, cookies, local browser profile contents, or
-  account data
-- signing material, native-host manifests copied from an installed product, or
-  vendor bundle resources
-
-If further binary inspection is needed for interoperability, keep it outside
-the implementation lane and summarize only the neutral contract deltas here.
+The requirements use public Codex interfaces, documented operating-system and
+browser APIs, and ordinary observable behavior of compatible environments.
 
 ## Codex-Owned Contract
 
@@ -77,7 +37,7 @@ Providers must be side-effect conscious:
 
 ## Desktop Provider Contract
 
-The desktop adapter is the cleanroom target for macOS Screen Recording and
+The desktop adapter is the provider target for macOS Screen Recording and
 Accessibility implementations. It is also suitable for future native Windows
 desktop providers if the OS APIs can satisfy the same contract.
 
@@ -137,7 +97,7 @@ Desktop provider configuration:
 
 ## Browser Shell Provider Contract
 
-The browser adapter is the cleanroom target for in-app-browser shells,
+The browser adapter is the provider target for in-app-browser shells,
 Windows-hosted browser shells, Chrome extension backends, remote browsers, and
 the built-in Playwright provider. The Playwright provider can remain a portable
 headless fallback, but visual review should configure it as a headed Google
@@ -183,16 +143,16 @@ Recommended Windows implementation shape:
   providers
 - keep OS-window lifecycle, display visibility, downloads, file upload, and
   shell-specific policies provider-side
-- avoid depending on a proprietary native pipe implementation; if a pipe is
-  used, treat it as provider-private transport behind the command-provider seam
+- the provider owns any native pipe or other internal transport behind the
+  command-provider seam
 
 ## Chrome Extension Provider Contract
 
 The Chrome backend needs signed-in browser state and must preserve user
-control. A cleanroom Chrome provider should use public Chrome extension,
+control. An independent Chrome provider should use public Chrome extension,
 Native Messaging, and Chrome DevTools Protocol APIs.
 
-Observed behavior reduced to requirements:
+Compatibility requirements:
 
 - extension-to-native-host transport is JSON-RPC-like
 - the extension attaches to tabs through Chrome debugger/CDP APIs
@@ -207,20 +167,19 @@ Observed behavior reduced to requirements:
 - the provider should ask before interacting with new websites unless policy
   already allows that host
 
-Cleanroom implementation notes:
+Provider integration interfaces:
 
-- do not copy native-host names, manifests, extension code, or bundled assets
-  into this repository
-- install/repair remains an operator or provider responsibility
+- the provider owns native-host and extension packaging, installation, and
+  repair integration
 - Codex core should see only `browser_observe` and `browser_step` native
   computer-use calls plus provider diagnostics
 - history access is a separate sensitive capability and should not have an
   unconditional always-allow path
 
-## Plugin Internals Reduced to Public Seams
+## Provider Integration Interfaces
 
-Bundled Browser, Chrome, and Computer Use plugins reduce to these public Codex
-seams:
+Browser, Chrome, and computer-use integrations can be represented through these
+public Codex seams:
 
 - plugin discovery and skill routing tell the agent which surface to prefer
 - browser providers expose browser sessions, tabs, screenshots, and actions
