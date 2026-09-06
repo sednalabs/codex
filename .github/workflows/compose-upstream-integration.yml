@@ -318,6 +318,7 @@ jobs:
             bundle_base_ref="${bundle_ref_prefix}/base"
             bundle_upstream_ref="${bundle_ref_prefix}/upstream"
             cleanup_bundle_refs() {
+              cleanup_materialize
               git update-ref -d "${bundle_materialized_ref}" || true
               git update-ref -d "${bundle_base_ref}" || true
               git update-ref -d "${bundle_upstream_ref}" || true
