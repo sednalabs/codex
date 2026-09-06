@@ -1,4 +1,4 @@
-name: Build accepted SDK and build-source consumer
+name: Inspect accepted SDK and build-source composition
 
 on:
   push:
@@ -20,9 +20,9 @@ permissions:
   actions: read
 
 jobs:
-  build-sdk-build-consumer:
+  composition-metadata:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 30
     env:
       REQUESTED_WORKFLOW_SHA: ${{ inputs.expected_workflow_sha || '' }}
       REQUESTED_WORKFLOW_TREE: ${{ inputs.expected_workflow_tree || '' }}
@@ -37,7 +37,7 @@ jobs:
       BUILD_SOURCE_TREE: 6adcbddd3dde655a77a385fc75d5af9d39f90802
       BUILD_SOURCE_BRANCH: worker/w13825-build-source-authoring-20260907
     steps:
-      - name: Check out exact reviewed consumer helper
+      - name: Check out exact reviewed metadata helper
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -57,163 +57,11 @@ jobs:
           python3 "${helper}" \
             --validate-runtime-only \
             --expected-workflow-sha "${workflow_sha}" \
-            --expected-workflow-tree "${workflow_tree}"
+            --expected-workflow-tree "${workflow_tree}" >/dev/null
           {
             printf 'EXPECTED_WORKFLOW_SHA=%s\n' "${workflow_sha}"
             printf 'EXPECTED_WORKFLOW_TREE=%s\n' "${workflow_tree}"
           } >>"${GITHUB_ENV}"
-
-      - name: Prove fail-closed event and path boundary
-        shell: bash
-        run: |
-          set -euo pipefail
-          helper="${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py"
-          expect_failure() {
-            expected="$1"
-            shift
-            set +e
-            output="$("$@" 2>&1)"
-            status=$?
-            set -e
-            test "${status}" -ne 0
-            grep -F -- "${expected}" <<<"${output}" >/dev/null
-          }
-          runtime_args=(
-            python3 "${helper}"
-            --validate-runtime-only
-            --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}"
-            --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
-          )
-          validation_ref=refs/heads/worker/w13825-sdk-build-consumer
-          fixture_dir="${RUNNER_TEMP}/consumer-event-fixtures"
-          mkdir "${fixture_dir}"
-          python3 - "${fixture_dir}" "${EXPECTED_WORKFLOW_SHA}" "${EXPECTED_WORKFLOW_TREE}" <<'PY'
-          import copy
-          import json
-          import sys
-          from pathlib import Path
-
-          target = Path(sys.argv[1])
-          workflow_sha = sys.argv[2]
-          workflow_tree = sys.argv[3]
-          push = {
-              "ref": "refs/heads/worker/w13825-sdk-build-consumer",
-              "before": "d66a32521e38a51d9a2917d8378795667606f48c",
-              "after": workflow_sha,
-              "created": False,
-              "deleted": False,
-              "forced": False,
-              "head_commit": {"id": workflow_sha},
-              "repository": {"full_name": "sednalabs/codex"},
-          }
-          fixtures = {"push-valid": push}
-          mutations = {
-              "push-wrong-repository": ("repository", {"full_name": "wrong/repository"}),
-              "push-wrong-ref": ("ref", "refs/heads/main"),
-              "push-wrong-before": ("before", "1" * 40),
-              "push-wrong-after": ("after", "0" * 40),
-              "push-forced": ("forced", True),
-              "push-deleted": ("deleted", True),
-              "push-created": ("created", True),
-          }
-          for name, (key, value) in mutations.items():
-              fixture = copy.deepcopy(push)
-              fixture[key] = value
-              fixtures[name] = fixture
-          dispatch = {
-              "inputs": {
-                  "expected_workflow_sha": workflow_sha,
-                  "expected_workflow_tree": workflow_tree,
-              },
-              "repository": {"full_name": "sednalabs/codex"},
-          }
-          fixtures["dispatch-valid"] = dispatch
-          dispatch_wrong_sha = copy.deepcopy(dispatch)
-          dispatch_wrong_sha["inputs"]["expected_workflow_sha"] = "0" * 40
-          fixtures["dispatch-wrong-sha"] = dispatch_wrong_sha
-          for name, value in fixtures.items():
-              (target / f"{name}.json").write_text(json.dumps(value) + "\n", encoding="utf-8")
-          PY
-          run_push_fixture() {
-            env \
-              GITHUB_EVENT_NAME=push \
-              GITHUB_REF="${validation_ref}" \
-              GITHUB_REPOSITORY=sednalabs/codex \
-              GITHUB_SHA="${EXPECTED_WORKFLOW_SHA}" \
-              GITHUB_EVENT_PATH="$1" \
-              REQUESTED_WORKFLOW_SHA= \
-              REQUESTED_WORKFLOW_TREE= \
-              "${runtime_args[@]}"
-          }
-          run_dispatch_fixture() {
-            env \
-              GITHUB_EVENT_NAME=workflow_dispatch \
-              GITHUB_REF="${validation_ref}" \
-              GITHUB_REPOSITORY=sednalabs/codex \
-              GITHUB_SHA="${EXPECTED_WORKFLOW_SHA}" \
-              GITHUB_EVENT_PATH="$1" \
-              REQUESTED_WORKFLOW_SHA="$2" \
-              REQUESTED_WORKFLOW_TREE="${EXPECTED_WORKFLOW_TREE}" \
-              "${runtime_args[@]}"
-          }
-          run_push_fixture "${fixture_dir}/push-valid.json" >/dev/null
-          expect_failure "event repository mismatch" \
-            run_push_fixture "${fixture_dir}/push-wrong-repository.json"
-          expect_failure "push event ref mismatch" \
-            run_push_fixture "${fixture_dir}/push-wrong-ref.json"
-          expect_failure "push predecessor mismatch" \
-            run_push_fixture "${fixture_dir}/push-wrong-before.json"
-          expect_failure "push target mismatch" \
-            run_push_fixture "${fixture_dir}/push-wrong-after.json"
-          expect_failure "push event must not be forced" \
-            run_push_fixture "${fixture_dir}/push-forced.json"
-          expect_failure "push event must not delete ref" \
-            run_push_fixture "${fixture_dir}/push-deleted.json"
-          expect_failure "push event must fast-forward the existing consumer ref" \
-            run_push_fixture "${fixture_dir}/push-created.json"
-          run_dispatch_fixture \
-            "${fixture_dir}/dispatch-valid.json" \
-            "${EXPECTED_WORKFLOW_SHA}" >/dev/null
-          expect_failure "workflow dispatch SHA does not match run checkout" \
-            run_dispatch_fixture \
-              "${fixture_dir}/dispatch-wrong-sha.json" \
-              0000000000000000000000000000000000000000
-          expect_failure "repo-root must be absolute" \
-            python3 "${helper}" \
-              --repo-root source-candidate \
-              --artifact-dir "${RUNNER_TEMP}/not-present" \
-              --output-dir "${RUNNER_TEMP}/not-created" \
-              --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
-              --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
-          run_uv_fixture() {
-            env \
-              GITHUB_EVENT_NAME=push \
-              GITHUB_REF="${validation_ref}" \
-              GITHUB_REPOSITORY=sednalabs/codex \
-              GITHUB_SHA="${EXPECTED_WORKFLOW_SHA}" \
-              GITHUB_EVENT_PATH="${fixture_dir}/push-valid.json" \
-              REQUESTED_WORKFLOW_SHA= \
-              REQUESTED_WORKFLOW_TREE= \
-              python3 "${helper}" \
-                --validate-uv-identity "$1" \
-                --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
-                --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
-          }
-          plain_uv="$(run_uv_fixture 'uv 0.11.3')"
-          test "$(jq -r '.status' <<<"${plain_uv}")" = ready
-          test "$(jq -r '.identity.name' <<<"${plain_uv}")" = uv
-          test "$(jq -r '.identity.version' <<<"${plain_uv}")" = 0.11.3
-          test "$(jq -r '.identity.target' <<<"${plain_uv}")" = null
-          suffixed_uv="$(run_uv_fixture 'uv 0.11.3 (x86_64-unknown-linux-gnu)')"
-          test "$(jq -r '.status' <<<"${suffixed_uv}")" = ready
-          test "$(jq -r '.identity.target' <<<"${suffixed_uv}")" = x86_64-unknown-linux-gnu
-          expect_failure "uv:version-mismatch" \
-            run_uv_fixture 'uv 0.11.4'
-          expect_failure "uv:name-mismatch" \
-            run_uv_fixture 'uvx 0.11.3'
-          expect_failure "uv:malformed-identity" \
-            run_uv_fixture 'uv 0.11.3 x86_64-unknown-linux-gnu'
-          test -z "$(grep -nE 'patch_base64|disposition_json|git[[:space:]]+apply' "${helper}" || true)"
 
       - name: Verify exact accepted SDK artifact provider identity
         shell: bash
@@ -267,67 +115,68 @@ jobs:
           path: ${{ runner.temp }}/w13825-sdk-input
           merge-multiple: true
 
-      - name: Preflight accepted execution inputs
-        id: execution-inputs
+      - name: Emit complete content-free composition metadata
+        id: manifest
         shell: bash
         run: |
           set -euo pipefail
-          preflight_dir="${RUNNER_TEMP}/w13825-sdk-build-inputs"
-          python3 "${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py" \
-            --prepare-inputs-only \
-            --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
-            --artifact-dir "${RUNNER_TEMP}/w13825-sdk-input" \
-            --preflight-dir "${preflight_dir}" \
-            --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
-            --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
-          root_pnpm_version="$(
-            jq -er \
-              '.root_package.package_manager.version | select(type == "string" and test("^[0-9]+[.][0-9]+[.][0-9]+$"))' \
-              "${preflight_dir}/execution-inputs.json"
+          output_dir="${RUNNER_TEMP}/w13825-composition-metadata"
+          receipt="$(
+            python3 "${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py" \
+              --metadata-manifest-only \
+              --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
+              --artifact-dir "${RUNNER_TEMP}/w13825-sdk-input" \
+              --output-dir "${output_dir}" \
+              --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+              --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
           )"
-          printf 'root_pnpm_version=%s\n' "${root_pnpm_version}" >>"${GITHUB_OUTPUT}"
+          manifest="${output_dir}/composition-tree-manifest.json"
+          test -f "${manifest}"
+          test "$(find "${output_dir}" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 1
+          test "$(jq -r '.schema' "${manifest}")" = sdk-build-content-free-tree-manifest
+          test "$(jq -r '.status' "${manifest}")" = complete
+          manifest_sha256="$(sha256sum "${manifest}" | awk '{print $1}')"
+          manifest_size="$(stat -c '%s' "${manifest}")"
+          test "${manifest_sha256}" = "$(jq -r '.manifest_sha256' <<<"${receipt}")"
+          test "${manifest_size}" = "$(jq -r '.manifest_size_bytes | tostring' <<<"${receipt}")"
+          test "${manifest_size}" -gt 0
+          test "${manifest_size}" -le 16777216
+          {
+            printf 'file_sha256=%s\n' "${manifest_sha256}"
+            printf 'file_size_bytes=%s\n' "${manifest_size}"
+            printf 'manifest_identity_sha256=%s\n' "$(jq -r '.manifest_identity_sha256' <<<"${receipt}")"
+          } >>"${GITHUB_OUTPUT}"
+          printf 'CONTENT_FREE_TREE_MANIFEST=%s\n' "${receipt}"
 
-      - name: Set up exact uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: 0.11.3
-          enable-cache: false
-
-      - name: Set up accepted-root pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v5
-        with:
-          version: ${{ steps.execution-inputs.outputs.root_pnpm_version }}
-          run_install: false
-
-      - name: Set up Node.js 22
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
-      - name: Set up repository-pinned Bazel
-        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
-        with:
-          bazelisk-version: 1.28.1
-          bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}
-          cache-save: false
-
-      - name: Build, generate, test, and bundle exact consumer candidate
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 "${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py" \
-            --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
-            --artifact-dir "${RUNNER_TEMP}/w13825-sdk-input" \
-            --preflight-dir "${RUNNER_TEMP}/w13825-sdk-build-inputs" \
-            --output-dir "${RUNNER_TEMP}/w13825-sdk-build-candidate" \
-            --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
-            --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
-
-      - name: Upload successful consumer candidate evidence (no push)
-        if: success()
+      - name: Upload complete content-free composition metadata
+        id: upload-metadata
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: upstream-sdk-build-candidate-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/w13825-sdk-build-candidate
+          name: upstream-composition-tree-manifest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/w13825-composition-metadata/composition-tree-manifest.json
           if-no-files-found: error
+          compression-level: 9
+
+      - name: Record exact uploaded metadata identity
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload-metadata.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload-metadata.outputs.artifact-digest }}
+          FILE_SHA256: ${{ steps.manifest.outputs.file_sha256 }}
+          FILE_SIZE_BYTES: ${{ steps.manifest.outputs.file_size_bytes }}
+          MANIFEST_IDENTITY_SHA256: ${{ steps.manifest.outputs.manifest_identity_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "${ARTIFACT_ID}" =~ ^[0-9]+$ ]]
+          [[ "${ARTIFACT_DIGEST}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${FILE_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${FILE_SIZE_BYTES}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${MANIFEST_IDENTITY_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          jq -cn \
+            --arg artifact_id "${ARTIFACT_ID}" \
+            --arg artifact_digest "${ARTIFACT_DIGEST}" \
+            --arg file_sha256 "${FILE_SHA256}" \
+            --argjson file_size_bytes "${FILE_SIZE_BYTES}" \
+            --arg manifest_identity_sha256 "${MANIFEST_IDENTITY_SHA256}" \
+            '{schema:"sdk-build-content-free-tree-manifest-artifact",version:1,status:"uploaded",artifact_id:$artifact_id,artifact_digest:$artifact_digest,file_sha256:$file_sha256,file_size_bytes:$file_size_bytes,manifest_identity_sha256:$manifest_identity_sha256}' \
+            | sed 's/^/CONTENT_FREE_TREE_ARTIFACT=/'

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Build the exact hosted SDK/build consumer candidate for w13825.
+"""Inspect or build the exact hosted SDK/build consumer candidate for w13825.
 
 Trusted code comes from the reviewed workflow checkout.  The accepted SDK
 artifact and reviewed build-source commit are immutable data inputs.  The
 consumer verifies every input tuple, retains the three already-materialized
-patch dependencies, applies only eight reviewed source entries, regenerates
-up to five coupled outputs with repository-pinned tools, and emits a
-fresh-bare-verified Git bundle without publishing a ref.
+patch dependencies, and applies only eight reviewed source entries.  Its
+metadata-only mode emits complete content-free tree manifests without running
+generators or creating Git objects.  Its build mode regenerates up to five
+coupled outputs with repository-pinned tools and emits a fresh-bare-verified
+Git bundle without publishing a ref.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ REPOSITORY_ID = "1152496647"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-build-consumer"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "d66a32521e38a51d9a2917d8378795667606f48c"
+PUSH_PREDECESSOR_SHA = "8c75a6d18e634cd488c0c07f9cf67c49a294d91f"
 
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
@@ -165,6 +167,37 @@ GENERATED_PATHS = [
 ]
 SDK_GENERATED_PATHS = GENERATED_PATHS[2:]
 ALLOWED_MUTABLE_PATHS = sorted([*BUILD_PATHS, *GENERATED_PATHS])
+
+V8_DIAGNOSTIC_PATHS = sorted(
+    [
+        "MODULE.bazel",
+        "MODULE.bazel.lock",
+        "codex-rs/Cargo.lock",
+        "codex-rs/Cargo.toml",
+        "patches/v8_bazel_rules.patch",
+        "patches/v8_module_deps.patch",
+        "patches/v8_source_portability.patch",
+        "third_party/v8/BUILD.bazel",
+        "third_party/v8/README.md",
+        "third_party/v8/libcxx.BUILD.bazel",
+        "third_party/v8/llvm_libc.BUILD.bazel",
+        "third_party/v8/rusty_v8_149_2_0.sha256",
+        "third_party/v8/rusty_v8_150_4_0.sha256",
+    ]
+)
+V8_PATCH_PATHS = [
+    "patches/v8_bazel_rules.patch",
+    "patches/v8_module_deps.patch",
+    "patches/v8_source_portability.patch",
+]
+EXPECTED_V8_PATCH_ORDER = [
+    "v8_module_deps.patch",
+    "v8_bazel_rules.patch",
+    "v8_source_portability.patch",
+]
+MAX_TREE_ENTRY_COUNT = 100_000
+MAX_METADATA_MANIFEST_BYTES = 16 * 1024 * 1024
+MAX_METADATA_BLOB_BYTES = 2 * 1024 * 1024
 
 SDK_RUNTIME_DEPENDENCY = "openai-codex-cli-bin==0.147.0"
 SDK_RUNTIME_VERSION = "0.147.0"
@@ -348,6 +381,132 @@ def tree_entry(
     require(object_type == ("commit" if mode == "160000" else "blob"), f"mode/type mismatch for {path}")
     require(SHA_PATTERN.fullmatch(oid) is not None, f"invalid object ID for {path}")
     return mode, object_type, oid
+
+
+def normalized_tree_path(raw: bytes) -> str:
+    try:
+        path = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SystemExit("tree entry path is not UTF-8") from error
+    require(path and len(path.encode("utf-8")) <= 4096, "tree entry path length is invalid")
+    require(re.search(r"[\x00-\x1f\x7f]", path) is None, f"tree entry path contains control bytes: {path!r}")
+    normalized = pathlib.PurePosixPath(path)
+    require(not normalized.is_absolute(), f"tree entry path is absolute: {path}")
+    require(all(part not in {"", ".", ".."} for part in normalized.parts), f"tree entry path is unsafe: {path}")
+    require(normalized.as_posix() == path, f"tree entry path is not normalized: {path}")
+    return path
+
+
+def canonical_entry_bytes(entries: list[list[str]]) -> bytes:
+    return b"".join(
+        f"{mode} {object_type} {oid}\t{path}".encode("utf-8") + b"\0"
+        for mode, object_type, oid, path in entries
+    )
+
+
+def full_tree_manifest(
+    repo: pathlib.Path,
+    revision: str,
+    expected_tree: str,
+    expected_parent: str,
+) -> dict[str, Any]:
+    require(SHA_PATTERN.fullmatch(revision) is not None, "tree manifest revision is invalid")
+    require(SHA_PATTERN.fullmatch(expected_tree) is not None, "tree manifest expected tree is invalid")
+    require(SHA_PATTERN.fullmatch(expected_parent) is not None, "tree manifest expected parent is invalid")
+    require(
+        run("git", "rev-parse", f"{revision}^{{tree}}", cwd=repo).strip() == expected_tree,
+        "tree manifest root mismatch",
+    )
+    require(
+        run("git", "show", "-s", "--format=%P", revision, cwd=repo).split() == [expected_parent],
+        "tree manifest parent mismatch",
+    )
+
+    output = run_bytes("git", "ls-tree", "--full-tree", "-r", "-z", revision, cwd=repo)
+    require(output and output.endswith(b"\0"), "tree manifest listing is empty or incomplete")
+    entries: list[list[str]] = []
+    seen: set[str] = set()
+    for record in output[:-1].split(b"\0"):
+        require(record and b"\t" in record, "tree manifest record is malformed")
+        metadata, raw_path = record.split(b"\t", 1)
+        try:
+            mode, object_type, oid = metadata.decode("ascii").split()
+        except (UnicodeDecodeError, ValueError) as error:
+            raise SystemExit("tree manifest metadata is malformed") from error
+        path = normalized_tree_path(raw_path)
+        require(path not in seen, f"tree manifest contains duplicate path: {path}")
+        require(mode in {"100644", "100755", "120000", "160000"}, f"unsupported Git mode for {path}: {mode}")
+        require(object_type == ("commit" if mode == "160000" else "blob"), f"mode/type mismatch for {path}")
+        require(SHA_PATTERN.fullmatch(oid) is not None, f"invalid object ID for {path}")
+        seen.add(path)
+        entries.append([mode, object_type, oid, path])
+        require(len(entries) <= MAX_TREE_ENTRY_COUNT, "tree manifest entry bound exceeded")
+    entries.sort(key=lambda entry: entry[3].encode("utf-8"))
+    paths = [entry[3] for entry in entries]
+    canonical = canonical_entry_bytes(entries)
+    return {
+        "complete": True,
+        "commit_sha": revision,
+        "tree_sha": expected_tree,
+        "parent_sha": expected_parent,
+        "entry_count": len(entries),
+        "path_set_sha256": path_digest(paths),
+        "canonical_entries_sha256": hashlib.sha256(canonical).hexdigest(),
+        "entries": entries,
+    }
+
+
+def manifest_entry_map(subject: dict[str, Any]) -> dict[str, list[str]]:
+    entries = subject.get("entries")
+    require(isinstance(entries, list), "tree manifest entries are unavailable")
+    result: dict[str, list[str]] = {}
+    for entry in entries:
+        require(isinstance(entry, list) and len(entry) == 4, "tree manifest entry shape is invalid")
+        mode, object_type, oid, path = entry
+        require(all(isinstance(value, str) for value in entry), "tree manifest entry value is invalid")
+        require(path not in result, f"tree manifest entry is duplicated: {path}")
+        result[path] = [mode, object_type, oid, path]
+    return result
+
+
+def in_memory_composed_manifest(
+    repo: pathlib.Path,
+    sdk_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    entries = manifest_entry_map(sdk_manifest)
+    before = {path: list(entry) for path, entry in entries.items()}
+    for path, expected in BUILD_SOURCE_ENTRIES.items():
+        require(
+            tree_entry(repo, SDK_CANDIDATE_SHA, path) == tree_entry(repo, BASE_SHA, path),
+            f"accepted SDK candidate did not retain build source preimage: {path}",
+        )
+        require(
+            tree_entry(repo, BUILD_SOURCE_SHA, path) == expected,
+            f"build source tuple changed before overlay manifest: {path}",
+        )
+        mode, object_type, oid = expected
+        require(path in entries, f"build overlay path is absent from SDK candidate: {path}")
+        entries[path] = [mode, object_type, oid, path]
+
+    changed = sorted(path for path in entries if entries[path] != before.get(path))
+    require(changed == BUILD_PATHS, "in-memory overlay escaped or omitted the exact build path set")
+    composed_entries = sorted(entries.values(), key=lambda entry: entry[3].encode("utf-8"))
+    require(len(composed_entries) == len(before), "in-memory overlay changed the tree entry count")
+    canonical = canonical_entry_bytes(composed_entries)
+    return {
+        "complete": True,
+        "identity_kind": "in-memory-overlay",
+        "base_commit_sha": SDK_CANDIDATE_SHA,
+        "base_tree_sha": SDK_CANDIDATE_TREE,
+        "build_source_sha": BUILD_SOURCE_SHA,
+        "build_source_tree": BUILD_SOURCE_TREE,
+        "overlay_path_count": len(changed),
+        "overlay_path_set_sha256": path_digest(changed),
+        "entry_count": len(composed_entries),
+        "path_set_sha256": path_digest([entry[3] for entry in composed_entries]),
+        "canonical_entries_sha256": hashlib.sha256(canonical).hexdigest(),
+        "entries": composed_entries,
+    }
 
 
 def index_entry(repo: pathlib.Path, path: str) -> tuple[str, str, str] | None:
@@ -673,6 +832,282 @@ def bounded_text(value: Any, *, maximum: int = 256) -> str | None:
     if not isinstance(value, str) or not value or len(value) > maximum:
         return None
     return value
+
+
+def exact_text_blob(
+    repo: pathlib.Path,
+    entries: dict[str, list[str]],
+    path: str,
+) -> tuple[bytes, dict[str, str]]:
+    entry = entries.get(path)
+    require(entry is not None, f"metadata input path is absent: {path}")
+    mode, object_type, oid, listed_path = entry
+    require(listed_path == path, f"metadata input path changed: {path}")
+    require(mode in {"100644", "100755"} and object_type == "blob", f"metadata input is not a regular blob: {path}")
+    size = int(run("git", "cat-file", "-s", oid, cwd=repo).strip())
+    require(0 < size <= MAX_METADATA_BLOB_BYTES, f"metadata input size is invalid: {path}")
+    content = run_bytes("git", "cat-file", "blob", oid, cwd=repo)
+    require(len(content) == size, f"metadata input size changed: {path}")
+    require(b"\0" not in content, f"metadata input is not text: {path}")
+    return content, {"mode": mode, "type": object_type, "oid": oid}
+
+
+def exact_match(pattern: str, text: str, label: str, *, flags: int = 0) -> str:
+    values = re.findall(pattern, text, flags)
+    require(len(values) == 1, f"{label} must have one value")
+    value = bounded_text(values[0], maximum=512)
+    require(value is not None, f"{label} is invalid")
+    return value
+
+
+def starlark_blocks(text: str, function: str) -> list[str]:
+    pattern = rf"(?ms)^{re.escape(function)}\(\n.*?^\)\n"
+    return re.findall(pattern, text)
+
+
+def normalized_v8_metadata(repo: pathlib.Path, composed: dict[str, Any]) -> dict[str, Any]:
+    entries = manifest_entry_map(composed)
+    module_bytes, module_entry = exact_text_blob(repo, entries, "MODULE.bazel")
+    cargo_bytes, cargo_entry = exact_text_blob(repo, entries, "codex-rs/Cargo.toml")
+    try:
+        module_text = module_bytes.decode("utf-8")
+        cargo_text = cargo_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SystemExit("V8 selector input is not UTF-8") from error
+
+    v8_version = exact_match(
+        r'^bazel_dep\(name\s*=\s*"v8",\s*version\s*=\s*"([^"]+)"\)$',
+        module_text,
+        "V8 Bazel module version",
+        flags=re.MULTILINE,
+    )
+    archive_blocks = [
+        block
+        for block in starlark_blocks(module_text, "archive_override")
+        if re.search(r'^\s*module_name\s*=\s*"v8",\s*$', block, re.MULTILINE)
+    ]
+    require(len(archive_blocks) == 1, "V8 archive override must be unique")
+    archive = archive_blocks[0]
+    archive_integrity = exact_match(
+        r'^\s*integrity\s*=\s*"([^"]+)",\s*$',
+        archive,
+        "V8 archive integrity",
+        flags=re.MULTILINE,
+    )
+    archive_strip_prefix = exact_match(
+        r'^\s*strip_prefix\s*=\s*"([^"]+)",\s*$',
+        archive,
+        "V8 archive strip prefix",
+        flags=re.MULTILINE,
+    )
+    archive_urls = sorted(set(re.findall(r'"(https://[^"]+)"', archive)))
+    require(len(archive_urls) == 1 and bounded_text(archive_urls[0], maximum=512), "V8 archive URL is invalid")
+    patch_order = re.findall(r'"//patches:([A-Za-z0-9_.-]+)"', archive)
+    require(patch_order == EXPECTED_V8_PATCH_ORDER, "V8 patch order is invalid")
+
+    crate_archives: list[dict[str, Any]] = []
+    for block in starlark_blocks(module_text, "http_archive"):
+        names = re.findall(r'^\s*name\s*=\s*"(v8_crate_[0-9_]+)",\s*$', block, re.MULTILINE)
+        if not names:
+            continue
+        require(len(names) == 1 and len(crate_archives) < 8, "V8 crate archive set is invalid")
+        urls = sorted(set(re.findall(r'"(https://[^"]+)"', block)))
+        require(len(urls) == 1 and bounded_text(urls[0], maximum=512), "V8 crate archive URL is invalid")
+        crate_archives.append(
+            {
+                "name": names[0],
+                "sha256": exact_match(
+                    r'^\s*sha256\s*=\s*"([0-9a-f]{64})",\s*$',
+                    block,
+                    f"{names[0]} SHA-256",
+                    flags=re.MULTILINE,
+                ),
+                "strip_prefix": exact_match(
+                    r'^\s*strip_prefix\s*=\s*"([^"]+)",\s*$',
+                    block,
+                    f"{names[0]} strip prefix",
+                    flags=re.MULTILINE,
+                ),
+                "url": urls[0],
+            }
+        )
+    require(crate_archives, "V8 crate archive metadata is absent")
+    crate_archives.sort(key=lambda value: value["name"])
+
+    cargo_v8_version = exact_match(
+        r'^v8\s*=\s*"=([^"]+)"\s*$',
+        cargo_text,
+        "Cargo V8 version",
+        flags=re.MULTILINE,
+    )
+    patches: list[dict[str, Any]] = []
+    for path in V8_PATCH_PATHS:
+        content, entry = exact_text_blob(repo, entries, path)
+        try:
+            patch_text = content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise SystemExit(f"V8 patch is not UTF-8: {path}") from error
+        orig_versions = sorted(set(re.findall(r"(?m)^--- a/orig/v8-([^/\s]+)/", patch_text)))
+        mod_versions = sorted(set(re.findall(r"(?m)^\+\+\+ b/mod/v8-([^/\s]+)/", patch_text)))
+        require(orig_versions and mod_versions, f"V8 patch target versions are absent: {path}")
+        require(len(orig_versions) <= 8 and len(mod_versions) <= 8, f"V8 patch target version bound exceeded: {path}")
+        require(
+            all(bounded_text(version, maximum=64) is not None for version in [*orig_versions, *mod_versions]),
+            f"V8 patch target version is invalid: {path}",
+        )
+        patches.append(
+            {
+                "path": path,
+                "entry": entry,
+                "byte_size": len(content),
+                "content_sha256": hashlib.sha256(content).hexdigest(),
+                "orig_target_versions": orig_versions,
+                "mod_target_versions": mod_versions,
+            }
+        )
+
+    return {
+        "module": {
+            "entry": module_entry,
+            "bazel_module_version": v8_version,
+            "archive_integrity": archive_integrity,
+            "archive_strip_prefix": archive_strip_prefix,
+            "archive_url": archive_urls[0],
+            "patch_order": patch_order,
+            "crate_archives": crate_archives,
+        },
+        "cargo": {
+            "entry": cargo_entry,
+            "v8_version": cargo_v8_version,
+        },
+        "patches": patches,
+    }
+
+
+def projected_entries(subject: dict[str, Any]) -> list[dict[str, Any]]:
+    entries = manifest_entry_map(subject)
+    return [
+        {
+            "path": path,
+            "entry": (
+                {
+                    "mode": entries[path][0],
+                    "type": entries[path][1],
+                    "oid": entries[path][2],
+                }
+                if path in entries
+                else None
+            ),
+        }
+        for path in V8_DIAGNOSTIC_PATHS
+    ]
+
+
+def emit_tree_metadata_manifest(
+    repo: pathlib.Path,
+    files: dict[str, pathlib.Path],
+    output: pathlib.Path,
+    runtime: dict[str, str],
+) -> dict[str, Any]:
+    require(output.parent.is_dir(), "metadata output parent is unavailable")
+    require(not output.exists(), "metadata output directory already exists")
+
+    materialized = full_tree_manifest(repo, MATERIALIZED_SHA, MATERIALIZED_TREE, BASE_SHA)
+    sdk_candidate = full_tree_manifest(repo, SDK_CANDIDATE_SHA, SDK_CANDIDATE_TREE, MATERIALIZED_SHA)
+    materialized_entries = manifest_entry_map(materialized)
+    sdk_entries = manifest_entry_map(sdk_candidate)
+    sdk_changed = sorted(
+        path
+        for path in set(materialized_entries) | set(sdk_entries)
+        if materialized_entries.get(path) != sdk_entries.get(path)
+    )
+    require(sdk_changed == SDK_SOURCE_PATHS, "full SDK tree manifest delta is not the accepted path set")
+    composed = in_memory_composed_manifest(repo, sdk_candidate)
+    v8_projection = {
+        "materialized": projected_entries(materialized),
+        "sdk_candidate": projected_entries(sdk_candidate),
+        "composed_pre_generation": projected_entries(composed),
+    }
+    v8_metadata = normalized_v8_metadata(repo, composed)
+    identity_fields = {
+        "materialized_sha": MATERIALIZED_SHA,
+        "materialized_tree": MATERIALIZED_TREE,
+        "materialized_entries_sha256": materialized["canonical_entries_sha256"],
+        "sdk_candidate_sha": SDK_CANDIDATE_SHA,
+        "sdk_candidate_tree": SDK_CANDIDATE_TREE,
+        "sdk_candidate_entries_sha256": sdk_candidate["canonical_entries_sha256"],
+        "build_source_sha": BUILD_SOURCE_SHA,
+        "build_source_tree": BUILD_SOURCE_TREE,
+        "composed_entries_sha256": composed["canonical_entries_sha256"],
+        "v8_projection_sha256": hashlib.sha256(
+            json.dumps(v8_projection, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+    }
+    manifest_identity_sha256 = hashlib.sha256(
+        json.dumps(identity_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    manifest = {
+        "schema": "sdk-build-content-free-tree-manifest",
+        "version": 1,
+        "repository": REPOSITORY,
+        "signed": False,
+        "status": "complete",
+        "truncated": False,
+        "content_policy": "git-entry-metadata-and-bounded-normalized-v8-selectors-only",
+        "entry_format": ["mode", "type", "oid", "path"],
+        **runtime,
+        "input_sdk_artifact": {
+            "id": SDK_INPUT_ARTIFACT_ID,
+            "name": SDK_INPUT_ARTIFACT_NAME,
+            "size_bytes": SDK_INPUT_ARTIFACT_SIZE,
+            "archive_sha256": SDK_INPUT_ARCHIVE_SHA256,
+            "run_id": SDK_INPUT_RUN_ID,
+            "run_attempt": SDK_INPUT_RUN_ATTEMPT,
+            "workflow_sha": SDK_INPUT_WORKFLOW_SHA,
+            "workflow_tree": SDK_INPUT_WORKFLOW_TREE,
+            "bundle_sha256": SDK_INPUT_BUNDLE_SHA256,
+            "receipt_sha256": SDK_INPUT_RECEIPT_SHA256,
+            "provenance_sha256": digest(files["provenance"]),
+        },
+        "identity_fields": identity_fields,
+        "manifest_identity_sha256": manifest_identity_sha256,
+        "relationships": {
+            "materialized_parent": BASE_SHA,
+            "sdk_candidate_parent": MATERIALIZED_SHA,
+            "sdk_candidate_changed_path_count": len(sdk_changed),
+            "sdk_candidate_changed_path_set_sha256": path_digest(sdk_changed),
+            "sdk_candidate_changed_paths": sdk_changed,
+            "build_overlay_path_count": len(BUILD_PATHS),
+            "build_overlay_path_set_sha256": BUILD_PATHS_SHA256,
+        },
+        "subjects": {
+            "materialized": materialized,
+            "sdk_candidate": sdk_candidate,
+            "composed_pre_generation": composed,
+        },
+        "v8_projection": v8_projection,
+        "v8_metadata": v8_metadata,
+    }
+    payload = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    require(0 < len(payload) <= MAX_METADATA_MANIFEST_BYTES, "metadata manifest size bound exceeded")
+    output.mkdir()
+    manifest_path = output / "composition-tree-manifest.json"
+    manifest_path.write_bytes(payload)
+    require([path.name for path in output.iterdir()] == [manifest_path.name], "metadata output file set mismatch")
+    require(manifest_path.stat().st_size == len(payload), "metadata manifest size changed after write")
+    require(load(manifest_path) == manifest, "metadata manifest readback mismatch")
+    return {
+        "schema": "sdk-build-content-free-tree-manifest-emission",
+        "version": 1,
+        "status": "complete",
+        "manifest_file": manifest_path.name,
+        "manifest_sha256": digest(manifest_path),
+        "manifest_size_bytes": len(payload),
+        "manifest_identity_sha256": manifest_identity_sha256,
+        "materialized_entry_count": materialized["entry_count"],
+        "sdk_candidate_entry_count": sdk_candidate["entry_count"],
+        "composed_entry_count": composed["entry_count"],
+    }
 
 
 def read_input_text(
@@ -1383,6 +1818,7 @@ def main() -> None:
     parser.add_argument("--validate-runtime-only", action="store_true")
     parser.add_argument("--validate-uv-identity")
     parser.add_argument("--prepare-inputs-only", action="store_true")
+    parser.add_argument("--metadata-manifest-only", action="store_true")
     args = parser.parse_args()
 
     runtime = verify_runtime(args.expected_workflow_sha, args.expected_workflow_tree)
@@ -1393,7 +1829,8 @@ def main() -> None:
             and args.preflight_dir is None
             and args.output_dir is None
             and args.validate_uv_identity is None
-            and not args.prepare_inputs_only,
+            and not args.prepare_inputs_only
+            and not args.metadata_manifest_only,
             "runtime-only validation does not accept consumer paths",
         )
         print(json.dumps(runtime, sort_keys=True))
@@ -1404,7 +1841,8 @@ def main() -> None:
             and args.artifact_dir is None
             and args.preflight_dir is None
             and args.output_dir is None
-            and not args.prepare_inputs_only,
+            and not args.prepare_inputs_only
+            and not args.metadata_manifest_only,
             "uv identity validation does not accept consumer paths",
         )
         receipt = uv_identity_receipt(args.validate_uv_identity)
@@ -1419,6 +1857,24 @@ def main() -> None:
     artifact = absolute_argument(args.artifact_dir, "artifact-dir", must_exist=True)
     require(repo.is_dir() and artifact.is_dir(), "repository and artifact inputs must be directories")
     verify_build_source_checkout(repo)
+
+    if args.metadata_manifest_only:
+        require(not args.prepare_inputs_only, "metadata manifest mode conflicts with input preparation")
+        require(
+            args.preflight_dir is None and args.output_dir is not None,
+            "metadata manifest mode requires only output directory",
+        )
+        output = absolute_argument(args.output_dir, "output-dir", must_exist=False)
+        require(output.parent.is_dir(), "metadata output parent is unavailable")
+        files = verify_sdk_artifact_files(artifact)
+        with tempfile.TemporaryDirectory(prefix="w13825-tree-manifest-", dir=str(output.parent)) as temp_name:
+            temp = pathlib.Path(temp_name).resolve(strict=True)
+            import_sdk_bundle(repo, files["bundle"], temp)
+            sdk_receipt = load(files["receipt"])
+            verify_sdk_input_entries(repo, sdk_receipt)
+            emission = emit_tree_metadata_manifest(repo, files, output, runtime)
+        print(json.dumps(emission, sort_keys=True, separators=(",", ":")))
+        return
 
     if args.prepare_inputs_only:
         require(args.preflight_dir is not None and args.output_dir is None, "preflight path is required")
