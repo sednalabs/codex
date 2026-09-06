@@ -72,7 +72,7 @@ jobs:
             echo 'recovery snapshot: selected and remote ref names differ' >&2
             printf 'selected_count=%s remote_count=%s\n' "$(wc -l < refs.txt)" "$(wc -l < remote-refs.txt)" >&2
             sha256sum refs.txt remote-refs.txt >&2
-            comm -3 refs.txt remote-refs.txt | head -n 5 >&2
+            comm -3 refs.txt remote-refs.txt | awk 'NR <= 5 {print}' >&2
             exit 1
           fi
           while read -r oid ref; do
@@ -94,7 +94,7 @@ jobs:
             echo 'recovery snapshot: fetched and remote ref maps differ' >&2
             printf 'remote_count=%s fetched_count=%s\n' "$(wc -l < remote-map.txt)" "$(wc -l < fetched-map.txt)" >&2
             sha256sum remote-map.txt fetched-map.txt >&2
-            comm -3 <(awk '{print $2}' remote-map.txt) <(awk '{print $2}' fetched-map.txt) | head -n 5 >&2
+            comm -3 <(awk '{print $2}' remote-map.txt) <(awk '{print $2}' fetched-map.txt) | awk 'NR <= 5 {print}' >&2
             exit 1
           fi
           MAIN_OID=$(awk '$2 == "refs/heads/main" {print $1; found++} END {if (found != 1) exit 1}' remote-map.txt)
