@@ -114,6 +114,21 @@ jobs:
           set -euo pipefail; umask 077
           python3 scripts/recovery-snapshot/snapshot.py package --repo-dir source.git --refs-file refs.txt --metadata-dir metadata --candidate-sha "$CANDIDATE_SHA" --output snapshot.tar.gz > package-info.json
           python3 scripts/recovery-snapshot/snapshot.py restore-test --archive snapshot.tar.gz --candidate-sha "$CANDIDATE_SHA"
+      - name: Install pinned age tool
+        run: |
+          set -euo pipefail; umask 077
+          AGE_TOOL_DIR="$RUNNER_TEMP/recovery-snapshot-age-tool"
+          AGE_ARCHIVE="$AGE_TOOL_DIR/age-v1.3.2-linux-amd64.tar.gz"
+          rm -rf "$AGE_TOOL_DIR"
+          mkdir -p "$AGE_TOOL_DIR"
+          curl --fail --location --silent --show-error --retry 3 \
+            --output "$AGE_ARCHIVE" \
+            "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz"
+          test "$(stat -c '%s' "$AGE_ARCHIVE")" = 19405817
+          test "$(sha256sum "$AGE_ARCHIVE" | cut -d' ' -f1)" = cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
+          tar -xzf "$AGE_ARCHIVE" -C "$AGE_TOOL_DIR" age/age
+          test -f "$AGE_TOOL_DIR/age/age" -a -x "$AGE_TOOL_DIR/age/age"
+          echo "$AGE_TOOL_DIR/age" >> "$GITHUB_PATH"
       - name: Encrypt and upload ciphertext
         id: encrypt
         env:
@@ -122,8 +137,8 @@ jobs:
           WORKFLOW_CODE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail; umask 077
-          trap 'rm -f snapshot.tar.gz refs.txt remote-refs.txt remote-map.txt fetched-map.txt package-info.json tool-versions.json; rm -rf source.git metadata' EXIT
-          command -v age >/dev/null || { echo 'age is required on the hosted runner; no remote installation is performed' >&2; exit 1; }
+          trap 'rm -f snapshot.tar.gz refs.txt remote-refs.txt remote-map.txt fetched-map.txt package-info.json tool-versions.json; rm -rf source.git metadata "$RUNNER_TEMP/recovery-snapshot-age-tool"' EXIT
+          command -v age >/dev/null || { echo 'pinned age is required on the hosted runner; runner-local installation failed' >&2; exit 1; }
           [[ "$AGE_RECIPIENT" =~ ^age1[0-9a-z]+$ ]]
           test -s snapshot.tar.gz
           INNER_SIZE=$(stat -c '%s' snapshot.tar.gz)
@@ -188,6 +203,11 @@ jobs:
             --arg upload_artifact_digest "$UPLOAD_ARTIFACT_DIGEST" --arg api_artifact_digest "$API_ARTIFACT_DIGEST" \
             --argjson ciphertext_size "$CIPHERTEXT_SIZE" --argjson tool_versions "$TOOL_VERSIONS" --argjson artifact_size "$ARTIFACT_SIZE" '{inner_sha256,inner_size,ciphertext_sha256,ciphertext_size,artifact_id,artifact_size,upload_artifact_digest,api_artifact_digest,source_sha,workflow_code_sha,ref_manifest_sha256,metadata_manifest_sha256,restore_test_identity,recipient_sha256,tool_versions}' \
             >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove pinned age staging
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/recovery-snapshot-age-tool"
       - name: Remove plaintext staging data
         if: ${{ always() }}
         run: |
