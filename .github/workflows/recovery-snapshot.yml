@@ -129,19 +129,22 @@ jobs:
           SOURCE_SHA: ${{ steps.encrypt.outputs.source_sha }}
           TOOL_VERSIONS: ${{ steps.encrypt.outputs.tool_versions }}
           ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
-          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          UPLOAD_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           ARTIFACT_READBACK=$(gh api "repos/${{ github.repository }}/actions/artifacts/${{ steps.upload.outputs.artifact-id }}")
           ARTIFACT_SIZE=$(jq -r '.size_in_bytes' <<<"$ARTIFACT_READBACK")
-          ARTIFACT_DIGEST=$(jq -r '.digest' <<<"$ARTIFACT_READBACK")
-          test "$ARTIFACT_SIZE" != "null" -a "$ARTIFACT_DIGEST" != "null" -a -n "$ARTIFACT_DIGEST"
+          API_ARTIFACT_DIGEST=$(jq -r '.digest' <<<"$ARTIFACT_READBACK")
+          test "$ARTIFACT_SIZE" != "null" -a "$UPLOAD_ARTIFACT_DIGEST" != "null" -a -n "$UPLOAD_ARTIFACT_DIGEST" \
+            -a "$API_ARTIFACT_DIGEST" != "null" -a -n "$API_ARTIFACT_DIGEST" \
+            -a "$UPLOAD_ARTIFACT_DIGEST" = "$API_ARTIFACT_DIGEST"
           jq -n --arg inner_sha256 "$INNER_SHA" --argjson inner_size "$INNER_SIZE" \
             --arg ref_manifest_sha256 "$REF_MANIFEST_SHA" --arg metadata_manifest_sha256 "$METADATA_MANIFEST_SHA" \
             --arg restore_test_identity "$RESTORE_ID" --arg recipient_sha256 "$RECIPIENT_SHA256" \
-            --arg source_sha "$SOURCE_SHA" --arg ciphertext_sha256 "$CIPHERTEXT_SHA" --arg artifact_id "$ARTIFACT_ID" --arg artifact_digest "$ARTIFACT_DIGEST" \
-            --argjson ciphertext_size "$CIPHERTEXT_SIZE" --argjson tool_versions "$TOOL_VERSIONS" --argjson artifact_size "$ARTIFACT_SIZE" '{inner_sha256,inner_size,ciphertext_sha256,ciphertext_size,artifact_id,artifact_size,artifact_digest,source_sha,ref_manifest_sha256,metadata_manifest_sha256,restore_test_identity,recipient_sha256,tool_versions}' \
+            --arg source_sha "$SOURCE_SHA" --arg ciphertext_sha256 "$CIPHERTEXT_SHA" --arg artifact_id "$ARTIFACT_ID" \
+            --arg upload_artifact_digest "$UPLOAD_ARTIFACT_DIGEST" --arg api_artifact_digest "$API_ARTIFACT_DIGEST" \
+            --argjson ciphertext_size "$CIPHERTEXT_SIZE" --argjson tool_versions "$TOOL_VERSIONS" --argjson artifact_size "$ARTIFACT_SIZE" '{inner_sha256,inner_size,ciphertext_sha256,ciphertext_size,artifact_id,artifact_size,upload_artifact_digest,api_artifact_digest,source_sha,ref_manifest_sha256,metadata_manifest_sha256,restore_test_identity,recipient_sha256,tool_versions}' \
             >> "$GITHUB_STEP_SUMMARY"
       - name: Remove plaintext staging data
         if: ${{ always() }}
