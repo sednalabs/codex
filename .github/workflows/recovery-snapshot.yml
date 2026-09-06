@@ -1,0 +1,137 @@
+name: Recovery snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repository:
+        description: "Source repository (owner/name)"
+        required: true
+        default: "sednalabs/codex"
+        type: string
+      candidate_sha:
+        description: "Full commit SHA to bind into the package"
+        required: true
+        type: string
+      refs:
+        description: "One refs/heads/* or refs/tags/* name per line"
+        required: true
+        type: string
+      age_recipient:
+        description: "Operator-controlled age recipient"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Prepare exact inputs and fetch selected refs
+        env:
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          SELECTED_REFS: ${{ inputs.refs }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail; umask 077
+          [[ "$SOURCE_REPOSITORY" == "sednalabs/codex" && "$GITHUB_REPOSITORY" == "$SOURCE_REPOSITORY" ]]
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          printf '%s\n' "$SELECTED_REFS" | sed '/^[[:space:]]*$/d' > refs.txt
+          test -s refs.txt
+          while IFS= read -r ref; do
+            [[ "$ref" =~ ^refs/(heads|tags)/[A-Za-z0-9._/-]+$ && "$ref" != *..* && "$ref" != *//* && "$ref" != */. && "$ref" != */ && "$ref" != /* ]]
+          done < refs.txt
+          test "$(wc -l < refs.txt)" = "$(sort -u refs.txt | wc -l)"
+          sort -u refs.txt -o refs.txt
+          git init --bare source.git >/dev/null
+          git -C source.git remote add source "https://github.com/$SOURCE_REPOSITORY.git"
+          git ls-remote --refs source 'refs/heads/*' 'refs/tags/*' | awk '{print $2}' | sort -u > remote-refs.txt
+          cmp -s refs.txt remote-refs.txt
+          while IFS= read -r ref; do git -C source.git fetch --no-tags source "+$ref:$ref"; done < refs.txt
+          git -C source.git cat-file -e "$CANDIDATE_SHA^{commit}"
+          mkdir metadata
+          gh api "repos/$SOURCE_REPOSITORY" > metadata/repository.json
+          gh api --paginate --slurp "repos/$SOURCE_REPOSITORY/pulls?state=all&per_page=100" > metadata/pull-requests.json
+          gh api --paginate --slurp "repos/$SOURCE_REPOSITORY/releases?per_page=100" > metadata/releases.json
+          gh api --paginate --slurp "repos/$SOURCE_REPOSITORY/rulesets?per_page=100" > metadata/rulesets.json
+          gh api "repos/$SOURCE_REPOSITORY" --jq '{default_branch}' > metadata/default-branch.json
+      - name: Build package and restore-test before encryption
+        env: {CANDIDATE_SHA: ${{ inputs.candidate_sha }}}
+        run: |
+          set -euo pipefail; umask 077
+          python3 scripts/recovery-snapshot/snapshot.py package --repo-dir source.git --refs-file refs.txt --metadata-dir metadata --candidate-sha "$CANDIDATE_SHA" --output snapshot.tar.gz > package-info.json
+          python3 scripts/recovery-snapshot/snapshot.py restore-test --archive snapshot.tar.gz
+      - name: Encrypt and upload ciphertext
+        id: encrypt
+        env:
+          AGE_RECIPIENT: ${{ inputs.age_recipient }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail; umask 077
+          command -v age >/dev/null || { echo 'age is required on the hosted runner; no remote installation is performed' >&2; exit 1; }
+          [[ "$AGE_RECIPIENT" =~ ^age1[0-9a-z]+$ ]]
+          test -s snapshot.tar.gz
+          INNER_SIZE=$(stat -c '%s' snapshot.tar.gz)
+          test "$INNER_SIZE" -le 4294967296
+          test "$(sha256sum snapshot.tar.gz | cut -d' ' -f1)" = "$(jq -r .inner_sha256 package-info.json)"
+          test "$INNER_SIZE" = "$(jq -r .inner_size package-info.json)"
+          jq -cn --arg age "$(age --version)" --arg git "$(git --version)" \
+            --arg tar "$(tar --version | head -n1)" --arg gh "$(gh --version | head -n1)" \
+            --arg jq "$(jq --version)" '{age,git,tar,gh,jq}' > tool-versions.json
+          age -r "$AGE_RECIPIENT" -o recovery-snapshot.age snapshot.tar.gz
+          test "$(find . -maxdepth 1 -type f -name 'recovery-snapshot.age' | wc -l)" -eq 1
+          {
+            echo "inner_sha256=$(sha256sum snapshot.tar.gz | cut -d' ' -f1)"
+            echo "inner_size=$(stat -c '%s' snapshot.tar.gz)"
+            echo "ref_manifest_sha256=$(jq -r .ref_manifest_sha256 package-info.json)"
+            echo "metadata_manifest_sha256=$(sha256sum metadata/*.json | sha256sum | cut -d' ' -f1)"
+            echo "restore_test_identity=$(sha256sum snapshot.tar.gz | cut -d' ' -f1)"
+            echo "recipient_sha256=$(printf '%s' "$AGE_RECIPIENT" | sha256sum | cut -d' ' -f1)"
+            echo "source_sha=$CANDIDATE_SHA"
+            echo "tool_versions=$(jq -c . tool-versions.json)"
+          } >> "$GITHUB_OUTPUT"
+          rm -f snapshot.tar.gz refs.txt remote-refs.txt package-info.json tool-versions.json; rm -rf source.git metadata
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: recovery-snapshot-ciphertext
+          path: recovery-snapshot.age
+          retention-days: 3
+          if-no-files-found: error
+      - name: Emit non-sensitive receipt
+        env:
+          INNER_SHA: ${{ steps.encrypt.outputs.inner_sha256 }}
+          INNER_SIZE: ${{ steps.encrypt.outputs.inner_size }}
+          REF_MANIFEST_SHA: ${{ steps.encrypt.outputs.ref_manifest_sha256 }}
+          METADATA_MANIFEST_SHA: ${{ steps.encrypt.outputs.metadata_manifest_sha256 }}
+          RESTORE_ID: ${{ steps.encrypt.outputs.restore_test_identity }}
+          RECIPIENT_SHA256: ${{ steps.encrypt.outputs.recipient_sha256 }}
+          SOURCE_SHA: ${{ steps.encrypt.outputs.source_sha }}
+          TOOL_VERSIONS: ${{ steps.encrypt.outputs.tool_versions }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ARTIFACT_READBACK=$(gh api "repos/${{ github.repository }}/actions/artifacts/${{ steps.upload.outputs.artifact-id }}")
+          ARTIFACT_SIZE=$(jq -r '.size_in_bytes' <<<"$ARTIFACT_READBACK")
+          ARTIFACT_DIGEST=$(jq -r '.digest' <<<"$ARTIFACT_READBACK")
+          test "$ARTIFACT_SIZE" != "null" -a "$ARTIFACT_DIGEST" != "null" -a -n "$ARTIFACT_DIGEST"
+          jq -n --arg inner_sha256 "$INNER_SHA" --argjson inner_size "$INNER_SIZE" \
+            --arg ref_manifest_sha256 "$REF_MANIFEST_SHA" --arg metadata_manifest_sha256 "$METADATA_MANIFEST_SHA" \
+            --arg restore_test_identity "$RESTORE_ID" --arg recipient_sha256 "$RECIPIENT_SHA256" \
+            --arg source_sha "$SOURCE_SHA" --arg artifact_id "$ARTIFACT_ID" --arg artifact_digest "$ARTIFACT_DIGEST" \
+            --argjson tool_versions "$TOOL_VERSIONS" --argjson artifact_size "$ARTIFACT_SIZE" '{inner_sha256,inner_size,artifact_id,artifact_size,artifact_digest,source_sha,ref_manifest_sha256,metadata_manifest_sha256,restore_test_identity,recipient_sha256,tool_versions}' \
+            >> "$GITHUB_STEP_SUMMARY"
