@@ -22,6 +22,7 @@ jobs:
     env:
       CANDIDATE_SHA: ${{ inputs.candidate_sha }}
       CANDIDATE_REF: ${{ inputs.candidate_ref }}
+      CANONICAL_REF: ""
       RUNTIME_PIN: openai-codex-cli-bin==0.144.4
       OUTPUT_PATH: sdk/python/src/openai_codex/generated/v2_all.py
     steps:
@@ -35,9 +36,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          [[ "${CANDIDATE_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]
+          [[ "${CANDIDATE_REF}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]
+          [[ "${CANDIDATE_REF}" != refs/* ]]
+          [[ "${CANDIDATE_REF}" != */ ]]
+          git check-ref-format --branch "${CANDIDATE_REF}"
           test "${CANDIDATE_SHA}" = "$(git rev-parse HEAD)"
           test -z "$(git status --porcelain=v1)"
-          test "$(git diff-tree --no-commit-id --name-only -r HEAD | wc -l)" -ge 0
+          remote_line="$(git ls-remote --heads origin "refs/heads/${CANDIDATE_REF}")"
+          test "$(printf '%s\n' "${remote_line}" | sed '/^$/d' | wc -l)" = 1
+          remote_sha="$(printf '%s\n' "${remote_line}" | awk '{print $1}')"
+          remote_ref="$(printf '%s\n' "${remote_line}" | awk '{print $2}')"
+          test "${remote_sha}" = "${CANDIDATE_SHA}"
+          test "${remote_ref}" = "refs/heads/${CANDIDATE_REF}"
+          echo "CANONICAL_REF=refs/heads/${CANDIDATE_REF}" >> "${GITHUB_ENV}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -49,7 +61,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -Fqx '  "openai-codex-cli-bin==0.144.4",' pyproject.toml
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+          dependencies = project.get("dependencies", [])
+          matches = [item for item in dependencies if item == "openai-codex-cli-bin==0.144.4"]
+          if len(matches) != 1:
+              raise SystemExit(f"expected one pinned runtime dependency, found {len(matches)}")
+          PY
           uv sync --group dev --frozen
           uv run --frozen --no-sync python scripts/update_sdk_artifacts.py generate-types
 
@@ -61,6 +82,12 @@ jobs:
           changed="$(git status --porcelain=v1 | sed -E 's/^.. //')"
           test "${changed}" = "${expected}"
           test -f "${OUTPUT_PATH}"
+          test ! -L "${OUTPUT_PATH}"
+          test "$(stat -c '%a' "${OUTPUT_PATH}")" = 644
+          test "$(git diff --name-only | wc -l)" = 1
+          test "$(git diff --name-only)" = "${expected}"
+          test -z "$(git diff --summary -- "${expected}")"
+          git diff --diff-filter=T --quiet -- "${expected}"
           ! grep -nE '^(<<<<<<<|=======|>>>>>>>)' "${OUTPUT_PATH}"
           git diff --check
 
@@ -77,7 +104,7 @@ jobs:
 
           payload = {
               "repository": os.environ["GITHUB_REPOSITORY"],
-              "candidate_ref": os.environ["CANDIDATE_REF"],
+              "candidate_ref": os.environ["CANONICAL_REF"],
               "candidate_sha": os.environ["CANDIDATE_SHA"],
               "workflow_sha": os.environ["GITHUB_SHA"],
               "run_url": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
