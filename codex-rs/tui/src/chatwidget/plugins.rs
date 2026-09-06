@@ -1009,10 +1009,24 @@ impl ChatWidget {
         let selected_idx = self
             .bottom_pane
             .selected_index_for_active_view(PLUGINS_SELECTION_VIEW_ID);
+        let search_query = self
+            .selection_view_search_query(PLUGINS_SELECTION_VIEW_ID)
+            .filter(|query| !query.is_empty());
         self.plugins_active_tab_id = active_tab_id.clone();
-        let _ = self.bottom_pane.replace_selection_view_if_active(
-            PLUGINS_SELECTION_VIEW_ID,
-            self.plugins_popup_params(response, active_tab_id, selected_idx),
-        );
+        let mut params = self.plugins_popup_params(response, active_tab_id, selected_idx);
+        // Only carry the filter when the refreshed response retained the
+        // active tab. If it disappeared, the picker falls back to another tab
+        // and the old tab's query must not hide unrelated rows.
+        let active_tab_was_retained = self
+            .bottom_pane
+            .active_tab_id_for_active_view(PLUGINS_SELECTION_VIEW_ID)
+            .zip(params.initial_tab_id.as_deref())
+            .is_some_and(|(active_tab_id, restored_tab_id)| active_tab_id == restored_tab_id);
+        if active_tab_was_retained {
+            params.initial_search_query = search_query;
+        }
+        let _ = self
+            .bottom_pane
+            .replace_selection_view_if_active(PLUGINS_SELECTION_VIEW_ID, params);
     }
 }
