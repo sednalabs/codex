@@ -65,6 +65,9 @@ jobs:
           while read -r oid ref; do git -C source.git fetch --no-tags source "+$ref:$ref"; test "$(git -C source.git rev-parse "$ref")" = "$oid"; done < remote-map.txt
           git -C source.git for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags | sort -k2 > fetched-map.txt
           cmp -s remote-map.txt fetched-map.txt
+          MAIN_OID=$(awk '$2 == "refs/heads/main" {print $1; found++} END {if (found != 1) exit 1}' remote-map.txt)
+          [[ "$MAIN_OID" =~ ^[0-9a-fA-F]{40}$ ]]
+          test "$CANDIDATE_SHA" = "$MAIN_OID"
           git -C source.git cat-file -e "$CANDIDATE_SHA^{commit}"
           mkdir metadata
           gh api "repos/$SOURCE_REPOSITORY" > metadata/repository.json
