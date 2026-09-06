@@ -3,6 +3,7 @@
 load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+load("@rules_python//python:py_runtime_info.bzl", "PyRuntimeInfo")
 
 # ABI filenames from the pinned native sources. Missing outputs fail the build.
 _ABI_VERSIONS = {
@@ -30,8 +31,10 @@ def _native_link_impl(ctx):
     runtime = ctx.file.runtime
     versions = dict(_ABI_VERSIONS)
     macos = ctx.attr.target.endswith("apple-darwin")
-    if not macos:
+    windows = ctx.attr.target.endswith("windows-msvc")
+    if ctx.attr.target.endswith("unknown-linux-gnu"):
         versions["gstallocators-1.0"] = "0"
+    sdk = ctx.attr.runtime[OutputGroupInfo].sdk.to_list()[0] if windows else None
     locator = ctx.actions.declare_directory(ctx.label.name + "/lib/search-path")
     originals, aliases, libraries = [], [], []
     arguments = [locator.path]
@@ -45,39 +48,47 @@ def _native_link_impl(ctx):
     for name, version in versions.items():
         filename = "lib" + name + ("." + version + ".dylib" if macos else ".so." + version)
         alias = "lib" + name + (".dylib" if macos else ".so")
-        library = ctx.actions.declare_file(ctx.label.name + "/lib/" + filename)
+        directory = "lib"
+        if windows:
+            # Windows names come from the same pinned recipe's SDK and runtime.
+            filename = {"ffi": "libffi-8.dll", "intl": "intl-8.dll", "opus": "opus.dll", "pcre2-8": "pcre2-8.dll", "z": "z.dll"}.get(name, name + "-0.dll")
+            alias = ("libffi" if name == "ffi" else name) + ".lib"
+            directory = "bin"
+        library = ctx.actions.declare_file(ctx.label.name + "/" + directory + "/" + filename)
         development = ctx.actions.declare_file(ctx.label.name + "/lib/" + alias)
         originals.append(library)
         aliases.append(development)
-        arguments.extend([runtime.path + "/lib/" + filename, library.path])
-        arguments.extend([runtime.path + "/lib/" + filename, development.path])
+        arguments.extend([runtime.path + "/" + directory + "/" + filename, library.path])
+        arguments.extend([sdk.path + "/lib/" + alias if windows else runtime.path + "/lib/" + filename, development.path])
         libraries.append(cc_common.create_library_to_link(
             actions = ctx.actions,
             feature_configuration = features,
             cc_toolchain = cc,
             dynamic_library = library,
+            interface_library = development if windows else None,
             # @loader_path/$ORIGIN dependencies must stay beside one another.
             dynamic_library_symlink_path = "voice/" + ctx.label.name + "/" + filename,
         ))
     payloads = []
     paths = ["runtime.json"] + [
-        ("plugins/libgst" + plugin + ".dylib" if macos else "lib/gstreamer-1.0/libgst" + plugin + ".so")
+        ("bin/gst" + plugin + ".dll" if windows else "plugins/libgst" + plugin + ".dylib" if macos else "lib/gstreamer-1.0/libgst" + plugin + ".so")
         for plugin in "app audioconvert audioresample coreelements opus rtp rtpmanager".split(" ")
     ]
     for path in paths:
         payload = ctx.actions.declare_file(ctx.label.name + "/" + path)
         payloads.append(payload)
         arguments.extend([runtime.path + "/" + path, payload.path])
-    ctx.actions.run_shell(
-        inputs = [runtime],
+    python = ctx.attr._python[PyRuntimeInfo]
+    ctx.actions.run(
+        executable = python.interpreter,
+        inputs = depset([runtime, ctx.file._copy, python.interpreter] + ([sdk] if windows else []), transitive = [python.files]),
         outputs = [locator] + originals + aliases + payloads,
-        arguments = arguments,
-        command = 'set -eu; /bin/mkdir -p "$1"; shift; while [ "$#" -gt 0 ]; do /bin/mkdir -p "${2%/*}"; /bin/cp "$1" "$2"; shift 2; done',
+        arguments = [ctx.file._copy.path] + arguments,
         mnemonic = "VoiceNativeLinkInputs",
     )
     linker = cc_common.create_linker_input(
         owner = ctx.label,
-        user_link_flags = depset([
+        user_link_flags = depset([] if windows else [
             "-Wl,-rpath," + ("@loader_path/../lib" if macos else "$ORIGIN/../lib"),
         ]),
         libraries = depset(libraries),
@@ -98,6 +109,8 @@ native_link = rule(
     attrs = {
         "runtime": attr.label(mandatory = True, allow_single_file = True),
         "target": attr.string(mandatory = True),
+        "_copy": attr.label(default = "//third_party/voice:bazel_copy.py", allow_single_file = True),
+        "_python": attr.label(default = "@python_3_12//:py3_runtime", cfg = "exec"),
     },
     fragments = ["cpp"],
     toolchains = ["@bazel_tools//tools/cpp:toolchain_type"],

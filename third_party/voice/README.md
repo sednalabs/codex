@@ -240,3 +240,48 @@ Microsoft Visual C++ runtime (`VCRUNTIME140.dll`) already installed. The latter
 is not a guaranteed OS component. Release redistribution/licensing, Authenticode
 policy and actual helper loading remain separate requirements; this script does
 not install or redistribute Microsoft runtime files or enable voice.
+# Windows Bazel inputs and actions
+
+The named `native_prefix_windows_{x86_64,aarch64}`,
+`native_runtime_windows_{x86_64,aarch64}` and
+`native_link_windows_{x86_64,aarch64}` targets use the existing native recipe,
+runtime inspection and SDK export. These targets are MSVC-only. They require
+native Windows execution of the matching architecture; they are not cross builds.
+The generic Rust-consumer aliases are connected separately, after these inputs.
+
+Provide the complete installed Cygwin/pkgconf repository explicitly. The default
+`windows_installed_tools` label setting is empty and fails if a Windows action
+needs it. This keeps ordinary public dependency queries independent of private
+provisioning; it does not silently omit tools from a requested Windows build.
+The module does not download that installed tree or accept compiler licenses.
+
+After provisioning, a native PowerShell invocation is:
+
+```powershell
+bazel build //third_party/voice:native_link_windows_x86_64 `
+  --platforms=//:local_windows_msvc `
+  --inject_repository="voice_windows_tools=$env:VOICE_WINDOWS_BAZEL_REPOSITORY" `
+  --//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools `
+  --action_env="SystemRoot=$env:SystemRoot" --host_action_env="SystemRoot=$env:SystemRoot"
+```
+
+Use `native_link_windows_aarch64` on native ARM64 Windows. Existing MSVC license
+acceptance requirements still apply. `SystemRoot` must be a fixed action value,
+not the inherited form `--action_env=SystemRoot`; Bazel analysis cannot inspect
+that inherited value. The action validates the Windows command directory and
+constructs its tool search path from declared inputs, not developer PATH entries.
+
+Compiler, SDK, Python and CMake inputs use the existing pinned repositories.
+CMake and Cygwin execute as x64 under emulation on ARM64; compiler, SDK tools,
+Python and pkgconf match the native architecture. Complete support, include and
+library files are declared, and installed entrypoints must match the supplied
+target/architecture manifest and belong to that declared tree. This does not
+turn caller-provided files into authenticated inputs: provisioning retains that
+responsibility. These build tools must never enter shipped Codex packages.
+
+Windows link inputs pair SDK import libraries with the corresponding prepared
+DLLs. DLLs, plugins and the receipt remain under the normal native-link runfiles
+layout; Windows receives no ELF or Mach-O runtime-search flags. This capability
+still needs real native x64/ARM64 Bazel execution and consumer validation before
+it establishes complete Windows voice support. The existing direct native recipe
+passing on Windows does not prove this new Bazel input and execution path.

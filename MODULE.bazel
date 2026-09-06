@@ -174,7 +174,7 @@ use_repo(voice_python, "python_3_12")
 register_toolchains("@rules_foreign_cc//toolchains:built_make_toolchain")
 
 foreign_cc_tools = use_extension("@rules_foreign_cc//foreign_cc:extensions.bzl", "tools")
-use_repo(foreign_cc_tools, "pkgconfig_src")
+use_repo(foreign_cc_tools, "cmake-3.31.8-windows-x86_64", "pkgconfig_src")
 
 single_version_override(
     module_name = "rules_rs",

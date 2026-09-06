@@ -1,7 +1,7 @@
 diff --git a/windows/private/extensions/msvc_runtime.bzl b/windows/private/extensions/msvc_runtime.bzl
 --- a/windows/private/extensions/msvc_runtime.bzl
 +++ b/windows/private/extensions/msvc_runtime.bzl
-@@ -204,13 +204,19 @@
+@@ -204,13 +204,20 @@
      _keep_only_children(
          repository_ctx,
          repository_ctx.path("{}/Contents/VC/Tools/MSVC/{}".format(sysroot_dir, msvc_version)),
@@ -16,9 +16,10 @@ diff --git a/windows/private/extensions/msvc_runtime.bzl b/windows/private/exten
 +
 +    # Keep native-host tools and their support files separate from runtime inputs.
 +    bin_dir = "{}/Contents/VC/Tools/MSVC/{}/bin".format(sysroot_dir, msvc_version)
-+    _keep_only_children(repository_ctx, repository_ctx.path(bin_dir), ["Host" + arch for arch in architectures])
++    _keep_only_children(repository_ctx, repository_ctx.path(bin_dir), ["HostArm64" if arch == "arm64" else "Host" + arch for arch in architectures])
 +    for arch in architectures:
-+        _keep_only_children(repository_ctx, repository_ctx.path(bin_dir + "/Host" + arch), [arch])
++        host = "HostArm64" if arch == "arm64" else "Host" + arch
++        _keep_only_children(repository_ctx, repository_ctx.path(bin_dir + "/" + host), [arch])
  
  def _msvc_runtime_repository_impl(repository_ctx):
      _check_msvc_license_requirements(repository_ctx)
@@ -69,7 +70,7 @@ diff --git a/windows/private/extensions/msvc_runtime.BUILD.bazel b/windows/priva
 +directory(
 +    name = "msvc_tools_arm64_files",
 +    srcs = glob(
-+        ["__MSVC_RUNTIME_DIR__/Contents/VC/Tools/MSVC/__MSVC_VERSION__/bin/Hostarm64/arm64/**"],
++        ["__MSVC_RUNTIME_DIR__/Contents/VC/Tools/MSVC/__MSVC_VERSION__/bin/HostArm64/arm64/**"],
 +        allow_empty = True,
 +    ),
 +)
@@ -77,7 +78,7 @@ diff --git a/windows/private/extensions/msvc_runtime.BUILD.bazel b/windows/priva
 +subdirectory(
 +    name = "msvc_tools_arm64",
 +    parent = ":msvc_tools_arm64_files",
-+    path = "__MSVC_RUNTIME_DIR__/Contents/VC/Tools/MSVC/__MSVC_VERSION__/bin/Hostarm64/arm64",
++    path = "__MSVC_RUNTIME_DIR__/Contents/VC/Tools/MSVC/__MSVC_VERSION__/bin/HostArm64/arm64",
 +)
 diff --git a/windows/private/extensions/windows_sdk.bzl b/windows/private/extensions/windows_sdk.bzl
 --- a/windows/private/extensions/windows_sdk.bzl
