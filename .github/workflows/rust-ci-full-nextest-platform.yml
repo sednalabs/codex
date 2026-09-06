@@ -6,7 +6,23 @@ on:
       runner:
         required: true
         type: string
+      runner_group:
+        required: false
+        default: ""
+        type: string
+      runner_labels:
+        required: false
+        default: ""
+        type: string
       archive_runner:
+        required: false
+        default: ""
+        type: string
+      archive_runner_group:
+        required: false
+        default: ""
+        type: string
+      archive_runner_labels:
         required: false
         default: ""
         type: string
@@ -35,7 +51,7 @@ on:
 jobs:
   archive:
     name: Build nextest archive
-    runs-on: ${{ inputs.archive_runner != '' && inputs.archive_runner || inputs.runner }}
+    runs-on: ${{ inputs.archive_runner_group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"}}', inputs.archive_runner_group, inputs.archive_runner_labels)) || inputs.archive_runner != '' && inputs.archive_runner || inputs.runner_group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"}}', inputs.runner_group, inputs.runner_labels)) || inputs.runner }}
     timeout-minutes: 60
     defaults:
       run:
@@ -45,17 +61,15 @@ jobs:
       # on native Windows ARM64. Key producer-side caches by the archive runner
       # so the cross-compile build reuses the Windows x64 cache lineage.
       ARCHIVE_CACHE_RUNNER: ${{ inputs.archive_runner != '' && inputs.archive_runner || inputs.runner }}
-      INPUT_PROFILE: ${{ inputs.profile }}
-      INPUT_TARGET: ${{ inputs.target }}
       USE_SCCACHE: ${{ inputs.use_sccache && 'true' || 'false' }}
+      CODEX_CI_PROFILE: ${{ inputs.profile }}
+      CODEX_CI_TARGET: ${{ inputs.target }}
       CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_CI_TEST_DEBUG: "0"
-      CARGO_PROFILE_CI_TEST_STRIP: "symbols"
       SCCACHE_CACHE_SIZE: 10G
       NEXTEST_ARCHIVE_FILE: nextest-${{ inputs.artifact_id }}.tar.zst
       TEST_HELPERS_ARTIFACT: nextest-test-helpers-${{ inputs.artifact_id }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -68,7 +82,7 @@ jobs:
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
             sudo apt-get update -y
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev bubblewrap
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev libasound2-dev bubblewrap
           fi
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -91,7 +105,7 @@ jobs:
 
       - name: Restore cargo home cache
         id: cache_cargo_home_restore
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ~/.cargo/bin/
@@ -104,9 +118,10 @@ jobs:
 
       - name: Install sccache
         if: ${{ env.USE_SCCACHE == 'true' }}
-        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
-          tool: sccache@0.7.5
+          tool: sccache
+          version: 0.7.5
 
       - name: Configure sccache backend
         if: ${{ env.USE_SCCACHE == 'true' }}
@@ -137,7 +152,7 @@ jobs:
       - name: Restore sccache cache (fallback)
         if: ${{ env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true' }}
         id: cache_sccache_restore
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ env.SCCACHE_DIR }}
           key: sccache-${{ env.ARCHIVE_CACHE_RUNNER }}-${{ inputs.target }}-${{ inputs.profile }}-${{ steps.lockhash.outputs.hash }}-${{ github.run_id }}
@@ -145,17 +160,10 @@ jobs:
             sccache-${{ env.ARCHIVE_CACHE_RUNNER }}-${{ inputs.target }}-${{ inputs.profile }}-${{ steps.lockhash.outputs.hash }}-
             sccache-${{ env.ARCHIVE_CACHE_RUNNER }}-${{ inputs.target }}-${{ inputs.profile }}-
 
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
-          tool: nextest@0.9.103
-
-      - name: Enable unprivileged user namespaces (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo sysctl -w kernel.unprivileged_userns_clone=1
-          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
+          tool: nextest
+          version: 0.9.103
 
       - name: Build nextest archive
         shell: bash
@@ -164,8 +172,8 @@ jobs:
           archive_dir="${RUNNER_TEMP}/nextest-archive"
           mkdir -p "${archive_dir}"
           cargo nextest archive \
-            --target "${INPUT_TARGET}" \
-            --cargo-profile "${INPUT_PROFILE}" \
+            --target "${CODEX_CI_TARGET}" \
+            --cargo-profile "${CODEX_CI_PROFILE}" \
             --timings \
             --archive-file "${archive_dir}/${NEXTEST_ARCHIVE_FILE}"
 
@@ -179,20 +187,20 @@ jobs:
 
           if [[ "${RUNNER_OS}" == "Linux" ]]; then
             cargo build \
-              --target "${INPUT_TARGET}" \
-              --profile "${INPUT_PROFILE}" \
+              --target "${CODEX_CI_TARGET}" \
+              --profile "${CODEX_CI_PROFILE}" \
               -p codex-linux-sandbox \
               --bin codex-linux-sandbox
-            cp "${CARGO_TARGET_DIR}/${INPUT_TARGET}/${INPUT_PROFILE}/codex-linux-sandbox" "${helper_dir}/"
+            cp "${CARGO_TARGET_DIR}/${CODEX_CI_TARGET}/${CODEX_CI_PROFILE}/codex-linux-sandbox" "${helper_dir}/"
           else
             cargo build \
-              --target "${INPUT_TARGET}" \
-              --profile "${INPUT_PROFILE}" \
+              --target "${CODEX_CI_TARGET}" \
+              --profile "${CODEX_CI_PROFILE}" \
               -p codex-windows-sandbox \
               --bin codex-windows-sandbox-setup \
               --bin codex-command-runner
-            cp "${CARGO_TARGET_DIR}/${INPUT_TARGET}/${INPUT_PROFILE}/codex-windows-sandbox-setup.exe" "${helper_dir}/"
-            cp "${CARGO_TARGET_DIR}/${INPUT_TARGET}/${INPUT_PROFILE}/codex-command-runner.exe" "${helper_dir}/"
+            cp "${CARGO_TARGET_DIR}/${CODEX_CI_TARGET}/${CODEX_CI_PROFILE}/codex-windows-sandbox-setup.exe" "${helper_dir}/"
+            cp "${CARGO_TARGET_DIR}/${CODEX_CI_TARGET}/${CODEX_CI_PROFILE}/codex-command-runner.exe" "${helper_dir}/"
           fi
 
       - name: Upload Cargo timings (nextest)
@@ -223,7 +231,7 @@ jobs:
       - name: Save cargo home cache
         if: always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
             ~/.cargo/bin/
@@ -235,7 +243,7 @@ jobs:
       - name: Save sccache cache (fallback)
         if: always() && !cancelled() && env.USE_SCCACHE == 'true' && env.SCCACHE_GHA_ENABLED != 'true'
         continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ env.SCCACHE_DIR }}
           key: sccache-${{ env.ARCHIVE_CACHE_RUNNER }}-${{ inputs.target }}-${{ inputs.profile }}-${{ steps.lockhash.outputs.hash }}-${{ github.run_id }}
@@ -250,7 +258,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "### sccache stats — ${INPUT_TARGET} (tests)";
+            echo "### sccache stats — ${CODEX_CI_TARGET} (tests)";
             echo;
             echo '```';
             sccache --show-stats || true;
@@ -260,15 +268,15 @@ jobs:
   shard:
     name: Tests shard ${{ matrix.shard }}/4
     needs: archive
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner_group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"}}', inputs.runner_group, inputs.runner_labels)) || inputs.runner }}
     timeout-minutes: 60
     defaults:
       run:
         working-directory: codex-rs
     env:
-      INPUT_PROFILE: ${{ inputs.profile }}
-      INPUT_TARGET: ${{ inputs.target }}
-      INPUT_TEST_THREADS: ${{ inputs.test_threads }}
+      CODEX_CI_PROFILE: ${{ inputs.profile }}
+      CODEX_CI_TARGET: ${{ inputs.target }}
+      CODEX_CI_TEST_THREADS: ${{ inputs.test_threads }}
       NEXTEST_ARCHIVE_FILE: nextest-${{ inputs.artifact_id }}.tar.zst
       TEST_HELPERS_ARTIFACT: nextest-test-helpers-${{ inputs.artifact_id }}
     strategy:
@@ -276,7 +284,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -289,50 +297,29 @@ jobs:
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
             sudo apt-get update -y
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev bubblewrap
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev libasound2-dev bubblewrap
           fi
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: ${{ inputs.target }}
 
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
-          tool: nextest@0.9.103
-
-      - name: Enable unprivileged user namespaces (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo sysctl -w kernel.unprivileged_userns_clone=1
-          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
+          tool: nextest
+          version: 0.9.103
 
       - name: Set up remote test env (Docker)
         if: ${{ runner.os == 'Linux' && inputs.remote_env }}
         shell: bash
-        env:
-          CODEX_NEXTEST_SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
-          export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME="codex-remote-test-env-${GITHUB_RUN_ID}-${CODEX_NEXTEST_SHARD}"
-          export CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR="${RUNNER_TEMP}/remote-env-target-${CODEX_NEXTEST_SHARD}"
+          export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME="codex-remote-test-env-${{ github.run_id }}-${{ matrix.shard }}"
           source "${GITHUB_WORKSPACE}/scripts/test-remote-env.sh"
           echo "CODEX_TEST_ENVIRONMENT=${CODEX_TEST_ENVIRONMENT}" >> "$GITHUB_ENV"
           echo "CODEX_TEST_REMOTE_ENV=${CODEX_TEST_REMOTE_ENV}" >> "$GITHUB_ENV"
           echo "CODEX_TEST_REMOTE_ENV_CONTAINER_NAME=${CODEX_TEST_REMOTE_ENV_CONTAINER_NAME}" >> "$GITHUB_ENV"
-          echo "CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR=${CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR}" >> "$GITHUB_ENV"
           echo "CODEX_TEST_REMOTE_EXEC_SERVER_URL=${CODEX_TEST_REMOTE_EXEC_SERVER_URL}" >> "$GITHUB_ENV"
-
-      - name: Reclaim remote env build artifacts
-        if: ${{ runner.os == 'Linux' && inputs.remote_env }}
-        shell: bash
-        env:
-          CODEX_NEXTEST_SHARD: ${{ matrix.shard }}
-        run: |
-          set -euo pipefail
-          default_target_dir="${RUNNER_TEMP}/remote-env-target-${CODEX_NEXTEST_SHARD}"
-          rm -rf "${CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR:-${default_target_dir}}"
 
       - name: Download nextest archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -362,13 +349,13 @@ jobs:
 
           if [[ "${RUNNER_OS}" == "Linux" ]]; then
             helper_dir="${RUNNER_TEMP}/${TEST_HELPERS_ARTIFACT}"
-            helper_target_dir="${CARGO_TARGET_DIR}/${INPUT_TARGET}/${INPUT_PROFILE}"
+            helper_target_dir="${CARGO_TARGET_DIR}/${CODEX_CI_TARGET}/${CODEX_CI_PROFILE}"
             mkdir -p "${helper_target_dir}"
             cp "${helper_dir}/codex-linux-sandbox" "${helper_target_dir}/"
             chmod +x "${helper_target_dir}/codex-linux-sandbox"
           elif [[ "${RUNNER_OS}" == "Windows" ]]; then
             helper_dir="${RUNNER_TEMP}/${TEST_HELPERS_ARTIFACT}"
-            helper_target_dir="${CARGO_TARGET_DIR}/${INPUT_TARGET}/${INPUT_PROFILE}"
+            helper_target_dir="${CARGO_TARGET_DIR}/${CODEX_CI_TARGET}/${CODEX_CI_PROFILE}"
             mkdir -p "${helper_target_dir}"
             cp "${helper_dir}/codex-windows-sandbox-setup.exe" "${helper_target_dir}/"
             cp "${helper_dir}/codex-command-runner.exe" "${helper_target_dir}/"
@@ -379,10 +366,10 @@ jobs:
             --no-fail-fast
             --archive-file "${archive_file}"
             --workspace-remap "${workspace_root}"
-            --partition "hash:${CODEX_NEXTEST_SHARD}/4"
+            --partition "hash:${{ matrix.shard }}/4"
           )
-          if [[ "${INPUT_TEST_THREADS}" != "0" ]]; then
-            nextest_args+=(--test-threads "${INPUT_TEST_THREADS}")
+          if [[ "${CODEX_CI_TEST_THREADS}" != "0" ]]; then
+            nextest_args+=(--test-threads "${CODEX_CI_TEST_THREADS}")
           fi
 
           test_command=(cargo nextest "${nextest_args[@]}")
@@ -407,7 +394,6 @@ jobs:
 
           "${test_command[@]}"
         env:
-          CODEX_NEXTEST_SHARD: ${{ matrix.shard }}
           RUST_BACKTRACE: 1
           RUST_MIN_STACK: "8388608" # 8 MiB
           NEXTEST_STATUS_LEVEL: leak
