@@ -15,6 +15,7 @@ use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_tools::ToolSpec;
 use futures::StreamExt;
+use futures::future;
 use futures::stream::FuturesUnordered;
 use serde_json::json;
 use std::collections::HashMap;
@@ -40,8 +41,9 @@ pub(crate) fn resolve_wait_timeout_ms(
     max_wait_timeout_ms: i64,
     default_wait_timeout_ms: i64,
 ) -> Result<i64, FunctionCallError> {
-    let min_timeout_ms = min_wait_timeout_ms.clamp(0, MAX_WAIT_TIMEOUT_MS);
-    let max_timeout_ms = max_wait_timeout_ms.clamp(min_timeout_ms, MAX_WAIT_TIMEOUT_MS);
+    let min_timeout_ms = min_wait_timeout_ms.clamp(0, MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS);
+    let max_timeout_ms =
+        max_wait_timeout_ms.clamp(min_timeout_ms, MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS);
     let default_timeout_ms = default_wait_timeout_ms.clamp(min_timeout_ms, max_timeout_ms);
 
     match requested_timeout_ms {
@@ -61,6 +63,7 @@ enum WakeSource {
     TargetCompletion,
     Mailbox,
     Timeout,
+    SubscriptionLoss,
 }
 
 impl WakeSource {
@@ -69,6 +72,7 @@ impl WakeSource {
             WakeSource::TargetCompletion => CollabWaitingCompletionReason::Terminal,
             WakeSource::Mailbox => CollabWaitingCompletionReason::Mailbox,
             WakeSource::Timeout => CollabWaitingCompletionReason::Timeout,
+            WakeSource::SubscriptionLoss => CollabWaitingCompletionReason::SubscriptionLoss,
         }
     }
 }
@@ -129,6 +133,15 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
+        let wait_capability = registered_tool_runtime_capabilities().wait_agent;
+        let native_event_capable = wait_capability
+            .is_some_and(|capability| capability.native_event_wait && capability.mailbox_wake);
+        if args.native_event_wait && !native_event_capable {
+            return Err(FunctionCallError::RespondToModel(
+                "native_event_wait requires native_event_wait and mailbox_wake capabilities"
+                    .to_string(),
+            ));
+        }
         let receiver_thread_ids = if args.targets.is_empty() {
             Vec::new()
         } else {
@@ -212,6 +225,7 @@ impl Handler {
                         receiver_thread_ids.clone(),
                         receiver_agents.clone(),
                         agents_states,
+                        CollabWaitingCompletionReason::SubscriptionLoss,
                     )
                     .await;
                     return Err(collab_agent_error(*id, err));
@@ -219,19 +233,22 @@ impl Handler {
             }
         }
 
-        let wait_capability = registered_tool_runtime_capabilities().wait_agent;
         let return_when = wait_capability
             .filter(|capability| capability.return_when)
             .map_or(ReturnWhen::Any, |_| args.return_when);
+        // Preserve the existing broad mailbox eligibility rule. Typed mailbox
+        // filtering is a follow-on; native mode only changes lease expiry.
         let wake_on_mailbox = wait_capability.is_some_and(|capability| capability.mailbox_wake);
+        let native_event_wait = args.native_event_wait && native_event_capable;
         let completion_rule = CompletionRule::new(return_when);
         let wake_source = if let Some(wake_source) = ready_wake_source(
             session.as_ref(),
             completion_rule,
-            &final_statuses,
+            &mut final_statuses,
             &receiver_thread_ids,
             wake_on_mailbox,
             pending_input_activity,
+            &mut status_rxs,
         )
         .await
         {
@@ -245,7 +262,10 @@ impl Handler {
                 completion_rule,
                 &mut final_statuses,
                 wake_on_mailbox,
+                native_event_wait,
+                lease_timer_enabled(native_event_wait, timeout_ms),
                 Instant::now() + Duration::from_millis(timeout_ms as u64),
+                #[cfg(test)] /*lease_observer*/ None,
             )
             .await
         };
@@ -282,11 +302,16 @@ impl Handler {
             receiver_thread_ids,
             receiver_agents,
             statuses_by_id,
+            completion_reason,
         )
         .await;
 
         Ok(boxed_tool_output(result))
     }
+}
+
+fn lease_timer_enabled(native_event_wait: bool, timeout_ms: i64) -> bool {
+    !native_event_wait || timeout_ms > 0
 }
 
 impl CoreToolRuntime for Handler {
@@ -303,6 +328,8 @@ struct WaitArgs {
     timeout_ms: Option<i64>,
     #[serde(default)]
     return_when: ReturnWhen,
+    #[serde(default)]
+    native_event_wait: bool,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -326,10 +353,11 @@ pub(crate) struct WaitAgentResult {
 async fn ready_wake_source(
     session: &Session,
     completion_rule: CompletionRule,
-    final_statuses: &HashMap<ThreadId, AgentStatus>,
+    final_statuses: &mut HashMap<ThreadId, AgentStatus>,
     receiver_thread_ids: &[ThreadId],
     wake_on_mailbox: bool,
     pending_input_activity: Option<InputQueueActivity>,
+    status_rxs: &mut [(ThreadId, Receiver<AgentStatus>)],
 ) -> Option<WakeSource> {
     if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
         Some(WakeSource::TargetCompletion)
@@ -340,7 +368,18 @@ async fn ready_wake_source(
                 .has_pending_input(&session.active_turn)
                 .await)
     {
-        Some(WakeSource::Mailbox)
+        let latest = collect_current_wait_statuses(session, receiver_thread_ids).await;
+        final_statuses.extend(latest.into_iter().filter(|(_, status)| is_final(status)));
+        if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
+            Some(WakeSource::TargetCompletion)
+        } else if status_rxs
+            .iter()
+            .any(|(id, rx)| rx.has_changed().is_err() && !final_statuses.contains_key(id))
+        {
+            Some(WakeSource::SubscriptionLoss)
+        } else {
+            Some(WakeSource::Mailbox)
+        }
     } else {
         None
     }
@@ -356,6 +395,9 @@ impl WaitAgentResult {
             CollabWaitingCompletionReason::Terminal => "Wait completed.",
             CollabWaitingCompletionReason::Mailbox => "Wait woke due to mailbox activity.",
             CollabWaitingCompletionReason::Timeout => "Wait timed out.",
+            CollabWaitingCompletionReason::SubscriptionLoss => {
+                "Wait ended because its event subscription was lost."
+            }
         };
         Self {
             message: message.to_string(),
@@ -439,8 +481,12 @@ async fn emit_wait_completion(
     receiver_thread_ids: Vec<ThreadId>,
     receiver_agents: Vec<CollabAgentRef>,
     agents_states: HashMap<ThreadId, AgentStatus>,
+    completion_reason: CollabWaitingCompletionReason,
 ) {
-    let status = if agents_states.values().any(|agent_status| {
+    let status = if completion_reason == CollabWaitingCompletionReason::SubscriptionLoss
+        // Subscription loss is an unsuccessful lifecycle outcome even when
+        // the last authoritative statuses are still running.
+        || agents_states.values().any(|agent_status| {
         matches!(
             agent_status,
             AgentStatus::Errored(_) | AgentStatus::NotFound
@@ -498,20 +544,24 @@ async fn wait_for_final_status(
     session: std::sync::Arc<Session>,
     thread_id: ThreadId,
     mut status_rx: Receiver<AgentStatus>,
-) -> Option<(ThreadId, AgentStatus)> {
+) -> Option<(ThreadId, AgentStatus, bool)> {
     let mut status = status_rx.borrow().clone();
     if is_final(&status) {
-        return Some((thread_id, status));
+        return Some((thread_id, status, false));
     }
 
     loop {
         if status_rx.changed().await.is_err() {
             let latest = session.services.agent_control.get_status(thread_id).await;
-            return is_final(&latest).then_some((thread_id, latest));
+            // A closed subscription is an actionable identity/lifecycle loss
+            // when the authoritative status is not already terminal. Surface
+            // it as a terminal NotFound state so native mode cannot silently
+            // re-arm forever or hot-loop on a dead channel.
+            return Some((thread_id, latest, true));
         }
         status = status_rx.borrow().clone();
         if is_final(&status) {
-            return Some((thread_id, status));
+            return Some((thread_id, status, false));
         }
     }
 }
@@ -525,8 +575,22 @@ async fn wait_for_wake_source(
     completion_rule: CompletionRule,
     final_statuses: &mut HashMap<ThreadId, AgentStatus>,
     wake_on_mailbox: bool,
-    deadline: Instant,
+    native_event_wait: bool,
+    lease_timer_enabled: bool,
+    mut deadline: Instant,
+    #[cfg(test)] mut lease_observer: Option<&mut (dyn FnMut() + Send)>,
 ) -> WakeSource {
+    let lease_duration = if lease_timer_enabled {
+        deadline
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1))
+    } else {
+        Duration::ZERO
+    };
+    let closure_rxs = status_rxs
+        .iter()
+        .map(|(id, rx)| (*id, rx.clone()))
+        .collect::<Vec<_>>();
     let mut futures = FuturesUnordered::new();
     for (id, rx) in status_rxs {
         let session = session.clone();
@@ -538,30 +602,125 @@ async fn wait_for_wake_source(
             return WakeSource::TargetCompletion;
         }
 
-        let sleep = tokio::time::sleep_until(deadline);
-        tokio::pin!(sleep);
+        let timer = if lease_timer_enabled {
+            future::Either::Left(tokio::time::sleep_until(deadline))
+        } else {
+            future::Either::Right(future::pending())
+        };
+        tokio::pin!(timer);
 
         tokio::select! {
             maybe_status = futures.next(), if !futures.is_empty() => {
                 match maybe_status {
-                    Some(Some((id, status))) => {
-                        final_statuses.insert(id, status);
+                    Some(Some((id, status, subscription_lost))) => {
+                        let is_terminal = is_final(&status);
+                        if is_terminal {
+                            final_statuses.insert(id, status);
+                        }
+                        if subscription_lost {
+                            let latest = collect_current_wait_statuses(
+                                session.as_ref(),
+                                receiver_thread_ids,
+                            )
+                            .await;
+                            final_statuses.extend(
+                                latest
+                                    .into_iter()
+                                    .filter(|(_, status)| is_final(status)),
+                            );
+                            if !is_terminal {
+                                return if completion_rule.is_satisfied(
+                                    final_statuses,
+                                    receiver_thread_ids,
+                                ) {
+                                    WakeSource::TargetCompletion
+                                } else {
+                                    WakeSource::SubscriptionLoss
+                                };
+                            }
+                            // A terminally-closing subscription is only a
+                            // completion wake when the requested any/all
+                            // rule is satisfied. Otherwise keep the other
+                            // status subscriptions armed.
+                            if completion_rule.is_satisfied(
+                                final_statuses,
+                                receiver_thread_ids,
+                            ) {
+                                return WakeSource::TargetCompletion;
+                            }
+                        }
                     }
                     Some(None) => {}
                     None => {}
                 }
             }
-            input_activity_changed = input_activity_rx.changed(), if wake_on_mailbox => {
-                if input_activity_changed.is_ok()
-                    && session
-                        .input_queue
-                        .has_pending_input(&session.active_turn)
-                        .await
-                {
-                    return WakeSource::Mailbox;
+            input_activity_changed = input_activity_rx.changed(), if wake_on_mailbox || native_event_wait => {
+                match input_activity_changed {
+                    Ok(())
+                        if session
+                            .input_queue
+                            .has_pending_input(&session.active_turn)
+                            .await =>
+                    {
+                        let latest = collect_current_wait_statuses(
+                            session.as_ref(),
+                            receiver_thread_ids,
+                        )
+                        .await;
+                        final_statuses.extend(
+                            latest
+                                .into_iter()
+                                .filter(|(_, status)| is_final(status)),
+                        );
+                        let status_loss = closure_rxs.iter().any(|(id, rx)| {
+                            rx.has_changed().is_err() && !final_statuses.contains_key(id)
+                        });
+                        if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
+                            return WakeSource::TargetCompletion;
+                        } else if status_loss {
+                            return WakeSource::SubscriptionLoss;
+                        }
+                        return WakeSource::Mailbox;
+                    }
+                    Err(_) => {
+                        // The mailbox subscription is gone. End the pending
+                        // invocation so the owner can re-establish identity;
+                        // never re-arm a closed receiver in a hot loop.
+                        let latest = collect_current_wait_statuses(
+                            session.as_ref(),
+                            receiver_thread_ids,
+                        )
+                        .await;
+                        final_statuses.extend(
+                            latest
+                                .into_iter()
+                                .filter(|(_, status)| is_final(status)),
+                        );
+                        return if completion_rule.is_satisfied(
+                            final_statuses,
+                            receiver_thread_ids,
+                        ) {
+                            WakeSource::TargetCompletion
+                        } else {
+                            WakeSource::SubscriptionLoss
+                        };
+                    }
+                    _ => {}
                 }
             }
-            _ = &mut sleep => {
+            _ = &mut timer => {
+                if native_event_wait {
+                    #[cfg(test)]
+                    if let Some(observer) = lease_observer.as_deref_mut() {
+                        observer();
+                    }
+                    // The timeout is an internal lease/observation expiry. Keep
+                    // this invocation owned by the runtime and re-arm the
+                    // same subscriptions without producing a tool result or
+                    // starting another model/provider turn.
+                    deadline = Instant::now() + lease_duration;
+                    continue;
+                }
                 return WakeSource::Timeout;
             }
         }
@@ -571,6 +730,57 @@ async fn wait_for_wake_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn positive_native_lease_reports_each_rearm_before_terminal_wake() {
+        let (session, _turn) = crate::session::tests::make_session_and_context().await;
+        let target_id = ThreadId::new();
+        let (status_tx, status_rx) = tokio::sync::watch::channel(AgentStatus::Running);
+        let expiries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observer_expiries = expiries.clone();
+        let wait = tokio::spawn(async move {
+            let (mut input_activity_rx, _) = session
+                .input_queue
+                .subscribe_activity(/*turn_state*/ None)
+                .await;
+            let mut final_statuses = HashMap::new();
+            let status_rxs = vec![(target_id, status_rx)];
+            let mut observer = || {
+                observer_expiries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            };
+            wait_for_wake_source(
+                session.into(),
+                &mut input_activity_rx,
+                status_rxs,
+                &[target_id],
+                CompletionRule::new(ReturnWhen::Any),
+                &mut final_statuses,
+                /*wake_on_mailbox*/ false,
+                /*native_event_wait*/ true,
+                /*lease_timer_enabled*/ true,
+                Instant::now() + Duration::from_millis(5),
+                /*lease_observer*/ Some(&mut observer),
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while expiries.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("native lease should rearm at least twice");
+        status_tx
+            .send(AgentStatus::Shutdown)
+            .expect("status receiver should remain active");
+
+        assert_eq!(
+            wait.await.expect("wait task should join"),
+            WakeSource::TargetCompletion
+        );
+        assert!(expiries.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+    }
 
     #[test]
     fn wake_source_maps_to_public_completion_reason() {
@@ -586,6 +796,32 @@ mod tests {
             WakeSource::Timeout.completion_reason(),
             CollabWaitingCompletionReason::Timeout
         );
+        assert_eq!(
+            WakeSource::SubscriptionLoss.completion_reason(),
+            CollabWaitingCompletionReason::SubscriptionLoss
+        );
+    }
+
+    #[test]
+    fn subscription_loss_result_is_not_a_timeout() {
+        let result = WaitAgentResult::new(
+            Vec::new(),
+            Vec::new(),
+            CollabWaitingCompletionReason::SubscriptionLoss,
+        );
+        assert!(!result.timed_out);
+        assert!(result.message.contains("subscription"));
+    }
+
+    #[test]
+    fn all_completion_waits_for_remaining_targets_after_terminal_closure() {
+        let first = ThreadId::new();
+        let second = ThreadId::new();
+        let mut statuses = HashMap::from([(first, AgentStatus::Completed(None))]);
+        let rule = CompletionRule::new(ReturnWhen::All);
+        assert!(!rule.is_satisfied(&statuses, &[first, second]));
+        statuses.insert(second, AgentStatus::Completed(None));
+        assert!(rule.is_satisfied(&statuses, &[first, second]));
     }
 
     #[test]
@@ -643,6 +879,19 @@ mod tests {
             .expect("configured default should be accepted"),
             50
         );
+    }
+
+    #[test]
+    fn native_zero_timeout_disables_internal_lease_timer() {
+        assert!(!lease_timer_enabled(
+            /*native_event_wait*/ true, /*timeout_ms*/ 0
+        ));
+        assert!(lease_timer_enabled(
+            /*native_event_wait*/ true, /*timeout_ms*/ 1
+        ));
+        assert!(lease_timer_enabled(
+            /*native_event_wait*/ false, /*timeout_ms*/ 0
+        ));
     }
 
     #[test]

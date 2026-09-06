@@ -212,7 +212,10 @@ pub(crate) const AGENTS_MD_MAX_BYTES: usize = DEFAULT_PROJECT_DOC_MAX_BYTES; // 
 pub(crate) const DEFAULT_AGENT_MAX_THREADS: Option<usize> = Some(6);
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION: usize = 4;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
-pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
+/// Keep the default V2 wait ceiling aligned with the longest useful blocking
+/// wait exposed by the hosted runtime. The wait itself is event-driven, so
+/// this is a wall-clock ceiling rather than a polling interval.
+pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS: i64 = 2 * 60 * 60 * 1000;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_TERMINAL_IDLE_UNLOAD_TIMEOUT_MS: u64 = 300_000;
 

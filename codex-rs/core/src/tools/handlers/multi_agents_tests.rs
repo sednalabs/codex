@@ -82,6 +82,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -4772,6 +4773,127 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_native_wait_allows_zero_timeout_until_terminal_event() {
+    let (session, turn, target_id, _root, target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 0;
+            config.multi_agent_v2.max_wait_timeout_ms = 10_000;
+            config.multi_agent_v2.default_wait_timeout_ms = 0;
+        })
+        .await;
+
+    let wait_task = tokio::spawn({
+        let session = session.clone();
+        let turn = turn.clone();
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({
+                        "targets": [target_id.to_string()],
+                        "timeout_ms": 0,
+                        "native_event_wait": true,
+                    })),
+                ))
+                .await
+        }
+    });
+
+    target
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("shutdown should submit");
+
+    let output = timeout(Duration::from_secs(1), wait_task)
+        .await
+        .expect("zero-timeout native wait should remain armed until terminal event")
+        .expect("wait task should join")
+        .expect("native wait should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+
+    assert_eq!(result.requested_ids, vec![target_id]);
+    assert!(result.pending_ids.is_empty());
+    assert_eq!(
+        result.completion_reason,
+        CollabWaitingCompletionReason::Terminal
+    );
+    assert!(!result.timed_out);
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_native_wait_renews_positive_lease_until_terminal_event() {
+    const LEASE_MS: u64 = 5;
+    let (session, turn, target_id, _root, target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 1;
+            config.multi_agent_v2.max_wait_timeout_ms = 10_000;
+            config.multi_agent_v2.default_wait_timeout_ms = LEASE_MS as i64;
+        })
+        .await;
+
+    let wait_task = tokio::spawn({
+        let session = session.clone();
+        let turn = turn.clone();
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({
+                        "targets": [target_id.to_string()],
+                        "timeout_ms": LEASE_MS,
+                        "native_event_wait": true,
+                    })),
+                ))
+                .await
+        }
+    });
+
+    tokio::task::yield_now().await;
+    let observation_started = Instant::now();
+    tokio::time::sleep(Duration::from_millis(LEASE_MS * 5)).await;
+    assert!(
+        observation_started.elapsed() >= Duration::from_millis(LEASE_MS * 2),
+        "observation should span at least two lease durations"
+    );
+    assert!(
+        !wait_task.is_finished(),
+        "positive native lease expiry must renew the wait instead of completing it"
+    );
+
+    target
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("shutdown should submit");
+
+    let output = timeout(Duration::from_secs(1), wait_task)
+        .await
+        .expect("native wait should complete after terminal event")
+        .expect("wait task should join")
+        .expect("native wait should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+
+    assert_eq!(result.requested_ids, vec![target_id]);
+    assert!(result.pending_ids.is_empty());
+    assert_eq!(
+        result.completion_reason,
+        CollabWaitingCompletionReason::Terminal
+    );
+    assert!(!result.timed_out);
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_wait_agent_rejects_timeout_above_configured_max() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
@@ -5184,6 +5306,129 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
             timed_out: false,
         }
     );
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_wait_agent_wakes_on_terminal_child_event() {
+    let (session, turn, target_id, _root, target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 1;
+            config.multi_agent_v2.max_wait_timeout_ms = 10_000;
+            config.multi_agent_v2.default_wait_timeout_ms = 10_000;
+        })
+        .await;
+
+    let wait_task = tokio::spawn({
+        let session = session.clone();
+        let turn = turn.clone();
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({
+                        "targets": [target_id.to_string()],
+                        "timeout_ms": 10_000
+                    })),
+                ))
+                .await
+        }
+    });
+
+    target
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("shutdown should submit");
+
+    let output = timeout(Duration::from_secs(1), wait_task)
+        .await
+        .expect("terminal child event should wake wait_agent")
+        .expect("wait task should join")
+        .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+
+    assert_eq!(result.requested_ids, vec![target_id]);
+    assert!(result.pending_ids.is_empty());
+    assert_eq!(
+        result.completion_reason,
+        CollabWaitingCompletionReason::Terminal
+    );
+    assert!(!result.timed_out);
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_wait_agent_all_waits_for_each_terminal_child_event() {
+    let (session, turn, first_id, _root, first, manager) = multi_agent_v2_wait_context(|config| {
+        config.multi_agent_v2.min_wait_timeout_ms = 1;
+        config.multi_agent_v2.max_wait_timeout_ms = 10_000;
+        config.multi_agent_v2.default_wait_timeout_ms = 10_000;
+    })
+    .await;
+    let second = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("second target thread should start");
+    let second_id = second.thread_id;
+
+    let mut wait_task = tokio::spawn({
+        let session = session.clone();
+        let turn = turn.clone();
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({
+                        "targets": [first_id.to_string(), second_id.to_string()],
+                        "return_when": "all",
+                        "timeout_ms": 10_000
+                    })),
+                ))
+                .await
+        }
+    });
+
+    first
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("first shutdown should submit");
+    assert!(
+        timeout(Duration::from_millis(100), &mut wait_task)
+            .await
+            .is_err(),
+        "return_when=all must remain blocked until every target is terminal"
+    );
+
+    second
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("second shutdown should submit");
+
+    let output = timeout(Duration::from_secs(1), wait_task)
+        .await
+        .expect("second terminal child event should finish all-wait")
+        .expect("wait task should join")
+        .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+
+    assert_eq!(result.requested_ids, vec![first_id, second_id]);
+    assert!(result.pending_ids.is_empty());
+    assert_eq!(
+        result.completion_reason,
+        CollabWaitingCompletionReason::Terminal
+    );
+    assert!(!result.timed_out);
     assert_eq!(success, None);
 }
 
