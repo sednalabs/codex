@@ -98,9 +98,9 @@ jobs:
           workflow_tree = sys.argv[3]
           push = {
               "ref": "refs/heads/worker/w13825-sdk-build-consumer",
-              "before": "0" * 40,
+              "before": "cb72bf9be8308cb5e228835f3700a55a350d8ad4",
               "after": workflow_sha,
-              "created": True,
+              "created": False,
               "deleted": False,
               "forced": False,
               "head_commit": {"id": workflow_sha},
@@ -114,7 +114,7 @@ jobs:
               "push-wrong-after": ("after", "0" * 40),
               "push-forced": ("forced", True),
               "push-deleted": ("deleted", True),
-              "push-not-created": ("created", False),
+              "push-created": ("created", True),
           }
           for name, (key, value) in mutations.items():
               fixture = copy.deepcopy(push)
@@ -169,8 +169,8 @@ jobs:
             run_push_fixture "${fixture_dir}/push-forced.json"
           expect_failure "push event must not delete ref" \
             run_push_fixture "${fixture_dir}/push-deleted.json"
-          expect_failure "push event must create the new consumer ref" \
-            run_push_fixture "${fixture_dir}/push-not-created.json"
+          expect_failure "push event must fast-forward the existing consumer ref" \
+            run_push_fixture "${fixture_dir}/push-created.json"
           run_dispatch_fixture \
             "${fixture_dir}/dispatch-valid.json" \
             "${EXPECTED_WORKFLOW_SHA}" >/dev/null
