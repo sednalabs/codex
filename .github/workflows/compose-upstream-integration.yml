@@ -611,7 +611,7 @@ jobs:
           if sum(int(c.get("path_count", -1)) for c in cohorts) != 427:
               raise SystemExit("conflict cohort counts do not sum to 427")
 
-          bundle = str(expected["bundle"])
+          bundle = str(expected["bundle"].resolve())
           with tempfile.TemporaryDirectory(prefix="hosted-artifact-verify-") as directory:
               bare = pathlib.Path(directory) / "repo.git"
               subprocess.run(["git", "init", "--bare", str(bare)], check=True, stdout=subprocess.DEVNULL)
