@@ -81,7 +81,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
@@ -4752,6 +4752,73 @@ async fn multi_agent_v2_native_wait_allows_zero_timeout_until_terminal_event() {
     let output = timeout(Duration::from_secs(1), wait_task)
         .await
         .expect("zero-timeout native wait should remain armed until terminal event")
+        .expect("wait task should join")
+        .expect("native wait should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+
+    assert_eq!(result.requested_ids, vec![target_id]);
+    assert!(result.pending_ids.is_empty());
+    assert_eq!(
+        result.completion_reason,
+        CollabWaitingCompletionReason::Terminal
+    );
+    assert!(!result.timed_out);
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_native_wait_renews_positive_lease_until_terminal_event() {
+    const LEASE_MS: u64 = 5;
+    let (session, turn, target_id, _root, target, _manager) =
+        multi_agent_v2_wait_context(|config| {
+            config.multi_agent_v2.min_wait_timeout_ms = 1;
+            config.multi_agent_v2.max_wait_timeout_ms = 10_000;
+            config.multi_agent_v2.default_wait_timeout_ms = LEASE_MS as i64;
+        })
+        .await;
+
+    let wait_task = tokio::spawn({
+        let session = session.clone();
+        let turn = turn.clone();
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({
+                        "targets": [target_id.to_string()],
+                        "timeout_ms": LEASE_MS,
+                        "native_event_wait": true,
+                    })),
+                ))
+                .await
+        }
+    });
+
+    tokio::task::yield_now().await;
+    let observation_started = Instant::now();
+    tokio::time::sleep(Duration::from_millis(LEASE_MS * 5)).await;
+    assert!(
+        observation_started.elapsed() >= Duration::from_millis(LEASE_MS * 2),
+        "observation should span at least two lease durations"
+    );
+    assert!(
+        !wait_task.is_finished(),
+        "positive native lease expiry must renew the wait instead of completing it"
+    );
+
+    target
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("shutdown should submit");
+
+    let output = timeout(Duration::from_secs(1), wait_task)
+        .await
+        .expect("native wait should complete after terminal event")
         .expect("wait task should join")
         .expect("native wait should succeed");
     let (content, success) = expect_text_output(output);
