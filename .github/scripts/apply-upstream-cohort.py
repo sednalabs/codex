@@ -7,9 +7,9 @@ consumer verifies every input tuple, retains the three already-materialized
 patch dependencies, and applies only eleven reviewed source entries.  Its
 metadata-only mode emits complete content-free tree manifests without running
 generators or creating Git objects.  Its build mode validates the accepted
-manifest inventory, regenerates the composed Cargo lock plus five coupled
-outputs with repository-pinned tools, and emits a fresh-bare-verified Git bundle
-without publishing a ref.
+manifest inventory, resolves the composed Cargo lock conservatively from its
+accepted seed, regenerates five coupled outputs with repository-pinned tools,
+and emits a fresh-bare-verified Git bundle without publishing a ref.
 """
 
 from __future__ import annotations
@@ -349,10 +349,13 @@ EXPECTED_V8_LOCK_ENTRY = {
         "which 6.0.3",
     ],
 }
-EXPECTED_NORMALIZED_LOCK_EDGES = {
+EXPECTED_SEED_LOCK_EDGES = {
     ("prost-build", "0.12.6"): "heck 0.4.1",
-    ("prost-build", "0.14.4"): "heck 0.5.0",
+    ("prost-build", "0.14.4"): "heck 0.4.1",
 }
+# A non-empty resolver delta is diagnostic-only until the root explicitly
+# accepts its exact canonical digest in a reviewed successor.
+ACCEPTED_LOCK_DELTA_SHA256: str | None = None
 MAX_MANIFEST_COUNT = 512
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_LOCK_BYTES = 16 * 1024 * 1024
@@ -985,7 +988,53 @@ def lock_package_sort_key(package: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
-def generate_composed_cargo_lock(worktree: pathlib.Path, diagnostics: pathlib.Path) -> dict[str, Any]:
+def normalized_v8_lock_entries(
+    packages: dict[tuple[str, str, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            **package,
+            "dependencies": sorted(package.get("dependencies", [])),
+        }
+        for package in sorted(
+            (package for package in packages.values() if package.get("name") == "v8"),
+            key=lock_package_sort_key,
+        )
+    ]
+
+
+def observed_seed_lock_edges(
+    packages: dict[tuple[str, str, str], dict[str, Any]],
+    stage: str,
+    mismatches: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    observations: list[dict[str, Any]] = []
+    for (name, version), expected_edge in sorted(EXPECTED_SEED_LOCK_EDGES.items()):
+        matches = [
+            package
+            for package in packages.values()
+            if package.get("name") == name and package.get("version") == version
+        ]
+        actual_edges = sorted(
+            dependency
+            for package in matches
+            for dependency in package.get("dependencies", [])
+            if isinstance(dependency, str) and (dependency == "heck" or dependency.startswith("heck "))
+        )
+        observation = {
+            "stage": stage,
+            "package": name,
+            "version": version,
+            "expected": expected_edge,
+            "actual": actual_edges,
+        }
+        observations.append(observation)
+        if len(matches) != 1 or actual_edges != [expected_edge]:
+            mismatches.append({"kind": "seed-lock-edge-mismatch", **observation})
+    return observations
+
+
+def resolve_composed_cargo_lock(worktree: pathlib.Path, diagnostics: pathlib.Path) -> dict[str, Any]:
     lock_path = worktree / ROOT_LOCK_PATH
     before_raw = lock_path.read_bytes()
     before, before_error = parse_lock_bytes(before_raw, "accepted-build-source-lock")
@@ -996,8 +1045,15 @@ def generate_composed_cargo_lock(worktree: pathlib.Path, diagnostics: pathlib.Pa
     commands: list[dict[str, Any]] = []
     for label, args in (
         (
-            "cargo-generate-lockfile",
-            ("cargo", "generate-lockfile", "--manifest-path", ROOT_MANIFEST_PATH),
+            "cargo-metadata-seed-preserving-resolution",
+            (
+                "cargo",
+                "metadata",
+                "--manifest-path",
+                ROOT_MANIFEST_PATH,
+                "--format-version",
+                "1",
+            ),
         ),
         (
             "cargo-metadata-locked",
@@ -1007,7 +1063,6 @@ def generate_composed_cargo_lock(worktree: pathlib.Path, diagnostics: pathlib.Pa
                 "--manifest-path",
                 ROOT_MANIFEST_PATH,
                 "--locked",
-                "--no-deps",
                 "--format-version",
                 "1",
             ),
@@ -1016,7 +1071,14 @@ def generate_composed_cargo_lock(worktree: pathlib.Path, diagnostics: pathlib.Pa
         if commands and commands[-1]["exit_code"] != 0:
             break
         try:
-            result = subprocess.run(args, cwd=worktree, check=False, text=True, capture_output=True)
+            result = subprocess.run(
+                args,
+                cwd=worktree,
+                check=False,
+                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
         except OSError:
             command = {
                 "label": label,
@@ -1048,60 +1110,126 @@ def generate_composed_cargo_lock(worktree: pathlib.Path, diagnostics: pathlib.Pa
         if before[key] != after[key]
     ]
 
-    v8_entries = sorted(
-        (package for package in after.values() if package.get("name") == "v8"),
-        key=lock_package_sort_key,
-    )
-    normalized_v8_entries = [
-        {
-            **package,
-            "dependencies": sorted(package.get("dependencies", [])),
-        }
-        for package in v8_entries
-    ]
+    dependency_edge_changes = []
+    for key in sorted(before_keys & after_keys):
+        before_edges = sorted(
+            dependency
+            for dependency in before[key].get("dependencies", [])
+            if isinstance(dependency, str)
+        )
+        after_edges = sorted(
+            dependency
+            for dependency in after[key].get("dependencies", [])
+            if isinstance(dependency, str)
+        )
+        if before_edges != after_edges:
+            dependency_edge_changes.append(
+                {
+                    "identity": list(key),
+                    "added": sorted(set(after_edges) - set(before_edges)),
+                    "removed": sorted(set(before_edges) - set(after_edges)),
+                    "before": before_edges,
+                    "after": after_edges,
+                }
+            )
+
+    preservation_violations: list[dict[str, Any]] = []
+    for key in sorted(before_keys):
+        package = before[key]
+        if key not in after:
+            same_name_after = sorted(
+                (candidate for candidate in after.values() if candidate.get("name") == package.get("name")),
+                key=lock_package_sort_key,
+            )
+            preservation_violations.append(
+                {
+                    "kind": "accepted-package-identity-removed-or-reidentified",
+                    "accepted": package,
+                    "same_name_after": same_name_after,
+                }
+            )
+        elif before[key].get("checksum") != after[key].get("checksum"):
+            preservation_violations.append(
+                {
+                    "kind": "accepted-package-checksum-changed",
+                    "identity": list(key),
+                    "accepted": before[key].get("checksum"),
+                    "actual": after[key].get("checksum"),
+                }
+            )
+    mismatches.extend(preservation_violations)
+
     normalized_expected_v8 = {
         **EXPECTED_V8_LOCK_ENTRY,
         "dependencies": sorted(EXPECTED_V8_LOCK_ENTRY["dependencies"]),
     }
-    if normalized_v8_entries != [normalized_expected_v8]:
+    before_v8 = normalized_v8_lock_entries(before)
+    after_v8 = normalized_v8_lock_entries(after)
+    if before_v8 != [normalized_expected_v8]:
         mismatches.append(
             {
-                "kind": "v8-lock-entry-mismatch",
-                "expected": EXPECTED_V8_LOCK_ENTRY,
-                "actual": v8_entries,
+                "kind": "accepted-v8-lock-entry-mismatch",
+                "expected": normalized_expected_v8,
+                "actual": before_v8,
             }
         )
-    normalized_edges: list[dict[str, Any]] = []
-    for (name, version), expected_edge in sorted(EXPECTED_NORMALIZED_LOCK_EDGES.items()):
-        matches = [
-            package
-            for package in after.values()
-            if package.get("name") == name and package.get("version") == version
-        ]
-        heck_edges = sorted(
-            dependency
-            for package in matches
-            for dependency in package.get("dependencies", [])
-            if isinstance(dependency, str) and (dependency == "heck" or dependency.startswith("heck "))
-        )
-        normalized_edges.append(
+    if after_v8 != [normalized_expected_v8]:
+        mismatches.append(
             {
-                "package": name,
-                "version": version,
-                "expected": expected_edge,
-                "actual": heck_edges,
+                "kind": "resolved-v8-lock-entry-mismatch",
+                "expected": normalized_expected_v8,
+                "actual": after_v8,
             }
         )
-        if len(matches) != 1 or heck_edges != [expected_edge]:
-            mismatches.append(
-                {
-                    "kind": "normalized-lock-edge-mismatch",
-                    "package": name,
-                    "version": version,
-                    "expected": expected_edge,
-                    "actual": heck_edges,
-                }
-            )
+
+    seed_edge_observations = [
+        *observed_seed_lock_edges(before, "accepted-seed", mismatches),
+        *observed_seed_lock_edges(after, "resolved-composed", mismatches),
+    ]
+
+    new_package_dependency_edges = [
+        {
+            "identity": list(lock_package_sort_key(package)),
+            "dependencies": sorted(
+                dependency
+                for dependency in package.get("dependencies", [])
+                if isinstance(dependency, str)
+            ),
+        }
+        for package in added
+    ]
+    delta = {
+        "preimage_sha256": hashlib.sha256(before_raw).hexdigest(),
+        "resolved_sha256": hashlib.sha256(after_raw).hexdigest(),
+        "raw_lock_changed": before_raw != after_raw,
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "new_package_dependency_edges": new_package_dependency_edges,
+        "dependency_edge_changes": dependency_edge_changes,
+    }
+    delta_sha256 = hashlib.sha256(
+        json.dumps(delta, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    delta_requires_approval = bool(added or removed or changed or before_raw != after_raw)
+    delta_approved = not delta_requires_approval or (
+        ACCEPTED_LOCK_DELTA_SHA256 is not None and delta_sha256 == ACCEPTED_LOCK_DELTA_SHA256
+    )
+    if delta_requires_approval and ACCEPTED_LOCK_DELTA_SHA256 is None:
+        mismatches.append(
+            {
+                "kind": "exact-lock-delta-approval-required",
+                "actual_delta_sha256": delta_sha256,
+            }
+        )
+    elif delta_requires_approval and not delta_approved:
+        mismatches.append(
+            {
+                "kind": "accepted-lock-delta-digest-mismatch",
+                "expected": ACCEPTED_LOCK_DELTA_SHA256,
+                "actual": delta_sha256,
+            }
+        )
 
     if all(command["exit_code"] == 0 for command in commands) and len(commands) == 2:
         run("git", "add", "--", ROOT_LOCK_PATH, cwd=worktree)
@@ -1109,36 +1237,55 @@ def generate_composed_cargo_lock(worktree: pathlib.Path, diagnostics: pathlib.Pa
             require_candidate_paths(
                 worktree,
                 sorted([*BUILD_PATHS, *SDK_GENERATED_PATHS]),
-                "composed Cargo lock generation",
+                "composed Cargo lock resolution",
             )
         except SystemExit as error:
             mismatches.append({"kind": "lock-path-boundary", "diagnostic": str(error)[:240]})
 
     mismatches.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+    acceptance = "ACCEPTED" if not mismatches else "UNACCEPTED"
     receipt = {
         "schema": "sdk-build-composed-cargo-lock-attribution",
-        "version": 1,
-        "status": "ready" if not mismatches else "invalid",
+        "version": 2,
+        "status": "ready" if acceptance == "ACCEPTED" else "unaccepted",
+        "acceptance": acceptance,
+        "promotion_permitted": acceptance == "ACCEPTED",
         "input_sdk_candidate": SDK_CANDIDATE_SHA,
         "build_source_sha": BUILD_SOURCE_SHA,
+        "accepted_seed_git_entry": tuple_json(BUILD_SOURCE_ENTRIES[ROOT_LOCK_PATH]),
         "manifest_structure_receipt_sha256": digest(diagnostics / "structural-receipt.json"),
-        "generation_context": "actual-composed-index-and-worktree",
+        "generation_context": "actual-composed-index-and-worktree-with-accepted-lock-seed",
+        "resolution_policy": "cargo-metadata-preserves-compatible-accepted-lock-entries",
+        "accepted_lock_delta_sha256": ACCEPTED_LOCK_DELTA_SHA256,
+        "actual_lock_delta_sha256": delta_sha256,
+        "delta_requires_approval": delta_requires_approval,
+        "delta_approved": delta_approved,
         "commands": commands,
         "preimage_sha256": hashlib.sha256(before_raw).hexdigest(),
         "preimage_bytes": len(before_raw),
         "preimage_package_count": len(before),
-        "generated_sha256": hashlib.sha256(after_raw).hexdigest(),
-        "generated_bytes": len(after_raw),
-        "generated_package_count": len(after),
+        "resolved_sha256": hashlib.sha256(after_raw).hexdigest(),
+        "resolved_bytes": len(after_raw),
+        "resolved_package_count": len(after),
         "actual_delta_count": len(added) + len(removed) + len(changed),
-        "actual_delta": {"added": added, "removed": removed, "changed": changed},
-        "v8_entry": v8_entries,
-        "normalized_edges": normalized_edges,
+        "actual_delta": delta,
+        "workspace_package_additions": [package for package in added if not package.get("source")],
+        "external_package_additions": [package for package in added if package.get("source")],
+        "new_package_dependency_edges": new_package_dependency_edges,
+        "dependency_edge_changes": dependency_edge_changes,
+        "accepted_package_preservation_violation_count": len(preservation_violations),
+        "accepted_package_preservation_violations": preservation_violations,
+        "accepted_v8_entry": before_v8,
+        "resolved_v8_entry": after_v8,
+        "seed_lock_edges": seed_edge_observations,
         "mismatch_count": len(mismatches),
         "mismatches": mismatches,
     }
     write_json(diagnostics / "lock-attribution.json", receipt)
-    require(not mismatches, f"composed Cargo lock invalid: {len(mismatches)} mismatches")
+    require(
+        acceptance == "ACCEPTED",
+        f"composed Cargo lock is UNACCEPTED: {len(mismatches)} blockers; exact delta decision required",
+    )
     return receipt
 
 
@@ -2263,7 +2410,7 @@ def generate_and_test(
     }
     print(json.dumps(pre_generation_readback, sort_keys=True))
     require(execution_inputs["status"] == "ready", "execution inputs are not ready")
-    generate_composed_cargo_lock(worktree, diagnostics)
+    resolve_composed_cargo_lock(worktree, diagnostics)
     require(tool_observations["status"] == "ready", f"tool smoke invalid: {tool_observations['errors']}")
     generator_identity["manifest_structure_receipt_sha256"] = digest(
         diagnostics / "structural-receipt.json"
@@ -2412,8 +2559,8 @@ def generate_and_test(
     require(not run("git", "diff", "--name-only", cwd=worktree), "candidate has unstaged tracked changes")
     run("git", "diff", "--cached", "--check", SDK_CANDIDATE_SHA, cwd=worktree)
     generator_identity["commands"] = [
-        "cargo generate-lockfile --manifest-path codex-rs/Cargo.toml",
-        "cargo metadata --manifest-path codex-rs/Cargo.toml --locked --no-deps --format-version 1",
+        "cargo metadata --manifest-path codex-rs/Cargo.toml --format-version 1",
+        "cargo metadata --manifest-path codex-rs/Cargo.toml --locked --format-version 1",
         "uv sync --project sdk/python --group dev --frozen",
         "uv run --project sdk/python --frozen --no-sync python scripts/update_sdk_artifacts.py generate-types",
         "python3 .github/scripts/rusty_v8_bazel.py check-module-bazel --version 150.4.0",
@@ -2613,7 +2760,7 @@ def main() -> None:
                 require(selected_entry[:2] == parent_entry[:2], f"generated path type changed: {path}")
                 require(changed == (selected_entry != parent_entry), f"generated path change manifest mismatch: {path}")
                 disposition = (
-                    "regenerated-from-build-source-seed"
+                    "resolved-from-build-source-seed"
                     if source_entry is not None
                     else "regenerated-change" if changed else "regenerated-noop"
                 )
@@ -2681,7 +2828,7 @@ def main() -> None:
             "build_source_path_set_sha256": BUILD_PATHS_SHA256,
             "generated_path_count": len(GENERATED_PATHS),
             "generated_paths": GENERATED_PATHS,
-            "generated_path_policy": "mandatory-generation-allowed-change-subset",
+            "generated_path_policy": "mandatory-resolution-or-generation-allowed-change-subset",
             "generated_path_dispositions": generated_dispositions,
             "candidate_sha": candidate_sha,
             "candidate_tree": candidate_tree,
