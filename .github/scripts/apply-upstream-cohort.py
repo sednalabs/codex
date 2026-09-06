@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Build the exact hosted SDK/build consumer candidate for w13825.
+"""Read exact bounded metadata from the accepted SDK artifact for w13825.
 
 Trusted code comes from the reviewed workflow checkout.  The accepted SDK
 artifact and reviewed build-source commit are immutable data inputs.  The
-consumer verifies every input tuple, retains the three already-materialized
-patch dependencies, applies only eight reviewed source entries, regenerates
-up to five coupled outputs with repository-pinned tools, and emits a
-fresh-bare-verified Git bundle without publishing a ref.
+reader verifies the accepted artifact, bundle, lineage, SDK source entries,
+and retained patch dependencies; reports four bounded runtime-input
+observations plus two materialized TUI entry identities; and stops before any
+install, generation, test, candidate, or bundle-output operation.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ REPOSITORY_ID = "1152496647"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-build-consumer"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "cb72bf9be8308cb5e228835f3700a55a350d8ad4"
+PUSH_PREDECESSOR_SHA = "8bdc3fca8c8796c12dd8c2aff4946ba2a5e73c60"
 
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
@@ -142,18 +142,19 @@ PATCH_DEPENDENCIES: dict[str, tuple[str, str, str]] = {
     ),
 }
 
-COMPOSITE_RUNTIME_INPUTS: dict[str, tuple[str, str, str]] = {
-    "sdk/python/pyproject.toml": (
-        "100644",
-        "blob",
-        "88bf8bac4854c35afa7115483cf3e26d713a64de",
-    ),
-    "sdk/python/uv.lock": (
-        "100644",
-        "blob",
-        "6f6f867ede321b6be3a94612ba3eebb853a1ac04",
-    ),
-}
+RUNTIME_INPUT_PATHS = (
+    "sdk/python/pyproject.toml",
+    "sdk/python/uv.lock",
+)
+RUNTIME_INPUT_REVISIONS = (
+    ("materialized-parent", MATERIALIZED_SHA),
+    ("sdk-candidate", SDK_CANDIDATE_SHA),
+)
+MATERIALIZED_TUI_IDENTITY_PATHS = (
+    "codex-rs/tui/src/bottom_pane/approval_overlay.rs",
+    "codex-rs/tui/src/chatwidget/interrupts.rs",
+)
+MAX_RUNTIME_INPUT_BYTES = 4 * 1024 * 1024
 
 GENERATED_PATHS = [
     "MODULE.bazel.lock",
@@ -580,11 +581,7 @@ def import_sdk_bundle(repo: pathlib.Path, bundle: pathlib.Path, temp: pathlib.Pa
     require(run("git", "show", "-s", "--format=%P", SDK_SOURCE_SHA, cwd=repo).split() == [BASE_SHA], "SDK source parent mismatch")
 
 
-def verify_sdk_input_entries(repo: pathlib.Path, receipt: dict[str, Any]) -> list[dict[str, Any]]:
-    require(
-        not set(COMPOSITE_RUNTIME_INPUTS).intersection(ALLOWED_MUTABLE_PATHS),
-        "composite runtime input entered the mutable cohort",
-    )
+def verify_sdk_input_entries(repo: pathlib.Path, receipt: dict[str, Any]) -> None:
     sdk_changed = run(
         "git",
         "diff-tree",
@@ -607,29 +604,142 @@ def verify_sdk_input_entries(repo: pathlib.Path, receipt: dict[str, Any]) -> lis
     for path, expected in PATCH_DEPENDENCIES.items():
         require(tree_entry(repo, MATERIALIZED_SHA, path) == expected, f"materialized patch dependency mismatch: {path}")
         require(tree_entry(repo, SDK_CANDIDATE_SHA, path) == expected, f"SDK candidate patch dependency mismatch: {path}")
-    verified_runtime_inputs: list[dict[str, Any]] = []
-    for path, expected in COMPOSITE_RUNTIME_INPUTS.items():
-        materialized_entry = tree_entry(repo, MATERIALIZED_SHA, path)
-        candidate_entry = tree_entry(repo, SDK_CANDIDATE_SHA, path)
-        expected_tuple = "/".join(expected)
-        materialized_tuple = "/".join(materialized_entry) if materialized_entry is not None else "missing"
-        candidate_tuple = "/".join(candidate_entry) if candidate_entry is not None else "missing"
-        require(
-            materialized_entry == expected,
-            f"materialized runtime input mismatch: {path} expected={expected_tuple} observed={materialized_tuple}",
+
+
+def bounded_single_value(values: list[str]) -> dict[str, Any]:
+    distinct = sorted(set(values))
+    if not distinct:
+        return {"status": "missing", "value": None, "match_count": 0}
+    if len(distinct) != 1:
+        return {"status": "ambiguous", "value": None, "match_count": len(distinct)}
+    value = distinct[0]
+    if len(value) > 96:
+        return {"status": "oversized", "value": None, "match_count": 1}
+    return {"status": "observed", "value": value, "match_count": 1}
+
+
+def runtime_fields(repo: pathlib.Path, path: str, entry: tuple[str, str, str] | None) -> dict[str, Any]:
+    if entry is None:
+        return {"parse_status": "entry-missing"}
+    if entry[1] != "blob":
+        return {"parse_status": "entry-not-blob"}
+    oid = entry[2]
+    try:
+        size = int(run("git", "cat-file", "-s", oid, cwd=repo).strip())
+    except (subprocess.CalledProcessError, ValueError):
+        return {"parse_status": "blob-size-read-error"}
+    if size > MAX_RUNTIME_INPUT_BYTES:
+        return {"parse_status": "blob-too-large", "blob_size": size}
+    try:
+        data = tomllib.loads(run_bytes("git", "cat-file", "blob", oid, cwd=repo).decode("utf-8"))
+    except (subprocess.CalledProcessError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return {"parse_status": "toml-read-error", "blob_size": size}
+
+    if path == "sdk/python/pyproject.toml":
+        project = data.get("project", {})
+        dependencies = project.get("dependencies", []) if isinstance(project, dict) else []
+        matches = (
+            [value for value in dependencies if isinstance(value, str) and value.startswith("openai-codex-cli-bin")]
+            if isinstance(dependencies, list)
+            else []
         )
-        require(
-            candidate_entry == expected,
-            f"SDK candidate runtime input mismatch: {path} expected={expected_tuple} observed={candidate_tuple}",
-        )
-        verified_runtime_inputs.append(
+        return {
+            "parse_status": "parsed",
+            "blob_size": size,
+            "runtime_requirement": bounded_single_value(matches),
+        }
+
+    packages = data.get("package", [])
+    package_versions: list[str] = []
+    requirement_specifiers: list[str] = []
+    if isinstance(packages, list):
+        for package in packages:
+            if not isinstance(package, dict):
+                continue
+            if package.get("name") == "openai-codex-cli-bin" and isinstance(package.get("version"), str):
+                package_versions.append(package["version"])
+            if package.get("name") != "openai-codex":
+                continue
+            metadata = package.get("metadata", {})
+            requires_dist = metadata.get("requires-dist", []) if isinstance(metadata, dict) else []
+            if not isinstance(requires_dist, list):
+                continue
+            for requirement in requires_dist:
+                if (
+                    isinstance(requirement, dict)
+                    and requirement.get("name") == "openai-codex-cli-bin"
+                    and isinstance(requirement.get("specifier"), str)
+                ):
+                    requirement_specifiers.append(requirement["specifier"])
+    return {
+        "parse_status": "parsed",
+        "blob_size": size,
+        "runtime_package_version": bounded_single_value(package_versions),
+        "runtime_requirement_specifier": bounded_single_value(requirement_specifiers),
+    }
+
+
+def collect_metadata_observations(repo: pathlib.Path) -> list[dict[str, Any]]:
+    observations: list[dict[str, Any]] = []
+    for role, revision in RUNTIME_INPUT_REVISIONS:
+        for path in RUNTIME_INPUT_PATHS:
+            try:
+                entry = tree_entry(repo, revision, path)
+                entry_status = "observed" if entry is not None else "missing"
+            except subprocess.CalledProcessError:
+                entry = None
+                entry_status = "tree-read-error"
+            except (SystemExit, UnicodeDecodeError, ValueError):
+                entry = None
+                entry_status = "invalid-tree-entry"
+            observations.append(
+                {
+                    "observation_kind": "runtime-input",
+                    "role": role,
+                    "revision": revision,
+                    "path": path,
+                    "entry_status": entry_status,
+                    "entry": tuple_json(entry),
+                    "runtime": runtime_fields(repo, path, entry),
+                }
+            )
+    for path in MATERIALIZED_TUI_IDENTITY_PATHS:
+        try:
+            entry = tree_entry(repo, MATERIALIZED_SHA, path)
+            entry_status = "observed" if entry is not None else "missing"
+        except subprocess.CalledProcessError:
+            entry = None
+            entry_status = "tree-read-error"
+        except (SystemExit, UnicodeDecodeError, ValueError):
+            entry = None
+            entry_status = "invalid-tree-entry"
+        observations.append(
             {
+                "observation_kind": "tree-entry-identity",
+                "role": "materialized-parent",
+                "revision": MATERIALIZED_SHA,
                 "path": path,
-                "materialized": tuple_json(materialized_entry),
-                "sdk_candidate": tuple_json(candidate_entry),
+                "entry_status": entry_status,
+                "entry": tuple_json(entry),
             }
         )
-    return verified_runtime_inputs
+    return observations
+
+
+def observation_complete(observation: dict[str, Any]) -> bool:
+    if observation["entry_status"] != "observed":
+        return False
+    if observation["observation_kind"] == "tree-entry-identity":
+        return True
+    runtime = observation["runtime"]
+    if runtime.get("parse_status") != "parsed":
+        return False
+    required_fields = (
+        ("runtime_requirement",)
+        if observation["path"] == "sdk/python/pyproject.toml"
+        else ("runtime_package_version", "runtime_requirement_specifier")
+    )
+    return all(runtime.get(field, {}).get("status") == "observed" for field in required_fields)
 
 
 def require_source_pins(worktree: pathlib.Path) -> dict[str, str]:
@@ -903,16 +1013,64 @@ def main() -> None:
     parser.add_argument("--expected-workflow-sha", required=True)
     parser.add_argument("--expected-workflow-tree", required=True)
     parser.add_argument("--validate-runtime-only", action="store_true")
+    parser.add_argument("--metadata-readback-only", action="store_true")
     args = parser.parse_args()
 
     runtime = verify_runtime(args.expected_workflow_sha, args.expected_workflow_tree)
     if args.validate_runtime_only:
         require(
-            args.repo_root is None and args.artifact_dir is None and args.output_dir is None,
+            args.repo_root is None
+            and args.artifact_dir is None
+            and args.output_dir is None
+            and not args.metadata_readback_only,
             "runtime-only validation does not accept consumer paths",
         )
         print(json.dumps(runtime, sort_keys=True))
         return
+    require(args.metadata_readback_only, "only metadata readback is enabled")
+    require(
+        args.repo_root is not None and args.artifact_dir is not None and args.output_dir is None,
+        "metadata readback requires repository and artifact inputs only",
+    )
+    repo = absolute_argument(args.repo_root, "repo-root", must_exist=True)
+    artifact = absolute_argument(args.artifact_dir, "artifact-dir", must_exist=True)
+    require(repo.is_dir() and artifact.is_dir(), "repository and artifact inputs must be directories")
+    verify_build_source_checkout(repo)
+    files = verify_sdk_artifact_files(artifact)
+    with tempfile.TemporaryDirectory(prefix="w13825-sdk-metadata-", dir=str(artifact.parent)) as temp_name:
+        temp = pathlib.Path(temp_name).resolve(strict=True)
+        import_sdk_bundle(repo, files["bundle"], temp)
+        sdk_receipt = load(files["receipt"])
+        verify_sdk_input_entries(repo, sdk_receipt)
+        observations = collect_metadata_observations(repo)
+    readback_complete = all(observation_complete(observation) for observation in observations)
+    runtime_observation_count = len(RUNTIME_INPUT_REVISIONS) * len(RUNTIME_INPUT_PATHS)
+    tui_identity_observation_count = len(MATERIALIZED_TUI_IDENTITY_PATHS)
+    evidence = {
+        "schema": "accepted-composite-metadata-readback",
+        "version": 1,
+        "evidence_only": True,
+        "consumer_acceptance": "not-evaluated",
+        "candidate_generation": "not-started",
+        "candidate_bundle": "not-created",
+        "repository": REPOSITORY,
+        **runtime,
+        "input_sdk_artifact_id": SDK_INPUT_ARTIFACT_ID,
+        "input_sdk_artifact_name": SDK_INPUT_ARTIFACT_NAME,
+        "input_sdk_archive_sha256": SDK_INPUT_ARCHIVE_SHA256,
+        "input_sdk_bundle_sha256": SDK_INPUT_BUNDLE_SHA256,
+        "input_sdk_receipt_sha256": SDK_INPUT_RECEIPT_SHA256,
+        "materialized_sha": MATERIALIZED_SHA,
+        "sdk_candidate_sha": SDK_CANDIDATE_SHA,
+        "expected_runtime_observation_count": runtime_observation_count,
+        "expected_materialized_tui_identity_observation_count": tui_identity_observation_count,
+        "expected_observation_count": runtime_observation_count + tui_identity_observation_count,
+        "observation_count": len(observations),
+        "readback_status": "complete" if readback_complete else "evidence-gap",
+        "observations": observations,
+    }
+    print(json.dumps(evidence, sort_keys=True))
+    return
     require(
         args.repo_root is not None and args.artifact_dir is not None and args.output_dir is not None,
         "consumer paths are required",
