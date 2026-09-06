@@ -761,9 +761,13 @@ mod tests {
             .await
         });
 
-        while expiries.load(std::sync::atomic::Ordering::SeqCst) < 2 {
-            tokio::task::yield_now().await;
-        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while expiries.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("native lease should rearm at least twice");
         status_tx
             .send(AgentStatus::Shutdown)
             .expect("status receiver should remain active");
