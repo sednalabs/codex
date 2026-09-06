@@ -45,6 +45,7 @@ mod backfill;
 mod configured_identity_provenance;
 mod extension_storage;
 mod external_agent_config_imports;
+mod goal_execution_lease;
 mod goals;
 mod logs;
 mod memories;
@@ -62,6 +63,8 @@ pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportHistoryRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportSuccessRecord;
+pub use goal_execution_lease::GoalExecutionLease;
+pub use goal_execution_lease::GoalExecutionLeaseError;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
@@ -338,6 +341,19 @@ impl StateRuntime {
 
     pub fn thread_goals(&self) -> &GoalStore {
         &self.thread_goals
+    }
+
+    /// Try to acquire the explicit execution lease for a thread goal.
+    pub async fn try_acquire_goal_execution_lease(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<GoalExecutionLease, GoalExecutionLeaseError> {
+        let goals_db_path = self
+            .sqlite
+            .goals_db_path()
+            .canonicalize()
+            .map_err(GoalExecutionLeaseError::Io)?;
+        GoalExecutionLease::acquire(&goals_db_path, thread_id)
     }
 
     pub fn memories(&self) -> &MemoryStore {
