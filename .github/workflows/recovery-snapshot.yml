@@ -54,6 +54,9 @@ jobs:
           test -s refs.txt
           while IFS= read -r ref; do
             [[ "$ref" =~ ^refs/(heads|tags)/ ]] || exit 1
+            case "$ref" in
+              *'$'*|*'`'*|*'&'*|*'|'*|*'>'*|*'<'*|*';'*|*'('*|*')'*|*"'"*|*'"'*) exit 1 ;;
+            esac
             git check-ref-format "$ref" >/dev/null
           done < refs.txt
           test "$(wc -l < refs.txt)" = "$(sort -u refs.txt | wc -l)"
