@@ -575,6 +575,7 @@ pub(crate) struct ChatWidget {
     model_catalog: Arc<ModelCatalog>,
     model_popup_request_id: Option<uuid::Uuid>,
     permission_popup_request_id: Option<uuid::Uuid>,
+    worktree_popup_request_id: Option<uuid::Uuid>,
     permission_profiles_menu_opened: bool,
     model_popup_model_ids: Vec<String>,
     session_telemetry: SessionTelemetry,

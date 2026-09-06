@@ -127,6 +127,7 @@ mod daybreak;
 mod experimental_features;
 mod permission_discovery;
 mod pets;
+mod worktree_browser;
 pub use custom_terminal::Terminal;
 mod assistant_directives;
 mod auto_review_denials;

@@ -419,6 +419,20 @@ pub(crate) enum AppEvent {
     /// Continue a checkout transition after synchronous Git work finishes off-loop.
     ManagedWorktreeCreated(Box<ManagedWorktreeCreated>),
 
+    BrowseManagedWorktrees,
+    ManagedWorktreesLoaded {
+        request: crate::worktree_browser::Request,
+        result: Result<Vec<crate::worktree_browser::Entry>, String>,
+    },
+    ManagedWorktreeAction {
+        request: crate::worktree_browser::Request,
+        action: crate::worktree_browser::Action,
+    },
+    ShowManagedWorktreeActions {
+        request: crate::worktree_browser::Request,
+        entry: crate::worktree_browser::Entry,
+    },
+
     /// Change the working directory of the originating idle primary thread.
     ChangeWorkingDirectory {
         thread_id: ThreadId,

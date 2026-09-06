@@ -2954,6 +2954,7 @@ model_reasoning_effort = "low"
         codex_worktree::WorktreeSettings::for_cli(&home, /*desktop*/ None)
             .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?,
     );
+    let mut browser_entries = Vec::new();
     requests.lock().expect("request recorder lock").clear();
     app.handle_event(
         &mut tui,
@@ -2972,6 +2973,10 @@ model_reasoning_effort = "low"
         .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?
         .pop()
         .expect("unused checkout");
+    browser_entries.push(crate::worktree_browser::Entry {
+        cwd: unused.cwd.clone(),
+        owner: None,
+    });
     assert_eq!(
         manager
             .owner(&unused.root)
@@ -3035,6 +3040,16 @@ terminal_visualization_instructions = true
     complete_managed_worktree_creation(&mut app, &mut tui, &mut server, &mut events).await?;
     assert_eq!(app.chat_widget.thread_id(), Some(original));
     assert!(recorded_params(&requests, "thread/fork").is_empty());
+    let feature_mismatch_checkout = manager
+        .list(&source)
+        .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?
+        .into_iter()
+        .find(|checkout| checkout.cwd != unused.cwd)
+        .expect("feature mismatch leaves an unused checkout");
+    browser_entries.push(crate::worktree_browser::Entry {
+        cwd: feature_mismatch_checkout.cwd,
+        owner: None,
+    });
     while events.try_recv().is_ok() {}
     app.handle_event(
         &mut tui,
@@ -3061,6 +3076,13 @@ terminal_visualization_instructions = true
         .expect("created checkout")
         .1
         .root
+        .clone();
+    let stale_cwd = created
+        .result
+        .as_ref()
+        .expect("created checkout")
+        .1
+        .cwd
         .clone();
     app.primary_thread_id = Some(ThreadId::new());
     app.handle_event(
@@ -3089,6 +3111,10 @@ terminal_visualization_instructions = true
             .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?,
         None
     );
+    browser_entries.push(crate::worktree_browser::Entry {
+        cwd: stale_cwd,
+        owner: None,
+    });
     for mode in [ManagedWorktreeMode::New, ManagedWorktreeMode::Fork] {
         requests.lock().expect("request recorder lock").clear();
         let previous = app.chat_widget.thread_id();
@@ -3117,6 +3143,10 @@ terminal_visualization_instructions = true
             .iter()
             .find(|checkout| checkout.cwd.canonicalize().ok().as_ref() == Some(&cwd))
             .expect("managed checkout");
+        browser_entries.push(crate::worktree_browser::Entry {
+            cwd: checkout.cwd.clone(),
+            owner: Some(replacement),
+        });
         assert!(checkout.root.starts_with(home.join("worktrees")));
         assert!(!project_pool.exists());
         assert_eq!(
@@ -3172,6 +3202,39 @@ terminal_visualization_instructions = true
             .thread_read(replacement, /*include_turns*/ false)
             .await?;
         assert_eq!(attached.cwd.as_path().canonicalize()?, cwd);
+    }
+    browser_entries.sort_by(|left, right| left.cwd.cmp(&right.cwd));
+    let nested = source.join("browser-only");
+    fs::create_dir(&nested)?;
+    assert_eq!(
+        crate::worktree_browser::list(home.clone(), nested)
+            .await
+            .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?,
+        browser_entries
+    );
+    let unowned = manager
+        .create(&codex_worktree::CreateWorktree {
+            source_cwd: source.clone(),
+            base: None,
+        })
+        .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
+    browser_entries.push(crate::worktree_browser::Entry {
+        cwd: unowned.cwd,
+        owner: None,
+    });
+    browser_entries.sort_by(|left, right| left.cwd.cmp(&right.cwd));
+    for owner in [None, Some("not-a-thread-uuid")] {
+        if let Some(owner) = owner {
+            manager
+                .bind_thread(&unowned.root, owner)
+                .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?;
+        }
+        assert_eq!(
+            crate::worktree_browser::list(home.clone(), source.clone())
+                .await
+                .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?,
+            browser_entries
+        );
     }
     app.start_fresh_session_with_summary_hint(
         &mut tui,

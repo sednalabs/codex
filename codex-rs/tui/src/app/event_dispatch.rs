@@ -97,6 +97,26 @@ impl App {
             AppEvent::ManagedWorktreeCreated(created) => {
                 self.finish_managed_worktree(tui, app_server, *created).await;
             }
+            AppEvent::BrowseManagedWorktrees => {
+                if let Some(request) = self.chat_widget.request_managed_worktrees() {
+                    crate::worktree_browser::fetch(
+                        request,
+                        self.config.codex_home.to_path_buf(),
+                        self.app_event_tx.clone(),
+                    );
+                }
+            }
+            AppEvent::ManagedWorktreesLoaded { request, result } => {
+                self.chat_widget.on_managed_worktrees_loaded(request, result);
+            }
+            AppEvent::ManagedWorktreeAction { request, action } => {
+                if let Some(event) = self.chat_widget.managed_worktree_action(&request, action) {
+                    self.app_event_tx.send(event);
+                }
+            }
+            AppEvent::ShowManagedWorktreeActions { request, entry } => {
+                self.chat_widget.show_managed_worktree_actions(request, entry);
+            }
             AppEvent::ChangeWorkingDirectory {
                 thread_id,
                 requested_cwd,
