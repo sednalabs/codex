@@ -2,6 +2,15 @@ name: Apply admitted upstream SDK cohort
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_workflow_sha:
+        description: Exact reviewed producer workflow commit
+        required: true
+        type: string
+      expected_workflow_tree:
+        description: Exact reviewed producer workflow tree
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -10,29 +19,106 @@ permissions:
 jobs:
   apply-sdk-cohort:
     runs-on: ubuntu-latest
+    env:
+      EXPECTED_WORKFLOW_SHA: ${{ inputs.expected_workflow_sha }}
+      EXPECTED_WORKFLOW_TREE: ${{ inputs.expected_workflow_tree }}
+      SDK_SOURCE_SHA: bc8884624330b6e681cfa3ce5fc575ce8298ed1b
+      SDK_SOURCE_TREE: 1e143e2bc5964a4308d9a6f36ca3e2af028e79e9
+      SDK_SOURCE_BRANCH: worker/w13825-sdk-source-authoring-20260906
     steps:
-      - name: Check out trusted helper candidate
+      - name: Check out exact reviewed helper
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.expected_workflow_sha }}
           fetch-depth: 1
           persist-credentials: false
           path: helper-checkout
 
-      - name: Check out frozen source candidate
+      - name: Check out exact SDK source candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 5eb6ca6519b1a79e8997bf21321885de1fd9ed01
-          fetch-depth: 1
+          ref: bc8884624330b6e681cfa3ce5fc575ce8298ed1b
+          fetch-depth: 2
           persist-credentials: false
           path: source-candidate
 
-      - name: Verify source candidate identity
+      - name: Verify dispatch and checkout identities
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C "${GITHUB_WORKSPACE}/source-candidate" rev-parse HEAD)" = 5eb6ca6519b1a79e8997bf21321885de1fd9ed01
-          test "$(git -C "${GITHUB_WORKSPACE}/source-candidate" rev-parse HEAD^{tree})" = 7a4e9d32c7a13a22215335a850cf879e284fdc63
+          test "${GITHUB_REPOSITORY}" = sednalabs/codex
+          test "${GITHUB_EVENT_NAME}" = workflow_dispatch
+          test "${GITHUB_SHA}" = "${EXPECTED_WORKFLOW_SHA}"
+          test "${EXPECTED_WORKFLOW_SHA}" = "$(git -C "${GITHUB_WORKSPACE}/helper-checkout" rev-parse HEAD)"
+          test "${EXPECTED_WORKFLOW_TREE}" = "$(git -C "${GITHUB_WORKSPACE}/helper-checkout" rev-parse HEAD^{tree})"
+          test "${SDK_SOURCE_SHA}" = "$(git -C "${GITHUB_WORKSPACE}/source-candidate" rev-parse HEAD)"
+          test "${SDK_SOURCE_TREE}" = "$(git -C "${GITHUB_WORKSPACE}/source-candidate" rev-parse HEAD^{tree})"
+          test "5eb6ca6519b1a79e8997bf21321885de1fd9ed01" = "$(git -C "${GITHUB_WORKSPACE}/source-candidate" show -s --format=%P HEAD)"
+          test -z "$(git -C "${GITHUB_WORKSPACE}/source-candidate" status --porcelain)"
+          remote_source="$({ git -C "${GITHUB_WORKSPACE}/source-candidate" ls-remote --heads origin "refs/heads/${SDK_SOURCE_BRANCH}"; } | awk '{print $1}')"
+          test "${remote_source}" = "${SDK_SOURCE_SHA}"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+          inputs = event.get("inputs")
+          if not isinstance(inputs, dict) or set(inputs) != {"expected_workflow_sha", "expected_workflow_tree"}:
+              raise SystemExit("workflow dispatch input set mismatch")
+          if inputs["expected_workflow_sha"] != os.environ["EXPECTED_WORKFLOW_SHA"]:
+              raise SystemExit("workflow dispatch SHA receipt mismatch")
+          if inputs["expected_workflow_tree"] != os.environ["EXPECTED_WORKFLOW_TREE"]:
+              raise SystemExit("workflow dispatch tree receipt mismatch")
+          PY
+
+      - name: Prove fail-closed input boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          helper="${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py"
+          expect_failure() {
+            expected="$1"
+            shift
+            set +e
+            output="$("$@" 2>&1)"
+            status=$?
+            set -e
+            test "${status}" -ne 0
+            grep -F -- "${expected}" <<<"${output}" >/dev/null
+          }
+          expect_failure "current repository mismatch" \
+            env GITHUB_REPOSITORY=wrong/repository python3 "${helper}" \
+              --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
+              --artifact-dir "${RUNNER_TEMP}/not-present" \
+              --output-dir "${RUNNER_TEMP}/not-created" \
+              --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+              --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+          expect_failure "repo-root must be absolute" \
+            python3 "${helper}" \
+              --repo-root source-candidate \
+              --artifact-dir "${RUNNER_TEMP}/not-present" \
+              --output-dir "${RUNNER_TEMP}/not-created" \
+              --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+              --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+
+          extra_source="${RUNNER_TEMP}/extra-source"
+          git clone --shared --no-checkout "${GITHUB_WORKSPACE}/source-candidate" "${extra_source}"
+          git -C "${extra_source}" checkout --detach "${SDK_SOURCE_SHA}"
+          git -C "${extra_source}" config user.name github-actions-for-negative-control
+          git -C "${extra_source}" config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          printf '\nnegative-control-only\n' >>"${extra_source}/.github/pull_request_template.md"
+          git -C "${extra_source}" add .github/pull_request_template.md
+          git -C "${extra_source}" commit -m "negative control: reject extra source path"
+          expect_failure "SDK source head mismatch" \
+            python3 "${helper}" \
+              --repo-root "${extra_source}" \
+              --artifact-dir "${RUNNER_TEMP}/not-present" \
+              --output-dir "${RUNNER_TEMP}/not-created" \
+              --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+              --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+
+          test -z "$(grep -nE 'patch_base64|disposition_json|git[[:space:]]+apply' "${helper}" || true)"
 
       - name: Download exact accepted source artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -43,15 +129,75 @@ jobs:
           run-id: 34035744523
           path: ${{ runner.temp }}/w13825-source-artifact
 
+      - name: Prove fail-closed evidence boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          helper="${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py"
+          source_artifact="${RUNNER_TEMP}/w13825-source-artifact"
+          make_fixture() {
+            fixture="$1"
+            mkdir "${fixture}"
+            for source_path in "${source_artifact}"/*; do
+              ln -s "${source_path}" "${fixture}/$(basename "${source_path}")"
+            done
+          }
+          expect_failure() {
+            expected="$1"
+            shift
+            set +e
+            output="$("$@" 2>&1)"
+            status=$?
+            set -e
+            test "${status}" -ne 0
+            grep -F -- "${expected}" <<<"${output}" >/dev/null
+          }
+
+          staged_fixture="${RUNNER_TEMP}/tampered-staged"
+          make_fixture "${staged_fixture}"
+          rm "${staged_fixture}/staged-auto-merge.txt"
+          cp "${source_artifact}/staged-auto-merge.txt" "${staged_fixture}/staged-auto-merge.txt"
+          printf '\n' >>"${staged_fixture}/staged-auto-merge.txt"
+          expect_failure "staged path-list digest mismatch" \
+            python3 "${helper}" \
+              --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
+              --artifact-dir "${staged_fixture}" \
+              --output-dir "${RUNNER_TEMP}/tampered-staged-output" \
+              --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+              --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+
+          provenance_fixture="${RUNNER_TEMP}/tampered-provenance"
+          make_fixture "${provenance_fixture}"
+          rm "${provenance_fixture}/provenance.json"
+          python3 - "${source_artifact}/provenance.json" "${provenance_fixture}/provenance.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          source = Path(sys.argv[1])
+          target = Path(sys.argv[2])
+          value = json.loads(source.read_text(encoding="utf-8"))
+          value["materialized_tree"] = "0" * 40
+          target.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          expect_failure "source provenance digest mismatch" \
+            python3 "${helper}" \
+              --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
+              --artifact-dir "${provenance_fixture}" \
+              --output-dir "${RUNNER_TEMP}/tampered-provenance-output" \
+              --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+              --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+
       - name: Apply SDK cohort and emit candidate
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/w13825-sdk-candidate"
           python3 "${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py" \
             --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
             --artifact-dir "${RUNNER_TEMP}/w13825-source-artifact" \
-            --output-dir "${RUNNER_TEMP}/w13825-sdk-candidate"
+            --output-dir "${RUNNER_TEMP}/w13825-sdk-candidate" \
+            --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+            --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
 
       - name: Upload successful candidate evidence (no push)
         if: success()
