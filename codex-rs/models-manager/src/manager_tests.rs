@@ -11,6 +11,7 @@ use codex_login::ExternalAuth;
 use codex_login::ExternalAuthRefreshContext;
 use codex_login::TokenData;
 use codex_protocol::auth::AuthMode;
+use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelsResponse;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -1166,5 +1167,171 @@ fn bundled_models_json_roundtrips() {
     assert!(
         !response.models.is_empty(),
         "bundled models.json should contain at least one model"
+    );
+}
+
+#[tokio::test]
+async fn openai_overlay_preserves_unrelated_metadata_and_static_catalog_precedence() {
+    const SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    let sentence = SENTENCE;
+    let mut candidate = remote_model("codex-auto-review", "Auto Review", /*priority*/ 7);
+    candidate.base_instructions = format!("before {sentence} after");
+    candidate.model_messages = Some(ModelMessages {
+        instructions_template: Some(format!("before {sentence} after")),
+        instructions_variables: None,
+        approvals: None,
+        auto_review: None,
+        permissions: None,
+    });
+    let static_candidate = candidate.clone();
+    let original_display = candidate.display_name.clone();
+    let original_priority = candidate.priority;
+    let mut transformed = candidate.clone();
+    assert_eq!(
+        instruction_overlay::apply_openai_compatible(&mut transformed),
+        instruction_overlay::OverlayOutcome::Applied
+    );
+    assert!(!transformed.base_instructions.contains(sentence));
+    assert!(
+        !transformed
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_ref())
+            .expect("template")
+            .contains(sentence)
+    );
+    assert_eq!(transformed.display_name, original_display);
+    assert_eq!(transformed.priority, original_priority);
+
+    let static_manager = static_manager_for_tests(ModelsResponse {
+        models: vec![static_candidate.clone()],
+    });
+    let static_info = static_manager
+        .get_model_info(
+            "codex-auto-review",
+            &ModelsManagerConfig {
+                personality_enabled: true,
+                ..ModelsManagerConfig::default()
+            },
+        )
+        .await;
+    assert_eq!(static_info, static_candidate);
+
+    let configured = ModelsManagerConfig {
+        base_instructions: Some(sentence.to_string()),
+        ..ModelsManagerConfig::default()
+    };
+    let configured_info = static_manager
+        .get_model_info("codex-auto-review", &configured)
+        .await;
+    assert_eq!(configured_info.base_instructions, sentence);
+}
+
+#[tokio::test]
+async fn openai_overlay_applies_after_remote_and_cache_composition() {
+    const SENTENCE: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    let sentence = SENTENCE;
+    let mut candidate = remote_model("codex-auto-review", "Auto Review", /*priority*/ 7);
+    candidate.base_instructions = format!("before {sentence} after");
+    candidate.model_messages = Some(ModelMessages {
+        instructions_template: Some(format!("before {sentence} after")),
+        instructions_variables: None,
+        approvals: None,
+        auto_review: None,
+        permissions: None,
+    });
+    let original_display = candidate.display_name.clone();
+    let home = tempdir().expect("temp dir");
+    let endpoint = TestModelsEndpoint::new(vec![vec![candidate.clone()]]);
+    let manager = openai_manager_for_tests(home.path().to_path_buf(), endpoint.clone());
+    manager
+        .refresh_available_models(RefreshStrategy::Online, &DEFAULT_HTTP_CLIENT_FACTORY)
+        .await
+        .expect("remote refresh succeeds");
+    let template_config = ModelsManagerConfig {
+        personality_enabled: true,
+        ..ModelsManagerConfig::default()
+    };
+    let info = manager
+        .get_model_info("codex-auto-review", &template_config)
+        .await;
+    assert!(
+        !info
+            .get_model_instructions(/*personality*/ None)
+            .contains(sentence)
+    );
+    assert!(
+        !info
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_ref())
+            .expect("template")
+            .contains(sentence)
+    );
+    assert_eq!(info.display_name, original_display);
+    assert_eq!(endpoint.fetch_count(), 1);
+
+    let configured_info = manager
+        .get_model_info(
+            "codex-auto-review",
+            &ModelsManagerConfig {
+                base_instructions: Some("operator base".to_string()),
+                ..ModelsManagerConfig::default()
+            },
+        )
+        .await;
+    assert_eq!(configured_info.base_instructions, "operator base");
+    assert!(configured_info.model_messages.is_none());
+
+    let disabled_info = manager
+        .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
+        .await;
+    assert!(
+        !disabled_info
+            .get_model_instructions(/*personality*/ None)
+            .contains(sentence)
+    );
+    assert!(disabled_info.model_messages.is_none());
+
+    let cache_bytes = tokio::fs::read(home.path().join("models_cache.json"))
+        .await
+        .expect("cache should be persisted");
+    assert!(String::from_utf8_lossy(&cache_bytes).contains(sentence));
+
+    let cache_endpoint = TestModelsEndpoint::without_refresh(Vec::new());
+    let cached_manager =
+        openai_manager_for_tests(home.path().to_path_buf(), cache_endpoint.clone());
+    cached_manager
+        .refresh_available_models(
+            RefreshStrategy::OnlineIfUncached,
+            &DEFAULT_HTTP_CLIENT_FACTORY,
+        )
+        .await
+        .expect("cache load succeeds");
+    let cached_info = cached_manager
+        .get_model_info("codex-auto-review", &template_config)
+        .await;
+    assert!(
+        !cached_info
+            .get_model_instructions(/*personality*/ None)
+            .contains(sentence)
+    );
+    assert!(
+        !cached_info
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_ref())
+            .expect("cached template")
+            .contains(sentence)
+    );
+    assert_eq!(cache_endpoint.fetch_count(), 0);
+
+    let suffix_info = manager
+        .get_model_info("codex-auto-review-v2", &ModelsManagerConfig::default())
+        .await;
+    assert!(
+        suffix_info
+            .get_model_instructions(/*personality*/ None)
+            .contains(sentence)
     );
 }

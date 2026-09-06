@@ -1,6 +1,7 @@
 use super::cache::ModelsCacheManager;
 use crate::collaboration_mode_presets::builtin_collaboration_mode_presets;
 use crate::config::ModelsManagerConfig;
+use crate::instruction_overlay;
 use crate::model_info;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
@@ -291,6 +292,23 @@ impl ModelsManager for OpenAiModelsManager {
 
     fn get_remote_models(&self) -> ModelsManagerFuture<'_, Vec<ModelInfo>> {
         Box::pin(async move { self.remote_models.read().await.clone() })
+    }
+
+    fn get_model_info<'a>(
+        &'a self,
+        model: &'a str,
+        config: &'a ModelsManagerConfig,
+    ) -> ModelsManagerFuture<'a, ModelInfo> {
+        Box::pin(async move {
+            let remote_models = self.get_remote_models().await;
+            construct_model_info_from_candidates_with_overlay(
+                model,
+                &remote_models,
+                config,
+                /*apply_overlay*/
+                true,
+            )
+        })
     }
 
     fn try_get_remote_models(&self) -> Result<Vec<ModelInfo>, TryLockError> {
@@ -620,11 +638,23 @@ pub(crate) fn construct_model_info_from_candidates(
     candidates: &[ModelInfo],
     config: &ModelsManagerConfig,
 ) -> ModelInfo {
+    construct_model_info_from_candidates_with_overlay(
+        model, candidates, config, /*apply_overlay*/
+        false,
+    )
+}
+
+fn construct_model_info_from_candidates_with_overlay(
+    model: &str,
+    candidates: &[ModelInfo],
+    config: &ModelsManagerConfig,
+    apply_overlay: bool,
+) -> ModelInfo {
     // First use the normal longest-prefix match. If that misses, allow a narrowly scoped
     // retry for namespaced slugs like `custom/gpt-5.3-codex`.
     let remote = find_model_by_longest_prefix(model, candidates)
         .or_else(|| find_model_by_namespaced_suffix(model, candidates));
-    let model_info = if let Some(remote) = remote {
+    let mut model_info = if let Some(remote) = remote {
         ModelInfo {
             slug: model.to_string(),
             used_fallback_model_metadata: false,
@@ -633,6 +663,9 @@ pub(crate) fn construct_model_info_from_candidates(
     } else {
         model_info::model_info_from_slug(model)
     };
+    if apply_overlay {
+        let _outcome = instruction_overlay::apply_openai_compatible(&mut model_info);
+    }
     model_info::with_config_overrides(model_info, config)
 }
 
