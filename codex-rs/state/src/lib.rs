@@ -59,6 +59,8 @@ pub use runtime::ExternalAgentConfigImportDetailsRecord;
 pub use runtime::ExternalAgentConfigImportFailureRecord;
 pub use runtime::ExternalAgentConfigImportHistoryRecord;
 pub use runtime::ExternalAgentConfigImportSuccessRecord;
+pub use runtime::GoalExecutionLease;
+pub use runtime::GoalExecutionLeaseError;
 pub use runtime::GoalAccountingMode;
 pub use runtime::GoalAccountingOutcome;
 pub use runtime::GoalStore;
