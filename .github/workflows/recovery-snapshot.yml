@@ -63,7 +63,7 @@ jobs:
           sort -u refs.txt -o refs.txt
           git init --bare source.git >/dev/null
           git -C source.git remote add source "https://github.com/$SOURCE_REPOSITORY.git"
-          if ! git ls-remote --refs source 'refs/heads/*' 'refs/tags/*' | awk '{print $1" "$2}' | sort -k2 > remote-map.txt; then
+          if ! git -C source.git ls-remote --refs source 'refs/heads/*' 'refs/tags/*' | awk '{print $1" "$2}' | sort -k2 > remote-map.txt; then
             echo 'recovery snapshot: ls-remote failed' >&2
             exit 1
           fi
