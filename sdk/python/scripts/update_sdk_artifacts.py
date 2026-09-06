@@ -744,6 +744,7 @@ def generate_v2_all(schema_dir: Path) -> None:
     _require_nullable_collab_spawn_identity_fields(out_path)
     _add_legacy_collab_spawn_identity_validator(out_path)
     _preserve_collab_spawn_identity_contract(out_path)
+    _preserve_plan_type_enum(out_path)
     _normalize_generated_timestamps(out_path)
     _strip_redundant_model_config_passes(out_path)
 
@@ -907,6 +908,8 @@ def _preserve_reasoning_effort_enum(out_path: Path) -> None:
     medium = "medium"
     high = "high"
     xhigh = "xhigh"
+    max = "max"
+    ultra = "ultra"
 
     @classmethod
     def _missing_(cls, value: object) -> ReasoningEffort | None:
@@ -945,6 +948,36 @@ def _preserve_thread_source_enum(out_path: Path) -> None:
         return member
 """
     out_path.write_text(source[:class_start] + open_enum + source[class_end:])
+
+
+def _preserve_plan_type_enum(out_path: Path) -> None:
+    """Keep the public plan constants while accepting values from newer runtimes."""
+    source = out_path.read_text()
+    class_start = source.find("class PlanType(Enum):")
+    if class_start == -1:
+        raise RuntimeError("Generated SDK is missing PlanType")
+    class_end = source.find("\n\nclass ", class_start)
+    if class_end == -1:
+        class_end = len(source)
+
+    class_source = source[class_start:class_end]
+    class_source = class_source.replace(
+        "class PlanType(Enum):",
+        "class PlanType(str, Enum):",
+        1,
+    ).rstrip()
+    class_source += """
+
+    @classmethod
+    def _missing_(cls, value: object) -> PlanType | None:
+        if not isinstance(value, str) or not value:
+            return None
+        member = str.__new__(cls, value)
+        member._name_ = value
+        member._value_ = value
+        return member
+"""
+    out_path.write_text(source[:class_start] + class_source + source[class_end:])
 
 
 def _preserve_collab_spawn_identity_contract(out_path: Path) -> None:
