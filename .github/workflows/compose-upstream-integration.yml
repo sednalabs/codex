@@ -26,7 +26,7 @@ env:
 
 jobs:
   compose:
-    if: github.event_name == 'workflow_dispatch' || github.event.before == '4abfe49c95bfdf10c07827c963f851970a58d655'
+    if: github.event_name == 'workflow_dispatch' || github.event.before == 'db75a712424b06407930aad8de3a93634c55083a'
     runs-on: ubuntu-latest
     steps:
       - name: Check out integration branch
@@ -77,6 +77,8 @@ jobs:
             exit 1
           fi
           candidate_tree="${base_tree}"
+          base_sha="$(git rev-parse HEAD)"
+          export BASE_SHA="${base_sha}" BASE_TREE="${base_tree}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git merge --no-ff --no-edit "${UPSTREAM_SHA}"; then
@@ -91,10 +93,101 @@ jobs:
             git status --short > composition-receipt/status.txt || true
             git diff --no-ext-diff > composition-receipt/diff.patch || true
             git diff --no-ext-diff --name-only --diff-filter=U > composition-receipt/unmerged.txt || true
-            merge_sha=""
-            merge_tree=""
+            python3 - <<'PY'
+          if True:
+            import hashlib, json, os
+
+            with open("composition-receipt/unmerged.txt") as f:
+                paths = sorted({line.strip() for line in f if line.strip()})
+            path_bytes = ("\n".join(paths) + ("\n" if paths else "")).encode()
+            path_digest = hashlib.sha256(path_bytes).hexdigest()
+
+            def build_ci_path(p):
+                root_name = p.rsplit("/", 1)[-1]
+                return (p.startswith((".github/", ".codex/", "build/", "defs/")) or
+                        ("/" not in p and (root_name in {
+                            "Cargo.lock", "Makefile", "Justfile", "justfile", "MODULE.bazel",
+                            "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb", "Cargo.toml",
+                            "package.json", "WORKSPACE", "WORKSPACE.bazel", ".bazelrc", "BUILD", "BUILD.bazel",
+                            "go.mod", "go.sum", "requirements.txt", "pyproject.toml", "rust-toolchain.toml",
+                        } or root_name.endswith((".lock", ".lockb")))))
+
+            cohort_specs = [
+                ("build-ci-generated", build_ci_path, "build-ci-owner",
+                 "preserve workflow/build graph/lock/generated source-of-truth behavior",
+                 "hosted docs/attestation/artifact/repo-checks/lock/generated checks"),
+                ("sdk-public-contract", lambda p: p.startswith("sdk/"), "sdk-owner",
+                 "preserve public SDK API/serialization behavior", "hosted sdk/package checks"),
+                ("app-server-protocol-transport", lambda p: p.startswith(("app-server-protocol/", "codex-rs/app-server", "codex-rs/codex-api/", "codex-rs/codex-mcp/", "codex-rs/realtime-webrtc/")), "app-server-owner",
+                 "preserve schema/transport/auth/retry/account/history behavior", "hosted ui-protocol/startup-sync/product-surfaces/schema checks"),
+                ("tui-history", lambda p: p.startswith(("codex-rs/tui/", "codex-rs/core/src/session/")), "tui-owner",
+                 "preserve transcript/history/queue/interrupt/usage/resume behavior", "hosted ui-protocol/subagents/ledger lanes"),
+                ("core-agent-lifecycle", lambda p: p.startswith("codex-rs/"), "core-agent-owner",
+                 "preserve fork-owned agent/session/permission/provider behavior", "hosted core/agent/session targeted lanes plus current carry-ledger evidence"),
+                ("docs-policy", lambda p: p.startswith(("docs/", "patches/")), "docs-policy-owner",
+                 "preserve operator-facing policy/provenance", "hosted docs/attestation checks"),
+                ("unclassified-user-judgment", lambda p: True, "user-judgment-owner",
+                 "preserve by deferral", "no proof until authority decision"),
+            ]
+            cohorts = []
+            remaining = paths[:]
+            for name, matches, owner, preserved, proof in cohort_specs:
+                selected = [p for p in remaining if matches(p)]
+                remaining = [p for p in remaining if p not in selected]
+                selected_bytes = ("\n".join(selected) + ("\n" if selected else "")).encode()
+                cohorts.append({
+                    "name": name,
+                    "path_count": len(selected),
+                    "path_set_sha256": hashlib.sha256(selected_bytes).hexdigest(),
+                    "representative_paths": selected[:12],
+                    "authority_owner": owner,
+                    "equivalence_sources": [
+                        "docs/carry-divergence-ledger.md#Current Live Divergences (43 headings)",
+                        "docs/upstream-sync/2026-07-28.md (historical harvest seed only)",
+                        "Ops w11999#56611",
+                    ],
+                    "preserved_behaviors": preserved,
+                    "hosted_proof_requirements": proof,
+                    "resolution_mode": "defer_pending_authority" if name == "unclassified-user-judgment" else "manual_authority_review",
+                    "user_judgment": name == "unclassified-user-judgment",
+                    "equivalence_status": "remains_to_be_checked_against_exact_current_cut",
+                })
+            manifest = {
+                "schema": "hosted-conflict-manifest",
+                "version": 1,
+                "repository": os.environ["GITHUB_REPOSITORY"],
+                "branch": os.environ["INTEGRATION_BRANCH"],
+                "expected_head": os.environ["EXPECTED_HEAD"],
+                "run_id": os.environ["GITHUB_RUN_ID"],
+                "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                "event": os.environ["GITHUB_EVENT_NAME"],
+                "base_sha": os.environ["BASE_SHA"],
+                "base_tree": os.environ["BASE_TREE"],
+                "upstream_sha": os.environ["UPSTREAM_SHA"],
+                "upstream_tree": os.environ["UPSTREAM_TREE"],
+                "total_unmerged_path_count": len(paths),
+                "path_set_sha256": path_digest,
+                "cohorts": cohorts,
+                "resolution_notice": "No path-name-only merge decision; automatic ours/theirs resolution is not implied.",
+            }
+            with open("composition-receipt/conflict-manifest.json", "w") as f:
+                json.dump(manifest, f, indent=2, sort_keys=True)
+                f.write("\n")
+            with open("composition-receipt/manifest-summary.env", "w") as f:
+                f.write(f"MANIFEST_TOTAL={len(paths)}\nMANIFEST_DIGEST={path_digest}\n")
+          PY
+          merge_sha=""
+          merge_tree=""
+          fi
+          manifest_total=0
+          manifest_digest=""
+          if test -f composition-receipt/manifest-summary.env; then
+            . composition-receipt/manifest-summary.env
+            manifest_total="${MANIFEST_TOTAL}"
+            manifest_digest="${MANIFEST_DIGEST}"
           fi
           export base_tree upstream_tree remote_readback merge_sha merge_tree candidate_tree status conflict
+          export manifest_total manifest_digest
           python3 - <<'PY'
           import json, os
           receipt = {
@@ -114,6 +207,9 @@ jobs:
               "pre_merge_remote_readback": os.environ["remote_readback"],
               "status": os.environ["status"],
               "conflict": os.environ["conflict"] == "true",
+              "conflict_manifest": "composition-receipt/conflict-manifest.json" if os.environ["conflict"] == "true" else "",
+              "total_unmerged_path_count": int(os.environ.get("manifest_total", "0")),
+              "unmerged_path_set_sha256": os.environ.get("manifest_digest", ""),
           }
           with open("composition-receipt/receipt.json", "w") as f:
               json.dump(receipt, f, indent=2, sort_keys=True)
@@ -133,6 +229,13 @@ jobs:
             echo "- event: ${GITHUB_EVENT_NAME}"
             echo "- remote readback: ${remote_readback}"
             echo "- result: ${status}"
+            if test "${conflict}" = true; then
+              echo "- conflict manifest: composition-receipt/conflict-manifest.json"
+              echo "- total unmerged paths: ${manifest_total}"
+              echo "- overall path-set SHA-256: ${manifest_digest}"
+            else
+              echo "- conflict manifest: not generated (clean merge)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
           test "${conflict}" = false
 
