@@ -51,6 +51,7 @@ enum HistoryCapabilities {
     ThreadListFails,
     ThreadStartFails,
     ConfigReadUnsupported(i64),
+    ConfigReadFails,
 }
 
 /// Returns and resets `(thread/loaded/list, thread/read)` request counts.
@@ -200,6 +201,17 @@ async fn start_recording_app_server_with_history(
                                 code,
                                 data: None,
                                 message: "unknown variant `config/read`".to_string(),
+                            },
+                        })
+                    } else if history_capabilities == HistoryCapabilities::ConfigReadFails
+                        && request.method == "config/read"
+                    {
+                        JSONRPCMessage::Error(JSONRPCError {
+                            id: request_id,
+                            error: JSONRPCErrorError {
+                                code: -32603,
+                                data: None,
+                                message: "config temporarily unavailable".to_string(),
                             },
                         })
                     } else if history_capabilities == HistoryCapabilities::ThreadStartFails
@@ -3716,3 +3728,5 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
 
 #[path = "new_session_tests.rs"]
 mod new_session_tests;
+#[path = "startup_defaults_tests.rs"]
+mod startup_defaults_tests;
