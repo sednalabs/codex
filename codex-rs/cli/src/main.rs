@@ -763,19 +763,8 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     let status = {
         #[cfg(windows)]
         {
-            if action == UpdateAction::StandaloneWindows {
-                let (cmd, args) = action.command_args();
-                // Run the standalone PowerShell installer with PowerShell
-                // itself. Routing this through `cmd.exe /C` would parse
-                // PowerShell metacharacters like `|` before PowerShell sees
-                // the installer command.
-                std::process::Command::new(cmd).args(args).status()?
-            } else {
-                // On Windows, run via cmd.exe so .CMD/.BAT are correctly resolved (PATHEXT semantics).
-                std::process::Command::new("cmd")
-                    .args(["/C", &cmd_str])
-                    .status()?
-            }
+            let (cmd, args) = action.command_args();
+            std::process::Command::new(cmd).args(args).status()?
         }
         #[cfg(not(windows))]
         {
@@ -808,11 +797,56 @@ fn run_update_command() -> anyhow::Result<()> {
     #[cfg(not(debug_assertions))]
     {
         let Some(action) = codex_tui::get_update_action() else {
+            if requires_manual_sedna_update(
+                option_env!("CODEX_RELEASE_REPOSITORY"),
+                option_env!("CODEX_RELEASE_TAG_PREFIX"),
+                codex_utils_version::RELEASE_VERSION,
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+            ) {
+                anyhow::bail!(
+                    "Automatic updates are available only for stable Sedna Linux releases. This build must be updated manually from https://github.com/sednalabs/codex/releases."
+                );
+            }
             anyhow::bail!(
-                "Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/"
+                "Could not detect the Codex installation method. Please update manually: {}",
+                update_manual_install_url()
             );
         };
         run_update_action(action)
+    }
+}
+
+fn requires_manual_sedna_update(
+    repository: Option<&str>,
+    tag_prefix: Option<&str>,
+    release_version: &str,
+    target_os: &str,
+    target_arch: &str,
+) -> bool {
+    codex_utils_version::is_sedna_release_identity(repository, tag_prefix)
+        && !codex_utils_version::is_sedna_automatic_update_eligible(
+            release_version,
+            target_os,
+            target_arch,
+        )
+}
+
+fn update_manual_install_url() -> &'static str {
+    update_manual_install_url_for_release_identity(
+        option_env!("CODEX_RELEASE_REPOSITORY"),
+        option_env!("CODEX_RELEASE_TAG_PREFIX"),
+    )
+}
+
+fn update_manual_install_url_for_release_identity(
+    repository: Option<&str>,
+    tag_prefix: Option<&str>,
+) -> &'static str {
+    if codex_utils_version::is_sedna_release_identity(repository, tag_prefix) {
+        "https://github.com/sednalabs/codex/releases"
+    } else {
+        "https://developers.openai.com/codex/cli/"
     }
 }
 
@@ -2596,6 +2630,47 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_tui::TokenUsage;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn manual_update_url_uses_sedna_releases_only_for_sedna_identity() {
+        assert_eq!(
+            update_manual_install_url_for_release_identity(Some("sednalabs/codex"), Some("v")),
+            "https://github.com/sednalabs/codex/releases"
+        );
+        assert_eq!(
+            update_manual_install_url_for_release_identity(Some("openai/codex"), Some("v")),
+            "https://developers.openai.com/codex/cli/"
+        );
+        assert_eq!(
+            update_manual_install_url_for_release_identity(Some("sednalabs/codex"), None),
+            "https://developers.openai.com/codex/cli/"
+        );
+    }
+
+    #[test]
+    fn sedna_prerelease_and_macos_builds_require_manual_updates() {
+        assert!(!requires_manual_sedna_update(
+            Some("sednalabs/codex"),
+            Some("v"),
+            "1.2.3-sedna.1",
+            "linux",
+            "x86_64",
+        ));
+        assert!(requires_manual_sedna_update(
+            Some("sednalabs/codex"),
+            Some("v"),
+            "1.2.3-alpha.1-sedna.1",
+            "linux",
+            "x86_64",
+        ));
+        assert!(requires_manual_sedna_update(
+            Some("sednalabs/codex"),
+            Some("v"),
+            "1.2.3-sedna.1",
+            "macos",
+            "x86_64",
+        ));
+    }
 
     #[tokio::test]
     async fn updater_http_client_factory_honors_respect_system_proxy() {

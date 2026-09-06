@@ -1,4 +1,7 @@
 use crate::legacy_core::config::Config;
+use crate::update_versions::is_actionable_sedna_update;
+use crate::version::CODEX_RELEASE_REPOSITORY;
+use crate::version::CODEX_RELEASE_TAG_PREFIX;
 use chrono::DateTime;
 use chrono::Utc;
 use serde::Deserialize;
@@ -13,6 +16,44 @@ pub(crate) struct VersionInfo {
     pub(crate) last_checked_at: DateTime<Utc>,
     #[serde(default)]
     pub(crate) dismissed_version: Option<String>,
+    /// Legacy records have no identity and therefore fail closed.
+    #[serde(default)]
+    pub(crate) release_repository: Option<String>,
+    #[serde(default)]
+    pub(crate) release_tag_prefix: Option<String>,
+}
+
+impl VersionInfo {
+    pub(crate) fn for_current_channel(
+        latest_version: String,
+        last_checked_at: DateTime<Utc>,
+        dismissed_version: Option<String>,
+    ) -> Self {
+        Self {
+            latest_version,
+            last_checked_at,
+            dismissed_version,
+            release_repository: Some(CODEX_RELEASE_REPOSITORY.to_string()),
+            release_tag_prefix: Some(CODEX_RELEASE_TAG_PREFIX.to_string()),
+        }
+    }
+
+    pub(crate) fn matches_current_channel(&self) -> bool {
+        self.release_repository.as_deref() == Some(CODEX_RELEASE_REPOSITORY)
+            && self.release_tag_prefix.as_deref() == Some(CODEX_RELEASE_TAG_PREFIX)
+    }
+
+    pub(crate) fn dismissed_version_for_current_channel(&self) -> Option<String> {
+        self.matches_current_channel()
+            .then(|| self.dismissed_version.clone())
+            .flatten()
+    }
+
+    pub(crate) fn actionable_latest_version(&self, current_version: &str) -> Option<&str> {
+        (self.matches_current_channel()
+            && is_actionable_sedna_update(&self.latest_version, current_version))
+        .then_some(self.latest_version.as_str())
+    }
 }
 
 const VERSION_FILENAME: &str = "version.json";
@@ -31,12 +72,21 @@ pub(crate) fn read_version_info(version_file: &Path) -> anyhow::Result<VersionIn
 pub(crate) async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<()> {
     let version_file = version_filepath(config);
     let mut info = match read_version_info(&version_file) {
-        Ok(info) => info,
-        Err(_) => VersionInfo {
-            latest_version: version.to_string(),
-            last_checked_at: DateTime::<Utc>::UNIX_EPOCH,
-            dismissed_version: None,
-        },
+        Ok(info) if info.matches_current_channel() => info,
+        Err(_) => {
+            VersionInfo::for_current_channel(
+                version.to_string(),
+                DateTime::<Utc>::UNIX_EPOCH,
+                None,
+            )
+        }
+        Ok(_) => {
+            VersionInfo::for_current_channel(
+                version.to_string(),
+                DateTime::<Utc>::UNIX_EPOCH,
+                None,
+            )
+        }
     };
     info.dismissed_version = Some(version.to_string());
     let json_line = format!("{}\n", serde_json::to_string(&info)?);
