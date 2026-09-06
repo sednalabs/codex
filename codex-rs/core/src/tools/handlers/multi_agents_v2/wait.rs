@@ -746,7 +746,7 @@ mod tests {
                 observer_expiries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             };
             wait_for_wake_source(
-                session,
+                session.into(),
                 &mut input_activity_rx,
                 status_rxs,
                 &[target_id],
