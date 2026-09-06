@@ -1,8 +1,13 @@
 use super::*;
 use std::fs;
-use std::path::PathBuf;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::Read;
+use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
+use std::process::Stdio;
 use std::sync::Arc;
 use tempfile::tempdir;
 
@@ -59,8 +64,16 @@ fn lock_file_is_stable_and_not_unlinked() {
 fn cross_process_contention_uses_native_lock() {
     if std::env::var_os("CODEX_GOAL_LEASE_CHILD").is_some() {
         let database = PathBuf::from(std::env::var_os("CODEX_GOAL_LEASE_DB").expect("database"));
-        let _lease = GoalExecutionLease::acquire(&database, thread_id(5)).expect("child lease");
-        std::thread::sleep(std::time::Duration::from_millis(250));
+        let lease = GoalExecutionLease::acquire(&database, thread_id(5)).expect("child lease");
+        println!("READY");
+        std::io::stdout().flush().expect("flush ready signal");
+        let mut release = [0_u8; 1];
+        std::io::stdin()
+            .read_exact(&mut release)
+            .expect("read release signal");
+        drop(lease);
+        println!("RELEASED");
+        std::io::stdout().flush().expect("flush release signal");
         return;
     }
 
@@ -72,14 +85,32 @@ fn cross_process_contention_uses_native_lock() {
         .arg("--nocapture")
         .env("CODEX_GOAL_LEASE_CHILD", "1")
         .env("CODEX_GOAL_LEASE_DB", &database)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .spawn()
         .expect("spawn child");
-    std::thread::sleep(std::time::Duration::from_millis(75));
-    assert!(matches!(
+    let mut child_stdin = child.stdin.take().expect("child stdin");
+    let child_stdout = child.stdout.take().expect("child stdout");
+    let mut child_stdout = BufReader::new(child_stdout);
+    let mut signal = String::new();
+    child_stdout
+        .read_line(&mut signal)
+        .expect("read child ready signal");
+    assert_eq!(signal.trim(), "READY");
+    let busy = matches!(
         GoalExecutionLease::acquire(&database, thread_id(5)),
         Err(GoalExecutionLeaseError::Busy)
-    ));
+    );
+    child_stdin.write_all(b"x").expect("send release signal");
+    child_stdin.flush().expect("flush release signal");
+    signal.clear();
+    child_stdout
+        .read_line(&mut signal)
+        .expect("read child release signal");
+    assert_eq!(signal.trim(), "RELEASED");
     assert!(child.wait().expect("wait child").success());
+    assert!(busy, "parent should observe the child-held lease as busy");
+    GoalExecutionLease::acquire(&database, thread_id(5)).expect("lease after child release");
 }
 
 #[test]
