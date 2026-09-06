@@ -13,7 +13,7 @@ pub enum UpdateAction {
 }
 
 impl UpdateAction {
-    #[cfg(any(not(debug_assertions), test))]
+    #[cfg(not(debug_assertions))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
         Self::from_install_context_for_sedna_release(
             context,
@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(
             UpdateAction::from_install_context_for_sedna_release_on_target(
                 &context,
-                true,
+                /*has_sedna_identity*/ true,
                 "1.2.3-sedna.1",
                 "linux",
                 "x86_64",

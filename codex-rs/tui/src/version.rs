@@ -57,8 +57,6 @@ pub fn latest_release_notes_url() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn sedna_update_identity_requires_both_explicit_build_values() {
         assert!(codex_utils_version::is_sedna_release_identity(
