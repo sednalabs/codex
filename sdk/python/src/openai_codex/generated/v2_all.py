@@ -2494,7 +2494,7 @@ class PlanDeltaNotification(BaseModel):
     turn_id: Annotated[str, Field(alias="turnId")]
 
 
-class PlanType(Enum):
+class PlanType(str, Enum):
     free = "free"
     go = "go"
     plus = "plus"
@@ -2507,6 +2507,15 @@ class PlanType(Enum):
     enterprise = "enterprise"
     edu = "edu"
     unknown = "unknown"
+
+    @classmethod
+    def _missing_(cls, value: object) -> PlanType | None:
+        if not isinstance(value, str) or not value:
+            return None
+        member = str.__new__(cls, value)
+        member._name_ = value
+        member._value_ = value
+        return member
 
 
 class PluginAuthPolicy(Enum):
@@ -2969,6 +2978,8 @@ class ReasoningEffort(str, Enum):
     medium = "medium"
     high = "high"
     xhigh = "xhigh"
+    max = "max"
+    ultra = "ultra"
 
     @classmethod
     def _missing_(cls, value: object) -> ReasoningEffort | None:
